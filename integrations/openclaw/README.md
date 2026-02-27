@@ -43,6 +43,7 @@ plugins:
         maxResults: 6
         autoRecall: true
         autoIndex: true
+        requestTimeoutMs: 600000
 ```
 
 Set your API key in the environment:

@@ -13,8 +13,18 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
+      - LLM_PROVIDER="custom"
+      - LLM_MODEL="xai/grok-4-1-fast-reasoning"
+      - LLM_ENDPOINT="https://api.x.ai/v1"
       - LLM_API_KEY=${LLM_API_KEY}
-      - ENABLE_BACKEND_ACCESS_CONTROL=false
+      - EMBEDDING_PROVIDER="ollama"
+      - EMBEDDING_MODEL="bge-m3"
+      - EMBEDDING_ENDPOINT="http://host.docker.internal:11434/api/embed"
+      - EMBEDDING_DIMENSIONS=1024
+      - HUGGINGFACE_TOKENIZER="BAAI/bge-m3"
+      - REQUIRE_AUTHENTICATION="false"
+      - ENABLE_BACKEND_ACCESS_CONTROL="false"
+
     volumes:
       - cognee_data:/app/cognee/.cognee_system
     restart: unless-stopped

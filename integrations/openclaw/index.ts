@@ -300,7 +300,14 @@ class CogneeClient {
     datasetId?: string;
   }): Promise<{ datasetId: string; datasetName: string; dataId?: string }> {
     const formData = new FormData();
-    formData.append("data", new Blob([params.data], { type: "text/plain" }), "openclaw-memory.txt");
+    const content:string = params.data;
+
+    // Compute hash so that each file has a different name as cognee seems to generate the dataId from the name
+    const hash8:string = Math.abs(
+        content.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
+    ).toString(16).padStart(8, '0').slice(0, 8);
+
+    formData.append("data", new Blob([content], { type: "text/plain" }), `openclaw-memory${hash8}.txt`);
     formData.append("datasetName", params.datasetName);
     if (params.datasetId) {
       formData.append("datasetId", params.datasetId);
