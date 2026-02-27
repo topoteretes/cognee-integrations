@@ -33,7 +33,7 @@ Enable the plugin in your OpenClaw config (`~/.openclaw/config.yaml` or project 
 ```yaml
 plugins:
   entries:
-    memory-cognee:
+    cognee-openclaw:
       enabled: true
       config:
         baseUrl: "http://localhost:8000"
