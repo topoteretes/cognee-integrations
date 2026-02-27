@@ -300,14 +300,8 @@ class CogneeClient {
     datasetId?: string;
   }): Promise<{ datasetId: string; datasetName: string; dataId?: string }> {
     const formData = new FormData();
-    const content:string = params.data;
-
-    // Compute hash so that each file has a different name as cognee seems to generate the dataId from the name
-    const hash8:string = Math.abs(
-        content.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
-    ).toString(16).padStart(8, '0').slice(0, 8);
-
-    formData.append("data", new Blob([content], { type: "text/plain" }), `openclaw-memory${hash8}.txt`);
+    const hash8 = createHash("sha256").update(params.data).digest("hex").slice(0, 8);
+    formData.append("data", new Blob([params.data], { type: "text/plain" }), `openclaw-memory-${hash8}.txt`);
     formData.append("datasetName", params.datasetName);
     if (params.datasetId) {
       formData.append("datasetId", params.datasetId);
@@ -322,7 +316,7 @@ class CogneeClient {
     const dataId = this.extractDataId(data.data_id ?? data.data_ingestion_info);
     if (!dataId) {
       console.warn(
-        "memory-cognee: add response missing data_id",
+        "cognee-openclaw: add response missing data_id",
         JSON.stringify(
           {
             keys: Object.keys(data),
@@ -353,7 +347,8 @@ class CogneeClient {
     });
 
     const formData = new FormData();
-    formData.append("data", new Blob([params.data], { type: "text/plain" }), "openclaw-memory.txt");
+    const hash8 = createHash("sha256").update(params.data).digest("hex").slice(0, 8);
+    formData.append("data", new Blob([params.data], { type: "text/plain" }), `openclaw-memory-${hash8}.txt`);
 
     const data = await this.fetchJson<CogneeAddResponse>(`/api/v1/update?${query.toString()}`, {
       method: "PATCH",
@@ -375,7 +370,7 @@ class CogneeClient {
         "Content-Type": "application/json",
         ...this.buildHeaders(),
       },
-      body: JSON.stringify({ datasetIds: params.datasetIds }),
+      body: JSON.stringify({ datasetIds: params.datasetIds, runInBackground: true }),
     });
   }
 
@@ -501,13 +496,13 @@ async function syncFiles(
           syncIndex.datasetName = cfg.datasetName;
           result.updated++;
 
-          logger.info?.(`memory-cognee: updated ${file.path}`);
+          logger.info?.(`cognee-openclaw: updated ${file.path}`);
           continue; // Success, move to next file
         } catch (updateError) {
           // If update fails (404/409 - document not found), fall back to add
           const errorMsg = updateError instanceof Error ? updateError.message : String(updateError);
           if (errorMsg.includes("404") || errorMsg.includes("409") || errorMsg.includes("not found")) {
-            logger.info?.(`memory-cognee: update failed for ${file.path}, falling back to add`);
+            logger.info?.(`cognee-openclaw: update failed for ${file.path}, falling back to add`);
             // Clear the stale dataId and fall through to add
             delete existing.dataId;
           } else {
@@ -541,10 +536,10 @@ async function syncFiles(
       needsCognify = true;
       result.added++;
 
-      logger.info?.(`memory-cognee: added ${file.path}`);
+      logger.info?.(`cognee-openclaw: added ${file.path}`);
     } catch (error) {
       result.errors++;
-      logger.warn?.(`memory-cognee: failed to sync ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn?.(`cognee-openclaw: failed to sync ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -552,9 +547,9 @@ async function syncFiles(
   if (needsCognify && cfg.autoCognify && datasetId) {
     try {
       await client.cognify({ datasetIds: [datasetId] });
-      logger.info?.("memory-cognee: cognify completed");
+      logger.info?.("cognee-openclaw: cognify dispatched");
     } catch (error) {
-      logger.warn?.(`memory-cognee: cognify failed: ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn?.(`cognee-openclaw: cognify failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -569,7 +564,7 @@ async function syncFiles(
 // ---------------------------------------------------------------------------
 
 const memoryCogneePlugin = {
-  id: "memory-cognee",
+  id: "cognee-openclaw",
   name: "Memory (Cognee)",
   description: "Cognee-backed memory: indexes workspace memory files, auto-recalls before agent runs",
   kind: "memory" as const,
@@ -588,7 +583,7 @@ const memoryCogneePlugin = {
           datasetId = state[cfg.datasetName];
         })
         .catch((error) => {
-          api.logger.warn?.(`memory-cognee: failed to load dataset state: ${String(error)}`);
+          api.logger.warn?.(`cognee-openclaw: failed to load dataset state: ${String(error)}`);
         }),
       loadSyncIndex()
         .then((state) => {
@@ -599,7 +594,7 @@ const memoryCogneePlugin = {
           }
         })
         .catch((error) => {
-          api.logger.warn?.(`memory-cognee: failed to load sync index: ${String(error)}`);
+          api.logger.warn?.(`cognee-openclaw: failed to load sync index: ${String(error)}`);
         }),
     ]);
 
@@ -609,11 +604,11 @@ const memoryCogneePlugin = {
 
       const files = await collectMemoryFiles(workspaceDir);
       if (files.length === 0) {
-        logger.info?.("memory-cognee: no memory files found");
+        logger.info?.("cognee-openclaw: no memory files found");
         return { added: 0, updated: 0, skipped: 0, errors: 0 };
       }
 
-      logger.info?.(`memory-cognee: found ${files.length} memory file(s), syncing...`);
+      logger.info?.(`cognee-openclaw: found ${files.length} memory file(s), syncing...`);
 
       const result = await syncFiles(client, files, syncIndex, cfg, logger);
       if (result.datasetId) {
@@ -689,10 +684,10 @@ const memoryCogneePlugin = {
           try {
             const result = await runSync(resolvedWorkspaceDir, ctx.logger);
             ctx.logger.info?.(
-              `memory-cognee: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.skipped} unchanged`,
+              `cognee-openclaw: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.skipped} unchanged`,
             );
           } catch (error) {
-            ctx.logger.warn?.(`memory-cognee: auto-sync failed: ${String(error)}`);
+            ctx.logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(error)}`);
           }
         },
       });
@@ -708,11 +703,11 @@ const memoryCogneePlugin = {
         await stateReady;
 
         if (!event.prompt || event.prompt.length < 5) {
-          api.logger.debug?.("memory-cognee: skipping recall (prompt too short)");
+          api.logger.debug?.("cognee-openclaw: skipping recall (prompt too short)");
           return;
         }
         if (!datasetId) {
-          api.logger.debug?.("memory-cognee: skipping recall (no datasetId)");
+          api.logger.debug?.("cognee-openclaw: skipping recall (no datasetId)");
           return;
         }
 
@@ -729,7 +724,7 @@ const memoryCogneePlugin = {
             .slice(0, cfg.maxResults);
 
           if (filtered.length === 0) {
-            api.logger.debug?.("memory-cognee: search returned no results above minScore");
+            api.logger.debug?.("cognee-openclaw: search returned no results above minScore");
             return;
           }
 
@@ -745,14 +740,14 @@ const memoryCogneePlugin = {
           );
 
           api.logger.info?.(
-            `memory-cognee: injecting ${filtered.length} memories for session ${ctx.sessionKey ?? "unknown"}`,
+            `cognee-openclaw: injecting ${filtered.length} memories for session ${ctx.sessionKey ?? "unknown"}`,
           );
 
           return {
             prependContext: `<cognee_memories>\nRelevant memories:\n${payload}\n</cognee_memories>`,
           };
         } catch (error) {
-          api.logger.warn?.(`memory-cognee: recall failed: ${String(error)}`);
+          api.logger.warn?.(`cognee-openclaw: recall failed: ${String(error)}`);
         }
       });
     }
@@ -781,7 +776,7 @@ const memoryCogneePlugin = {
 
           if (changedFiles.length === 0) return;
 
-          api.logger.info?.(`memory-cognee: detected ${changedFiles.length} changed file(s), syncing...`);
+          api.logger.info?.(`cognee-openclaw: detected ${changedFiles.length} changed file(s), syncing...`);
 
           const result = await syncFiles(client, changedFiles, syncIndex, cfg, api.logger);
           if (result.datasetId) {
@@ -789,10 +784,10 @@ const memoryCogneePlugin = {
           }
 
           api.logger.info?.(
-            `memory-cognee: post-agent sync: ${result.added} added, ${result.updated} updated`,
+            `cognee-openclaw: post-agent sync: ${result.added} added, ${result.updated} updated`,
           );
         } catch (error) {
-          api.logger.warn?.(`memory-cognee: post-agent sync failed: ${String(error)}`);
+          api.logger.warn?.(`cognee-openclaw: post-agent sync failed: ${String(error)}`);
         }
       });
     }
