@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -15,6 +15,7 @@ type CogneePluginConfig = {
   apiKey?: string;
   datasetName?: string;
   searchType?: CogneeSearchType;
+  searchPrompt?: string;
   maxResults?: number;
   minScore?: number;
   maxTokens?: number;
@@ -67,6 +68,7 @@ type SyncResult = {
   updated: number;
   skipped: number;
   errors: number;
+  deleted: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -76,6 +78,7 @@ type SyncResult = {
 const DEFAULT_BASE_URL = "http://localhost:8000";
 const DEFAULT_DATASET_NAME = "openclaw";
 const DEFAULT_SEARCH_TYPE: CogneeSearchType = "GRAPH_COMPLETION";
+const DEFAULT_SEARCH_PROMPT = "";
 const DEFAULT_MAX_RESULTS = 6;
 const DEFAULT_MIN_SCORE = 0;
 const DEFAULT_MAX_TOKENS = 512;
@@ -117,6 +120,7 @@ function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> {
   const baseUrl = raw.baseUrl?.trim() || DEFAULT_BASE_URL;
   const datasetName = raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
+  const searchPrompt = raw.searchPrompt || DEFAULT_SEARCH_PROMPT;
   const maxResults =
     typeof raw.maxResults === "number" ? raw.maxResults : DEFAULT_MAX_RESULTS;
   const minScore =
@@ -142,6 +146,7 @@ function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> {
     apiKey,
     datasetName,
     searchType,
+    searchPrompt,
     maxResults,
     minScore,
     maxTokens,
@@ -363,6 +368,30 @@ class CogneeClient {
     };
   }
 
+  async delete(params: {
+    dataId: string;
+    datasetId: string;
+  }): Promise<{ datasetId: string; dataId: string; deleted: boolean }> {
+    try {
+      const url = `/api/v1/datasets/${params.datasetId}/data/${params.dataId}`;
+      await this.fetchJson<unknown>(url, {
+        method: "DELETE",
+        headers: this.buildHeaders(),
+      });
+      return {
+        datasetId: params.datasetId,
+        dataId: params.dataId,
+        deleted: true,
+      };
+    } catch (error) {
+      return {
+        datasetId: params.datasetId,
+        dataId: params.dataId,
+        deleted: false,
+      };
+    }
+  }
+
   async cognify(params: { datasetIds?: string[] } = {}): Promise<{ status?: string }> {
     return this.fetchJson<{ status?: string }>("/api/v1/cognify", {
       method: "POST",
@@ -376,9 +405,9 @@ class CogneeClient {
 
   async search(params: {
     queryText: string;
+    searchPrompt: string;
     searchType: CogneeSearchType;
     datasetIds: string[];
-    maxTokens: number;
   }): Promise<CogneeSearchResult[]> {
     const data = await this.fetchJson<unknown>("/api/v1/search", {
       method: "POST",
@@ -390,7 +419,7 @@ class CogneeClient {
         query: params.queryText,
         searchType: params.searchType,
         datasetIds: params.datasetIds,
-        max_tokens: params.maxTokens,
+        systemPrompt: params.searchPrompt,
       }),
     });
 
@@ -461,16 +490,17 @@ class CogneeClient {
 
 async function syncFiles(
   client: CogneeClient,
-  files: MemoryFile[],
+  changedFiles: MemoryFile[],
+  fullFiles: MemoryFile[],
   syncIndex: SyncIndex,
   cfg: Required<CogneePluginConfig>,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
 ): Promise<SyncResult & { datasetId?: string }> {
-  const result: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0 };
+  const result: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   let datasetId = syncIndex.datasetId;
   let needsCognify = false;
 
-  for (const file of files) {
+  for (const file of changedFiles) {
     const existing = syncIndex.entries[file.path];
 
     // Skip unchanged files
@@ -543,7 +573,28 @@ async function syncFiles(
     }
   }
 
-  // Cognify only after adds (not after updates — those are already processed)
+  // Handle deletions: remove from Cognee any files no longer present
+  const currentPaths = new Set(fullFiles.map(f => f.path));
+  for (const [path, entry] of Object.entries(syncIndex.entries)) {
+    if (!currentPaths.has(path) && entry.dataId && datasetId) {
+      const deleteResult = await client.delete({ dataId: entry.dataId, datasetId });
+      if (deleteResult.deleted) {
+        result.deleted++;
+        delete syncIndex.entries[path];
+        logger.info?.(`cognee-openclaw: deleted ${path}`);
+      } else {
+        result.errors++;
+        logger.warn?.(`cognee-openclaw: failed to delete ${path}`);
+      }
+    }
+  }
+
+  // Trigger cognify if deletions occurred (dataset structure changed)
+  if (result.deleted > 0) {
+    needsCognify = true;
+  }
+
+  // Cognify only after adds or deletions (not after updates — those are already processed)
   if (needsCognify && cfg.autoCognify && datasetId) {
     try {
       await client.cognify({ datasetIds: [datasetId] });
@@ -605,12 +656,12 @@ const memoryCogneePlugin = {
       const files = await collectMemoryFiles(workspaceDir);
       if (files.length === 0) {
         logger.info?.("cognee-openclaw: no memory files found");
-        return { added: 0, updated: 0, skipped: 0, errors: 0 };
+        return { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
       }
 
       logger.info?.(`cognee-openclaw: found ${files.length} memory file(s), syncing...`);
 
-      const result = await syncFiles(client, files, syncIndex, cfg, logger);
+      const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
       if (result.datasetId) {
         datasetId = result.datasetId;
       }
@@ -631,7 +682,7 @@ const memoryCogneePlugin = {
         .description("Sync memory files to Cognee (add new, update changed, skip unchanged)")
         .action(async () => {
           const result = await runSync(resolvedWorkspaceDir, ctx.logger);
-          const summary = `Sync complete: ${result.added} added, ${result.updated} updated, ${result.skipped} unchanged, ${result.errors} errors`;
+          const summary = `Sync complete: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted, ${result.skipped} unchanged, ${result.errors} errors`;
           ctx.logger.info?.(summary);
           console.log(summary);
         });
@@ -648,7 +699,7 @@ const memoryCogneePlugin = {
 
           let dirty = 0;
           let newCount = 0;
-          for (const file of files) {
+  for (const file of files) {
             const existing = syncIndex.entries[file.path];
             if (!existing) {
               newCount++;
@@ -684,7 +735,7 @@ const memoryCogneePlugin = {
           try {
             const result = await runSync(resolvedWorkspaceDir, ctx.logger);
             ctx.logger.info?.(
-              `cognee-openclaw: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.skipped} unchanged`,
+              `cognee-openclaw: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted, ${result.skipped} unchanged`,
             );
           } catch (error) {
             ctx.logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(error)}`);
@@ -716,7 +767,7 @@ const memoryCogneePlugin = {
             queryText: event.prompt,
             searchType: cfg.searchType,
             datasetIds: [datasetId],
-            maxTokens: cfg.maxTokens,
+            searchPrompt: cfg.searchPrompt,
           });
 
           const filtered = results
@@ -778,13 +829,13 @@ const memoryCogneePlugin = {
 
           api.logger.info?.(`cognee-openclaw: detected ${changedFiles.length} changed file(s), syncing...`);
 
-          const result = await syncFiles(client, changedFiles, syncIndex, cfg, api.logger);
+          const result = await syncFiles(client, changedFiles, files, syncIndex, cfg, api.logger);
           if (result.datasetId) {
             datasetId = result.datasetId;
           }
 
           api.logger.info?.(
-            `cognee-openclaw: post-agent sync: ${result.added} added, ${result.updated} updated`,
+            `cognee-openclaw: post-agent sync: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`,
           );
         } catch (error) {
           api.logger.warn?.(`cognee-openclaw: post-agent sync failed: ${String(error)}`);
@@ -795,3 +846,7 @@ const memoryCogneePlugin = {
 };
 
 export default memoryCogneePlugin;
+
+// Exports for testing
+export { CogneeClient, syncFiles };
+export type { CogneePluginConfig, MemoryFile, SyncIndex, SyncResult };

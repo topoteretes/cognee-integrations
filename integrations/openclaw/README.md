@@ -103,3 +103,11 @@ For live rebuilds during development:
 ```bash
 npm run dev
 ```
+
+## Testing
+
+Run the test suite to verify functionality:
+
+```bash
+npm test
+```

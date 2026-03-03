@@ -12,7 +12,8 @@
       "DOM"
     ],
     "types": [
-      "node"
+      "node",
+      "jest"
     ],
     "skipLibCheck": true
   },

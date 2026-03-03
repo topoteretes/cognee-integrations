@@ -54,6 +54,10 @@
       "requestTimeoutMs": {
         "type": "number",
         "description": "HTTP timeout in milliseconds for Cognee requests (default: 60000)"
+      },
+      "searchPrompt": {
+        "type": "string",
+        "description": "Additional prompt to cognee to help query processing (default:'')"
       }
     }
   },
