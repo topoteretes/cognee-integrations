@@ -40,6 +40,7 @@ plugins:
         apiKey: "${COGNEE_API_KEY}"
         datasetName: "my-project"
         searchType: "GRAPH_COMPLETION"
+        deleteMode: "hard"
         maxResults: 6
         autoRecall: true
         autoIndex: true
@@ -76,7 +77,7 @@ export COGNEE_API_KEY="your-key-here"
    - `~/.openclaw/memory/cognee/datasets.json` — dataset ID mapping
    - `~/.openclaw/memory/cognee/sync-index.json` — per-file hash and Cognee data IDs
 
-Memory files detected at: `MEMORY.md`, `memory.md`, or `memory/*.md`
+Memory files detected at: `MEMORY.md` and `memory/*.md`
 
 ## CLI Commands
 

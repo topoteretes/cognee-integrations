@@ -14,6 +14,14 @@
         "type": "string",
         "description": "Cognee API key (or use ${COGNEE_API_KEY})"
       },
+      "username": {
+        "type": "string",
+        "description": "Cognee login username (default: default_user@example.com)"
+      },
+      "password": {
+        "type": "string",
+        "description": "Cognee login password (default: default_password)"
+      },
       "datasetName": {
         "type": "string",
         "description": "Cognee dataset name to store memories in"
@@ -26,6 +34,14 @@
           "SUMMARIES"
         ],
         "description": "Cognee search mode"
+      },
+      "deleteMode": {
+        "type": "string",
+        "enum": [
+          "soft",
+          "hard"
+        ],
+        "description": "Cognee delete mode: 'soft' removes raw data only, 'hard' also removes degree-one graph nodes (default: soft)"
       },
       "maxResults": {
         "type": "number",
@@ -55,9 +71,13 @@
         "type": "number",
         "description": "HTTP timeout in milliseconds for Cognee requests (default: 60000)"
       },
+      "ingestionTimeoutMs": {
+        "type": "number",
+        "description": "HTTP timeout in milliseconds for add/update (ingestion) requests, which are typically slower (default: 300000 = 5 min)"
+      },
       "searchPrompt": {
         "type": "string",
-        "description": "Additional prompt to cognee to help query processing (default:'')"
+        "description": "System prompt sent to Cognee to guide search query processing (default: '')"
       }
     }
   },
@@ -71,6 +91,15 @@
       "sensitive": true,
       "placeholder": "${COGNEE_API_KEY}"
     },
+    "username": {
+      "label": "Username",
+      "placeholder": "default_user@example.com"
+    },
+    "password": {
+      "label": "Password",
+      "sensitive": true,
+      "placeholder": "default_password"
+    },
     "datasetName": {
       "label": "Dataset Name",
       "placeholder": "openclaw"
@@ -78,6 +107,10 @@
     "searchType": {
       "label": "Search Type",
       "placeholder": "GRAPH_COMPLETION"
+    },
+    "deleteMode": {
+      "label": "Delete Mode",
+      "placeholder": "soft"
     },
     "maxResults": {
       "label": "Max Results",
@@ -103,6 +136,10 @@
     "requestTimeoutMs": {
       "label": "Request Timeout (ms)",
       "placeholder": "60000"
+    },
+    "ingestionTimeoutMs": {
+      "label": "Ingestion Timeout (ms)",
+      "placeholder": "300000"
     }
   }
 }
