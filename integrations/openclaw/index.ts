@@ -9,13 +9,17 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 // ---------------------------------------------------------------------------
 
 type CogneeSearchType = "GRAPH_COMPLETION" | "CHUNKS" | "SUMMARIES";
+type CogneeDeleteMode = "soft" | "hard";
 
 type CogneePluginConfig = {
   baseUrl?: string;
   apiKey?: string;
+  username?: string;
+  password?: string;
   datasetName?: string;
   searchType?: CogneeSearchType;
   searchPrompt?: string;
+  deleteMode?: CogneeDeleteMode;
   maxResults?: number;
   minScore?: number;
   maxTokens?: number;
@@ -23,6 +27,7 @@ type CogneePluginConfig = {
   autoIndex?: boolean;
   autoCognify?: boolean;
   requestTimeoutMs?: number;
+  ingestionTimeoutMs?: number;
 };
 
 type CogneeAddResponse = {
@@ -79,6 +84,7 @@ const DEFAULT_BASE_URL = "http://localhost:8000";
 const DEFAULT_DATASET_NAME = "openclaw";
 const DEFAULT_SEARCH_TYPE: CogneeSearchType = "GRAPH_COMPLETION";
 const DEFAULT_SEARCH_PROMPT = "";
+const DEFAULT_DELETE_MODE: CogneeDeleteMode = "soft";
 const DEFAULT_MAX_RESULTS = 6;
 const DEFAULT_MIN_SCORE = 0;
 const DEFAULT_MAX_TOKENS = 512;
@@ -86,12 +92,15 @@ const DEFAULT_AUTO_RECALL = true;
 const DEFAULT_AUTO_INDEX = true;
 const DEFAULT_AUTO_COGNIFY = true;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const DEFAULT_INGESTION_TIMEOUT_MS = 300_000; // 5 min for add/update (ingestion is slow)
+const MAX_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 3_000;
 
 const STATE_PATH = join(homedir(), ".openclaw", "memory", "cognee", "datasets.json");
 const SYNC_INDEX_PATH = join(homedir(), ".openclaw", "memory", "cognee", "sync-index.json");
 
 /** Glob patterns for memory files, relative to workspace root. */
-const MEMORY_FILE_PATTERNS = ["MEMORY.md", "memory.md", "memory"];
+const MEMORY_FILE_PATTERNS = ["MEMORY.md", "memory"];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,6 +130,7 @@ function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> {
   const datasetName = raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
   const searchPrompt = raw.searchPrompt || DEFAULT_SEARCH_PROMPT;
+  const deleteMode = raw.deleteMode === "hard" ? "hard" : DEFAULT_DELETE_MODE;
   const maxResults =
     typeof raw.maxResults === "number" ? raw.maxResults : DEFAULT_MAX_RESULTS;
   const minScore =
@@ -135,18 +145,26 @@ function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> {
     typeof raw.autoCognify === "boolean" ? raw.autoCognify : DEFAULT_AUTO_COGNIFY;
   const requestTimeoutMs =
     typeof raw.requestTimeoutMs === "number" ? raw.requestTimeoutMs : DEFAULT_REQUEST_TIMEOUT_MS;
+  const ingestionTimeoutMs =
+    typeof raw.ingestionTimeoutMs === "number" ? raw.ingestionTimeoutMs : DEFAULT_INGESTION_TIMEOUT_MS;
 
   const apiKey =
     raw.apiKey && raw.apiKey.length > 0
       ? resolveEnvVars(raw.apiKey)
       : process.env.COGNEE_API_KEY || "";
 
+  const username = raw.username?.trim() || process.env.COGNEE_USERNAME || "";
+  const password = raw.password?.trim() || process.env.COGNEE_PASSWORD || "";
+
   return {
     baseUrl,
     apiKey,
+    username,
+    password,
     datasetName,
     searchType,
     searchPrompt,
+    deleteMode,
     maxResults,
     minScore,
     maxTokens,
@@ -154,6 +172,7 @@ function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> {
     autoIndex,
     autoCognify,
     requestTimeoutMs,
+    ingestionTimeoutMs,
   };
 }
 
@@ -223,7 +242,6 @@ async function collectMemoryFiles(workspaceDir: string): Promise<MemoryFile[]> {
           hash: hashText(content),
         });
       } else if (stat.isDirectory()) {
-        // Recursively scan the memory/ directory for .md files
         const entries = await scanDir(target, workspaceDir);
         files.push(...entries);
       }
@@ -231,7 +249,6 @@ async function collectMemoryFiles(workspaceDir: string): Promise<MemoryFile[]> {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
-      // File/dir doesn't exist — skip silently
     }
   }
 
@@ -267,36 +284,143 @@ async function scanDir(dir: string, workspaceDir: string): Promise<MemoryFile[]>
 // ---------------------------------------------------------------------------
 
 class CogneeClient {
+  private authToken: string | undefined;
+  private loginPromise: Promise<void> | undefined;
+
   constructor(
     private readonly baseUrl: string,
     private readonly apiKey?: string,
+    private readonly username?: string,
+    private readonly password?: string,
     private readonly timeoutMs: number = 30_000,
+    private readonly ingestionTimeoutMs: number = DEFAULT_INGESTION_TIMEOUT_MS,
   ) {}
 
-  private buildHeaders(): Record<string, string> {
-    if (!this.apiKey) return {};
-    return {
-      Authorization: `Bearer ${this.apiKey}`,
-      "X-Api-Key": this.apiKey,
-    };
-  }
+  /**
+   * Authenticate with Cognee via /api/v1/auth/login.
+   * Falls back to default local dev credentials when none are configured.
+   */
+  async login(): Promise<void> {
+    const user = this.username || "default_user@example.com";
+    const pass = this.password || "default_password";
 
-  private async fetchJson<T>(path: string, init: RequestInit, timeoutMs = this.timeoutMs): Promise<T> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        ...init,
+      const response = await fetch(`${this.baseUrl}/api/v1/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ username: user, password: pass }),
         signal: controller.signal,
       });
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Cognee request failed (${response.status}): ${errorText}`);
+        throw new Error(`Cognee login failed (${response.status}): ${errorText}`);
       }
-      return (await response.json()) as T;
+      const data = (await response.json()) as { access_token?: string; token?: string };
+      this.authToken = data.access_token ?? data.token;
+      if (!this.authToken) {
+        throw new Error("Cognee login succeeded but no token in response");
+      }
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /**
+   * Ensure the client is authenticated (login once, reuse token).
+   */
+  async ensureAuth(): Promise<void> {
+    if (this.authToken || this.apiKey) return;
+    if (!this.loginPromise) {
+      this.loginPromise = this.login().catch((err) => {
+        this.loginPromise = undefined;
+        throw err;
+      });
+    }
+    return this.loginPromise;
+  }
+
+  private buildHeaders(): Record<string, string> {
+    if (this.apiKey) {
+      return {
+        Authorization: `Bearer ${this.apiKey}`,
+        "X-Api-Key": this.apiKey,
+      };
+    }
+    if (this.authToken) {
+      return { Authorization: `Bearer ${this.authToken}` };
+    }
+    return {};
+  }
+
+  private async fetchJson<T>(
+    path: string,
+    init: RequestInit,
+    timeoutMs = this.timeoutMs,
+    retries = MAX_RETRIES,
+  ): Promise<T> {
+    await this.ensureAuth();
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (attempt > 0) {
+        const delay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(`${this.baseUrl}${path}`, {
+          ...init,
+          headers: { ...this.buildHeaders(), ...(init.headers as Record<string, string>) },
+          signal: controller.signal,
+        });
+
+        // On 401, try re-login once and retry
+        if (response.status === 401 && !this.apiKey) {
+          clearTimeout(timer);
+          this.authToken = undefined;
+          this.loginPromise = undefined;
+          await this.ensureAuth();
+
+          const retryController = new AbortController();
+          const retryTimeout = setTimeout(() => retryController.abort(), timeoutMs);
+          try {
+            const retryResponse = await fetch(`${this.baseUrl}${path}`, {
+              ...init,
+              headers: { ...this.buildHeaders(), ...(init.headers as Record<string, string>) },
+              signal: retryController.signal,
+            });
+            if (!retryResponse.ok) {
+              const errorText = await retryResponse.text();
+              throw new Error(`Cognee request failed (${retryResponse.status}): ${errorText}`);
+            }
+            return (await retryResponse.json()) as T;
+          } finally {
+            clearTimeout(retryTimeout);
+          }
+        }
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Cognee request failed (${response.status}): ${errorText}`);
+        }
+        return (await response.json()) as T;
+      } catch (error) {
+        clearTimeout(timer);
+        const isTimeout =
+          error instanceof DOMException ||
+          (error instanceof Error && error.name === "AbortError");
+        if (isTimeout && attempt < retries) {
+          lastError = error;
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
   }
 
   async add(params: {
@@ -306,22 +430,28 @@ class CogneeClient {
   }): Promise<{ datasetId: string; datasetName: string; dataId?: string }> {
     const formData = new FormData();
     const hash8 = createHash("sha256").update(params.data).digest("hex").slice(0, 8);
-    formData.append("data", new Blob([params.data], { type: "text/plain" }), `openclaw-memory-${hash8}.txt`);
+    const fileName = `openclaw-memory-${hash8}.txt`;
+    formData.append("data", new Blob([params.data], { type: "text/plain" }), fileName);
     formData.append("datasetName", params.datasetName);
     if (params.datasetId) {
       formData.append("datasetId", params.datasetId);
     }
 
-    const data = await this.fetchJson<CogneeAddResponse>("/api/v1/add", {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: formData,
-    });
+    const data = await this.fetchJson<CogneeAddResponse>(
+      "/api/v1/add",
+      { method: "POST", body: formData },
+      this.ingestionTimeoutMs,
+    );
 
-    const dataId = this.extractDataId(data.data_id ?? data.data_ingestion_info);
+    let dataId = this.extractDataId(data.data_id ?? data.data_ingestion_info);
+
+    if (!dataId && data.dataset_id) {
+      dataId = await this.resolveDataIdFromDataset(data.dataset_id, fileName);
+    }
+
     if (!dataId) {
       console.warn(
-        "cognee-openclaw: add response missing data_id",
+        "cognee-openclaw: add response missing data_id and dataset lookup failed",
         JSON.stringify(
           {
             keys: Object.keys(data),
@@ -353,30 +483,59 @@ class CogneeClient {
 
     const formData = new FormData();
     const hash8 = createHash("sha256").update(params.data).digest("hex").slice(0, 8);
-    formData.append("data", new Blob([params.data], { type: "text/plain" }), `openclaw-memory-${hash8}.txt`);
+    const fileName = `openclaw-memory-${hash8}.txt`;
+    formData.append("data", new Blob([params.data], { type: "text/plain" }), fileName);
 
-    const data = await this.fetchJson<CogneeAddResponse>(`/api/v1/update?${query.toString()}`, {
-      method: "PATCH",
-      headers: this.buildHeaders(),
-      body: formData,
-    });
+    const data = await this.fetchJson<CogneeAddResponse>(
+      `/api/v1/update?${query.toString()}`,
+      { method: "PATCH", body: formData },
+      this.ingestionTimeoutMs,
+    );
+
+    let dataId = this.extractDataId(data.data_id ?? data.data_ingestion_info);
+
+    if (!dataId) {
+      dataId = await this.resolveDataIdFromDataset(params.datasetId, fileName);
+    }
 
     return {
       datasetId: data.dataset_id,
       datasetName: data.dataset_name,
-      dataId: this.extractDataId(data.data_id ?? data.data_ingestion_info),
+      dataId,
     };
+  }
+
+  /**
+   * Query the dataset's data items and find a matching entry by filename.
+   * Used as fallback when add/update responses don't include a usable data_id.
+   */
+  async resolveDataIdFromDataset(datasetId: string, fileName: string): Promise<string | undefined> {
+    try {
+      type DataItem = { id: string; name: string };
+      const items = await this.fetchJson<DataItem[]>(`/api/v1/datasets/${datasetId}/data`, {
+        method: "GET",
+      });
+      if (!Array.isArray(items)) return undefined;
+      const match = items.find((item) => item.name === fileName.replace(/\.txt$/, ""));
+      return match?.id;
+    } catch {
+      return undefined;
+    }
   }
 
   async delete(params: {
     dataId: string;
     datasetId: string;
-  }): Promise<{ datasetId: string; dataId: string; deleted: boolean }> {
+    mode?: CogneeDeleteMode;
+  }): Promise<{ datasetId: string; dataId: string; deleted: boolean; error?: string }> {
     try {
-      const url = `/api/v1/datasets/${params.datasetId}/data/${params.dataId}`;
-      await this.fetchJson<unknown>(url, {
+      const query = new URLSearchParams({
+        data_id: params.dataId,
+        dataset_id: params.datasetId,
+        mode: params.mode ?? "soft",
+      });
+      await this.fetchJson<unknown>(`/api/v1/delete?${query.toString()}`, {
         method: "DELETE",
-        headers: this.buildHeaders(),
       });
       return {
         datasetId: params.datasetId,
@@ -388,6 +547,7 @@ class CogneeClient {
         datasetId: params.datasetId,
         dataId: params.dataId,
         deleted: false,
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }
@@ -395,10 +555,7 @@ class CogneeClient {
   async cognify(params: { datasetIds?: string[] } = {}): Promise<{ status?: string }> {
     return this.fetchJson<{ status?: string }>("/api/v1/cognify", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...this.buildHeaders(),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ datasetIds: params.datasetIds, runInBackground: true }),
     });
   }
@@ -408,18 +565,17 @@ class CogneeClient {
     searchPrompt: string;
     searchType: CogneeSearchType;
     datasetIds: string[];
+    maxTokens: number;
   }): Promise<CogneeSearchResult[]> {
     const data = await this.fetchJson<unknown>("/api/v1/search", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...this.buildHeaders(),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         query: params.queryText,
         searchType: params.searchType,
         datasetIds: params.datasetIds,
-        systemPrompt: params.searchPrompt,
+        max_tokens: params.maxTokens,
+        ...(params.searchPrompt ? { systemPrompt: params.searchPrompt } : {}),
       }),
     });
 
@@ -484,8 +640,9 @@ class CogneeClient {
 //   - Changed file with dataId              → update (no re-cognify)
 //   - Changed file without dataId           → add + cognify
 //   - Unchanged file                        → skip
+//   - Deleted file (in index, not on disk)  → delete + cognify
 //
-// Matches clawdbot cognee-provider.ts syncFiles() (lines 422-513).
+// Based on clawdbot cognee-provider.ts syncFiles(), extended with delete support.
 // ---------------------------------------------------------------------------
 
 async function syncFiles(
@@ -515,13 +672,17 @@ async function syncFiles(
       // Changed file with prior dataId → try update first
       if (existing?.dataId && datasetId) {
         try {
-          await client.update({
+          const updateResponse = await client.update({
             dataId: existing.dataId,
             datasetId,
             data: dataWithMetadata,
           });
 
-          syncIndex.entries[file.path] = { hash: file.hash, dataId: existing.dataId };
+          const newDataId = updateResponse.dataId;
+          if (!newDataId) {
+            logger.warn?.(`cognee-openclaw: update for ${file.path} succeeded but could not resolve new data_id`);
+          }
+          syncIndex.entries[file.path] = { hash: file.hash, dataId: newDataId };
           syncIndex.datasetId = datasetId;
           syncIndex.datasetName = cfg.datasetName;
           result.updated++;
@@ -577,24 +738,32 @@ async function syncFiles(
   const currentPaths = new Set(fullFiles.map(f => f.path));
   for (const [path, entry] of Object.entries(syncIndex.entries)) {
     if (!currentPaths.has(path) && entry.dataId && datasetId) {
-      const deleteResult = await client.delete({ dataId: entry.dataId, datasetId });
+      const deleteResult = await client.delete({
+        dataId: entry.dataId,
+        datasetId,
+        mode: cfg.deleteMode,
+      });
       if (deleteResult.deleted) {
         result.deleted++;
         delete syncIndex.entries[path];
         logger.info?.(`cognee-openclaw: deleted ${path}`);
       } else {
-        result.errors++;
-        logger.warn?.(`cognee-openclaw: failed to delete ${path}`);
+        const isNotFound = deleteResult.error && (
+          deleteResult.error.includes("404") || deleteResult.error.includes("409") || deleteResult.error.includes("not found")
+        );
+        if (isNotFound) {
+          result.deleted++;
+          delete syncIndex.entries[path];
+          logger.info?.(`cognee-openclaw: deleted ${path} (already removed from Cognee)`);
+        } else {
+          result.errors++;
+          logger.warn?.(`cognee-openclaw: failed to delete ${path}${deleteResult.error ? `: ${deleteResult.error}` : ""}`);
+        }
       }
     }
   }
 
-  // Trigger cognify if deletions occurred (dataset structure changed)
-  if (result.deleted > 0) {
-    needsCognify = true;
-  }
-
-  // Cognify only after adds or deletions (not after updates — those are already processed)
+  // Cognify only after adds (updates re-process inline; hard-deletes clean up graph nodes inline)
   if (needsCognify && cfg.autoCognify && datasetId) {
     try {
       await client.cognify({ datasetIds: [datasetId] });
@@ -621,7 +790,7 @@ const memoryCogneePlugin = {
   kind: "memory" as const,
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
-    const client = new CogneeClient(cfg.baseUrl, cfg.apiKey, cfg.requestTimeoutMs);
+    const client = new CogneeClient(cfg.baseUrl, cfg.apiKey, cfg.username, cfg.password, cfg.requestTimeoutMs, cfg.ingestionTimeoutMs);
     let datasetId: string | undefined;
     let syncIndex: SyncIndex = { entries: {} };
     let syncIndexReady = false;
@@ -699,7 +868,7 @@ const memoryCogneePlugin = {
 
           let dirty = 0;
           let newCount = 0;
-  for (const file of files) {
+          for (const file of files) {
             const existing = syncIndex.entries[file.path];
             if (!existing) {
               newCount++;
@@ -768,6 +937,7 @@ const memoryCogneePlugin = {
             searchType: cfg.searchType,
             datasetIds: [datasetId],
             searchPrompt: cfg.searchPrompt,
+            maxTokens: cfg.maxTokens,
           });
 
           const filtered = results
@@ -814,6 +984,16 @@ const memoryCogneePlugin = {
 
         await stateReady;
 
+        // Reload sync index from disk to pick up changes made by CLI or other processes
+        try {
+          const freshIndex = await loadSyncIndex();
+          syncIndex.entries = freshIndex.entries;
+          if (freshIndex.datasetId) syncIndex.datasetId = freshIndex.datasetId;
+          if (freshIndex.datasetName) syncIndex.datasetName = freshIndex.datasetName;
+        } catch {
+          // Fall through with existing in-memory index
+        }
+
         // Need workspace dir to find memory files
         const workspaceDir = resolvedWorkspaceDir || process.cwd();
 
@@ -825,9 +1005,13 @@ const memoryCogneePlugin = {
             return !existing || existing.hash !== f.hash;
           });
 
-          if (changedFiles.length === 0) return;
+          // Check for deletions: files tracked in the sync index but no longer on disk
+          const currentPaths = new Set(files.map(f => f.path));
+          const hasDeletedFiles = Object.keys(syncIndex.entries).some(p => !currentPaths.has(p));
 
-          api.logger.info?.(`cognee-openclaw: detected ${changedFiles.length} changed file(s), syncing...`);
+          if (changedFiles.length === 0 && !hasDeletedFiles) return;
+
+          api.logger.info?.(`cognee-openclaw: detected ${changedFiles.length} changed file(s)${hasDeletedFiles ? " + deletions" : ""}, syncing...`);
 
           const result = await syncFiles(client, changedFiles, files, syncIndex, cfg, api.logger);
           if (result.datasetId) {
@@ -849,4 +1033,4 @@ export default memoryCogneePlugin;
 
 // Exports for testing
 export { CogneeClient, syncFiles };
-export type { CogneePluginConfig, MemoryFile, SyncIndex, SyncResult };
+export type { CogneeDeleteMode, CogneePluginConfig, MemoryFile, SyncIndex, SyncResult };

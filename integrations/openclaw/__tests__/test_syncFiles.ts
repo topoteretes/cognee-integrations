@@ -53,9 +53,12 @@ describe("syncFiles", () => {
     cfg = {
       baseUrl: "http://test",
       apiKey: "key",
+      username: "",
+      password: "",
       datasetName: "test",
       searchPrompt: "",
       searchType: "GRAPH_COMPLETION",
+      deleteMode: "soft",
       maxResults: 6,
       minScore: 0,
       maxTokens: 512,
@@ -63,6 +66,7 @@ describe("syncFiles", () => {
       autoIndex: true,
       autoCognify: true,
       requestTimeoutMs: 30000,
+      ingestionTimeoutMs: 300000,
     };
     logger = { info: jest.fn(), warn: jest.fn() };
   });
@@ -178,9 +182,9 @@ describe("syncFiles", () => {
       const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
 
       expect(result).toEqual({ added: 0, updated: 0, skipped: 0, errors: 0, deleted: 1, datasetId: "ds1" });
-      expect(mockDelete).toHaveBeenCalledWith({ dataId: "id1", datasetId: "ds1" });
+      expect(mockDelete).toHaveBeenCalledWith({ dataId: "id1", datasetId: "ds1", mode: "soft" });
       expect(syncIndex.entries).toEqual({});
-      expect(mockCognify).toHaveBeenCalledWith({ datasetIds: ["ds1"] });
+      expect(mockCognify).not.toHaveBeenCalled();
       expect(logger.info).toHaveBeenCalledWith("cognee-openclaw: deleted removed.md");
     });
 
@@ -285,7 +289,7 @@ describe("syncFiles", () => {
       expect(mockCognify).toHaveBeenCalledWith({ datasetIds: ["ds1"] });
     });
 
-    it("triggers cognify on deletions", async () => {
+    it("does not trigger cognify on pure deletions (cognify only runs after adds)", async () => {
       const files: MemoryFile[] = [];
       const syncIndex: SyncIndex = {
         entries: { "removed.md": { hash: "hash", dataId: "id1" } },
@@ -296,7 +300,7 @@ describe("syncFiles", () => {
 
       await syncFiles(client, files, files, syncIndex, cfg, logger);
 
-      expect(mockCognify).toHaveBeenCalledWith({ datasetIds: ["ds1"] });
+      expect(mockCognify).not.toHaveBeenCalled();
     });
 
     it("does not trigger cognify when autoCognify is false", async () => {
