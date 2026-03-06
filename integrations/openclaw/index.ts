@@ -734,32 +734,14 @@ async function syncFiles(
     }
   }
 
-  // Handle deletions: remove from Cognee any files no longer present
+  // Deletions disabled — never remove data from Cognee when workspace files
+  // are removed, since the agent may delete/recreate files across sessions
+  // and we never want to lose knowledge graph data.
   const currentPaths = new Set(fullFiles.map(f => f.path));
-  for (const [path, entry] of Object.entries(syncIndex.entries)) {
-    if (!currentPaths.has(path) && entry.dataId && datasetId) {
-      const deleteResult = await client.delete({
-        dataId: entry.dataId,
-        datasetId,
-        mode: cfg.deleteMode,
-      });
-      if (deleteResult.deleted) {
-        result.deleted++;
-        delete syncIndex.entries[path];
-        logger.info?.(`cognee-openclaw: deleted ${path}`);
-      } else {
-        const isNotFound = deleteResult.error && (
-          deleteResult.error.includes("404") || deleteResult.error.includes("409") || deleteResult.error.includes("not found")
-        );
-        if (isNotFound) {
-          result.deleted++;
-          delete syncIndex.entries[path];
-          logger.info?.(`cognee-openclaw: deleted ${path} (already removed from Cognee)`);
-        } else {
-          result.errors++;
-          logger.warn?.(`cognee-openclaw: failed to delete ${path}${deleteResult.error ? `: ${deleteResult.error}` : ""}`);
-        }
-      }
+  for (const [path] of Object.entries(syncIndex.entries)) {
+    if (!currentPaths.has(path)) {
+      delete syncIndex.entries[path];
+      logger.info?.(`cognee-openclaw: untracked ${path} (file removed, cognee data kept)`);
     }
   }
 
@@ -972,6 +954,51 @@ const memoryCogneePlugin = {
         }
       });
     }
+
+    // ------------------------------------------------------------------
+    // Persist conversation turns to Cognee after every agent run
+    // ------------------------------------------------------------------
+
+    api.on("agent_end", async (event, ctx) => {
+      if (!event.success || !event.messages || event.messages.length === 0) return;
+      await stateReady;
+
+      try {
+        type MessageLike = { role?: string; content?: unknown };
+        const turns: string[] = [];
+        for (const raw of event.messages) {
+          const msg = raw as MessageLike;
+          if (msg.role === "user" || msg.role === "assistant") {
+            const text =
+              typeof msg.content === "string"
+                ? msg.content
+                : Array.isArray(msg.content)
+                  ? (msg.content as { type: string; text?: string }[])
+                      .filter((b) => b.type === "text")
+                      .map((b) => b.text)
+                      .join("\n")
+                  : "";
+            if (text.length > 0) turns.push(`[${msg.role}]: ${text}`);
+          }
+        }
+        if (turns.length === 0) return;
+
+        const sessionKey = ctx?.sessionKey ?? "unknown";
+        const content = `[${new Date().toISOString()}] session=${sessionKey}\n\n${turns.join("\n\n")}`;
+        const result = await client.add({ data: content, datasetName: cfg.datasetName, datasetId });
+        if (result.datasetId && !datasetId) datasetId = result.datasetId;
+        api.logger.info?.(`cognee-openclaw: persisted ${turns.length} turn(s) to cognee`);
+
+        // Cognify in background (don't block)
+        if (cfg.autoCognify && datasetId) {
+          client.cognify({ datasetIds: [datasetId] }).catch((err) => {
+            api.logger.warn?.(`cognee-openclaw: background cognify failed: ${String(err)}`);
+          });
+        }
+      } catch (error) {
+        api.logger.warn?.(`cognee-openclaw: dialogue persist failed: ${String(error)}`);
+      }
+    });
 
     // ------------------------------------------------------------------
     // Post-agent sync: detect file changes and sync to Cognee
