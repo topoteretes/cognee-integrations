@@ -1,0 +1,43 @@
+identity:
+  name: "delete_dataset"
+  author: "topoteretes"
+  label:
+    en_US: "Delete Dataset"
+    zh_Hans: "删除数据集"
+    pt_BR: "Excluir Dataset"
+    ja_JP: "データセット削除"
+description:
+  human:
+    en_US: "Delete an entire dataset from Cognee"
+    zh_Hans: "从 Cognee 删除整个数据集"
+    pt_BR: "Excluir um dataset inteiro do Cognee"
+    ja_JP: "Cognee からデータセット全体を削除"
+  llm: "Delete an entire dataset from Cognee by its UUID. This permanently removes the dataset and all its data."
+parameters:
+  - name: dataset_id
+    type: string
+    required: true
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of the dataset to delete"
+      zh_Hans: "要删除的数据集 UUID"
+      pt_BR: "UUID do dataset a ser excluído"
+      ja_JP: "削除するデータセットの UUID"
+    llm_description: "The UUID of the dataset to delete"
+    form: llm
+output_schema:
+  type: object
+  properties:
+    succeeded:
+      type: boolean
+      description: "Whether the deletion was successful"
+    dataset_id:
+      type: string
+      description: "The dataset ID that was targeted"
+extra:
+  python:
+    source: tools/delete_dataset.py

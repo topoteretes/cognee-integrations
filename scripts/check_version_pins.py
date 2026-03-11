@@ -24,10 +24,11 @@ from pathlib import Path
 INTEGRATIONS_DIR = Path(__file__).resolve().parent.parent / "integrations"
 
 # Matches cognee dependency with optional extras: "cognee..." or "cognee[extra]..."
-COGNEE_DEP_PATTERN = re.compile(r'"(cognee(?:\[[^\]]*\])?)\s*([^"]*)"')
+# The negative lookahead (?![\w-]) prevents matching longer names like "cognee-dify-plugin".
+COGNEE_DEP_PATTERN = re.compile(r'"(cognee(?:\[[^\]]*\])?)(?![\w-])\s*([^"]*)"')
 
 # Git / URL dependency: cognee @ git+... or cognee @ https://...
-COGNEE_URL_PATTERN = re.compile(r'"cognee\s*@\s*[^"]*"')
+COGNEE_URL_PATTERN = re.compile(r'"cognee(?![\w-])\s*@\s*[^"]*"')
 
 # Check for lower bound (>= or >)
 LOWER_BOUND_PATTERN = re.compile(r">=?\s*\d")

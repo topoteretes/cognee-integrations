@@ -1,9 +1,16 @@
 # Cognee Integrations Inventory
 #
 # Tracks all integrations in this monorepo.
-# Update this file when adding new integrations.
+# Update this file when adding or migrating integrations.
+#
+# migration_status values:
+#   done       – code lives in this monorepo and is the primary dev location
+#   pending    – still in its own repo, migration planned
+#   skipped    – migration deferred (e.g. repo inaccessible)
 
 integrations:
+
+  # ── Already in monorepo ────────────────────────────────────────────
 
   - slug: openclaw
     name: "Memory (Cognee) for OpenClaw"
@@ -13,12 +20,114 @@ integrations:
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
     current_version: "2026.2.4"
+    migration_status: done
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
-# ── Future migrations (not yet in monorepo) ─────────────────────────
-#
-# These integrations exist in external repos and may be migrated later:
-# - langgraph: https://github.com/topoteretes/cognee-integration-langgraph
-# - openai-agents: https://github.com/topoteretes/cognee-integration-openai-agents
-#
-# Add entries above when migrations are complete.
+  - slug: dify
+    name: "Cognee Tool Plugin for Dify"
+    owner: cognee
+    language: python
+    registry: dify-marketplace
+    package_name: "cognee"
+    cognee_dependency: http-api
+    current_version: "0.0.1"
+    migration_status: done
+    notes: "Dify tool plugin – add data, cognify, search, delete via Cognee API"
+
+  # ── Pending migrations ─────────────────────────────────────────────
+
+  - slug: langgraph
+    name: "Cognee Integration for LangGraph"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-langgraph"
+    cognee_dependency: sdk
+    current_version: "0.1.6"
+    migration_status: pending
+    source_repo: https://github.com/topoteretes/cognee-integration-langgraph
+    notes: "LangGraph agent tools – add, search, session management"
+
+  - slug: crewai
+    name: "Cognee Integration for CrewAI"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-crewai"
+    cognee_dependency: sdk
+    current_version: "0.1.1"
+    migration_status: pending
+    source_repo: https://github.com/topoteretes/cognee-integration-crewai
+    notes: "CrewAI agent tools – add, search, session management"
+
+  - slug: strands
+    name: "Cognee Integration for Strands"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-strands"
+    cognee_dependency: sdk
+    current_version: "0.1.1"
+    migration_status: pending
+    source_repo: https://github.com/topoteretes/cognee-integration-strands
+    notes: "Strands agent tools – add, search, session management"
+
+  - slug: google-adk
+    name: "Cognee Integration for Google ADK"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-google-adk"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: pending
+    source_repo: https://github.com/topoteretes/cognee-integration-google-adk
+    notes: "Google ADK agent tools – add, search, session management"
+
+  - slug: claude
+    name: "Cognee Integration for Claude Agent SDK"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-claude"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: pending
+    source_repo: https://github.com/topoteretes/cognee-integration-claude
+    notes: "Claude Agent SDK tools – add, search, session management"
+
+  - slug: n8n
+    name: "Cognee Nodes for n8n"
+    owner: cognee
+    language: typescript
+    registry: npm
+    package_name: "n8n-nodes-cognee"
+    cognee_dependency: http-api
+    current_version: "0.2.0"
+    migration_status: pending
+    source_repo: https://github.com/topoteretes/cognee-n8n
+    notes: "n8n community node – add data, cognify, search, delete"
+
+  - slug: vercel-ai-sdk
+    name: "Cognee for Vercel AI SDK"
+    owner: cognee
+    language: typescript
+    registry: npm
+    package_name: "TBD"
+    cognee_dependency: http-api
+    current_version: "TBD"
+    migration_status: pending
+    source_repo: https://github.com/topoteretes/cognee-vercel-ai-sdk
+    notes: "Vercel AI SDK middleware – auto-store conversations, retrieve context"
+
+  - slug: openai-agents
+    name: "Cognee Integration for OpenAI Agents"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-openai-agents"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: pending
+    source_repo: https://github.com/topoteretes/cognee-integration-openai-agents
+    notes: "Repo currently private."
