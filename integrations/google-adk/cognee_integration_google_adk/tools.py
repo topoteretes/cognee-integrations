@@ -1,10 +1,11 @@
-import functools
-import cognee
 import asyncio
-from typing import Optional, List
+import functools
 import logging
-from google.adk.tools import LongRunningFunctionTool
+from typing import List, Optional
+
+import cognee
 from cognee.modules.engine.models.node_set import NodeSet
+from google.adk.tools import LongRunningFunctionTool
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +27,7 @@ async def _enqueue_add(*args, **kwargs):
         await _add_queue.put((args, kwargs))
         while True:
             try:
-                next_args, next_kwargs = await asyncio.wait_for(
-                    _add_queue.get(), timeout=2
-                )
+                next_args, next_kwargs = await asyncio.wait_for(_add_queue.get(), timeout=2)
                 _add_queue.task_done()
             except asyncio.TimeoutError:
                 break
@@ -77,19 +76,16 @@ async def search_tool_impl(query_text: str, node_set: Optional[List[str]] = None
     """
     logger.info(f"Searching cognee for: {query_text} with node_set: {node_set}")
     await _add_queue.join()
-    
+
     if node_set:
         # Use NodeSet filtering when a node_set is provided
         result = await cognee.search(
-            query_text=query_text,
-            node_type=NodeSet,
-            node_name=node_set,
-            top_k=100
+            query_text=query_text, node_type=NodeSet, node_name=node_set, top_k=100
         )
     else:
         # Default search without node filtering
         result = await cognee.search(query_text, top_k=100)
-    
+
     logger.info(f"Search results: {result}")
     return result
 
@@ -142,9 +138,7 @@ def get_sessionized_cognee_tools(session_id: Optional[str] = None) -> list:
     session_decorator = sessionised_tool(session_id)
 
     sessionized_add_tool = LongRunningFunctionTool(session_decorator(add_tool.func))
-    sessionized_search_tool = LongRunningFunctionTool(
-        session_decorator(search_tool.func)
-    )
+    sessionized_search_tool = LongRunningFunctionTool(session_decorator(search_tool.func))
 
     logger.info(f"Initialized session with session_id = {session_id}")
 
