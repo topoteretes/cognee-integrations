@@ -1,0 +1,3 @@
+tenant_id,dataset_id,dataset_name,export_allowed,restriction_reason,policy_source
+TEN-ACME,D-938,EU_Consumer_Transactions_2025,false,EU residency + regulated category: exports restricted (view-only allowed).,compliance_policy_v2
+TEN-ACME,D-101,Product_Usage_Events,true,,compliance_policy_v2

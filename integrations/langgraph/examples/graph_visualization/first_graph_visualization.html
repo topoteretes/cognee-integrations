@@ -1,0 +1,1450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cognee Knowledge Graph</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#000000;--bg2:#323332;--surface:rgba(255,255,255,0.06);
+  --border:rgba(219,216,216,0.12);--text:#F4F4F4;--text2:#DBD8D8;
+  --accent:#6510F4;--accent2:#A550FF;--green:#0DFF00;
+}
+@font-face{font-family:'Inter';src:local('Inter'),local('Inter-Regular');font-display:swap}
+body,html{width:100%;height:100%;overflow:hidden;background:#000000;color:#F4F4F4;font-family:'Inter',system-ui,-apple-system,sans-serif}
+canvas{display:block;width:100vw;height:100vh;cursor:grab}
+canvas:active{cursor:grabbing}
+
+#header{
+  position:fixed;top:0;left:0;right:0;height:48px;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 20px;z-index:100;
+  background:linear-gradient(180deg,rgba(0,0,0,0.95) 0%,rgba(0,0,0,0) 100%);
+  pointer-events:none;
+}
+#header>*{pointer-events:auto}
+.logo{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;letter-spacing:0.02em;color:var(--text)}
+.logo img{height:28px;width:auto}
+.stats{display:flex;gap:16px;font-size:11px;color:var(--text2);font-variant-numeric:tabular-nums}
+.stats span{display:flex;align-items:center;gap:4px}
+.stats .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+
+#controls{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:100;
+  display:flex;gap:2px;padding:4px;
+  background:var(--bg2);border:1px solid var(--border);border-radius:10px;
+}
+.ctrl-btn{
+  padding:6px 14px;font-size:11px;font-weight:500;font-family:inherit;
+  color:var(--text2);background:transparent;border:none;border-radius:7px;
+  cursor:pointer;transition:all 0.15s ease;white-space:nowrap;
+}
+.ctrl-btn:hover{color:var(--text);background:var(--surface)}
+.ctrl-btn.active{color:#F4F4F4;background:rgba(101,16,244,0.2)}
+.ctrl-sep{width:1px;background:var(--border);margin:2px 4px}
+
+#search-box{
+  position:fixed;top:56px;left:20px;z-index:100;width:280px;
+}
+#search-input{
+  width:100%;padding:8px 12px 8px 32px;
+  font-size:12px;font-family:inherit;color:var(--text);
+  background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+  outline:none;transition:border-color 0.15s;
+}
+#search-input:focus{border-color:var(--accent)}
+#search-input::placeholder{color:var(--text2)}
+.search-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text2);pointer-events:none}
+
+#info-panel{
+  position:fixed;top:56px;right:20px;width:320px;max-height:calc(100vh - 80px);
+  overflow-y:auto;z-index:100;
+  background:var(--bg2);border:1px solid var(--border);border-radius:12px;
+  padding:16px;opacity:0;transform:translateX(8px);
+  transition:opacity 0.2s ease,transform 0.2s ease;
+}
+#info-panel.visible{opacity:1;transform:translateX(0)}
+#info-panel::-webkit-scrollbar{width:4px}
+#info-panel::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.panel-header{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.panel-type{
+  font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;
+  padding:2px 6px;border-radius:4px;background:rgba(101,16,244,0.2);color:#A550FF;
+}
+.panel-title{font-size:14px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.panel-section{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.panel-section-title{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text2);margin-bottom:8px}
+.panel-row{display:flex;justify-content:space-between;align-items:flex-start;padding:3px 0;font-size:12px;gap:12px}
+.panel-row .k{color:var(--text2);flex-shrink:0}
+.panel-row .v{color:var(--text);text-align:right;word-break:break-word;max-width:200px}
+
+#legend{
+  position:fixed;bottom:64px;left:20px;z-index:100;
+  display:flex;flex-wrap:wrap;gap:6px 12px;
+  padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;
+  max-width:400px;
+}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text2);white-space:nowrap}
+.legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+.empty-state{
+  position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  text-align:center;color:var(--text2);font-size:14px;
+}
+
+#loading-overlay{
+  position:fixed;top:0;left:0;right:0;bottom:0;z-index:200;
+  background:rgba(0,0,0,0.92);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  transition:opacity 0.4s ease;
+}
+#loading-overlay.hidden{opacity:0;pointer-events:none}
+#loading-text{font-size:14px;color:var(--text2);margin-bottom:16px}
+#loading-bar-bg{width:240px;height:4px;background:var(--bg2);border-radius:2px;overflow:hidden}
+#loading-bar{width:0%;height:100%;background:var(--accent);border-radius:2px;transition:width 0.15s linear}
+#loading-stats{font-size:11px;color:var(--text2);margin-top:10px;opacity:0.7}
+
+#minimap-container{
+  position:fixed;bottom:64px;right:20px;z-index:100;
+  border:1px solid var(--border);border-radius:8px;overflow:hidden;
+  background:rgba(0,0,0,0.7);cursor:pointer;display:none;
+}
+#minimap-canvas{display:block}
+
+#fps-counter{
+  position:fixed;top:12px;right:180px;z-index:100;
+  font-size:10px;color:var(--text2);font-variant-numeric:tabular-nums;
+  display:none;pointer-events:none;
+}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="logo">
+    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANoAAAA8CAYAAAAAAKREAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAA7nSURBVHgB7V1dcttGEu6BKFcSySn4BEufwNQJTJ0g0glEVRJXal+snMDUCSK/bO3a2jJ1AiknEH0C0ycwcoJwI8l2WSKx/WEGDk1h/oABKcn4qliWOUOgMdN/09PTEOSIvTiNP9J5Z0riByLRTintzHVJ1Of1Cq0M/z3+NqHAAA0XdLYV0crjKd+faWgLEjHa+O8x/53wn6M6abDRJih6pMYnztuYrjHR9G1ExDTdH5qu80t81k0p2plmz0YjftbnVZ4jFF114Zf4Q3tCl13Qh7nEc+P7iOcypekfPLOj7+j+8GAMWutHzudXJDorJB6lRHE+ZpiPKdEfLabJd7yErQMGYkpTnvjpXs7UjhiuULofYgIlDZOnPAk9TxoGLHD7dQocBGNC4hn/2XX8SULZ2Fyn60n8YSelyWC+/yVdbgzGD7wYLSRdoQFmfk/vnzID9/i/bcefDflz9HK8PqAagPGCEfHgsYQ8xksraPlglBCweYCY3TKTJ2m4eMZaZY+qIbjAlWDkInymSyNkGXiSfn0xXj9wueDP8Tk8jd+q0MX3O/hEl/u+wm1DIJ5KVom2/zVeH1EASIs6eUWB5lHXQRhufkru2sYKHtj+i/Havmv/GmhIeDA2Qwjbz/H7p+xyOTG+AxKS2rqn68Bu1OA/47VdWjBdocYLCD2fvvxUBIwXK7d+RUOSIxE0ZYX4/UlRo7h+83OsfU4D3XweIzb9G7ZONdIADb35soI2ZNqg/Xq0QAh2wV+M7/dNfeqiS9BK78X42yOqAFj/K6LjGuZzxG71ZhnL+1N88YzHtU+BoVMA0ex/ahYyoPMkPje6gdB8NdKAa54q98obyxEySiJqDUx9eEzhKvaoBsCdfRL/tUUlgbFmF7uu+eys0uppL/7T69p1CRnAvNt/wtef//6zoIHByU/rJCRdHvVJnbQKX/+Rri13L0rS4GqlcO3jMpND/sycUAVIITO7b6CrxBo28enMUdBXij+8kCtN8kNCfoCw/ebauaSQJT6dpbB9qZxa+R/M4GCktukCmHgObz5fp7VBUbj1J3YRKIvaRDu6a/BC+H+6tqo0yFD2BYeyCcxnuk77Ht2DddomBygF0HfoOuQnPFqh1S+2FqSnQF3Wak9TxzWKi5CFoIv/6TiMV8z3OeZ/rW7/LNyUZjrmez/nfiezLj3m8ozOOOxPWyZ+UuixVX9rCxgtcLxy5TTKf5+t0SAg/KCn5h+m+4eWdUIOFY4/LSKGF9gPi5hHPcQb85XT5y/H9520Nz8TFrnPTH14+2HTZfuBaXtHhoGVwp/uHjpcy4Uu6R0I61oyLF3ne2AgkhZfdz2P6Kc9MOPKU46RwTGv1x6a1mshx4uv1bMJHJQHr9cyZR6pLywTT7uuQgZAkHhCHmIgZ1zKEd9n26ChbeZ/11XIAEWvMVI3sT93NqBknhzeUF3bOHTcL1R0wTIYXG1BzDQJVaQLFtGdrvUDVoIbwuAmMVM9c3G5ZZ+pYa4inthw5SnwDCudTclPWsT3qKW9Z+h5xH4extc8XunWL5mXx4KmfO+uvjP9WnaTEAPJwvFgjdYeINrI0n1S1M9GA6JuZWjAb0C/oUs3HwgDdvR0UcKTs+mbtQBLxZNgcluZaVZ7VIEuZoJt39A8+qdmd9qFLuI1E9YnbX0PUSryC35K2aXTtacknhoUQfB5xHhB2MigNCfs+uLf6IompojS6NDRVTDB9gAmGjAILzys6TwU/UNd+9Qg4DYFgEEumxoEzcluynNdOzP8D1SSLghL2f0vpQT2y9A1AwNTZ0rTW8hytGi1b2iOv6FWZ/7LOudRjnPU1/cQOxD+SBgGjtcwJmsQDCYaIvaZqSLMjCMe69p4XdAlPQZVN3MndNUnvTbs6rSzma7095cVsyau6OrAQFfH5D6qtm5RWxWlCc+D3b9TfvZ3pn65Bfnyu/DziGAN1rWgybIWzYQfazTdoI0XmGjaKfoSExOCBuV3axlH/8tU28ZK6IgqAgt3QdPfde0cGe2SJ10coRtQRVjoir+j1bbut60Ci5IjNXgWRQAzY0+KA0h/TmSwrmv/lbimtNmKmoyJ1zxC4LFveU7n74RjqhuEH4KmG5hKWtEVSgMWCjtborcUCCbG0e8R6ff8PtJVkPExM5/MZL8OPV2f6NOQAsBE16VROYnKyim3XrxV8yf2pDw3u9vzFjfV/97JmMxaLwg89i39aBKPWrRkfEPfYI9G15xQIKRUygdva75PQiXcMl2J0Lf6MBgwXgRdwrAFwK5+nGpz1VsJGaC2eI4n5LbXqMFwVVrcWUXY1vS1KktsU7D16lfJbMFxpKULmgnCGAL3v1ZKdwZtzffBxssMkwKAFdarDh3gVfDasGSqFs4iRhxcmj4/DLjckVsC0wNR4nnyjfh1Wj9AoOVGC1qDrweIPJcQMkRIf8+ZmcLDlpFShKHaiB/OftkImgG8iOaJFO2CpmwdEMZNE6b1zoIs1PJhdjmvoZCZa0DbrduX1quoRyNoBvDg/aFrUxu3prCuEyxbGwsJSN0E8H7mUKWAaWBn5tBgYT6yZE05C3xENxipYdG9iGvxb04MbS4bt0bYNlJDRTYXiZJBp2wLRrPfie83kWGEzJBFCRmg9hPn5gACn9G5gbQwV6sKiwbCi5gwGJOb8JE+jjlKpGtuUyCwtvxHaqCh6Hse6BHTphufLsoPVDkUqU4r6DAMXUpgETAFnSKaGHkKgsTKZzClq96UBVZ3SiQg2qZGNf4bP8Z/ba1kLn75QkEmQQu4DtED1+fojoYGfdaGL1L9WkgbEpe0nbEgiafF15wcMGO8LpNZIM+3ZcVpdKi8Ib4MsLZPdFHHK2m9jVZajWWfAqLqWvu/sjzBCVVAxBu5rzVtsT4zITh0gx87JP1a8aM8hNcmv3tnWKGWaR2GPcBT30OR2JsxHT5ERkxd1Z7qBs5w6dpCuNtlwNZRx+NkyvgPiWhKkZbRWDtZj5GEAE+ANg2Jd+KdT8/qEFGkvYYw3BuAhjUl/zJwVupd0fH1eUAg2UIe289p0T7dUiiLpM3fDKE4/ZEaeNyY8R8M0RVdDgztHVWPojTAXBhcpLHo+thpuCgt8KoEQVvXHtGK1SVA8q+wZKkgVQgHC1FXBMfY8cx49n/G552/03eQECu2yIzBbbVmOVKDYmLF+WoRjD0LS64rjv5UMijY2GYePcZHnXu7hkj5p0PdRZDXVYbRIVjQ3mAu5Ichb013HTsNxQVPbECwwlIfwqmaMeiznTtSaPOnl1J0jGfGs18SvXFNPhWyxNuttWY5WuZiQu0yBXWqIjUfSdorq8xVwaZXOOSJD/7WFuexnFzNtbVzgRa+0RYL1pt57Y3r6FwHFxpgXV0mSGZ9n/+mK0iaA4VdyRETGTGrLTDkUiPktkAeIJ2agjkoqPPGZ20LL+FJfNbXWQwbLEd/vJW5XAbgiMz1gk241jyffg4P/RifHUSa6NoMEpKlvo/ms57B3Od00VMbsF3dBUzFQF1pwMZli12+eab0LF8OF81J0Oouw+crZIbaFwiiPKQAMNWRcakzqep8oAaMdR50VX5lZePsXQTgie5MU6nirqouim0plPBnf43WTorC+K7Vlufr0XwWNEggTDoZj0AUEgUJjl2Z0CRooIH95TeulaJmXmxBsy+8sMGHsVWy65saa10OeVK3ffZmboOgAcr6vCI3oKZMkieS42UXeJGKbtxdqzfPA+so5eK5YBgp/lI0QTac5GO+CNXnFCysQ5iptnXVqzTI+vlkNzOx2lCromHTlQY1CR0/GlJeb7WctSE2lesQMhlcEb/q6qjcBSCowwLbdij+BMBr6MxudpvmlPmoSyXwiT7tsjLvOPJ4d0oplcC1U9tfpGDlxUZsEbaygN9ui6jVS4Ms4+YqZGoN0aNgyKo/ZSlFqBJ2l4Ushyyok9YR4Cm1Xs4DW3XxOEkP5VoJkGtJxWBCWBUOufcdClc6AvlhYv9w/P2BS++cBk/raoR0F1tefr08uqFDJjRHwjLhSCUSNOU+0ejl+P6IvkJA2NiykaNlc4KokDkDHuBlygaK6Hq4kQ7Q1x1t6Qjhf3rsYw+FQ1VW283XaL1fppQX//PQreCo8f5Z1vdaiazviNLHuqMbvE7Z1b05pG4YUooSCgSV56lpjbwVxt95jNWVp1ojOiltHdSW0jYCJD4VpIuRHTxlfljX8oPTwkYtahH5cQyUSObGfkqIcLUMSFz2I4oeuw+ItDhIoSpLgwrfdguaxuwCP6AlwRCo2A252V0UBZaVrKoFXFyq/F5H5vaf1PGiRPDXJV3trZD4wZcm16M77lEM+hyy7coqTF8WiEF0ZpIV00lHdR7Ik0yGkmLZ/WOaCR8z843wOlYcb+GHH1XN/Oa9m0GqcZ91pc0XBeRvsuKBpYfyQ8Ruv441n/IosGUTo5RdGe9EB2ybiGyjF8njGU/NBJ0yweL1lBiyFXy9RvdPFnFERo6r6Er+KqSJrXn6Fjzmw+degva14WfW6KTf10vw4rmoxPkr/OYerSWLPFvVYLloBM0Al5d/VMSQMvd2sS+2b7B4NIJmgWGdFhIJf/ZvezJxAz1udCmDm4Ca9oDm0SZNMmqDu4FG0Cww1LIIjrKnFBrcfDSuoyMcE1KDwPUFiQ1uDxqL5gj1or6HluMfQTAJmEHR4GagsWglISOSupdQ2CCQlW7cHF32Pl2DsGgEbYn4iTfEdfmkwuN90Q1uPhrXcYm4osmerk0YXs3U4PahEbQlQiW2JkVtU5ouLZeyQXg0grZ8BD9U2uDmoRG0JQKFVEkvaAk1uDNo3iazBKDAywV92DEVUsWL9ajBnUETdVwgXCsohTjz1eBmobFoCwBqWfIm9M45nWdvtbQXEkpr3xRvsFg0Fq1GKAFDlkfX9TeNNbubaCxaYMy6hxPPMnV5vUlqcOfQCFpgXNBFVoRWeDoL3HvEQrbdpF3dTTSCFhCqiJFjAaMcssDLS4fKvw1uLxpBCwhBU9SJd+0+xHvh1ml90NQOuftoBC0gprJ2vA3ZQdLD5rzZV4Um6hgQ+jeoyBqTviXKGtwdNIIWGErYjkmu1RK2XkfrJaokN7hb+D+UrQNupCR2zAAAAABJRU5ErkJggg==" alt="Cognee">
+  </div>
+  <div class="stats" id="stats"></div>
+</div>
+
+<div id="search-box">
+  <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+  <input type="text" id="search-input" placeholder="Search nodes..." autocomplete="off" spellcheck="false">
+</div>
+
+<div id="controls">
+  <button class="ctrl-btn active" data-layer="nodes">Nodes</button>
+  <button class="ctrl-btn active" data-layer="edges">Edges</button>
+  <button class="ctrl-btn active" data-layer="labels">Labels</button>
+  <button class="ctrl-btn" data-layer="heatmap">Heatmap</button>
+  <button class="ctrl-btn" data-layer="typeclouds">Type Clouds</button>
+  <div class="ctrl-sep"></div>
+  <span style="font-size:10px;color:var(--text2);padding:6px 4px">Color:</span>
+  <button class="ctrl-btn active" data-colorby="type">Type</button>
+  <button class="ctrl-btn" data-colorby="task">Task</button>
+  <button class="ctrl-btn" data-colorby="pipeline">Pipeline</button>
+  <button class="ctrl-btn" data-colorby="nodeset">Node Set</button>
+  <button class="ctrl-btn" data-colorby="user">User</button>
+  <div class="ctrl-sep"></div>
+  <button class="ctrl-btn" id="btn-zoom-out" title="Zoom out (-)">&#x2212;</button>
+  <button class="ctrl-btn" id="btn-zoom-in" title="Zoom in (+)">+</button>
+  <button class="ctrl-btn" id="btn-fit" title="Fit to view (F)">Fit</button>
+</div>
+
+<div id="info-panel"></div>
+<div id="legend"></div>
+
+<div id="loading-overlay">
+  <div id="loading-text">Laying out graph...</div>
+  <div id="loading-bar-bg"><div id="loading-bar"></div></div>
+  <div id="loading-stats"></div>
+</div>
+
+<div id="minimap-container"><canvas id="minimap-canvas"></canvas></div>
+<div id="fps-counter"></div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+(function(){
+"use strict";
+
+var nodes = [{"name": "", "type": "DocumentChunk", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["text"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_chunks_from_documents", "source_node_set": null, "source_user": "default_user@example.com", "text": "Signed contract with QuantumSoft; Industry: technology; Start date: Aug 2024; End date: Aug 2028; Contract value: \u00a35.5M.", "chunk_size": 50, "chunk_index": 0, "cut_type": "sentence_end", "id": "6499887a-7857-504d-ad64-80a278f8bd32", "color": "#0DFF00"}, {"name": "contract with quantumsoft", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "A contract signed with QuantumSoft.", "id": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "color": "#6510F4"}, {"name": "contract", "type": "EntityType", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "contract", "id": "c4e1a68b-9ada-54b4-be2e-00dd7e6f6d1c", "color": "#A550FF"}, {"name": "quantumsoft", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Organization named QuantumSoft.", "id": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "color": "#6510F4"}, {"name": "organization", "type": "EntityType", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "organization", "id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "color": "#A550FF"}, {"name": "2024-08", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract start month and year.", "id": "99d38ac8-0e57-5689-a638-4390404b61b2", "color": "#6510F4"}, {"name": "date", "type": "EntityType", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "date", "id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "color": "#A550FF"}, {"name": "2028-08", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract end month and year.", "id": "21c4c750-d31e-5dd8-b11c-43353a8ce43f", "color": "#6510F4"}, {"name": "gbp 5.5m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value.", "id": "49184c49-a3fb-5d49-8ecf-ab82164b5d2d", "color": "#6510F4"}, {"name": "monetaryamount", "type": "EntityType", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "monetaryamount", "id": "5edbe470-5f47-5ba4-8900-1af1b52776cf", "color": "#A550FF"}, {"name": "technology", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry category.", "id": "65c71de3-4c23-5f28-8e07-fc7428d1e0c4", "color": "#6510F4"}, {"name": "industry", "type": "EntityType", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "industry", "id": "7c44de48-005a-524b-a90a-48586049ccf8", "color": "#A550FF"}, {"name": "text_f90c688945da80cba868a805360ce078", "type": "TextDocument", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "classify_documents", "source_node_set": null, "source_user": "default_user@example.com", "raw_data_location": "file:///Users/handekafkas/Documents/local-code/cognee-integrations/integrations/langgraph/.venv/lib/python3.10/site-packages/cognee/.data_storage/text_f90c688945da80cba868a805360ce078.txt", "external_metadata": "{}", "mime_type": "text/plain", "id": "7256ac6e-61f5-574c-8bfe-d41a64c60b06", "color": "#DBD8D8"}, {"name": "", "type": "DocumentChunk", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["text"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_chunks_from_documents", "source_node_set": null, "source_user": "default_user@example.com", "text": "Signed contract with Meditech Solutions; Industry: healthcare; Start date: Jan 2023; End date: Dec 2025; Contract value: \u00a31.2M.", "chunk_size": 53, "chunk_index": 0, "cut_type": "sentence_end", "id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "color": "#0DFF00"}, {"name": "meditech solutions", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Organization in the healthcare industry.", "id": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "color": "#6510F4"}, {"name": "meditech solutions contract", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract signed with Meditech Solutions from Jan 2023 to Dec 2025 valued at \u00a31.2M.", "id": "273c94c1-f22a-5dc1-a9db-a560af90753e", "color": "#6510F4"}, {"name": "healthcare", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry focused on health services and products", "id": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "color": "#6510F4"}, {"name": "2023-01", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Start date of the contract (January 2023).", "id": "998c449e-87d3-5c55-8b8a-27b03791f8b4", "color": "#6510F4"}, {"name": "2025-12", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year December 2025", "id": "dc8b0936-d474-5002-af83-3fdbc29f4482", "color": "#6510F4"}, {"name": "\u00a31.2m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value.", "id": "a6e6dac3-841c-5ee1-a5b4-135d2d6af913", "color": "#6510F4"}, {"name": "money", "type": "EntityType", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "money", "id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "color": "#A550FF"}, {"name": "text_352944bd7307e7c80711b9d063f28a5f", "type": "TextDocument", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "classify_documents", "source_node_set": null, "source_user": "default_user@example.com", "raw_data_location": "file:///Users/handekafkas/Documents/local-code/cognee-integrations/integrations/langgraph/.venv/lib/python3.10/site-packages/cognee/.data_storage/text_352944bd7307e7c80711b9d063f28a5f.txt", "external_metadata": "{}", "mime_type": "text/plain", "id": "85fd91c5-21c4-5022-b6f7-b611182c4d49", "color": "#DBD8D8"}, {"name": "", "type": "TextSummary", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["text"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "summarize_text", "source_node_set": null, "source_user": "default_user@example.com", "text": "Agreement finalized with QuantumSoft (tech sector), Aug 2024\u2013Aug 2028, worth \u00a35.5M.", "id": "0c57b0bf-bb7d-5a8a-901e-7f3199df7a23", "color": "#6510F4"}, {"name": "", "type": "DocumentChunk", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["text"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_chunks_from_documents", "source_node_set": null, "source_user": "default_user@example.com", "text": "Signed contract with Orion Retail Group; Industry: retail; Start date: Mar 2024; End date: Mar 2026; Contract value: \u00a3850K.", "chunk_size": 52, "chunk_index": 0, "cut_type": "sentence_end", "id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "color": "#0DFF00"}, {"name": "contract with orion retail group", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "status: signed", "id": "c5af5330-31f2-5be1-b5c3-727f70a204de", "color": "#6510F4"}, {"name": "orion retail group", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "", "id": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "color": "#6510F4"}, {"name": "retail", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "", "id": "e583f3fb-5b52-568e-995b-b86917591181", "color": "#6510F4"}, {"name": "2024-03", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "year: 2024; month: 03", "id": "cb0553ac-fa8b-5892-b040-514c8963d89a", "color": "#6510F4"}, {"name": "2026-03", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "year: 2026; month: 03", "id": "b17c4b26-8f48-5e75-829d-df31eb956f89", "color": "#6510F4"}, {"name": "\u00a3850k", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "currency: GBP; amount: 850000", "id": "0c47316b-950c-52af-bc98-9d48366ef7e2", "color": "#6510F4"}, {"name": "text_3fa4e51b8ce81bfd98ca83cf00aec897", "type": "TextDocument", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "classify_documents", "source_node_set": null, "source_user": "default_user@example.com", "raw_data_location": "file:///Users/handekafkas/Documents/local-code/cognee-integrations/integrations/langgraph/.venv/lib/python3.10/site-packages/cognee/.data_storage/text_3fa4e51b8ce81bfd98ca83cf00aec897.txt", "external_metadata": "{}", "mime_type": "text/plain", "id": "1610813b-4291-5d03-b1b7-056ecec01a21", "color": "#DBD8D8"}, {"name": "", "type": "TextSummary", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["text"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "summarize_text", "source_node_set": null, "source_user": "default_user@example.com", "text": "Secured a \u00a3850K, two-year contract with Orion Retail Group (retail), active Mar 2024\u2013Mar 2026.", "id": "27beaa26-ab11-5f18-8365-997905ef5a74", "color": "#6510F4"}, {"name": "", "type": "TextSummary", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["text"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "summarize_text", "source_node_set": null, "source_user": "default_user@example.com", "text": "Executed a \u00a31.2M healthcare-sector agreement with Meditech Solutions, running Jan 2023\u2013Dec 2025.", "id": "1ba11cfe-7b21-5c7d-bcf9-e2b02a2c5963", "color": "#6510F4"}, {"name": "", "type": "DocumentChunk", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["text"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_chunks_from_documents", "source_node_set": null, "source_user": "default_user@example.com", "text": "We have signed a contract with the following company: \"HealthBridge Systems\". Company is in the healthcare industry. Start date is Feb 2023 and end date is Jan 2026. Contract value is \u00a32.4M.\nWe have signed a contract with the following company: \"NovaCare Diagnostics\". Company is in the healthcare industry. Start date is May 2024 and end date is Apr 2027. Contract value is \u00a31.6M.\nWe have signed a contract with the following company: \"SkyPort Logistics\". Company is in the logistics industry. Start date is Nov 2022 and end date is Oct 2026. Contract value is \u00a33.1M.\nWe have signed a contract with the following company: \"BrightWave Energy\". Company is in the renewable energy industry. Start date is Jul 2023 and end date is Jun 2028. Contract value is \u00a37.8M.\nWe have signed a contract with the following company: \"Apex Finance Group\". Company is in the financial services industry. Start date is Jan 2022 and end date is Dec 2025. Contract value is \u00a32.2M.\nWe have signed a contract with the following company: \"AgroSphere Foods\". Company is in the agriculture industry. Start date is Sep 2024 and end date is Aug 2029. Contract value is \u00a34.9M.\nWe have signed a contract with the following company: \"Stellar Aerospace\". Company is in the aerospace industry. Start date is Mar 2023 and end date is Feb 2027. Contract value is \u00a39.2M.\nWe have signed a contract with the following company: \"MetroBuild Contractors\". Company is in the construction industry. Start date is Oct 2022 and end date is Sep 2026. Contract value is \u00a35.4M.\nWe have signed a contract with the following company: \"FutureLearn Academy\". Company is in the education industry. Start date is Jun 2024 and end date is May 2027. Contract value is \u00a3980K.\nWe have signed a contract with the following company: \"BlueWave Media\". Company is in the media & entertainment industry. Start date is Dec 2023 and end date is Nov 2026. Contract value is \u00a31.3M.", "chunk_size": 796, "chunk_index": 0, "cut_type": "sentence_end", "id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "color": "#0DFF00"}, {"name": "healthbridge systems", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the healthcare industry with a signed contract", "id": "882cea2f-45ac-50d1-89c1-207c717f6064", "color": "#6510F4"}, {"name": "novacare diagnostics", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the healthcare industry with a signed contract", "id": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "color": "#6510F4"}, {"name": "skyport logistics", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the logistics industry with a signed contract", "id": "5eba00cf-a884-58c4-ab80-423678469fe9", "color": "#6510F4"}, {"name": "brightwave energy", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the renewable energy industry with a signed contract", "id": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "color": "#6510F4"}, {"name": "apex finance group", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the financial services industry with a signed contract", "id": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "color": "#6510F4"}, {"name": "agrosphere foods", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the agriculture industry with a signed contract", "id": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "color": "#6510F4"}, {"name": "stellar aerospace", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the aerospace industry with a signed contract", "id": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "color": "#6510F4"}, {"name": "metrobuild contractors", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the construction industry with a signed contract", "id": "dd567000-6e56-53d7-9662-0688d47a2513", "color": "#6510F4"}, {"name": "futurelearn academy", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the education industry with a signed contract", "id": "60b22a22-c746-543f-9215-1e787b8ec6dd", "color": "#6510F4"}, {"name": "bluewave media", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Company in the media and entertainment industry with a signed contract", "id": "8dc54624-4826-5002-8097-3d26de58c4dd", "color": "#6510F4"}, {"name": "logistics", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry focused on transportation and supply chain operations", "id": "049ca12e-ce6f-5c78-9466-8f1465360416", "color": "#6510F4"}, {"name": "renewable energy", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry focused on energy from renewable sources", "id": "92c1818b-46a9-5290-b22d-221d7311247a", "color": "#6510F4"}, {"name": "financial services", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry providing banking, investment, and related services", "id": "0d0a4c2e-ee9a-51e5-839c-b70eca8cef54", "color": "#6510F4"}, {"name": "agriculture", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry focused on farming and food production", "id": "b572fb39-ca51-59ed-b945-6b44efba9a5e", "color": "#6510F4"}, {"name": "aerospace", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry focused on aircraft and space vehicles", "id": "6b0fb037-e0bf-5e60-b4a5-6c6da07b13c6", "color": "#6510F4"}, {"name": "construction", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry focused on building infrastructure and structures", "id": "2761537e-41b9-5b2d-b88f-abdc05d216c7", "color": "#6510F4"}, {"name": "education", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry focused on learning and training services", "id": "14cd23b8-44a8-5f7d-9209-fcec2d2dc222", "color": "#6510F4"}, {"name": "media & entertainment", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Industry focused on content creation, distribution, and entertainment", "id": "5df1e4c3-4d07-5fce-9077-4cbbe09abc76", "color": "#6510F4"}, {"name": "2023-02", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year February 2023", "id": "4e29d03b-34e2-5fbc-b98a-bc600aaf153d", "color": "#6510F4"}, {"name": "2026-01", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year January 2026", "id": "379fe35f-ca62-54fd-8e3b-8ce22c3698b1", "color": "#6510F4"}, {"name": "2024-05", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year May 2024", "id": "fcc7f0ca-9ba2-5450-bace-3592b41312e9", "color": "#6510F4"}, {"name": "2027-04", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year April 2027", "id": "26f0ed37-738b-5c01-8118-68ea9b4064d9", "color": "#6510F4"}, {"name": "2022-11", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year November 2022", "id": "e76acce5-fc75-59b9-809c-7c33236c9aa5", "color": "#6510F4"}, {"name": "2026-10", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year October 2026", "id": "569991b3-36e4-5c98-8571-50f519d3e6e1", "color": "#6510F4"}, {"name": "2023-07", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year July 2023", "id": "00d93755-b62f-5a6f-8135-21c51e4916c5", "color": "#6510F4"}, {"name": "2028-06", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year June 2028", "id": "929e0a14-2a54-5828-99a8-8edf97d27748", "color": "#6510F4"}, {"name": "2022-01", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year January 2022", "id": "6e563649-e544-5bea-b356-b239ad21c670", "color": "#6510F4"}, {"name": "2024-09", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year September 2024", "id": "259789b1-0717-5947-8d6f-0ca8f31cb526", "color": "#6510F4"}, {"name": "2029-08", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year August 2029", "id": "663bcda8-f6df-5dc2-b3f7-7fb31a85d0e7", "color": "#6510F4"}, {"name": "2023-03", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year March 2023", "id": "f573d7de-a973-51e5-bc58-64f731f50e05", "color": "#6510F4"}, {"name": "2027-02", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year February 2027", "id": "16b161cb-716e-5a2e-9dfa-78fa5a09db24", "color": "#6510F4"}, {"name": "2022-10", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year October 2022", "id": "36994cf6-e588-5476-b71c-2814921719c8", "color": "#6510F4"}, {"name": "2026-09", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year September 2026", "id": "7500fd6b-3372-5abb-a9c8-17f12cc00621", "color": "#6510F4"}, {"name": "2024-06", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year June 2024", "id": "14529f73-ea1f-54ef-aabc-7b3ee962f9d9", "color": "#6510F4"}, {"name": "2027-05", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year May 2027", "id": "f1d2aef9-7916-5ec6-a128-49d719e33401", "color": "#6510F4"}, {"name": "2023-12", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year December 2023", "id": "5db118d5-dbe1-5b62-8759-544212f18ec3", "color": "#6510F4"}, {"name": "2026-11", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Month and year November 2026", "id": "e6c33d55-1820-5a5e-8930-e0a45f9f7c94", "color": "#6510F4"}, {"name": "\u00a32.4m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 2.4 million", "id": "cd452c55-4d87-58a4-82aa-1c3419690d1c", "color": "#6510F4"}, {"name": "\u00a31.6m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 1.6 million", "id": "359ed58f-6bb7-547c-b4c6-56e177c7c840", "color": "#6510F4"}, {"name": "\u00a33.1m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 3.1 million", "id": "bb735aaa-c505-5f56-a57a-1c61cf721fc6", "color": "#6510F4"}, {"name": "\u00a37.8m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 7.8 million", "id": "8e4f8e5b-f4aa-5f8c-b546-53de9ca42506", "color": "#6510F4"}, {"name": "\u00a32.2m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 2.2 million", "id": "a610dc99-6513-59ae-a0a4-df8471d14707", "color": "#6510F4"}, {"name": "\u00a34.9m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 4.9 million", "id": "aef008fd-5c16-55a3-a22c-6d2c888d42b3", "color": "#6510F4"}, {"name": "\u00a39.2m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 9.2 million", "id": "7cf4d2db-e53f-54b0-842f-835eb82b7a41", "color": "#6510F4"}, {"name": "\u00a35.4m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 5.4 million", "id": "c7cf415c-a0bb-5109-88d5-0172c1373510", "color": "#6510F4"}, {"name": "\u00a3980k", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 980 thousand", "id": "b0d00416-30c8-5a10-ab00-d775b6bffb58", "color": "#6510F4"}, {"name": "\u00a31.3m", "type": "Entity", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "extract_graph_from_data", "source_node_set": null, "source_user": "default_user@example.com", "description": "Contract value in GBP 1.3 million", "id": "9e0e5109-5c49-5709-8e73-9d7dfab15347", "color": "#6510F4"}, {"name": "text_d4efe071dd53c3c46ef8355164578d0d", "type": "TextDocument", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["name"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "classify_documents", "source_node_set": null, "source_user": "default_user@example.com", "raw_data_location": "file:///Users/handekafkas/Documents/local-code/cognee-integrations/integrations/langgraph/.venv/lib/python3.10/site-packages/cognee/.data_storage/text_d4efe071dd53c3c46ef8355164578d0d.txt", "external_metadata": "{}", "mime_type": "text/plain", "id": "c3c185c1-7710-5a94-b8ec-880987722392", "color": "#DBD8D8"}, {"name": "", "type": "TextSummary", "ontology_valid": false, "version": 1, "topological_rank": 0, "metadata": {"index_fields": ["text"]}, "belongs_to_set": null, "source_pipeline": "cognify_pipeline", "source_task": "summarize_text", "source_node_set": null, "source_user": "default_user@example.com", "text": "Inked 10 multi\u2011year agreements across 9 sectors totaling \u00a338.88M (avg \u00a33.89M) spanning Jan 2022\u2013Aug 2029; highest value: Stellar Aerospace (\u00a39.2M); longest terms: BrightWave Energy and AgroSphere Foods (5 years).", "id": "3304975d-3903-5303-af03-d1f53dbcc0af", "color": "#6510F4"}];
+var links = [{"source": "6499887a-7857-504d-ad64-80a278f8bd32", "target": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "6499887a-7857-504d-ad64-80a278f8bd32", "target_node_id": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "relationship_name": "contains", "updated_at": "2026-03-13 08:41:52", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: contract with quantumsoft; entity_description: A contract signed with QuantumSoft."}}, {"source": "6499887a-7857-504d-ad64-80a278f8bd32", "target": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "6499887a-7857-504d-ad64-80a278f8bd32", "target_node_id": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "relationship_name": "contains", "updated_at": "2026-03-13 08:41:52", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: quantumsoft; entity_description: Organization named QuantumSoft."}}, {"source": "6499887a-7857-504d-ad64-80a278f8bd32", "target": "99d38ac8-0e57-5689-a638-4390404b61b2", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "6499887a-7857-504d-ad64-80a278f8bd32", "target_node_id": "99d38ac8-0e57-5689-a638-4390404b61b2", "relationship_name": "contains", "updated_at": "2026-03-13 08:41:52", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2024-08; entity_description: Contract start month and year."}}, {"source": "6499887a-7857-504d-ad64-80a278f8bd32", "target": "21c4c750-d31e-5dd8-b11c-43353a8ce43f", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "6499887a-7857-504d-ad64-80a278f8bd32", "target_node_id": "21c4c750-d31e-5dd8-b11c-43353a8ce43f", "relationship_name": "contains", "updated_at": "2026-03-13 08:41:52", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2028-08; entity_description: Contract end month and year."}}, {"source": "6499887a-7857-504d-ad64-80a278f8bd32", "target": "49184c49-a3fb-5d49-8ecf-ab82164b5d2d", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "6499887a-7857-504d-ad64-80a278f8bd32", "target_node_id": "49184c49-a3fb-5d49-8ecf-ab82164b5d2d", "relationship_name": "contains", "updated_at": "2026-03-13 08:41:52", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: gbp 5.5m; entity_description: Contract value."}}, {"source": "6499887a-7857-504d-ad64-80a278f8bd32", "target": "65c71de3-4c23-5f28-8e07-fc7428d1e0c4", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "6499887a-7857-504d-ad64-80a278f8bd32", "target_node_id": "65c71de3-4c23-5f28-8e07-fc7428d1e0c4", "relationship_name": "contains", "updated_at": "2026-03-13 08:41:52", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: technology; entity_description: Industry category."}}, {"source": "6499887a-7857-504d-ad64-80a278f8bd32", "target": "7256ac6e-61f5-574c-8bfe-d41a64c60b06", "relation": "is_part_of", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "6499887a-7857-504d-ad64-80a278f8bd32", "target_node_id": "7256ac6e-61f5-574c-8bfe-d41a64c60b06", "relationship_name": "is_part_of", "updated_at": "2026-03-13 08:41:52"}}, {"source": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target": "c4e1a68b-9ada-54b4-be2e-00dd7e6f6d1c", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target_node_id": "c4e1a68b-9ada-54b4-be2e-00dd7e6f6d1c", "relationship_name": "is_a", "updated_at": "2026-03-13 08:41:52"}}, {"source": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "relation": "has_party", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "has_party", "source_node_id": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target_node_id": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "ontology_valid": false}}, {"source": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target": "99d38ac8-0e57-5689-a638-4390404b61b2", "relation": "start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "start_date", "source_node_id": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target_node_id": "99d38ac8-0e57-5689-a638-4390404b61b2", "ontology_valid": false}}, {"source": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target": "21c4c750-d31e-5dd8-b11c-43353a8ce43f", "relation": "end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "end_date", "source_node_id": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target_node_id": "21c4c750-d31e-5dd8-b11c-43353a8ce43f", "ontology_valid": false}}, {"source": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target": "49184c49-a3fb-5d49-8ecf-ab82164b5d2d", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "7f305c08-e7e5-5fb3-bf12-41d4f052b2b2", "target_node_id": "49184c49-a3fb-5d49-8ecf-ab82164b5d2d", "ontology_valid": false}}, {"source": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:41:52"}}, {"source": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "target": "65c71de3-4c23-5f28-8e07-fc7428d1e0c4", "relation": "industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "industry", "source_node_id": "957e5fef-7266-57c8-a9dd-a7d3aa0a9550", "target_node_id": "65c71de3-4c23-5f28-8e07-fc7428d1e0c4", "ontology_valid": false}}, {"source": "99d38ac8-0e57-5689-a638-4390404b61b2", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "99d38ac8-0e57-5689-a638-4390404b61b2", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:41:52"}}, {"source": "21c4c750-d31e-5dd8-b11c-43353a8ce43f", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "21c4c750-d31e-5dd8-b11c-43353a8ce43f", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:41:52"}}, {"source": "49184c49-a3fb-5d49-8ecf-ab82164b5d2d", "target": "5edbe470-5f47-5ba4-8900-1af1b52776cf", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "49184c49-a3fb-5d49-8ecf-ab82164b5d2d", "target_node_id": "5edbe470-5f47-5ba4-8900-1af1b52776cf", "relationship_name": "is_a", "updated_at": "2026-03-13 08:41:52"}}, {"source": "65c71de3-4c23-5f28-8e07-fc7428d1e0c4", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "65c71de3-4c23-5f28-8e07-fc7428d1e0c4", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:41:52"}}, {"source": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target_node_id": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:05", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: meditech solutions; entity_description: Organization in the healthcare industry."}}, {"source": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target": "273c94c1-f22a-5dc1-a9db-a560af90753e", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target_node_id": "273c94c1-f22a-5dc1-a9db-a560af90753e", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:05", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: meditech solutions contract; entity_description: Contract signed with Meditech Solutions from Jan 2023 to Dec 2025 valued at \u00a31.2M."}}, {"source": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target_node_id": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:05", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: healthcare; entity_description: Healthcare industry."}}, {"source": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target": "998c449e-87d3-5c55-8b8a-27b03791f8b4", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target_node_id": "998c449e-87d3-5c55-8b8a-27b03791f8b4", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:05", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2023-01; entity_description: Start date of the contract (January 2023)."}}, {"source": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target": "dc8b0936-d474-5002-af83-3fdbc29f4482", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target_node_id": "dc8b0936-d474-5002-af83-3fdbc29f4482", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:05", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2025-12; entity_description: End date of the contract (December 2025)."}}, {"source": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target": "a6e6dac3-841c-5ee1-a5b4-135d2d6af913", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target_node_id": "a6e6dac3-841c-5ee1-a5b4-135d2d6af913", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:05", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a31.2m; entity_description: Contract value."}}, {"source": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target": "85fd91c5-21c4-5022-b6f7-b611182c4d49", "relation": "is_part_of", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "target_node_id": "85fd91c5-21c4-5022-b6f7-b611182c4d49", "relationship_name": "is_part_of", "updated_at": "2026-03-13 08:42:05"}}, {"source": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:05"}}, {"source": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "target": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "target_node_id": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "ontology_valid": false}}, {"source": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target": "c4e1a68b-9ada-54b4-be2e-00dd7e6f6d1c", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target_node_id": "c4e1a68b-9ada-54b4-be2e-00dd7e6f6d1c", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:05"}}, {"source": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "relation": "involves_party", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "involves_party", "source_node_id": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target_node_id": "c6afc508-9451-5fec-b8c3-54f66e5c8837", "ontology_valid": false}}, {"source": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target": "998c449e-87d3-5c55-8b8a-27b03791f8b4", "relation": "start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "start_date", "source_node_id": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target_node_id": "998c449e-87d3-5c55-8b8a-27b03791f8b4", "ontology_valid": false}}, {"source": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target": "dc8b0936-d474-5002-af83-3fdbc29f4482", "relation": "end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "end_date", "source_node_id": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target_node_id": "dc8b0936-d474-5002-af83-3fdbc29f4482", "ontology_valid": false}}, {"source": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target": "a6e6dac3-841c-5ee1-a5b4-135d2d6af913", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "273c94c1-f22a-5dc1-a9db-a560af90753e", "target_node_id": "a6e6dac3-841c-5ee1-a5b4-135d2d6af913", "ontology_valid": false}}, {"source": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "998c449e-87d3-5c55-8b8a-27b03791f8b4", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "998c449e-87d3-5c55-8b8a-27b03791f8b4", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:05"}}, {"source": "dc8b0936-d474-5002-af83-3fdbc29f4482", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "dc8b0936-d474-5002-af83-3fdbc29f4482", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "a6e6dac3-841c-5ee1-a5b4-135d2d6af913", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "a6e6dac3-841c-5ee1-a5b4-135d2d6af913", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:05"}}, {"source": "0c57b0bf-bb7d-5a8a-901e-7f3199df7a23", "target": "6499887a-7857-504d-ad64-80a278f8bd32", "relation": "made_from", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "0c57b0bf-bb7d-5a8a-901e-7f3199df7a23", "target_node_id": "6499887a-7857-504d-ad64-80a278f8bd32", "relationship_name": "made_from", "updated_at": "2026-03-13 08:41:52"}}, {"source": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target": "c5af5330-31f2-5be1-b5c3-727f70a204de", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target_node_id": "c5af5330-31f2-5be1-b5c3-727f70a204de", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:04", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: contract with orion retail group; entity_description: status: signed"}}, {"source": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target_node_id": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:04", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: orion retail group; entity_description: "}}, {"source": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target": "e583f3fb-5b52-568e-995b-b86917591181", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target_node_id": "e583f3fb-5b52-568e-995b-b86917591181", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:04", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: retail; entity_description: "}}, {"source": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target": "cb0553ac-fa8b-5892-b040-514c8963d89a", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target_node_id": "cb0553ac-fa8b-5892-b040-514c8963d89a", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:04", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2024-03; entity_description: year: 2024; month: 03"}}, {"source": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target": "b17c4b26-8f48-5e75-829d-df31eb956f89", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target_node_id": "b17c4b26-8f48-5e75-829d-df31eb956f89", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:04", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2026-03; entity_description: year: 2026; month: 03"}}, {"source": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target": "0c47316b-950c-52af-bc98-9d48366ef7e2", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target_node_id": "0c47316b-950c-52af-bc98-9d48366ef7e2", "relationship_name": "contains", "updated_at": "2026-03-13 08:42:04", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a3850k; entity_description: currency: GBP; amount: 850000"}}, {"source": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target": "1610813b-4291-5d03-b1b7-056ecec01a21", "relation": "is_part_of", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "target_node_id": "1610813b-4291-5d03-b1b7-056ecec01a21", "relationship_name": "is_part_of", "updated_at": "2026-03-13 08:42:04"}}, {"source": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target": "c4e1a68b-9ada-54b4-be2e-00dd7e6f6d1c", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target_node_id": "c4e1a68b-9ada-54b4-be2e-00dd7e6f6d1c", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:04"}}, {"source": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "relation": "contract_with", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_with", "source_node_id": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target_node_id": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "ontology_valid": false}}, {"source": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target": "cb0553ac-fa8b-5892-b040-514c8963d89a", "relation": "start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "start_date", "source_node_id": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target_node_id": "cb0553ac-fa8b-5892-b040-514c8963d89a", "ontology_valid": false}}, {"source": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target": "b17c4b26-8f48-5e75-829d-df31eb956f89", "relation": "end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "end_date", "source_node_id": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target_node_id": "b17c4b26-8f48-5e75-829d-df31eb956f89", "ontology_valid": false}}, {"source": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target": "0c47316b-950c-52af-bc98-9d48366ef7e2", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "c5af5330-31f2-5be1-b5c3-727f70a204de", "target_node_id": "0c47316b-950c-52af-bc98-9d48366ef7e2", "ontology_valid": false}}, {"source": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:04"}}, {"source": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "target": "e583f3fb-5b52-568e-995b-b86917591181", "relation": "industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "industry", "source_node_id": "2b0e2249-336a-5edd-9026-6eb94e8056f2", "target_node_id": "e583f3fb-5b52-568e-995b-b86917591181", "ontology_valid": false}}, {"source": "e583f3fb-5b52-568e-995b-b86917591181", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "e583f3fb-5b52-568e-995b-b86917591181", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:04"}}, {"source": "cb0553ac-fa8b-5892-b040-514c8963d89a", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "cb0553ac-fa8b-5892-b040-514c8963d89a", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:04"}}, {"source": "b17c4b26-8f48-5e75-829d-df31eb956f89", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "b17c4b26-8f48-5e75-829d-df31eb956f89", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:04"}}, {"source": "0c47316b-950c-52af-bc98-9d48366ef7e2", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "0c47316b-950c-52af-bc98-9d48366ef7e2", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:42:04"}}, {"source": "27beaa26-ab11-5f18-8365-997905ef5a74", "target": "85acc1d7-90fb-566e-b52a-79b076afa40c", "relation": "made_from", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "27beaa26-ab11-5f18-8365-997905ef5a74", "target_node_id": "85acc1d7-90fb-566e-b52a-79b076afa40c", "relationship_name": "made_from", "updated_at": "2026-03-13 08:42:04"}}, {"source": "1ba11cfe-7b21-5c7d-bcf9-e2b02a2c5963", "target": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "relation": "made_from", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "1ba11cfe-7b21-5c7d-bcf9-e2b02a2c5963", "target_node_id": "890820c8-8d8c-51d0-9227-644ee31ac4a1", "relationship_name": "made_from", "updated_at": "2026-03-13 08:42:05"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "882cea2f-45ac-50d1-89c1-207c717f6064", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "882cea2f-45ac-50d1-89c1-207c717f6064", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: healthbridge systems; entity_description: Company in the healthcare industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: novacare diagnostics; entity_description: Company in the healthcare industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "5eba00cf-a884-58c4-ab80-423678469fe9", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "5eba00cf-a884-58c4-ab80-423678469fe9", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: skyport logistics; entity_description: Company in the logistics industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: brightwave energy; entity_description: Company in the renewable energy industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: apex finance group; entity_description: Company in the financial services industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: agrosphere foods; entity_description: Company in the agriculture industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: stellar aerospace; entity_description: Company in the aerospace industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "dd567000-6e56-53d7-9662-0688d47a2513", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "dd567000-6e56-53d7-9662-0688d47a2513", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: metrobuild contractors; entity_description: Company in the construction industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "60b22a22-c746-543f-9215-1e787b8ec6dd", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "60b22a22-c746-543f-9215-1e787b8ec6dd", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: futurelearn academy; entity_description: Company in the education industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "8dc54624-4826-5002-8097-3d26de58c4dd", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "8dc54624-4826-5002-8097-3d26de58c4dd", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: bluewave media; entity_description: Company in the media and entertainment industry with a signed contract"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: healthcare; entity_description: Industry focused on health services and products"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "049ca12e-ce6f-5c78-9466-8f1465360416", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "049ca12e-ce6f-5c78-9466-8f1465360416", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: logistics; entity_description: Industry focused on transportation and supply chain operations"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "92c1818b-46a9-5290-b22d-221d7311247a", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "92c1818b-46a9-5290-b22d-221d7311247a", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: renewable energy; entity_description: Industry focused on energy from renewable sources"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "0d0a4c2e-ee9a-51e5-839c-b70eca8cef54", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "0d0a4c2e-ee9a-51e5-839c-b70eca8cef54", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: financial services; entity_description: Industry providing banking, investment, and related services"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "b572fb39-ca51-59ed-b945-6b44efba9a5e", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "b572fb39-ca51-59ed-b945-6b44efba9a5e", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: agriculture; entity_description: Industry focused on farming and food production"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "6b0fb037-e0bf-5e60-b4a5-6c6da07b13c6", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "6b0fb037-e0bf-5e60-b4a5-6c6da07b13c6", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: aerospace; entity_description: Industry focused on aircraft and space vehicles"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "2761537e-41b9-5b2d-b88f-abdc05d216c7", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "2761537e-41b9-5b2d-b88f-abdc05d216c7", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: construction; entity_description: Industry focused on building infrastructure and structures"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "14cd23b8-44a8-5f7d-9209-fcec2d2dc222", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "14cd23b8-44a8-5f7d-9209-fcec2d2dc222", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: education; entity_description: Industry focused on learning and training services"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "5df1e4c3-4d07-5fce-9077-4cbbe09abc76", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "5df1e4c3-4d07-5fce-9077-4cbbe09abc76", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: media & entertainment; entity_description: Industry focused on content creation, distribution, and entertainment"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "4e29d03b-34e2-5fbc-b98a-bc600aaf153d", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "4e29d03b-34e2-5fbc-b98a-bc600aaf153d", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2023-02; entity_description: Month and year February 2023"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "379fe35f-ca62-54fd-8e3b-8ce22c3698b1", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "379fe35f-ca62-54fd-8e3b-8ce22c3698b1", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2026-01; entity_description: Month and year January 2026"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "fcc7f0ca-9ba2-5450-bace-3592b41312e9", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "fcc7f0ca-9ba2-5450-bace-3592b41312e9", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2024-05; entity_description: Month and year May 2024"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "26f0ed37-738b-5c01-8118-68ea9b4064d9", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "26f0ed37-738b-5c01-8118-68ea9b4064d9", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2027-04; entity_description: Month and year April 2027"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "e76acce5-fc75-59b9-809c-7c33236c9aa5", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "e76acce5-fc75-59b9-809c-7c33236c9aa5", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2022-11; entity_description: Month and year November 2022"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "569991b3-36e4-5c98-8571-50f519d3e6e1", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "569991b3-36e4-5c98-8571-50f519d3e6e1", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2026-10; entity_description: Month and year October 2026"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "00d93755-b62f-5a6f-8135-21c51e4916c5", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "00d93755-b62f-5a6f-8135-21c51e4916c5", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2023-07; entity_description: Month and year July 2023"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "929e0a14-2a54-5828-99a8-8edf97d27748", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "929e0a14-2a54-5828-99a8-8edf97d27748", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2028-06; entity_description: Month and year June 2028"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "6e563649-e544-5bea-b356-b239ad21c670", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "6e563649-e544-5bea-b356-b239ad21c670", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2022-01; entity_description: Month and year January 2022"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "dc8b0936-d474-5002-af83-3fdbc29f4482", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "dc8b0936-d474-5002-af83-3fdbc29f4482", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2025-12; entity_description: Month and year December 2025"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "259789b1-0717-5947-8d6f-0ca8f31cb526", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "259789b1-0717-5947-8d6f-0ca8f31cb526", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2024-09; entity_description: Month and year September 2024"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "663bcda8-f6df-5dc2-b3f7-7fb31a85d0e7", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "663bcda8-f6df-5dc2-b3f7-7fb31a85d0e7", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2029-08; entity_description: Month and year August 2029"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "f573d7de-a973-51e5-bc58-64f731f50e05", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "f573d7de-a973-51e5-bc58-64f731f50e05", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2023-03; entity_description: Month and year March 2023"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "16b161cb-716e-5a2e-9dfa-78fa5a09db24", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "16b161cb-716e-5a2e-9dfa-78fa5a09db24", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2027-02; entity_description: Month and year February 2027"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "36994cf6-e588-5476-b71c-2814921719c8", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "36994cf6-e588-5476-b71c-2814921719c8", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2022-10; entity_description: Month and year October 2022"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "7500fd6b-3372-5abb-a9c8-17f12cc00621", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "7500fd6b-3372-5abb-a9c8-17f12cc00621", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2026-09; entity_description: Month and year September 2026"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "14529f73-ea1f-54ef-aabc-7b3ee962f9d9", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "14529f73-ea1f-54ef-aabc-7b3ee962f9d9", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2024-06; entity_description: Month and year June 2024"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "f1d2aef9-7916-5ec6-a128-49d719e33401", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "f1d2aef9-7916-5ec6-a128-49d719e33401", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2027-05; entity_description: Month and year May 2027"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "5db118d5-dbe1-5b62-8759-544212f18ec3", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "5db118d5-dbe1-5b62-8759-544212f18ec3", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2023-12; entity_description: Month and year December 2023"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "e6c33d55-1820-5a5e-8930-e0a45f9f7c94", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "e6c33d55-1820-5a5e-8930-e0a45f9f7c94", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: 2026-11; entity_description: Month and year November 2026"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "cd452c55-4d87-58a4-82aa-1c3419690d1c", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "cd452c55-4d87-58a4-82aa-1c3419690d1c", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a32.4m; entity_description: Contract value in GBP 2.4 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "359ed58f-6bb7-547c-b4c6-56e177c7c840", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "359ed58f-6bb7-547c-b4c6-56e177c7c840", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a31.6m; entity_description: Contract value in GBP 1.6 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "bb735aaa-c505-5f56-a57a-1c61cf721fc6", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "bb735aaa-c505-5f56-a57a-1c61cf721fc6", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a33.1m; entity_description: Contract value in GBP 3.1 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "8e4f8e5b-f4aa-5f8c-b546-53de9ca42506", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "8e4f8e5b-f4aa-5f8c-b546-53de9ca42506", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a37.8m; entity_description: Contract value in GBP 7.8 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "a610dc99-6513-59ae-a0a4-df8471d14707", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "a610dc99-6513-59ae-a0a4-df8471d14707", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a32.2m; entity_description: Contract value in GBP 2.2 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "aef008fd-5c16-55a3-a22c-6d2c888d42b3", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "aef008fd-5c16-55a3-a22c-6d2c888d42b3", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a34.9m; entity_description: Contract value in GBP 4.9 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "7cf4d2db-e53f-54b0-842f-835eb82b7a41", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "7cf4d2db-e53f-54b0-842f-835eb82b7a41", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a39.2m; entity_description: Contract value in GBP 9.2 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "c7cf415c-a0bb-5109-88d5-0172c1373510", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "c7cf415c-a0bb-5109-88d5-0172c1373510", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a35.4m; entity_description: Contract value in GBP 5.4 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "b0d00416-30c8-5a10-ab00-d775b6bffb58", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "b0d00416-30c8-5a10-ab00-d775b6bffb58", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a3980k; entity_description: Contract value in GBP 980 thousand"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "9e0e5109-5c49-5709-8e73-9d7dfab15347", "relation": "contains", "weight": null, "all_weights": {}, "relationship_type": "contains", "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "9e0e5109-5c49-5709-8e73-9d7dfab15347", "relationship_name": "contains", "updated_at": "2026-03-13 08:45:08", "relationship_type": "contains", "edge_text": "relationship_name: contains; entity_name: \u00a31.3m; entity_description: Contract value in GBP 1.3 million"}}, {"source": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target": "c3c185c1-7710-5a94-b8ec-880987722392", "relation": "is_part_of", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "target_node_id": "c3c185c1-7710-5a94-b8ec-880987722392", "relationship_name": "is_part_of", "updated_at": "2026-03-13 08:45:08"}}, {"source": "882cea2f-45ac-50d1-89c1-207c717f6064", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "882cea2f-45ac-50d1-89c1-207c717f6064", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "882cea2f-45ac-50d1-89c1-207c717f6064", "target": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "882cea2f-45ac-50d1-89c1-207c717f6064", "target_node_id": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "ontology_valid": false}}, {"source": "882cea2f-45ac-50d1-89c1-207c717f6064", "target": "4e29d03b-34e2-5fbc-b98a-bc600aaf153d", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "882cea2f-45ac-50d1-89c1-207c717f6064", "target_node_id": "4e29d03b-34e2-5fbc-b98a-bc600aaf153d", "ontology_valid": false}}, {"source": "882cea2f-45ac-50d1-89c1-207c717f6064", "target": "379fe35f-ca62-54fd-8e3b-8ce22c3698b1", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "882cea2f-45ac-50d1-89c1-207c717f6064", "target_node_id": "379fe35f-ca62-54fd-8e3b-8ce22c3698b1", "ontology_valid": false}}, {"source": "882cea2f-45ac-50d1-89c1-207c717f6064", "target": "cd452c55-4d87-58a4-82aa-1c3419690d1c", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "882cea2f-45ac-50d1-89c1-207c717f6064", "target_node_id": "cd452c55-4d87-58a4-82aa-1c3419690d1c", "ontology_valid": false}}, {"source": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target_node_id": "4c8ad276-6c0b-5eba-8140-344adfc919ae", "ontology_valid": false}}, {"source": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target": "fcc7f0ca-9ba2-5450-bace-3592b41312e9", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target_node_id": "fcc7f0ca-9ba2-5450-bace-3592b41312e9", "ontology_valid": false}}, {"source": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target": "26f0ed37-738b-5c01-8118-68ea9b4064d9", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target_node_id": "26f0ed37-738b-5c01-8118-68ea9b4064d9", "ontology_valid": false}}, {"source": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target": "359ed58f-6bb7-547c-b4c6-56e177c7c840", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "76f17395-c9ac-5e87-b260-4cebd9c99ec1", "target_node_id": "359ed58f-6bb7-547c-b4c6-56e177c7c840", "ontology_valid": false}}, {"source": "5eba00cf-a884-58c4-ab80-423678469fe9", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "5eba00cf-a884-58c4-ab80-423678469fe9", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "5eba00cf-a884-58c4-ab80-423678469fe9", "target": "049ca12e-ce6f-5c78-9466-8f1465360416", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "5eba00cf-a884-58c4-ab80-423678469fe9", "target_node_id": "049ca12e-ce6f-5c78-9466-8f1465360416", "ontology_valid": false}}, {"source": "5eba00cf-a884-58c4-ab80-423678469fe9", "target": "e76acce5-fc75-59b9-809c-7c33236c9aa5", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "5eba00cf-a884-58c4-ab80-423678469fe9", "target_node_id": "e76acce5-fc75-59b9-809c-7c33236c9aa5", "ontology_valid": false}}, {"source": "5eba00cf-a884-58c4-ab80-423678469fe9", "target": "569991b3-36e4-5c98-8571-50f519d3e6e1", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "5eba00cf-a884-58c4-ab80-423678469fe9", "target_node_id": "569991b3-36e4-5c98-8571-50f519d3e6e1", "ontology_valid": false}}, {"source": "5eba00cf-a884-58c4-ab80-423678469fe9", "target": "bb735aaa-c505-5f56-a57a-1c61cf721fc6", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "5eba00cf-a884-58c4-ab80-423678469fe9", "target_node_id": "bb735aaa-c505-5f56-a57a-1c61cf721fc6", "ontology_valid": false}}, {"source": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target": "92c1818b-46a9-5290-b22d-221d7311247a", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target_node_id": "92c1818b-46a9-5290-b22d-221d7311247a", "ontology_valid": false}}, {"source": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target": "00d93755-b62f-5a6f-8135-21c51e4916c5", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target_node_id": "00d93755-b62f-5a6f-8135-21c51e4916c5", "ontology_valid": false}}, {"source": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target": "929e0a14-2a54-5828-99a8-8edf97d27748", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target_node_id": "929e0a14-2a54-5828-99a8-8edf97d27748", "ontology_valid": false}}, {"source": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target": "8e4f8e5b-f4aa-5f8c-b546-53de9ca42506", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "54572a00-0522-5b18-abd7-dbc3f4b05bcb", "target_node_id": "8e4f8e5b-f4aa-5f8c-b546-53de9ca42506", "ontology_valid": false}}, {"source": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target": "0d0a4c2e-ee9a-51e5-839c-b70eca8cef54", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target_node_id": "0d0a4c2e-ee9a-51e5-839c-b70eca8cef54", "ontology_valid": false}}, {"source": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target": "6e563649-e544-5bea-b356-b239ad21c670", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target_node_id": "6e563649-e544-5bea-b356-b239ad21c670", "ontology_valid": false}}, {"source": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target": "dc8b0936-d474-5002-af83-3fdbc29f4482", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target_node_id": "dc8b0936-d474-5002-af83-3fdbc29f4482", "ontology_valid": false}}, {"source": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target": "a610dc99-6513-59ae-a0a4-df8471d14707", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "1daab11b-71fe-55d9-9193-6e48e9fa2871", "target_node_id": "a610dc99-6513-59ae-a0a4-df8471d14707", "ontology_valid": false}}, {"source": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target": "b572fb39-ca51-59ed-b945-6b44efba9a5e", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target_node_id": "b572fb39-ca51-59ed-b945-6b44efba9a5e", "ontology_valid": false}}, {"source": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target": "259789b1-0717-5947-8d6f-0ca8f31cb526", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target_node_id": "259789b1-0717-5947-8d6f-0ca8f31cb526", "ontology_valid": false}}, {"source": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target": "663bcda8-f6df-5dc2-b3f7-7fb31a85d0e7", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target_node_id": "663bcda8-f6df-5dc2-b3f7-7fb31a85d0e7", "ontology_valid": false}}, {"source": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target": "aef008fd-5c16-55a3-a22c-6d2c888d42b3", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "edf92ddf-8f2f-5806-b67d-119fefe463f7", "target_node_id": "aef008fd-5c16-55a3-a22c-6d2c888d42b3", "ontology_valid": false}}, {"source": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target": "6b0fb037-e0bf-5e60-b4a5-6c6da07b13c6", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target_node_id": "6b0fb037-e0bf-5e60-b4a5-6c6da07b13c6", "ontology_valid": false}}, {"source": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target": "f573d7de-a973-51e5-bc58-64f731f50e05", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target_node_id": "f573d7de-a973-51e5-bc58-64f731f50e05", "ontology_valid": false}}, {"source": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target": "16b161cb-716e-5a2e-9dfa-78fa5a09db24", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target_node_id": "16b161cb-716e-5a2e-9dfa-78fa5a09db24", "ontology_valid": false}}, {"source": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target": "7cf4d2db-e53f-54b0-842f-835eb82b7a41", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "4406d9ba-ca14-52c3-9287-1d3828a4259f", "target_node_id": "7cf4d2db-e53f-54b0-842f-835eb82b7a41", "ontology_valid": false}}, {"source": "dd567000-6e56-53d7-9662-0688d47a2513", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "dd567000-6e56-53d7-9662-0688d47a2513", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "dd567000-6e56-53d7-9662-0688d47a2513", "target": "2761537e-41b9-5b2d-b88f-abdc05d216c7", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "dd567000-6e56-53d7-9662-0688d47a2513", "target_node_id": "2761537e-41b9-5b2d-b88f-abdc05d216c7", "ontology_valid": false}}, {"source": "dd567000-6e56-53d7-9662-0688d47a2513", "target": "36994cf6-e588-5476-b71c-2814921719c8", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "dd567000-6e56-53d7-9662-0688d47a2513", "target_node_id": "36994cf6-e588-5476-b71c-2814921719c8", "ontology_valid": false}}, {"source": "dd567000-6e56-53d7-9662-0688d47a2513", "target": "7500fd6b-3372-5abb-a9c8-17f12cc00621", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "dd567000-6e56-53d7-9662-0688d47a2513", "target_node_id": "7500fd6b-3372-5abb-a9c8-17f12cc00621", "ontology_valid": false}}, {"source": "dd567000-6e56-53d7-9662-0688d47a2513", "target": "c7cf415c-a0bb-5109-88d5-0172c1373510", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "dd567000-6e56-53d7-9662-0688d47a2513", "target_node_id": "c7cf415c-a0bb-5109-88d5-0172c1373510", "ontology_valid": false}}, {"source": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target": "14cd23b8-44a8-5f7d-9209-fcec2d2dc222", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target_node_id": "14cd23b8-44a8-5f7d-9209-fcec2d2dc222", "ontology_valid": false}}, {"source": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target": "14529f73-ea1f-54ef-aabc-7b3ee962f9d9", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target_node_id": "14529f73-ea1f-54ef-aabc-7b3ee962f9d9", "ontology_valid": false}}, {"source": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target": "f1d2aef9-7916-5ec6-a128-49d719e33401", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target_node_id": "f1d2aef9-7916-5ec6-a128-49d719e33401", "ontology_valid": false}}, {"source": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target": "b0d00416-30c8-5a10-ab00-d775b6bffb58", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "60b22a22-c746-543f-9215-1e787b8ec6dd", "target_node_id": "b0d00416-30c8-5a10-ab00-d775b6bffb58", "ontology_valid": false}}, {"source": "8dc54624-4826-5002-8097-3d26de58c4dd", "target": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "8dc54624-4826-5002-8097-3d26de58c4dd", "target_node_id": "d3d7b6b4-9b0d-52e8-9e09-a9e9cf4b5a4d", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "8dc54624-4826-5002-8097-3d26de58c4dd", "target": "5df1e4c3-4d07-5fce-9077-4cbbe09abc76", "relation": "operates_in_industry", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "operates_in_industry", "source_node_id": "8dc54624-4826-5002-8097-3d26de58c4dd", "target_node_id": "5df1e4c3-4d07-5fce-9077-4cbbe09abc76", "ontology_valid": false}}, {"source": "8dc54624-4826-5002-8097-3d26de58c4dd", "target": "5db118d5-dbe1-5b62-8759-544212f18ec3", "relation": "contract_start_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_start_date", "source_node_id": "8dc54624-4826-5002-8097-3d26de58c4dd", "target_node_id": "5db118d5-dbe1-5b62-8759-544212f18ec3", "ontology_valid": false}}, {"source": "8dc54624-4826-5002-8097-3d26de58c4dd", "target": "e6c33d55-1820-5a5e-8930-e0a45f9f7c94", "relation": "contract_end_date", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_end_date", "source_node_id": "8dc54624-4826-5002-8097-3d26de58c4dd", "target_node_id": "e6c33d55-1820-5a5e-8930-e0a45f9f7c94", "ontology_valid": false}}, {"source": "8dc54624-4826-5002-8097-3d26de58c4dd", "target": "9e0e5109-5c49-5709-8e73-9d7dfab15347", "relation": "contract_value", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"relationship_name": "contract_value", "source_node_id": "8dc54624-4826-5002-8097-3d26de58c4dd", "target_node_id": "9e0e5109-5c49-5709-8e73-9d7dfab15347", "ontology_valid": false}}, {"source": "049ca12e-ce6f-5c78-9466-8f1465360416", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "049ca12e-ce6f-5c78-9466-8f1465360416", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "92c1818b-46a9-5290-b22d-221d7311247a", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "92c1818b-46a9-5290-b22d-221d7311247a", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "0d0a4c2e-ee9a-51e5-839c-b70eca8cef54", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "0d0a4c2e-ee9a-51e5-839c-b70eca8cef54", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "b572fb39-ca51-59ed-b945-6b44efba9a5e", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "b572fb39-ca51-59ed-b945-6b44efba9a5e", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "6b0fb037-e0bf-5e60-b4a5-6c6da07b13c6", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "6b0fb037-e0bf-5e60-b4a5-6c6da07b13c6", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "2761537e-41b9-5b2d-b88f-abdc05d216c7", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "2761537e-41b9-5b2d-b88f-abdc05d216c7", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "14cd23b8-44a8-5f7d-9209-fcec2d2dc222", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "14cd23b8-44a8-5f7d-9209-fcec2d2dc222", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "5df1e4c3-4d07-5fce-9077-4cbbe09abc76", "target": "7c44de48-005a-524b-a90a-48586049ccf8", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "5df1e4c3-4d07-5fce-9077-4cbbe09abc76", "target_node_id": "7c44de48-005a-524b-a90a-48586049ccf8", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "4e29d03b-34e2-5fbc-b98a-bc600aaf153d", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "4e29d03b-34e2-5fbc-b98a-bc600aaf153d", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "379fe35f-ca62-54fd-8e3b-8ce22c3698b1", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "379fe35f-ca62-54fd-8e3b-8ce22c3698b1", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "fcc7f0ca-9ba2-5450-bace-3592b41312e9", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "fcc7f0ca-9ba2-5450-bace-3592b41312e9", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "26f0ed37-738b-5c01-8118-68ea9b4064d9", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "26f0ed37-738b-5c01-8118-68ea9b4064d9", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "e76acce5-fc75-59b9-809c-7c33236c9aa5", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "e76acce5-fc75-59b9-809c-7c33236c9aa5", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "569991b3-36e4-5c98-8571-50f519d3e6e1", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "569991b3-36e4-5c98-8571-50f519d3e6e1", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "00d93755-b62f-5a6f-8135-21c51e4916c5", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "00d93755-b62f-5a6f-8135-21c51e4916c5", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "929e0a14-2a54-5828-99a8-8edf97d27748", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "929e0a14-2a54-5828-99a8-8edf97d27748", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "6e563649-e544-5bea-b356-b239ad21c670", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "6e563649-e544-5bea-b356-b239ad21c670", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "259789b1-0717-5947-8d6f-0ca8f31cb526", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "259789b1-0717-5947-8d6f-0ca8f31cb526", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "663bcda8-f6df-5dc2-b3f7-7fb31a85d0e7", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "663bcda8-f6df-5dc2-b3f7-7fb31a85d0e7", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "f573d7de-a973-51e5-bc58-64f731f50e05", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "f573d7de-a973-51e5-bc58-64f731f50e05", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "16b161cb-716e-5a2e-9dfa-78fa5a09db24", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "16b161cb-716e-5a2e-9dfa-78fa5a09db24", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "36994cf6-e588-5476-b71c-2814921719c8", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "36994cf6-e588-5476-b71c-2814921719c8", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "7500fd6b-3372-5abb-a9c8-17f12cc00621", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "7500fd6b-3372-5abb-a9c8-17f12cc00621", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "14529f73-ea1f-54ef-aabc-7b3ee962f9d9", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "14529f73-ea1f-54ef-aabc-7b3ee962f9d9", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "f1d2aef9-7916-5ec6-a128-49d719e33401", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "f1d2aef9-7916-5ec6-a128-49d719e33401", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "5db118d5-dbe1-5b62-8759-544212f18ec3", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "5db118d5-dbe1-5b62-8759-544212f18ec3", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "e6c33d55-1820-5a5e-8930-e0a45f9f7c94", "target": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "e6c33d55-1820-5a5e-8930-e0a45f9f7c94", "target_node_id": "d61d99ac-b291-5666-9748-3e80e1c8b56a", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "cd452c55-4d87-58a4-82aa-1c3419690d1c", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "cd452c55-4d87-58a4-82aa-1c3419690d1c", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "359ed58f-6bb7-547c-b4c6-56e177c7c840", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "359ed58f-6bb7-547c-b4c6-56e177c7c840", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "bb735aaa-c505-5f56-a57a-1c61cf721fc6", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "bb735aaa-c505-5f56-a57a-1c61cf721fc6", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "8e4f8e5b-f4aa-5f8c-b546-53de9ca42506", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "8e4f8e5b-f4aa-5f8c-b546-53de9ca42506", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "a610dc99-6513-59ae-a0a4-df8471d14707", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "a610dc99-6513-59ae-a0a4-df8471d14707", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "aef008fd-5c16-55a3-a22c-6d2c888d42b3", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "aef008fd-5c16-55a3-a22c-6d2c888d42b3", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "7cf4d2db-e53f-54b0-842f-835eb82b7a41", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "7cf4d2db-e53f-54b0-842f-835eb82b7a41", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "c7cf415c-a0bb-5109-88d5-0172c1373510", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "c7cf415c-a0bb-5109-88d5-0172c1373510", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "b0d00416-30c8-5a10-ab00-d775b6bffb58", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "b0d00416-30c8-5a10-ab00-d775b6bffb58", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "9e0e5109-5c49-5709-8e73-9d7dfab15347", "target": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relation": "is_a", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "9e0e5109-5c49-5709-8e73-9d7dfab15347", "target_node_id": "eb21d9c9-1c11-5569-9a2e-d7801071d92e", "relationship_name": "is_a", "updated_at": "2026-03-13 08:45:08"}}, {"source": "3304975d-3903-5303-af03-d1f53dbcc0af", "target": "57030239-a75e-54ea-a7e7-dc74519e99e6", "relation": "made_from", "weight": null, "all_weights": {}, "relationship_type": null, "edge_info": {"source_node_id": "3304975d-3903-5303-af03-d1f53dbcc0af", "target_node_id": "57030239-a75e-54ea-a7e7-dc74519e99e6", "relationship_name": "made_from", "updated_at": "2026-03-13 08:45:08"}}];
+var taskColors = {"classify_documents": "#db5656", "extract_chunks_from_documents": "#56db7d", "extract_graph_from_data": "#a456db", "summarize_text": "#dbca56"};
+var pipelineColors = {"cognify_pipeline": "#db5656"};
+var nodesetColors = {};
+var userColors = {"default_user@example.com": "#db5656"};
+
+if (!nodes || nodes.length === 0) {
+  document.body.innerHTML = '<div class="empty-state">No graph data available</div>';
+  return;
+}
+
+// ── Helpers ──
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function truncate(s,n){if(!s)return"";return s.length>n?s.slice(0,n)+"\u2026":s}
+function hexToRgb(hex){
+  if(!hex)return[219,216,216];
+  var c=hex.replace("#","");
+  if(c.length===3)c=c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
+  var n=parseInt(c,16);
+  return[(n>>16)&255,(n>>8)&255,n&255];
+}
+function hslToRgb(h,s,l){
+  s/=100;l/=100;
+  var a=s*Math.min(l,1-l);
+  function f(n){var k=(n+h/30)%12;return l-a*Math.max(-1,Math.min(k-3,9-k,1))}
+  return[Math.round(f(0)*255),Math.round(f(8)*255),Math.round(f(4)*255)];
+}
+function clamp(v,lo,hi){return v<lo?lo:v>hi?hi:v}
+function lerp(a,b,t){return a+(b-a)*t}
+
+var N=nodes.length;
+var M=links.length;
+
+// ── Resolve IDs ──
+nodes.forEach(function(n){
+  if(!n.id)n.id=n.node_id||n.uuid||n.external_id||n.name||Math.random().toString(36);
+});
+var nodeMap={};
+nodes.forEach(function(n){nodeMap[n.id]=n});
+links=links.filter(function(l){
+  var s=typeof l.source==="object"?(l.source.id||l.source):l.source;
+  var t=typeof l.target==="object"?(l.target.id||l.target):l.target;
+  return nodeMap[s]&&nodeMap[t];
+});
+M=links.length;
+
+// ── Compute node degrees for sizing ──
+var degreeMap={};
+nodes.forEach(function(n){degreeMap[n.id]=0});
+links.forEach(function(l){
+  var s=typeof l.source==="object"?l.source.id:l.source;
+  var t=typeof l.target==="object"?l.target.id:l.target;
+  degreeMap[s]=(degreeMap[s]||0)+1;
+  degreeMap[t]=(degreeMap[t]||0)+1;
+});
+var maxDeg=Math.max(1,Math.max.apply(null,Object.values(degreeMap)));
+nodes.forEach(function(n){n._degree=degreeMap[n.id]||0;n._r=4+Math.sqrt(n._degree/maxDeg)*10});
+
+// Pre-sort nodes by degree descending (for adaptive labels)
+var nodesByDegree=nodes.slice().sort(function(a,b){return b._degree-a._degree});
+var topDegreeSet=new Set();
+nodesByDegree.slice(0,Math.min(10,N)).forEach(function(n){topDegreeSet.add(n.id)});
+
+// ── Color palette ──
+var colorByType={
+  "Entity":"#6510F4","EntityType":"#A550FF","DocumentChunk":"#0DFF00",
+  "TextSummary":"#6510F4","TableRow":"#A550FF","TableType":"#6510F4",
+  "ColumnValue":"#747470","SchemaTable":"#A550FF","DatabaseSchema":"#6510F4",
+  "SchemaRelationship":"#323332"
+};
+var typeColors={};
+var typeRgbCache={};
+var hueStep=0;
+nodes.forEach(function(n){
+  if(!n.color)n.color=colorByType[n.type]||null;
+  if(!n.color){
+    if(!typeColors[n.type]){
+      var hue=(hueStep*137.5)%360;hueStep++;
+      typeColors[n.type]="hsl("+hue+",55%,65%)";
+    }
+    n.color=typeColors[n.type];
+  }
+  // Cache RGB per type
+  if(!typeRgbCache[n.type]){
+    var c=n.color;
+    if(c.indexOf("hsl")===0){
+      var m=c.match(/[\d.]+/g);
+      typeRgbCache[n.type]=hslToRgb(+m[0],+m[1],+m[2]);
+    }else{
+      typeRgbCache[n.type]=hexToRgb(c);
+    }
+  }
+  n._rgb=typeRgbCache[n.type];
+  if(n.ontology_valid===true){
+    n.color="#D8D8D8";
+    n._rgb=[216,216,216];
+  }
+});
+
+// ── Color-by mode ──
+var colorByMode="type";
+
+function recolorNodes(){
+  nodes.forEach(function(n){
+    if(colorByMode==="type"){
+      n.color=colorByType[n.type]||typeColors[n.type]||"#DBD8D8";
+    }else if(colorByMode==="task"){
+      n.color=taskColors[n.source_task||"Unknown"]||"#DBD8D8";
+    }else if(colorByMode==="pipeline"){
+      n.color=pipelineColors[n.source_pipeline||"Unknown"]||"#DBD8D8";
+    }else if(colorByMode==="nodeset"){
+      n.color=nodesetColors[n.source_node_set||"Unknown"]||"#DBD8D8";
+    }else if(colorByMode==="user"){
+      n.color=userColors[n.source_user||"Unknown"]||"#DBD8D8";
+    }
+    if(colorByMode==="type"&&n.ontology_valid===true){
+      n.color="#D8D8D8";
+      n._rgb=[216,216,216];
+    }else{
+      // Recache RGB
+      if(n.color.indexOf("hsl")===0){
+        var m=n.color.match(/[\d.]+/g);
+        n._rgb=hslToRgb(+m[0],+m[1],+m[2]);
+      }else{
+        n._rgb=hexToRgb(n.color);
+      }
+    }
+  });
+}
+
+document.querySelectorAll(".ctrl-btn[data-colorby]").forEach(function(btn){
+  btn.addEventListener("click",function(){
+    document.querySelectorAll(".ctrl-btn[data-colorby]").forEach(function(b){b.classList.remove("active")});
+    btn.classList.add("active");
+    colorByMode=btn.dataset.colorby;
+    recolorNodes();
+    updateLegend();
+    draw();
+  });
+});
+
+// ── Stats ──
+var typeCounts={};
+nodes.forEach(function(n){typeCounts[n.type]=(typeCounts[n.type]||0)+1});
+var taskCounts={};
+nodes.forEach(function(n){var t=n.source_task||"Unknown";taskCounts[t]=(taskCounts[t]||0)+1});
+var pipeCounts={};
+nodes.forEach(function(n){var p=n.source_pipeline||"Unknown";pipeCounts[p]=(pipeCounts[p]||0)+1});
+var nodesetCounts={};
+nodes.forEach(function(n){var s=n.source_node_set||"Unknown";nodesetCounts[s]=(nodesetCounts[s]||0)+1});
+var userCounts={};
+nodes.forEach(function(n){var u=n.source_user||"Unknown";userCounts[u]=(userCounts[u]||0)+1});
+var uniqueTasks=Object.keys(taskCounts).length;
+var uniquePipelines=Object.keys(pipeCounts).length;
+var uniqueNodesets=Object.keys(nodesetCounts).length;
+var uniqueUsers=Object.keys(userCounts).length;
+var statsEl=document.getElementById("stats");
+var perfTier=N>10000?"large":N>2000?"medium":"small";
+statsEl.innerHTML='<span><span class="dot" style="background:#6510F4"></span>'+N.toLocaleString()+" nodes</span>"+
+  '<span><span class="dot" style="background:#747470"></span>'+M.toLocaleString()+" edges</span>"+
+  '<span>'+Object.keys(typeCounts).length+" types</span>"+
+  '<span>'+uniqueTasks+" tasks</span>"+
+  '<span>'+uniquePipelines+" pipelines</span>"+
+  '<span>'+uniqueNodesets+" node sets</span>"+
+  '<span>'+uniqueUsers+" users</span>"+
+  '<span style="opacity:0.5">['+perfTier+']</span>';
+
+// ── Legend ──
+var legendEl=document.getElementById("legend");
+
+function updateLegend(){
+  var entries,counts,colorSource;
+  if(colorByMode==="type"){
+    counts=typeCounts;
+    entries=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a]});
+    colorSource=function(t){return colorByType[t]||typeColors[t]||"#DBD8D8"};
+  }else if(colorByMode==="task"){
+    counts=taskCounts;
+    entries=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a]});
+    colorSource=function(t){return taskColors[t]||"#DBD8D8"};
+  }else if(colorByMode==="pipeline"){
+    counts=pipeCounts;
+    entries=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a]});
+    colorSource=function(t){return pipelineColors[t]||"#DBD8D8"};
+  }else if(colorByMode==="nodeset"){
+    counts=nodesetCounts;
+    entries=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a]});
+    colorSource=function(t){return nodesetColors[t]||"#DBD8D8"};
+  }else{
+    counts=userCounts;
+    entries=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a]});
+    colorSource=function(t){return userColors[t]||"#DBD8D8"};
+  }
+  if(entries.length>12)entries=entries.slice(0,12);
+  legendEl.innerHTML=entries.map(function(t){
+    return '<div class="legend-item"><div class="legend-dot" style="background:'+colorSource(t)+'"></div>'+esc(t)+" ("+counts[t]+")</div>";
+  }).join("");
+}
+updateLegend();
+
+// ── Canvas setup ──
+var canvas=document.getElementById("canvas");
+var ctx=canvas.getContext("2d");
+var dpr=window.devicePixelRatio||1;
+var W,H;
+function resize(){
+  W=window.innerWidth;H=window.innerHeight;
+  canvas.width=W*dpr;canvas.height=H*dpr;
+  canvas.style.width=W+"px";canvas.style.height=H+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+resize();
+window.addEventListener("resize",function(){resize();draw()});
+
+// ── Layer toggles ──
+var layers={nodes:true,edges:true,labels:true,heatmap:false,typeclouds:false};
+document.querySelectorAll(".ctrl-btn[data-layer]").forEach(function(btn){
+  btn.addEventListener("click",function(){
+    var key=btn.dataset.layer;
+    layers[key]=!layers[key];
+    btn.classList.toggle("active",layers[key]);
+    if((key==="heatmap"||key==="typeclouds")&&layers[key]){
+      computeDensity();
+    }
+    draw();
+  });
+});
+
+// ── Transform state ──
+var tx=W/2,ty=H/2,scale=1;
+
+// ── Smooth zoom animation state ──
+var zoomAnim=null; // {fromScale,toScale,fromTx,toTx,fromTy,toTy,startTime,duration}
+
+function animateZoom(){
+  if(!zoomAnim)return;
+  var elapsed=performance.now()-zoomAnim.startTime;
+  var t=Math.min(1,elapsed/zoomAnim.duration);
+  // Ease out cubic
+  var e=1-Math.pow(1-t,3);
+  scale=lerp(zoomAnim.fromScale,zoomAnim.toScale,e);
+  tx=lerp(zoomAnim.fromTx,zoomAnim.toTx,e);
+  ty=lerp(zoomAnim.fromTy,zoomAnim.toTy,e);
+  draw();
+  if(t<1){requestAnimationFrame(animateZoom)}
+  else{zoomAnim=null}
+}
+
+function smoothZoomTo(newScale,pivotX,pivotY,duration){
+  newScale=clamp(newScale,0.02,30);
+  var ratio=newScale/scale;
+  var newTx=pivotX-(pivotX-tx)*ratio;
+  var newTy=pivotY-(pivotY-ty)*ratio;
+  zoomAnim={fromScale:scale,toScale:newScale,fromTx:tx,toTx:newTx,fromTy:ty,toTy:newTy,startTime:performance.now(),duration:duration||150};
+  requestAnimationFrame(animateZoom);
+}
+
+function smoothPanZoomTo(newScale,newTx,newTy,duration){
+  newScale=clamp(newScale,0.02,30);
+  zoomAnim={fromScale:scale,toScale:newScale,fromTx:tx,toTx:newTx,fromTy:ty,toTy:newTy,startTime:performance.now(),duration:duration||300};
+  requestAnimationFrame(animateZoom);
+}
+
+// ── Zoom-to-fit ──
+function zoomToFit(animated){
+  var minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  var valid=0;
+  nodes.forEach(function(n){
+    if(typeof n.x!=="number"||!isFinite(n.x))return;
+    valid++;
+    if(n.x<minX)minX=n.x;if(n.x>maxX)maxX=n.x;
+    if(n.y<minY)minY=n.y;if(n.y>maxY)maxY=n.y;
+  });
+  if(valid===0){return}
+  var pad=0.1;
+  var gw=maxX-minX||100;
+  var gh=maxY-minY||100;
+  var cx=(minX+maxX)/2;
+  var cy=(minY+maxY)/2;
+  var sx=W*(1-2*pad)/gw;
+  var sy=H*(1-2*pad)/gh;
+  var ns=Math.min(sx,sy,10);
+  var ntx=W/2-cx*ns;
+  var nty=H/2-cy*ns;
+  if(animated){smoothPanZoomTo(ns,ntx,nty,400)}
+  else{scale=ns;tx=ntx;ty=nty;draw()}
+}
+
+// ── Force simulation (Phase 3f: adaptive tuning) ──
+var repStr,linkDist,alphaDecayVal,velDecayVal,distMaxVal,collideIter;
+if(N>10000){
+  repStr=-20;linkDist=20;alphaDecayVal=0.05;velDecayVal=0.6;distMaxVal=200;collideIter=0;
+}else if(N>5000){
+  repStr=-40;linkDist=30;alphaDecayVal=0.04;velDecayVal=0.5;distMaxVal=300;collideIter=0;
+}else if(N>2000){
+  repStr=-60;linkDist=40;alphaDecayVal=0.03;velDecayVal=0.45;distMaxVal=400;collideIter=1;
+}else if(N>500){
+  repStr=-120;linkDist=70;alphaDecayVal=0.02;velDecayVal=0.4;distMaxVal=500;collideIter=1;
+}else{
+  repStr=-180;linkDist=100;alphaDecayVal=0.02;velDecayVal=0.4;distMaxVal=600;collideIter=1;
+}
+
+var MAX_TICKS=N>10000?300:N>5000?400:1000;
+var simTickCount=0;
+var simDone=false;
+
+// ── Loading overlay (Phase 3g) ──
+var loadingOverlay=document.getElementById("loading-overlay");
+var loadingBar=document.getElementById("loading-bar");
+var loadingText=document.getElementById("loading-text");
+var loadingStatsEl=document.getElementById("loading-stats");
+var showLoading=N>200;
+
+if(!showLoading){
+  loadingOverlay.classList.add("hidden");
+}else{
+  loadingStatsEl.textContent=N.toLocaleString()+" nodes, "+M.toLocaleString()+" edges";
+}
+
+var simulation=d3.forceSimulation(nodes)
+  .force("link",d3.forceLink(links).id(function(d){return d.id}).distance(linkDist).strength(0.2))
+  .force("charge",d3.forceManyBody().strength(repStr).distanceMax(distMaxVal))
+  .force("center",d3.forceCenter(0,0))
+  .force("x",d3.forceX(0).strength(0.04))
+  .force("y",d3.forceY(0).strength(0.04))
+  .alphaDecay(alphaDecayVal)
+  .velocityDecay(velDecayVal);
+
+if(collideIter>0){
+  simulation.force("collide",d3.forceCollide().radius(function(d){return d._r+2}).iterations(collideIter));
+}
+
+// ── Quadtree (Phase 3a) ──
+var quadtree=null;
+var qtRebuildInterval=N>10000?10:N>2000?5:3;
+
+function rebuildQuadtree(){
+  quadtree=d3.quadtree()
+    .x(function(d){return d.x})
+    .y(function(d){return d.y})
+    .addAll(nodes.filter(function(n){return typeof n.x==="number"&&isFinite(n.x)}));
+}
+
+// ── Adjacency index ──
+var adjMap={};
+nodes.forEach(function(n){adjMap[n.id]=[]});
+
+// Simulation tick handler
+simulation.on("tick",function(){
+  simTickCount++;
+
+  // Rebuild adjacency once after link objects are resolved
+  if(simTickCount===1){
+    adjMap={};
+    nodes.forEach(function(n2){adjMap[n2.id]=[]});
+    links.forEach(function(l){
+      var sid=l.source.id||l.source;
+      var tid=l.target.id||l.target;
+      if(adjMap[sid])adjMap[sid].push(tid);
+      if(adjMap[tid])adjMap[tid].push(sid);
+    });
+  }
+
+  // Rebuild quadtree periodically
+  if(simTickCount%qtRebuildInterval===0){rebuildQuadtree()}
+
+  // Update loading progress
+  if(showLoading&&!simDone){
+    var pct=Math.min(99,Math.round(simTickCount/MAX_TICKS*100));
+    loadingBar.style.width=pct+"%";
+    loadingText.textContent="Laying out graph... "+pct+"%";
+  }
+
+  // Cap simulation ticks
+  if(simTickCount>=MAX_TICKS&&!simDone){
+    simulation.stop();
+    simDone=true;
+    rebuildQuadtree();
+    computeDensity();
+    if(showLoading){
+      loadingBar.style.width="100%";
+      loadingText.textContent="Done!";
+      setTimeout(function(){loadingOverlay.classList.add("hidden")},300);
+    }
+    zoomToFit(false);
+    setupMinimap();
+    draw();
+    return;
+  }
+
+  // Only draw during simulation if small graph, otherwise skip frames
+  if(N<2000||simTickCount%3===0){draw()}
+});
+
+// When simulation ends naturally (alpha < alphaMin)
+simulation.on("end",function(){
+  if(!simDone){
+    simDone=true;
+    rebuildQuadtree();
+    computeDensity();
+    if(showLoading){
+      loadingBar.style.width="100%";
+      loadingText.textContent="Done!";
+      setTimeout(function(){loadingOverlay.classList.add("hidden")},300);
+    }
+    zoomToFit(false);
+    setupMinimap();
+    draw();
+  }
+});
+
+// ── Interaction state ──
+var hoveredNode=null;
+var searchQuery="";
+var searchMatches=new Set();
+
+// ── Search ──
+var searchInput=document.getElementById("search-input");
+searchInput.addEventListener("input",function(){
+  searchQuery=searchInput.value.trim().toLowerCase();
+  searchMatches.clear();
+  if(searchQuery){
+    nodes.forEach(function(n){
+      var name=(n.name||"").toLowerCase();
+      var type=(n.type||"").toLowerCase();
+      if(name.indexOf(searchQuery)>=0||type.indexOf(searchQuery)>=0)searchMatches.add(n.id);
+    });
+  }
+  draw();
+});
+
+// ── Info panel ──
+var infoPanel=document.getElementById("info-panel");
+function showNodeInfo(n){
+  if(!n){infoPanel.classList.remove("visible");return}
+  var html='<div class="panel-header">';
+  html+='<span class="panel-type" style="background:'+n.color+'22;color:'+n.color+'">'+esc(n.type||"Node")+"</span>";
+  html+='<span class="panel-title">'+esc(truncate(n.name||n.id,40))+"</span></div>";
+
+  var desc=null;
+  var descKeys=["description","summary","text","content"];
+  for(var i=0;i<descKeys.length;i++){
+    var v=n[descKeys[i]]||(n.properties&&n.properties[descKeys[i]]);
+    if(typeof v==="string"&&v.trim()){desc=v.trim();break}
+  }
+  if(desc){
+    html+='<div style="font-size:12px;color:var(--text2);line-height:1.5;margin-top:8px">'+esc(truncate(desc,300))+"</div>";
+  }
+
+  html+='<div class="panel-section"><div class="panel-section-title">Properties</div>';
+  html+='<div class="panel-row"><span class="k">ID</span><span class="v" style="font-size:10px;opacity:0.7">'+esc(truncate(n.id,36))+"</span></div>";
+  html+='<div class="panel-row"><span class="k">Connections</span><span class="v">'+n._degree+"</span></div>";
+  if(n.source_task)html+='<div class="panel-row"><span class="k">Source Task</span><span class="v">'+esc(n.source_task)+"</span></div>";
+  if(n.source_pipeline)html+='<div class="panel-row"><span class="k">Source Pipeline</span><span class="v">'+esc(n.source_pipeline)+"</span></div>";
+  if(n.source_node_set)html+='<div class="panel-row"><span class="k">Source Node Set</span><span class="v">'+esc(n.source_node_set)+"</span></div>";
+  if(n.source_user)html+='<div class="panel-row"><span class="k">Source User</span><span class="v">'+esc(n.source_user)+"</span></div>";
+  if(n.ontology_valid!==undefined&&n.ontology_valid!==null){var ovStyle=n.ontology_valid===true?'color:#D8D8D8;font-weight:600':'color:var(--text2)';html+='<div class="panel-row"><span class="k">Ontology Valid</span><span class="v" style="'+ovStyle+'">'+esc(String(n.ontology_valid))+"</span></div>";}
+
+  if(n.properties){
+    Object.keys(n.properties).slice(0,10).forEach(function(key){
+      var v=n.properties[key];
+      if(v!==undefined&&v!==null&&typeof v!=="object"){
+        html+='<div class="panel-row"><span class="k">'+esc(key)+'</span><span class="v">'+esc(truncate(String(v),80))+"</span></div>";
+      }
+    });
+  }
+  html+="</div>";
+
+  infoPanel.innerHTML=html;
+  infoPanel.classList.add("visible");
+}
+
+function showEdgeInfo(e){
+  var html='<div class="panel-header">';
+  html+='<span class="panel-type">Edge</span>';
+  html+='<span class="panel-title">'+esc(e.relation||"relationship")+"</span></div>";
+  html+='<div class="panel-section"><div class="panel-section-title">Details</div>';
+  var sName=e.source.name||e.source.id;
+  var tName=e.target.name||e.target.id;
+  html+='<div class="panel-row"><span class="k">From</span><span class="v">'+esc(truncate(sName,30))+"</span></div>";
+  html+='<div class="panel-row"><span class="k">To</span><span class="v">'+esc(truncate(tName,30))+"</span></div>";
+  if(e.weight!=null)html+='<div class="panel-row"><span class="k">Weight</span><span class="v">'+e.weight+"</span></div>";
+  if(e.all_weights&&Object.keys(e.all_weights).length>0){
+    Object.keys(e.all_weights).forEach(function(k){
+      html+='<div class="panel-row"><span class="k">w:'+esc(k)+'</span><span class="v">'+e.all_weights[k]+"</span></div>";
+    });
+  }
+  if(e.relationship_type)html+='<div class="panel-row"><span class="k">Type</span><span class="v">'+esc(e.relationship_type)+"</span></div>";
+  html+="</div>";
+  infoPanel.innerHTML=html;
+  infoPanel.classList.add("visible");
+}
+
+// ── Hit testing (Phase 3a: quadtree-accelerated) ──
+function screenToWorld(sx,sy){return{x:(sx-tx)/scale,y:(sy-ty)/scale}}
+function worldToScreen(wx,wy){return{x:wx*scale+tx,y:wy*scale+ty}}
+
+function findNodeAt(sx,sy){
+  var w=screenToWorld(sx,sy);
+  var searchR=(20)/scale; // max search radius in world coords
+  if(quadtree){
+    var found=quadtree.find(w.x,w.y,searchR);
+    if(found){
+      var dx=found.x-w.x,dy=found.y-w.y;
+      var d=Math.sqrt(dx*dx+dy*dy);
+      var hitR=(found._r+4)/scale;
+      if(d<hitR)return found;
+    }
+    return null;
+  }
+  // Fallback for before quadtree is built
+  var best=null,bestD=Infinity;
+  for(var i=nodes.length-1;i>=0;i--){
+    var n=nodes[i];
+    if(typeof n.x!=="number")continue;
+    var dx2=n.x-w.x,dy2=n.y-w.y;
+    var d2=Math.sqrt(dx2*dx2+dy2*dy2);
+    var hitR2=(n._r+4)/scale;
+    if(d2<hitR2&&d2<bestD){best=n;bestD=d2}
+  }
+  return best;
+}
+
+function findEdgeAt(sx,sy){
+  var w=screenToWorld(sx,sy);
+  var threshold=6/scale;
+  // Only check edges with at least one endpoint in viewport (Phase 3b)
+  var vp=getViewportWorld();
+  var margin=50/scale;
+  for(var i=0;i<links.length;i++){
+    var e=links[i];
+    var ax=e.source.x,ay=e.source.y,bx=e.target.x,by=e.target.y;
+    if(typeof ax!=="number")continue;
+    // Skip if both endpoints off-screen
+    var sIn=ax>=vp.x1-margin&&ax<=vp.x2+margin&&ay>=vp.y1-margin&&ay<=vp.y2+margin;
+    var tIn=bx>=vp.x1-margin&&bx<=vp.x2+margin&&by>=vp.y1-margin&&by<=vp.y2+margin;
+    if(!sIn&&!tIn)continue;
+    var ddx=bx-ax,ddy=by-ay;
+    var len2=ddx*ddx+ddy*ddy;
+    if(len2===0)continue;
+    var t=Math.max(0,Math.min(1,((w.x-ax)*ddx+(w.y-ay)*ddy)/len2));
+    var px=ax+t*ddx,py=ay+t*ddy;
+    var dist=Math.sqrt((w.x-px)*(w.x-px)+(w.y-py)*(w.y-py));
+    if(dist<threshold)return e;
+  }
+  return null;
+}
+
+// ── Viewport helpers (Phase 3b) ──
+function getViewportWorld(){
+  return{
+    x1:-tx/scale,
+    y1:-ty/scale,
+    x2:(W-tx)/scale,
+    y2:(H-ty)/scale
+  };
+}
+
+function isInViewport(wx,wy,margin,vp){
+  return wx>=vp.x1-margin&&wx<=vp.x2+margin&&wy>=vp.y1-margin&&wy<=vp.y2+margin;
+}
+
+// ── Mouse ──
+var isDragging=false,dragNode=null,isPanning=false;
+var lastMx=0,lastMy=0;
+
+canvas.addEventListener("mousedown",function(ev){
+  var mx=ev.offsetX,my=ev.offsetY;
+  lastMx=mx;lastMy=my;
+  var hit=findNodeAt(mx,my);
+  if(hit){
+    dragNode=hit;isDragging=true;
+    dragNode.fx=dragNode.x;dragNode.fy=dragNode.y;
+    simulation.alphaTarget(0.3).restart();
+    canvas.style.cursor="grabbing";
+  }else{
+    isPanning=true;
+    canvas.style.cursor="grabbing";
+  }
+});
+
+canvas.addEventListener("mousemove",function(ev){
+  var mx=ev.offsetX,my=ev.offsetY;
+  if(isDragging&&dragNode){
+    var w=screenToWorld(mx,my);
+    dragNode.fx=w.x;dragNode.fy=w.y;
+  }else if(isPanning){
+    tx+=mx-lastMx;ty+=my-lastMy;
+    draw();
+  }else{
+    var hit=findNodeAt(mx,my);
+    if(hit!==hoveredNode){
+      hoveredNode=hit;
+      if(hoveredNode){
+        showNodeInfo(hoveredNode);
+        canvas.style.cursor="pointer";
+      }else{
+        var edge=findEdgeAt(mx,my);
+        if(edge){showEdgeInfo(edge);canvas.style.cursor="pointer"}
+        else{infoPanel.classList.remove("visible");canvas.style.cursor="grab"}
+      }
+      draw();
+    }
+  }
+  lastMx=mx;lastMy=my;
+});
+
+canvas.addEventListener("mouseup",function(){
+  if(isDragging&&dragNode){
+    dragNode.fx=null;dragNode.fy=null;
+    simulation.alphaTarget(0);
+  }
+  isDragging=false;dragNode=null;isPanning=false;
+  canvas.style.cursor="grab";
+});
+
+canvas.addEventListener("mouseleave",function(){
+  if(isDragging&&dragNode){dragNode.fx=null;dragNode.fy=null;simulation.alphaTarget(0)}
+  isDragging=false;dragNode=null;isPanning=false;
+  hoveredNode=null;draw();
+});
+
+// ── Double-click to zoom to node (Phase 1) ──
+canvas.addEventListener("dblclick",function(ev){
+  ev.preventDefault();
+  var mx=ev.offsetX,my=ev.offsetY;
+  var hit=findNodeAt(mx,my);
+  if(hit&&typeof hit.x==="number"){
+    var ns=clamp(scale*2,0.02,30);
+    var ntx=W/2-hit.x*ns;
+    var nty=H/2-hit.y*ns;
+    smoothPanZoomTo(ns,ntx,nty,300);
+  }
+});
+
+// ── Wheel zoom (Phase 1: proportional to deltaY) ──
+canvas.addEventListener("wheel",function(ev){
+  ev.preventDefault();
+  if(zoomAnim)zoomAnim=null; // cancel any running animation
+  var mx=ev.offsetX,my=ev.offsetY;
+  var factor=Math.exp(-ev.deltaY*0.002);
+  var newScale=clamp(scale*factor,0.02,30);
+  var ratio=newScale/scale;
+  tx=mx-(mx-tx)*ratio;
+  ty=my-(my-ty)*ratio;
+  scale=newScale;
+  draw();
+},{passive:false});
+
+// ── Zoom buttons (Phase 1) ──
+document.getElementById("btn-zoom-in").addEventListener("click",function(){
+  smoothZoomTo(scale*1.4,W/2,H/2,200);
+});
+document.getElementById("btn-zoom-out").addEventListener("click",function(){
+  smoothZoomTo(scale/1.4,W/2,H/2,200);
+});
+document.getElementById("btn-fit").addEventListener("click",function(){
+  zoomToFit(true);
+});
+
+// ── Density (Phase 2: Grid-based heatmap + type clouds) ──
+var densityCellSize=30; // world-space cell size
+var heatmapGrid=null; // {cols,rows,ox,oy,data:[]} global density
+var typeGrids=null; // {type:{cols,rows,ox,oy,data:[],rgb:[]}} per-type density
+
+function computeDensity(){
+  if(!layers.heatmap&&!layers.typeclouds)return;
+  // Compute world bounding box
+  var minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  nodes.forEach(function(n){
+    if(typeof n.x!=="number"||!isFinite(n.x))return;
+    if(n.x<minX)minX=n.x;if(n.x>maxX)maxX=n.x;
+    if(n.y<minY)minY=n.y;if(n.y>maxY)maxY=n.y;
+  });
+  if(minX===Infinity)return;
+
+  var pad=densityCellSize*2;
+  minX-=pad;minY-=pad;maxX+=pad;maxY+=pad;
+  var cols=Math.ceil((maxX-minX)/densityCellSize);
+  var rows=Math.ceil((maxY-minY)/densityCellSize);
+  if(cols<1||rows<1||cols*rows>500000)return; // safety limit
+
+  // Global heatmap
+  if(layers.heatmap){
+    var grid=new Float32Array(cols*rows);
+    nodes.forEach(function(n){
+      if(typeof n.x!=="number"||!isFinite(n.x))return;
+      var ci=Math.floor((n.x-minX)/densityCellSize);
+      var ri=Math.floor((n.y-minY)/densityCellSize);
+      if(ci>=0&&ci<cols&&ri>=0&&ri<rows)grid[ri*cols+ci]++;
+    });
+    // Multi-pass 3x3 box blur (3 passes approximates Gaussian)
+    var src=grid,dst;
+    for(var pass=0;pass<3;pass++){
+      dst=new Float32Array(cols*rows);
+      for(var r=0;r<rows;r++){
+        for(var c=0;c<cols;c++){
+          var sum=0,cnt=0;
+          for(var dr=-1;dr<=1;dr++){
+            for(var dc=-1;dc<=1;dc++){
+              var rr=r+dr,cc=c+dc;
+              if(rr>=0&&rr<rows&&cc>=0&&cc<cols){sum+=src[rr*cols+cc];cnt++}
+            }
+          }
+          dst[r*cols+c]=sum/cnt;
+        }
+      }
+      src=dst;
+    }
+    var blurred=src;
+    var maxVal=0;
+    for(var i=0;i<blurred.length;i++){if(blurred[i]>maxVal)maxVal=blurred[i]}
+    // Pre-render to offscreen canvas for smooth bilinear interpolation
+    var hmCanvas=document.createElement("canvas");
+    hmCanvas.width=cols;hmCanvas.height=rows;
+    var hmCtx=hmCanvas.getContext("2d");
+    var hmImg=hmCtx.createImageData(cols,rows);
+    if(maxVal>0){
+      for(var i=0;i<blurred.length;i++){
+        var v=blurred[i];
+        if(v>0){
+          var a=Math.round((0.03+(v/maxVal)*0.17)*255);
+          var idx=i*4;
+          hmImg.data[idx]=255;hmImg.data[idx+1]=230;hmImg.data[idx+2]=200;hmImg.data[idx+3]=a;
+        }
+      }
+    }
+    hmCtx.putImageData(hmImg,0,0);
+    heatmapGrid={cols:cols,rows:rows,ox:minX,oy:minY,data:blurred,maxVal:maxVal,canvas:hmCanvas};
+  }
+
+  // Per-type grids
+  if(layers.typeclouds){
+    var tg={};
+    nodes.forEach(function(n){
+      if(typeof n.x!=="number"||!isFinite(n.x))return;
+      var t=n.type||"default";
+      if(!tg[t]){tg[t]={grid:new Float32Array(cols*rows),rgb:n._rgb}}
+      var ci=Math.floor((n.x-minX)/densityCellSize);
+      var ri=Math.floor((n.y-minY)/densityCellSize);
+      if(ci>=0&&ci<cols&&ri>=0&&ri<rows)tg[t].grid[ri*cols+ci]++;
+    });
+    // Multi-pass blur + offscreen canvas per type
+    var result={};
+    Object.keys(tg).forEach(function(t){
+      var g=tg[t].grid;
+      var rgb=tg[t].rgb;
+      // 3-pass box blur
+      var src2=g,dst2;
+      for(var pass=0;pass<3;pass++){
+        dst2=new Float32Array(cols*rows);
+        for(var r=0;r<rows;r++){
+          for(var c=0;c<cols;c++){
+            var sum=0,cnt=0;
+            for(var dr=-1;dr<=1;dr++){
+              for(var dc=-1;dc<=1;dc++){
+                var rr=r+dr,cc=c+dc;
+                if(rr>=0&&rr<rows&&cc>=0&&cc<cols){sum+=src2[rr*cols+cc];cnt++}
+              }
+            }
+            dst2[r*cols+c]=sum/cnt;
+          }
+        }
+        src2=dst2;
+      }
+      var bl=src2;
+      var mv=0;
+      for(var i=0;i<bl.length;i++){if(bl[i]>mv)mv=bl[i]}
+      // Pre-render to offscreen canvas
+      var tcCanvas=document.createElement("canvas");
+      tcCanvas.width=cols;tcCanvas.height=rows;
+      var tcCtx=tcCanvas.getContext("2d");
+      var tcImg=tcCtx.createImageData(cols,rows);
+      if(mv>0){
+        for(var i=0;i<bl.length;i++){
+          var v=bl[i];
+          if(v>0){
+            var a=Math.round((0.05+(v/mv)*0.20)*255);
+            var idx=i*4;
+            tcImg.data[idx]=rgb[0];tcImg.data[idx+1]=rgb[1];tcImg.data[idx+2]=rgb[2];tcImg.data[idx+3]=a;
+          }
+        }
+      }
+      tcCtx.putImageData(tcImg,0,0);
+      result[t]={cols:cols,rows:rows,ox:minX,oy:minY,data:bl,maxVal:mv,rgb:rgb,canvas:tcCanvas};
+    });
+    typeGrids=result;
+  }
+}
+
+// ── FPS counter (Phase 4) ──
+var fpsEl=document.getElementById("fps-counter");
+var showFps=false;
+var fpsFrames=0,fpsLast=performance.now(),fpsCurrent=0;
+
+function updateFps(){
+  fpsFrames++;
+  var now=performance.now();
+  if(now-fpsLast>=1000){
+    fpsCurrent=Math.round(fpsFrames*1000/(now-fpsLast));
+    fpsFrames=0;fpsLast=now;
+    if(showFps)fpsEl.textContent=fpsCurrent+" fps | "+N+" nodes | "+M+" edges";
+  }
+}
+
+// ── Drawing (Phase 3b-3e: viewport culling, batched edges, LOD, adaptive labels) ──
+function draw(){
+  updateFps();
+  ctx.save();
+  ctx.clearRect(0,0,W,H);
+
+  // Background
+  ctx.fillStyle="#000000";
+  ctx.fillRect(0,0,W,H);
+
+  // Subtle grid
+  ctx.save();
+  ctx.globalAlpha=0.03;
+  ctx.strokeStyle="#fff";
+  ctx.lineWidth=1;
+  var gridSize=60*scale;
+  if(gridSize>10){
+    var ox=tx%gridSize,oy=ty%gridSize;
+    ctx.beginPath();
+    for(var gx=ox;gx<W;gx+=gridSize){ctx.moveTo(gx,0);ctx.lineTo(gx,H)}
+    for(var gy=oy;gy<H;gy+=gridSize){ctx.moveTo(0,gy);ctx.lineTo(W,gy)}
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  ctx.translate(tx,ty);
+  ctx.scale(scale,scale);
+
+  // Viewport in world coords
+  var vp=getViewportWorld();
+  var vpMargin=30/scale;
+
+  // Build neighbor set for hover
+  var neighborSet=null;
+  if(hoveredNode){
+    neighborSet=new Set();
+    neighborSet.add(hoveredNode.id);
+    if(adjMap[hoveredNode.id]){
+      adjMap[hoveredNode.id].forEach(function(id){neighborSet.add(id)});
+    }
+  }
+
+  // Search highlighting
+  var hasSearch=searchQuery&&searchMatches.size>0;
+
+  // ── Density heatmap layer (smooth offscreen canvas) ──
+  if(layers.heatmap&&heatmapGrid&&heatmapGrid.maxVal>0&&heatmapGrid.canvas){
+    ctx.save();
+    ctx.imageSmoothingEnabled=true;
+    ctx.imageSmoothingQuality="high";
+    ctx.drawImage(heatmapGrid.canvas,heatmapGrid.ox,heatmapGrid.oy,
+      heatmapGrid.cols*densityCellSize,heatmapGrid.rows*densityCellSize);
+    ctx.restore();
+  }
+
+  // ── Type cloud layer (smooth offscreen canvas) ──
+  if(layers.typeclouds&&typeGrids){
+    ctx.save();
+    ctx.imageSmoothingEnabled=true;
+    ctx.imageSmoothingQuality="high";
+    Object.keys(typeGrids).forEach(function(t){
+      var tg=typeGrids[t];
+      if(tg.maxVal<=0||!tg.canvas)return;
+      ctx.drawImage(tg.canvas,tg.ox,tg.oy,
+        tg.cols*densityCellSize,tg.rows*densityCellSize);
+    });
+    ctx.restore();
+  }
+
+  // ── Edges (Phase 3b-3c: viewport culling + batched rendering) ──
+  if(layers.edges){
+    // At extreme zoom-out with large graph, skip edges entirely
+    var skipEdges=scale<0.1&&N>5000;
+    if(!skipEdges){
+      var skipArrows=scale<0.5||N>5000;
+
+      // Classify edges into batches by visual state
+      var normalEdges=[];
+      var hoverEdges=[];
+      var searchEdges=[];
+      var arrowEdges=[];
+
+      links.forEach(function(l){
+        var sx2=l.source.x,sy2=l.source.y,tx2=l.target.x,ty2=l.target.y;
+        if(typeof sx2!=="number")return;
+
+        // Viewport culling: skip if both endpoints off-screen
+        var sIn=sx2>=vp.x1-vpMargin&&sx2<=vp.x2+vpMargin&&sy2>=vp.y1-vpMargin&&sy2<=vp.y2+vpMargin;
+        var tIn=tx2>=vp.x1-vpMargin&&tx2<=vp.x2+vpMargin&&ty2>=vp.y1-vpMargin&&ty2<=vp.y2+vpMargin;
+        if(!sIn&&!tIn)return;
+
+        var alpha=0.08;
+        var lineW=0.5;
+        var isHover=false,isSearch=false;
+
+        if(hoveredNode){
+          var sid=l.source.id||l.source;
+          var tid=l.target.id||l.target;
+          if(sid===hoveredNode.id||tid===hoveredNode.id){
+            alpha=0.6;lineW=1.5;isHover=true;
+          }else{alpha=0.02}
+        }
+        if(hasSearch){
+          var sid3=l.source.id||l.source;
+          var tid3=l.target.id||l.target;
+          if(searchMatches.has(sid3)&&searchMatches.has(tid3)){
+            alpha=Math.max(alpha,0.4);lineW=Math.max(lineW,1);isSearch=true;
+          }else if(!hoveredNode){alpha=0.02}
+        }
+        if(l.weight){lineW=Math.max(lineW,Math.min(3,l.weight*2))}
+
+        var entry={l:l,alpha:alpha,lineW:lineW};
+        if(isHover){hoverEdges.push(entry);if(!skipArrows&&alpha>0.1)arrowEdges.push(entry)}
+        else if(isSearch){searchEdges.push(entry);if(!skipArrows&&alpha>0.1)arrowEdges.push(entry)}
+        else{normalEdges.push(entry)}
+      });
+
+      // Draw normal edges in a single batch
+      if(normalEdges.length>0){
+        var nAlpha=hoveredNode?0.02:hasSearch?0.02:0.08;
+        ctx.beginPath();
+        normalEdges.forEach(function(e){
+          ctx.moveTo(e.l.source.x,e.l.source.y);
+          ctx.lineTo(e.l.target.x,e.l.target.y);
+        });
+        ctx.strokeStyle="rgba(219,216,216,"+nAlpha+")";
+        ctx.lineWidth=0.5/scale;
+        ctx.stroke();
+      }
+
+      // Draw search-matched edges
+      searchEdges.forEach(function(e){
+        ctx.beginPath();
+        ctx.moveTo(e.l.source.x,e.l.source.y);
+        ctx.lineTo(e.l.target.x,e.l.target.y);
+        ctx.strokeStyle="rgba(219,216,216,"+e.alpha+")";
+        ctx.lineWidth=e.lineW/scale;
+        ctx.stroke();
+      });
+
+      // Draw hover edges
+      hoverEdges.forEach(function(e){
+        ctx.beginPath();
+        ctx.moveTo(e.l.source.x,e.l.source.y);
+        ctx.lineTo(e.l.target.x,e.l.target.y);
+        ctx.strokeStyle="rgba(219,216,216,"+e.alpha+")";
+        ctx.lineWidth=e.lineW/scale;
+        ctx.stroke();
+      });
+
+      // Draw arrows for highlighted edges
+      if(!skipArrows){
+        arrowEdges.forEach(function(e){
+          var l=e.l;
+          var sx3=l.source.x,sy3=l.source.y,tx3=l.target.x,ty3=l.target.y;
+          var ddx=tx3-sx3,ddy=ty3-sy3;
+          var len=Math.sqrt(ddx*ddx+ddy*ddy);
+          if(len>0){
+            var ux=ddx/len,uy=ddy/len;
+            var tr=(l.target._r||6)+2;
+            var ax=tx3-ux*tr,ay=ty3-uy*tr;
+            var arrowSize=4/scale;
+            ctx.beginPath();
+            ctx.moveTo(ax,ay);
+            ctx.lineTo(ax-ux*arrowSize+uy*arrowSize*0.5,ay-uy*arrowSize-ux*arrowSize*0.5);
+            ctx.lineTo(ax-ux*arrowSize-uy*arrowSize*0.5,ay-uy*arrowSize+ux*arrowSize*0.5);
+            ctx.closePath();
+            ctx.fillStyle="rgba(219,216,216,"+e.alpha+")";
+            ctx.fill();
+          }
+        });
+      }
+    }
+  }
+
+  // Edge labels on hover
+  if(layers.labels&&hoveredNode&&scale>0.4){
+    ctx.font=(10/scale)+"px Inter,system-ui,sans-serif";
+    ctx.textAlign="center";
+    ctx.textBaseline="middle";
+    links.forEach(function(l){
+      var sid=l.source.id||l.source;
+      var tid=l.target.id||l.target;
+      if(sid===hoveredNode.id||tid===hoveredNode.id){
+        var mx2=(l.source.x+l.target.x)/2;
+        var my2=(l.source.y+l.target.y)/2;
+        ctx.fillStyle="rgba(219,216,216,0.7)";
+        ctx.fillText(truncate(l.relation||"",30),mx2,my2-6/scale);
+      }
+    });
+  }
+
+  // ── Nodes (Phase 3d: LOD rendering) ──
+  if(layers.nodes){
+    var useDots=scale<0.2||N>10000;
+    var skipGlow=N>5000;
+    var skipBorder=N>2000;
+
+    nodes.forEach(function(n){
+      if(typeof n.x!=="number")return;
+      // Viewport culling
+      if(!isInViewport(n.x,n.y,n._r*3+vpMargin,vp))return;
+
+      var r=n._r;
+      var alpha=1;
+      var glowAlpha=0;
+
+      if(hoveredNode){
+        if(neighborSet.has(n.id)){
+          alpha=1;glowAlpha=n.id===hoveredNode.id?0.4:0.2;
+        }else{
+          alpha=0.15;
+        }
+      }
+      if(hasSearch){
+        if(searchMatches.has(n.id)){alpha=1;glowAlpha=0.3}
+        else if(!hoveredNode){alpha=0.12}
+      }
+
+      if(useDots){
+        // Simplified: small filled rectangle
+        ctx.globalAlpha=alpha;
+        ctx.fillStyle=n.color;
+        var dotSize=Math.max(1,r*0.5);
+        ctx.fillRect(n.x-dotSize,n.y-dotSize,dotSize*2,dotSize*2);
+        ctx.globalAlpha=1;
+        return;
+      }
+
+      // Glow (skip for large graphs)
+      if(glowAlpha>0&&!skipGlow){
+        var grd=ctx.createRadialGradient(n.x,n.y,r,n.x,n.y,r*3);
+        var rgb=n._rgb;
+        grd.addColorStop(0,"rgba("+rgb[0]+","+rgb[1]+","+rgb[2]+","+glowAlpha+")");
+        grd.addColorStop(1,"rgba("+rgb[0]+","+rgb[1]+","+rgb[2]+",0)");
+        ctx.fillStyle=grd;
+        ctx.beginPath();
+        ctx.arc(n.x,n.y,r*3,0,Math.PI*2);
+        ctx.fill();
+      }
+
+      // Node circle
+      ctx.globalAlpha=alpha;
+      ctx.beginPath();
+      ctx.arc(n.x,n.y,r,0,Math.PI*2);
+      ctx.fillStyle=n.color;
+      ctx.fill();
+
+      // Subtle border (skip for medium+ graphs)
+      if(!skipBorder){
+        ctx.strokeStyle="rgba(244,244,244,0.2)";
+        ctx.lineWidth=0.5;
+        ctx.stroke();
+      }
+      ctx.globalAlpha=1;
+    });
+  }
+
+  // ── Labels (Phase 3e: adaptive) ──
+  if(layers.labels){
+    var fontSize=Math.max(3,Math.min(12,10/scale));
+    ctx.font="500 "+fontSize+"px Inter,system-ui,sans-serif";
+    ctx.textAlign="center";
+    ctx.textBaseline="middle";
+
+    // Adaptive label strategy
+    var disableLabels=N>10000&&scale<0.5;
+
+    if(!disableLabels){
+      var labelEvery;
+      if(N>5000){labelEvery=Infinity} // only special nodes
+      else if(N>2000){labelEvery=Math.ceil(N/20)}
+      else if(N>500){labelEvery=scale<0.3?Math.ceil(N/20):scale<0.8?Math.ceil(N/80):1}
+      else{labelEvery=1}
+
+      nodes.forEach(function(n,i){
+        if(typeof n.x!=="number")return;
+        // Viewport culling for labels
+        if(!isInViewport(n.x,n.y,n._r+fontSize*2+vpMargin,vp))return;
+
+        var shouldLabel=false;
+
+        // Always label hovered + neighbors
+        if(hoveredNode&&neighborSet&&neighborSet.has(n.id))shouldLabel=true;
+        // Always label search matches
+        if(hasSearch&&searchMatches.has(n.id))shouldLabel=true;
+
+        if(N>5000){
+          // Only label top-degree or hovered/searched
+          if(topDegreeSet.has(n.id))shouldLabel=true;
+        }else{
+          // High-degree nodes
+          if(n._degree>=maxDeg*0.3)shouldLabel=true;
+          // Sparse labeling
+          if(labelEvery<Infinity&&i%labelEvery===0)shouldLabel=true;
+        }
+
+        if(!shouldLabel)return;
+
+        var alpha2=0.85;
+        if(hoveredNode){
+          alpha2=neighborSet.has(n.id)?1:0.1;
+        }
+        if(hasSearch){
+          alpha2=searchMatches.has(n.id)?1:0.08;
+        }
+
+        var label=truncate(n.name||"",30);
+        var yOff=n._r+fontSize*0.8;
+
+        // Text shadow
+        ctx.fillStyle="rgba(0,0,0,"+alpha2*0.8+")";
+        ctx.fillText(label,n.x+0.5,n.y+yOff+0.5);
+
+        ctx.fillStyle="rgba(244,244,244,"+alpha2+")";
+        ctx.fillText(label,n.x,n.y+yOff);
+      });
+    }else if(hoveredNode){
+      // Even with labels disabled, label hovered node
+      var hn=hoveredNode;
+      var label2=truncate(hn.name||"",30);
+      var yOff2=hn._r+fontSize*0.8;
+      ctx.fillStyle="rgba(0,0,0,0.8)";
+      ctx.fillText(label2,hn.x+0.5,hn.y+yOff2+0.5);
+      ctx.fillStyle="rgba(244,244,244,1)";
+      ctx.fillText(label2,hn.x,hn.y+yOff2);
+    }
+  }
+
+  ctx.restore();
+
+  // Update minimap
+  if(minimapReady)drawMinimap();
+}
+
+// ── Density scheduling ──
+var densityTimer=null;
+function scheduleDensity(){
+  if(densityTimer)clearTimeout(densityTimer);
+  densityTimer=setTimeout(computeDensity,300);
+}
+
+// Recompute density when simulation settles
+var densityTickCount=0;
+simulation.on("tick.density",function(){
+  densityTickCount++;
+  if(densityTickCount%50===0)computeDensity();
+});
+
+// ── Minimap (Phase 4) ──
+var minimapContainer=document.getElementById("minimap-container");
+var minimapCanvas=document.getElementById("minimap-canvas");
+var minimapCtx=minimapCanvas.getContext("2d");
+var minimapW=150,minimapH=100;
+var minimapReady=false;
+var minimapBounds=null; // {minX,maxX,minY,maxY}
+var minimapDragging=false;
+
+function setupMinimap(){
+  if(N<500){return} // hide minimap for small graphs
+  minimapCanvas.width=minimapW*dpr;
+  minimapCanvas.height=minimapH*dpr;
+  minimapCanvas.style.width=minimapW+"px";
+  minimapCanvas.style.height=minimapH+"px";
+  minimapCtx.setTransform(dpr,0,0,dpr,0,0);
+  minimapContainer.style.display="block";
+  minimapReady=true;
+  computeMinimapBounds();
+  drawMinimap();
+}
+
+function computeMinimapBounds(){
+  var minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  nodes.forEach(function(n){
+    if(typeof n.x!=="number"||!isFinite(n.x))return;
+    if(n.x<minX)minX=n.x;if(n.x>maxX)maxX=n.x;
+    if(n.y<minY)minY=n.y;if(n.y>maxY)maxY=n.y;
+  });
+  var pad=50;
+  minimapBounds={minX:minX-pad,maxX:maxX+pad,minY:minY-pad,maxY:maxY+pad};
+}
+
+function drawMinimap(){
+  if(!minimapReady||!minimapBounds)return;
+  var mb=minimapBounds;
+  var gw=mb.maxX-mb.minX||100;
+  var gh=mb.maxY-mb.minY||100;
+  var sx=minimapW/gw;
+  var sy=minimapH/gh;
+  var ms=Math.min(sx,sy);
+
+  minimapCtx.clearRect(0,0,minimapW,minimapH);
+  minimapCtx.fillStyle="rgba(0,0,0,0.6)";
+  minimapCtx.fillRect(0,0,minimapW,minimapH);
+
+  // Draw nodes as dots
+  var dotR=Math.max(0.5,1);
+  nodes.forEach(function(n){
+    if(typeof n.x!=="number")return;
+    var px=(n.x-mb.minX)*ms;
+    var py=(n.y-mb.minY)*ms;
+    minimapCtx.fillStyle=n.color;
+    minimapCtx.fillRect(px-dotR,py-dotR,dotR*2,dotR*2);
+  });
+
+  // Draw viewport rectangle
+  var vp=getViewportWorld();
+  var vx1=(vp.x1-mb.minX)*ms;
+  var vy1=(vp.y1-mb.minY)*ms;
+  var vx2=(vp.x2-mb.minX)*ms;
+  var vy2=(vp.y2-mb.minY)*ms;
+  minimapCtx.strokeStyle="rgba(255,255,255,0.7)";
+  minimapCtx.lineWidth=1;
+  minimapCtx.strokeRect(vx1,vy1,vx2-vx1,vy2-vy1);
+}
+
+// Minimap click-to-navigate
+minimapCanvas.addEventListener("mousedown",function(ev){
+  ev.stopPropagation();
+  minimapDragging=true;
+  navigateMinimap(ev);
+});
+minimapCanvas.addEventListener("mousemove",function(ev){
+  if(minimapDragging)navigateMinimap(ev);
+});
+minimapCanvas.addEventListener("mouseup",function(){minimapDragging=false});
+minimapCanvas.addEventListener("mouseleave",function(){minimapDragging=false});
+
+function navigateMinimap(ev){
+  if(!minimapBounds)return;
+  var rect=minimapCanvas.getBoundingClientRect();
+  var mx=(ev.clientX-rect.left);
+  var my=(ev.clientY-rect.top);
+  var mb=minimapBounds;
+  var gw=mb.maxX-mb.minX||100;
+  var gh=mb.maxY-mb.minY||100;
+  var ms=Math.min(minimapW/gw,minimapH/gh);
+  var wx=mx/ms+mb.minX;
+  var wy=my/ms+mb.minY;
+  tx=W/2-wx*scale;
+  ty=H/2-wy*scale;
+  draw();
+}
+
+// Initial draw
+draw();
+
+// ── Keyboard shortcuts ──
+document.addEventListener("keydown",function(ev){
+  if(ev.target===searchInput)return;
+  if(ev.key==="f"||ev.key==="/"){ev.preventDefault();searchInput.focus()}
+  if(ev.key==="Escape"){searchInput.value="";searchQuery="";searchMatches.clear();searchInput.blur();draw()}
+  if(ev.key==="0"){tx=W/2;ty=H/2;scale=1;draw()}
+  // Phase 1: keyboard zoom
+  if(ev.key==="="||ev.key==="+"){smoothZoomTo(scale*1.4,W/2,H/2,200)}
+  if(ev.key==="-"||ev.key==="_"){smoothZoomTo(scale/1.4,W/2,H/2,200)}
+  // Phase 4: FPS counter toggle
+  if(ev.key==="d"||ev.key==="D"){
+    showFps=!showFps;
+    fpsEl.style.display=showFps?"block":"none";
+    if(!showFps)fpsEl.textContent="";
+  }
+});
+
+// Trigger density computation after initial layout
+scheduleDensity();
+
+})();
+</script>
+</body>
+</html>

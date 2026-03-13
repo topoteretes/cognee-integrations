@@ -1,0 +1,3 @@
+tenant_id,billing_account_id,invoice_id,invoice_number,customer_account_id,status,amount_due,amount_paid,currency,issued_at,due_at,paid_at,description
+TEN-ACME,BA-ACME-001,INV-94812,2026-000312,CA-ACME-001,paid,1450.0,1450.0,EUR,2026-01-03T08:15:00Z,2026-01-03T08:15:00Z,2026-01-03T08:17:12Z,Seat true-up: +45 seats (from 5 to 50) for Jan 2026.
+TEN-ACME,BA-ACME-001,INV-94700,2025-000299,CA-ACME-001,paid,290.0,290.0,EUR,2025-12-28T10:00:00Z,2026-01-02T00:00:00Z,2026-01-02T09:02:12Z,Monthly subscription renewal - Dec 2025.

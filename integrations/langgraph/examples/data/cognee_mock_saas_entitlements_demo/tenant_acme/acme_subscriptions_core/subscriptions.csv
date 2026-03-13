@@ -1,0 +1,2 @@
+tenant_id,customer_account_id,billing_account_id,workspace_id,subscription_id,plan_id,plan_name,status,seats_purchased,seats_active,start_date,current_period_start,current_period_end,updated_at,region,notes
+TEN-ACME,CA-ACME-001,BA-ACME-001,W-332,SUB-483,PLAN-PRO-ANNUAL-2026,Pro Annual,active,50,5,2025-12-15,2025-12-15,2026-12-14,2026-01-03T08:19:10Z,EU-DE,"Seats purchased updated to 50, but active seats shown as 5 due to entitlement fallback applied later."

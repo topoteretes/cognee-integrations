@@ -1,0 +1,3 @@
+tenant_id,payment_id,invoice_id,provider,provider_payment_intent_id,provider_charge_id,status,authorized_at,captured_at,amount,currency,risk_score,risk_flag,method
+TEN-ACME,PAY-8801,INV-94812,stripe,pi_3NACME0TRUEUP,ch_3NACME0TRUEUP,captured,2026-01-03T08:16:55Z,2026-01-03T08:17:12Z,1450.0,EUR,0.22,LOW,card
+TEN-ACME,PAY-8700,INV-94700,stripe,pi_3NACME0OLD,ch_3NACME0OLD,captured,2026-01-02T09:01:55Z,2026-01-02T09:02:12Z,290.0,EUR,0.15,LOW,card

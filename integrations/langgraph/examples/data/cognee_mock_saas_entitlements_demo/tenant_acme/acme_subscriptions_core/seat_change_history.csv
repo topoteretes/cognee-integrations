@@ -1,0 +1,3 @@
+tenant_id,workspace_id,subscription_id,changed_at,old_paid_seats,new_paid_seats,reason,source_event_id
+TEN-ACME,W-332,SUB-483,2026-01-03T08:19:10Z,5,50,Seat true-up after invoice payment,EVT-0006
+TEN-ACME,W-332,SUB-483,2026-01-03T08:22:41Z,50,50,Entitlement fallback reduced active seats to 5 (not purchased seats),EVT-0012

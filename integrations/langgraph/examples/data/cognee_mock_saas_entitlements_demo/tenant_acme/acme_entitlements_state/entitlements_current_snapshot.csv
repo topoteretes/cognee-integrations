@@ -1,0 +1,6 @@
+tenant_id,workspace_id,subject_type,subject_id,entitlement_key,entitlement_value,source,computed_at,last_synced_at
+TEN-ACME,W-332,workspace,W-332,access.level,trial_read_only,entitlements_service,2026-01-03T08:22:41Z,2026-01-03T08:22:41Z
+TEN-ACME,W-332,workspace,W-332,exports.enabled,false,entitlements_service,2026-01-03T08:22:41Z,2026-01-03T08:22:41Z
+TEN-ACME,W-332,workspace,W-332,api.enabled,false,entitlements_service,2026-01-03T08:22:41Z,2026-01-03T08:22:41Z
+TEN-ACME,W-332,workspace,W-332,audit_logs.enabled,true,entitlements_service,2026-01-03T08:22:41Z,2026-01-03T08:22:41Z
+TEN-ACME,W-332,workspace,W-332,seats.max,5,entitlements_service,2026-01-03T08:22:41Z,2026-01-03T08:22:41Z

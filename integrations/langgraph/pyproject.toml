@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-langgraph"
+version = "0.1.7"
+description = "A powerful integration between LangGraph and Cognee providing intelligent knowledge management and retrieval capabilities for AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Cognee team"}
+]
+dependencies = [
+    "cognee>=0.5.2,<0.5.4",
+    "grandalf>=0.8",
+    "mistralai>=1.0,<2.0",
+    "ipykernel>=6.30.1",
+    "ipython>=8.10.0",
+    "langchain",
+    "langchain-community>=0.3.29",
+    "langchain_openai",
+    "langgraph",
+    "neo4j>=6.1.0",
+    "python-dotenv",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_langgraph*"]
+exclude = ["examples*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.14.6",
+]
+guide = [
+    "mediawikiapi>=1.3",
+    "wikibase-rest-api-client>=0.2.5",
+    "wikipedia>=1.4.0",
+]

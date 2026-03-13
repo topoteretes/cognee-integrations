@@ -1,0 +1,4 @@
+tenant_id,billing_account_id,occurred_at,event_type,related_invoice_id,details,source_event_id
+TEN-ACME,BA-ACME-001,2026-01-03T08:21:05Z,dunning_warning_sent,INV-94700,Warning email sent because billing_account status still marked past_due.,EVT-0010
+TEN-ACME,BA-ACME-001,2026-01-03T08:22:41Z,access_restricted,INV-94700,Entitlements service applied fallback: trial_read_only due to past_due gate.,EVT-0012
+TEN-ACME,BA-ACME-001,2026-01-03T09:05:33Z,billing_account_reconciled,INV-94700,"Delayed reconciliation cleared status to current, but entitlements cache was not refreshed.",EVT-0020

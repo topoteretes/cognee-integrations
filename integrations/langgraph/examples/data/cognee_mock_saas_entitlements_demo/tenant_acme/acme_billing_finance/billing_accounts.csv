@@ -1,0 +1,2 @@
+tenant_id,billing_account_id,customer_account_id,status,dunning_stage,grace_period_days,updated_at,notes
+TEN-ACME,BA-ACME-001,CA-ACME-001,past_due,stage_1,7,2026-01-03T08:20:05Z,Status was not cleared immediately after payment due to delayed reconciliation of older invoice INV-94700.

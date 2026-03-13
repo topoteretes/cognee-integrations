@@ -1,0 +1,2 @@
+tenant_id,customer_account_id,billing_account_id,workspace_id,subscription_id,plan_name,status,seats_purchased,updated_at
+TEN-BETA,CA-BETA-001,BA-BETA-001,W-901,SUB-901,Pro Monthly,active,10,2026-01-02T12:00:00Z

@@ -1,0 +1,61 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+@prefix saas: <https://example.com/ontologies/saas#> .
+@prefix fin:  <https://example.com/ontologies/finance#> .
+
+<https://example.com/ontologies/saas_finance_subset>
+    a owl:Ontology ;
+    rdfs:label "SaaS + Finance Subset Ontology (Demo)" .
+
+#### Core SaaS classes
+saas:Tenant a owl:Class ; rdfs:label "Tenant" .
+saas:CustomerAccount a owl:Class ; rdfs:label "Customer Account" .
+saas:BillingAccount a owl:Class ; rdfs:label "Billing Account" .
+saas:Workspace a owl:Class ; rdfs:label "Workspace" .
+saas:Subscription a owl:Class ; rdfs:label "Subscription" .
+saas:Plan a owl:Class ; rdfs:label "Plan" .
+saas:Entitlement a owl:Class ; rdfs:label "Entitlement" .
+saas:SeatAllocation a owl:Class ; rdfs:label "Seat Allocation" .
+saas:PolicyRestriction a owl:Class ; rdfs:label "Policy Restriction" .
+saas:EntitlementDriftIncident a owl:Class ; rdfs:label "Entitlement Drift Incident" .
+
+#### Core finance classes
+fin:Invoice a owl:Class ; rdfs:label "Invoice" .
+fin:Payment a owl:Class ; rdfs:label "Payment" .
+fin:DunningEvent a owl:Class ; rdfs:label "Dunning Event" .
+
+#### Relationships (object properties)
+saas:hasBillingAccount a owl:ObjectProperty ;
+    rdfs:domain saas:CustomerAccount ; rdfs:range saas:BillingAccount ;
+    rdfs:label "has billing account" .
+
+saas:hasSubscription a owl:ObjectProperty ;
+    rdfs:domain saas:CustomerAccount ; rdfs:range saas:Subscription ;
+    rdfs:label "has subscription" .
+
+saas:subscriptionHasPlan a owl:ObjectProperty ;
+    rdfs:domain saas:Subscription ; rdfs:range saas:Plan ;
+    rdfs:label "subscription has plan" .
+
+saas:subscriptionGrantsEntitlement a owl:ObjectProperty ;
+    rdfs:domain saas:Subscription ; rdfs:range saas:Entitlement ;
+    rdfs:label "subscription grants entitlement" .
+
+saas:blockedByPolicy a owl:ObjectProperty ;
+    rdfs:domain saas:Entitlement ; rdfs:range saas:PolicyRestriction ;
+    rdfs:label "blocked by policy" .
+
+fin:invoiceHasPayment a owl:ObjectProperty ;
+    rdfs:domain fin:Invoice ; rdfs:range fin:Payment ;
+    rdfs:label "invoice has payment" .
+
+saas:billedByInvoice a owl:ObjectProperty ;
+    rdfs:domain saas:Subscription ; rdfs:range fin:Invoice ;
+    rdfs:label "billed by invoice" .
+
+#### Example data properties
+fin:status a owl:DatatypeProperty ; rdfs:label "status" .
+saas:effectiveAt a owl:DatatypeProperty ; rdfs:label "effective at" .

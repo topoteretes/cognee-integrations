@@ -50,8 +50,6 @@ integrations:
     source_repo: https://github.com/topoteretes/cognee-integration-google-adk
     notes: "Google ADK agent tools – add, search, session management"
 
-  # ── Pending migrations ─────────────────────────────────────────────
-
   - slug: langgraph
     name: "Cognee Integration for LangGraph"
     owner: cognee
@@ -59,10 +57,12 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-langgraph"
     cognee_dependency: sdk
-    current_version: "0.1.6"
-    migration_status: pending
+    current_version: "0.1.7"
+    migration_status: done
     source_repo: https://github.com/topoteretes/cognee-integration-langgraph
     notes: "LangGraph agent tools – add, search, session management"
+
+  # ── Pending migrations ─────────────────────────────────────────────
 
   - slug: crewai
     name: "Cognee Integration for CrewAI"

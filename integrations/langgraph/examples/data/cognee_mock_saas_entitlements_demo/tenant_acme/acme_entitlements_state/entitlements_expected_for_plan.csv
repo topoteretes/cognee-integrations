@@ -1,0 +1,6 @@
+plan_id,entitlement_key,expected_value,notes
+PLAN-PRO-ANNUAL-2026,access.level,full,Pro should grant full access
+PLAN-PRO-ANNUAL-2026,exports.enabled,true,Exports included in Pro Annual
+PLAN-PRO-ANNUAL-2026,api.enabled,true,API included in Pro Annual
+PLAN-PRO-ANNUAL-2026,audit_logs.enabled,true,Audit logs included
+PLAN-PRO-ANNUAL-2026,seats.max,50,Seat cap equals purchased seats
