@@ -1,4 +1,4 @@
-# @cognee/cognee-openclaw-skills
+# cognee-openclaw-skills
 
 OpenClaw plugin for self-improving agent skills powered by Cognee.
 
@@ -17,6 +17,14 @@ The plugin runs a feedback loop around your workspace skill definitions (`SKILL.
 - Python 3.10+ (for Cognee)
 - An OpenAI API key (or another LLM provider supported by Cognee)
 
+## Installation
+
+Install from npm:
+
+```bash
+openclaw plugins install cognee-openclaw-skills
+```
+
 ## Quick Start
 
 1. Install and start the Cognee API server:
@@ -28,7 +36,7 @@ cognee-cli -api                        # starts on http://localhost:8000
 curl http://localhost:8000/health      # verify it's running
 ```
 
-2. Build and install the plugin:
+2. Or build and install locally for development:
 
 ```bash
 cd integrations/openclaw-skills
