@@ -90,3 +90,7 @@ venv.bak/
 
 node_modules/
 *.bin
+
+# Dify plugin CLI binary and packages
+dify-plugin
+*.difypkg
