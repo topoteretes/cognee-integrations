@@ -1,73 +1,100 @@
 {
-  "name": "cognee-openclaw-skills",
-  "displayName": "Skills (Cognee)",
-  "description": "Self-improving agent skills: ingest SKILL.md files, execute against tasks, and automatically diagnose and fix failing skills over time.",
+  "id": "cognee-openclaw-skills",
+  "name": "Skills (Cognee)",
   "kind": "skills",
-  "config": {
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "Cognee API base URL (default: http://localhost:8000)"
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Cognee API key (or set COGNEE_API_KEY env var)"
+      },
+      "username": {
+        "type": "string",
+        "description": "Cognee username for login (or set COGNEE_USERNAME env var)"
+      },
+      "password": {
+        "type": "string",
+        "description": "Cognee password for login (or set COGNEE_PASSWORD env var)"
+      },
+      "skillsFolder": {
+        "type": "string",
+        "description": "Workspace-relative path to the folder containing SKILL.md skill definitions (default: skills)"
+      },
+      "datasetName": {
+        "type": "string",
+        "description": "Cognee dataset name for skill storage (default: skills)"
+      },
+      "autoIngest": {
+        "type": "boolean",
+        "description": "Automatically ingest skills on startup (default: true)"
+      },
+      "autoObserve": {
+        "type": "boolean",
+        "description": "Record agent run outcomes to feed the self-improvement loop (default: true)"
+      },
+      "autoAmendify": {
+        "type": "boolean",
+        "description": "Automatically inspect and fix failing skills after runs (default: false)"
+      },
+      "amendifyMinRuns": {
+        "type": "number",
+        "description": "Minimum failed runs before auto-amendify triggers (default: 3)"
+      },
+      "amendifyScoreThreshold": {
+        "type": "number",
+        "description": "Runs scoring below this count as failures (default: 0.5)"
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "description": "Timeout for standard API requests in ms (default: 60000)"
+      },
+      "ingestionTimeoutMs": {
+        "type": "number",
+        "description": "Timeout for skill ingestion requests in ms (default: 300000)"
+      }
+    }
+  },
+  "uiHints": {
     "baseUrl": {
-      "type": "string",
-      "default": "http://localhost:8000",
-      "description": "Cognee API base URL"
+      "label": "Base URL",
+      "placeholder": "http://localhost:8000"
     },
     "apiKey": {
-      "type": "string",
-      "default": "",
-      "description": "Cognee API key (or set COGNEE_API_KEY env var)"
+      "label": "API Key",
+      "sensitive": true,
+      "placeholder": "${COGNEE_API_KEY}"
     },
     "username": {
-      "type": "string",
-      "default": "",
-      "description": "Cognee username for login (or set COGNEE_USERNAME env var)"
+      "label": "Username",
+      "placeholder": "default_user@example.com"
     },
     "password": {
-      "type": "string",
-      "default": "",
-      "description": "Cognee password for login (or set COGNEE_PASSWORD env var)"
+      "label": "Password",
+      "sensitive": true,
+      "placeholder": "default_password"
     },
     "skillsFolder": {
-      "type": "string",
-      "default": "skills",
-      "description": "Workspace-relative path to the folder containing SKILL.md skill definitions"
+      "label": "Skills Folder",
+      "placeholder": "skills"
     },
     "datasetName": {
-      "type": "string",
-      "default": "skills",
-      "description": "Cognee dataset name for skill storage"
+      "label": "Dataset Name",
+      "placeholder": "skills"
     },
     "autoIngest": {
-      "type": "boolean",
-      "default": true,
-      "description": "Automatically ingest skills on startup"
+      "label": "Auto-Ingest on Startup"
     },
     "autoObserve": {
-      "type": "boolean",
-      "default": true,
-      "description": "Record agent run outcomes to feed the self-improvement loop"
+      "label": "Auto-Observe Runs"
     },
     "autoAmendify": {
-      "type": "boolean",
-      "default": false,
-      "description": "Automatically inspect and fix failing skills after runs"
-    },
-    "amendifyMinRuns": {
-      "type": "number",
-      "default": 3,
-      "description": "Minimum failed runs before auto-amendify triggers"
-    },
-    "amendifyScoreThreshold": {
-      "type": "number",
-      "default": 0.5,
-      "description": "Runs scoring below this count as failures"
-    },
-    "requestTimeoutMs": {
-      "type": "number",
-      "default": 60000,
-      "description": "Timeout for standard API requests (ms)"
-    },
-    "ingestionTimeoutMs": {
-      "type": "number",
-      "default": 300000,
-      "description": "Timeout for skill ingestion requests (ms)"
+      "label": "Auto-Amendify Failing Skills"
     }
   }
 }
