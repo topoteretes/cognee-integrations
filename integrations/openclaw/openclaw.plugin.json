@@ -26,6 +26,13 @@
         "type": "string",
         "description": "Cognee dataset name to store memories in"
       },
+      "datasetNames": {
+        "type": "object",
+        "description": "Per-agent dataset names keyed by agent id (falls back to datasetName)",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
       "searchType": {
         "type": "string",
         "enum": [
@@ -103,6 +110,10 @@
     "datasetName": {
       "label": "Dataset Name",
       "placeholder": "openclaw"
+    },
+    "datasetNames": {
+      "label": "Dataset Names (per-agent)",
+      "placeholder": "{\"asst\":\"asst\",\"lawyer\":\"lawyer\"}"
     },
     "searchType": {
       "label": "Search Type",

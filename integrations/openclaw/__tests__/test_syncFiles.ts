@@ -1,5 +1,5 @@
 import { CogneeClient } from "../index";
-import { syncFiles } from "../index";
+import { resolveDatasetNameForAgent, syncFiles } from "../index";
 import type { MemoryFile, SyncIndex, CogneePluginConfig } from "../index";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -18,10 +18,13 @@ const SYNC_INDEX_PATH = join(homedir(), ".openclaw", "memory", "cognee", "sync-i
 const STATE_PATH = join(homedir(), ".openclaw", "memory", "cognee", "datasets.json");
 
 // Mock CogneeClient
-jest.mock("../index", () => ({
-  CogneeClient: jest.fn(),
-  syncFiles: jest.requireActual("../index").syncFiles,
-}));
+jest.mock("../index", () => {
+  const actual = jest.requireActual("../index");
+  return {
+    ...actual,
+    CogneeClient: jest.fn(),
+  };
+});
 
 const mockAdd = jest.fn();
 const mockUpdate = jest.fn();
@@ -56,6 +59,7 @@ describe("syncFiles", () => {
       username: "",
       password: "",
       datasetName: "test",
+      datasetNames: {},
       searchPrompt: "",
       searchType: "GRAPH_COMPLETION",
       deleteMode: "soft",
@@ -335,5 +339,50 @@ describe("syncFiles", () => {
       expect(result.deleted).toBe(0);
       expect(mockDelete).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("resolveDatasetNameForAgent", () => {
+  const cfg: Required<CogneePluginConfig> = {
+    baseUrl: "http://test",
+    apiKey: "key",
+    username: "",
+    password: "",
+    datasetName: "shared-default",
+    datasetNames: {
+      lawyer: "legal-memory",
+      lexi: "media-memory",
+      asst: "shared-default",
+    },
+    searchPrompt: "",
+    searchType: "GRAPH_COMPLETION",
+    deleteMode: "soft",
+    maxResults: 6,
+    minScore: 0,
+    maxTokens: 512,
+    autoRecall: true,
+    autoIndex: true,
+    autoCognify: true,
+    requestTimeoutMs: 30000,
+    ingestionTimeoutMs: 300000,
+  };
+
+  it("falls back to the default dataset for agents without an override", () => {
+    expect(resolveDatasetNameForAgent(cfg, "researcher")).toBe("shared-default");
+  });
+
+  it("uses datasetName when an agent is omitted from datasetNames in a mixed config", () => {
+    expect(resolveDatasetNameForAgent(cfg, "elena")).toBe("shared-default");
+    expect(resolveDatasetNameForAgent(cfg, undefined)).toBe("shared-default");
+  });
+
+  it("returns exclusive datasets for agents with dedicated overrides", () => {
+    expect(resolveDatasetNameForAgent(cfg, "lawyer")).toBe("legal-memory");
+    expect(resolveDatasetNameForAgent(cfg, "lexi")).toBe("media-memory");
+  });
+
+  it("allows explicit sharing by pointing multiple agents at the same dataset", () => {
+    expect(resolveDatasetNameForAgent(cfg, "asst")).toBe("shared-default");
+    expect(resolveDatasetNameForAgent(cfg, "elena")).toBe("shared-default");
   });
 });
