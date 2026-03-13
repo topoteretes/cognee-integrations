@@ -1,0 +1,73 @@
+{
+  "name": "cognee-openclaw-skills",
+  "displayName": "Skills (Cognee)",
+  "description": "Self-improving agent skills: ingest SKILL.md files, execute against tasks, and automatically diagnose and fix failing skills over time.",
+  "kind": "skills",
+  "config": {
+    "baseUrl": {
+      "type": "string",
+      "default": "http://localhost:8000",
+      "description": "Cognee API base URL"
+    },
+    "apiKey": {
+      "type": "string",
+      "default": "",
+      "description": "Cognee API key (or set COGNEE_API_KEY env var)"
+    },
+    "username": {
+      "type": "string",
+      "default": "",
+      "description": "Cognee username for login (or set COGNEE_USERNAME env var)"
+    },
+    "password": {
+      "type": "string",
+      "default": "",
+      "description": "Cognee password for login (or set COGNEE_PASSWORD env var)"
+    },
+    "skillsFolder": {
+      "type": "string",
+      "default": "skills",
+      "description": "Workspace-relative path to the folder containing SKILL.md skill definitions"
+    },
+    "datasetName": {
+      "type": "string",
+      "default": "skills",
+      "description": "Cognee dataset name for skill storage"
+    },
+    "autoIngest": {
+      "type": "boolean",
+      "default": true,
+      "description": "Automatically ingest skills on startup"
+    },
+    "autoObserve": {
+      "type": "boolean",
+      "default": true,
+      "description": "Record agent run outcomes to feed the self-improvement loop"
+    },
+    "autoAmendify": {
+      "type": "boolean",
+      "default": false,
+      "description": "Automatically inspect and fix failing skills after runs"
+    },
+    "amendifyMinRuns": {
+      "type": "number",
+      "default": 3,
+      "description": "Minimum failed runs before auto-amendify triggers"
+    },
+    "amendifyScoreThreshold": {
+      "type": "number",
+      "default": 0.5,
+      "description": "Runs scoring below this count as failures"
+    },
+    "requestTimeoutMs": {
+      "type": "number",
+      "default": 60000,
+      "description": "Timeout for standard API requests (ms)"
+    },
+    "ingestionTimeoutMs": {
+      "type": "number",
+      "default": 300000,
+      "description": "Timeout for skill ingestion requests (ms)"
+    }
+  }
+}

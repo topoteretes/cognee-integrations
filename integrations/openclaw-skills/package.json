@@ -1,0 +1,51 @@
+{
+  "name": "@cognee/cognee-openclaw-skills",
+  "version": "2026.3.0",
+  "type": "module",
+  "description": "OpenClaw plugin for self-improving agent skills powered by Cognee",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "transform": {
+      "^.+\\.ts$": [
+        "ts-jest",
+        {
+          "useESM": true
+        }
+      ]
+    }
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.2.3-1"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.0.0",
+    "jest": "^30.2.0",
+    "openclaw": "2026.2.3-1",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.3.0"
+  },
+  "overrides": {
+    "tar": "7.5.7"
+  }
+}
