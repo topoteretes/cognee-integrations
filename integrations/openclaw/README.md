@@ -1,13 +1,18 @@
 # @cognee/cognee-openclaw
 
-OpenClaw plugin that adds Cognee-backed memory with automatic recall and indexing.
+OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (company/user/agent), session tracking, and automatic recall.
 
 ## Features
 
-- **Auto-recall**: Before each agent run, searches Cognee for relevant memories and injects them as context
-- **Auto-index**: On startup and after each agent run, syncs memory markdown files to Cognee (add new, update changed, delete removed, skip unchanged)
-- **CLI commands**: `openclaw cognee index` to manually sync, `openclaw cognee status` to check state
-- **Configurable**: Search type, max results, score filtering, token limits, and more
+- **Multi-scope memory**: Separate datasets for company-wide knowledge, per-user preferences, and per-agent context
+- **Scope-aware routing**: Memory files are automatically routed to the correct dataset based on directory structure
+- **Multi-scope recall**: Before each agent run, searches across all configured scopes and injects labeled context
+- **Session tracking**: Multi-turn conversation context via Cognee's session system
+- **14 search types**: From simple semantic search (CHUNKS) to chain-of-thought graph reasoning (GRAPH_COMPLETION_COT) to auto-selection (FEELING_LUCKY)
+- **Health check**: Verifies Cognee API connectivity before operations
+- **Auto-index**: Syncs memory markdown files to Cognee (add new, update changed, delete removed, skip unchanged)
+- **Memify support**: Optional graph enrichment after cognify for better entity consolidation
+- **CLI commands**: `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`
 
 ## Installation
 
@@ -26,9 +31,9 @@ Or once published:
 openclaw plugins install @cognee/cognee-openclaw
 ```
 
-## Configuration
+## Quick Start (Single-Scope)
 
-Enable the plugin in your OpenClaw config (`~/.openclaw/config.yaml` or project config):
+For simple setups, the plugin works with a single dataset (backward compatible):
 
 ```yaml
 plugins:
@@ -39,48 +44,157 @@ plugins:
         baseUrl: "http://localhost:8000"
         apiKey: "${COGNEE_API_KEY}"
         datasetName: "my-project"
-        searchType: "GRAPH_COMPLETION"
-        deleteMode: "hard"
-        maxResults: 6
-        autoRecall: true
-        autoIndex: true
 ```
 
-Set your API key in the environment:
+## Multi-Scope Memory
 
-```bash
-export COGNEE_API_KEY="your-key-here"
+For production use, enable multi-scope mode by setting any scope-specific dataset name:
+
+```yaml
+plugins:
+  entries:
+    cognee-openclaw:
+      enabled: true
+      config:
+        baseUrl: "http://localhost:8000"
+        apiKey: "${COGNEE_API_KEY}"
+
+        # Multi-scope datasets
+        companyDataset: "acme-shared"
+        userDatasetPrefix: "acme-user"
+        agentDatasetPrefix: "acme-agent"
+        userId: "${OPENCLAW_USER_ID}"
+        agentId: "code-assistant"
+
+        # Search all scopes during recall (in priority order)
+        recallScopes:
+          - agent
+          - user
+          - company
+
+        # Default scope for files not matching any route
+        defaultWriteScope: "agent"
 ```
+
+### Memory Scope Hierarchy
+
+| Scope | Dataset | Purpose | Example Files |
+|-------|---------|---------|---------------|
+| **Company** | `acme-shared` | Shared knowledge across all users/agents | `memory/company/policies.md`, `memory/company/domain-glossary.md` |
+| **User** | `acme-user-alice` | Per-user preferences, feedback, corrections | `memory/user/preferences.md`, `memory/user/feedback.md` |
+| **Agent** | `acme-agent-code-assistant` | Per-agent learned behaviors, tool outputs | `memory/tools.md`, `MEMORY.md` |
+
+### Scope Routing
+
+Files are routed to scopes based on their path. Default routing rules:
+
+```
+memory/company/**  ->  company scope
+memory/user/**     ->  user scope
+memory/**          ->  agent scope (catch-all)
+MEMORY.md          ->  agent scope
+```
+
+Custom routing via config:
+
+```yaml
+scopeRouting:
+  - pattern: "memory/shared/**"
+    scope: company
+  - pattern: "memory/personal/**"
+    scope: user
+  - pattern: "memory/**"
+    scope: agent
+```
+
+### Multi-Scope Recall
+
+During recall, the plugin searches each scope independently and injects labeled results:
+
+```xml
+<cognee_memories>
+  <agent_memory>[agent-specific results]</agent_memory>
+  <user_memory>[user preference results]</user_memory>
+  <company_memory>[shared knowledge results]</company_memory>
+</cognee_memories>
+```
+
+This lets the agent distinguish between personal context, shared knowledge, and its own learned patterns.
 
 ## Configuration Options
+
+### Connection
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `baseUrl` | string | `http://localhost:8000` | Cognee API base URL |
 | `apiKey` | string | `$COGNEE_API_KEY` | API key for authentication |
-| `datasetName` | string | `openclaw` | Dataset name for storing memories |
-| `searchType` | string | `GRAPH_COMPLETION` | Search mode: `GRAPH_COMPLETION`, `CHUNKS`, `SUMMARIES` |
-| `maxResults` | number | `6` | Max memories to inject per recall |
+
+### Memory Scopes
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `companyDataset` | string | — | Dataset for company-wide memory. Setting this enables multi-scope mode |
+| `userDatasetPrefix` | string | — | Prefix for user datasets (becomes `{prefix}-{userId}`) |
+| `agentDatasetPrefix` | string | — | Prefix for agent datasets (becomes `{prefix}-{agentId}`) |
+| `userId` | string | `$OPENCLAW_USER_ID` | User identifier for user-scoped memory |
+| `agentId` | string | `default` | Agent identifier for agent-scoped memory |
+| `recallScopes` | string[] | `["agent","user","company"]` | Scopes to search during recall, in priority order |
+| `defaultWriteScope` | string | `agent` | Default scope for files not matching any route |
+| `scopeRouting` | object[] | (see above) | Path-to-scope routing rules |
+
+### Sessions
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enableSessions` | boolean | `true` | Enable session-based conversation tracking |
+| `persistSessionsAfterEnd` | boolean | `true` | Persist session Q&A into the knowledge graph |
+
+### Search
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `searchType` | string | `FEELING_LUCKY` | Search strategy (see below) |
+| `maxResults` | number | `6` | Max memories to inject per scope |
 | `minScore` | number | `0` | Minimum relevance score filter |
-| `maxTokens` | number | `512` | Token cap for recall context |
+| `maxTokens` | number | `512` | Token cap for recall context per scope |
+| `searchPrompt` | string | `""` | System prompt to guide search |
+
+### Search Types
+
+| Type | Description |
+|------|-------------|
+| `FEELING_LUCKY` | **Default** — auto-selects the best strategy per query |
+| `GRAPH_COMPLETION` | Graph traversal + LLM reasoning |
+| `GRAPH_COMPLETION_COT` | Chain-of-thought reasoning over graph (iterative) |
+| `GRAPH_COMPLETION_CONTEXT_EXTENSION` | Extended context retrieval (multiple rounds) |
+| `GRAPH_SUMMARY_COMPLETION` | Graph with pre-computed summaries |
+| `RAG_COMPLETION` | Traditional RAG with document chunks |
+| `TRIPLET_COMPLETION` | Subject-predicate-object search |
+| `CHUNKS` | Pure semantic vector search |
+| `CHUNKS_LEXICAL` | Keyword/lexical search |
+| `SUMMARIES` | Pre-computed hierarchical summaries |
+| `TEMPORAL` | Time-aware graph search |
+| `NATURAL_LANGUAGE` | Natural language to graph query |
+| `CYPHER` | Direct graph database queries |
+| `CODING_RULES` | Code-specific rule search |
+
+### Automation
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
 | `autoRecall` | boolean | `true` | Inject memories before agent runs |
 | `autoIndex` | boolean | `true` | Sync memory files on startup and after agent runs |
 | `autoCognify` | boolean | `true` | Run cognify after new memories are added |
-| `deleteMode` | string | `soft` | Delete mode: `soft` removes raw data only, `hard` also removes degree-one graph nodes |
-| `searchPrompt` | string | `""` | System prompt sent to Cognee to guide search query processing |
+| `autoMemify` | boolean | `false` | Run memify (graph enrichment) after cognify |
+| `deleteMode` | string | `soft` | `soft` removes raw data, `hard` also removes graph nodes |
+
+### Timeouts
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
 | `requestTimeoutMs` | number | `60000` | HTTP timeout for Cognee requests |
-| `ingestionTimeoutMs` | number | `300000` | HTTP timeout for add/update (ingestion) requests, which are typically slower |
-
-## How It Works
-
-1. **On startup**: Scans `memory/` directory for markdown files and syncs to Cognee (add new, update changed, delete removed, skip unchanged)
-2. **Before agent start**: Searches Cognee for memories relevant to the prompt and prepends as `<cognee_memories>` context
-3. **After agent end**: Re-scans memory files and syncs any changes the agent made (including deletions)
-4. **State tracking**:
-   - `~/.openclaw/memory/cognee/datasets.json` — dataset ID mapping
-   - `~/.openclaw/memory/cognee/sync-index.json` — per-file hash and Cognee data IDs
-
-Memory files detected at: `MEMORY.md` and `memory/**/*.md` (recursive)
+| `ingestionTimeoutMs` | number | `300000` | HTTP timeout for add/update requests |
 
 ## CLI Commands
 
@@ -88,15 +202,32 @@ Memory files detected at: `MEMORY.md` and `memory/**/*.md` (recursive)
 # Manually sync memory files to Cognee
 openclaw cognee index
 
-# Check sync status (indexed files, pending changes)
+# Check sync status (files indexed, dataset info, per-scope breakdown)
 openclaw cognee status
+
+# Verify Cognee API connectivity
+openclaw cognee health
+
+# Show memory scope routing for current workspace files
+openclaw cognee scopes
 ```
+
+## How It Works
+
+1. **On startup**: Health check, then scan `memory/` directory and sync files to scope-specific Cognee datasets
+2. **Before agent start**: Search each configured scope in parallel, merge results with scope labels, inject as `<cognee_memories>` context
+3. **After agent end**: Re-scan memory files and sync any changes (including deletions) to the correct scope datasets
+4. **State tracking**:
+   - `~/.openclaw/memory/cognee/datasets.json` — dataset ID mapping
+   - `~/.openclaw/memory/cognee/scoped-sync-indexes.json` — per-scope file hashes and data IDs
+   - `~/.openclaw/memory/cognee/sync-index.json` — legacy single-scope index
+
+Memory files detected at: `MEMORY.md` and `memory/**/*.md` (recursive)
 
 ## Development
 
 ```bash
 cd integrations/openclaw
-# Build once, then link for local development with an OpenClaw project
 npm install
 npm run build
 openclaw plugins install -l .
@@ -109,8 +240,6 @@ npm run dev
 ```
 
 ## Testing
-
-Run the test suite to verify functionality:
 
 ```bash
 npm test

@@ -24,28 +24,89 @@
       },
       "datasetName": {
         "type": "string",
-        "description": "Cognee dataset name to store memories in"
+        "description": "Cognee dataset name for single-scope mode (default: openclaw). Ignored when multi-scope is enabled."
+      },
+      "companyDataset": {
+        "type": "string",
+        "description": "Dataset name for company-wide shared memory. Setting this enables multi-scope mode."
+      },
+      "userDatasetPrefix": {
+        "type": "string",
+        "description": "Prefix for user-scoped datasets (becomes '{prefix}-{userId}'). Setting this enables multi-scope mode."
+      },
+      "agentDatasetPrefix": {
+        "type": "string",
+        "description": "Prefix for agent-scoped datasets (becomes '{prefix}-{agentId}'). Setting this enables multi-scope mode."
+      },
+      "userId": {
+        "type": "string",
+        "description": "User identifier for user-scoped memory (or set OPENCLAW_USER_ID env var)"
+      },
+      "agentId": {
+        "type": "string",
+        "description": "Agent identifier for agent-scoped memory (or set OPENCLAW_AGENT_ID env var, default: 'default')"
+      },
+      "recallScopes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["company", "user", "agent"]
+        },
+        "description": "Memory scopes to search during recall, in priority order (default: ['agent', 'user', 'company'])"
+      },
+      "defaultWriteScope": {
+        "type": "string",
+        "enum": ["company", "user", "agent"],
+        "description": "Default scope for files that don't match any scopeRouting pattern (default: 'agent')"
+      },
+      "scopeRouting": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "pattern": { "type": "string", "description": "Glob pattern to match file paths (e.g. 'memory/company/**')" },
+            "scope": { "type": "string", "enum": ["company", "user", "agent"] }
+          },
+          "required": ["pattern", "scope"]
+        },
+        "description": "Rules to route memory files to scopes based on path patterns. First match wins."
+      },
+      "enableSessions": {
+        "type": "boolean",
+        "description": "Enable session-based conversation tracking for multi-turn recall (default: true)"
+      },
+      "persistSessionsAfterEnd": {
+        "type": "boolean",
+        "description": "Persist session Q&A pairs into the knowledge graph after agent ends (default: true)"
       },
       "searchType": {
         "type": "string",
         "enum": [
           "GRAPH_COMPLETION",
+          "GRAPH_COMPLETION_COT",
+          "GRAPH_COMPLETION_CONTEXT_EXTENSION",
+          "GRAPH_SUMMARY_COMPLETION",
+          "RAG_COMPLETION",
+          "TRIPLET_COMPLETION",
           "CHUNKS",
-          "SUMMARIES"
+          "CHUNKS_LEXICAL",
+          "SUMMARIES",
+          "CYPHER",
+          "NATURAL_LANGUAGE",
+          "TEMPORAL",
+          "CODING_RULES",
+          "FEELING_LUCKY"
         ],
-        "description": "Cognee search mode"
+        "description": "Cognee search mode (default: FEELING_LUCKY — auto-selects best strategy per query)"
       },
       "deleteMode": {
         "type": "string",
-        "enum": [
-          "soft",
-          "hard"
-        ],
+        "enum": ["soft", "hard"],
         "description": "Cognee delete mode: 'soft' removes raw data only, 'hard' also removes degree-one graph nodes (default: soft)"
       },
       "maxResults": {
         "type": "number",
-        "description": "Max recall results to inject (default: 6)"
+        "description": "Max recall results to inject per scope (default: 6)"
       },
       "minScore": {
         "type": "number",
@@ -53,7 +114,7 @@
       },
       "maxTokens": {
         "type": "number",
-        "description": "Token cap for recall (default: 512)"
+        "description": "Token cap for recall per scope (default: 512)"
       },
       "autoRecall": {
         "type": "boolean",
@@ -67,13 +128,17 @@
         "type": "boolean",
         "description": "Run cognify after new memories are added (default: true)"
       },
+      "autoMemify": {
+        "type": "boolean",
+        "description": "Run memify (graph enrichment) after cognify completes (default: false)"
+      },
       "requestTimeoutMs": {
         "type": "number",
         "description": "HTTP timeout in milliseconds for Cognee requests (default: 60000)"
       },
       "ingestionTimeoutMs": {
         "type": "number",
-        "description": "HTTP timeout in milliseconds for add/update (ingestion) requests, which are typically slower (default: 300000 = 5 min)"
+        "description": "HTTP timeout in milliseconds for add/update (ingestion) requests (default: 300000 = 5 min)"
       },
       "searchPrompt": {
         "type": "string",
@@ -101,12 +166,45 @@
       "placeholder": "default_password"
     },
     "datasetName": {
-      "label": "Dataset Name",
+      "label": "Dataset Name (single-scope)",
       "placeholder": "openclaw"
+    },
+    "companyDataset": {
+      "label": "Company Dataset",
+      "placeholder": "my-company"
+    },
+    "userDatasetPrefix": {
+      "label": "User Dataset Prefix",
+      "placeholder": "my-project-user"
+    },
+    "agentDatasetPrefix": {
+      "label": "Agent Dataset Prefix",
+      "placeholder": "my-project-agent"
+    },
+    "userId": {
+      "label": "User ID",
+      "placeholder": "${OPENCLAW_USER_ID}"
+    },
+    "agentId": {
+      "label": "Agent ID",
+      "placeholder": "default"
+    },
+    "recallScopes": {
+      "label": "Recall Scopes"
+    },
+    "defaultWriteScope": {
+      "label": "Default Write Scope",
+      "placeholder": "agent"
+    },
+    "enableSessions": {
+      "label": "Enable Sessions"
+    },
+    "persistSessionsAfterEnd": {
+      "label": "Persist Sessions"
     },
     "searchType": {
       "label": "Search Type",
-      "placeholder": "GRAPH_COMPLETION"
+      "placeholder": "FEELING_LUCKY"
     },
     "deleteMode": {
       "label": "Delete Mode",
@@ -132,6 +230,9 @@
     },
     "autoCognify": {
       "label": "Auto-Cognify"
+    },
+    "autoMemify": {
+      "label": "Auto-Memify"
     },
     "requestTimeoutMs": {
       "label": "Request Timeout (ms)",

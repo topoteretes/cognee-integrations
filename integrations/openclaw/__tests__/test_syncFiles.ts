@@ -1,6 +1,6 @@
 import { CogneeClient } from "../index";
-import { syncFiles } from "../index";
-import type { MemoryFile, SyncIndex, CogneePluginConfig } from "../index";
+import { syncFiles, syncFilesScoped, matchGlob, routeFileToScope, datasetNameForScope, isMultiScopeEnabled } from "../index";
+import type { MemoryFile, SyncIndex, CogneePluginConfig, ScopedSyncIndexes, MemoryScope, ScopeRoute } from "../index";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promises as fs } from "node:fs";
@@ -16,24 +16,204 @@ jest.mock("node:fs", () => ({
 const mockFs = fs as jest.Mocked<typeof fs>;
 const SYNC_INDEX_PATH = join(homedir(), ".openclaw", "memory", "cognee", "sync-index.json");
 const STATE_PATH = join(homedir(), ".openclaw", "memory", "cognee", "datasets.json");
+const SCOPED_SYNC_INDEX_PATH = join(homedir(), ".openclaw", "memory", "cognee", "scoped-sync-indexes.json");
 
 // Mock CogneeClient
 jest.mock("../index", () => ({
   CogneeClient: jest.fn(),
   syncFiles: jest.requireActual("../index").syncFiles,
+  syncFilesScoped: jest.requireActual("../index").syncFilesScoped,
+  matchGlob: jest.requireActual("../index").matchGlob,
+  routeFileToScope: jest.requireActual("../index").routeFileToScope,
+  datasetNameForScope: jest.requireActual("../index").datasetNameForScope,
+  isMultiScopeEnabled: jest.requireActual("../index").isMultiScopeEnabled,
 }));
 
 const mockAdd = jest.fn();
 const mockUpdate = jest.fn();
 const mockDelete = jest.fn();
 const mockCognify = jest.fn();
+const mockMemify = jest.fn();
 
 (CogneeClient as jest.MockedClass<typeof CogneeClient>).mockImplementation(() => ({
   add: mockAdd,
   update: mockUpdate,
   delete: mockDelete,
   cognify: mockCognify,
+  memify: mockMemify,
 } as any));
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function baseCfg(overrides: Partial<CogneePluginConfig> = {}): Required<CogneePluginConfig> {
+  return {
+    baseUrl: "http://test",
+    apiKey: "key",
+    username: "",
+    password: "",
+    datasetName: "test",
+    companyDataset: "",
+    userDatasetPrefix: "",
+    agentDatasetPrefix: "",
+    userId: "",
+    agentId: "default",
+    recallScopes: ["agent", "user", "company"],
+    defaultWriteScope: "agent",
+    scopeRouting: [
+      { pattern: "memory/company/**", scope: "company" as MemoryScope },
+      { pattern: "memory/company/*", scope: "company" as MemoryScope },
+      { pattern: "memory/user/**", scope: "user" as MemoryScope },
+      { pattern: "memory/user/*", scope: "user" as MemoryScope },
+      { pattern: "memory/**", scope: "agent" as MemoryScope },
+      { pattern: "memory/*", scope: "agent" as MemoryScope },
+      { pattern: "MEMORY.md", scope: "agent" as MemoryScope },
+    ],
+    enableSessions: true,
+    persistSessionsAfterEnd: true,
+    searchPrompt: "",
+    searchType: "FEELING_LUCKY",
+    deleteMode: "soft",
+    maxResults: 6,
+    minScore: 0,
+    maxTokens: 512,
+    autoRecall: true,
+    autoIndex: true,
+    autoCognify: true,
+    autoMemify: false,
+    requestTimeoutMs: 30000,
+    ingestionTimeoutMs: 300000,
+    ...overrides,
+  } as Required<CogneePluginConfig>;
+}
+
+const createFile = (path: string, content: string, hash?: string): MemoryFile => ({
+  path,
+  absPath: `/workspace/${path}`,
+  content,
+  hash: hash || `hash-${content}`,
+});
+
+// ---------------------------------------------------------------------------
+// matchGlob tests
+// ---------------------------------------------------------------------------
+
+describe("matchGlob", () => {
+  it("matches exact file", () => {
+    expect(matchGlob("MEMORY.md", "MEMORY.md")).toBe(true);
+    expect(matchGlob("MEMORY.md", "memory/foo.md")).toBe(false);
+  });
+
+  it("matches single-level wildcard", () => {
+    expect(matchGlob("memory/*", "memory/foo.md")).toBe(true);
+    expect(matchGlob("memory/*", "memory/sub/foo.md")).toBe(false);
+  });
+
+  it("matches double-star glob", () => {
+    expect(matchGlob("memory/company/**", "memory/company/foo.md")).toBe(true);
+    expect(matchGlob("memory/company/**", "memory/company/sub/foo.md")).toBe(true);
+    expect(matchGlob("memory/company/**", "memory/user/foo.md")).toBe(false);
+  });
+
+  it("matches nested patterns", () => {
+    expect(matchGlob("memory/**", "memory/foo.md")).toBe(true);
+    expect(matchGlob("memory/**", "memory/company/foo.md")).toBe(true);
+    expect(matchGlob("memory/**", "memory/user/deep/nested/foo.md")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// routeFileToScope tests
+// ---------------------------------------------------------------------------
+
+describe("routeFileToScope", () => {
+  const routes: ScopeRoute[] = [
+    { pattern: "memory/company/**", scope: "company" },
+    { pattern: "memory/company/*", scope: "company" },
+    { pattern: "memory/user/**", scope: "user" },
+    { pattern: "memory/user/*", scope: "user" },
+    { pattern: "memory/**", scope: "agent" },
+    { pattern: "memory/*", scope: "agent" },
+    { pattern: "MEMORY.md", scope: "agent" },
+  ];
+
+  it("routes company files to company scope", () => {
+    expect(routeFileToScope("memory/company/policy.md", routes, "agent")).toBe("company");
+    expect(routeFileToScope("memory/company/sub/deep.md", routes, "agent")).toBe("company");
+  });
+
+  it("routes user files to user scope", () => {
+    expect(routeFileToScope("memory/user/prefs.md", routes, "agent")).toBe("user");
+    expect(routeFileToScope("memory/user/feedback/item.md", routes, "agent")).toBe("user");
+  });
+
+  it("routes other memory files to agent scope", () => {
+    expect(routeFileToScope("memory/tools.md", routes, "agent")).toBe("agent");
+    expect(routeFileToScope("MEMORY.md", routes, "agent")).toBe("agent");
+  });
+
+  it("uses default scope for unmatched paths", () => {
+    expect(routeFileToScope("other/file.md", routes, "user")).toBe("user");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// datasetNameForScope tests
+// ---------------------------------------------------------------------------
+
+describe("datasetNameForScope", () => {
+  it("uses companyDataset when configured", () => {
+    const cfg = baseCfg({ companyDataset: "acme-shared" });
+    expect(datasetNameForScope("company", cfg)).toBe("acme-shared");
+  });
+
+  it("falls back to datasetName-company", () => {
+    const cfg = baseCfg({ companyDataset: "" });
+    expect(datasetNameForScope("company", cfg)).toBe("test-company");
+  });
+
+  it("uses userDatasetPrefix with userId", () => {
+    const cfg = baseCfg({ userDatasetPrefix: "proj-user", userId: "alice" });
+    expect(datasetNameForScope("user", cfg)).toBe("proj-user-alice");
+  });
+
+  it("uses agentDatasetPrefix with agentId", () => {
+    const cfg = baseCfg({ agentDatasetPrefix: "proj-agent", agentId: "coder" });
+    expect(datasetNameForScope("agent", cfg)).toBe("proj-agent-coder");
+  });
+
+  it("defaults agentId to 'default'", () => {
+    const cfg = baseCfg({ agentDatasetPrefix: "proj-agent", agentId: "default" });
+    expect(datasetNameForScope("agent", cfg)).toBe("proj-agent-default");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isMultiScopeEnabled tests
+// ---------------------------------------------------------------------------
+
+describe("isMultiScopeEnabled", () => {
+  it("returns false when no scope-specific config", () => {
+    expect(isMultiScopeEnabled(baseCfg())).toBe(false);
+  });
+
+  it("returns true when companyDataset is set", () => {
+    expect(isMultiScopeEnabled(baseCfg({ companyDataset: "acme" }))).toBe(true);
+  });
+
+  it("returns true when userDatasetPrefix is set", () => {
+    expect(isMultiScopeEnabled(baseCfg({ userDatasetPrefix: "proj-user" }))).toBe(true);
+  });
+
+  it("returns true when agentDatasetPrefix is set", () => {
+    expect(isMultiScopeEnabled(baseCfg({ agentDatasetPrefix: "proj-agent" }))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// syncFiles (legacy single-scope) tests
+// ---------------------------------------------------------------------------
 
 describe("syncFiles", () => {
   let client: CogneeClient;
@@ -45,37 +225,14 @@ describe("syncFiles", () => {
     mockFs.readFile.mockImplementation(async (path) => {
       if (path === SYNC_INDEX_PATH) return JSON.stringify({ entries: {} });
       if (path === STATE_PATH) return JSON.stringify({});
+      if (path === SCOPED_SYNC_INDEX_PATH) return JSON.stringify({});
       throw new Error(`Unexpected file read: ${path}`);
     });
     mockFs.writeFile.mockResolvedValue(undefined);
     mockFs.mkdir.mockResolvedValue(undefined);
     client = new CogneeClient("http://test", "key");
-    cfg = {
-      baseUrl: "http://test",
-      apiKey: "key",
-      username: "",
-      password: "",
-      datasetName: "test",
-      searchPrompt: "",
-      searchType: "GRAPH_COMPLETION",
-      deleteMode: "soft",
-      maxResults: 6,
-      minScore: 0,
-      maxTokens: 512,
-      autoRecall: true,
-      autoIndex: true,
-      autoCognify: true,
-      requestTimeoutMs: 30000,
-      ingestionTimeoutMs: 300000,
-    };
+    cfg = baseCfg();
     logger = { info: jest.fn(), warn: jest.fn() };
-  });
-
-  const createFile = (path: string, content: string, hash?: string): MemoryFile => ({
-    path,
-    absPath: `/workspace/${path}`,
-    content,
-    hash: hash || `hash-${content}`,
   });
 
   describe("New file addition", () => {
@@ -315,6 +472,30 @@ describe("syncFiles", () => {
       expect(mockCognify).not.toHaveBeenCalled();
     });
 
+    it("triggers memify after cognify when autoMemify is true", async () => {
+      cfg.autoMemify = true;
+      const files = [createFile("new.md", "content")];
+      const syncIndex: SyncIndex = { entries: {} };
+
+      mockAdd.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
+
+      await syncFiles(client, files, files, syncIndex, cfg, logger);
+
+      expect(mockCognify).toHaveBeenCalledWith({ datasetIds: ["ds1"] });
+      expect(mockMemify).toHaveBeenCalledWith({ datasetIds: ["ds1"] });
+    });
+
+    it("does not trigger memify when autoMemify is false", async () => {
+      const files = [createFile("new.md", "content")];
+      const syncIndex: SyncIndex = { entries: {} };
+
+      mockAdd.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
+
+      await syncFiles(client, files, files, syncIndex, cfg, logger);
+
+      expect(mockMemify).not.toHaveBeenCalled();
+    });
+
     it("does not delete unchanged files when called with partial changedFiles", async () => {
       const fullFiles = [
         createFile("unchanged.md", "old content", "hash1"),
@@ -335,5 +516,125 @@ describe("syncFiles", () => {
       expect(result.deleted).toBe(0);
       expect(mockDelete).not.toHaveBeenCalled();
     });
+  });
+
+  describe("Override dataset name (scoped sync)", () => {
+    it("uses overrideDatasetName instead of cfg.datasetName", async () => {
+      const files = [createFile("company/policy.md", "content")];
+      const syncIndex: SyncIndex = { entries: {} };
+
+      mockAdd.mockResolvedValue({ datasetId: "ds-company", datasetName: "acme-company", dataId: "id1" });
+
+      const result = await syncFiles(client, files, files, syncIndex, cfg, logger, "acme-company");
+
+      expect(mockAdd).toHaveBeenCalledWith({
+        data: expect.stringContaining("company/policy.md"),
+        datasetName: "acme-company",
+        datasetId: undefined,
+      });
+      expect(result.datasetId).toBe("ds-company");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// syncFilesScoped tests
+// ---------------------------------------------------------------------------
+
+describe("syncFilesScoped", () => {
+  let client: CogneeClient;
+  let cfg: Required<CogneePluginConfig>;
+  let logger: { info?: jest.Mock; warn?: jest.Mock };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFs.readFile.mockImplementation(async (path) => {
+      if (path === STATE_PATH) return JSON.stringify({});
+      if (path === SCOPED_SYNC_INDEX_PATH) return JSON.stringify({});
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.mkdir.mockResolvedValue(undefined);
+    client = new CogneeClient("http://test", "key");
+    cfg = baseCfg({
+      companyDataset: "acme-company",
+      userDatasetPrefix: "acme-user",
+      agentDatasetPrefix: "acme-agent",
+      userId: "alice",
+      agentId: "coder",
+    });
+    logger = { info: jest.fn(), warn: jest.fn() };
+  });
+
+  it("routes files to correct scope datasets", async () => {
+    const files = [
+      createFile("memory/company/policy.md", "company policy"),
+      createFile("memory/user/prefs.md", "user prefs"),
+      createFile("memory/tools.md", "agent tools"),
+    ];
+    const scopedIndexes: ScopedSyncIndexes = {};
+
+    mockAdd.mockImplementation(async (params: any) => ({
+      datasetId: `ds-${params.datasetName}`,
+      datasetName: params.datasetName,
+      dataId: `id-${params.datasetName}`,
+    }));
+
+    const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, logger);
+
+    expect(result.added).toBe(3);
+    expect(result.errors).toBe(0);
+
+    // Verify each file went to the correct dataset
+    const addCalls = mockAdd.mock.calls.map((c: any[]) => c[0].datasetName);
+    expect(addCalls).toContain("acme-company");
+    expect(addCalls).toContain("acme-user-alice");
+    expect(addCalls).toContain("acme-agent-coder");
+  });
+
+  it("handles mixed operations across scopes", async () => {
+    const files = [
+      createFile("memory/company/new.md", "new company doc"),
+      createFile("memory/user/prefs.md", "updated prefs"),
+    ];
+    const scopedIndexes: ScopedSyncIndexes = {
+      user: {
+        entries: { "memory/user/prefs.md": { hash: "old-hash", dataId: "uid1" } },
+        datasetId: "ds-user",
+      },
+      agent: {
+        entries: { "memory/removed.md": { hash: "hash", dataId: "aid1" } },
+        datasetId: "ds-agent",
+      },
+    };
+
+    mockAdd.mockResolvedValue({ datasetId: "ds-company", datasetName: "acme-company", dataId: "cid1" });
+    mockUpdate.mockResolvedValue({ datasetId: "ds-user", datasetName: "acme-user-alice", dataId: "uid1" });
+    mockDelete.mockResolvedValue({ datasetId: "ds-agent", dataId: "aid1", deleted: true });
+
+    const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, logger);
+
+    expect(result.added).toBe(1);   // company/new.md
+    expect(result.updated).toBe(1); // user/prefs.md
+    expect(result.deleted).toBe(1); // agent/removed.md (no longer on disk)
+  });
+
+  it("skips scopes with no changes", async () => {
+    const files = [
+      createFile("memory/company/policy.md", "same", "hash-same"),
+    ];
+    const scopedIndexes: ScopedSyncIndexes = {
+      company: {
+        entries: { "memory/company/policy.md": { hash: "hash-same", dataId: "cid1" } },
+        datasetId: "ds-company",
+      },
+    };
+
+    const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, logger);
+
+    expect(result.added).toBe(0);
+    expect(result.updated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(mockAdd).not.toHaveBeenCalled();
   });
 });
