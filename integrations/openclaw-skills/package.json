@@ -35,7 +35,8 @@
     }
   },
   "peerDependencies": {
-    "openclaw": ">=2026.2.3-1"
+    "openclaw": ">=2026.2.3-1",
+    "@cognee/cognee-openclaw": ">=2026.3.0"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
