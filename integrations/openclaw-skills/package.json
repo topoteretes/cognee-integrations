@@ -39,6 +39,7 @@
     "@cognee/cognee-openclaw": ">=2026.3.0"
   },
   "devDependencies": {
+    "@cognee/cognee-openclaw": "file:../openclaw",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
     "jest": "^30.2.0",
