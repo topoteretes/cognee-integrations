@@ -112,6 +112,11 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Build local dependencies
+        if: matrix.integration == 'openclaw-skills'
+        working-directory: integrations/openclaw
+        run: npm install && npm run build
+
       - name: Install dependencies
         working-directory: integrations/${{ matrix.integration }}
         run: npm install

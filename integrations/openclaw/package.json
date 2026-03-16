@@ -16,7 +16,6 @@
     "README.md"
   ],
   "scripts": {
-    "prepare": "tsc -p tsconfig.build.json",
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
