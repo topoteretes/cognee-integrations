@@ -32,6 +32,9 @@
           "useESM": true
         }
       ]
+    },
+    "moduleNameMapper": {
+      "^(\\.\\.?/.*)\\.js$": "$1"
     }
   },
   "peerDependencies": {
