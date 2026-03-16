@@ -16,6 +16,7 @@
     "README.md"
   ],
   "scripts": {
+    "prepare": "tsc",
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
