@@ -20,20 +20,11 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "NODE_OPTIONS='--experimental-vm-modules' jest"
+    "test": "jest"
   },
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "extensionsToTreatAsEsm": [".ts"],
-    "transform": {
-      "^.+\\.ts$": [
-        "ts-jest",
-        {
-          "useESM": true
-        }
-      ]
-    },
     "moduleNameMapper": {
       "^@cognee/cognee-openclaw$": "<rootDir>/../openclaw/index.ts",
       "^(\\.{1,2}/.*)\\.js$": "$1"
