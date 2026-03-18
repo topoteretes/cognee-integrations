@@ -29,9 +29,14 @@
       "^.+\\.ts$": [
         "ts-jest",
         {
-          "useESM": true
+          "useESM": true,
+          "isolatedModules": true
         }
       ]
+    },
+    "moduleNameMapper": {
+      "^@cognee/cognee-openclaw$": "<rootDir>/../openclaw/index.ts",
+      "^(\\.{1,2}/.*)\\.js$": "$1"
     }
   },
   "peerDependencies": {

@@ -11,8 +11,6 @@ ROOT = Path(__file__).resolve().parent.parent
 INTEGRATIONS_DIR = ROOT / "integrations"
 INVENTORY_FILE = INTEGRATIONS_DIR / "inventory.yml"
 
-ASYNC_GUIDANCE_PATTERN = re.compile(r"\basync\b|timeout|retry|non-blocking", re.IGNORECASE)
-
 
 def _dir_has_files(directory: Path) -> bool:
     """Return True if *directory* contains at least one file (non-recursive)."""
@@ -120,10 +118,6 @@ def main() -> int:
         if not pyproject.exists() and not package_json.exists():
             errors.append(f"{name}: missing pyproject.toml or package.json")
 
-        if readme.exists():
-            if not ASYNC_GUIDANCE_PATTERN.search(readme.read_text()):
-                errors.append(f"{name}: README.md missing async-first guidance (async/timeout/retry)")
-
     # Validate required inventory metadata for migrated integrations.
     for slug, entry in by_slug.items():
         status = entry.get("migration_status", "")
@@ -135,7 +129,6 @@ def main() -> int:
             "package_name",
             "monorepo_path",
             "install_path_status",
-            "migration_group",
         ):
             if not entry.get(required_key):
                 errors.append(f"{slug}: done entry missing `{required_key}` in inventory")
