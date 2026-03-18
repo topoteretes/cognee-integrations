@@ -20,17 +20,17 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "jest"
+    "test": "NODE_OPTIONS='--experimental-vm-modules' jest"
   },
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
+    "extensionsToTreatAsEsm": [".ts"],
     "transform": {
       "^.+\\.ts$": [
         "ts-jest",
         {
-          "useESM": true,
-          "isolatedModules": true
+          "useESM": true
         }
       ]
     },
