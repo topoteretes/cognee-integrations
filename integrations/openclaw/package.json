@@ -23,8 +23,15 @@
     "test": "jest"
   },
   "jest": {
-    "preset": "ts-jest",
     "testEnvironment": "node",
+    "transform": {
+      "^.+\\.ts$": ["ts-jest", {
+        "tsconfig": {
+          "module": "commonjs",
+          "moduleResolution": "node"
+        }
+      }]
+    },
     "moduleNameMapper": {
       "^(\\.\\.?/.*)\\.js$": "$1"
     }
