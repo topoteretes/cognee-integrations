@@ -34,7 +34,7 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.3.0"
+    current_version: "2026.3.1"
     migration_status: done
     monorepo_path: "integrations/openclaw"
     install_path_status: stable
