@@ -178,8 +178,6 @@ export class CogneeHttpClient {
     filePath: string;
   }): Promise<{ datasetId: string; datasetName: string; dataId?: string }> {
     const formData = new FormData();
-    // const hash8 = createHash("sha256").update(params.data).digest("hex").slice(0, 8);
-    // const fileName = `openclaw-memory-${hash8}.txt`;
     const fileName = sanitizeFilePath(params.filePath);
     formData.append("data", new Blob([params.data], { type: "text/plain" }), fileName);
     formData.append("datasetName", params.datasetName);
@@ -196,7 +194,6 @@ export class CogneeHttpClient {
     let dataId = extractDataId(data.data_id ?? data.data_ingestion_info);
 
     if (!dataId && data.dataset_id) {
-      // dataId = await this.resolveDataIdFromDataset(data.dataset_id, fileName);
       dataId = await this.resolveDataIdFromDataset(data.dataset_id, sanitizeFilePath(params.filePath));
     }
 
@@ -218,8 +215,6 @@ export class CogneeHttpClient {
   }): Promise<{ datasetId: string; datasetName: string; dataId?: string }> {
     const query = new URLSearchParams({ data_id: params.dataId, dataset_id: params.datasetId });
     const formData = new FormData();
-    // const hash8 = createHash("sha256").update(params.data).digest("hex").slice(0, 8);
-    // const fileName = `openclaw-memory-${hash8}.txt`;
     const fileName = sanitizeFilePath(params.filePath);
     formData.append("data", new Blob([params.data], { type: "text/plain" }), fileName);
 
@@ -231,7 +226,6 @@ export class CogneeHttpClient {
 
     let dataId = extractDataId(data.data_id ?? data.data_ingestion_info);
     if (!dataId) {
-      // dataId = await this.resolveDataIdFromDataset(params.datasetId, fileName);
       dataId = await this.resolveDataIdFromDataset(params.datasetId, sanitizeFilePath(params.filePath));
     }
 
@@ -243,7 +237,6 @@ export class CogneeHttpClient {
       type DataItem = { id: string; name: string };
       const items = await this.fetchJson<DataItem[]>(`/api/v1/datasets/${datasetId}/data`, { method: "GET" });
       if (!Array.isArray(items)) return undefined;
-      // const match = items.find((item) => item.name === fileName.replace(/\.txt$/, ""));
       const match = items.find((item) => item.name === fileName);
       return match?.id;
     } catch {
