@@ -91,6 +91,15 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const enableSessions = typeof raw.enableSessions === "boolean" ? raw.enableSessions : true;
   const persistSessionsAfterEnd = typeof raw.persistSessionsAfterEnd === "boolean" ? raw.persistSessionsAfterEnd : true;
 
+  // Access control
+  const enablePermissionGrants = typeof raw.enablePermissionGrants === "boolean"
+    ? raw.enablePermissionGrants : false;
+  const grantReadUserIds = Array.isArray(raw.grantReadUserIds)
+    ? raw.grantReadUserIds
+    : (process.env.COGNEE_GRANT_READ_USER_IDS?.split(",").map(s => s.trim()).filter(Boolean) ?? []);
+  const permissionEndpointPath = raw.permissionEndpointPath?.trim()
+    || "/api/v1/datasets/permissions";
+
   return {
     baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, userId, agentId,
@@ -100,5 +109,6 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify,
     requestTimeoutMs, ingestionTimeoutMs,
+    enablePermissionGrants, grantReadUserIds, permissionEndpointPath,
   };
 }
