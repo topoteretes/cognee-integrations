@@ -15,6 +15,7 @@ export async function syncFiles(
   cfg: Required<CogneePluginConfig>,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
   overrideDatasetName?: string,
+  onNewDataset?: (datasetId: string) => Promise<void>,
 ): Promise<SyncResult & { datasetId?: string }> {
   const result: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   const dsName = overrideDatasetName || cfg.datasetName;
@@ -73,6 +74,7 @@ export async function syncFiles(
         const state = await loadDatasetState();
         state[dsName] = response.datasetId;
         await saveDatasetState(state);
+        await onNewDataset?.(response.datasetId);
       }
 
       syncIndex.entries[file.path] = { hash: file.hash, dataId: response.dataId };
@@ -143,6 +145,7 @@ export async function syncFilesScoped(
   scopedIndexes: ScopedSyncIndexes,
   cfg: Required<CogneePluginConfig>,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
+  onNewDataset?: (datasetId: string, scope: MemoryScope) => Promise<void>,
 ): Promise<SyncResult & { datasetIds: Record<MemoryScope, string | undefined> }> {
   const totalResult: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   const datasetIds: Record<MemoryScope, string | undefined> = { company: undefined, user: undefined, agent: undefined };
@@ -188,7 +191,10 @@ export async function syncFilesScoped(
 
     logger.info?.(`cognee-openclaw: [${scope}] syncing ${scopeChanged.length} changed file(s) to dataset "${dsName}"${hasDeletedFiles ? " + deletions" : ""}`);
 
-    const result = await syncFiles(client, scopeChanged, scopeFull, scopeIndex, cfg, logger, dsName);
+    const result = await syncFiles(
+      client, scopeChanged, scopeFull, scopeIndex, cfg, logger, dsName,
+      onNewDataset ? (dsId) => onNewDataset(dsId, scope) : undefined,
+    );
     totalResult.added += result.added;
     totalResult.updated += result.updated;
     totalResult.skipped += result.skipped;

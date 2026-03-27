@@ -143,7 +143,16 @@
       "searchPrompt": {
         "type": "string",
         "description": "System prompt sent to Cognee to guide search query processing (default: '')"
-      }
+      },
+      "enablePermissionGrants": {
+        "type": "boolean",
+        "description": "Automatically grant read permissions to specified users when datasets are created (default: false)"
+      },
+      "grantReadUserIds": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Cognee user IDs (email or UUID) to grant read access on created datasets (or set COGNEE_GRANT_READ_USER_IDS as comma-separated)"
+      },
     }
   },
   "uiHints": {
@@ -241,6 +250,12 @@
     "ingestionTimeoutMs": {
       "label": "Ingestion Timeout (ms)",
       "placeholder": "300000"
-    }
+    },
+    "enablePermissionGrants": {
+      "label": "Enable Permission Grants"
+    },
+    "grantReadUserIds": {
+      "label": "Grant Read to User IDs"
+    },
   }
 }
