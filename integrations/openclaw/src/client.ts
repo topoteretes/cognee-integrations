@@ -328,23 +328,23 @@ export class CogneeHttpClient {
     datasetId: string;
     recipientId: string;
     permissionType?: string;
-    endpointPath?: string;
   }): Promise<{ granted: boolean; error?: string }> {
-    const endpoint = params.endpointPath || "/api/v1/datasets/permissions";
+    const permissionName = params.permissionType ?? "read";
+    // Cognee endpoint: POST /api/v1/permissions/datasets/{principal_id}
+    // with query params: permission_name, dataset_ids
+    const query = new URLSearchParams({
+      permission_name: permissionName,
+      dataset_ids: params.datasetId,
+    });
+    const endpoint = `/api/v1/permissions/datasets/${params.recipientId}?${query.toString()}`;
     try {
       await this.fetchJson(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          dataset_id: params.datasetId,
-          recipient_id: params.recipientId,
-          permission_type: params.permissionType ?? "read",
-        }),
       }, this.timeoutMs, 0); // 0 retries — permission grants are not critical path
       return { granted: true };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      // 404/405 means the endpoint doesn't exist yet — expected, not an error
+      // 404/405 means the endpoint doesn't exist on older Cognee versions
       if (msg.includes("404") || msg.includes("405") || msg.includes("Not Found") || msg.includes("Method Not Allowed")) {
         return { granted: false, error: "permission endpoint not available" };
       }
@@ -360,7 +360,6 @@ export class CogneeHttpClient {
     datasetId: string;
     recipientIds: string[];
     permissionType?: string;
-    endpointPath?: string;
     logger?: { info?: (msg: string) => void; warn?: (msg: string) => void };
   }): Promise<void> {
     if (params.recipientIds.length === 0) return;
@@ -373,7 +372,6 @@ export class CogneeHttpClient {
         datasetId: params.datasetId,
         recipientId,
         permissionType: params.permissionType,
-        endpointPath: params.endpointPath,
       });
 
       if (result.granted) {

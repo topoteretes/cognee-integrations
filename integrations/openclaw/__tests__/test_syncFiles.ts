@@ -83,7 +83,6 @@ function baseCfg(overrides: Partial<CogneePluginConfig> = {}): Required<CogneePl
     ingestionTimeoutMs: 300000,
     enablePermissionGrants: false,
     grantReadUserIds: [],
-    permissionEndpointPath: "/api/v1/datasets/permissions",
     ...overrides,
   } as Required<CogneePluginConfig>;
 }

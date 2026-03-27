@@ -49,7 +49,7 @@ const memoryCogneePlugin = {
             datasetId,
             recipientIds: cfg.grantReadUserIds,
             permissionType: "read",
-            endpointPath: cfg.permissionEndpointPath,
+
             logger: api.logger,
           });
         }
@@ -324,7 +324,7 @@ const memoryCogneePlugin = {
               datasetId: dsId,
               recipientIds: cfg.grantReadUserIds,
               permissionType: "read",
-              endpointPath: cfg.permissionEndpointPath,
+  
               logger: { info: (m) => console.log(`  ${m}`), warn: (m) => console.log(`  WARN: ${m}`) },
             });
           }
@@ -371,7 +371,7 @@ const memoryCogneePlugin = {
                   datasetId: dsId,
                   recipientIds: cfg.grantReadUserIds,
                   permissionType: "read",
-                  endpointPath: cfg.permissionEndpointPath,
+      
                   logger: ctx.logger,
                 });
               }

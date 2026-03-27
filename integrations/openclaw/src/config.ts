@@ -97,8 +97,6 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const grantReadUserIds = Array.isArray(raw.grantReadUserIds)
     ? raw.grantReadUserIds
     : (process.env.COGNEE_GRANT_READ_USER_IDS?.split(",").map(s => s.trim()).filter(Boolean) ?? []);
-  const permissionEndpointPath = raw.permissionEndpointPath?.trim()
-    || "/api/v1/datasets/permissions";
 
   return {
     baseUrl, apiKey, username, password, datasetName,
@@ -109,6 +107,6 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify,
     requestTimeoutMs, ingestionTimeoutMs,
-    enablePermissionGrants, grantReadUserIds, permissionEndpointPath,
+    enablePermissionGrants, grantReadUserIds,
   };
 }

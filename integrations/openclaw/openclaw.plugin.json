@@ -153,10 +153,6 @@
         "items": { "type": "string" },
         "description": "Cognee user IDs (email or UUID) to grant read access on created datasets (or set COGNEE_GRANT_READ_USER_IDS as comma-separated)"
       },
-      "permissionEndpointPath": {
-        "type": "string",
-        "description": "Cognee API path for dataset permission grants (default: /api/v1/datasets/permissions)"
-      }
     }
   },
   "uiHints": {
@@ -261,9 +257,5 @@
     "grantReadUserIds": {
       "label": "Grant Read to User IDs"
     },
-    "permissionEndpointPath": {
-      "label": "Permission Endpoint Path",
-      "placeholder": "/api/v1/datasets/permissions"
-    }
   }
 }

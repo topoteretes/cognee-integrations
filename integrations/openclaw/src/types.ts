@@ -75,7 +75,6 @@ export type CogneePluginConfig = {
   // --- Access control ---
   enablePermissionGrants?: boolean;
   grantReadUserIds?: string[];
-  permissionEndpointPath?: string;
 };
 
 export type CogneeAddResponse = {
