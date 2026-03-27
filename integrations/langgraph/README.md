@@ -154,6 +154,18 @@ CACHING=true
 CACHE_BACKEND=redis
 ```
 
+## Async-first Guidance
+
+This integration is fully async -- all agent invocations must use `await agent.ainvoke()`. Keep the following in mind for production use:
+
+- **Long-running operations:** `cognee.add()` and `cognee.cognify()` can take seconds to minutes depending on data volume. Wrap them with `asyncio.wait_for()` to enforce timeouts:
+  ```python
+  await asyncio.wait_for(cognee.cognify(), timeout=300)
+  ```
+- **Retries for transient failures:** LLM and network calls can fail intermittently. Use retry logic (e.g., `tenacity`) around agent invocations or tool calls in your workflow.
+- **Non-blocking deployment:** Do not call `ainvoke()` or Cognee tools from synchronous request handlers. Use an async web framework or `asyncio.run()` at the entry point.
+- **Session-aware timeouts:** When using `get_sessionized_cognee_tools()` in multi-user apps, each session's add/cognify operations run independently. Set per-request timeouts appropriate for the expected data volume.
+
 ## Requirements
 
 - Python 3.10+

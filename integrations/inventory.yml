@@ -2,136 +2,182 @@
 #
 # Tracks all integrations in this monorepo.
 # Update this file when adding or migrating integrations.
+
+# ownership values:
+#   cognee-owned
+#   partner-owned
 #
 # migration_status values:
-#   done       – code lives in this monorepo and is the primary dev location
-#   pending    – still in its own repo, migration planned
-#   skipped    – migration deferred (e.g. repo inaccessible)
+#   done       - code lives in this monorepo and is the primary dev location
+#   pending    - still in separate repo, migration planned
+#   skipped    - migration deferred
 #
-# TODO: CI currently only runs import smoke tests. To run the example scripts
-#       as integration tests we need CI secrets (LLM_API_KEY, GOOGLE_API_KEY,
-#       etc.) provisioned per integration. Track and resolve before v1 release.
+# install_path_status values:
+#   stable                  - install path/package name preserved
+#   replacement-documented  - old path replaced and docs point to new path
+#   unknown                 - not yet validated
+#
+# archive_status values:
+#   n/a       - no separate legacy repo to archive
+#   tracked   - legacy repo exists; redirect/archive tracking in progress
+#   archived  - legacy repo archived and points to monorepo path
+#   pending   - legacy repo exists; archive/redirect not yet handled
 
 integrations:
 
-  # ── Already in monorepo ────────────────────────────────────────────
+  # --- Migrated integrations (group-1) ---
 
   - slug: openclaw
     name: "Memory (Cognee) for OpenClaw"
-    owner: cognee
+    ownership: cognee-owned
     language: typescript
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.2.4"
+    current_version: "2026.3.1"
     migration_status: done
+    monorepo_path: "integrations/openclaw"
+    install_path_status: stable
+    archive_status: n/a
     notes: "OpenClaw plugin with auto-recall/capture hooks"
+
+  - slug: openclaw-skills
+    name: "Cognee OpenClaw Skills Plugin"
+    ownership: cognee-owned
+    language: typescript
+    registry: npm
+    package_name: "cognee-openclaw-skills"
+    cognee_dependency: http-api
+    current_version: "2026.3.0"
+    migration_status: done
+    monorepo_path: "integrations/openclaw-skills"
+    install_path_status: stable
+    archive_status: n/a
+    notes: "OpenClaw plugin for skill ingest/observe/amendify workflows"
 
   - slug: dify
     name: "Cognee Tool Plugin for Dify"
-    owner: cognee
+    ownership: cognee-owned
     language: python
     registry: dify-marketplace
     package_name: "cognee"
-    cognee_dependency: http-api
+    cognee_dependency: Cognee Cloud
     current_version: "0.0.1"
     migration_status: done
-    notes: "Dify tool plugin – add data, cognify, search, delete via Cognee API"
+    monorepo_path: "integrations/dify"
+    install_path_status: stable
+    archive_status: n/a
+    notes: "Dify tool plugin - add data, cognify, search, delete via Cognee API"
 
   - slug: google-adk
     name: "Cognee Integration for Google ADK"
-    owner: cognee
+    ownership: cognee-owned
     language: python
     registry: pypi
     package_name: "cognee-integration-google-adk"
     cognee_dependency: sdk
     current_version: "0.1.1"
     migration_status: done
-    source_repo: https://github.com/topoteretes/cognee-integration-google-adk
-    notes: "Google ADK agent tools – add, search, session management"
+    monorepo_path: "integrations/google-adk"
+    install_path_status: stable
+    source_repo: "https://github.com/topoteretes/cognee-integration-google-adk"
+    archive_status: tracked
+    archive_redirect_link: "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/google-adk"
+    notes: "Google ADK agent tools - add, search, session management"
 
   - slug: langgraph
     name: "Cognee Integration for LangGraph"
-    owner: cognee
+    ownership: cognee-owned
     language: python
     registry: pypi
     package_name: "cognee-integration-langgraph"
     cognee_dependency: sdk
     current_version: "0.1.7"
     migration_status: done
-    source_repo: https://github.com/topoteretes/cognee-integration-langgraph
-    notes: "LangGraph agent tools – add, search, session management"
+    monorepo_path: "integrations/langgraph"
+    install_path_status: stable
+    source_repo: "https://github.com/topoteretes/cognee-integration-langgraph"
+    archive_status: tracked
+    archive_redirect_link: "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/langgraph"
+    notes: "LangGraph agent tools - add, search, session management"
 
-  # ── Pending migrations ─────────────────────────────────────────────
+  # --- Pending migrations ---
 
   - slug: crewai
     name: "Cognee Integration for CrewAI"
-    owner: cognee
+    ownership: cognee-owned
     language: python
     registry: pypi
     package_name: "cognee-integration-crewai"
     cognee_dependency: sdk
     current_version: "0.1.1"
     migration_status: pending
-    source_repo: https://github.com/topoteretes/cognee-integration-crewai
-    notes: "CrewAI agent tools – add, search, session management"
+    source_repo: "https://github.com/topoteretes/cognee-integration-crewai"
+    archive_status: pending
+    notes: "CrewAI agent tools - add, search, session management"
 
   - slug: strands
     name: "Cognee Integration for Strands"
-    owner: cognee
+    ownership: cognee-owned
     language: python
     registry: pypi
     package_name: "cognee-integration-strands"
     cognee_dependency: sdk
     current_version: "0.1.1"
     migration_status: pending
-    source_repo: https://github.com/topoteretes/cognee-integration-strands
-    notes: "Strands agent tools – add, search, session management"
+    source_repo: "https://github.com/topoteretes/cognee-integration-strands"
+    archive_status: pending
+    notes: "Strands agent tools - add, search, session management"
 
   - slug: claude
     name: "Cognee Integration for Claude Agent SDK"
-    owner: cognee
+    ownership: cognee-owned
     language: python
     registry: pypi
     package_name: "cognee-integration-claude"
     cognee_dependency: sdk
     current_version: "0.1.0"
     migration_status: pending
-    source_repo: https://github.com/topoteretes/cognee-integration-claude
-    notes: "Claude Agent SDK tools – add, search, session management"
+    source_repo: "https://github.com/topoteretes/cognee-integration-claude"
+    archive_status: pending
+    notes: "Claude Agent SDK tools - add, search, session management"
 
   - slug: n8n
     name: "Cognee Nodes for n8n"
-    owner: cognee
+    ownership: cognee-owned
     language: typescript
     registry: npm
     package_name: "n8n-nodes-cognee"
-    cognee_dependency: http-api
+    cognee_dependency: Cognee Cloud
     current_version: "0.2.0"
     migration_status: pending
-    source_repo: https://github.com/topoteretes/cognee-n8n
-    notes: "n8n community node – add data, cognify, search, delete"
+    source_repo: "https://github.com/topoteretes/cognee-n8n"
+    archive_status: pending
+    notes: "n8n community node - add data, cognify, search, delete"
 
   - slug: vercel-ai-sdk
     name: "Cognee for Vercel AI SDK"
-    owner: cognee
+    ownership: cognee-owned
     language: typescript
     registry: npm
     package_name: "TBD"
     cognee_dependency: http-api
     current_version: "TBD"
     migration_status: pending
-    source_repo: https://github.com/topoteretes/cognee-vercel-ai-sdk
-    notes: "Vercel AI SDK middleware – auto-store conversations, retrieve context"
+    source_repo: "https://github.com/topoteretes/cognee-vercel-ai-sdk"
+    archive_status: pending
+    notes: "Vercel AI SDK middleware - auto-store conversations, retrieve context"
 
   - slug: openai-agents
     name: "Cognee Integration for OpenAI Agents"
-    owner: cognee
+    ownership: cognee-owned
     language: python
     registry: pypi
     package_name: "cognee-integration-openai-agents"
     cognee_dependency: sdk
     current_version: "0.1.0"
     migration_status: pending
-    source_repo: https://github.com/topoteretes/cognee-integration-openai-agents
-    notes: "Repo currently private."
+    source_repo: "https://github.com/topoteretes/cognee-integration-openai-agents"
+    archive_status: pending
+    notes: "Repository currently private."
+
