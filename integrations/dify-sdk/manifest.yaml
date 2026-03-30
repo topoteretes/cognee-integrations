@@ -1,0 +1,37 @@
+version: 0.0.1
+type: plugin
+author: topoteretes
+name: cognee_sdk
+label:
+  en_US: cognee (Self-Hosted)
+  ja_JP: cognee（セルフホスト）
+  zh_Hans: cognee（自托管）
+  pt_BR: cognee (Self-Hosted)
+description:
+  en_US: Connect Dify to a self-hosted Cognee server for memory operations
+  ja_JP: セルフホスト型 Cognee サーバーに接続してメモリ操作を実行
+  zh_Hans: 连接到自托管的 Cognee 服务器进行内存操作
+  pt_BR: Conecte o Dify a um servidor Cognee auto-hospedado para operações de memória
+icon: icon.svg
+icon_dark: icon-dark.svg
+resource:
+  memory: 268435456
+  permission:
+    tool:
+      enabled: true
+plugins:
+  tools:
+    - provider/cognee_sdk.yaml
+meta:
+  version: 0.0.1
+  arch:
+    - amd64
+    - arm64
+  runner:
+    language: python
+    version: "3.12"
+    entrypoint: main
+  minimum_dify_version: null
+created_at: 2026-03-30T12:00:00.000000+00:00
+privacy: PRIVACY.md
+verified: false
