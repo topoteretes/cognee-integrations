@@ -108,16 +108,11 @@ services:
     container_name: cognee-local
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
       - HOST=0.0.0.0
       - ENVIRONMENT=local
     volumes:
-      - cognee_data:/app/.cognee_system
-
-volumes:
-  cognee_data:
+      - .env:/app/.env
 ```
 
 Create a `.env` file alongside it (**never commit this file**):
@@ -233,6 +228,8 @@ In the Dify plugins page, find **Cognee (Self-Hosted)** and click configure:
 > **Important:** Since the plugin runs on your host machine (not inside Docker), use `localhost`. If you were running the plugin inside Docker too, you'd use `host.docker.internal`.
 
 Click **Save**. The plugin validates by performing a health check and logging in.
+
+> **Long-running operations:** Cognify and Update can take long on large datasets. This plugin sets generous timeouts, but Dify itself has its own limits (`PLUGIN_DAEMON_TIMEOUT`, `GUNICORN_TIMEOUT`, etc. in Dify's `docker/.env`). Increase those if operations time out.
 
 #### Step 5: Test the tools
 

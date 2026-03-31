@@ -4,17 +4,17 @@ services:
     container_name: cognee-sdk-local
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
       - HOST=0.0.0.0
       - ENVIRONMENT=local
     volumes:
-      - cognee_data:/app/.cognee_system
+      - .env:/app/.env
+       - cognee_system:/app/cognee/.cognee_system                                                                                                
+       - cognee_data:/app/cognee/.data_storage  
     deploy:
       resources:
         limits:
           memory: 8GB
-
-volumes:
-  cognee_data:
+volumes:                                                                                                                                        
+  cognee_system:                                                                                                                                
+  cognee_data:   

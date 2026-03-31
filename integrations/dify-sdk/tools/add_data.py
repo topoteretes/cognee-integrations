@@ -12,7 +12,7 @@ def _login(base_url: str, email: str, password: str) -> str:
     response = httpx.post(
         f"{base_url}/api/v1/auth/login",
         data={"username": email, "password": password},
-        timeout=10,
+        timeout=60,
     )
     response.raise_for_status()
     return response.json()["access_token"]
@@ -57,7 +57,7 @@ class AddDataTool(Tool):
                 headers={"Authorization": f"Bearer {token}"},
                 files={"data": (filename, file_obj, "text/plain")},
                 data=form_data,
-                timeout=60,
+                timeout=3600,
             )
             response.raise_for_status()
             result = response.json()

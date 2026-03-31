@@ -10,7 +10,7 @@ def _login(base_url: str, email: str, password: str) -> str:
     response = httpx.post(
         f"{base_url}/api/v1/auth/login",
         data={"username": email, "password": password},
-        timeout=10,
+        timeout=60,
     )
     response.raise_for_status()
     return response.json()["access_token"]
@@ -30,7 +30,7 @@ class DeleteDatasetTool(Tool):
             response = httpx.delete(
                 f"{base_url}/api/v1/datasets/{dataset_id}",
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=30,
+                timeout=600,
             )
             response.raise_for_status()
 

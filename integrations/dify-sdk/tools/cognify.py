@@ -10,7 +10,7 @@ def _login(base_url: str, email: str, password: str) -> str:
     response = httpx.post(
         f"{base_url}/api/v1/auth/login",
         data={"username": email, "password": password},
-        timeout=10,
+        timeout=60,
     )
     response.raise_for_status()
     return response.json()["access_token"]
@@ -58,7 +58,7 @@ class CognifyTool(Tool):
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",
                 },
-                timeout=1200,
+                timeout=21600,
             )
             response.raise_for_status()
 

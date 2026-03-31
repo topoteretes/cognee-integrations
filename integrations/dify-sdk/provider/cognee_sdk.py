@@ -28,7 +28,7 @@ class CogneeSdkProvider(ToolProvider):
 
         # 1. Health check
         try:
-            response = httpx.get(f"{base_url}/health", timeout=10)
+            response = httpx.get(f"{base_url}/health", timeout=60)
             logger.info(f"Health check response: {response.status_code}")
             response.raise_for_status()
         except httpx.ConnectError:
@@ -54,7 +54,7 @@ class CogneeSdkProvider(ToolProvider):
                     "username": user_email,
                     "password": user_password,
                 },
-                timeout=10,
+                timeout=60,
             )
             logger.info(f"Login response: {response.status_code}")
             response.raise_for_status()
