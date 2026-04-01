@@ -124,3 +124,7 @@ jobs:
       - name: Type check
         working-directory: integrations/${{ matrix.integration }}
         run: npx tsc --noEmit --skipLibCheck
+
+      - name: Run tests
+        working-directory: integrations/${{ matrix.integration }}
+        run: npm test

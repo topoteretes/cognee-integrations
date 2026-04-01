@@ -361,6 +361,18 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+## Async-first Guidance
+
+All tools in this integration are async (`async def`). Keep the following in mind:
+
+- **Long-running operations:** `cognee.add()` and `cognee.cognify()` can take seconds to minutes depending on data volume. Wrap them with `asyncio.wait_for()` to enforce timeouts in production:
+  ```python
+  await asyncio.wait_for(cognee.cognify(), timeout=300)
+  ```
+- **Retries for transient failures:** LLM and network calls can fail intermittently. Use retry logic (e.g., `tenacity`) around `add_tool` and `search_tool` invocations in your agent orchestration layer.
+- **Non-blocking deployment:** Do not call Cognee tools from synchronous request handlers. Use `asyncio.run()` or an async web framework to avoid blocking your application.
+- **Google ADK long-running tools:** When using ADK's `InMemoryRunner`, agent tool calls are already async. Ensure your runner's timeout is high enough for indexing operations.
+
 ## Requirements
 
 - Python 3.10+

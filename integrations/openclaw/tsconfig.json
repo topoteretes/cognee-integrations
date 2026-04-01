@@ -15,7 +15,8 @@
       "node",
       "jest"
     ],
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "isolatedModules": true
   },
   "include": [
     "index.ts",

@@ -14,6 +14,7 @@ The plugin runs a feedback loop around your workspace skill definitions (`SKILL.
 ## Prerequisites
 
 - [OpenClaw](https://openclaw.dev) `>=2026.2.3-1`
+- [`@cognee/cognee-openclaw`](../openclaw) `>=2026.3.0` — **required peer dependency**. This plugin reuses its HTTP client (`CogneeHttpClient`) for all Cognee API communication. Both plugins must be installed together.
 - Python 3.10+ (for Cognee)
 - An OpenAI API key (or another LLM provider supported by Cognee)
 
