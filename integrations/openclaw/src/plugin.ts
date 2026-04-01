@@ -404,7 +404,7 @@ const memoryCogneePlugin = {
             const totalResults = Object.values(scopeResults).reduce((sum, arr) => sum + arr.length, 0);
             api.logger.info?.(`cognee-openclaw: injecting ${totalResults} memories across ${Object.keys(scopeResults).length} scope(s)`);
 
-            return { prependContext: `<cognee_memories>\n${sections.join("\n")}\n</cognee_memories>` };
+            return { [cfg.recallInjectionPosition]: `<cognee_memories>\n${sections.join("\n")}\n</cognee_memories>` };
           } else {
             // Legacy single-scope
             const results = await client.search({
@@ -431,7 +431,7 @@ const memoryCogneePlugin = {
             );
 
             api.logger.info?.(`cognee-openclaw: injecting ${filtered.length} memories`);
-            return { prependContext: `<cognee_memories>\nRelevant memories:\n${payload}\n</cognee_memories>` };
+            return { [cfg.recallInjectionPosition]: `<cognee_memories>\nRelevant memories:\n${payload}\n</cognee_memories>` };
           }
         } catch (error) {
           api.logger.warn?.(`cognee-openclaw: recall failed: ${String(error)}`);

@@ -11,6 +11,7 @@ export const DEFAULT_DELETE_MODE = "soft" as const;
 export const DEFAULT_MAX_RESULTS = 3;
 export const DEFAULT_MIN_SCORE = 0.3;
 export const DEFAULT_MAX_TOKENS = 512;
+export const DEFAULT_RECALL_INJECTION_POSITION = "prependSystemContext" as const;
 export const DEFAULT_AUTO_RECALL = true;
 export const DEFAULT_AUTO_INDEX = true;
 export const DEFAULT_AUTO_COGNIFY = true;
@@ -87,6 +88,12 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const defaultWriteScope = raw.defaultWriteScope || DEFAULT_WRITE_SCOPE;
   const scopeRouting = Array.isArray(raw.scopeRouting) ? raw.scopeRouting : DEFAULT_SCOPE_ROUTING;
 
+  // Recall injection
+  const validPositions = ["prependSystemContext", "appendSystemContext", "prependContext"] as const;
+  const recallInjectionPosition = raw.recallInjectionPosition && validPositions.includes(raw.recallInjectionPosition)
+    ? raw.recallInjectionPosition
+    : DEFAULT_RECALL_INJECTION_POSITION;
+
   // Session
   const enableSessions = typeof raw.enableSessions === "boolean" ? raw.enableSessions : true;
   const persistSessionsAfterEnd = typeof raw.persistSessionsAfterEnd === "boolean" ? raw.persistSessionsAfterEnd : true;
@@ -95,6 +102,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting,
+    recallInjectionPosition,
     enableSessions, persistSessionsAfterEnd,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,

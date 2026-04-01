@@ -62,6 +62,10 @@ export type CogneePluginConfig = {
   minScore?: number;
   maxTokens?: number;
 
+  // --- Recall injection ---
+  /** Where recalled memories are injected in the prompt. Default: prependSystemContext */
+  recallInjectionPosition?: "prependSystemContext" | "appendSystemContext" | "prependContext";
+
   // --- Automation ---
   autoRecall?: boolean;
   autoIndex?: boolean;
