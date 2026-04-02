@@ -116,6 +116,11 @@
         "type": "number",
         "description": "Token cap for recall per scope (default: 512)"
       },
+      "recallInjectionPosition": {
+        "type": "string",
+        "enum": ["prependSystemContext", "appendSystemContext", "prependContext"],
+        "description": "Where recalled memories are injected: prepend to system prompt, append to system prompt, or prepend to prompt context (default: prependSystemContext)"
+      },
       "autoRecall": {
         "type": "boolean",
         "description": "Inject memories before each agent run (default: true)"
@@ -221,6 +226,10 @@
     "maxTokens": {
       "label": "Max Tokens",
       "placeholder": "512"
+    },
+    "recallInjectionPosition": {
+      "label": "Recall Injection Position",
+      "placeholder": "prependSystemContext"
     },
     "autoRecall": {
       "label": "Auto-Recall"
