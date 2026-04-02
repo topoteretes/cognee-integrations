@@ -20,6 +20,43 @@ import { syncFiles, syncFilesScoped } from "./sync.js";
 // Plugin registration
 // ---------------------------------------------------------------------------
 
+type AgentEndWorkspaceResolution = {
+  workspaceDir: string;
+  source: "hook context" | "agent runtime" | "service cache" | "process.cwd()";
+};
+
+type RuntimeAgentWorkspaceResolver = {
+  resolveAgentWorkspaceDir?: (config: unknown, agentId: string) => string | undefined;
+};
+
+function resolveAgentEndWorkspace(params: {
+  api: OpenClawPluginApi;
+  hookCtx: { workspaceDir?: string; agentId?: string };
+  resolvedWorkspaceDir?: string;
+}): AgentEndWorkspaceResolution {
+  const hookWorkspaceDir = params.hookCtx.workspaceDir?.trim();
+  if (hookWorkspaceDir) {
+    return { workspaceDir: hookWorkspaceDir, source: "hook context" };
+  }
+
+  const agentId = params.hookCtx.agentId?.trim();
+  if (agentId) {
+    // Older plugin-sdk typings may not expose runtime.agent yet, so probe it structurally.
+    const runtimeAgent = (params.api.runtime as { agent?: RuntimeAgentWorkspaceResolver }).agent;
+    const runtimeWorkspaceDir = runtimeAgent?.resolveAgentWorkspaceDir?.(params.api.config, agentId);
+    if (runtimeWorkspaceDir?.trim()) {
+      return { workspaceDir: runtimeWorkspaceDir, source: "agent runtime" };
+    }
+  }
+
+  const serviceWorkspaceDir = params.resolvedWorkspaceDir?.trim();
+  if (serviceWorkspaceDir) {
+    return { workspaceDir: serviceWorkspaceDir, source: "service cache" };
+  }
+
+  return { workspaceDir: process.cwd(), source: "process.cwd()" };
+}
+
 const memoryCogneePlugin = {
   id: "cognee-openclaw",
   name: "Memory (Cognee)",
@@ -448,7 +485,15 @@ const memoryCogneePlugin = {
         if (!event.success) return;
         await stateReady;
 
-        const workspaceDir = resolvedWorkspaceDir || process.cwd();
+        const workspace = resolveAgentEndWorkspace({
+          api,
+          hookCtx: ctx,
+          resolvedWorkspaceDir,
+        });
+        api.logger.info?.(
+          `cognee-openclaw: agent_end workspace resolved from ${workspace.source}: ${workspace.workspaceDir}`,
+        );
+        const workspaceDir = workspace.workspaceDir;
 
         // Fix #4: Actually persist the session into the knowledge graph
         if (cfg.enableSessions && cfg.persistSessionsAfterEnd && sessionId) {
