@@ -5,6 +5,7 @@ import { MEMORY_SCOPES } from "./types.js";
 import { CogneeHttpClient } from "./client.js";
 import { resolveConfig } from "./config.js";
 import { collectMemoryFiles } from "./files.js";
+import { buildMemoryFlushPlan } from "./flush-plan.js";
 import {
   loadDatasetState,
   loadScopedSyncIndexes,
@@ -27,6 +28,10 @@ type AgentEndWorkspaceResolution = {
 
 type RuntimeAgentWorkspaceResolver = {
   resolveAgentWorkspaceDir?: (config: unknown, agentId: string) => string | undefined;
+};
+
+type MemoryFlushPlanRegistrant = OpenClawPluginApi & {
+  registerMemoryFlushPlan?: (resolver: typeof buildMemoryFlushPlan) => void;
 };
 
 function resolveAgentEndWorkspace(params: {
@@ -66,6 +71,9 @@ const memoryCogneePlugin = {
     const cfg = resolveConfig(api.pluginConfig);
     const client = new CogneeHttpClient(cfg.baseUrl, cfg.apiKey, cfg.username, cfg.password, cfg.requestTimeoutMs, cfg.ingestionTimeoutMs);
     const multiScope = isMultiScopeEnabled(cfg);
+
+    (api as MemoryFlushPlanRegistrant).registerMemoryFlushPlan?.(buildMemoryFlushPlan);
+    api.logger.debug?.("cognee-openclaw: registered memory flush plan");
 
     // Legacy single-scope state
     let datasetId: string | undefined;

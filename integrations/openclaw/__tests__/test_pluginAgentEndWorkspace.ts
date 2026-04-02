@@ -10,6 +10,7 @@ const mockMigrateLegacyIndex = jest.fn();
 
 const mockHealth = jest.fn();
 const mockFetchJson = jest.fn();
+const mockRegisterMemoryFlushPlan = jest.fn();
 
 jest.mock("../src/files", () => ({
   collectMemoryFiles: (...args: unknown[]) => mockCollectMemoryFiles(...args),
@@ -75,6 +76,7 @@ function createApi(params?: {
       },
     },
     logger,
+    registerMemoryFlushPlan: mockRegisterMemoryFlushPlan,
     registerCli: jest.fn(),
     registerService: jest.fn((registration: ServiceRegistration) => {
       services.push(registration);
@@ -131,6 +133,19 @@ describe("cognee-openclaw agent_end workspace resolution", () => {
     });
     mockHealth.mockResolvedValue({ status: "ok" });
     mockFetchJson.mockResolvedValue({});
+  });
+
+  it("registers a memory flush plan resolver", () => {
+    createApi();
+
+    expect(mockRegisterMemoryFlushPlan).toHaveBeenCalledTimes(1);
+    const resolver = mockRegisterMemoryFlushPlan.mock.calls[0]?.[0] as
+      | ((params?: { nowMs?: number }) => { relativePath: string } | null)
+      | undefined;
+    expect(resolver).toBeDefined();
+    expect(resolver?.({ nowMs: Date.UTC(2026, 3, 3, 0, 0, 0) })?.relativePath).toBe(
+      "memory/2026-04-03.md",
+    );
   });
 
   it("uses hook context workspaceDir when present", async () => {
