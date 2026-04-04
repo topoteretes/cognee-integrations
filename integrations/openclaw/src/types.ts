@@ -31,7 +31,11 @@ export type ScopeRoute = {
   scope: MemoryScope;
 };
 
+export type CogneeMode = "local" | "cloud";
+
 export type CogneePluginConfig = {
+  /** "local" for self-hosted Cognee, "cloud" for Cognee Cloud. Default: "local" */
+  mode?: CogneeMode;
   baseUrl?: string;
   apiKey?: string;
   username?: string;

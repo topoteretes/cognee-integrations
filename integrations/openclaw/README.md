@@ -62,7 +62,7 @@ openclaw cognee setup --hybrid
 
 **Hybrid mode** keeps `memory-core` enabled — the agent uses both Cognee recall and built-in memory search.
 
-Then optionally configure the Cognee connection in `~/.openclaw/openclaw.json`:
+Then configure the Cognee connection in `~/.openclaw/openclaw.json`:
 
 ```yaml
 plugins:
@@ -74,6 +74,33 @@ plugins:
         apiKey: "${COGNEE_API_KEY}"
         datasetName: "my-project"
 ```
+
+### Cognee Cloud
+
+To use Cognee Cloud instead of a local instance, set `mode` to `"cloud"`:
+
+```yaml
+plugins:
+  entries:
+    cognee-openclaw:
+      enabled: true
+      config:
+        mode: "cloud"
+        baseUrl: "https://tenant-xxx.cloud.cognee.ai/api"
+        apiKey: "${COGNEE_API_KEY}"
+```
+
+Or via environment variables:
+
+```bash
+export COGNEE_MODE=cloud
+export COGNEE_BASE_URL=https://tenant-xxx.cloud.cognee.ai/api
+export COGNEE_API_KEY=your-api-key
+```
+
+**Cloud mode supported operations**: add (new files), search, cognify, delete.
+
+**Known limitation**: Updating existing data (modifying a previously synced file) is not yet supported in cloud mode. Cognee Cloud silently ignores re-adds with the same filename. To update data, delete and re-add it manually via the [Cognee Cloud platform](https://platform.cognee.ai) or the API directly. This will be supported in a future version.
 
 ## Multi-Scope Memory
 

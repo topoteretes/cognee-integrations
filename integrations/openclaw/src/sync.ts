@@ -39,6 +39,7 @@ export async function syncFiles(
             datasetId,
             data: dataWithMetadata,
             filePath: file.path,
+            datasetName: dsName,
           });
           const newDataId = updateResponse.dataId;
           if (!newDataId) {
@@ -48,7 +49,7 @@ export async function syncFiles(
           syncIndex.datasetId = datasetId;
           syncIndex.datasetName = dsName;
           result.updated++;
-          logger.info?.(`cognee-openclaw: updated ${file.path}`);
+          logger.info?.(`cognee-openclaw: updated ${file.path} (newDataId=${newDataId})`);
           continue;
         } catch (updateError) {
           const errorMsg = updateError instanceof Error ? updateError.message : String(updateError);
@@ -66,7 +67,7 @@ export async function syncFiles(
         datasetId,
         data: dataWithMetadata,
         filePath: file.path,
-    });
+      });
 
       if (response.datasetId && response.datasetId !== datasetId) {
         datasetId = response.datasetId;

@@ -1,4 +1,4 @@
-import type { CogneePluginConfig, CogneeSearchType, MemoryScope, ScopeRoute } from "./types.js";
+import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, ScopeRoute } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -11,7 +11,7 @@ export const DEFAULT_DELETE_MODE = "soft" as const;
 export const DEFAULT_MAX_RESULTS = 3;
 export const DEFAULT_MIN_SCORE = 0.3;
 export const DEFAULT_MAX_TOKENS = 512;
-export const DEFAULT_RECALL_INJECTION_POSITION = "prependSystemContext" as const;
+export const DEFAULT_RECALL_INJECTION_POSITION = "prependContext" as const;
 export const DEFAULT_AUTO_RECALL = true;
 export const DEFAULT_AUTO_INDEX = true;
 export const DEFAULT_AUTO_COGNIFY = true;
@@ -58,7 +58,8 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
       ? (rawConfig as CogneePluginConfig)
       : {};
 
-  const baseUrl = raw.baseUrl?.trim() || DEFAULT_BASE_URL;
+  const mode: CogneeMode = raw.mode === "cloud" || process.env.COGNEE_MODE === "cloud" ? "cloud" : "local";
+  const baseUrl = raw.baseUrl?.trim() || process.env.COGNEE_BASE_URL?.trim() || DEFAULT_BASE_URL;
   const datasetName = raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
   const searchPrompt = raw.searchPrompt || "";
@@ -74,7 +75,9 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const ingestionTimeoutMs = typeof raw.ingestionTimeoutMs === "number" ? raw.ingestionTimeoutMs : DEFAULT_INGESTION_TIMEOUT_MS;
 
   const apiKey =
-    raw.apiKey && raw.apiKey.length > 0 ? resolveEnvVars(raw.apiKey) : process.env.COGNEE_API_KEY || "";
+    raw.apiKey && raw.apiKey.length > 0 ? resolveEnvVars(raw.apiKey)
+    : mode === "cloud" ? process.env.COGNEE_API_KEY || ""
+    : "";
   const username = raw.username?.trim() || process.env.COGNEE_USERNAME || "";
   const password = raw.password?.trim() || process.env.COGNEE_PASSWORD || "";
 
@@ -99,7 +102,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const persistSessionsAfterEnd = typeof raw.persistSessionsAfterEnd === "boolean" ? raw.persistSessionsAfterEnd : true;
 
   return {
-    baseUrl, apiKey, username, password, datasetName,
+    mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting,
     recallInjectionPosition,

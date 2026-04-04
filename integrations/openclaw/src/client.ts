@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { CogneeAddResponse, CogneeDeleteMode, CogneeSearchResult, CogneeSearchType } from "./types.js";
+import type { CogneeAddResponse, CogneeDeleteMode, CogneeMode, CogneeSearchResult, CogneeSearchType } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,7 +28,12 @@ export class CogneeHttpClient {
     private readonly password?: string,
     private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
     readonly ingestionTimeoutMs: number = DEFAULT_INGESTION_TIMEOUT_MS,
-  ) {}
+    readonly mode: CogneeMode = "local",
+  ) { }
+
+  private get isCloud(): boolean {
+    return this.mode === "cloud";
+  }
 
   async login(): Promise<void> {
     const user = this.username || "default_user@example.com";
@@ -58,6 +63,10 @@ export class CogneeHttpClient {
   }
 
   async ensureAuth(): Promise<void> {
+    if (this.isCloud) {
+      if (!this.apiKey) throw new Error("Cognee Cloud mode requires an API key (set COGNEE_API_KEY)");
+      return;
+    }
     if (this.authToken || this.apiKey) return;
     if (!this.loginPromise) {
       this.loginPromise = this.login().catch((err) => {
@@ -69,6 +78,9 @@ export class CogneeHttpClient {
   }
 
   private buildHeaders(): Record<string, string> {
+    if (this.isCloud) {
+      return { "X-Api-Key": this.apiKey! };
+    }
     if (this.apiKey) {
       return {
         Authorization: `Bearer ${this.apiKey}`,
@@ -156,8 +168,10 @@ export class CogneeHttpClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      const headers = this.isCloud ? { "X-Api-Key": this.apiKey! } : {};
       const response = await fetch(`${this.baseUrl}/health`, {
         method: "GET",
+        headers,
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -177,6 +191,9 @@ export class CogneeHttpClient {
     datasetId?: string;
     filePath: string;
   }): Promise<{ datasetId: string; datasetName: string; dataId?: string }> {
+    let data: CogneeAddResponse;
+
+    const addPath = this.isCloud ? "/add" : "/api/v1/add";
     const formData = new FormData();
     const fileName = sanitizeFilePath(params.filePath);
     formData.append("data", new Blob([params.data], { type: "text/plain" }), fileName);
@@ -185,8 +202,8 @@ export class CogneeHttpClient {
       formData.append("datasetId", params.datasetId);
     }
 
-    const data = await this.fetchJson<CogneeAddResponse>(
-      "/api/v1/add",
+    data = await this.fetchJson<CogneeAddResponse>(
+      addPath,
       { method: "POST", body: formData },
       this.ingestionTimeoutMs,
     );
@@ -212,7 +229,15 @@ export class CogneeHttpClient {
     datasetId: string;
     data: string;
     filePath: string;
+    datasetName?: string;
   }): Promise<{ datasetId: string; datasetName: string; dataId?: string }> {
+    if (this.isCloud) {
+      // Cloud: update is not supported
+      // Users should update data directly via the Cognee Cloud platform or API.
+      return { datasetId: params.datasetId, datasetName: params.datasetName || params.datasetId, dataId: params.dataId };
+    }
+
+    // Local: PATCH /api/v1/update
     const query = new URLSearchParams({ data_id: params.dataId, dataset_id: params.datasetId });
     const formData = new FormData();
     const fileName = sanitizeFilePath(params.filePath);
@@ -234,8 +259,9 @@ export class CogneeHttpClient {
 
   async resolveDataIdFromDataset(datasetId: string, fileName: string): Promise<string | undefined> {
     try {
+      const path = this.isCloud ? `/datasets/${datasetId}/data` : `/api/v1/datasets/${datasetId}/data`;
       type DataItem = { id: string; name: string };
-      const items = await this.fetchJson<DataItem[]>(`/api/v1/datasets/${datasetId}/data`, { method: "GET" });
+      const items = await this.fetchJson<DataItem[]>(path, { method: "GET" });
       if (!Array.isArray(items)) return undefined;
       const match = items.find((item) => item.name === fileName);
       return match?.id;
@@ -250,8 +276,13 @@ export class CogneeHttpClient {
     mode?: CogneeDeleteMode;
   }): Promise<{ datasetId: string; dataId: string; deleted: boolean; error?: string }> {
     try {
-      const query = new URLSearchParams({ data_id: params.dataId, dataset_id: params.datasetId, mode: params.mode ?? "soft" });
-      await this.fetchJson<unknown>(`/api/v1/delete?${query.toString()}`, { method: "DELETE" });
+      if (this.isCloud) {
+        // Cloud: DELETE /datasets/{datasetId}/data/{dataId}
+        await this.fetchJson<unknown>(`/datasets/${params.datasetId}/data/${params.dataId}`, { method: "DELETE" });
+      } else {
+        const query = new URLSearchParams({ data_id: params.dataId, dataset_id: params.datasetId, mode: params.mode ?? "soft" });
+        await this.fetchJson<unknown>(`/api/v1/delete?${query.toString()}`, { method: "DELETE" });
+      }
       return { datasetId: params.datasetId, dataId: params.dataId, deleted: true };
     } catch (error) {
       return { datasetId: params.datasetId, dataId: params.dataId, deleted: false, error: error instanceof Error ? error.message : String(error) };
@@ -259,7 +290,8 @@ export class CogneeHttpClient {
   }
 
   async cognify(params: { datasetIds?: string[] } = {}): Promise<{ status?: string }> {
-    return this.fetchJson<{ status?: string }>("/api/v1/cognify", {
+    const path = this.isCloud ? "/cognify" : "/api/v1/cognify";
+    return this.fetchJson<{ status?: string }>(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ datasetIds: params.datasetIds, runInBackground: true }),
@@ -283,7 +315,8 @@ export class CogneeHttpClient {
     maxTokens: number;
     sessionId?: string;
   }): Promise<CogneeSearchResult[]> {
-    const data = await this.fetchJson<unknown>("/api/v1/search", {
+    const searchPath = this.isCloud ? "/search" : "/api/v1/search";
+    const data = await this.fetchJson<unknown>(searchPath, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -299,14 +332,16 @@ export class CogneeHttpClient {
   }
 
   async listDatasets(): Promise<{ id: string; name: string }[]> {
-    return this.fetchJson<{ id: string; name: string }[]>("/api/v1/datasets", { method: "GET" });
+    const path = this.isCloud ? "/datasets" : "/api/v1/datasets";
+    return this.fetchJson<{ id: string; name: string }[]>(path, { method: "GET" });
   }
 
   /**
    * Poll cognify pipeline status. Returns the status string ("completed", "running", "failed", etc.).
    */
   async datasetStatus(datasetId: string): Promise<string> {
-    const resp = await this.fetchJson<Record<string, string>>(`/api/v1/datasets/status?dataset_id=${datasetId}`, { method: "GET" });
+    const path = this.isCloud ? `/datasets/status?dataset_id=${datasetId}` : `/api/v1/datasets/status?dataset_id=${datasetId}`;
+    const resp = await this.fetchJson<Record<string, string>>(path, { method: "GET" });
     // Response is a dict keyed by dataset ID: { [datasetId]: "DATASET_PROCESSING_COMPLETED" }
     const status = resp[datasetId] ?? Object.values(resp)[0] ?? "unknown";
     return status.toLowerCase().replace("dataset_processing_", "");
@@ -347,9 +382,24 @@ function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
       }
       if (item && typeof item === "object") {
         const record = item as Record<string, unknown>;
+
+        // Extract text: prefer .text, then .search_result (cloud format), then stringify
+        let text: string;
+        if (typeof record.text === "string") {
+          text = record.text;
+        } else if (Array.isArray(record.search_result)) {
+          text = record.search_result.map(String).join("\n");
+        } else if (typeof record.search_result === "string") {
+          text = record.search_result;
+        } else {
+          text = JSON.stringify(record);
+        }
+
         return {
-          id: typeof record.id === "string" ? record.id : `result-${index}`,
-          text: typeof record.text === "string" ? record.text : JSON.stringify(record),
+          id: typeof record.id === "string" ? record.id
+            : typeof record.dataset_id === "string" ? record.dataset_id
+              : `result-${index}`,
+          text,
           score: typeof record.score === "number" ? record.score : 1,
           metadata: record.metadata as Record<string, unknown> | undefined,
         };

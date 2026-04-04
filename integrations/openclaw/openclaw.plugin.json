@@ -6,9 +6,17 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "cloud"
+        ],
+        "description": "\"local\" for self-hosted Cognee, \"cloud\" for Cognee Cloud (default: local). Also settable via COGNEE_MODE env var. Cloud mode supports: add, search, cognify, delete. Update (modifying existing data) is not yet supported — use the Cognee Cloud platform or API directly."
+      },
       "baseUrl": {
         "type": "string",
-        "description": "Cognee API base URL (default: http://localhost:8000)"
+        "description": "Cognee API base URL (default: http://localhost:8000). Also settable via COGNEE_BASE_URL env var."
       },
       "apiKey": {
         "type": "string",
@@ -50,13 +58,21 @@
         "type": "array",
         "items": {
           "type": "string",
-          "enum": ["company", "user", "agent"]
+          "enum": [
+            "company",
+            "user",
+            "agent"
+          ]
         },
         "description": "Memory scopes to search during recall, in priority order (default: ['agent', 'user', 'company'])"
       },
       "defaultWriteScope": {
         "type": "string",
-        "enum": ["company", "user", "agent"],
+        "enum": [
+          "company",
+          "user",
+          "agent"
+        ],
         "description": "Default scope for files that don't match any scopeRouting pattern (default: 'agent')"
       },
       "scopeRouting": {
@@ -64,10 +80,23 @@
         "items": {
           "type": "object",
           "properties": {
-            "pattern": { "type": "string", "description": "Glob pattern to match file paths (e.g. 'memory/company/**')" },
-            "scope": { "type": "string", "enum": ["company", "user", "agent"] }
+            "pattern": {
+              "type": "string",
+              "description": "Glob pattern to match file paths (e.g. 'memory/company/**')"
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "company",
+                "user",
+                "agent"
+              ]
+            }
           },
-          "required": ["pattern", "scope"]
+          "required": [
+            "pattern",
+            "scope"
+          ]
         },
         "description": "Rules to route memory files to scopes based on path patterns. First match wins."
       },
@@ -101,7 +130,10 @@
       },
       "deleteMode": {
         "type": "string",
-        "enum": ["soft", "hard"],
+        "enum": [
+          "soft",
+          "hard"
+        ],
         "description": "Cognee delete mode: 'soft' removes raw data only, 'hard' also removes degree-one graph nodes (default: soft)"
       },
       "maxResults": {
