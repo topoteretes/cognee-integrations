@@ -1,0 +1,61 @@
+identity:
+  name: "delete_data"
+  author: "topoteretes"
+  label:
+    en_US: "Delete Data"
+    zh_Hans: "删除数据"
+    pt_BR: "Excluir Dados"
+    ja_JP: "データ削除"
+description:
+  human:
+    en_US: "Delete a specific data item from a dataset on your local Cognee server"
+    zh_Hans: "从本地 Cognee 服务器的数据集中删除特定数据项"
+    pt_BR: "Excluir um item de dados específico de um dataset no seu servidor Cognee local"
+    ja_JP: "ローカル Cognee サーバーのデータセットから特定のデータ項目を削除"
+  llm: "Delete a specific data item from a dataset on the local Cognee server by its UUID. Requires both the dataset ID and the data item ID."
+parameters:
+  - name: dataset_id
+    type: string
+    required: true
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of the dataset containing the data"
+      zh_Hans: "包含该数据的数据集 UUID"
+      pt_BR: "UUID do dataset que contém os dados"
+      ja_JP: "データを含むデータセットの UUID"
+    llm_description: "The UUID of the dataset containing the data item"
+    form: llm
+  - name: data_id
+    type: string
+    required: true
+    label:
+      en_US: "Data ID"
+      zh_Hans: "数据 ID"
+      pt_BR: "ID dos Dados"
+      ja_JP: "データ ID"
+    human_description:
+      en_US: "UUID of the data item to delete"
+      zh_Hans: "要删除的数据项 UUID"
+      pt_BR: "UUID do item de dados a ser excluído"
+      ja_JP: "削除するデータ項目の UUID"
+    llm_description: "The UUID of the specific data item to delete"
+    form: llm
+output_schema:
+  type: object
+  properties:
+    succeeded:
+      type: boolean
+      description: "Whether the deletion was successful"
+    dataset_id:
+      type: string
+      description: "The dataset ID that was targeted"
+    data_id:
+      type: string
+      description: "The data item ID that was targeted"
+extra:
+  python:
+    source: tools/delete_data.py
