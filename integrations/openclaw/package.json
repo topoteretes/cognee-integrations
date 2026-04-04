@@ -1,6 +1,6 @@
 {
   "name": "@cognee/cognee-openclaw",
-  "version": "2026.3.2",
+  "version": "2026.3.3",
   "type": "module",
   "description": "OpenClaw Cognee-backed memory plugin with auto-recall/capture",
   "main": "dist/index.js",
@@ -44,7 +44,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
     "jest": "^30.2.0",
-    "openclaw": "2026.2.3-1",
+    "openclaw": "2026.4.2",
     "ts-jest": "^29.4.6",
     "typescript": "^5.3.0"
   },
