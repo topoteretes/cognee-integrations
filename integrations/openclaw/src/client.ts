@@ -294,7 +294,7 @@ export class CogneeHttpClient {
     return this.fetchJson<{ status?: string }>(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ datasetIds: params.datasetIds, runInBackground: true }),
+      body: JSON.stringify({ datasetIds: params.datasetIds, runInBackground: true, temporal_cognify: true }),
     });
   }
 
