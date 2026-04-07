@@ -6,8 +6,8 @@ from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
 
 
-def _login(base_url: str, email: str, password: str) -> str:
-    response = httpx.post(
+def _login(base_url: str, email: str, password: str, client: httpx.Client) -> str:
+    response = client.post(
         f"{base_url}/api/v1/auth/login",
         data={"username": email, "password": password},
         timeout=60,
@@ -49,38 +49,39 @@ class SearchTool(Tool):
             body["systemPrompt"] = system_prompt
 
         try:
-            token = _login(base_url, user_email, user_password)
+            with httpx.Client(trust_env=False) as client:
+                token = _login(base_url, user_email, user_password, client)
 
-            response = httpx.post(
-                f"{base_url}/api/v1/search",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                timeout=300,
-            )
-            response.raise_for_status()
-            result = response.json()
+                response = client.post(
+                    f"{base_url}/api/v1/search",
+                    json=body,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=300,
+                )
+                response.raise_for_status()
+                result = response.json()
 
-            yield self.create_json_message(result)
+                yield self.create_json_message(result)
 
-            if isinstance(result, list):
-                text_parts = [f"Found {len(result)} result(s):\n"]
-                for i, item in enumerate(result, 1):
-                    if isinstance(item, dict):
-                        content = item.get("content", item.get("text", str(item)))
-                        text_parts.append(f"{i}. {content}")
-                    else:
-                        text_parts.append(f"{i}. {item}")
-                formatted = "\n".join(text_parts)
-                yield self.create_variable_message("results_count", len(result))
-                yield self.create_variable_message("results_text", formatted)
-                yield self.create_text_message(formatted)
-            else:
-                yield self.create_variable_message("results_count", 1)
-                yield self.create_variable_message("results_text", str(result))
-                yield self.create_text_message(f"Search results: {result}")
+                if isinstance(result, list):
+                    text_parts = [f"Found {len(result)} result(s):\n"]
+                    for i, item in enumerate(result, 1):
+                        if isinstance(item, dict):
+                            content = item.get("content", item.get("text", str(item)))
+                            text_parts.append(f"{i}. {content}")
+                        else:
+                            text_parts.append(f"{i}. {item}")
+                    formatted = "\n".join(text_parts)
+                    yield self.create_variable_message("results_count", len(result))
+                    yield self.create_variable_message("results_text", formatted)
+                    yield self.create_text_message(formatted)
+                else:
+                    yield self.create_variable_message("results_count", 1)
+                    yield self.create_variable_message("results_text", str(result))
+                    yield self.create_text_message(f"Search results: {result}")
         except httpx.HTTPStatusError as e:
             error_msg = f"Cognee API error {e.response.status_code}: {e.response.text}"
             yield self.create_json_message({"error": error_msg})

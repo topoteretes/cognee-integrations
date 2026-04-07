@@ -6,8 +6,8 @@ from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
 
 
-def _login(base_url: str, email: str, password: str) -> str:
-    response = httpx.post(
+def _login(base_url: str, email: str, password: str, client: httpx.Client) -> str:
+    response = client.post(
         f"{base_url}/api/v1/auth/login",
         data={"username": email, "password": password},
         timeout=60,
@@ -49,28 +49,29 @@ class CognifyTool(Tool):
             body["ontologyKey"] = [k.strip() for k in ontology_key_str.split(",") if k.strip()]
 
         try:
-            token = _login(base_url, user_email, user_password)
+            with httpx.Client(trust_env=False) as client:
+                token = _login(base_url, user_email, user_password, client)
 
-            response = httpx.post(
-                f"{base_url}/api/v1/cognify",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                timeout=21600,
-            )
-            response.raise_for_status()
+                response = client.post(
+                    f"{base_url}/api/v1/cognify",
+                    json=body,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=21600,
+                )
+                response.raise_for_status()
 
-            try:
-                result = response.json()
-            except Exception:
-                result = {"status": "ok"}
+                try:
+                    result = response.json()
+                except Exception:
+                    result = {"status": "ok"}
 
-            label = ", ".join(datasets) if datasets else ", ".join(dataset_ids)
-            yield self.create_json_message(result)
-            yield self.create_variable_message("datasets", label)
-            yield self.create_text_message(f"Successfully cognified dataset(s): {label}")
+                label = ", ".join(datasets) if datasets else ", ".join(dataset_ids)
+                yield self.create_json_message(result)
+                yield self.create_variable_message("datasets", label)
+                yield self.create_text_message(f"Successfully cognified dataset(s): {label}")
         except httpx.HTTPStatusError as e:
             error_msg = f"Cognee API error {e.response.status_code}: {e.response.text}"
             yield self.create_json_message({"error": error_msg})
