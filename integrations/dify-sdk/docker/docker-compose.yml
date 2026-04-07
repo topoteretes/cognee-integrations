@@ -9,8 +9,8 @@ services:
       - ENVIRONMENT=local
     volumes:
       - .env:/app/.env
-       - cognee_system:/app/cognee/.cognee_system                                                                                                
-       - cognee_data:/app/cognee/.data_storage  
+      - cognee_system:/app/cognee/.cognee_system                                                                                                
+      - cognee_data:/app/cognee/.data_storage  
     deploy:
       resources:
         limits:

@@ -8,7 +8,7 @@
 
 Cognee (Self-Hosted) is a Dify tool plugin that connects to a **self-hosted Cognee server** for memory management. It lets you ingest text data into datasets, build a memory engine with the Cognify, search across them with advanced retrieval techniques, and update or delete data — all from within Dify workflows.
 
-This plugin is designed for users running Cognee on their own infrastructure. For the cloud-hosted version, see the [Cognee (Cloud) plugin](https://github.com/topoteretes/cognee-integrations).
+This plugin is designed for users running Cognee on their own infrastructure. For the cloud-hosted version, see the [Cognee (Cloud) plugin](https://github.com/topoteretes/cognee-integrations/tree/main/integrations/dify).
 
 **Tested with Cognee v0.5.5.** Other versions may have different API endpoints — verify compatibility before using a different version.
 
@@ -190,7 +190,7 @@ There are two methods:
 **Method A: Remote debug (recommended for development)**
 
 1. Go to **http://localhost/plugins** and click the debug icon to get the debugging key.
-2. In the plugin directory, create `.env`:
+2. In the plugin directory (integrations/dift-sdk), create `.env`:
    ```
    INSTALL_METHOD=remote
    REMOTE_INSTALL_URL=localhost:5003
