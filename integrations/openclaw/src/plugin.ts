@@ -51,6 +51,19 @@ const memoryCogneePlugin = {
     let resolveServiceReady: () => void;
     const serviceReady = new Promise<void>((r) => { resolveServiceReady = r; });
 
+    // Permission grant callback (fires when a new dataset is created)
+    const onNewDataset = cfg.enablePermissionGrants && cfg.grantReadUserIds.length > 0
+      ? async (datasetId: string) => {
+          await client.grantPermissions({
+            datasetId,
+            recipientIds: cfg.grantReadUserIds,
+            permissionType: "read",
+
+            logger: api.logger,
+          });
+        }
+      : undefined;
+
     // Load persisted state on startup
     const stateReady = Promise.all([
       loadDatasetState()
@@ -127,9 +140,9 @@ const memoryCogneePlugin = {
       logger.info?.(`cognee-openclaw: found ${files.length} memory file(s), syncing...`);
 
       if (multiScope) {
-        return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger);
+        return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, onNewDataset ? (dsId) => onNewDataset(dsId) : undefined);
       } else {
-        const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
+        const result = await syncFiles(client, files, files, syncIndex, cfg, logger, undefined, onNewDataset);
         if (result.datasetId) datasetId = result.datasetId;
         return result;
       }
@@ -295,6 +308,38 @@ const memoryCogneePlugin = {
           }
           process.exit(0);
         });
+
+      cognee
+        .command("permissions")
+        .description("Grant read permissions on all known datasets to configured users")
+        .action(async () => {
+          if (!cfg.enablePermissionGrants) {
+            console.log("Permission grants are disabled. Set enablePermissionGrants: true in plugin config.");
+            process.exit(1);
+          }
+          if (cfg.grantReadUserIds.length === 0) {
+            console.log("No users configured. Set grantReadUserIds in plugin config.");
+            process.exit(1);
+          }
+          const state = await loadDatasetState();
+          const datasets = Object.entries(state);
+          if (datasets.length === 0) {
+            console.log("No datasets found. Run 'openclaw cognee index' first.");
+            process.exit(0);
+          }
+          for (const [dsName, dsId] of datasets) {
+            console.log(`\nDataset: ${dsName} (${dsId})`);
+            await client.grantPermissions({
+              datasetId: dsId,
+              recipientIds: cfg.grantReadUserIds,
+              permissionType: "read",
+  
+              logger: { info: (m) => console.log(`  ${m}`), warn: (m) => console.log(`  WARN: ${m}`) },
+            });
+          }
+          console.log("\nDone.");
+          process.exit(0);
+        });
     }, { commands: ["cognee"] });
 
     // ------------------------------------------------------------------
@@ -325,6 +370,24 @@ const memoryCogneePlugin = {
             ctx.logger.info?.(`cognee-openclaw: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted, ${result.skipped} unchanged`);
           } catch (error) {
             ctx.logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(error)}`);
+          }
+
+          // Re-grant permissions on all known datasets (idempotent)
+          if (cfg.enablePermissionGrants && cfg.grantReadUserIds.length > 0) {
+            try {
+              const state = await loadDatasetState();
+              for (const [, dsId] of Object.entries(state)) {
+                await client.grantPermissions({
+                  datasetId: dsId,
+                  recipientIds: cfg.grantReadUserIds,
+                  permissionType: "read",
+      
+                  logger: ctx.logger,
+                });
+              }
+            } catch (error) {
+              ctx.logger.warn?.(`cognee-openclaw: startup permission grants failed: ${String(error)}`);
+            }
           }
         },
       });
@@ -528,7 +591,7 @@ const memoryCogneePlugin = {
             if (!hasChanges) return;
 
             api.logger.info?.("cognee-openclaw: detected changes, syncing across scopes...");
-            const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, api.logger);
+            const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, api.logger, onNewDataset ? (dsId) => onNewDataset(dsId) : undefined);
             api.logger.info?.(`cognee-openclaw: post-agent sync: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
           } else {
             try {
@@ -550,7 +613,7 @@ const memoryCogneePlugin = {
             if (changedFiles.length === 0 && !hasDeletedFiles) return;
 
             api.logger.info?.(`cognee-openclaw: detected ${changedFiles.length} changed file(s)${hasDeletedFiles ? " + deletions" : ""}, syncing...`);
-            const result = await syncFiles(client, changedFiles, files, syncIndex, cfg, api.logger);
+            const result = await syncFiles(client, changedFiles, files, syncIndex, cfg, api.logger, undefined, onNewDataset);
             if (result.datasetId) datasetId = result.datasetId;
             api.logger.info?.(`cognee-openclaw: post-agent sync: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
           }

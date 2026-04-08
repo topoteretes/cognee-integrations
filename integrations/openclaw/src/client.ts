@@ -142,6 +142,16 @@ export class CogneeHttpClient {
           }
         }
 
+        if (response.status === 403) {
+          const errorText = await response.text();
+          console.warn(
+            `cognee-openclaw: 403 Forbidden on ${path}. Response: ${errorText}. ` +
+            `This typically means the authenticated user lacks permission on the target dataset. ` +
+            `Enable permission grants in plugin config or check ENABLE_BACKEND_ACCESS_CONTROL on the Cognee server.`
+          );
+          throw new Error(`Cognee request forbidden (403): ${errorText}`);
+        }
+
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(`Cognee request failed (${response.status}): ${errorText}`);
@@ -345,6 +355,69 @@ export class CogneeHttpClient {
     // Response is a dict keyed by dataset ID: { [datasetId]: "DATASET_PROCESSING_COMPLETED" }
     const status = resp[datasetId] ?? Object.values(resp)[0] ?? "unknown";
     return status.toLowerCase().replace("dataset_processing_", "");
+  }
+
+  // -- Permissions ------------------------------------------------------------
+
+  async grantPermission(params: {
+    datasetId: string;
+    recipientId: string;
+    permissionType?: string;
+  }): Promise<{ granted: boolean; error?: string }> {
+    const permissionName = params.permissionType ?? "read";
+    // Cognee endpoint: POST /api/v1/permissions/datasets/{principal_id}
+    // with query params: permission_name, dataset_ids
+    const query = new URLSearchParams({
+      permission_name: permissionName,
+      dataset_ids: params.datasetId,
+    });
+    const endpoint = `/api/v1/permissions/datasets/${params.recipientId}?${query.toString()}`;
+    try {
+      await this.fetchJson(endpoint, {
+        method: "POST",
+      }, this.timeoutMs, 0); // 0 retries — permission grants are not critical path
+      return { granted: true };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      // 404/405 means the endpoint doesn't exist on older Cognee versions
+      if (msg.includes("404") || msg.includes("405") || msg.includes("Not Found") || msg.includes("Method Not Allowed")) {
+        return { granted: false, error: "permission endpoint not available" };
+      }
+      // 409 likely means permission already exists — treat as success (idempotent)
+      if (msg.includes("409") || msg.includes("Conflict") || msg.includes("already exists")) {
+        return { granted: true };
+      }
+      return { granted: false, error: msg };
+    }
+  }
+
+  async grantPermissions(params: {
+    datasetId: string;
+    recipientIds: string[];
+    permissionType?: string;
+    logger?: { info?: (msg: string) => void; warn?: (msg: string) => void };
+  }): Promise<void> {
+    if (params.recipientIds.length === 0) return;
+
+    let endpointAvailable = true;
+    for (const recipientId of params.recipientIds) {
+      if (!endpointAvailable) break;
+
+      const result = await this.grantPermission({
+        datasetId: params.datasetId,
+        recipientId,
+        permissionType: params.permissionType,
+      });
+
+      if (result.granted) {
+        params.logger?.info?.(`cognee-openclaw: granted ${params.permissionType ?? "read"} on dataset ${params.datasetId} to ${recipientId}`);
+      } else if (result.error === "permission endpoint not available") {
+        params.logger?.info?.("cognee-openclaw: permission endpoint not available on this Cognee version, skipping grants");
+        endpointAvailable = false;
+      } else {
+        params.logger?.warn?.(`cognee-openclaw: failed to grant permission to ${recipientId}: ${result.error}`);
+      }
+    }
   }
 }
 

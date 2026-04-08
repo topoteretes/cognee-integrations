@@ -81,6 +81,8 @@ function baseCfg(overrides: Partial<CogneePluginConfig> = {}): Required<CogneePl
     autoMemify: false,
     requestTimeoutMs: 30000,
     ingestionTimeoutMs: 300000,
+    enablePermissionGrants: false,
+    grantReadUserIds: [],
     ...overrides,
   } as Required<CogneePluginConfig>;
 }
@@ -382,6 +384,39 @@ describe("syncFiles", () => {
 
     expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ datasetName: "acme-company" }));
   });
+
+  it("calls onNewDataset callback when a new dataset is created", async () => {
+    const files = [createFile("new.md", "content")];
+    const syncIndex: SyncIndex = { entries: {} };
+    mockAdd.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
+    const onNewDataset = jest.fn().mockResolvedValue(undefined);
+
+    await syncFiles(client, files, files, syncIndex, cfg, logger, undefined, onNewDataset);
+
+    expect(onNewDataset).toHaveBeenCalledWith("ds1");
+  });
+
+  it("does not call onNewDataset callback on updates", async () => {
+    const files = [createFile("existing.md", "new content")];
+    const syncIndex: SyncIndex = { entries: { "existing.md": { hash: "old-hash", dataId: "id1" } }, datasetId: "ds1" };
+    mockUpdate.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
+    const onNewDataset = jest.fn().mockResolvedValue(undefined);
+
+    await syncFiles(client, files, files, syncIndex, cfg, logger, undefined, onNewDataset);
+
+    expect(onNewDataset).not.toHaveBeenCalled();
+  });
+
+  it("does not call onNewDataset callback when datasetId already known", async () => {
+    const files = [createFile("new.md", "content")];
+    const syncIndex: SyncIndex = { entries: {}, datasetId: "ds1" };
+    mockAdd.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
+    const onNewDataset = jest.fn().mockResolvedValue(undefined);
+
+    await syncFiles(client, files, files, syncIndex, cfg, logger, undefined, onNewDataset);
+
+    expect(onNewDataset).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -447,6 +482,19 @@ describe("syncFilesScoped", () => {
     expect(result.added).toBe(1);
     expect(result.updated).toBe(1);
     expect(result.deleted).toBe(1);
+  });
+
+  it("forwards onNewDataset callback with scope", async () => {
+    const files = [
+      createFile("memory/company/policy.md", "company policy"),
+    ];
+    const scopedIndexes: ScopedSyncIndexes = {};
+    mockAdd.mockResolvedValue({ datasetId: "ds-company", datasetName: "acme-company", dataId: "cid1" });
+    const onNewDataset = jest.fn().mockResolvedValue(undefined);
+
+    await syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, onNewDataset);
+
+    expect(onNewDataset).toHaveBeenCalledWith("ds-company", "company");
   });
 
   it("skips scopes with no changes", async () => {

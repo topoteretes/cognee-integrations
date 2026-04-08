@@ -79,6 +79,10 @@ export type CogneePluginConfig = {
   // --- Timeouts ---
   requestTimeoutMs?: number;
   ingestionTimeoutMs?: number;
+
+  // --- Access control ---
+  enablePermissionGrants?: boolean;
+  grantReadUserIds?: string[];
 };
 
 export type CogneeAddResponse = {
