@@ -6,8 +6,8 @@ from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
 
 
-def _login(base_url: str, email: str, password: str) -> str:
-    response = httpx.post(
+def _login(base_url: str, email: str, password: str, client: httpx.Client) -> str:
+    response = client.post(
         f"{base_url}/api/v1/auth/login",
         data={"username": email, "password": password},
         timeout=60,
@@ -26,24 +26,25 @@ class DeleteDataTool(Tool):
         data_id = tool_parameters["data_id"]
 
         try:
-            token = _login(base_url, user_email, user_password)
+            with httpx.Client(trust_env=False) as client:
+                token = _login(base_url, user_email, user_password, client)
 
-            response = httpx.delete(
-                f"{base_url}/api/v1/datasets/{dataset_id}/data/{data_id}",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=600,
-            )
-            response.raise_for_status()
+                response = client.delete(
+                    f"{base_url}/api/v1/datasets/{dataset_id}/data/{data_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=600,
+                )
+                response.raise_for_status()
 
-            yield self.create_json_message(
-                {"succeeded": True, "dataset_id": dataset_id, "data_id": data_id}
-            )
-            yield self.create_variable_message("succeeded", True)
-            yield self.create_variable_message("dataset_id", dataset_id)
-            yield self.create_variable_message("data_id", data_id)
-            yield self.create_text_message(
-                f"Successfully deleted data item '{data_id}' from dataset '{dataset_id}'."
-            )
+                yield self.create_json_message(
+                    {"succeeded": True, "dataset_id": dataset_id, "data_id": data_id}
+                )
+                yield self.create_variable_message("succeeded", True)
+                yield self.create_variable_message("dataset_id", dataset_id)
+                yield self.create_variable_message("data_id", data_id)
+                yield self.create_text_message(
+                    f"Successfully deleted data item '{data_id}' from dataset '{dataset_id}'."
+                )
         except Exception as e:
             yield self.create_json_message(
                 {"succeeded": False, "dataset_id": dataset_id, "data_id": data_id}

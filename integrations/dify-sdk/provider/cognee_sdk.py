@@ -28,7 +28,8 @@ class CogneeSdkProvider(ToolProvider):
 
         # 1. Health check
         try:
-            response = httpx.get(f"{base_url}/health", timeout=60)
+            with httpx.Client(trust_env=False) as client:
+                response = client.get(f"{base_url}/health", timeout=60)
             logger.info(f"Health check response: {response.status_code}")
             response.raise_for_status()
         except httpx.ConnectError:
@@ -48,14 +49,15 @@ class CogneeSdkProvider(ToolProvider):
 
         # 2. Login to verify credentials
         try:
-            response = httpx.post(
-                f"{base_url}/api/v1/auth/login",
-                data={
-                    "username": user_email,
-                    "password": user_password,
-                },
-                timeout=60,
-            )
+            with httpx.Client(trust_env=False) as client:
+                response = client.post(
+                    f"{base_url}/api/v1/auth/login",
+                    data={
+                        "username": user_email,
+                        "password": user_password,
+                    },
+                    timeout=60,
+                )
             logger.info(f"Login response: {response.status_code}")
             response.raise_for_status()
 
