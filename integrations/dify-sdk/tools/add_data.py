@@ -78,7 +78,8 @@ class AddDataTool(Tool):
                 yield self.create_variable_message("data_id", first_data_id)
                 yield self.create_variable_message("items_count", len(data_ids))
                 yield self.create_text_message(
-                    f"Successfully added data to dataset '{resp_dataset_name}' (id: {resp_dataset_id})."
+                    f"Successfully added data to dataset "
+                    f"'{resp_dataset_name}' (id: {resp_dataset_id})."
                 )
         except httpx.HTTPStatusError as e:
             error_msg = f"Cognee API error {e.response.status_code}: {e.response.text}"
