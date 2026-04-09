@@ -43,7 +43,7 @@ Or once published:
 
 ```bash
 # Pin to an exact version to avoid unintended updates (supply-chain best practice)
-openclaw plugins install @cognee/cognee-openclaw@2026.3.0
+openclaw plugins install @cognee/cognee-openclaw@2026.3.1
 ```
 
 ## Quick Start
@@ -184,7 +184,10 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `baseUrl` | string | `http://localhost:8000` | Cognee API base URL |
-| `apiKey` | string | `$COGNEE_API_KEY` | API key for authentication |
+| `apiKey` | string | `$COGNEE_API_KEY` | API key for Bearer token authentication |
+| `username` | string | `$COGNEE_USERNAME` | Username for password-based login (used if no `apiKey`) |
+| `password` | string | `$COGNEE_PASSWORD` | Password for password-based login (used if no `apiKey`) |
+| `datasetName` | string | `openclaw` | Dataset name for single-scope mode |
 
 ### Memory Scopes
 
@@ -194,7 +197,7 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `userDatasetPrefix` | string | — | Prefix for user datasets (becomes `{prefix}-{userId}`) |
 | `agentDatasetPrefix` | string | — | Prefix for agent datasets (becomes `{prefix}-{agentId}`) |
 | `userId` | string | `$OPENCLAW_USER_ID` | User identifier for user-scoped memory |
-| `agentId` | string | `default` | Agent identifier for agent-scoped memory |
+| `agentId` | string | `$OPENCLAW_AGENT_ID` / `default` | Agent identifier for agent-scoped memory |
 | `recallScopes` | string[] | `["agent","user","company"]` | Scopes to search during recall, in priority order |
 | `defaultWriteScope` | string | `agent` | Default scope for files not matching any route |
 | `scopeRouting` | object[] | (see above) | Path-to-scope routing rules |
@@ -221,20 +224,19 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | Type | Description |
 |------|-------------|
 | `GRAPH_COMPLETION` | **Default** — graph traversal + LLM reasoning |
-| `CHUNKS` | Semantic vector search, returns raw stored text (no generation) |
-| `FEELING_LUCKY` | Auto-selects a strategy per query (may pick generative modes) |
 | `GRAPH_COMPLETION_COT` | Chain-of-thought reasoning over graph (iterative) |
 | `GRAPH_COMPLETION_CONTEXT_EXTENSION` | Extended context retrieval (multiple rounds) |
 | `GRAPH_SUMMARY_COMPLETION` | Graph with pre-computed summaries |
 | `RAG_COMPLETION` | Traditional RAG with document chunks |
 | `TRIPLET_COMPLETION` | Subject-predicate-object search |
-| `CHUNKS` | Pure semantic vector search |
+| `CHUNKS` | Semantic vector search, returns raw stored text (no generation) |
 | `CHUNKS_LEXICAL` | Keyword/lexical search |
 | `SUMMARIES` | Pre-computed hierarchical summaries |
 | `TEMPORAL` | Time-aware graph search |
 | `NATURAL_LANGUAGE` | Natural language to graph query |
 | `CYPHER` | Direct graph database queries |
 | `CODING_RULES` | Code-specific rule search |
+| `FEELING_LUCKY` | Auto-selects a strategy per query (may pick generative modes) |
 
 ### Automation
 

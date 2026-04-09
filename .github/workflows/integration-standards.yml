@@ -1,0 +1,31 @@
+name: Integration Standards
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'integrations/**'
+      - 'scripts/check_integration_standards.py'
+      - '.github/workflows/integration-standards.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'integrations/**'
+      - 'scripts/check_integration_standards.py'
+      - '.github/workflows/integration-standards.yml'
+
+jobs:
+  standards:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Validate integration standard
+        run: python scripts/check_integration_standards.py
+
