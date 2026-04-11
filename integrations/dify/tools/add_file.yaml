@@ -1,0 +1,91 @@
+identity:
+  name: "add_file"
+  author: "topoteretes"
+  label:
+    en_US: "Add File"
+    zh_Hans: "添加文件"
+    pt_BR: "Adicionar Arquivo"
+    ja_JP: "ファイル追加"
+description:
+  human:
+    en_US: "Upload files to a Cognee dataset for knowledge graph processing"
+    zh_Hans: "上传文件到 Cognee 数据集以进行知识图谱处理"
+    pt_BR: "Enviar arquivos para um dataset Cognee para processamento de grafo de conhecimento"
+    ja_JP: "ナレッジグラフ処理のために Cognee データセットにファイルをアップロード"
+  llm: "Upload files to a Cognee dataset. Use this to ingest documents (PDF, TXT, DOCX, etc.) into a named dataset before running cognify to build the knowledge graph."
+parameters:
+  - name: files
+    type: files
+    required: true
+    label:
+      en_US: "Files"
+      zh_Hans: "文件"
+      pt_BR: "Arquivos"
+      ja_JP: "ファイル"
+    human_description:
+      en_US: "Files to upload to the dataset"
+      zh_Hans: "要上传到数据集的文件"
+      pt_BR: "Arquivos para enviar ao dataset"
+      ja_JP: "データセットにアップロードするファイル"
+    llm_description: "The files to upload to the dataset for knowledge graph processing."
+    form: llm
+  - name: dataset_name
+    type: string
+    required: false
+    label:
+      en_US: "Dataset Name"
+      zh_Hans: "数据集名称"
+      pt_BR: "Nome do Dataset"
+      ja_JP: "データセット名"
+    human_description:
+      en_US: "Name of the target dataset. Either dataset_name or dataset_id must be provided."
+      zh_Hans: "目标数据集名称。dataset_name 或 dataset_id 必须提供其一。"
+      pt_BR: "Nome do dataset de destino. dataset_name ou dataset_id deve ser fornecido."
+      ja_JP: "対象データセット名。dataset_name または dataset_id のいずれかが必要です。"
+    llm_description: "The name of the dataset to upload files to. Either dataset_name or dataset_id must be provided."
+    form: llm
+  - name: dataset_id
+    type: string
+    required: false
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of an existing dataset. Either dataset_name or dataset_id must be provided."
+      zh_Hans: "已有数据集的 UUID。dataset_name 或 dataset_id 必须提供其一。"
+      pt_BR: "UUID de um dataset existente. dataset_name ou dataset_id deve ser fornecido."
+      ja_JP: "既存データセットの UUID。dataset_name または dataset_id のいずれかが必要です。"
+    llm_description: "The UUID of an existing dataset. Either dataset_name or dataset_id must be provided."
+    form: llm
+  - name: node_set
+    type: string
+    required: false
+    label:
+      en_US: "Node Set"
+      zh_Hans: "节点集"
+      pt_BR: "Conjunto de Nós"
+      ja_JP: "ノードセット"
+    human_description:
+      en_US: "Comma-separated node set names for graph organization"
+      zh_Hans: "用于图谱组织的节点集名称，用逗号分隔"
+      pt_BR: "Nomes de conjuntos de nós separados por vírgula para organização do grafo"
+      ja_JP: "グラフ構成用のノードセット名（カンマ区切り）"
+    llm_description: "Optional comma-separated node set names for organizing data in the knowledge graph"
+    form: llm
+output_schema:
+  type: object
+  properties:
+    dataset_name:
+      type: string
+      description: "The dataset name that files were added to"
+    dataset_id:
+      type: string
+      description: "The UUID of the dataset"
+    file_count:
+      type: number
+      description: "Number of files uploaded"
+extra:
+  python:
+    source: tools/add_file.py

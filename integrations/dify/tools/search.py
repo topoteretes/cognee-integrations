@@ -16,12 +16,17 @@ class SearchTool(Tool):
         dataset_ids_str = tool_parameters.get("dataset_ids", "")
         search_type = tool_parameters.get("search_type", "GRAPH_COMPLETION")
         system_prompt = tool_parameters.get("system_prompt", "")
+        node_name_str = tool_parameters.get("node_name", "")
         top_k = tool_parameters.get("top_k", 10)
         only_context = tool_parameters.get("only_context", "false") == "true"
+        verbose = tool_parameters.get("verbose", "false") == "true"
 
         datasets = [d.strip() for d in datasets_str.split(",") if d.strip()] if datasets_str else []
         dataset_ids = (
             [d.strip() for d in dataset_ids_str.split(",") if d.strip()] if dataset_ids_str else []
+        )
+        node_names = (
+            [n.strip() for n in node_name_str.split(",") if n.strip()] if node_name_str else []
         )
 
         body: dict[str, Any] = {
@@ -29,6 +34,7 @@ class SearchTool(Tool):
             "query": query,
             "topK": int(top_k),
             "onlyContext": only_context,
+            "verbose": verbose,
         }
         if datasets:
             body["datasets"] = datasets
@@ -36,6 +42,8 @@ class SearchTool(Tool):
             body["datasetIds"] = dataset_ids
         if system_prompt:
             body["systemPrompt"] = system_prompt
+        if node_names:
+            body["nodeName"] = node_names
 
         try:
             response = httpx.post(

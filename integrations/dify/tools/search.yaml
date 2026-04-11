@@ -72,7 +72,7 @@ parameters:
       zh_Hans: "要执行的搜索类型"
       pt_BR: "O tipo de pesquisa a ser realizada"
       ja_JP: "実行する検索タイプ"
-    llm_description: "The search strategy: GRAPH_COMPLETION uses the knowledge graph, GRAPH_COMPLETION_COT uses chain-of-thought reasoning, RAG_COMPLETION uses retrieval-augmented generation"
+    llm_description: "The search strategy to use. GRAPH_COMPLETION uses the knowledge graph for LLM completion. GRAPH_COMPLETION_COT adds chain-of-thought reasoning. RAG_COMPLETION uses retrieval-augmented generation. CHUNKS returns raw text chunks. SUMMARIES returns summaries. TRIPLET_COMPLETION completes from graph triplets. GRAPH_SUMMARY_COMPLETION combines graph and summaries. CYPHER runs a Cypher query. NATURAL_LANGUAGE uses natural language graph queries. GRAPH_COMPLETION_CONTEXT_EXTENSION extends context from the graph. FEELING_LUCKY returns a best guess. TEMPORAL searches temporal data. CODING_RULES searches coding rules. CHUNKS_LEXICAL uses lexical chunk search."
     form: form
     default: "GRAPH_COMPLETION"
     options:
@@ -88,12 +88,78 @@ parameters:
           zh_Hans: "图谱补全（思维链）"
           pt_BR: "Completude do Grafo (Cadeia de Pensamento)"
           ja_JP: "グラフ補完（思考の連鎖）"
+      - value: "GRAPH_COMPLETION_CONTEXT_EXTENSION"
+        label:
+          en_US: "Graph Completion (Context Extension)"
+          zh_Hans: "图谱补全（上下文扩展）"
+          pt_BR: "Completude do Grafo (Extensão de Contexto)"
+          ja_JP: "グラフ補完（コンテキスト拡張）"
+      - value: "GRAPH_SUMMARY_COMPLETION"
+        label:
+          en_US: "Graph Summary Completion"
+          zh_Hans: "图谱摘要补全"
+          pt_BR: "Completude de Resumo do Grafo"
+          ja_JP: "グラフサマリー補完"
       - value: "RAG_COMPLETION"
         label:
           en_US: "RAG Completion"
           zh_Hans: "RAG 补全"
           pt_BR: "Completude RAG"
           ja_JP: "RAG 補完"
+      - value: "CHUNKS"
+        label:
+          en_US: "Chunks"
+          zh_Hans: "文本块"
+          pt_BR: "Chunks"
+          ja_JP: "チャンク"
+      - value: "CHUNKS_LEXICAL"
+        label:
+          en_US: "Chunks (Lexical)"
+          zh_Hans: "文本块（词法）"
+          pt_BR: "Chunks (Léxico)"
+          ja_JP: "チャンク（レキシカル）"
+      - value: "SUMMARIES"
+        label:
+          en_US: "Summaries"
+          zh_Hans: "摘要"
+          pt_BR: "Resumos"
+          ja_JP: "サマリー"
+      - value: "TRIPLET_COMPLETION"
+        label:
+          en_US: "Triplet Completion"
+          zh_Hans: "三元组补全"
+          pt_BR: "Completude de Tripla"
+          ja_JP: "トリプレット補完"
+      - value: "CYPHER"
+        label:
+          en_US: "Cypher Query"
+          zh_Hans: "Cypher 查询"
+          pt_BR: "Consulta Cypher"
+          ja_JP: "Cypher クエリ"
+      - value: "NATURAL_LANGUAGE"
+        label:
+          en_US: "Natural Language"
+          zh_Hans: "自然语言"
+          pt_BR: "Linguagem Natural"
+          ja_JP: "自然言語"
+      - value: "FEELING_LUCKY"
+        label:
+          en_US: "Feeling Lucky"
+          zh_Hans: "手气不错"
+          pt_BR: "Com Sorte"
+          ja_JP: "ラッキー検索"
+      - value: "TEMPORAL"
+        label:
+          en_US: "Temporal"
+          zh_Hans: "时序"
+          pt_BR: "Temporal"
+          ja_JP: "時系列"
+      - value: "CODING_RULES"
+        label:
+          en_US: "Coding Rules"
+          zh_Hans: "编码规则"
+          pt_BR: "Regras de Codificação"
+          ja_JP: "コーディングルール"
   - name: system_prompt
     type: string
     required: false
@@ -108,6 +174,21 @@ parameters:
       pt_BR: "Prompt do sistema para pesquisas do tipo Completion"
       ja_JP: "Completion タイプの検索に使用するシステムプロンプト"
     llm_description: "Optional system prompt to be used for Completion type searches in Cognee"
+    form: llm
+  - name: node_name
+    type: string
+    required: false
+    label:
+      en_US: "Node Name"
+      zh_Hans: "节点名称"
+      pt_BR: "Nome do Nó"
+      ja_JP: "ノード名"
+    human_description:
+      en_US: "Comma-separated node set names to filter search results"
+      zh_Hans: "用于过滤搜索结果的节点集名称，用逗号分隔"
+      pt_BR: "Nomes de conjuntos de nós separados por vírgula para filtrar resultados"
+      ja_JP: "検索結果をフィルタリングするノードセット名（カンマ区切り）"
+    llm_description: "Optional comma-separated node set names to restrict the search to specific node sets in the knowledge graph"
     form: llm
   - name: top_k
     type: number
@@ -142,6 +223,29 @@ parameters:
       pt_BR: "Retornar apenas o contexto bruto em vez da completude gerada pelo LLM"
       ja_JP: "LLM による補完ではなく生のコンテキストのみを返す"
     llm_description: "Set to true to return only the raw context Cognee sends to the LLM, instead of the LLM completion response"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+  - name: verbose
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Verbose"
+      zh_Hans: "详细输出"
+      pt_BR: "Detalhado"
+      ja_JP: "詳細出力"
+    human_description:
+      en_US: "Return verbose output with additional details"
+      zh_Hans: "返回包含更多详细信息的输出"
+      pt_BR: "Retornar saída detalhada com informações adicionais"
+      ja_JP: "追加の詳細情報を含む出力を返す"
+    llm_description: "Set to true to return verbose output with additional search details"
     form: form
     options:
       - value: "false"

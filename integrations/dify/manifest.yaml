@@ -1,4 +1,4 @@
-version: 0.0.1
+version: 0.0.2
 type: plugin
 author: topoteretes
 name: cognee
@@ -8,10 +8,10 @@ label:
   zh_Hans: cognee
   pt_BR: cognee
 description:
-  en_US: Build and query knowledge graphs with Cognee
-  ja_JP: Cognee でナレッジグラフを構築・検索
-  zh_Hans: 使用 Cognee 构建和查询知识图谱
-  pt_BR: Construa e consulte grafos de conhecimento com Cognee
+  en_US: Knowledge engine to build personalized and dynamic AI memory for agents.
+  ja_JP: AI エージェントのための個性化された動的なAIメモリを構築するための知識エンジン。
+  zh_Hans: 个性化和动态AI记忆的构建知识引擎
+  pt_BR: Engenheiro de conhecimento para construir memória personalizada e dinâmica para agentes de IA.
 icon: icon.svg
 icon_dark: icon-dark.svg
 resource:
@@ -23,7 +23,7 @@ plugins:
   tools:
     - provider/cognee.yaml
 meta:
-  version: 0.0.1
+  version: 0.0.2
   arch:
     - amd64
     - arm64

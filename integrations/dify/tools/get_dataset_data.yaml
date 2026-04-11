@@ -1,0 +1,43 @@
+identity:
+  name: "get_dataset_data"
+  author: "topoteretes"
+  label:
+    en_US: "Get Dataset Data"
+    zh_Hans: "获取数据集数据"
+    pt_BR: "Obter Dados do Dataset"
+    ja_JP: "データセットデータ取得"
+description:
+  human:
+    en_US: "Retrieve all data items in a specific dataset"
+    zh_Hans: "获取特定数据集中的所有数据项"
+    pt_BR: "Recuperar todos os itens de dados em um dataset específico"
+    ja_JP: "特定のデータセット内のすべてのデータ項目を取得"
+  llm: "List all data items stored in a Cognee dataset. Returns data IDs, names, file types, and timestamps. Use this to inspect what has been ingested into a dataset."
+parameters:
+  - name: dataset_id
+    type: string
+    required: true
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of the dataset to retrieve data from"
+      zh_Hans: "要获取数据的数据集 UUID"
+      pt_BR: "UUID do dataset para recuperar dados"
+      ja_JP: "データを取得するデータセットの UUID"
+    llm_description: "The UUID of the dataset to list data items from"
+    form: llm
+output_schema:
+  type: object
+  properties:
+    data_count:
+      type: number
+      description: "Number of data items returned"
+    data_text:
+      type: string
+      description: "Formatted list of data items"
+extra:
+  python:
+    source: tools/get_dataset_data.py

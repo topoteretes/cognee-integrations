@@ -7,10 +7,10 @@ identity:
     pt_BR: "Cognee"
     ja_JP: "Cognee"
   description:
-    en_US: "Build and query knowledge graphs with Cognee"
-    zh_Hans: "使用 Cognee 构建和查询知识图谱"
-    pt_BR: "Construa e consulte grafos de conhecimento com Cognee"
-    ja_JP: "Cognee でナレッジグラフを構築・検索"
+    en_US: "Knowledge engine to build personalized and dynamic AI memory for agents."
+    zh_Hans: "个性化和动态AI记忆的构建知识引擎"
+    pt_BR: "Engenheiro de conhecimento para construir memória personalizada e dinâmica para agentes de IA."
+    ja_JP: "AI エージェントのための個性化された動的なAIメモリを構築するための知識エンジン。"
   icon: "cognee.svg"
   tags:
     - search
@@ -56,8 +56,12 @@ credentials_for_provider:
 
 tools:
   - tools/add_data.yaml
+  - tools/add_file.yaml
   - tools/cognify.yaml
   - tools/search.yaml
+  - tools/create_dataset.yaml
+  - tools/get_datasets.yaml
+  - tools/get_dataset_data.yaml
   - tools/delete_dataset.yaml
   - tools/delete_data.yaml
 extra:

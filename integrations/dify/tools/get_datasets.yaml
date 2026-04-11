@@ -1,0 +1,28 @@
+identity:
+  name: "get_datasets"
+  author: "topoteretes"
+  label:
+    en_US: "Get Datasets"
+    zh_Hans: "获取数据集"
+    pt_BR: "Obter Datasets"
+    ja_JP: "データセット取得"
+description:
+  human:
+    en_US: "Retrieve all datasets accessible to the current user"
+    zh_Hans: "获取当前用户可访问的所有数据集"
+    pt_BR: "Recuperar todos os datasets acessíveis ao usuário atual"
+    ja_JP: "現在のユーザーがアクセス可能なすべてのデータセットを取得"
+  llm: "List all Cognee datasets accessible to the authenticated user. Returns dataset IDs, names, and timestamps. Use this to discover available datasets before searching or adding data."
+parameters: []
+output_schema:
+  type: object
+  properties:
+    datasets_count:
+      type: number
+      description: "Number of datasets returned"
+    datasets_text:
+      type: string
+      description: "Formatted list of datasets"
+extra:
+  python:
+    source: tools/get_datasets.py

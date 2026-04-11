@@ -1,0 +1,43 @@
+identity:
+  name: "create_dataset"
+  author: "topoteretes"
+  label:
+    en_US: "Create Dataset"
+    zh_Hans: "创建数据集"
+    pt_BR: "Criar Dataset"
+    ja_JP: "データセット作成"
+description:
+  human:
+    en_US: "Create a new Cognee dataset or return an existing one with the same name"
+    zh_Hans: "创建新的 Cognee 数据集，或返回同名的已有数据集"
+    pt_BR: "Criar um novo dataset Cognee ou retornar um existente com o mesmo nome"
+    ja_JP: "新しい Cognee データセットを作成、または同名の既存データセットを返す"
+  llm: "Create a new Cognee dataset by name. If a dataset with the same name already exists, it returns the existing one. Use this to set up a dataset before ingesting data with Add Data or Add File."
+parameters:
+  - name: name
+    type: string
+    required: true
+    label:
+      en_US: "Dataset Name"
+      zh_Hans: "数据集名称"
+      pt_BR: "Nome do Dataset"
+      ja_JP: "データセット名"
+    human_description:
+      en_US: "Name for the new dataset"
+      zh_Hans: "新数据集的名称"
+      pt_BR: "Nome para o novo dataset"
+      ja_JP: "新しいデータセットの名前"
+    llm_description: "The name for the new dataset. If a dataset with this name already exists, the existing dataset is returned."
+    form: llm
+output_schema:
+  type: object
+  properties:
+    dataset_id:
+      type: string
+      description: "The UUID of the created or existing dataset"
+    dataset_name:
+      type: string
+      description: "The name of the dataset"
+extra:
+  python:
+    source: tools/create_dataset.py
