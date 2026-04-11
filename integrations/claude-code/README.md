@@ -36,13 +36,32 @@ Or create `~/.cognee-plugin/config.json`:
 }
 ```
 
-### 3. Install the plugin
+### 3. Enable the plugin
+
+**Option A — permanent (recommended):**
+
+Add the plugin directory to your shell profile so it loads on every session:
 
 ```bash
-claude plugin add /path/to/cognee-integrations/integrations/claude-code
+# Add to ~/.zshrc or ~/.bashrc
+alias claude="claude --plugin-dir /path/to/cognee-integrations/integrations/claude-code"
 ```
 
-That's it. Start a Claude Code session and the plugin works automatically.
+Then reload: `source ~/.zshrc`
+
+**Option B — single session:**
+
+```bash
+claude --plugin-dir /path/to/cognee-integrations/integrations/claude-code
+```
+
+**Option C — validate first:**
+
+```bash
+claude plugin validate /path/to/cognee-integrations/integrations/claude-code
+```
+
+When the plugin loads, you'll see "Cognee Memory Connected" with the mode, dataset, and session ID at the start of your session.
 
 ## How it works
 
@@ -50,12 +69,24 @@ The plugin hooks into six Claude Code lifecycle events:
 
 | Hook | What it does |
 |------|-------------|
-| **SessionStart** | Loads config, computes a per-directory session ID, connects to Cognee Cloud if configured, creates the `claude-code@cognee.local` identity |
+| **SessionStart** | Loads config, computes a per-directory session ID, connects to Cognee Cloud if configured |
 | **UserPromptSubmit** | Searches the session cache for context relevant to your prompt and injects it (3s timeout, fails silently) |
-| **PostToolUse** | Captures tool name, input, and output into the session cache (async, non-blocking) |
+| **PostToolUse** | Captures tool name, input, and output into the session cache with `[category:agent]` tag (async, non-blocking) |
 | **Stop** | Captures the final assistant response when you interrupt |
 | **PreCompact** | Before context window compaction, builds a memory anchor from session + graph context so key knowledge survives the reset |
 | **SessionEnd** | Runs `cognee.improve()` to bridge session data into the permanent knowledge graph |
+
+## Data categories
+
+The plugin organizes knowledge into three categories via `node_set` tagging:
+
+| Category | Node set | What belongs here |
+|----------|----------|-------------------|
+| **user** | `user_context` | User preferences, corrections, personal facts |
+| **project** | `project_docs` | Repository docs, code context, architecture decisions |
+| **agent** | `agent_actions` | Tool call logs, reasoning traces (auto-captured by hooks) |
+
+When using `/cognee-memory:cognee-remember`, Claude routes data to the correct category based on context. When searching with `/cognee-memory:cognee-search`, you can filter by category using `--node-set`.
 
 ## Session naming
 
@@ -77,8 +108,8 @@ You can change the strategy via config or env vars:
 
 Three skills are available as slash commands:
 
-- **`/cognee-memory:cognee-remember`** — permanently store data in the knowledge graph (full add + cognify + improve pipeline)
-- **`/cognee-memory:cognee-search`** — explicitly search session or graph memory (automatic search happens on every prompt via hooks)
+- **`/cognee-memory:cognee-remember`** — permanently store data in the knowledge graph (full add + cognify + improve pipeline). Routes to user/project/agent category.
+- **`/cognee-memory:cognee-search`** — explicitly search session or graph memory, optionally filtered by category. Automatic search happens on every prompt via hooks.
 - **`/cognee-memory:cognee-sync`** — force-sync session data to the permanent graph without waiting for session end
 
 ## Configuration reference
