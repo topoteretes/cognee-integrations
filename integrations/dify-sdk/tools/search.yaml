@@ -1,0 +1,236 @@
+identity:
+  name: "search"
+  author: "topoteretes"
+  label:
+    en_US: "Search"
+    zh_Hans: "搜索"
+    pt_BR: "Pesquisar"
+    ja_JP: "検索"
+description:
+  human:
+    en_US: "Search the memory on your local Cognee server"
+    zh_Hans: "在本地 Cognee 服务器的内存中搜索"
+    pt_BR: "Pesquisar no grafo de conhecimento do seu servidor Cognee local"
+    ja_JP: "ローカル Cognee サーバのメモリを検索"
+  llm: "Search the memory on the local Cognee server to retrieve relevant information from previously ingested and cognified datasets."
+parameters:
+  - name: query
+    type: string
+    required: true
+    label:
+      en_US: "Query"
+      zh_Hans: "查询"
+      pt_BR: "Consulta"
+      ja_JP: "クエリ"
+    human_description:
+      en_US: "The search query"
+      zh_Hans: "搜索查询"
+      pt_BR: "A consulta de pesquisa"
+      ja_JP: "検索クエリ"
+    llm_description: "The natural language search query to find relevant information in the memory"
+    form: llm
+  - name: datasets
+    type: string
+    required: false
+    label:
+      en_US: "Datasets"
+      zh_Hans: "数据集"
+      pt_BR: "Datasets"
+      ja_JP: "データセット"
+    human_description:
+      en_US: "Comma-separated list of dataset names to search"
+      zh_Hans: "要搜索的数据集名称，用逗号分隔"
+      pt_BR: "Lista de nomes de datasets separados por vírgula"
+      ja_JP: "検索するデータセット名のカンマ区切りリスト"
+    llm_description: "Comma-separated list of dataset names to search (e.g. 'dataset1,dataset2')"
+    form: llm
+  - name: dataset_ids
+    type: string
+    required: false
+    label:
+      en_US: "Dataset IDs"
+      zh_Hans: "数据集 ID"
+      pt_BR: "IDs dos Datasets"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "Comma-separated list of dataset UUIDs to search"
+      zh_Hans: "要搜索的数据集 UUID，用逗号分隔"
+      pt_BR: "Lista de UUIDs de datasets separados por vírgula para pesquisar"
+      ja_JP: "検索するデータセット UUID のカンマ区切りリスト"
+    llm_description: "Comma-separated list of dataset UUIDs to search"
+    form: llm
+  - name: search_type
+    type: select
+    required: true
+    label:
+      en_US: "Search Type"
+      zh_Hans: "搜索类型"
+      pt_BR: "Tipo de Pesquisa"
+      ja_JP: "検索タイプ"
+    human_description:
+      en_US: "The type of search to perform"
+      zh_Hans: "要执行的搜索类型"
+      pt_BR: "O tipo de pesquisa a ser realizada"
+      ja_JP: "実行する検索タイプ"
+    llm_description: "The search strategy: GRAPH_COMPLETION uses the knowledge graph, GRAPH_COMPLETION_COT uses chain-of-thought reasoning, RAG_COMPLETION uses retrieval-augmented generation"
+    form: form
+    default: "GRAPH_COMPLETION"
+    options:
+      - value: "GRAPH_COMPLETION"
+        label:
+          en_US: "Graph Completion"
+          zh_Hans: "图谱补全"
+          pt_BR: "Completude do Grafo"
+          ja_JP: "グラフ補完"
+      - value: "GRAPH_COMPLETION_COT"
+        label:
+          en_US: "Graph Completion (Chain of Thought)"
+          zh_Hans: "图谱补全（思维链）"
+          pt_BR: "Completude do Grafo (Cadeia de Pensamento)"
+          ja_JP: "グラフ補完（思考の連鎖）"
+      - value: "GRAPH_COMPLETION_CONTEXT_EXTENSION"
+        label:
+          en_US: "Graph Completion (Context Extension)"
+          zh_Hans: "图谱补全（上下文扩展）"
+          pt_BR: "Completude do Grafo (Extensão de Contexto)"
+          ja_JP: "グラフ補完（コンテキスト拡張）"
+      - value: "GRAPH_SUMMARY_COMPLETION"
+        label:
+          en_US: "Graph Summary Completion"
+          zh_Hans: "图谱摘要补全"
+          pt_BR: "Completude de Resumo do Grafo"
+          ja_JP: "グラフサマリー補完"
+      - value: "RAG_COMPLETION"
+        label:
+          en_US: "RAG Completion"
+          zh_Hans: "RAG 补全"
+          pt_BR: "Completude RAG"
+          ja_JP: "RAG 補完"
+      - value: "TRIPLET_COMPLETION"
+        label:
+          en_US: "Triplet Completion"
+          zh_Hans: "三元组补全"
+          pt_BR: "Completude de Tripleto"
+          ja_JP: "トリプレット補完"
+      - value: "SUMMARIES"
+        label:
+          en_US: "Summaries"
+          zh_Hans: "摘要"
+          pt_BR: "Resumos"
+          ja_JP: "サマリー"
+      - value: "CHUNKS"
+        label:
+          en_US: "Chunks"
+          zh_Hans: "文档块"
+          pt_BR: "Chunks"
+          ja_JP: "チャンク"
+      - value: "CHUNKS_LEXICAL"
+        label:
+          en_US: "Chunks (Lexical)"
+          zh_Hans: "文档块（词法）"
+          pt_BR: "Chunks (Léxico)"
+          ja_JP: "チャンク（語彙）"
+      - value: "CYPHER"
+        label:
+          en_US: "Cypher"
+          zh_Hans: "Cypher"
+          pt_BR: "Cypher"
+          ja_JP: "Cypher"
+      - value: "NATURAL_LANGUAGE"
+        label:
+          en_US: "Natural Language"
+          zh_Hans: "自然语言"
+          pt_BR: "Linguagem Natural"
+          ja_JP: "自然言語"
+      - value: "TEMPORAL"
+        label:
+          en_US: "Temporal"
+          zh_Hans: "时序"
+          pt_BR: "Temporal"
+          ja_JP: "時系列"
+      - value: "FEELING_LUCKY"
+        label:
+          en_US: "Feeling Lucky"
+          zh_Hans: "手气不错"
+          pt_BR: "Estou com Sorte"
+          ja_JP: "I'm Feeling Lucky"
+      - value: "CODING_RULES"
+        label:
+          en_US: "Coding Rules"
+          zh_Hans: "编码规则"
+          pt_BR: "Regras de Código"
+          ja_JP: "コーディングルール"
+  - name: system_prompt
+    type: string
+    required: false
+    label:
+      en_US: "System Prompt"
+      zh_Hans: "系统提示"
+      pt_BR: "Prompt do Sistema"
+      ja_JP: "システムプロンプト"
+    human_description:
+      en_US: "System prompt for Completion-type searches"
+      zh_Hans: "用于补全类型搜索的系统提示"
+      pt_BR: "Prompt do sistema para pesquisas do tipo Completion"
+      ja_JP: "Completion タイプの検索に使用するシステムプロンプト"
+    llm_description: "Optional system prompt to be used for Completion type searches in Cognee"
+    form: llm
+  - name: top_k
+    type: number
+    required: false
+    default: 10
+    min: 1
+    max: 100
+    label:
+      en_US: "Top K"
+      zh_Hans: "Top K"
+      pt_BR: "Top K"
+      ja_JP: "Top K"
+    human_description:
+      en_US: "Maximum number of results to return"
+      zh_Hans: "返回的最大结果数"
+      pt_BR: "Número máximo de resultados a retornar"
+      ja_JP: "返却する最大結果数"
+    llm_description: "Maximum number of results to return (default: 10)"
+    form: form
+  - name: only_context
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Only Context"
+      zh_Hans: "仅上下文"
+      pt_BR: "Apenas Contexto"
+      ja_JP: "コンテキストのみ"
+    human_description:
+      en_US: "Return only the raw context instead of LLM-generated completion"
+      zh_Hans: "仅返回原始上下文而非 LLM 生成的补全结果"
+      pt_BR: "Retornar apenas o contexto bruto em vez da completude gerada pelo LLM"
+      ja_JP: "LLM による補完ではなく生のコンテキストのみを返す"
+    llm_description: "Set to true to return only the raw context Cognee sends to the LLM, instead of the LLM completion response"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+output_schema:
+  type: object
+  properties:
+    results_count:
+      type: number
+      description: "Number of results returned"
+    results_text:
+      type: string
+      description: "Formatted search results as text"
+extra:
+  python:
+    source: tools/search.py

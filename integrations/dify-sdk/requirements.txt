@@ -1,0 +1,4 @@
+# Canonical deps are in pyproject.toml. This file is kept for the Dify plugin
+# build system (dify-plugin CLI) which requires requirements.txt.
+dify_plugin>=0.4.0,<0.7.0
+httpx>=0.27.0
