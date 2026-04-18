@@ -1,0 +1,84 @@
+identity:
+  author: "topoteretes"
+  name: "cognee_sdk"
+  label:
+    en_US: "Cognee (Self-Hosted)"
+    zh_Hans: "Cognee（自托管）"
+    pt_BR: "Cognee (Self-Hosted)"
+    ja_JP: "Cognee（セルフホスト）"
+  description:
+    en_US: "Connect to a self-hosted Cognee server for memory operations"
+    zh_Hans: "连接到自托管的 Cognee 服务器进行内存操作"
+    pt_BR: "Conecte-se a um servidor Cognee auto-hospedado para operações de memória"
+    ja_JP: "セルフホスト型 Cognee サーバーに接続してメモリ操作を実行"
+  icon: "cognee.svg"
+  tags:
+    - search
+    - utilities
+
+credentials_for_provider:
+  base_url:
+    type: text-input
+    required: true
+    label:
+      en_US: "Cognee Server URL"
+      zh_Hans: "Cognee 服务器 URL"
+      pt_BR: "URL do Servidor Cognee"
+      ja_JP: "Cognee サーバー URL"
+    placeholder:
+      en_US: "http://localhost:8000"
+      zh_Hans: "http://localhost:8000"
+      pt_BR: "http://localhost:8000"
+      ja_JP: "http://localhost:8000"
+    help:
+      en_US: "Base URL of your local Cognee server (e.g. http://localhost:8000)"
+      zh_Hans: "本地 Cognee 服务器的基础 URL（例如 http://localhost:8000）"
+      pt_BR: "URL base do seu servidor Cognee local (ex: http://localhost:8000)"
+      ja_JP: "ローカル Cognee サーバーのベース URL（例: http://localhost:8000）"
+  user_email:
+    type: text-input
+    required: true
+    label:
+      en_US: "User Email"
+      zh_Hans: "用户邮箱"
+      pt_BR: "Email do Usuário"
+      ja_JP: "ユーザーメール"
+    placeholder:
+      en_US: "default_user@example.com"
+      zh_Hans: "default_user@example.com"
+      pt_BR: "default_user@example.com"
+      ja_JP: "default_user@example.com"
+    help:
+      en_US: "Email for your Cognee server user account"
+      zh_Hans: "Cognee 服务器用户账户的邮箱"
+      pt_BR: "Email da sua conta de usuário do servidor Cognee"
+      ja_JP: "Cognee サーバーのユーザーアカウントメール"
+  user_password:
+    type: secret-input
+    required: true
+    label:
+      en_US: "User Password"
+      zh_Hans: "用户密码"
+      pt_BR: "Senha do Usuário"
+      ja_JP: "ユーザーパスワード"
+    placeholder:
+      en_US: "Enter your Cognee user password"
+      zh_Hans: "请输入您的 Cognee 用户密码"
+      pt_BR: "Insira sua senha de usuário Cognee"
+      ja_JP: "Cognee ユーザーパスワードを入力してください"
+    help:
+      en_US: "Password for your Cognee server user account"
+      zh_Hans: "Cognee 服务器用户账户的密码"
+      pt_BR: "Senha da sua conta de usuário do servidor Cognee"
+      ja_JP: "Cognee サーバーのユーザーアカウントパスワード"
+
+tools:
+  - tools/add_data.yaml
+  - tools/cognify.yaml
+  - tools/search.yaml
+  - tools/delete_dataset.yaml
+  - tools/update_data.yaml
+  - tools/delete_data.yaml
+extra:
+  python:
+    source: provider/cognee_sdk.py
