@@ -64,7 +64,9 @@ async def _store(prompt: str):
         return
 
     if result:
-        hook_log("prompt_stored", {"chars": len(prompt), "qa_id": getattr(result, "entry_id", None)})
+        hook_log(
+            "prompt_stored", {"chars": len(prompt), "qa_id": getattr(result, "entry_id", None)}
+        )
         notify(f"user prompt stored ({len(prompt)} chars)")
         touch_activity()
 

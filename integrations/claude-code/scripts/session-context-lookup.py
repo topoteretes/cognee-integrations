@@ -127,9 +127,7 @@ async def _run(prompt: str):
     if not section_lines:
         return
 
-    context = (
-        "Relevant context from this session's memory:\n\n" + "\n".join(section_lines).strip()
-    )
+    context = "Relevant context from this session's memory:\n\n" + "\n".join(section_lines).strip()
     counts = {k: len(v) for k, v in by_source.items() if v}
     hook_log("context_lookup_hit", {"counts": counts})
     notify(f"injected context ({counts})")

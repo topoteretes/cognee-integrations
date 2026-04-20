@@ -145,7 +145,9 @@ async def _run():
     seed_results = await _recall(
         session_id, dataset, query="", scope=["session", "trace"], top_k=_TRACE_TOP_K
     )
-    session_entries = [r for r in seed_results if isinstance(r, dict) and r.get("_source") == "session"]
+    session_entries = [
+        r for r in seed_results if isinstance(r, dict) and r.get("_source") == "session"
+    ]
     trace_entries = [r for r in seed_results if isinstance(r, dict) and r.get("_source") == "trace"]
 
     # Fall back: if recall returned nothing (keyword-miss on empty query),
@@ -179,13 +181,9 @@ async def _run():
     graph_context_entries: list = []
     graph_entries: list = []
     if query:
-        ctx = await _recall(
-            session_id, dataset, query=query, scope=["graph_context"], top_k=1
-        )
+        ctx = await _recall(session_id, dataset, query=query, scope=["graph_context"], top_k=1)
         graph_context_entries = [r for r in ctx if isinstance(r, dict)]
-        g = await _recall(
-            session_id, dataset, query=query, scope=["graph"], top_k=_GRAPH_TOP_K
-        )
+        g = await _recall(session_id, dataset, query=query, scope=["graph"], top_k=_GRAPH_TOP_K)
         graph_entries = [r for r in g if isinstance(r, dict)]
 
     sections = []
@@ -210,7 +208,10 @@ async def _run():
         hook_log("precompact_empty")
         return
 
-    header = "## Cognee Memory Anchor\nPreserved context from session, agent trace, and knowledge graph:\n"
+    header = (
+        "## Cognee Memory Anchor\n"
+        "Preserved context from session, agent trace, and knowledge graph:\n"
+    )
     anchor = header + "\n\n".join(sections)
 
     hook_log(

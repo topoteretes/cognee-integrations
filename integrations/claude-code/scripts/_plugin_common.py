@@ -129,8 +129,6 @@ def touch_activity() -> None:
     """Update the last-activity timestamp for the idle watcher."""
     try:
         _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-        _ACTIVITY_FILE.write_text(
-            str(datetime.now(timezone.utc).timestamp()), encoding="utf-8"
-        )
+        _ACTIVITY_FILE.write_text(str(datetime.now(timezone.utc).timestamp()), encoding="utf-8")
     except Exception:
         pass

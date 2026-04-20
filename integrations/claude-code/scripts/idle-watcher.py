@@ -89,9 +89,10 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
         await ensure_cognee_ready(config)
         user_id, _ = await ensure_identity(config)
 
+        from uuid import UUID
+
         import cognee
         from cognee.modules.users.methods import get_user
-        from uuid import UUID
 
         user = await get_user(UUID(user_id)) if user_id else None
         await cognee.improve(
