@@ -1,0 +1,39 @@
+{
+  "name": "cognee",
+  "version": "1.0.3-local",
+  "description": "CLI-first Cognee workflows for memory, knowledge graphs, codebase ingestion, and local UI launch.",
+  "author": {
+    "name": "Topoteretes",
+    "url": "https://github.com/topoteretes"
+  },
+  "homepage": "https://docs.cognee.ai",
+  "repository": "https://github.com/topoteretes/cognee",
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "knowledge-graph",
+    "rag",
+    "cli",
+    "agents"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Cognee",
+    "shortDescription": "Use Cognee from Codex through the cognee CLI.",
+    "longDescription": "Reusable Codex skills for running Cognee's CLI workflows: configure local or cloud Cognee, remember and recall knowledge, ingest codebases, manage datasets, and launch the local UI with cognee-cli -ui. This plugin intentionally does not configure MCP.",
+    "developerName": "Topoteretes",
+    "category": "Engineering",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://docs.cognee.ai",
+    "defaultPrompt": [
+      "Use Cognee CLI to remember the important context in this repo.",
+      "Use Cognee CLI to recall what we know about this feature.",
+      "Launch the local Cognee UI with the CLI and check its health."
+    ],
+    "brandColor": "#6510F4"
+  }
+}

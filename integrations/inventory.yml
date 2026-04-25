@@ -38,6 +38,17 @@ integrations:
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
+  - slug: codex
+    name: "Cognee Plugin for Codex"
+    owner: cognee
+    language: markdown
+    registry: codex-marketplace
+    package_name: null
+    cognee_dependency: cli
+    current_version: "1.0.3-local"
+    migration_status: done
+    notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
+
   - slug: dify
     name: "Cognee Tool Plugin for Dify"
     owner: cognee

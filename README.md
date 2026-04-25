@@ -9,6 +9,8 @@ Each integration lives under `integrations/<name>/` and is an independently publ
 ```
 integrations/
   openclaw/           -> @openclaw/memory-cognee (npm)
+  claude-code/        -> Cognee plugin for Claude Code
+  codex/              -> Cognee plugin marketplace for Codex
 ```
 
 ## Adding a New Integration

@@ -1,0 +1,20 @@
+{
+  "name": "cognee-local",
+  "interface": {
+    "displayName": "Cognee Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "cognee",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cognee"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Engineering"
+    }
+  ]
+}
