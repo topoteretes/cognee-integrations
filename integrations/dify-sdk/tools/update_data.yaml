@@ -1,0 +1,91 @@
+identity:
+  name: "update_data"
+  author: "topoteretes"
+  label:
+    en_US: "Update Data"
+    zh_Hans: "更新数据"
+    pt_BR: "Atualizar Dados"
+    ja_JP: "データ更新"
+description:
+  human:
+    en_US: "Update a specific data item in a dataset on your local Cognee server"
+    zh_Hans: "更新本地 Cognee 服务器数据集中的特定数据项"
+    pt_BR: "Atualizar um item de dados específico em um dataset no seu servidor Cognee local"
+    ja_JP: "ローカル Cognee サーバーのデータセット内の特定のデータ項目を更新"
+  llm: "Update an existing data item in a Cognee dataset. Replaces the content of an existing document and re-integrates changes into the memory. Requires the dataset ID and data item ID."
+parameters:
+  - name: dataset_id
+    type: string
+    required: true
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of the dataset containing the data"
+      zh_Hans: "包含该数据的数据集 UUID"
+      pt_BR: "UUID do dataset que contém os dados"
+      ja_JP: "データを含むデータセットの UUID"
+    llm_description: "The UUID of the dataset containing the data item to update"
+    form: llm
+  - name: data_id
+    type: string
+    required: true
+    label:
+      en_US: "Data ID"
+      zh_Hans: "数据 ID"
+      pt_BR: "ID dos Dados"
+      ja_JP: "データ ID"
+    human_description:
+      en_US: "UUID of the data item to update"
+      zh_Hans: "要更新的数据项 UUID"
+      pt_BR: "UUID do item de dados a ser atualizado"
+      ja_JP: "更新するデータ項目の UUID"
+    llm_description: "The UUID of the specific data item to update"
+    form: llm
+  - name: text_data
+    type: string
+    required: true
+    label:
+      en_US: "Text Data"
+      zh_Hans: "文本数据"
+      pt_BR: "Dados de Texto"
+      ja_JP: "テキストデータ"
+    human_description:
+      en_US: "New text content to replace the existing data"
+      zh_Hans: "用于替换现有数据的新文本内容"
+      pt_BR: "Novo conteúdo de texto para substituir os dados existentes"
+      ja_JP: "既存のデータを置き換える新しいテキスト内容"
+    llm_description: "The new text content that will replace the existing data item"
+    form: llm
+  - name: node_set
+    type: string
+    required: false
+    label:
+      en_US: "Node Set"
+      zh_Hans: "节点集"
+      pt_BR: "Conjunto de Nós"
+      ja_JP: "ノードセット"
+    human_description:
+      en_US: "Comma-separated node set names for graph organization"
+      zh_Hans: "用于图谱组织的节点集名称，用逗号分隔"
+      pt_BR: "Nomes de conjuntos de nós separados por vírgula para organização do grafo"
+      ja_JP: "グラフ構成用のノードセット名（カンマ区切り）"
+    llm_description: "Optional comma-separated node set names for organizing data in the knowledge graph"
+    form: llm
+output_schema:
+  type: object
+  properties:
+    succeeded:
+      type: boolean
+      description: "Whether the update was successful"
+    dataset_id:
+      type: string
+      description: "The dataset ID that was targeted"
+    data_id:
+      type: string
+      description: "The data item ID that was updated"
+extra:
+  python:
+    source: tools/update_data.py

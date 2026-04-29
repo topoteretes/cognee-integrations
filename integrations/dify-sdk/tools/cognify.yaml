@@ -1,0 +1,85 @@
+identity:
+  name: "cognify"
+  author: "topoteretes"
+  label:
+    en_US: "Cognify"
+    zh_Hans: "Cognify"
+    pt_BR: "Cognify"
+    ja_JP: "Cognify"
+description:
+  human:
+    en_US: "Build a memory from one or more datasets on your local Cognee server"
+    zh_Hans: "从本地 Cognee 服务器的一个或多个数据集构建内存"
+    pt_BR: "Construir um memória a partir de um ou mais datasets no seu servidor Cognee local"
+    ja_JP: "ローカル Cognee サーバーの1つ以上のデータセットからメモリを構築"
+  llm: "Process datasets to build a memory on the local Cognee server. Run this after adding data to datasets. This operation may take several minutes depending on the data volume."
+parameters:
+  - name: datasets
+    type: string
+    required: false
+    label:
+      en_US: "Datasets"
+      zh_Hans: "数据集"
+      pt_BR: "Datasets"
+      ja_JP: "データセット"
+    human_description:
+      en_US: "Comma-separated list of dataset names to process. Either datasets or dataset_ids must be provided."
+      zh_Hans: "要处理的数据集名称，用逗号分隔。datasets 或 dataset_ids 必须提供其一。"
+      pt_BR: "Lista de nomes de datasets separados por vírgula. datasets ou dataset_ids deve ser fornecido."
+      ja_JP: "処理するデータセット名のカンマ区切りリスト。datasets または dataset_ids のいずれかが必要です。"
+    llm_description: "Comma-separated list of dataset names to build the memory from. Either datasets or dataset_ids must be provided."
+    form: llm
+  - name: dataset_ids
+    type: string
+    required: false
+    label:
+      en_US: "Dataset IDs"
+      zh_Hans: "数据集 ID"
+      pt_BR: "IDs dos Datasets"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "Comma-separated list of dataset UUIDs. Either datasets or dataset_ids must be provided."
+      zh_Hans: "数据集 UUID，用逗号分隔。datasets 或 dataset_ids 必须提供其一。"
+      pt_BR: "Lista de UUIDs de datasets separados por vírgula. datasets ou dataset_ids deve ser fornecido."
+      ja_JP: "データセット UUID のカンマ区切りリスト。datasets または dataset_ids のいずれかが必要です。"
+    llm_description: "Comma-separated list of dataset UUIDs to process. Either datasets or dataset_ids must be provided."
+    form: llm
+  - name: custom_prompt
+    type: string
+    required: false
+    label:
+      en_US: "Custom Prompt"
+      zh_Hans: "自定义提示"
+      pt_BR: "Prompt Personalizado"
+      ja_JP: "カスタムプロンプト"
+    human_description:
+      en_US: "Custom prompt for entity extraction and graph generation"
+      zh_Hans: "用于实体提取和图谱生成的自定义提示"
+      pt_BR: "Prompt personalizado para extração de entidades e geração de grafo"
+      ja_JP: "エンティティ抽出とグラフ生成のためのカスタムプロンプト"
+    llm_description: "Optional custom prompt for entity extraction and knowledge graph generation. Overrides the default prompts."
+    form: llm
+  - name: ontology_key
+    type: string
+    required: false
+    label:
+      en_US: "Ontology Key"
+      zh_Hans: "本体键"
+      pt_BR: "Chave de Ontologia"
+      ja_JP: "オントロジーキー"
+    human_description:
+      en_US: "Comma-separated ontology keys referencing previously uploaded ontology files"
+      zh_Hans: "引用先前上传的本体文件的本体键，用逗号分隔"
+      pt_BR: "Chaves de ontologia separadas por vírgula referenciando arquivos de ontologia previamente carregados"
+      ja_JP: "以前にアップロードしたオントロジーファイルを参照するオントロジーキー（カンマ区切り）"
+    llm_description: "Optional comma-separated ontology keys referencing previously uploaded ontology files for knowledge graph construction"
+    form: llm
+output_schema:
+  type: object
+  properties:
+    datasets:
+      type: string
+      description: "Comma-separated list of dataset names that were cognified"
+extra:
+  python:
+    source: tools/cognify.py
