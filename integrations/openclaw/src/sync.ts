@@ -5,6 +5,13 @@ import { datasetNameForScope, routeFileToScope } from "./scope.js";
 
 // ---------------------------------------------------------------------------
 // Single-scope sync
+//
+// Cognee 1.0.3 introduced /remember as the recommended ingest path: one
+// multipart call uploads a batch of files and the server runs add+cognify
+// (and improve) end-to-end, returning per-file data_ids. We use it for new
+// files and keep PATCH /update for changed files (remember has no update
+// counterpart, and the existing 1.0.3 update endpoint already triggers a
+// follow-up cognify internally, so the fan-out is the same).
 // ---------------------------------------------------------------------------
 
 export async function syncFiles(
@@ -19,7 +26,11 @@ export async function syncFiles(
   const result: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   const dsName = overrideDatasetName || cfg.datasetName;
   let datasetId = syncIndex.datasetId;
-  let needsCognify = false;
+
+  // Partition changed files into "needs add" vs "needs update".
+  // We process updates per-file (PATCH /update) and batch all adds into a
+  // single /remember call at the end of the loop.
+  const toAdd: MemoryFile[] = [];
 
   for (const file of changedFiles) {
     const existing = syncIndex.entries[file.path];
@@ -29,103 +40,103 @@ export async function syncFiles(
       continue;
     }
 
-    const dataWithMetadata = `# ${file.path}\n\n${file.content}\n\n---\nMetadata: ${JSON.stringify({ path: file.path, source: "memory" })}`;
-
-    try {
-      if (existing?.dataId && datasetId) {
-        try {
-          const updateResponse = await client.update({
-            dataId: existing.dataId,
-            datasetId,
-            data: dataWithMetadata,
-            filePath: file.path,
-            datasetName: dsName,
-          });
-          const newDataId = updateResponse.dataId;
-          if (!newDataId) {
-            logger.warn?.(`cognee-openclaw: update for ${file.path} succeeded but could not resolve new data_id`);
-          }
-          syncIndex.entries[file.path] = { hash: file.hash, dataId: newDataId };
-          syncIndex.datasetId = datasetId;
-          syncIndex.datasetName = dsName;
-          result.updated++;
-          logger.info?.(`cognee-openclaw: updated ${file.path} (newDataId=${newDataId})`);
+    if (existing?.dataId && datasetId) {
+      const dataWithMetadata = wrapWithMetadata(file);
+      try {
+        const updateResponse = await client.update({
+          dataId: existing.dataId,
+          datasetId,
+          data: dataWithMetadata,
+          filePath: file.path,
+          datasetName: dsName,
+        });
+        const newDataId = updateResponse.dataId;
+        if (!newDataId) {
+          logger.warn?.(`cognee-openclaw: update for ${file.path} succeeded but could not resolve new data_id`);
+        }
+        syncIndex.entries[file.path] = { hash: file.hash, dataId: newDataId };
+        syncIndex.datasetId = datasetId;
+        syncIndex.datasetName = dsName;
+        result.updated++;
+        logger.info?.(`cognee-openclaw: updated ${file.path} (newDataId=${newDataId})`);
+        continue;
+      } catch (updateError) {
+        const errorMsg = updateError instanceof Error ? updateError.message : String(updateError);
+        if (errorMsg.includes("404") || errorMsg.includes("409") || errorMsg.includes("not found")) {
+          logger.info?.(`cognee-openclaw: update failed for ${file.path}, falling back to remember`);
+          // fall through to add path
+        } else {
+          result.errors++;
+          logger.warn?.(`cognee-openclaw: failed to sync ${file.path}: ${errorMsg}`);
           continue;
-        } catch (updateError) {
-          const errorMsg = updateError instanceof Error ? updateError.message : String(updateError);
-          if (errorMsg.includes("404") || errorMsg.includes("409") || errorMsg.includes("not found")) {
-            logger.info?.(`cognee-openclaw: update failed for ${file.path}, falling back to add`);
-            delete existing.dataId;
-          } else {
-            throw updateError;
-          }
         }
       }
+    }
 
-      const response = await client.add({
+    toAdd.push(file);
+  }
+
+  if (toAdd.length > 0) {
+    try {
+      const rememberResponse = await client.remember({
+        files: toAdd.map((f) => ({ filePath: f.path, data: wrapWithMetadata(f) })),
         datasetName: dsName,
         datasetId,
-        data: dataWithMetadata,
-        filePath: file.path,
       });
 
-      if (response.datasetId && response.datasetId !== datasetId) {
-        datasetId = response.datasetId;
+      if (rememberResponse.datasetId && rememberResponse.datasetId !== datasetId) {
+        datasetId = rememberResponse.datasetId;
         const state = await loadDatasetState();
-        state[dsName] = response.datasetId;
+        state[dsName] = rememberResponse.datasetId;
         await saveDatasetState(state);
       }
 
-      syncIndex.entries[file.path] = { hash: file.hash, dataId: response.dataId };
+      const itemsByPath = new Map<string, string | undefined>();
+      for (const item of rememberResponse.items) {
+        itemsByPath.set(item.filePath, item.dataId);
+      }
+
+      for (const file of toAdd) {
+        const dataId = itemsByPath.get(file.path);
+        syncIndex.entries[file.path] = { hash: file.hash, dataId };
+        result.added++;
+        logger.info?.(`cognee-openclaw: remembered ${file.path}${dataId ? ` (dataId=${dataId})` : ""}`);
+      }
       syncIndex.datasetId = datasetId;
       syncIndex.datasetName = dsName;
-      needsCognify = true;
-      result.added++;
-      logger.info?.(`cognee-openclaw: added ${file.path}`);
     } catch (error) {
-      result.errors++;
-      logger.warn?.(`cognee-openclaw: failed to sync ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+      // One failed batch fails every queued file — surface them all so the
+      // caller's error count reflects the actual workload, not just one entry.
+      for (const file of toAdd) {
+        result.errors++;
+        logger.warn?.(`cognee-openclaw: failed to sync ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 
-  // Handle deletions
+  // Per-item /forget for files that disappeared from the workspace.
+  // We pass `dsName` (not the UUID) — see CogneeHttpClient.forget().
   const currentPaths = new Set(fullFiles.map(f => f.path));
   for (const [path, entry] of Object.entries(syncIndex.entries)) {
     if (!currentPaths.has(path) && entry.dataId && datasetId) {
-      const deleteResult = await client.delete({ dataId: entry.dataId, datasetId, mode: cfg.deleteMode });
-      if (deleteResult.deleted) {
+      const forgetResult = await client.forget({ dataId: entry.dataId, dataset: dsName });
+      if (forgetResult.deleted) {
         result.deleted++;
         delete syncIndex.entries[path];
-        logger.info?.(`cognee-openclaw: deleted ${path}`);
+        logger.info?.(`cognee-openclaw: forgot ${path}`);
       } else {
-        const isNotFound = deleteResult.error && (
-          deleteResult.error.includes("404") || deleteResult.error.includes("409") || deleteResult.error.includes("not found")
+        const isNotFound = forgetResult.error && (
+          forgetResult.error.includes("404") || forgetResult.error.includes("409") || forgetResult.error.includes("not found")
         );
         if (isNotFound) {
           result.deleted++;
           delete syncIndex.entries[path];
-          logger.info?.(`cognee-openclaw: deleted ${path} (already removed from Cognee)`);
+          logger.info?.(`cognee-openclaw: forgot ${path} (already removed from Cognee)`);
         } else {
           result.errors++;
-          logger.warn?.(`cognee-openclaw: failed to delete ${path}${deleteResult.error ? `: ${deleteResult.error}` : ""}`);
+          logger.warn?.(`cognee-openclaw: failed to forget ${path}${forgetResult.error ? `: ${forgetResult.error}` : ""}`);
         }
       }
-    }
-  }
-
-  // Fix #9: Only trigger memify AFTER polling cognify to completion
-  if (needsCognify && cfg.autoCognify && datasetId) {
-    try {
-      await client.cognify({ datasetIds: [datasetId] });
-      logger.info?.("cognee-openclaw: cognify dispatched");
-
-      if (cfg.autoMemify) {
-        // Poll for cognify completion before triggering memify
-        const memifyDatasetId = datasetId;
-        await waitForCognifyThenMemify(client, memifyDatasetId, logger);
-      }
-    } catch (error) {
-      logger.warn?.(`cognee-openclaw: cognify failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -203,66 +214,15 @@ export async function syncFilesScoped(
 }
 
 // ---------------------------------------------------------------------------
-// Fix #9: Poll cognify status before triggering memify
+// Helpers
 // ---------------------------------------------------------------------------
 
-/** Exported so tests can override */
-export let COGNIFY_POLL_INTERVAL_MS = 5_000;
-const COGNIFY_POLL_MAX_ATTEMPTS = 60; // 5 min max
-
-/** Allow tests to adjust the poll interval */
-export function _setPollInterval(ms: number): void { COGNIFY_POLL_INTERVAL_MS = ms; }
-
-async function waitForCognifyThenMemify(
-  client: CogneeHttpClient,
-  datasetId: string,
-  logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
-): Promise<void> {
-  for (let attempt = 0; attempt < COGNIFY_POLL_MAX_ATTEMPTS; attempt++) {
-    // Wait before polling (skip on first attempt to check immediately)
-    if (attempt > 0) {
-      await new Promise(r => setTimeout(r, COGNIFY_POLL_INTERVAL_MS));
-    }
-
-    try {
-      const status = await client.datasetStatus(datasetId);
-      if (status === "completed" || status === "COMPLETED") {
-        try {
-          await client.memify({ datasetIds: [datasetId] });
-          logger.info?.("cognee-openclaw: memify dispatched after cognify completed");
-        } catch (error) {
-          logger.warn?.(`cognee-openclaw: memify failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        return;
-      }
-      if (status === "failed" || status === "FAILED" || status === "error") {
-        logger.warn?.(`cognee-openclaw: cognify failed (status: ${status}), skipping memify`);
-        return;
-      }
-      if (status === "unknown") {
-        // Endpoint exists but doesn't track this operation — fall back to optimistic memify
-        logger.warn?.("cognee-openclaw: could not poll cognify status, running memify optimistically");
-        try {
-          await client.memify({ datasetIds: [datasetId] });
-          logger.info?.("cognee-openclaw: memify dispatched (optimistic)");
-        } catch (error) {
-          logger.warn?.(`cognee-openclaw: memify failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        return;
-      }
-      // Still running, continue polling
-    } catch {
-      // Status endpoint may not exist or may fail — fall back to fire-and-forget
-      logger.warn?.("cognee-openclaw: could not poll cognify status, running memify optimistically");
-      try {
-        await client.memify({ datasetIds: [datasetId] });
-        logger.info?.("cognee-openclaw: memify dispatched (optimistic)");
-      } catch (error) {
-        logger.warn?.(`cognee-openclaw: memify failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      return;
-    }
-  }
-
-  logger.warn?.("cognee-openclaw: cognify polling timed out, skipping memify");
+function wrapWithMetadata(file: MemoryFile): string {
+  return `# ${file.path}\n\n${file.content}\n\n---\nMetadata: ${JSON.stringify({ path: file.path, source: "memory" })}`;
 }
+
+// Kept for backwards compatibility with downstream consumers that imported
+// these from sync.ts to drive cognify polling. The new /remember path runs
+// cognify+improve server-side, so the openclaw sync flow no longer polls.
+export let COGNIFY_POLL_INTERVAL_MS = 5_000;
+export function _setPollInterval(ms: number): void { COGNIFY_POLL_INTERVAL_MS = ms; }

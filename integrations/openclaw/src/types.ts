@@ -89,6 +89,27 @@ export type CogneeAddResponse = {
   data_ingestion_info?: unknown;
 };
 
+export type CogneeRememberItem = {
+  id?: string;
+  name?: string;
+  content_hash?: string;
+  token_count?: number;
+  mime_type?: string;
+  data_size?: number;
+};
+
+export type CogneeRememberResponse = {
+  status?: string;
+  dataset_id?: string;
+  dataset_name?: string;
+  pipeline_run_id?: string;
+  items_processed?: number;
+  elapsed_seconds?: number;
+  items?: CogneeRememberItem[];
+  content_hash?: string;
+  error?: string;
+};
+
 export type CogneeSearchResult = {
   id: string;
   text: string;

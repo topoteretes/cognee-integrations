@@ -1,5 +1,5 @@
 import { CogneeHttpClient } from "../src/client";
-import { syncFiles, syncFilesScoped, _setPollInterval } from "../src/sync";
+import { syncFiles, syncFilesScoped } from "../src/sync";
 import { matchGlob, routeFileToScope, datasetNameForScope, isMultiScopeEnabled } from "../src/scope";
 import type { MemoryFile, SyncIndex, CogneePluginConfig, ScopedSyncIndexes, MemoryScope, ScopeRoute } from "../src/types";
 import { homedir } from "node:os";
@@ -24,21 +24,25 @@ jest.mock("../src/client", () => ({
   CogneeHttpClient: jest.fn(),
 }));
 
-const mockAdd = jest.fn();
+const mockRemember = jest.fn();
 const mockUpdate = jest.fn();
-const mockDelete = jest.fn();
-const mockCognify = jest.fn();
-const mockMemify = jest.fn();
-const mockDatasetStatus = jest.fn();
+const mockForget = jest.fn();
 
 (CogneeHttpClient as jest.MockedClass<typeof CogneeHttpClient>).mockImplementation(() => ({
-  add: mockAdd,
+  remember: mockRemember,
   update: mockUpdate,
-  delete: mockDelete,
-  cognify: mockCognify,
-  memify: mockMemify,
-  datasetStatus: mockDatasetStatus,
+  forget: mockForget,
 } as any));
+
+// Build a remember() response that mirrors the per-file dataIds requested.
+function rememberResult(datasetId: string, datasetName: string, files: { filePath: string; dataId: string }[]) {
+  return {
+    datasetId,
+    datasetName,
+    status: "completed",
+    items: files.map((f) => ({ filePath: f.filePath, uploadName: f.filePath, dataId: f.dataId })),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -237,13 +241,16 @@ describe("syncFiles", () => {
   it("adds new file and updates syncIndex", async () => {
     const files = [createFile("new.md", "content")];
     const syncIndex: SyncIndex = { entries: {} };
-    mockAdd.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
+    mockRemember.mockResolvedValue(rememberResult("ds1", "test", [{ filePath: "new.md", dataId: "id1" }]));
 
     const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
 
     expect(result).toEqual({ added: 1, updated: 0, skipped: 0, errors: 0, deleted: 0, datasetId: "ds1" });
     expect(syncIndex.entries["new.md"]).toEqual({ hash: "hash-content", dataId: "id1" });
-    expect(mockCognify).toHaveBeenCalledWith({ datasetIds: ["ds1"] });
+    expect(mockRemember).toHaveBeenCalledWith(expect.objectContaining({
+      datasetName: "test",
+      files: [expect.objectContaining({ filePath: "new.md" })],
+    }));
   });
 
   it("updates changed file with dataId", async () => {
@@ -254,14 +261,14 @@ describe("syncFiles", () => {
     const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
 
     expect(result).toEqual({ added: 0, updated: 1, skipped: 0, errors: 0, deleted: 0, datasetId: "ds1" });
-    expect(mockCognify).not.toHaveBeenCalled();
+    expect(mockRemember).not.toHaveBeenCalled();
   });
 
-  it("falls back to add when update fails with 404", async () => {
+  it("falls back to remember when update fails with 404", async () => {
     const files = [createFile("existing.md", "new content")];
     const syncIndex: SyncIndex = { entries: { "existing.md": { hash: "old-hash", dataId: "id1" } } };
     mockUpdate.mockRejectedValue(new Error("404 Not found"));
-    mockAdd.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id2" });
+    mockRemember.mockResolvedValue(rememberResult("ds1", "test", [{ filePath: "existing.md", dataId: "id2" }]));
 
     const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
 
@@ -287,12 +294,12 @@ describe("syncFiles", () => {
     const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
 
     expect(result.skipped).toBe(1);
-    expect(mockAdd).not.toHaveBeenCalled();
+    expect(mockRemember).not.toHaveBeenCalled();
   });
 
   it("deletes removed file with dataId", async () => {
     const syncIndex: SyncIndex = { entries: { "removed.md": { hash: "hash", dataId: "id1" } }, datasetId: "ds1" };
-    mockDelete.mockResolvedValue({ datasetId: "ds1", dataId: "id1", deleted: true });
+    mockForget.mockResolvedValue({ datasetId: "ds1", dataId: "id1", deleted: true });
 
     const result = await syncFiles(client, [], [], syncIndex, cfg, logger);
 
@@ -302,7 +309,7 @@ describe("syncFiles", () => {
 
   it("handles delete failure", async () => {
     const syncIndex: SyncIndex = { entries: { "removed.md": { hash: "hash", dataId: "id1" } }, datasetId: "ds1" };
-    mockDelete.mockResolvedValue({ datasetId: "ds1", dataId: "id1", deleted: false });
+    mockForget.mockResolvedValue({ datasetId: "ds1", dataId: "id1", deleted: false });
 
     const result = await syncFiles(client, [], [], syncIndex, cfg, logger);
 
@@ -313,7 +320,7 @@ describe("syncFiles", () => {
     const syncIndex: SyncIndex = { entries: { "removed.md": { hash: "hash" } }, datasetId: "ds1" };
     const result = await syncFiles(client, [], [], syncIndex, cfg, logger);
     expect(result.deleted).toBe(0);
-    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockForget).not.toHaveBeenCalled();
   });
 
   it("handles add, update, skip, delete in one sync", async () => {
@@ -326,39 +333,29 @@ describe("syncFiles", () => {
       entries: { "changed.md": { hash: "old-hash", dataId: "id2" }, "unchanged.md": { hash: "hash-same", dataId: "id3" }, "removed.md": { hash: "hash", dataId: "id4" } },
       datasetId: "ds1",
     };
-    mockAdd.mockResolvedValueOnce({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
+    mockRemember.mockResolvedValue(rememberResult("ds1", "test", [{ filePath: "new.md", dataId: "id1" }]));
     mockUpdate.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id2" });
-    mockDelete.mockResolvedValue({ datasetId: "ds1", dataId: "id4", deleted: true });
+    mockForget.mockResolvedValue({ datasetId: "ds1", dataId: "id4", deleted: true });
 
     const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
 
     expect(result).toEqual({ added: 1, updated: 1, skipped: 1, errors: 0, deleted: 1, datasetId: "ds1" });
   });
 
-  it("triggers memify only after cognify completes (Fix #9)", async () => {
-    _setPollInterval(1); // Use 1ms poll for tests
-    cfg.autoMemify = true;
-    const files = [createFile("new.md", "content")];
+  it("batches multiple new files into a single remember call", async () => {
+    const files = [createFile("a.md", "a"), createFile("b.md", "b")];
     const syncIndex: SyncIndex = { entries: {} };
-    mockAdd.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
-    mockDatasetStatus.mockResolvedValue("completed");
+    mockRemember.mockResolvedValue(rememberResult("ds1", "test", [
+      { filePath: "a.md", dataId: "ida" },
+      { filePath: "b.md", dataId: "idb" },
+    ]));
 
-    await syncFiles(client, files, files, syncIndex, cfg, logger);
+    const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
 
-    expect(mockCognify).toHaveBeenCalled();
-    // Memify should be called after polling shows cognify completed
-    expect(mockMemify).toHaveBeenCalledWith({ datasetIds: ["ds1"] });
-    _setPollInterval(5_000); // Reset
-  });
-
-  it("does not trigger memify when autoMemify is false", async () => {
-    const files = [createFile("new.md", "content")];
-    const syncIndex: SyncIndex = { entries: {} };
-    mockAdd.mockResolvedValue({ datasetId: "ds1", datasetName: "test", dataId: "id1" });
-
-    await syncFiles(client, files, files, syncIndex, cfg, logger);
-
-    expect(mockMemify).not.toHaveBeenCalled();
+    expect(result.added).toBe(2);
+    expect(mockRemember).toHaveBeenCalledTimes(1);
+    expect(syncIndex.entries["a.md"]?.dataId).toBe("ida");
+    expect(syncIndex.entries["b.md"]?.dataId).toBe("idb");
   });
 
   it("does not delete unchanged files when called with partial changedFiles", async () => {
@@ -370,17 +367,17 @@ describe("syncFiles", () => {
     const result = await syncFiles(client, changedFiles, fullFiles, syncIndex, cfg, logger);
 
     expect(result.deleted).toBe(0);
-    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockForget).not.toHaveBeenCalled();
   });
 
   it("uses overrideDatasetName for scoped sync", async () => {
     const files = [createFile("policy.md", "content")];
     const syncIndex: SyncIndex = { entries: {} };
-    mockAdd.mockResolvedValue({ datasetId: "ds-company", datasetName: "acme-company", dataId: "id1" });
+    mockRemember.mockResolvedValue(rememberResult("ds-company", "acme-company", [{ filePath: "policy.md", dataId: "id1" }]));
 
     await syncFiles(client, files, files, syncIndex, cfg, logger, "acme-company");
 
-    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ datasetName: "acme-company" }));
+    expect(mockRemember).toHaveBeenCalledWith(expect.objectContaining({ datasetName: "acme-company" }));
   });
 });
 
@@ -414,16 +411,17 @@ describe("syncFilesScoped", () => {
       createFile("memory/tools.md", "agent tools"),
     ];
     const scopedIndexes: ScopedSyncIndexes = {};
-    mockAdd.mockImplementation(async (params: any) => ({
+    mockRemember.mockImplementation(async (params: any) => ({
       datasetId: `ds-${params.datasetName}`,
       datasetName: params.datasetName,
-      dataId: `id-${params.datasetName}`,
+      status: "completed",
+      items: params.files.map((f: any) => ({ filePath: f.filePath, uploadName: f.filePath, dataId: `id-${params.datasetName}` })),
     }));
 
     const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, logger);
 
     expect(result.added).toBe(3);
-    const addCalls = mockAdd.mock.calls.map((c: any[]) => c[0].datasetName);
+    const addCalls = mockRemember.mock.calls.map((c: any[]) => c[0].datasetName);
     expect(addCalls).toContain("acme-company");
     expect(addCalls).toContain("acme-user-alice");
     expect(addCalls).toContain("acme-agent-coder");
@@ -438,9 +436,9 @@ describe("syncFilesScoped", () => {
       user: { entries: { "memory/user/prefs.md": { hash: "old-hash", dataId: "uid1" } }, datasetId: "ds-user" },
       agent: { entries: { "memory/removed.md": { hash: "hash", dataId: "aid1" } }, datasetId: "ds-agent" },
     };
-    mockAdd.mockResolvedValue({ datasetId: "ds-company", datasetName: "acme-company", dataId: "cid1" });
+    mockRemember.mockResolvedValue(rememberResult("ds-company", "acme-company", [{ filePath: "memory/company/new.md", dataId: "cid1" }]));
     mockUpdate.mockResolvedValue({ datasetId: "ds-user", datasetName: "acme-user-alice", dataId: "uid1" });
-    mockDelete.mockResolvedValue({ datasetId: "ds-agent", dataId: "aid1", deleted: true });
+    mockForget.mockResolvedValue({ datasetId: "ds-agent", dataId: "aid1", deleted: true });
 
     const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, logger);
 
@@ -458,6 +456,6 @@ describe("syncFilesScoped", () => {
     const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, logger);
 
     expect(result.skipped).toBe(1);
-    expect(mockAdd).not.toHaveBeenCalled();
+    expect(mockRemember).not.toHaveBeenCalled();
   });
 });
