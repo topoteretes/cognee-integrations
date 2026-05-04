@@ -1,0 +1,42 @@
+{
+  "_comment": "Sample to merge into ~/.claude/settings.json to enable the Cognee graph-memory harness. Merge manually with your existing settings.json. See docs/HARNESS_GUIDE.md for the meaning of each value.",
+
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/auto_remember_user_message.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/auto_remember_completion.py"
+          }
+        ]
+      }
+    ]
+  },
+
+  "permissions": {
+    "_comment_permissions": "Auto-allow the main Cognee MCP tools so you are not prompted on every call.",
+    "allow": [
+      "mcp__cognee__search",
+      "mcp__cognee__recall",
+      "mcp__cognee__remember",
+      "mcp__cognee__cognify",
+      "mcp__cognee__cognify_status",
+      "mcp__cognee__list_data",
+      "Bash(python3 ~/.claude/hooks/cognee_remember_flusher.py*)"
+    ]
+  },
+
+  "_comment_cron": "Run cognee_remember_flusher.py periodically (cron recommended). Example (every 5 minutes):",
+  "_comment_cron_example": "*/5 * * * * /usr/bin/python3 /home/youruser/.claude/hooks/cognee_remember_flusher.py >> /home/youruser/.claude/cognee_flusher.log 2>&1"
+}
