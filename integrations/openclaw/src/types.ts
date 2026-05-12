@@ -96,6 +96,27 @@ export type CogneeSearchResult = {
   metadata?: Record<string, unknown>;
 };
 
+export type CogneeComponentStatus = {
+  status: string;
+  provider: string;
+  response_time_ms: number;
+  details: string;
+};
+export type CogneeHealthDetailed = {
+  status: string;
+  timestamp: string;
+  version: string;
+  uptime: number;
+  components: {
+    relational_db: CogneeComponentStatus;
+    vector_db: CogneeComponentStatus;
+    graph_db: CogneeComponentStatus;
+    file_storage: CogneeComponentStatus;
+    llm_provider: CogneeComponentStatus;
+    embedding_service: CogneeComponentStatus;
+  };
+};
+
 export type DatasetState = Record<string, string>;
 
 export type SyncIndex = {

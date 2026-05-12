@@ -1,5 +1,11 @@
-import { createHash } from "node:crypto";
-import type { CogneeAddResponse, CogneeDeleteMode, CogneeMode, CogneeSearchResult, CogneeSearchType } from "./types.js";
+import type {
+  CogneeAddResponse,
+  CogneeDeleteMode,
+  CogneeHealthDetailed,
+  CogneeMode,
+  CogneeSearchResult,
+  CogneeSearchType
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -169,7 +175,7 @@ export class CogneeHttpClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const headers = this.isCloud ? { "X-Api-Key": this.apiKey! } : {};
+      const headers = this.buildHeaders();
       const response = await fetch(`${this.baseUrl}/health`, {
         method: "GET",
         headers,
@@ -179,6 +185,25 @@ export class CogneeHttpClient {
         throw new Error(`Cognee health check failed (${response.status})`);
       }
       return (await response.json()) as { status: string };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async healthDetailed(): Promise<CogneeHealthDetailed> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const headers = this.buildHeaders();
+      const response = await fetch(`${this.baseUrl}/health/detailed`, {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Cognee health check failed (${response.status})`);
+      }
+      return (await response.json()) as CogneeHealthDetailed;
     } finally {
       clearTimeout(timer);
     }

@@ -20,22 +20,81 @@ import { syncFiles, syncFilesScoped } from "./sync.js";
 // ---------------------------------------------------------------------------
 // Plugin registration
 // ---------------------------------------------------------------------------
+const PLUGIN_ID = "cognee-openclaw";
+const backend = "builtin";
 
-type MemoryFlushPlanRegistrant = OpenClawPluginApi & {
-  registerMemoryFlushPlan?: (resolver: typeof buildMemoryFlushPlan) => void;
-};
 const memoryCogneePlugin = {
-  id: "cognee-openclaw",
+  id: PLUGIN_ID,
   name: "Memory (Cognee)",
   description: "Cognee-backed memory with multi-scope support (company/user/agent), session tracking, and auto-recall",
   kind: "memory" as const,
+  activation: {
+    onStartup: true,
+  },
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
     const client = new CogneeHttpClient(cfg.baseUrl, cfg.apiKey, cfg.username, cfg.password, cfg.requestTimeoutMs, cfg.ingestionTimeoutMs, cfg.mode);
     const multiScope = isMultiScopeEnabled(cfg);
+    // cache status variables
+    let vectorAvailable = false;
+    let lastTotalIndexedFiles = 0;
+    const updateTotalIndexedFiles = (indexes: ScopedSyncIndexes) => {
+      const scopes = Object.keys(indexes);
+      lastTotalIndexedFiles = scopes
+        .map((s) => indexes[s])
+        .filter(i => !!i)
+        .map((i) => Object.keys(i.entries).length)
+        .reduce((a, b) => a + b, 0);
+    };
 
-    (api as MemoryFlushPlanRegistrant).registerMemoryFlushPlan?.(buildMemoryFlushPlan);
-    api.logger.debug?.("cognee-openclaw: registered memory flush plan");
+    api.registerMemoryCapability({
+      flushPlanResolver: buildMemoryFlushPlan,
+      runtime: {
+        resolveMemoryBackendConfig: () => ({ backend }),
+        // NOTICE: Stick to using hooks instead for memory recall as it's a more stable approach for a third-party plugin
+        getMemorySearchManager: async () => ({
+          manager: {
+            status: () => ({
+              backend,
+              provider: PLUGIN_ID,
+              files: lastTotalIndexedFiles,
+              chunks: 0,
+              vector: {
+                enabled: true,
+                available: vectorAvailable,
+              },
+            }),
+            probeVectorAvailability: async () => {
+              try {
+                const rs = await client.healthDetailed();
+                vectorAvailable = rs.components.vector_db.status === "healthy";
+                return vectorAvailable;
+              } catch {
+                return false;
+              }
+            },
+            probeEmbeddingAvailability: async () => {
+              try {
+                const rs = await client.healthDetailed();
+                return {
+                  ok: rs.components.embedding_service.status === "healthy"
+                };
+              } catch (error) {
+                return { ok: false, error: String(error) };
+              }
+            },
+            search: async () => [],
+            readFile: async (params: { relPath: string; from?: number; lines?: number }) => ({
+              text: "",
+              path: params.relPath,
+              from: params.from ?? 0,
+              lines: params.lines ?? 0,
+            }),
+          }
+        }),
+      },
+    });
+    api.logger.debug?.("cognee-openclaw: registered memory capability");
 
     // Legacy single-scope state
     let datasetId: string | undefined;
@@ -70,11 +129,13 @@ const memoryCogneePlugin = {
               const migrated = await migrateLegacyIndex(cfg.defaultWriteScope);
               if (migrated) {
                 scopedIndexes = migrated;
+                updateTotalIndexedFiles(migrated);
                 api.logger.info?.(`cognee-openclaw: migrated legacy sync index to scope "${cfg.defaultWriteScope}"`);
                 return;
               }
             }
             scopedIndexes = indexes;
+            updateTotalIndexedFiles(indexes);
           })
           .catch((error) => {
             api.logger.warn?.(`cognee-openclaw: failed to load scoped sync indexes: ${String(error)}`);
@@ -82,6 +143,7 @@ const memoryCogneePlugin = {
         : loadSyncIndex()
           .then((state) => {
             syncIndex = state;
+            updateTotalIndexedFiles({"agent": syncIndex});
             if (!datasetId && state.datasetId && state.datasetName === cfg.datasetName) {
               datasetId = state.datasetId;
             }
@@ -183,6 +245,7 @@ const memoryCogneePlugin = {
               console.log(`  New (unindexed): ${newCount}`);
               console.log(`  Changed (dirty): ${dirty}`);
             }
+            console.log(`Sync index: ${SCOPED_SYNC_INDEX_PATH}`);
           } else {
             const entryCount = Object.keys(syncIndex.entries).length;
             const entriesWithDataId = Object.values(syncIndex.entries).filter((e) => e.dataId).length;
@@ -255,7 +318,7 @@ const memoryCogneePlugin = {
           (config.plugins.slots as Record<string, string>).memory = "cognee-openclaw";
 
           config.plugins.entries ??= {} as typeof config.plugins.entries;
-          const entries = config.plugins.entries as Record<string, { enabled: boolean }>;
+          const entries = config.plugins.entries as Record<string, { enabled: boolean; hooks?: { allowPromptInjection?: boolean; allowConversationAccess?: boolean; } }>;
 
           if (opts.hybrid) {
             // Hybrid mode: keep built-in memory enabled
@@ -270,6 +333,12 @@ const memoryCogneePlugin = {
           // Ensure cognee-openclaw is enabled
           entries["cognee-openclaw"] ??= { enabled: true } as typeof entries[string];
           entries["cognee-openclaw"].enabled = true;
+
+          // Ensure this flag is enabled for the before_prompt_build & agent_end hooks to work
+          entries["cognee-openclaw"].hooks = {
+            allowPromptInjection: true,
+            allowConversationAccess: true,
+          };
 
           await writeConfigFile(config);
 
@@ -360,21 +429,6 @@ const memoryCogneePlugin = {
           await runAutoSync(ctx.workspaceDir);
         },
       });
-
-      // Fallback: OpenClaw >= 2026.4.x does not call start() on services
-      // registered by memory-kind plugins (core bug). Instead of polling,
-      // schedule the auto-sync to run on the next tick. The autoSyncStarted
-      // guard prevents double-execution if start() is called later or the
-      // core bug is fixed.
-      setTimeout(() => {
-        if (autoSyncStarted) return;
-        const config = api.runtime?.config?.loadConfig?.();
-        const fallbackDir = config?.agents?.defaults?.workspace;
-        api.logger.info?.("cognee-openclaw: service start() not invoked, running auto-sync directly");
-        runAutoSync(fallbackDir).catch((e) => {
-          api.logger.warn?.(`cognee-openclaw: fallback auto-sync error: ${String(e)}`);
-        });
-      }, 2_000);
     }
 
     // ------------------------------------------------------------------
@@ -549,6 +603,7 @@ const memoryCogneePlugin = {
             try {
               const freshIndexes = await loadScopedSyncIndexes();
               scopedIndexes = freshIndexes;
+              updateTotalIndexedFiles(freshIndexes);
             } catch { /* fall through */ }
 
             const files = await collectMemoryFiles(workspaceDir);
@@ -581,6 +636,7 @@ const memoryCogneePlugin = {
             try {
               const freshIndex = await loadSyncIndex();
               syncIndex.entries = freshIndex.entries;
+              updateTotalIndexedFiles({"agent": syncIndex});
               if (freshIndex.datasetId) syncIndex.datasetId = freshIndex.datasetId;
               if (freshIndex.datasetName) syncIndex.datasetName = freshIndex.datasetName;
             } catch { /* fall through */ }

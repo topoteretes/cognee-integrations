@@ -123,4 +123,4 @@ jobs:
 
       - name: Type check
         working-directory: integrations/${{ matrix.integration }}
-        run: npx tsc --noEmit --skipLibCheck
+        run: npx tsc -p tsconfig.build.json --noEmit --skipLibCheck
