@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-claude"
+version = "0.2.0"
+description = "Cognee integration with claude-agent-sdk-python"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "claude-agent-sdk>=0.2.88,<0.3.0",
+    "cognee>=1.0.0,<=1.1.2",
+    "python-dotenv>=1.1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/claude-agent-sdk"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_claude*"]
+exclude = ["examples*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.13.3",
+    "ipykernel>=6.29",
+]
