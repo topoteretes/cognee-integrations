@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognee-integration-claude"
-version = "0.1.1"
+version = "0.2.0"
 description = "Cognee integration with claude-agent-sdk-python"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "claude-agent-sdk>=0.1.1",
-    "cognee>=0.3.4,<0.5.4",
+    "claude-agent-sdk>=0.2.88,<0.3.0",
+    "cognee>=1.0.0,<=1.1.2",
     "python-dotenv>=1.1.1",
 ]
 
@@ -27,4 +27,5 @@ exclude = ["examples*"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.13.3",
+    "ipykernel>=6.29",
 ]

@@ -10,11 +10,25 @@ A powerful integration between Cognee and Claude Agent SDK that provides intelli
 
 - **Smart Knowledge Storage**: Add and persist information using Cognee's advanced indexing
 - **Semantic Search**: Retrieve relevant information using natural language queries
-- **Session Management**: Support for user-specific data isolation
+- **Two memory tiers**: a permanent knowledge graph plus a fast session cache you persist with `improve()`
 - **Claude Agent SDK Integration**: Seamless integration with Claude's agent framework
 - **Async Support**: Built with async/await for high-performance applications
-- **Thread-Safe**: Queue-based processing for concurrent operations
 - **Cross-Session Persistence**: Memory survives between agent instances
+
+## Upgrading from 0.1.x ⚠️
+
+cognee-integration-claude `0.2.0` moves the integration to **cognee v1.0** and replaces the old tool API.
+It's a breaking change with no compatibility shim — update your imports:
+
+| 0.1.x | 0.2.0 |
+|---|---|
+| `from cognee_integration_claude import add_tool, search_tool` | `from cognee_integration_claude import cognee_tools` |
+| `tools=[add_tool, search_tool]` | `tools=cognee_tools()` |
+| `get_sessionized_cognee_tools("user-1")` | `cognee_tools(session_id="user-1")` |
+| `allowed_tools=["mcp__tools__add_tool", "mcp__tools__search_tool"]` | `allowed_tools=["mcp__tools__remember", "mcp__tools__recall"]` |
+| `cognee>=0.3.4,<0.5.4` | `cognee>=1.0.0,<=1.1.2` |
+
+In 0.1.x a `session_id` tagged data to isolate it per user. In 0.2.0 it routes writes to cognee's **session cache**; run `cognee.improve(session_ids=[session_id])` to persist a session into the permanent graph (see [Session Management](#session-management)).
 
 ## Installation
 
@@ -42,26 +56,25 @@ from claude_agent_sdk import (
     AssistantMessage,
     TextBlock,
 )
-from cognee_integration_claude import add_tool, search_tool
+from cognee_integration_claude import cognee_tools
 
 load_dotenv()
 
 async def main():
     # Clean up memory to start fresh (Optional)
-    await cognee.prune.prune_data()
-    await cognee.prune.prune_system(metadata=True)
+    await cognee.forget(everything=True)
     
     # Create an MCP server with Cognee tools
     server = create_sdk_mcp_server(
         name="cognee-tools",
         version="1.0.0",
-        tools=[add_tool, search_tool]
+        tools=cognee_tools()
     )
     
     # Configure the agent
     options = ClaudeAgentOptions(
         mcp_servers={"tools": server},
-        allowed_tools=["mcp__tools__add_tool", "mcp__tools__search_tool"],
+        allowed_tools=["mcp__tools__remember", "mcp__tools__recall"],
     )
     
     # Use the agent to store information
@@ -96,115 +109,83 @@ if __name__ == "__main__":
 ### Basic Tools
 
 ```python
-from cognee_integration_claude import add_tool, search_tool
+from cognee_integration_claude import cognee_tools
 
-# add_tool: Store information in the knowledge base
-# search_tool: Search and retrieve previously stored information
+# cognee_tools() -> [remember_tool, recall_tool]
+#   remember (mcp__<server>__remember): store information   (cognee.remember)
+#   recall   (mcp__<server>__recall):   retrieve information (cognee.recall)
 ```
 
-### Sessionized Tools
+### Session Tools
 
-For multi-user applications, use sessionized tools to isolate data between users:
+Pass a `session_id` to route writes to cognee's **session cache** instead of the
+permanent graph. Cached entries are persisted into the graph when you call
+`cognee.improve(session_ids=[session_id])` — see [Session Management](#session-management).
 
 ```python
-from cognee_integration_claude import get_sessionized_cognee_tools
+from cognee_integration_claude import cognee_tools
 
-# Get tools for a specific user session
-add_tool, search_tool = get_sessionized_cognee_tools("user-123")
+# Writes go to the session cache (until improve())
+tools = cognee_tools(session_id="mission-briefing")
 
-# Auto-generate a session ID
-add_tool, search_tool = get_sessionized_cognee_tools()
+# No session -> writes go straight to the permanent graph
+tools = cognee_tools()
 ```
 
 ## Session Management
 
-`cognee-integration-claude` supports user-specific sessions to tag data and isolate retrieval between different users or contexts:
+A `session_id` selects cognee's **session cache** tier instead of the permanent graph:
+
+- **No `session_id`** → `remember` writes straight to the permanent knowledge graph.
+- **With `session_id`** → `remember` writes to that session's cache (cheap, no graph extraction); recall is session-aware.
+- **`cognee.improve(session_ids=[session_id])`** → promotes a session's cached entries into the permanent graph.
+
+So an agent can capture context cheaply during a session, then persist the useful parts later. Pass `remember_kwargs={"self_improvement": False}` to keep cached writes out of the graph until you call `improve()` (otherwise cognee bridges them in the background).
 
 ```python
-import asyncio
-from claude_agent_sdk import (
-    create_sdk_mcp_server,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    AssistantMessage,
-    TextBlock,
+import cognee
+from cognee_integration_claude import cognee_tools
+
+SESSION_ID = "mission-briefing"
+
+# Session agent: writes land in the cache, not the graph (until improve()).
+session_tools = cognee_tools(
+    session_id=SESSION_ID,
+    remember_kwargs={"self_improvement": False},
 )
-from cognee_integration_claude import get_sessionized_cognee_tools
+# ... drive an agent with session_tools to remember/recall during the session ...
 
-async def main():
-    # Each user gets their own isolated session
-    user1_add, user1_search = get_sessionized_cognee_tools("user-123")
-    user2_add, user2_search = get_sessionized_cognee_tools("user-456")
-    
-    # Create separate agent configurations for each user
-    user1_server = create_sdk_mcp_server(
-        name="user1-tools",
-        version="1.0.0",
-        tools=[user1_add, user1_search]
-    )
-    
-    user2_server = create_sdk_mcp_server(
-        name="user2-tools",
-        version="1.0.0",
-        tools=[user2_add, user2_search]
-    )
-    
-    user1_options = ClaudeAgentOptions(
-        mcp_servers={"tools": user1_server},
-        allowed_tools=["mcp__tools__add_tool", "mcp__tools__search_tool"],
-    )
-    
-    user2_options = ClaudeAgentOptions(
-        mcp_servers={"tools": user2_server},
-        allowed_tools=["mcp__tools__add_tool", "mcp__tools__search_tool"],
-    )
-    
-    # Each agent works with isolated data
-    async with ClaudeSDKClient(options=user1_options) as client:
-        await client.query("Remember: I like pizza")
-        async for msg in client.receive_response():
-            pass
-    
-    async with ClaudeSDKClient(options=user2_options) as client:
-        await client.query("Remember: I like sushi")
-        async for msg in client.receive_response():
-            pass
-    
-    # User 1 can only see their own data
-    async with ClaudeSDKClient(options=user1_options) as client:
-        await client.query("What food do I like?")
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        print(f"User 1's agent: {block.text}")  # Will mention pizza, not sushi
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# Persist everything captured in the session into the permanent graph:
+await cognee.improve(session_ids=[SESSION_ID])
 ```
+
+For a full runnable walkthrough — a permanent agent that can't see a session's cached data until `improve()` bridges it — see [`examples/session_memory.py`](examples/session_memory.py).
 
 ## Tool Reference
 
-### `add_tool(data: str)`
+### `cognee_tools(session_id=None, *, remember_kwargs=None, recall_kwargs=None)`
 
-Store information in the memory for later retrieval.
+Builds the `remember` and `recall` MCP tools. Pass the result to
+`create_sdk_mcp_server`; the agent calls them as `mcp__<server>__remember` and
+`mcp__<server>__recall`. With `session_id`, writes go to cognee's session cache
+(persist later with `cognee.improve(session_ids=[session_id])`); without it,
+writes go straight to the permanent graph. `remember_kwargs` / `recall_kwargs`
+bind extra cognee params per call (e.g. `remember_kwargs={"self_improvement": False}`).
 
-**Parameters:**
-- `data` (str): The text or information you want to store
+**Returns:** `[remember_tool, recall_tool]`
 
-**Returns:** Confirmation message
-
-**Example:**
 ```python
+from cognee_integration_claude import cognee_tools
+
 server = create_sdk_mcp_server(
     name="memory-tools",
     version="1.0.0",
-    tools=[add_tool]
+    tools=cognee_tools(),                  # or cognee_tools(session_id="user-123")
 )
 
 options = ClaudeAgentOptions(
     mcp_servers={"tools": server},
-    allowed_tools=["mcp__tools__add_tool"],
+    allowed_tools=["mcp__tools__remember", "mcp__tools__recall"],
 )
 
 async with ClaudeSDKClient(options=options) as client:
@@ -213,53 +194,46 @@ async with ClaudeSDKClient(options=options) as client:
         pass
 ```
 
-### `search_tool(query_text: str)`
+### `remember(data, **kwargs)`
 
-Search and retrieve previously stored information from the memory.
+Thin passthrough to `cognee.remember`, for pre-loading data directly (outside an
+agent). The integration imposes **no defaults of its own** — pass any keyword
+argument `cognee.remember` accepts (`dataset_name`, `session_id`,
+`self_improvement`, `run_in_background`, `custom_prompt`, `node_set`,
+`importance_weight`, …), and anything you omit falls back to cognee's own
+defaults. Returns cognee's `RememberResult`.
 
-**Parameters:**
-- `query_text` (str): Natural language search query
-
-**Returns:** List of relevant search results
-
-**Example:**
 ```python
-server = create_sdk_mcp_server(
-    name="memory-tools",
-    version="1.0.0",
-    tools=[search_tool]
-)
+from cognee_integration_claude import remember
 
-options = ClaudeAgentOptions(
-    mcp_servers={"tools": server},
-    allowed_tools=["mcp__tools__search_tool"],
-)
-
-async with ClaudeSDKClient(options=options) as client:
-    await client.query("What was our Q4 revenue?")
-    async for msg in client.receive_response():
-        if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, TextBlock):
-                    print(block.text)
+await remember("Einstein was born in Ulm.")                       # cognee defaults
 ```
 
-### `get_sessionized_cognee_tools(session_id: Optional[str] = None)`
+### `recall(query_text, **kwargs)`
 
-Returns cognee tools with optional user-specific sessionization.
+Thin passthrough to `cognee.recall`. Again **no integration defaults** — pass any
+keyword argument `cognee.recall` accepts (`query_type`, `datasets`, `top_k`,
+`session_id`, `node_name`, `scope`, `user`, …). With no `query_type`, cognee
+auto-routes the search strategy. Returns cognee's native `RecallResponse` list;
+use `render_results(...)` to flatten it to plain strings.
 
-**Parameters:**
-- `session_id` (Optional[str]): User identifier for data isolation. If not provided, a random session ID is auto-generated.
-
-**Returns:** `[add_tool, search_tool]` - A list of sessionized tools
-
-**Example:**
 ```python
-# With explicit session ID
-add_tool, search_tool = get_sessionized_cognee_tools("user-123")
+import cognee
+from cognee_integration_claude import recall, render_results
 
-# Auto-generate session ID
-add_tool, search_tool = get_sessionized_cognee_tools()
+results = await recall("healthcare contracts", query_type=cognee.SearchType.GRAPH_COMPLETION, top_k=20)
+texts = render_results(results)
+```
+
+### `render_results(results)`
+
+Flattens cognee's native `RecallResponse` list (what `recall` returns) into a
+list of plain strings, picking the right text field per result source.
+
+```python
+from cognee_integration_claude import recall, render_results
+
+texts = render_results(await recall("healthcare contracts"))
 ```
 
 ## Configuration
@@ -326,24 +300,25 @@ from claude_agent_sdk import (
     AssistantMessage,
     TextBlock,
 )
-from cognee_integration_claude import search_tool
+from cognee_integration_claude import cognee_tools
 
 async def main():
-    # Pre-load data directly into Cognee
-    await cognee.add("Important company information here...")
-    await cognee.add("More data to remember...")
-    await cognee.cognify()  # Process and index the data
+    # Pre-load data directly into Cognee. cognee.remember extracts entities and
+    # relationships and persists them — no separate cognify() step needed.
+    await cognee.remember("Important company information here...")
+    await cognee.remember("More data to remember...")
     
     # Now create an agent that can search this data
     server = create_sdk_mcp_server(
-        name="search-tools",
+        name="cognee-tools",
         version="1.0.0",
-        tools=[search_tool]
+        tools=cognee_tools()
     )
     
+    # Allow only recall if you want a read-only agent
     options = ClaudeAgentOptions(
         mcp_servers={"tools": server},
-        allowed_tools=["mcp__tools__search_tool"],
+        allowed_tools=["mcp__tools__recall"],
     )
     
     async with ClaudeSDKClient(options=options) as client:
@@ -367,12 +342,20 @@ import cognee
 
 async def reset_knowledge_base():
     """Clear all data and reset the knowledge base"""
-    await cognee.prune.prune_data()
-    await cognee.prune.prune_system(metadata=True)
+    await cognee.forget(everything=True)
 
 async def visualize_knowledge_graph():
-    """Generate a visualization of the knowledge graph"""
-    await cognee.visualize_graph("graph.html")
+    """Render the knowledge graph.
+
+    Plain cognee.visualize_graph() can't see per-dataset graphs when cognee's
+    access control is enabled (the default), so name the datasets explicitly.
+    """
+    from cognee.api.v1.visualize import visualize_multi_user_graph
+    from cognee.modules.users.methods import get_default_user
+
+    user = await get_default_user()
+    pairs = [(user, ds) for ds in await cognee.datasets.list_datasets(user=user)]
+    await visualize_multi_user_graph(pairs, destination_file_path="graph.html")
 ```
 
 ### Disabling Default Cursor Tools
@@ -382,7 +365,7 @@ When using Claude Agent SDK in environments like Cursor, you may want to disable
 ```python
 options = ClaudeAgentOptions(
     mcp_servers={"tools": server},
-    allowed_tools=["mcp__tools__add_tool", "mcp__tools__search_tool"],
+    allowed_tools=["mcp__tools__remember", "mcp__tools__recall"],
     disallowed_tools=[
         "Task", "Bash", "Glob", "Grep", "ExitPlanMode",
         "Read", "Edit", "Write", "NotebookEdit", "WebFetch",
