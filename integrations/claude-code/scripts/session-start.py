@@ -94,6 +94,22 @@ def _health_ok(url: str = _HEALTH_URL, timeout: float = 2.0) -> bool:
         return False
 
 
+def _wait_for_health(deadline_seconds: float) -> bool:
+    """Poll /health until the server is serving or the deadline elapses.
+
+    Used by bootstrap workers that did not win the boot single-flight: they
+    don't spawn uvicorn, they just wait for whichever worker did to finish
+    booting (including migrations) before registering.
+    """
+    deadline = time.monotonic() + deadline_seconds
+    while True:
+        if _health_ok():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_HEALTH_POLL_SECONDS)
+
+
 def _ensure_local_server_running(
     config: dict, health_timeout: float = _HEALTH_TIMEOUT_SECONDS
 ) -> None:
@@ -1008,42 +1024,62 @@ async def _run_heavy(
 
 
 async def _run_bootstrap(bootstrap: dict) -> None:
-    """Detached worker body: do the slow bootstrap under a single-flight lock."""
-    service_url = str(bootstrap.get("service_url", "") or _LOCAL_SERVICE_URL)
-    if server_ready_hint(service_url):
-        hook_log("bootstrap_skip_already_ready", {"service_url": service_url})
-        return
-    with _bootstrap_singleflight() as acquired:
-        if not acquired:
-            hook_log("bootstrap_skip_inflight", {"service_url": service_url})
+    """Detached worker body.
+
+    Two distinct concerns, deliberately decoupled:
+      1. Boot the local server EXACTLY ONCE — single-flighted on _BOOTSTRAP_LOCK
+         so concurrent agents don't each spawn uvicorn. Workers that don't win
+         the lock just wait for /health instead of returning.
+      2. Register THIS agent/session — runs for EVERY agent, regardless of who
+         booted, because registration is per-agent (and concurrency-safe via
+         the agent-keys / agent-lifecycle locks inside _run_heavy).
+    """
+    config = load_config()
+    cwd = str(bootstrap.get("cwd") or os.getcwd())
+    session_id = str(bootstrap.get("session_id", "") or "")
+    session_key = str(bootstrap.get("session_key", "") or "")
+    dataset = str(bootstrap.get("dataset", "") or get_dataset(config))
+    agent_session_name = str(bootstrap.get("agent_session_name", "") or session_key)
+    if session_key:
+        os.environ["COGNEE_SESSION_KEY"] = session_key
+    os.environ["COGNEE_AGENT_MODE"] = "true"
+    config["service_url"] = _LOCAL_SERVICE_URL
+    os.environ["COGNEE_SERVICE_URL"] = _LOCAL_SERVICE_URL
+
+    # 1. Ensure the server is up. Only the single-flight winner spawns uvicorn;
+    #    everyone else waits for /health (the winner may still be migrating).
+    if not _health_ok():
+        with _bootstrap_singleflight() as acquired:
+            if acquired:
+                try:
+                    _ensure_local_server_running(
+                        config, health_timeout=_SERVER_BOOT_DEADLINE_SECONDS
+                    )
+                except Exception as exc:
+                    hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
+            else:
+                hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
+        if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS):
+            hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
             return
-        if server_ready_hint(service_url):
-            return
-        config = load_config()
-        cwd = str(bootstrap.get("cwd") or os.getcwd())
-        session_id = str(bootstrap.get("session_id", "") or "")
-        session_key = str(bootstrap.get("session_key", "") or "")
-        dataset = str(bootstrap.get("dataset", "") or get_dataset(config))
-        agent_session_name = str(bootstrap.get("agent_session_name", "") or session_key)
-        if session_key:
-            os.environ["COGNEE_SESSION_KEY"] = session_key
-        os.environ["COGNEE_AGENT_MODE"] = "true"
-        config["service_url"] = _LOCAL_SERVICE_URL
-        os.environ["COGNEE_SERVICE_URL"] = _LOCAL_SERVICE_URL
-        try:
-            await _run_heavy(
-                config,
-                cwd,
-                session_id,
-                agent_session_name,
-                session_key,
-                dataset,
-                managed_endpoint=False,
-                boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
-            )
-            hook_log("bootstrap_complete", {"session_id": session_id})
-        except Exception as exc:
-            hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+
+    # 2. Register this agent/session. Runs for every agent — NOT gated by the
+    #    boot single-flight. _run_heavy's _ensure_local_server_running is a
+    #    no-op now that the server is healthy.
+    try:
+        await _run_heavy(
+            config,
+            cwd,
+            session_id,
+            agent_session_name,
+            session_key,
+            dataset,
+            managed_endpoint=False,
+            boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
+        )
+        hook_log("bootstrap_complete", {"session_id": session_id})
+    except Exception as exc:
+        hook_log("bootstrap_failed", {"error": str(exc)[:300]})
 
 
 def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: bool) -> dict:

@@ -221,8 +221,14 @@ def _write_json_file(path: Path, data: dict) -> None:
 
 
 def _bridge_cache_key(dataset: str, session_id: str) -> str:
-    user_id = os.environ.get("COGNEE_USER_ID", "") or load_resolved().get("user_id", "")
-    return f"{user_id}:{dataset}:{session_id}"
+    # Keyed by (dataset, session_id) only — deliberately independent of user_id.
+    # During lazy-bootstrap warmup the agent isn't registered yet, so user_id is
+    # empty at write time but resolves to a real id by drain time; embedding it
+    # would strand warmup-buffered entries under a key the drain never reads.
+    # session_id already scopes the local bridge buffer, and the graph write
+    # still targets the resolved dataset. Avoiding user_id also removes a
+    # blocking load_resolved() HTTP call from this hot path.
+    return f"{dataset}:{session_id}"
 
 
 def append_http_bridge_entry(

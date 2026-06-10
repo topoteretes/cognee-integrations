@@ -160,13 +160,20 @@ async def _store_tool_call(payload: dict) -> None:
     config = load_config()
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
+    if not server_ready_hint(runtime.get("service_url", "")):
+        # Server still warming: don't block the tool call and don't lose the
+        # trace. Mirror it into the local bridge shadow; the session->graph
+        # sync drains it once the server is ready.
+        trace_text = (
+            f"{tool_name} [{status}]\n"
+            f"Params: {json.dumps(params, ensure_ascii=False)}\n"
+            f"Return: {return_value}"
+        )
+        append_http_bridge_entry(dataset, session_id, trace=trace_text)
+        bump_save_counter(session_id, "trace")
+        hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
+        return
     if not use_http:
-        # While the server is still warming, skip the blocking local init and
-        # persist so this hook never stalls a tool call. Traces in this brief
-        # window are best-effort; any buffered prompt stays buffered.
-        if not server_ready_hint(runtime.get("service_url", "")):
-            hook_log("store_skipped_warming", {"mode": runtime["mode"]})
-            return
         await ensure_cognee_ready(config)
 
     entry = {
@@ -255,13 +262,21 @@ async def _store_assistant_stop(payload: dict) -> None:
     config = load_config()
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
+    if not server_ready_hint(runtime.get("service_url", "")):
+        # Server still warming: buffer the prompt+answer into the local bridge
+        # shadow instead of dropping it; the session->graph sync drains it once
+        # the server is ready.
+        pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
+        append_http_bridge_entry(
+            dataset,
+            session_id,
+            question=pending.get("prompt", ""),
+            answer=msg,
+        )
+        bump_save_counter(session_id, "answer")
+        hook_log("store_buffered_warming", {"hook": "stop"})
+        return
     if not use_http:
-        # While the server is still warming, skip the blocking local init and
-        # persist so this hook never stalls a tool call. Traces in this brief
-        # window are best-effort; any buffered prompt stays buffered.
-        if not server_ready_hint(runtime.get("service_url", "")):
-            hook_log("store_skipped_warming", {"mode": runtime["mode"]})
-            return
         await ensure_cognee_ready(config)
 
     pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
