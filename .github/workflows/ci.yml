@@ -6,11 +6,13 @@ on:
     paths:
       - 'integrations/**'
       - '.github/workflows/ci.yml'
+      - '.github/core-team.txt'
   push:
     branches: [main]
     paths:
       - 'integrations/**'
       - '.github/workflows/ci.yml'
+      - '.github/core-team.txt'
 
 jobs:
   detect-changes:
