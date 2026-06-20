@@ -30,6 +30,27 @@ function unwrapSearchAnswer(value: unknown): string {
 }
 
 /**
+ * Normalise parsed JSON review fields to the canonical shape the workflow
+ * expects: { score, missing_instruction, result_summary, dimensions }.
+ * LLMs sometimes return equivalent fields under alternate names
+ * (average_score, most_impactful_missing_instruction, summary, grades).
+ */
+function normalizeReviewFields(obj: Record<string, unknown>): Record<string, unknown> {
+  const score = obj.score ?? obj.average_score;
+  const missing_instruction =
+    obj.missing_instruction ?? obj.most_impactful_missing_instruction ?? '';
+  const result_summary = obj.result_summary ?? obj.summary ?? '';
+  let dimensions = obj.dimensions;
+  if (!Array.isArray(dimensions) && obj.grades && typeof obj.grades === 'object') {
+    dimensions = Object.entries(obj.grades as Record<string, number>).map(([name, s]) => ({
+      name,
+      score: s,
+    }));
+  }
+  return { ...obj, score, missing_instruction, result_summary, dimensions: dimensions ?? [] };
+}
+
+/**
  * Tolerantly parse the strict-JSON review the prompt asks for. Falls back to
  * extracting the first {...} block if the model wrapped it in prose/fences,
  * and finally falls back to regex extraction of the self-review prose block
@@ -38,14 +59,14 @@ function unwrapSearchAnswer(value: unknown): string {
 function parseReviewJson(text: string): Record<string, unknown> {
   // 1. Pure JSON response
   try {
-    return JSON.parse(text) as Record<string, unknown>;
+    return normalizeReviewFields(JSON.parse(text) as Record<string, unknown>);
   } catch { /* fall through */ }
 
   // 2. JSON block embedded in prose or fenced code block
   const match = text.match(/\{[\s\S]*\}/);
   if (match) {
     try {
-      return JSON.parse(match[0]) as Record<string, unknown>;
+      return normalizeReviewFields(JSON.parse(match[0]) as Record<string, unknown>);
     } catch { /* fall through */ }
   }
 
