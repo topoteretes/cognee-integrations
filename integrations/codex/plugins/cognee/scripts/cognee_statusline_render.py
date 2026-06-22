@@ -13,6 +13,7 @@ Output: ``cognee: <cognee-session-id> (+N more)``.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -53,17 +54,11 @@ def _total_sessions() -> int | None:
     return None
 
 
-def main() -> None:
-    try:
-        payload = json.load(sys.stdin)
-    except Exception:
-        payload = {}
-    host_id = str(payload.get("session_id") or "").strip() if isinstance(payload, dict) else ""
-
+def render_status_for_host(host_id: str) -> str:
+    """Render `cognee: <session> (+N more)` for a host session key."""
     session_id = _current_session(host_id)
     if not session_id:
-        sys.stdout.write("cognee: starting...")
-        return
+        return "cognee: starting..."
 
     total = _total_sessions()
     extra = ""
@@ -71,7 +66,18 @@ def main() -> None:
         others = total - 1 if total > 0 else 0
         if others > 0:
             extra = f" (+{others} more)"
-    sys.stdout.write(f"cognee: {session_id}{extra}")
+    return f"cognee: {session_id}{extra}"
+
+
+def main() -> None:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    host_id = str(payload.get("session_id") or "").strip() if isinstance(payload, dict) else ""
+    if not host_id:
+        host_id = str(os.environ.get("COGNEE_STATUS_HOST_KEY", "") or "").strip()
+    sys.stdout.write(render_status_for_host(host_id))
 
 
 if __name__ == "__main__":

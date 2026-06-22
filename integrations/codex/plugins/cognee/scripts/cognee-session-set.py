@@ -29,6 +29,7 @@ from _plugin_common import (  # noqa: E402
     sanitize_session_id,
     set_mapped_session,
 )
+from cognee_statusline_render import render_status_for_host
 
 try:
     from config import get_dataset, load_config
@@ -134,6 +135,7 @@ def main() -> None:
                 "existed": existed,
                 "created": existed is False,
                 "synced_previous": switched,
+                "status_line": render_status_for_host(host_key),
             }
         )
     )

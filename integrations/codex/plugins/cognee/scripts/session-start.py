@@ -44,6 +44,7 @@ from _plugin_common import (
     touch_activity,
     write_launch_pid_map,
 )
+from cognee_statusline_render import render_status_for_host
 from config import (
     _user_id_via_api,
     ensure_cognee_ready,
@@ -1101,7 +1102,10 @@ async def _start(payload: dict | None = None) -> dict:
             "cognee-plugin: missing payload session_id; refusing to register",
             file=sys.stderr,
         )
-        return {}
+        return {
+            "systemMessage": "Cognee Memory: session key missing in SessionStart payload.",
+            "hookSpecificOutput": {"hookEventName": "SessionStart"},
+        }
     os.environ["COGNEE_SESSION_KEY"] = session_key
 
     # Resolve (and persist) this launch's record: session_id (data scoping, new
@@ -1201,7 +1205,14 @@ async def _start(payload: dict | None = None) -> dict:
         file=sys.stderr,
     )
 
-    return {}
+    status_line = render_status_for_host(session_key)
+    return {
+        "systemMessage": f"Cognee Memory Connected\n{status_line}",
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": status_line,
+        },
+    }
 
 
 def main():
@@ -1228,12 +1239,13 @@ def main():
 
     # Keep SessionStart output as a valid empty hook result. Recall context is
     # injected on UserPromptSubmit, matching the original Codex hook contract.
+    output = {}
     try:
         with quiet_hook_output("session-start"):
-            asyncio.run(_start(payload))
+            output = asyncio.run(_start(payload)) or {}
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
-    print("{}")
+    print(json.dumps(output))
 
 
 if __name__ == "__main__":

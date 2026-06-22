@@ -35,6 +35,7 @@ from _plugin_common import (
     server_ready_hint,
     set_session_key,
 )
+from cognee_statusline_render import render_status_for_host
 from config import ensure_cognee_ready, get_session_id, load_config
 
 
@@ -287,10 +288,12 @@ async def _run(prompt: str) -> dict | None:
     except Exception as exc:
         hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
 
-    # Build a one-line visibility header so the user (via the assistant's
+    # Build a visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
+    status_line = render_status_for_host(get_session_key())
     header = (
+        f"{status_line}\n"
         "Cognee memory: recall "
         f"{counts['session']} session / {counts['trace']} trace / "
         f"{counts['graph_context']} graph; saved last turn "
