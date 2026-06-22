@@ -125,18 +125,17 @@ Final detached sync also performs unregister-on-finish when applicable.
 
 ## Status line (optional)
 
-Add to `~/.claude/settings.json`:
+The status line displays `cognee: <session-id> (+N more)` for the current terminal's active session.
 
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "/absolute/path/to/cognee-integrations/integrations/claude-code/scripts/cognee-statusline.sh"
-  }
-}
+Enable it by running the setup script once after installing the plugin:
+
+```bash
+python3 ~/.claude/plugins/marketplaces/cognee/integrations/claude-code/scripts/setup-statusline.py
 ```
 
-The status line displays `cognee: <session-id> (+N more)` and reads only local files — no network calls on every refresh:
+This writes the correct absolute path into `~/.claude/settings.json` automatically and preserves all other settings. Restart Claude Code after running it.
+
+The status line reads only local files — no network calls on every refresh:
 - `~/.cognee-plugin/sessions/<host_id>.json` — current session for this terminal
 - `~/.cognee-plugin/sessions_count.json` — total session count (TTL-refreshed by the plugin)
 
