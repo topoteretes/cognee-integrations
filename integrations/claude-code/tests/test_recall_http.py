@@ -106,6 +106,31 @@ def test_connection_error_is_unreachable():
     )
 
 
+def test_malformed_json_is_error_not_unreachable():
+    # A reachable server returning garbage is a SERVER bug → error envelope,
+    # NOT UNREACHABLE (which would wrongly trigger the CLI fallback).
+    out = rh.do_recall("http://x", "", "q", "", '["graph"]', "5", opener=_returns("not json{"))
+    assert isinstance(out, dict) and out["authoritative"] is False
+    assert out != rh.UNREACHABLE
+
+
+def test_no_cloud_key_sent_to_localhost():
+    captured = {}
+
+    def _capture(req, timeout=None):
+        captured["xapikey"] = req.get_header("X-api-key")  # urllib title-cases header names
+        return _Resp("[]")
+
+    # localhost target → cloud key must NOT be attached
+    rh.do_recall("http://localhost:8011", "cloud-key", "q", "", '["graph"]', "5", opener=_capture)
+    assert captured["xapikey"] is None
+    # remote target → key IS attached
+    rh.do_recall(
+        "https://tenant.cognee.ai", "cloud-key", "q", "", '["graph"]', "5", opener=_capture
+    )
+    assert captured["xapikey"] == "cloud-key"
+
+
 def test_coerce_top_k():
     assert rh.coerce_top_k("abc") == 5
     assert rh.coerce_top_k("0") == 5

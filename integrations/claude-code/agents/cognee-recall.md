@@ -23,29 +23,24 @@ Cognee organizes knowledge into three categories:
 | **project** | `project_docs` | Repository docs, code context, architecture decisions |
 | **agent** | `agent_actions` | Tool call logs, reasoning traces, generated artifacts |
 
-## Search commands
+## Search command
 
-Always search via the wrapper — it queries the **running server first** (`/api/v1/recall`, the source of truth), searches **all authorized datasets** (so a hit isn't missed because it's in another dataset), and falls back to `cognee-cli` only if the server is unreachable.
+Run **one** broad search via the wrapper and answer from it. It queries the **running server** (`/api/v1/recall`, the source of truth), spans **all authorized datasets**, and falls back to `cognee-cli` only if the server is unreachable:
 
-**Session context:**
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "<query>" 10 --session
+${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "<query>" 10
 ```
 
-**Permanent graph:**
-```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "<query>" 10 --graph
-```
+**Do not fan out into many targeted calls.** One broad search plus the context the `UserPromptSubmit` hook already injects on every turn is enough — multiple calls just add latency and (un-allowlisted) permission prompts for the user. Use `--graph` or `--session` only when you specifically need to narrow scope.
 
-**Ground-truth (if a result is empty but you expect content) — authoritative:**
+**Manual ground-truth only (not part of the normal flow):** if a result is empty and you genuinely doubt it, you may confirm directly. Category filtering uses `node_name` (the CLI doesn't expose it):
 ```bash
 curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY:-}" \
-  -d '{"query": "<query>", "top_k": 10, "only_context": true, "scope": ["graph"]}'
+  -d '{"query": "<query>", "top_k": 10, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"]}'
 ```
-
-Category filtering uses `node_name` on the same call (the CLI doesn't expose it): add `"node_name": ["project_docs"]` (or `user_context` / `agent_actions`).
+(For a local server `COGNEE_API_KEY` is unused; an empty value is fine.)
 
 ## The server is the source of truth (read this before reporting "not found")
 

@@ -24,9 +24,16 @@ Diagnostics also go to stderr so the caller can surface them.
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 UNREACHABLE = "UNREACHABLE"
+
+
+def _is_local(url):
+    """True for a localhost/loopback target (where a cloud API key is meaningless)."""
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
 def coerce_top_k(value, default=5):
@@ -77,8 +84,17 @@ def do_recall(
     }
     if session_id:
         body["session_id"] = session_id
+    # `datasets` is intentionally omitted. With no datasets, the server scopes the
+    # search to the caller's *read-authorized* datasets server-side (recall.py:
+    # get_specific_user_permission_datasets / get_authorized_existing_datasets, behind
+    # get_authenticated_user) — so it spans ALL authorized datasets with no cross-tenant
+    # leak. Restricting to one dataset client-side would reintroduce the false-negative
+    # where content lives in a different dataset than the plugin's default.
     headers = {"Content-Type": "application/json"}
-    if api_key:
+    # COGNEE_API_KEY is a *cloud* credential; the local single-user server needs no
+    # auth and ignores it. Only attach it for a remote/cloud target, so we don't send
+    # a meaningless (and confusing) cloud key to localhost.
+    if api_key and not _is_local(service_url):
         headers["X-Api-Key"] = api_key
 
     req = urllib.request.Request(
@@ -86,7 +102,7 @@ def do_recall(
     )
     try:
         with opener(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8") or "[]")
+            raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         # Reachable but rejected/failed. NOT an authoritative empty, and NOT a
         # reason to query a different backend via the CLI — report the error.
@@ -96,11 +112,19 @@ def do_recall(
             msg = "server returned HTTP %s for /api/v1/recall" % e.code
         sys.stderr.write("[cognee-search] %s — NOT falling back to local CLI\n" % msg)
         return _error(e.code, msg)
-    except Exception as e:  # URLError, timeout, JSON decode, etc. → genuinely unreachable
+    except Exception as e:  # URLError / timeout / OSError → genuinely unreachable
         sys.stderr.write(
             "[cognee-search] server unreachable at %s: %s\n" % (service_url, str(e)[:160])
         )
         return UNREACHABLE
+
+    # The server responded. A body we can't parse is a SERVER-side bug, not an
+    # unreachable server — report it as an error (do NOT trigger the CLI fallback).
+    try:
+        data = json.loads(raw or "[]")
+    except (json.JSONDecodeError, ValueError) as e:
+        sys.stderr.write("[cognee-search] malformed JSON from /api/v1/recall: %s\n" % str(e)[:160])
+        return _error(200, "malformed JSON response from /api/v1/recall")
 
     # An error-shaped 2xx body is also not a real result set.
     if isinstance(data, dict) and data.get("error"):

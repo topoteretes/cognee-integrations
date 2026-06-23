@@ -25,6 +25,8 @@ Knowledge is organized into three categories via `node_set`:
 
 Search goes through the **running Cognee server** (`POST /api/v1/recall`) — the source of truth. Use the wrapper below: it queries the server first, searches **all your authorized datasets** (so a hit isn't missed because it lives in another dataset), and falls back to `cognee-cli` only if the server is unreachable.
 
+**One broad search is usually enough** — the `UserPromptSubmit` hook already injects session/trace/graph context every turn, so avoid running many targeted searches (each is an extra permission prompt for the user).
+
 ### Search (server-first)
 
 ```bash
