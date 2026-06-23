@@ -25,6 +25,7 @@ from .schemas import FORGET_SCHEMA, RECALL_SCHEMA, REMEMBER_SCHEMA
 try:
     from agent.memory_provider import MemoryProvider
 except ImportError:  # pragma: no cover - lets package smoke tests run outside Hermes.
+
     class MemoryProvider:  # type: ignore[no-redef]
         @property
         def name(self) -> str:
@@ -199,9 +200,7 @@ class CogneeMemoryProvider(MemoryProvider):
 
     def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
         non_secret = {
-            key: value
-            for key, value in values.items()
-            if key not in {"api_key", "llm_api_key"}
+            key: value for key, value in values.items() if key not in {"api_key", "llm_api_key"}
         }
         if non_secret:
             save_plugin_config(non_secret, hermes_home)

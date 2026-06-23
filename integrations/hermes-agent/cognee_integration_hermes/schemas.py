@@ -82,4 +82,3 @@ FORGET_SCHEMA = {
         "required": [],
     },
 }
-

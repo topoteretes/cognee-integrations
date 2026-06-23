@@ -8,4 +8,3 @@ __all__ = ["CogneeMemoryProvider", "register"]
 def register(ctx) -> None:
     """Pip entry-point registration hook for Hermes Agent."""
     ctx.register_memory_provider(CogneeMemoryProvider())
-
