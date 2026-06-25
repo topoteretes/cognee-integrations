@@ -29,9 +29,9 @@ def test_fallback_without_host_id_uses_agent_and_dir():
 
 
 def test_prefix_env_override():
-    os.environ["COGNEE_SESSION_PREFIX"] = "claude"
+    os.environ["COGNEE_SESSION_PREFIX"] = "custom"  # a non-default value, to prove override
     try:
-        assert pc._generate_session_id("/x", "abc123").startswith("claude_abc123")
+        assert pc._generate_session_id("/x", "abc123") == "custom_abc123"
     finally:
         os.environ.pop("COGNEE_SESSION_PREFIX", None)
 

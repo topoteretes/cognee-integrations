@@ -966,7 +966,9 @@ const memoryCogneePlugin = {
         await Promise.all([stateReady, serviceReady]);
 
         const endAgentId = ctx?.agentId ?? lastAgentId;
-        const endSessionId = ctx?.sessionId ?? event.sessionId;
+        // Wrap to the same {agent}_{id} form data was saved under, so improve()
+        // looks up the right session (must match the session_start/hook wrapping).
+        const endSessionId = cogneeSessionId(ctx?.sessionId ?? event.sessionId);
         if (!ctx?.agentId) {
           api.logger.debug?.(`cognee-openclaw: session_end without ctx.agentId; falling back to lastAgentId="${endAgentId ?? "(none)"}"`);
         }
