@@ -42,6 +42,7 @@ def _build_https_opener():
         ctx = ssl.create_default_context(cafile=certifi.where())
     except ImportError:
         ctx = ssl.create_default_context()
+        _cert_loaded = False
         for path in filter(
             None,
             [
@@ -53,9 +54,15 @@ def _build_https_opener():
             if os.path.exists(path):
                 try:
                     ctx.load_verify_locations(path)
+                    _cert_loaded = True
                     break  # only stop once a path loaded successfully
                 except Exception:
                     pass
+        if not _cert_loaded:
+            sys.stderr.write(
+                "[cognee-search] SSL: no system cert bundle loaded; HTTPS may fail"
+                " — set SSL_CERT_FILE or install certifi\n"
+            )
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
