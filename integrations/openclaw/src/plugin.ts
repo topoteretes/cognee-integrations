@@ -23,6 +23,7 @@ import {
 } from "./persistence.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
+import { bootServerIfNeeded, waitForServerHealth, isLocalUrl } from "./server.js";
 
 /** Expand a leading `~` in a workspace path to the user's home directory. */
 function expandHome(p: string | undefined): string | undefined {
@@ -53,24 +54,6 @@ const memoryCogneePlugin = {
   kind: "memory" as const,
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
-
-    // Auto-enable per-agent memory when the gateway hosts more than one agent,
-    // unless the plugin config set `perAgentMemory` explicitly. This keeps
-    // single-agent installs (the common case) on the legacy shared behavior so
-    // the upgrade is non-breaking; multi-agent gateways get per-agent isolation.
-    const perAgentExplicit =
-      typeof (api.pluginConfig as { perAgentMemory?: unknown } | undefined)?.perAgentMemory === "boolean";
-    if (!perAgentExplicit) {
-      try {
-        const agentList = api.runtime?.config?.loadConfig?.()?.agents?.list;
-        if (Array.isArray(agentList) && agentList.length > 1) {
-          cfg.perAgentMemory = true;
-          api.logger.info?.(`cognee-openclaw: per-agent memory auto-enabled (${agentList.length} agents configured)`);
-        }
-      } catch (error) {
-        api.logger.debug?.(`cognee-openclaw: could not read agents.list for perAgentMemory auto-enable: ${String(error)}`);
-      }
-    }
 
     const client = new CogneeHttpClient(cfg.baseUrl, cfg.apiKey, cfg.username, cfg.password, cfg.requestTimeoutMs, cfg.ingestionTimeoutMs, cfg.mode);
     const multiScope = isMultiScopeEnabled(cfg);
@@ -121,6 +104,36 @@ const memoryCogneePlugin = {
     // this lets the final sweep find the right agent's workspace without falling
     // back to a single global (which mis-attributes when >1 agent is active).
     const agentWorkspaces = new Map<string, string>();
+
+    // Agent session registration tracking. Key: `${normalizedAgentId}::${sessionId}`.
+    // registeredSessions deduplicates registration calls; agentSessionNames
+    // stores the session name so session_end can pass it to unregister.
+    const registeredSessions = new Set<string>();
+    const agentSessionNames = new Map<string, string>();
+
+    // Lazy dataset-ID resolver: fires listDatasets() once per unknown name,
+    // caches the result so subsequent prompts skip the API call.
+    const datasetIdLookups = new Map<string, Promise<string | undefined>>();
+    function resolveDatasetIdFromServer(name: string): Promise<string | undefined> {
+      if (!datasetIdLookups.has(name)) {
+        datasetIdLookups.set(name, client.listDatasets()
+          .then(async (datasets) => {
+            const match = datasets.find((d) => d.name === name);
+            if (match?.id) {
+              api.logger.info?.(`cognee-openclaw: resolved existing dataset "${name}" → ${match.id}`);
+              const state = await loadDatasetState();
+              await saveDatasetState({ ...state, [name]: match.id });
+            }
+            return match?.id;
+          })
+          .catch((e: unknown) => {
+            api.logger.warn?.(`cognee-openclaw: dataset lookup failed: ${String(e)}`);
+            datasetIdLookups.delete(name); // allow retry on next prompt
+            return undefined;
+          }));
+      }
+      return datasetIdLookups.get(name)!;
+    }
 
     let resolvedWorkspaceDir: string | undefined;
     let resolveServiceReady: (() => void) | undefined;
@@ -200,7 +213,8 @@ const memoryCogneePlugin = {
       if (multiScope) {
         for (const scope of cfg.recallScopes) {
           const dsName = datasetNameForScope(scope, cfg, runtimeAgentId);
-          const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, runtimeAgentId);
+          const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, runtimeAgentId)
+            ?? await resolveDatasetIdFromServer(dsName);
           if (dsId) {
             ids.push(dsId);
           } else {
@@ -208,7 +222,11 @@ const memoryCogneePlugin = {
           }
         }
       } else {
-        if (datasetId) ids.push(datasetId);
+        const resolvedId = datasetId ?? await resolveDatasetIdFromServer(cfg.datasetName);
+        if (resolvedId) {
+          if (!datasetId) datasetId = resolvedId;
+          ids.push(resolvedId);
+        }
       }
 
       return { ids, missingScopes };
@@ -687,6 +705,9 @@ const memoryCogneePlugin = {
 
         const logger = api.logger;
 
+        const activeDataset = multiScope ? `${cfg.agentDatasetPrefix}/<agent> (per-agent)` : cfg.datasetName;
+        logger.info?.(`cognee-openclaw: dataset="${activeDataset}" url="${cfg.baseUrl}" mode=${cfg.mode}`);
+
         // Dedupe across duplicate register() calls in the same process.
         if (autoSyncedWorkspaces.has(resolvedWorkspaceDir)) {
           logger.debug?.(`cognee-openclaw: auto-sync already ran for ${resolvedWorkspaceDir} in this process, skipping`);
@@ -694,24 +715,43 @@ const memoryCogneePlugin = {
         }
         autoSyncedWorkspaces.add(resolvedWorkspaceDir);
 
-        try {
-          await client.health();
-        } catch (error) {
-          logger.warn?.(`cognee-openclaw: Cognee API unreachable at ${cfg.baseUrl} — auto-sync disabled for this session. Error: ${String(error)}`);
-          return;
-        }
-
-        try {
+        const doSync = async () => {
           const result = await runSync(resolvedWorkspaceDir, logger);
           logger.info?.(`cognee-openclaw: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted, ${result.skipped} unchanged`);
-          // Per-agent mode: seed each configured agent's files from its OWN
-          // workspace (runSync above only handled the shared company/user scopes).
           if (perAgentMemory) {
             await seedAllAgents(resolvedWorkspaceDir, logger);
           }
-        } catch (error) {
-          logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(error)}`);
+        };
+
+        // Fast path: server is already running.
+        let serverHealthy = false;
+        try {
+          await client.health();
+          serverHealthy = true;
+        } catch { /* server not yet up */ }
+
+        if (serverHealthy) {
+          try { await doSync(); } catch (e) { logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(e)}`); }
+          return;
         }
+
+        // Server not up. Bail on remote URLs; boot locally and defer sync.
+        if (!isLocalUrl(cfg.baseUrl)) {
+          logger.warn?.(`cognee-openclaw: Cognee API unreachable at ${cfg.baseUrl} — auto-sync disabled for this session.`);
+          return;
+        }
+
+        logger.info?.("cognee-openclaw: Cognee server not running — booting in background (sync will run once ready)");
+        bootServerIfNeeded(cfg.baseUrl, logger)
+          .then(() => waitForServerHealth(cfg.baseUrl, 180_000))
+          .then(async () => {
+            logger.info?.("cognee-openclaw: Cognee server ready — running deferred auto-sync");
+            try { await doSync(); } catch (e) { logger.warn?.(`cognee-openclaw: deferred sync failed: ${String(e)}`); }
+          })
+          .catch((e: unknown) => {
+            logger.warn?.(`cognee-openclaw: server did not become ready: ${String(e)}`);
+          });
+        // Return without awaiting — agents are usable immediately.
       };
 
       // Try registerService (works on older OpenClaw versions that invoke start())
@@ -741,6 +781,42 @@ const memoryCogneePlugin = {
     // ------------------------------------------------------------------
     // Auto-recall: inject memories before each agent run
     // ------------------------------------------------------------------
+
+    // Compute the Cognee dataset names this agent reads/writes, for the
+    // register payload. Called at registration time so the server knows
+    // which datasets to associate with this connection.
+    function resolveAgentDatasetNames(rawAgentId?: string): string[] {
+      if (perAgentMemory) {
+        return (["agent", "company", "user"] as const).map((s) => datasetNameForScope(s, cfg, rawAgentId));
+      }
+      if (multiScope) {
+        return (["company", "user", "agent"] as const).map((s) => datasetNameForScope(s, cfg, rawAgentId));
+      }
+      return [cfg.datasetName];
+    }
+
+    // Always-on: capture sessionId and register with the Cognee server once per
+    // (agentId, sessionId) pair, regardless of autoRecall/autoIndex settings.
+    api.on("before_prompt_build", async (_event, ctx) => {
+      if (cfg.enableSessions && ctx.sessionId) sessionId = ctx.sessionId;
+      if (cfg.enableSessions && ctx.sessionId) {
+        const regKey = `${normalizeAgentId(ctx.agentId, cfg)}::${ctx.sessionId}`;
+        if (!registeredSessions.has(regKey)) {
+          registeredSessions.add(regKey);
+          const agentSessionName = `${ctx.sessionId}-${normalizeAgentId(ctx.agentId, cfg)}`;
+          agentSessionNames.set(regKey, agentSessionName);
+          client.registerAgent({
+            agentSessionName,
+            sessionId: ctx.sessionId,
+            datasetNames: resolveAgentDatasetNames(ctx.agentId),
+          }).then(({ ok, connectionId }) => {
+            api.logger.info?.(`cognee-openclaw: agent registered (ok=${ok}${connectionId ? ` connectionId=${connectionId}` : ""})`);
+          }).catch((e: unknown) => {
+            api.logger.warn?.(`cognee-openclaw: agent register failed: ${String(e)}`);
+          });
+        }
+      }
+    });
 
     if (cfg.autoRecall) {
       api.on("before_prompt_build", async (event, ctx) => {
@@ -1009,6 +1085,28 @@ const memoryCogneePlugin = {
         sessionId = undefined;
       });
     }
+
+    // Always-on: unregister agent session from the Cognee server so the
+    // active-connection counter decrements regardless of autoIndex setting.
+    api.on("session_end", async (event, ctx) => {
+      const endAgentId = ctx?.agentId ?? lastAgentId;
+      const endSessionId = ctx?.sessionId ?? event.sessionId;
+      if (endSessionId) {
+        const regKey = `${normalizeAgentId(endAgentId, cfg)}::${endSessionId}`;
+        const agentSessionName = agentSessionNames.get(regKey);
+        if (agentSessionName) {
+          try {
+            const { activeAgents } = await client.unregisterAgent({ agentSessionName });
+            api.logger.info?.(`cognee-openclaw: agent unregistered (activeAgents=${activeAgents})`);
+          } catch (e) {
+            api.logger.warn?.(`cognee-openclaw: agent unregister failed: ${String(e)}`);
+          } finally {
+            agentSessionNames.delete(regKey);
+            registeredSessions.delete(regKey);
+          }
+        }
+      }
+    });
   },
 };
 

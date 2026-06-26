@@ -328,6 +328,15 @@ async def _run(prompt: str) -> dict | None:
         f"{saves_last_turn['answer']} answer"
     )
 
+    if total > 0:
+        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        notify(f"recall hit ({counts}); saves last turn {saves_last_turn}")
+    else:
+        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+        notify(f"no recall matches; saves last turn {saves_last_turn}")
+
+    # full_context for the audit log — build sections but don't surface them in
+    # the terminal. Only the header (status + counts) is shown to the user.
     section_lines = []
     if by_source.get("session_context"):
         section_lines.append("=== Active agent guidance ===")
@@ -349,21 +358,13 @@ async def _run(prompt: str) -> dict | None:
         for e in by_source["session"]:
             section_lines.append(_format_entry(e))
             section_lines.append("")
+    full_context = (
+        f"{header}\n\n" + "\n".join(section_lines).strip() if section_lines else header
+    )
 
-    if total > 0:
-        full_context = (
-            f"{header}\n\nRelevant context from this session's memory:\n\n"
-            + "\n".join(section_lines).strip()
-        )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
-        notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
-    else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
-
-    # Audit log: persist full recall details per turn. The hook output stays a
-    # short summary because Codex renders additionalContext in the terminal.
+    # Audit log: persist full recall details per turn for debugging.
+    # Only the header (status line + counts) is returned as additionalContext;
+    # the full sections go to the audit log only.
     try:
         from datetime import datetime as _dt
         from datetime import timezone as _tz
@@ -387,13 +388,12 @@ async def _run(prompt: str) -> dict | None:
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 
-    output = {
+    return {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": full_context,
+            "additionalContext": header,
         }
     }
-    return output
 
 
 def main():

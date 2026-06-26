@@ -9,14 +9,16 @@ The integration:
 
 ## Install
 
-Install from the Claude Code marketplace. You can do this interactively by typing slash commands directly in the Claude Code chat:
+Install from the Claude Code marketplace. The recommended way is from your shell, *before* launching Claude Code, so the first `claude` launch is a clean session that runs the plugin bootstrap automatically — no in-app restart needed:
 
-```
-/plugin marketplace add topoteretes/cognee-integrations
-/plugin install cognee-memory@cognee
+```bash
+claude plugin marketplace add topoteretes/cognee-integrations
+claude plugin install cognee-memory@cognee
 ```
 
-Then set environment variables for your runtime mode.
+These CLI subcommands use the exact same plugin manager as the in-chat `/plugin` commands — same marketplace clone, same install cache, same global state — they just run before you enter the terminal. Default install scope is `user` (global); pass `--scope project` or `--scope local` to confine it.
+
+Then set environment variables for your runtime mode (in the shell you'll launch `claude` from).
 
 **Cognee Cloud or a remote server** — set both:
 
@@ -39,6 +41,10 @@ You can also set config in `~/.cognee-plugin/claude-code/config.json`:
   "dataset": "agent_sessions"
 }
 ```
+
+Then launch `claude`. All setup happens in the `SessionStart` hook, which fires once per fresh launch — so with the shell install above, the first launch connects memory with no extra steps.
+
+If you instead installed **from inside the chat** with the `/plugin` slash commands, you must **restart Claude Code** (start a new session) before memory connects: `/reload-plugins` makes the skills and agents available in the current session but does not run `SessionStart`. On a first-run marketplace install the marketplace is also fetched asynchronously, so `SessionStart` may not fire that session even with a reload. Either way, make sure your env vars are set in the shell you launch from.
 
 On startup you should see a "Cognee Memory Connected" system message.
 
