@@ -138,7 +138,7 @@ export class Cognee implements INodeType {
     usableAsTool: true,
     version: 1,
     subtitle: '={{$parameter["resource"] + ": " + $parameter["operation"]}}',
-    description: 'Add text data to a Cognee dataset, build a knowledge graph, search Cognee memory, manage datasets, and run the self-improving skill loop (ingest, review, propose, apply)',
+    description: 'Remember and recall from Cognee memory, add text data to datasets, build a knowledge graph, search Cognee memory, manage datasets, and run the self-improving skill loop',
     defaults: {
       name: 'Cognee',
     },
@@ -167,6 +167,8 @@ export class Cognee implements INodeType {
           { name: 'Add Data', value: 'addData' },
           { name: 'Cognify', value: 'cognify' },
           { name: 'Delete', value: 'delete' },
+          { name: 'Recall', value: 'recall' },
+          { name: 'Remember', value: 'remember' },
           { name: 'Search', value: 'search' },
           { name: 'Skill', value: 'skill' },
         ],
