@@ -1330,16 +1330,33 @@ def _post_remember_document(
         # urlopen raises on non-2xx. Surface it as a graceful failure (not an
         # exception) so the caller skips this one document and keeps syncing the
         # others; the unmarked digest lets a later detached attempt retry.
-        return {"ok": False, "dataset_id": "", "pipeline_run_id": "", "status": exc.code}
+        # Uniform shape: every failure carries both `status` and `error`.
+        return {
+            "ok": False,
+            "dataset_id": "",
+            "pipeline_run_id": "",
+            "status": exc.code,
+            "error": f"HTTP {exc.code}: {exc.reason}",
+        }
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         # A transient network/timeout error must also skip just this document,
-        # not propagate to the outer handler and abort the whole sync.
-        return {"ok": False, "dataset_id": "", "pipeline_run_id": "", "error": str(exc)[:200]}
+        # not propagate to the outer handler and abort the whole sync. status=0
+        # signals a network-level (non-HTTP) failure.
+        return {
+            "ok": False,
+            "dataset_id": "",
+            "pipeline_run_id": "",
+            "status": 0,
+            "error": str(exc)[:200],
+        }
     result = {"ok": True, "dataset_id": "", "pipeline_run_id": ""}
     try:
         parsed = json.loads(raw) if raw else {}
     except (ValueError, TypeError):
+        # A 2xx with an unparseable body (e.g. a proxy/nginx error page) is NOT a
+        # trustworthy success — flag it so the caller retries instead of marking done.
         parsed = {}
+        result["parse_error"] = True
     if isinstance(parsed, dict):
         result["dataset_id"] = str(parsed.get("dataset_id") or "")
         result["pipeline_run_id"] = str(parsed.get("pipeline_run_id") or "")
@@ -1384,6 +1401,7 @@ def persist_session_cache_to_graph_via_http(
     bridge_cache = _load_json_file(bridge_path)
     state = bridge_cache.get("_state", {}) if isinstance(bridge_cache, dict) else {}
     wrote = False
+    overall_start = time.monotonic()
     try:
         for kind, node_set, document in (
             ("qa", "user_sessions_from_cache", qa_doc),
@@ -1395,6 +1413,11 @@ def persist_session_cache_to_graph_via_http(
             digest = hashlib.sha256(document.encode("utf-8")).hexdigest()
             if state.get(state_key) == digest:
                 continue
+            # poll_deadline is an OVERALL budget across all documents, not per-document,
+            # so two documents can't compound to 2x the configured wait.
+            if time.monotonic() - overall_start >= poll_deadline:
+                hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
+                break
             submitted = _post_remember_document(
                 base_url, api_key, dataset, document, node_set, submit_timeout
             )
@@ -1408,15 +1431,21 @@ def persist_session_cache_to_graph_via_http(
                 continue
             dataset_id = submitted.get("dataset_id") or ""
             if not dataset_id:
-                # Accepted, but no handle to confirm completion. Mark it written so we
-                # don't blindly resubmit and duplicate the cognify on the next attempt.
+                if submitted.get("parse_error"):
+                    # 2xx but an unparseable body (e.g. a proxy/nginx error page): we
+                    # can't trust the write landed, so leave the digest unmarked to retry.
+                    hook_log("http_bridge_parse_error", {"dataset": dataset, "kind": kind})
+                    continue
+                # Valid response with no handle to poll. Mark written so we don't
+                # resubmit and duplicate the cognify on every future sync.
                 state[state_key] = digest
                 wrote = True
                 hook_log("http_bridge_no_dataset_id", {"dataset": dataset, "kind": kind})
                 continue
+            remaining = poll_deadline - (time.monotonic() - overall_start)
             outcome = wait_for_cognify(
                 dataset_id,
-                deadline_seconds=poll_deadline,
+                deadline_seconds=max(1.0, remaining),
                 interval_seconds=poll_interval,
                 request_timeout=status_timeout,
             )

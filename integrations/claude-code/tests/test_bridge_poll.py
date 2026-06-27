@@ -12,8 +12,10 @@ Run: python integrations/claude-code/tests/test_bridge_poll.py (or via pytest).
 """
 
 import hashlib
+import os
 import pathlib
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -55,7 +57,13 @@ def test_post_remember_document_background_and_parses_ids():
 
 
 def _run_bridge(
-    outcome, *, post_result=None, post_results=None, preseed_state=None, docs=("qa text", "")
+    outcome,
+    *,
+    post_result=None,
+    post_results=None,
+    preseed_state=None,
+    docs=("qa text", ""),
+    wait_sleep=0.0,
 ):
     """Drive persist_session_cache_to_graph_via_http with the HTTP seams mocked.
 
@@ -89,6 +97,8 @@ def _run_bridge(
 
     def _wait(*a, **k):
         calls["wait"] += 1
+        if wait_sleep:
+            time.sleep(wait_sleep)
         return outcome
 
     pc._local_api_url = lambda: "http://x"
@@ -166,6 +176,24 @@ def test_post_remember_document_http_error_returns_not_ok():
         urllib.request.urlopen = orig
     assert res["ok"] is False
     assert res["status"] == 503
+    assert "error" in res  # uniform: every failure carries a human-readable error
+
+
+def test_post_remember_document_parse_error_flag():
+    # 2xx with an unparseable body (e.g. a proxy error page) flags parse_error.
+    orig = urllib.request.urlopen
+
+    def _bad_json(req, timeout=None):
+        return _Resp(b"<html>502 Bad Gateway</html>")
+
+    urllib.request.urlopen = _bad_json
+    try:
+        res = pc._post_remember_document("http://x", "k", "ds", "doc", "user_context", 30.0)
+    finally:
+        urllib.request.urlopen = orig
+    assert res["ok"] is True
+    assert res.get("parse_error") is True
+    assert res["dataset_id"] == ""
 
 
 def test_post_remember_document_network_error_returns_not_ok():
@@ -183,6 +211,34 @@ def test_post_remember_document_network_error_returns_not_ok():
         urllib.request.urlopen = orig
     assert res["ok"] is False
     assert "error" in res
+    assert res["status"] == 0  # network-level failures use status 0
+
+
+def test_parse_error_not_marked():
+    # An unparseable 2xx must NOT be marked written (it's retried), unlike a valid
+    # response with no dataset_id.
+    wrote, state, calls = _run_bridge(
+        "completed", post_result={"ok": True, "dataset_id": "", "parse_error": True}
+    )
+    assert wrote is False
+    assert state == {}
+    assert calls["wait"] == 0
+
+
+def test_overall_deadline_across_documents():
+    # poll_deadline is an overall budget: once the first document's wait exhausts it,
+    # the second document is skipped (not given a fresh full deadline).
+    os.environ["COGNEE_BRIDGE_POLL_DEADLINE"] = "0.01"
+    try:
+        wrote, state, calls = _run_bridge(
+            "completed", docs=("qa text", "trace text"), wait_sleep=0.05
+        )
+    finally:
+        os.environ.pop("COGNEE_BRIDGE_POLL_DEADLINE", None)
+    assert calls["post"] == 1  # second document skipped once the budget is spent
+    assert calls["wait"] == 1
+    assert len(state) == 1  # only the first document synced
+    assert wrote is True
 
 
 def test_post_failure_skips_document():
