@@ -496,6 +496,72 @@ export class Cognee implements INodeType {
         ],
         default: 'remember',
       },
+      // Remember action fields
+      {
+        displayName: 'Data',
+        name: 'rememberData',
+        type: 'string',
+        typeOptions: {
+          rows: 4,
+        },
+        default: '',
+        required: true,
+        description: 'The text content to store in Cognee memory',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              data: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Dataset Name',
+        name: 'rememberDatasetName',
+        type: 'string',
+        default: 'main_dataset',
+        required: true,
+        description: 'Name of the Cognee dataset to store the data in',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              datasetName: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Session ID',
+        name: 'rememberSessionId',
+        type: 'string',
+        default: '',
+        description: 'Optional session identifier. When provided, data is stored in the fast session cache instead of the permanent knowledge graph.',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              sessionId: '={{$value || undefined}}',
+            },
+          },
+        },
+      },
       // Add action fields
       {
         displayName: 'Dataset Name',
