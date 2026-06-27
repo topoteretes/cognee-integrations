@@ -138,7 +138,7 @@ export class Cognee implements INodeType {
     usableAsTool: true,
     version: 1,
     subtitle: '={{$parameter["resource"] + ": " + $parameter["operation"]}}',
-    description: 'Add text data to a Cognee dataset, build a knowledge graph, search Cognee memory, manage datasets, and run the self-improving skill loop (ingest, review, propose, apply)',
+    description: 'Remember and recall from Cognee memory, add text data to datasets, build a knowledge graph, search Cognee memory, manage datasets, and run the self-improving skill loop',
     defaults: {
       name: 'Cognee',
     },
@@ -167,6 +167,8 @@ export class Cognee implements INodeType {
           { name: 'Add Data', value: 'addData' },
           { name: 'Cognify', value: 'cognify' },
           { name: 'Delete', value: 'delete' },
+          { name: 'Recall', value: 'recall' },
+          { name: 'Remember', value: 'remember' },
           { name: 'Search', value: 'search' },
           { name: 'Skill', value: 'skill' },
         ],
@@ -462,6 +464,245 @@ export class Cognee implements INodeType {
           },
         ],
         default: 'ingestSkill',
+      },
+      // Remember operation
+      {
+        displayName: 'Operation',
+        name: 'operation',
+        type: 'options',
+        noDataExpression: true,
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+          },
+        },
+        options: [
+          {
+            name: 'Remember',
+            value: 'remember',
+            action: 'Store data in cognee memory',
+            description: 'Store data in Cognee memory. Without a session ID the data is ingested into the permanent knowledge graph. With a session ID it is cached for fast session-scoped retrieval.',
+            routing: {
+              request: {
+                method: 'POST',
+                url: '/v1/remember',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                timeout: 600000, // 10 minutes — cognify can be slow
+              },
+            },
+          },
+        ],
+        default: 'remember',
+      },
+      // Recall operation
+      {
+        displayName: 'Operation',
+        name: 'operation',
+        type: 'options',
+        noDataExpression: true,
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+          },
+        },
+        options: [
+          {
+            name: 'Recall',
+            value: 'recall',
+            action: 'Recall information from cognee memory',
+            description: 'Query Cognee memory with auto-routing. Searches session cache first when a session ID is provided, then falls through to the permanent knowledge graph.',
+            routing: {
+              request: {
+                method: 'POST',
+                url: '/v1/recall',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                timeout: 300000, // 5 minutes
+              },
+            },
+          },
+        ],
+        default: 'recall',
+      },
+      // Remember action fields
+      {
+        displayName: 'Data',
+        name: 'rememberData',
+        type: 'string',
+        typeOptions: {
+          rows: 4,
+        },
+        default: '',
+        required: true,
+        description: 'The text content to store in Cognee memory',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              data: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Dataset Name',
+        name: 'rememberDatasetName',
+        type: 'string',
+        default: 'main_dataset',
+        required: true,
+        description: 'Name of the Cognee dataset to store the data in',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              datasetName: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Session ID',
+        name: 'rememberSessionId',
+        type: 'string',
+        default: '',
+        description: 'Optional session identifier. When provided, data is stored in the fast session cache instead of the permanent knowledge graph.',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              sessionId: '={{$value || undefined}}',
+            },
+          },
+        },
+      },
+      // Recall action fields
+      {
+        displayName: 'Query',
+        name: 'recallQuery',
+        type: 'string',
+        default: '',
+        required: true,
+        description: 'The text query to search for in Cognee memory',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              query: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Top K',
+        name: 'recallTopK',
+        type: 'number',
+        default: 10,
+        description: 'Maximum number of results to return',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              top_k: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Search Type',
+        name: 'recallSearchType',
+        type: 'options',
+        options: [
+          { name: 'Auto (Recommended)', value: '' },
+          { name: 'Graph Completion', value: 'GRAPH_COMPLETION' },
+          { name: 'Chain of Thought', value: 'GRAPH_COMPLETION_COT' },
+          { name: 'RAG Completion', value: 'RAG_COMPLETION' },
+        ],
+        default: '',
+        description: 'Type of search to perform. Auto lets Cognee choose the best strategy.',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              search_type: '={{$value || undefined}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Datasets',
+        name: 'recallDatasets',
+        type: 'string',
+        typeOptions: {
+          multipleValues: true,
+        },
+        default: [],
+        description: 'Optional list of dataset names to restrict the search to',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              datasets: '={{$value.length ? $value : undefined}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Session ID',
+        name: 'recallSessionId',
+        type: 'string',
+        default: '',
+        description: 'Optional session identifier. When provided, session cache is searched first before the permanent graph.',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              session_id: '={{$value || undefined}}',
+            },
+          },
+        },
       },
       // Add action fields
       {
