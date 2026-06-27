@@ -18,6 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+# Per-operation timeouts in seconds, tunable independently of recall
+# (COGNEE_RECALL_TIMEOUT). Each falls back to its prior default when unset.
+_REMEMBER_TIMEOUT = float(os.environ.get("COGNEE_REMEMBER_TIMEOUT", "30"))
+_REGISTER_TIMEOUT = float(os.environ.get("COGNEE_REGISTER_TIMEOUT", "15"))
+
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _SHARED_PLUGIN_ROOT = Path.home() / ".cognee-plugin"
 _HOOK_LOG = _PLUGIN_DIR / "hook.log"
@@ -1060,7 +1065,7 @@ def remember_entry_via_http(
     session_id: str,
     entry: dict,
     *,
-    timeout: float = 30.0,
+    timeout: float = _REMEMBER_TIMEOUT,
 ) -> dict | None:
     """Store a typed QA/trace entry through the backend API.
 
@@ -1085,7 +1090,7 @@ def register_agent_via_http(
     agent_session_name: str,
     session_id: str = "",
     dataset_names: list[str] | None = None,
-    timeout: float = 15.0,
+    timeout: float = _REGISTER_TIMEOUT,
 ) -> tuple[bool, dict]:
     payload = {
         "agent_session_name": agent_session_name,
