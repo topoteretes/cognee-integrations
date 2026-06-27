@@ -114,9 +114,10 @@ def do_remember(
         [("data", filename, content.encode("utf-8") if isinstance(content, str) else content)],
     )
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-    # COGNEE_API_KEY is a cloud credential; local single-user servers need no
-    # auth and ignore it. Only attach it for a remote/cloud target.
-    if api_key and not _is_local(service_url):
+    # Attach the key whenever present. The bundled local server requires
+    # X-Api-Key and returns 401 without it; a server that ignores auth won't
+    # mind the extra header. (Stripping it for loopback broke localhost remember.)
+    if api_key:
         headers["X-Api-Key"] = api_key
 
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
