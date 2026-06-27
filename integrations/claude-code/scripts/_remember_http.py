@@ -29,6 +29,10 @@ import uuid
 
 UNREACHABLE = "UNREACHABLE"
 
+# Remember (write) timeout in seconds, tunable independently of recall
+# (COGNEE_RECALL_TIMEOUT). Falls back to the prior default when unset.
+_REMEMBER_TIMEOUT = float(os.environ.get("COGNEE_REMEMBER_TIMEOUT", "60"))
+
 
 def _is_local(url):
     """True for a localhost/loopback target (where a cloud API key is meaningless)."""
@@ -100,7 +104,7 @@ def do_remember(
     node_set,
     *,
     opener=urllib.request.urlopen,
-    timeout=60.0,
+    timeout=_REMEMBER_TIMEOUT,
 ):
     """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE."""
     url = service_url.rstrip("/") + "/api/v1/remember"
