@@ -80,6 +80,31 @@ plugins:
 
 > `hooks.allowConversationAccess` -> OpenClaw ≥ 2026.4.27 blocks non-bundled plugins from registering the `agent_end` hook unless this flag is set. Without it, file sync memory operations after each agent turn is silently disabled. The gateway still loads the plugin, but file changes the agent makes won't reach Cognee until the next manual `openclaw cognee index` or gateway start. Restart the gateway after adding the flag: `openclaw gateway stop && openclaw gateway start`.
 
+## Modes
+
+The plugin connects to cognee in one of three modes. It picks the mode
+automatically from your config:
+
+| Mode | When it's used | How it talks to cognee |
+| --- | --- | --- |
+| **local-server** (default) | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
+| **remote** | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
+| **embedded** | `COGNEE_EMBEDDED=true` | runs cognee in-process |
+
+**Why local-server is the default.** cognee's local stores (SQLite, Kuzu/Ladybug,
+LanceDB) are single-writer. Driving them in-process from the agent's background
+threads — or from a second process sharing the same `data_root` — risks
+`database is locked` errors and corruption. A local cognee server is the single
+owner that serializes all access, so the agent just makes HTTP calls.
+**`embedded` is opt-in and is safe for single-process / offline use only.**
+
+**No silent fallbacks.** The plugin never downgrades modes behind your back. If
+`COGNEE_BASE_URL` is set but unreachable, or the local server fails to start,
+initialization raises rather than quietly switching to a different mode — silent
+fallback would either mask a config error (remote → local data divergence) or
+reintroduce the very DB-lock risk this design removes (local-server → embedded).
+To accept the single-process trade-off, set `COGNEE_EMBEDDED=true` explicitly.
+
 ### Cognee Cloud
 
 To use Cognee Cloud instead of a local instance, set `mode` to `"cloud"`:
