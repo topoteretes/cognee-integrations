@@ -465,6 +465,37 @@ export class Cognee implements INodeType {
         ],
         default: 'ingestSkill',
       },
+      // Remember operation
+      {
+        displayName: 'Operation',
+        name: 'operation',
+        type: 'options',
+        noDataExpression: true,
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+          },
+        },
+        options: [
+          {
+            name: 'Remember',
+            value: 'remember',
+            action: 'Store data in cognee memory',
+            description: 'Store data in Cognee memory. Without a session ID the data is ingested into the permanent knowledge graph. With a session ID it is cached for fast session-scoped retrieval.',
+            routing: {
+              request: {
+                method: 'POST',
+                url: '/v1/remember',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                timeout: 600000, // 10 minutes — cognify can be slow
+              },
+            },
+          },
+        ],
+        default: 'remember',
+      },
       // Add action fields
       {
         displayName: 'Dataset Name',
