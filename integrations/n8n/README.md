@@ -50,9 +50,67 @@ Create credentials of type `Cognee API` in n8n. The node uses these values to au
 
 ## Operations
 
-The node exposes five resources. Each operation maps to a Cognee API endpoint.
+The node exposes six resources. Each operation maps to a Cognee API endpoint.
 
-> **Two API surfaces.** The **Add Data / Cognify / Search / Delete** resources call Cognee Cloud's `/api/*` endpoints. The **Skill** resource (self-improving loop) calls the `/api/v1/*` endpoints — available on a self-hosted cognee server today, and on Cognee Cloud as its `/api/v1` surface rolls out. Point the credential **Base URL** at whichever backend exposes the routes you need (e.g. `http://localhost:8000` for a self-hosted server). The connection test hits `GET /health`.
+> **Two API surfaces.** The **Add Data / Cognify / Search / Delete** resources call Cognee Cloud's `/api/*` endpoints. The **Memory** and **Skill** resources call the `/api/v1/*` endpoints — available on a self-hosted cognee server today, and on Cognee Cloud as its `/api/v1` surface rolls out. Point the credential **Base URL** at whichever backend exposes the routes you need (e.g. `http://localhost:8000` for a self-hosted server). The connection test hits `GET /health`.
+
+### Resource: Memory
+
+#### Operation: Recall
+
+- **Endpoint**: `POST /api/v1/recall`
+- **Description**: Query the Cognee knowledge graph and/or session cache with natural language. A memory-oriented alias for search, supporting all search types.
+- **Fields**:
+  - Query (`recallQuery`, required): Natural-language question to ask.
+  - Datasets (`recallDatasets`, optional, multiple): Dataset names to search. Leave empty to search all accessible datasets.
+  - Search Type (`recallSearchType`, options, default `GRAPH_COMPLETION`): One of `GRAPH_COMPLETION`, `GRAPH_COMPLETION_COT`, `RAG_COMPLETION`, `CHUNKS`, `SUMMARIES`.
+  - Top K (`recallTopK`, number, default `15`): Maximum results to return.
+  - Session ID (`recallSessionId`, optional): Session whose cached QA/trace entries should be searched.
+
+Example body sent by the node:
+
+```json
+{
+  "query": "What are our company's data retention policies?",
+  "datasets": ["company-docs"],
+  "search_type": "GRAPH_COMPLETION",
+  "top_k": 15
+}
+```
+
+Example response (list of result objects):
+
+```json
+[
+  {
+    "id": "...",
+    "text": "Data is retained for 7 years per regulatory requirements...",
+    "confidence": 0.91
+  }
+]
+```
+
+#### Operation: Remember
+
+- **Endpoint**: `POST /api/v1/remember`
+- **Description**: Ingest text into a Cognee dataset and build the knowledge graph in a single call (add + cognify in one request).
+- **Fields**:
+  - Dataset Name (`rememberDatasetName`, required): Target dataset name (created if it does not exist).
+  - Text (`rememberText`, required): The text content to ingest.
+  - Session ID (`rememberSessionId`, optional): Session to attribute this memory to. When set, data is stored in the session cache and bridged into the permanent graph in the background.
+  - Run in Background (`rememberRunInBackground`, boolean, default `false`): When `true`, returns immediately with pipeline metadata; poll `GET /api/v1/datasets/status` for completion.
+
+> **Text-only limitation.** `POST /api/v1/remember` is a `multipart/form-data` endpoint designed primarily for file uploads. Through this node, only inline text ingestion is supported (the text is sent via the `skills_text` form field and processed server-side). To upload binary files or documents, use the Cognee Python SDK or REST API directly.
+
+Example response:
+
+```json
+{
+  "status": "completed",
+  "pipeline_run_id": "3fa85f64-...",
+  "items_processed": 1
+}
+```
 
 ### Resource: Add Data
 
@@ -187,6 +245,8 @@ The node depends on `n8n-workflow` at runtime (peer dependency). It should work 
 - [Package homepage](https://github.com/topoteretes/cognee-n8n)
 
 ## Version history
+
+- **0.6.0**: Add the **Memory** resource with `recall` (`POST /api/v1/recall`) and `remember` (`POST /api/v1/remember`, text-only) operations targeting the `/api/v1` API. Both operations follow the same declarative routing pattern as all existing operations.
 
 - **0.5.0**: Add the **Skill** resource (self-improving skill loop) targeting the `/api/v1` API: Ingest Skill, Review Skill (agentic), Propose Improvement, Apply Improvement, Get Skill, Get Proposal. Existing Add/Cognify/Search/Delete operations are unchanged.
 
