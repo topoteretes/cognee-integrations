@@ -20,6 +20,7 @@ _SHARED_ROOT = Path.home() / ".cognee-plugin"
 _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
+_UPDATE_CHECK_PATH = _SHARED_ROOT / "update-check.json"
 _DEFAULT_DATASET = "agent_sessions"
 
 
@@ -73,12 +74,34 @@ def _health_prefix() -> str:
     return ""
 
 
+def _update_suffix() -> str:
+    """A compact 'update available' badge, read from the cached version check.
+
+    Pure-local: the network check runs elsewhere (version_check.py, spawned at
+    SessionStart) and writes update-check.json; here we only read it.
+    """
+    if os.environ.get("COGNEE_UPDATE_CHECK", "").strip().lower() in {"0", "false", "no", "off"}:
+        return ""
+    try:
+        data = json.loads(_UPDATE_CHECK_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("update_available"):
+            latest = str(data.get("latest") or "").strip()
+            if latest:
+                return f" · ⬆ v{latest} available — /plugin update"
+            return " · ⬆ update available"
+    except Exception:
+        pass
+    return ""
+
+
 def main() -> None:
     try:
         json.load(sys.stdin)  # consume stdin as required by Claude Code
     except Exception:
         pass
-    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
+    sys.stdout.write(
+        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_suffix()}"
+    )
 
 
 if __name__ == "__main__":
