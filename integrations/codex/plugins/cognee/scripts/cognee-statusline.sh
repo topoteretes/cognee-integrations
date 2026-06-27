@@ -6,4 +6,4 @@
 # the renderer is pure-local (reads only ~/.cognee-plugin/codex JSON files),
 # never imports the plugin runtime, and makes no network call, so it stays
 # instant.
-exec python3 "$(dirname "$0")/cognee_statusline_render.py"
+exec python3 "$(dirname "$0")/cognee_statusline_render.py" "$@"
