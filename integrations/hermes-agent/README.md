@@ -138,6 +138,10 @@ hermes cognee config
 hermes cognee install
 ```
 
+## Troubleshooting
+
+For common setup and runtime failures, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 ## Development
 
 ```bash

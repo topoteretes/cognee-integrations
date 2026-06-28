@@ -249,6 +249,8 @@ There is no automatic update mechanism — reinstall is the only way to pull in 
 
 ## Troubleshooting
 
+For the common setup and runtime failures tracked across Cognee integrations, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 **Recall returns empty but data was ingested**
 - Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `config.json` / `agent_sessions`).
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.

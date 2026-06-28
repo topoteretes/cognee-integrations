@@ -289,6 +289,10 @@ openclaw cognee improve                       # current dataset, all sessions
 openclaw cognee improve --session-id <id>     # scope to one session
 ```
 
+## Troubleshooting
+
+For common setup and runtime failures, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 ## How It Works
 
 1. **On startup**: Health check, then scan `memory/` directory and call `/api/v1/remember` (one batched multipart upload per scope). Cognee runs add + cognify + improve server-side.
