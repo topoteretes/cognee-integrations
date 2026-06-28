@@ -1120,6 +1120,8 @@ def recall_via_http(
     search_type: str | None = None,
     context_profile: str | None = None,
     timeout: float = 10.0,
+    retries: int = 0,
+    backoff_base: float = 0.5,
 ) -> list:
     payload = {
         "query": query,
@@ -1132,8 +1134,20 @@ def recall_via_http(
         payload["search_type"] = search_type
     if context_profile:
         payload["context_profile"] = context_profile
-    result = _json_http_request("/api/v1/recall", payload, timeout=timeout)
-    return result if isinstance(result, list) else []
+    last_exc = None
+    for attempt in range(1 + max(0, retries)):
+        if attempt > 0:
+            time.sleep(backoff_base * (2 ** (attempt - 1)))
+        try:
+            result = _json_http_request("/api/v1/recall", payload, timeout=timeout)
+            return result if isinstance(result, list) else []
+        except urllib.error.HTTPError:
+            raise  # HTTP errors are not transient — propagate immediately
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc  # re-raise after exhausted retries
+    return []
 
 
 def _backend_reachable(base_url: str, timeout: float = 1.5) -> bool:

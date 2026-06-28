@@ -191,6 +191,25 @@ async def _run(prompt: str) -> dict | None:
         hook_log("no_session_id", {"event": "context_lookup"})
         return None
 
+    def _is_first_recall(sid: str) -> bool:
+        """True when no tool-call turns have completed for this session yet.
+
+        Uses the same counter.json that store-to-session.py writes via
+        bump_turn_counter(). A missing key means count == 0, i.e. first recall.
+        """
+        try:
+            from pathlib import Path
+            counter_file = Path.home() / ".cognee-plugin" / "claude-code" / "counter.json"
+            if not counter_file.exists():
+                return True
+            import json as _json
+            data = _json.loads(counter_file.read_text(encoding="utf-8"))
+            return int(data.get(sid, 0)) == 0
+        except Exception:
+            return False  # fail safe: don't retry if we can't tell
+
+    is_first = _is_first_recall(session_id)
+
     saves_last_turn = read_and_reset_save_counter(session_id)
 
     # Run scopes independently: a failure in one (e.g. graph search hitting an
@@ -215,6 +234,8 @@ async def _run(prompt: str) -> dict | None:
     # never be the long pole. Each scope gets a short per-call timeout, and the
     # whole loop stops once the overall budget is spent. Partial results are fine.
     recall_timeout = _float_env("COGNEE_RECALL_TIMEOUT", 2.5)
+    recall_retries = int(_float_env("COGNEE_RECALL_RETRIES", 2))
+    recall_backoff = _float_env("COGNEE_RECALL_BACKOFF", 0.5)
     budget_deadline = time.monotonic() + _float_env("COGNEE_RECALL_BUDGET", 4.0)
     # Respect the shared circuit breaker: when the server has been failing (tripped
     # by the explicit recall path), skip this per-prompt recall rather than hammering
@@ -244,22 +265,35 @@ async def _run(prompt: str) -> dict | None:
                     search_type=qtype,
                     context_profile=context_profile,
                     timeout=recall_timeout,
+                    retries=recall_retries if is_first else 0,
+                    backoff_base=recall_backoff,
                 )
             else:
                 query_type = getattr(SearchType, qtype, None) if qtype else None
-                part = await asyncio.wait_for(
-                    cognee.recall(
-                        prompt,
-                        session_id=session_id,
-                        top_k=TOP_K,
-                        scope=scope_list,
-                        only_context=True,
-                        query_type=query_type,
-                        user=user,
-                        **({"context_profile": context_profile} if context_profile else {}),
-                    ),
-                    timeout=recall_timeout,
-                )
+                _sdk_retries = recall_retries if is_first else 0
+                _sdk_attempt = 0
+                while True:
+                    try:
+                        part = await asyncio.wait_for(
+                            cognee.recall(
+                                prompt,
+                                session_id=session_id,
+                                top_k=TOP_K,
+                                scope=scope_list,
+                                only_context=True,
+                                query_type=query_type,
+                                user=user,
+                                **({"context_profile": context_profile} if context_profile else {}),
+                            ),
+                            timeout=recall_timeout,
+                        )
+                        break
+                    except (asyncio.TimeoutError, OSError) as exc:
+                        if _sdk_attempt >= _sdk_retries:
+                            raise
+                        _sdk_attempt += 1
+                        import time as _time
+                        _time.sleep(recall_backoff * (2 ** (_sdk_attempt - 1)))
             if part:
                 results.extend(part)
         except Exception as exc:

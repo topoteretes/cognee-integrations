@@ -147,6 +147,10 @@ An idle watcher runs in the background for the lifetime of each launch. It polls
 | `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
 | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
 | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
+| `COGNEE_WARMUP` | `false` | Fire background GET /health to pre-warm a cold cloud tenant |
+| `COGNEE_WARMUP_TIMEOUT` | `5` | Timeout in seconds for the warmup ping (non-blocking) |
+| `COGNEE_RECALL_RETRIES` | `2` | Retry count on timeout/connection error for the first recall of a session; 0 to disable |
+| `COGNEE_RECALL_BACKOFF` | `0.5` | Base backoff in seconds between retries (doubles each attempt) |
 
 Final sync on session end is triggered by the `SessionEnd` detached worker, with an exit watcher as fallback if the process exits without firing `SessionEnd`.
 

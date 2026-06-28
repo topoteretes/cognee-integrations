@@ -31,6 +31,9 @@ import urllib.request
 
 UNREACHABLE = "UNREACHABLE"
 
+RECALL_RETRY_DEFAULT = 2   # sensible default, overridable per-call
+RECALL_BACKOFF_BASE  = 0.5  # seconds; doubles each attempt
+
 
 # macOS Python installations often lack root CA certs in the default bundle.
 # Build one opener for all HTTPS calls: try certifi opportunistically (if
@@ -114,8 +117,18 @@ def do_recall(
     *,
     opener=None,
     timeout=20.0,
+    retries: int = 0,           # 0 = no retry (default for normal turns)
+    backoff_base: float = RECALL_BACKOFF_BASE,
 ):
-    """Query the server. Return results (list), an error envelope (dict), or ``UNREACHABLE``."""
+    """Query the server. Return results (list), an error envelope (dict), or ``UNREACHABLE``.
+
+    On a transient network/timeout failure (URLError / TimeoutError / OSError),
+    retry up to ``retries`` times with exponential backoff (``backoff_base * 2**attempt``
+    seconds between attempts). HTTP errors are never retried — a reachable server
+    that rejects/fails the request is an authoritative answer.
+    """
+    import time as _time
+
     url = service_url.rstrip("/") + "/api/v1/recall"
     body = {
         "query": query,
@@ -144,25 +157,41 @@ def do_recall(
     if api_key and not _is_local(service_url):
         headers["X-Api-Key"] = api_key
 
+    # Build the request object once — reused on every retry attempt.
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
     )
     _open = opener if opener is not None else _HTTPS_OPENER.open
-    try:
-        with _open(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        # Reachable but rejected/failed. NOT an authoritative empty, and NOT a
-        # reason to query a different backend via the CLI — report the error.
-        if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
-        else:
-            msg = "server returned HTTP %s for /api/v1/recall" % e.code
-        sys.stderr.write("[cognee-search] %s — NOT falling back to local CLI\n" % msg)
-        return _error(e.code, msg)
-    except Exception as e:  # URLError / timeout / OSError → genuinely unreachable
+
+    raw = None
+    last_exc = None
+    for attempt in range(1 + max(0, retries)):
+        if attempt > 0:
+            _time.sleep(backoff_base * (2 ** (attempt - 1)))
+        try:
+            with _open(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+            break  # success — exit retry loop
+        except urllib.error.HTTPError as e:
+            # Reachable but rejected/failed. NOT an authoritative empty, and NOT a
+            # reason to query a different backend via the CLI — report the error.
+            # HTTP errors are never retried.
+            if e.code in (401, 403):
+                msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
+            else:
+                msg = "server returned HTTP %s for /api/v1/recall" % e.code
+            sys.stderr.write("[cognee-search] %s — NOT falling back to local CLI\n" % msg)
+            return _error(e.code, msg)
+        except Exception as e:  # URLError / timeout / OSError → genuinely unreachable
+            last_exc = e
+            sys.stderr.write(
+                "[cognee-search] attempt %d/%d failed: %s\n"
+                % (attempt + 1, 1 + retries, str(e)[:160])
+            )
+    else:
         sys.stderr.write(
-            "[cognee-search] server unreachable at %s: %s\n" % (service_url, str(e)[:160])
+            "[cognee-search] server unreachable at %s after %d attempt(s): %s\n"
+            % (service_url, 1 + retries, str(last_exc)[:160])
         )
         return UNREACHABLE
 

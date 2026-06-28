@@ -168,6 +168,66 @@ def test_coerce_scope():
     assert rh.coerce_scope("") == "auto"
 
 
+def test_retry_succeeds_on_second_attempt():
+    """Timeout then success -> do_recall returns results, not UNREACHABLE."""
+    calls = {"n": 0}
+
+    def _opener(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.URLError("timed out")
+        return _Resp('[{"text": "hit"}]')
+
+    result = rh.do_recall(
+        "http://x", "", "q", "", '["graph"]', "5",
+        opener=_opener, retries=1, backoff_base=0.0,
+    )
+    assert result == [{"text": "hit"}]
+    assert calls["n"] == 2
+
+
+def test_retry_exhausted_returns_unreachable():
+    """All attempts timeout -> UNREACHABLE (graceful degradation)."""
+    result = rh.do_recall(
+        "http://x", "", "q", "", '["graph"]', "5",
+        opener=_raises(urllib.error.URLError("refused")),
+        retries=2, backoff_base=0.0,
+    )
+    assert result == rh.UNREACHABLE
+
+
+def test_http_error_not_retried():
+    """HTTPError is not a transient error — must not retry, must return error envelope."""
+    calls = {"n": 0}
+
+    def _opener(req, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.HTTPError("http://x", 500, "boom", {}, None)
+
+    result = rh.do_recall(
+        "http://x", "", "q", "", '["graph"]', "5",
+        opener=_opener, retries=2, backoff_base=0.0,
+    )
+    assert isinstance(result, dict) and result["status"] == 500
+    assert calls["n"] == 1  # fired exactly once — no retry on HTTP errors
+
+
+def test_no_retry_by_default():
+    """retries=0 (default) -> exactly one attempt, UNREACHABLE on failure."""
+    calls = {"n": 0}
+
+    def _opener(req, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.URLError("refused")
+
+    result = rh.do_recall(
+        "http://x", "", "q", "", '["graph"]', "5",
+        opener=_opener,
+    )
+    assert result == rh.UNREACHABLE
+    assert calls["n"] == 1
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
