@@ -80,32 +80,56 @@ plugins:
 
 > `hooks.allowConversationAccess` -> OpenClaw ≥ 2026.4.27 blocks non-bundled plugins from registering the `agent_end` hook unless this flag is set. Without it, file sync memory operations after each agent turn is silently disabled. The gateway still loads the plugin, but file changes the agent makes won't reach Cognee until the next manual `openclaw cognee index` or gateway start. Restart the gateway after adding the flag: `openclaw gateway stop && openclaw gateway start`.
 
-### Cognee Cloud
+### Modes
 
-To use Cognee Cloud instead of a local instance, set `mode` to `"cloud"`:
+The provider connects to cognee in one of three modes. It picks the mode
+automatically from your config:
 
-```yaml
-plugins:
-  entries:
-    cognee-openclaw:
-      enabled: true
-      config:
-        mode: "cloud"
-        baseUrl: "https://tenant-xxx.cloud.cognee.ai/api"
-        apiKey: "${COGNEE_API_KEY}"
-```
+| Mode | When it's used | How it talks to cognee |
+| --- | --- | --- |
+| **local-server** (default) | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
+| **remote** | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
+| **embedded** | `COGNEE_EMBEDDED=true` | runs cognee in-process |
 
-Or via environment variables:
+**Why local-server is the default.** cognee's local stores (SQLite, Kuzu/Ladybug,
+LanceDB) are single-writer. Driving them in-process from the agent's background
+threads — or from a second OpenClaw process sharing the same `data_root` — risks
+`database is locked` errors and corruption. A local cognee server is the single
+owner that serializes all access, so the agent just makes HTTP calls. This is the
+same design the Claude Code and Codex plugins use. **`embedded` is opt-in and is
+safe for single-process / offline use only.**
+
+**No silent fallbacks.** The provider never downgrades modes behind your back. If
+`COGNEE_BASE_URL` is set but unreachable, or the local server fails to start,
+initialization raises rather than quietly switching to a different mode — silent
+fallback would either mask a config error (remote → local data divergence) or
+reintroduce the very DB-lock risk this design removes (local-server → embedded).
+To accept the single-process trade-off, set `COGNEE_EMBEDDED=true` explicitly.
+
+local-server mode (default — just set your LLM creds):
 
 ```bash
-export COGNEE_MODE=cloud
-export COGNEE_BASE_URL=https://tenant-xxx.cloud.cognee.ai/api
-export COGNEE_API_KEY=your-api-key
+LLM_API_KEY=sk-...
+LLM_MODEL=gpt-4o-mini
+COGNEE_DATASET=my-project
+# COGNEE_LOCAL_PORT=8000   # optional; point at a shared server for a unified brain
 ```
 
-**Cloud mode supported operations**: `remember` (new files), `recall`, per-item `forget`. The `/remember` and `/recall` endpoints are verified against self-hosted Cognee 1.0.3; cloud parity for these specific routes has not been validated yet — file an issue if you hit a 404.
+Remote / cloud mode:
 
-**Known limitation**: Updating existing data (modifying a previously synced file) is not supported in cloud mode — `PATCH /update` is self-hosted only. In cloud mode the plugin's update path is a no-op; to edit a single file in place, delete it and re-add it via the [Cognee Cloud platform](https://platform.cognee.ai) or the API directly.
+```bash
+COGNEE_BASE_URL=https://your-cognee-service.example   # canonical name
+COGNEE_API_KEY=...
+COGNEE_DATASET=my-project
+```
+
+Embedded (in-process) mode — single-process / offline only:
+
+```bash
+COGNEE_EMBEDDED=true
+LLM_API_KEY=sk-...
+COGNEE_DATASET=my-project
+```
 
 ## Multi-Scope Memory
 
