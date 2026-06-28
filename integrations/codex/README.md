@@ -215,6 +215,12 @@ Config precedence:
 
 ## Troubleshooting
 
+Run the doctor script for a one-page health snapshot before digging into logs:
+
+```bash
+python3 ~/.codex/plugins/cognee/scripts/cognee-doctor.py
+```
+
 **Recall returns empty but data was ingested**
 - Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `config.json` / `agent_sessions`).
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
