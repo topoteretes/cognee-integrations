@@ -5,4 +5,5 @@
 # We `exec` into the standalone Python renderer so it inherits that same stdin —
 # the renderer is pure-local (reads only ~/.cognee-plugin JSON files), never
 # imports the plugin runtime, and makes no network call, so it stays instant.
-exec python3 "$(dirname "$0")/cognee_statusline_render.py"
+exec python3 "$(dirname "$0")/cognee_statusline_render.py" "$@"
+
