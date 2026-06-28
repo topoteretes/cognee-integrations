@@ -107,13 +107,14 @@ export class CogneeHttpClient {
     timeoutMs = this.timeoutMs,
     responseParser: (r: Response) => Promise<T> = async (r: Response) => (await r.json()) as T,
     retries = MAX_RETRIES,
+    retryBackoffMs = RETRY_BASE_DELAY_MS,
   ): Promise<T> {
     await this.ensureAuth();
 
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) {
-        const delay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+        const delay = retryBackoffMs * 2 ** (attempt - 1);
         await new Promise((r) => setTimeout(r, delay));
       }
 
@@ -190,6 +191,37 @@ export class CogneeHttpClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Fire a non-blocking GET /health in the background so a scale-to-zero
+   * cloud tenant starts warming up before the first real recall.
+   * Gated by COGNEE_WARMUP=true. No-op unless a remote base URL is set.
+   * All errors are swallowed — a failed ping must never stall the caller.
+   */
+  fireWarmupPing(): void {
+    const enabled =
+      (process.env.COGNEE_WARMUP ?? "false").trim().toLowerCase();
+    if (!["1", "true", "yes", "on"].includes(enabled)) return;
+
+    // Only fire when a non-local base URL is configured.
+    if (!this.baseUrl || this.baseUrl.includes("localhost") || this.baseUrl.includes("127.0.0.1")) return;
+
+    const url = `${this.baseUrl}/health`;
+    const warmupTimeoutMs = Number(process.env.COGNEE_WARMUP_TIMEOUT_MS ?? "5000");
+
+    // Fire and forget — intentionally not awaited.
+    void (async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), warmupTimeoutMs);
+      try {
+        await fetch(url, { method: "GET", signal: controller.signal });
+      } catch {
+        // swallow — warmup failure is never surfaced
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
   }
 
   // -- Data operations ------------------------------------------------------
@@ -517,21 +549,35 @@ export class CogneeHttpClient {
     topK?: number;
     sessionId?: string;
     scope?: string | string[];
+    firstRecall?: boolean;
   }): Promise<CogneeSearchResult[]> {
     const recallPath = this.isCloud ? "/recall" : "/api/v1/recall";
-    const data = await this.fetchAPI<unknown>(recallPath, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: params.queryText,
-        search_type: params.searchType,
-        dataset_ids: params.datasetIds,
-        ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
-        ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
-        ...(params.sessionId ? { session_id: params.sessionId } : {}),
-        ...(params.scope ? { scope: params.scope } : {}),
-      }),
-    });
+    
+    const firstRecallRetries = params.firstRecall
+      ? Math.max(0, Number(process.env.COGNEE_RECALL_RETRIES ?? "2"))
+      : 0;
+    const firstRecallBackoffMs = Number(process.env.COGNEE_RECALL_BACKOFF_MS ?? "500");
+
+    const data = await this.fetchAPI<unknown>(
+      recallPath,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: params.queryText,
+          search_type: params.searchType,
+          dataset_ids: params.datasetIds,
+          ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
+          ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
+          ...(params.sessionId ? { session_id: params.sessionId } : {}),
+          ...(params.scope ? { scope: params.scope } : {}),
+        }),
+      },
+      this.timeoutMs,
+      undefined,
+      firstRecallRetries,
+      firstRecallBackoffMs,
+    );
     return normalizeSearchResults(data);
   }
 
