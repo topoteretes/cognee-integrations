@@ -17,6 +17,9 @@ const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 3_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
+export const DEFAULT_RECALL_TIMEOUT_MS  = 20_000;
+export const DEFAULT_SEARCH_TIMEOUT_MS  = 20_000;
+export const DEFAULT_HEALTH_TIMEOUT_MS  = 10_000;
 
 // ---------------------------------------------------------------------------
 // CogneeHttpClient — shared HTTP transport with auth, retry, timeout
@@ -24,6 +27,44 @@ const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 // Extracted so both the memory plugin and skills plugin can share one
 // implementation instead of duplicating ~200 lines of fetch/auth logic.
 // ---------------------------------------------------------------------------
+
+// --- Circuit breaker -------------------------------------------------------
+// Trips on UNREACHABLE (AbortError / network error) and 5xx.
+// 401/403 are auth config problems — they do NOT trip the breaker.
+
+export const DEFAULT_BREAKER_THRESHOLD = 5;
+export const DEFAULT_BREAKER_COOLDOWN_MS = 120_000;
+
+export class CircuitBreaker {
+  private failures = 0;
+  private cooldownUntil = 0;
+
+  constructor(
+    private readonly threshold: number = DEFAULT_BREAKER_THRESHOLD,
+    private readonly cooldownMs: number = DEFAULT_BREAKER_COOLDOWN_MS,
+  ) {}
+
+  get isOpen(): boolean {
+    return Date.now() < this.cooldownUntil;
+  }
+
+  get retryInMs(): number {
+    return Math.max(0, this.cooldownUntil - Date.now());
+  }
+
+  recordFailure(): void {
+    this.failures += 1;
+    if (this.failures >= this.threshold) {
+      this.cooldownUntil = Date.now() + this.cooldownMs;
+    }
+  }
+
+  recordSuccess(): void {
+    this.failures = 0;
+    this.cooldownUntil = 0;
+  }
+}
+// --------------------------------------------------------------------------
 
 export class CogneeHttpClient {
   private authToken: string | undefined;
@@ -37,6 +78,10 @@ export class CogneeHttpClient {
     private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
     readonly ingestionTimeoutMs: number = DEFAULT_INGESTION_TIMEOUT_MS,
     readonly mode: CogneeMode = "local",
+    // --- new (optional, append-only) ---
+    private readonly recallTimeoutMs: number = DEFAULT_RECALL_TIMEOUT_MS,
+    private readonly searchTimeoutMs: number = DEFAULT_SEARCH_TIMEOUT_MS,
+    readonly breaker: CircuitBreaker = new CircuitBreaker(),
   ) { }
 
   private get isCloud(): boolean {
@@ -110,6 +155,13 @@ export class CogneeHttpClient {
   ): Promise<T> {
     await this.ensureAuth();
 
+    // Circuit breaker: reject immediately when open (no network call).
+    if (this.breaker.isOpen) {
+      throw new Error(
+        `Cognee temporarily unavailable (circuit open, retry in ~${Math.ceil(this.breaker.retryInMs / 1000)}s)`
+      );
+    }
+
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) {
@@ -145,6 +197,7 @@ export class CogneeHttpClient {
               const errorText = await retryResponse.text();
               throw new Error(`Cognee request failed (${retryResponse.status}): ${errorText}`);
             }
+            this.breaker.recordSuccess();
             return responseParser(retryResponse);
           } finally {
             clearTimeout(retryTimeout);
@@ -153,11 +206,25 @@ export class CogneeHttpClient {
 
         if (!response.ok) {
           const errorText = await response.text();
+          // 5xx — transient server failure, trip the breaker.
+          // 401/403 — auth config problem, do NOT trip the breaker.
+          if (response.status >= 500) {
+            this.breaker.recordFailure();
+          }
           throw new Error(`Cognee request failed (${response.status}): ${errorText}`);
         }
+        this.breaker.recordSuccess();
         return (await response.json()) as T;
       } catch (error) {
         clearTimeout(timer);
+        // Trip the breaker on network/timeout errors (not on HTTP errors, which
+        // are already handled by the status check above).
+        const isNetworkError =
+          error instanceof DOMException ||
+          (error instanceof Error && (error.name === "AbortError" || error.name === "TypeError"));
+        if (isNetworkError) {
+          this.breaker.recordFailure();
+        }
         const isTimeout =
           error instanceof DOMException ||
           (error instanceof Error && error.name === "AbortError");
@@ -175,7 +242,7 @@ export class CogneeHttpClient {
 
   async health(): Promise<{ status: string }> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), DEFAULT_HEALTH_TIMEOUT_MS);
     try {
       const headers = this.isCloud ? { "X-Api-Key": this.apiKey! } : {};
       const response = await fetch(`${this.baseUrl}/health`, {
@@ -502,7 +569,7 @@ export class CogneeHttpClient {
         ...(params.searchPrompt ? { systemPrompt: params.searchPrompt } : {}),
         ...(params.sessionId ? { session_id: params.sessionId } : {}),
       }),
-    });
+    }, this.searchTimeoutMs);
     return normalizeSearchResults(data);
   }
 
@@ -531,7 +598,7 @@ export class CogneeHttpClient {
         ...(params.sessionId ? { session_id: params.sessionId } : {}),
         ...(params.scope ? { scope: params.scope } : {}),
       }),
-    });
+    }, this.recallTimeoutMs);
     return normalizeSearchResults(data);
   }
 
