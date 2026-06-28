@@ -171,6 +171,8 @@ End-to-end example workflow:
 
 Troubleshooting:
 
+For the common setup and runtime failures tracked across Cognee integrations, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 - 401/403 errors: Check the API key and that `X-Api-Key` is accepted by your Cognee instance.
 - Connection errors: Verify Base URL and network access from your n8n host.
 
