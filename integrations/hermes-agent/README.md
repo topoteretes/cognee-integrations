@@ -48,6 +48,14 @@ cognee = "cognee_integration_hermes"
 The setup wizard writes non-secret settings to `$HERMES_HOME/cognee.json` and
 secrets to `$HERMES_HOME/.env`.
 
+Config precedence:
+
+1. environment variables
+2. `$HERMES_HOME/cognee.json`
+3. defaults
+
+Precedence is covered by `tests/test_config_precedence.py`.
+
 ### Modes
 
 The provider connects to cognee in one of three modes. It picks the mode

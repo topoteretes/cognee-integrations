@@ -199,6 +199,8 @@ Config precedence:
 2. `~/.cognee-plugin/config.json`
 3. defaults
 
+Precedence is covered by `plugins/cognee/tests/test_config_precedence.py`.
+
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
 | `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall |

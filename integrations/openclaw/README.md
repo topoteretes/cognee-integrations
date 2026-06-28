@@ -184,6 +184,14 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 
 ## Configuration Options
 
+Config precedence:
+
+1. environment variables
+2. plugin config in `openclaw.json` / gateway config
+3. defaults
+
+Precedence is covered by `npm run test:config-precedence` (`__tests__/test_configPrecedence.ts`).
+
 ### Connection
 
 | Option | Type | Default | Description |

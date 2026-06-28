@@ -277,6 +277,8 @@ Config precedence:
 2. `~/.cognee-plugin/claude-code/config.json`
 3. defaults
 
+Precedence is covered by `tests/test_config_precedence.py`.
+
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
 | `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall |

@@ -20,7 +20,8 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "jest"
+    "test": "jest",
+    "test:config-precedence": "npx tsx __tests__/test_configPrecedence.ts"
   },
   "jest": {
     "preset": "ts-jest",
