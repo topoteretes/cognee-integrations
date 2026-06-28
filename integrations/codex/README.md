@@ -130,6 +130,20 @@ Data added outside of Claude to the dataset (via SDK or the server for example) 
 | `PreCompact` | memory anchor build before compaction |
 | `SessionEnd` | trigger detached final sync worker |
 
+## Cold-start warmup
+
+When COGNEE_BASE_URL points at a cloud tenant that scales to zero, enable
+the warmup ping so the tenant begins waking up before the user's first recall:
+
+    export COGNEE_WARMUP=true
+
+The ping is non-blocking and fails silently. Off by default. No-op in local mode.
+
+| Env var                | Default | Effect                                                      |
+|------------------------|---------|-------------------------------------------------------------|
+| COGNEE_WARMUP          | false   | Fire background GET /health at SessionStart                 |
+| COGNEE_WARMUP_TIMEOUT  | 5       | Timeout in seconds for the warmup ping (non-blocking)       |
+
 ## Session sync and watchers
 
 An idle watcher runs in the background for the lifetime of each launch. It polls activity every `COGNEE_IDLE_POLL` seconds and persists the session cache when the session has been quiet for `COGNEE_IDLE_THRESHOLD` seconds, then waits at least `COGNEE_IMPROVE_COOLDOWN` seconds before the next run.
@@ -212,6 +226,8 @@ Config precedence:
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
+| warmup ping    | COGNEE_WARMUP         | false | Fire background GET /health to pre-warm a cold cloud tenant |
+| warmup timeout | COGNEE_WARMUP_TIMEOUT | 5     | Timeout in seconds for the warmup ping (non-blocking)       |
 
 ## Troubleshooting
 

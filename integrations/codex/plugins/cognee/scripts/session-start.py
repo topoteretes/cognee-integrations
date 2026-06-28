@@ -84,6 +84,34 @@ _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() n
     "no",
 )
 
+_WARMUP_ENABLED: bool = os.environ.get("COGNEE_WARMUP", "false").strip().lower() in (
+    "1", "true", "yes", "on"
+)
+_WARMUP_TIMEOUT_SECONDS: float = float(
+    os.environ.get("COGNEE_WARMUP_TIMEOUT", "5").strip() or "5"
+)
+
+def _fire_warmup_ping(service_url: str) -> None:
+    """Fire a background GET /health to pre-warm a cold cloud tenant.
+
+    No-op when COGNEE_WARMUP is not set. Runs in a daemon thread so it
+    never consumes any part of the SessionStart hook budget. All errors
+    are swallowed — a failed or slow ping must never block the session.
+    """
+    if not _WARMUP_ENABLED or not service_url:
+        return
+    url = _health_url(service_url)
+    def _ping() -> None:
+        try:
+            with urllib.request.urlopen(url, timeout=_WARMUP_TIMEOUT_SECONDS):
+                pass
+        except Exception:
+            pass
+        finally:
+            hook_log("warmup_ping_fired", {"url": url})
+    import threading
+    threading.Thread(target=_ping, daemon=True, name="cognee-warmup").start()
+
 # --- Self-managed cognee install (SHARED with the Claude Code plugin) --------
 # uv + a uv-managed Python guarantee a cognee-compatible runtime (3.10-3.14)
 # regardless of what's on the machine. All paths sit under the shared
@@ -1097,6 +1125,9 @@ async def _start(payload: dict | None = None) -> dict:
     os.environ["COGNEE_BASE_URL"] = target_url
     if api_key:
         os.environ["COGNEE_API_KEY"] = api_key
+
+    if configured_url:
+        _fire_warmup_ping(configured_url)
 
     # The host (Codex) session id is a local correlation key only: it keeps every
     # hook process of this launch resolving the SAME Cognee session id (via the
