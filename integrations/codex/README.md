@@ -212,6 +212,10 @@ Config precedence:
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
+| warmup ping | `COGNEE_WARMUP` | `false` | Fire background GET /health to pre-warm a cold cloud tenant |
+| warmup timeout | `COGNEE_WARMUP_TIMEOUT` | `5` | Timeout in seconds for the warmup ping (non-blocking) |
+| recall retries | `COGNEE_RECALL_RETRIES` | `2` | Retry count on timeout/connection error for the first recall of a session; 0 to disable |
+| recall backoff | `COGNEE_RECALL_BACKOFF` | `0.5` | Base backoff in seconds between retries (doubles each attempt) |
 
 ## Troubleshooting
 
