@@ -45,6 +45,14 @@ _DEFAULTS = {
     # Memory steering: assert Cognee as the preferred memory over Claude Code's
     # built-in auto memory (MEMORY.md). Opt out with COGNEE_PREFER_MEMORY=false.
     "prefer_cognee_memory": True,
+    # Background remember + cognify status polling. Remember runs in the background
+    # (so a large cognify never holds one request open past the cloud's ~10-min
+    # request ceiling); these tune how completion is polled afterwards.
+    "cognify_poll_interval": 3.0,  # seconds between status polls
+    "bridge_poll_deadline": 600.0,  # session->graph bridge: overall wait for COMPLETED
+    "bridge_submit_timeout": 30.0,  # the background POST read timeout (enqueue is fast)
+    "remember_wait_seconds": 8.0,  # explicit "remember this": bounded wait, 0 disables
+    "status_request_timeout": 10.0,  # per-poll GET timeout
 }
 
 
@@ -81,6 +89,13 @@ _ENV_MAP = {
     "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",
+    # Background remember + cognify polling (read at the call sites via _float_env;
+    # registered here for config-file support and discoverability).
+    "COGNEE_COGNIFY_POLL_INTERVAL": "cognify_poll_interval",
+    "COGNEE_BRIDGE_POLL_DEADLINE": "bridge_poll_deadline",
+    "COGNEE_BRIDGE_SUBMIT_TIMEOUT": "bridge_submit_timeout",
+    "COGNEE_REMEMBER_WAIT_SECONDS": "remember_wait_seconds",
+    "COGNEE_STATUS_REQUEST_TIMEOUT": "status_request_timeout",
     # Legacy compat
     "COGNEE_SESSION_ID": "_static_session_id",
 }

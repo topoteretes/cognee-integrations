@@ -22,6 +22,7 @@ import json
 import os
 import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -92,6 +93,80 @@ def _timeout_result(timeout):
     return _error(0, "remember submitted; timed out after %ss waiting for confirmation" % timeout)
 
 
+def _float_env(name, default):
+    try:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _explicit_wait_seconds():
+    """Seconds the explicit "remember this" waits for the cognify to become queryable.
+
+    Default 8s: a background submit returns immediately, so without a short wait an
+    immediate recall sees the not-yet-cognified graph. 0 disables (fire-and-forget).
+    """
+    return _float_env("COGNEE_REMEMBER_WAIT_SECONDS", 8.0)
+
+
+def _poll_status(
+    service_url,
+    api_key,
+    dataset_id,
+    deadline_seconds,
+    *,
+    opener=urllib.request.urlopen,
+    interval_seconds=3.0,
+    request_timeout=10.0,
+):
+    """Poll /api/v1/datasets/status (cognify_pipeline) until terminal or the deadline.
+
+    Returns "completed" | "errored" | "timeout" | "unknown". Deliberately mirrors
+    _plugin_common.wait_for_cognify but stays stdlib-only and opener-injectable so this
+    module keeps running under bare python3 (no plugin venv) and remains test-mockable.
+    """
+    if not dataset_id:
+        return "unknown"
+    url = (
+        service_url.rstrip("/")
+        + "/api/v1/datasets/status?dataset="
+        + urllib.parse.quote(str(dataset_id))
+        + "&pipeline=cognify_pipeline"
+    )
+    headers = {}
+    if api_key and not _is_local(service_url):
+        headers["X-Api-Key"] = api_key
+    deadline = time.monotonic() + max(0.0, deadline_seconds)
+    while True:
+        status = ""
+        try:
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with opener(req, timeout=request_timeout) as resp:
+                raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw or "{}")
+            if isinstance(parsed, dict) and parsed:
+                val = parsed.get(str(dataset_id))
+                if val is None and len(parsed) == 1:
+                    val = next(iter(parsed.values()))
+                if isinstance(val, dict):
+                    val = val.get("cognify_pipeline")
+                status = str(val or "").upper()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return "unknown"  # older server without the status route
+            # transient — fall through to the deadline check
+        except Exception:
+            pass  # transient (URLError/timeout/parse) — keep polling until deadline
+        if status.endswith("COMPLETED"):
+            return "completed"
+        if status.endswith("ERRORED"):
+            return "errored"
+        if time.monotonic() >= deadline:
+            return "timeout"
+        time.sleep(max(0.1, interval_seconds))  # floor avoids a tight spin if misconfigured to 0
+
+
 def do_remember(
     service_url,
     api_key,
@@ -158,7 +233,37 @@ def do_remember(
         msg = str(data.get("error"))[:200]
         sys.stderr.write("[cognee-remember] server returned error: %s\n" % msg)
         return _error(200, msg)
-    return {"ok": True}
+
+    result = {"ok": True}
+    if isinstance(data, dict):
+        if data.get("dataset_id"):
+            result["dataset_id"] = str(data["dataset_id"])
+        if data.get("pipeline_run_id"):
+            result["pipeline_run_id"] = str(data["pipeline_run_id"])
+        if data.get("status"):
+            result["status"] = str(data["status"])
+
+    # A background submit returns as soon as the cognify is enqueued, so the graph
+    # isn't queryable yet. Optionally wait (bounded) and report whether it landed,
+    # so an immediate recall isn't stale. Synchronous writes already completed.
+    wait_seconds = _explicit_wait_seconds()
+    if wait_seconds > 0 and result.get("dataset_id") and _background_flag() == "true":
+        outcome = _poll_status(
+            service_url,
+            api_key,
+            result["dataset_id"],
+            wait_seconds,
+            opener=opener,
+            interval_seconds=_float_env("COGNEE_COGNIFY_POLL_INTERVAL", 3.0),
+            request_timeout=_float_env("COGNEE_STATUS_REQUEST_TIMEOUT", 10.0),
+        )
+        result["wait_outcome"] = outcome
+        result["queryable"] = outcome == "completed"
+        if outcome == "errored":
+            sys.stderr.write(
+                "[cognee-remember] cognify ERRORED for dataset %s\n" % result["dataset_id"]
+            )
+    return result
 
 
 def main(argv):

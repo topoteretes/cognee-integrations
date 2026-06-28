@@ -92,8 +92,90 @@ def test_connection_failure_is_unreachable():
 
 
 def test_2xx_returns_ok():
+    # body "{}" has no dataset_id, so the bounded wait is skipped.
     res = rh.do_remember("http://x", "", "c", "ds", "user_context", opener=_capturing_opener({}))
     assert res == {"ok": True}
+
+
+def _seq_opener(post_body, status_bodies, counts=None):
+    """Opener that returns post_body on the POST and successive status_bodies on GETs."""
+    state = {"i": 0}
+
+    def _open(req, timeout=None):
+        method = getattr(req, "method", None) or req.get_method()
+        if counts is not None:
+            counts[method] = counts.get(method, 0) + 1
+        if method == "POST":
+            return _Resp(post_body)
+        body = status_bodies[min(state["i"], len(status_bodies) - 1)]
+        state["i"] += 1
+        return _Resp(body)
+
+    return _open
+
+
+def test_response_body_parsed_into_result():
+    os.environ["COGNEE_REMEMBER_WAIT_SECONDS"] = "0"  # isolate parsing from the poll
+    try:
+        body = b'{"status":"running","dataset_id":"d1","pipeline_run_id":"p1"}'
+        res = rh.do_remember("http://x", "", "c", "ds", "uc", opener=_capturing_opener({}, body))
+        assert res["ok"] is True
+        assert res["dataset_id"] == "d1"
+        assert res["pipeline_run_id"] == "p1"
+        assert res["status"] == "running"
+        assert "queryable" not in res  # wait disabled
+    finally:
+        os.environ.pop("COGNEE_REMEMBER_WAIT_SECONDS", None)
+
+
+def test_unparseable_body_still_ok():
+    res = rh.do_remember("http://x", "", "c", "ds", "uc", opener=_capturing_opener({}, b"not json"))
+    assert res == {"ok": True}
+
+
+def test_wait_zero_skips_poll():
+    os.environ["COGNEE_REMEMBER_WAIT_SECONDS"] = "0"
+    try:
+        counts = {}
+        body = b'{"status":"running","dataset_id":"d1"}'
+        res = rh.do_remember(
+            "http://x", "", "c", "ds", "uc", opener=_seq_opener(body, [b"{}"], counts)
+        )
+        assert counts.get("GET", 0) == 0  # no status poll issued
+        assert "queryable" not in res
+    finally:
+        os.environ.pop("COGNEE_REMEMBER_WAIT_SECONDS", None)
+
+
+def test_explicit_wait_completed():
+    os.environ["COGNEE_REMEMBER_WAIT_SECONDS"] = "5"
+    os.environ["COGNEE_COGNIFY_POLL_INTERVAL"] = "0.01"
+    try:
+        post = b'{"status":"running","dataset_id":"d1","pipeline_run_id":"p1"}'
+        statuses = [
+            b'{"d1":"DATASET_PROCESSING_STARTED"}',
+            b'{"d1":"DATASET_PROCESSING_COMPLETED"}',
+        ]
+        res = rh.do_remember("http://x", "", "c", "ds", "uc", opener=_seq_opener(post, statuses))
+        assert res["queryable"] is True
+        assert res["wait_outcome"] == "completed"
+    finally:
+        os.environ.pop("COGNEE_REMEMBER_WAIT_SECONDS", None)
+        os.environ.pop("COGNEE_COGNIFY_POLL_INTERVAL", None)
+
+
+def test_explicit_wait_timeout():
+    os.environ["COGNEE_REMEMBER_WAIT_SECONDS"] = "0.05"
+    os.environ["COGNEE_COGNIFY_POLL_INTERVAL"] = "0.01"
+    try:
+        post = b'{"status":"running","dataset_id":"d1"}'
+        statuses = [b'{"d1":"DATASET_PROCESSING_STARTED"}']  # never completes
+        res = rh.do_remember("http://x", "", "c", "ds", "uc", opener=_seq_opener(post, statuses))
+        assert res["queryable"] is False
+        assert res["wait_outcome"] == "timeout"
+    finally:
+        os.environ.pop("COGNEE_REMEMBER_WAIT_SECONDS", None)
+        os.environ.pop("COGNEE_COGNIFY_POLL_INTERVAL", None)
 
 
 if __name__ == "__main__":
