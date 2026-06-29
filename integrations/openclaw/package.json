@@ -34,6 +34,7 @@
       ]
     },
     "moduleNameMapper": {
+      "^(.*[\\/])version(?:\\.js)?$": "<rootDir>/__mocks__/version.ts",
       "^(\\.\\.?/.*)\\.js$": "$1"
     }
   },
