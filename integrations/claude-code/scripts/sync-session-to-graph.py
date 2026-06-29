@@ -245,6 +245,7 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
         _load_resolved()
     )
     target_sessions = [session_id] if session_id else []
+    _sync_start = time.monotonic()
     hook_log(
         "sync_start",
         {
@@ -284,6 +285,7 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
                             "dataset": dataset,
                             "via": "http_remember",
                             "wrote": wrote,
+                            "elapsed_ms": round((time.monotonic() - _sync_start) * 1000),
                         },
                     )
                     print(
@@ -307,6 +309,7 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
                         "user_id": str(getattr(user, "id", "")),
                         "wrote": wrote,
                         "graph_synced": graph_result.get("synced", 0),
+                        "elapsed_ms": round((time.monotonic() - _sync_start) * 1000),
                     },
                 )
                 print(
@@ -412,9 +415,10 @@ def main():
             return
         except Exception as exc:
             # Non-fatal: session sync failure should not crash Codex.
+            _elapsed = round((time.monotonic() - _sync_start) * 1000) if '_sync_start' in dir() else 0
             hook_log(
                 "sync_failed",
-                {"attempt": attempt, "attempts": attempts, "error": str(exc)[:300]},
+                {"attempt": attempt, "attempts": attempts, "error": str(exc)[:300], "elapsed_ms": _elapsed},
             )
             print(f"cognee-sync: failed ({exc})", file=sys.stderr)
             if attempt < attempts:

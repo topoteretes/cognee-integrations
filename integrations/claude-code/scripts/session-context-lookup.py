@@ -216,6 +216,7 @@ async def _run(prompt: str) -> dict | None:
     # whole loop stops once the overall budget is spent. Partial results are fine.
     recall_timeout = _float_env("COGNEE_RECALL_TIMEOUT", 2.5)
     budget_deadline = time.monotonic() + _float_env("COGNEE_RECALL_BUDGET", 4.0)
+    _recall_start = time.monotonic()
     # Respect the shared circuit breaker: when the server has been failing (tripped
     # by the explicit recall path), skip this per-prompt recall rather than hammering
     # a down backend on every keystroke. HTTP/cloud mode only.
@@ -358,16 +359,17 @@ async def _run(prompt: str) -> dict | None:
             section_lines.append(_format_entry(e))
             section_lines.append("")
 
+    elapsed_ms = round((time.monotonic() - _recall_start) * 1000)
     if total > 0:
         full_context = (
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn, "elapsed_ms": elapsed_ms})
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
         full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn, "elapsed_ms": elapsed_ms})
         notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a

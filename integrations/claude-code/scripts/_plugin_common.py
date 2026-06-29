@@ -1092,20 +1092,20 @@ def wait_for_cognify(
         f"&pipeline={urllib.parse.quote(pipeline)}"
     )
     deadline = time.monotonic() + max(0.0, deadline_seconds)
+    _poll_start = time.monotonic()
     while True:
         try:
             result = _json_http_request(path, None, method="GET", timeout=request_timeout)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                # Older server without the status route — can't confirm, don't loop.
                 return "unknown"
             hook_log(
                 "cognify_poll_transient",
-                {"dataset_id": dataset_id, "error": f"HTTP {exc.code}"},
+                {"dataset_id": dataset_id, "error": f"HTTP {exc.code}", "elapsed_ms": round((time.monotonic() - _poll_start) * 1000)},
             )
             result = None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            hook_log("cognify_poll_transient", {"dataset_id": dataset_id, "error": str(exc)[:120]})
+            hook_log("cognify_poll_transient", {"dataset_id": dataset_id, "error": str(exc)[:120], "elapsed_ms": round((time.monotonic() - _poll_start) * 1000)})
             result = None
 
         status = ""
@@ -1113,19 +1113,21 @@ def wait_for_cognify(
             raw = result.get(str(dataset_id))
             if raw is None and len(result) == 1:
                 raw = next(iter(result.values()))
-            # A multi-pipeline response nests {pipeline: status}; unwrap if needed.
             if isinstance(raw, dict):
                 raw = raw.get(pipeline)
             status = str(raw or "").upper()
 
         if status.endswith("COMPLETED"):
+            hook_log("cognify_poll_completed", {"dataset_id": dataset_id, "elapsed_ms": round((time.monotonic() - _poll_start) * 1000)})
             return "completed"
         if status.endswith("ERRORED"):
+            hook_log("cognify_poll_errored", {"dataset_id": dataset_id, "elapsed_ms": round((time.monotonic() - _poll_start) * 1000)})
             return "errored"
 
         if time.monotonic() >= deadline:
+            hook_log("cognify_poll_timeout", {"dataset_id": dataset_id, "elapsed_ms": round((time.monotonic() - _poll_start) * 1000)})
             return "timeout"
-        time.sleep(max(0.1, interval_seconds))  # floor avoids a tight spin if misconfigured to 0
+        time.sleep(max(0.1, interval_seconds))
 
 
 def remember_entry_via_http(
