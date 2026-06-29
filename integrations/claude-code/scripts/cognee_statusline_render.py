@@ -21,6 +21,9 @@ _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _DEFAULT_DATASET = "agent_sessions"
+_DEFAULT_PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+_CLAUDE_PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", str(_DEFAULT_PLUGIN_ROOT)))
+_PLUGIN_JSON_PATH = _CLAUDE_PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
 
 
 def _active_dataset() -> str:
@@ -73,12 +76,28 @@ def _health_prefix() -> str:
     return ""
 
 
-def main() -> None:
+def _installed_version() -> str:
     try:
-        json.load(sys.stdin)  # consume stdin as required by Claude Code
+        data = json.loads(_PLUGIN_JSON_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            v = str(data.get("version") or "").strip()
+            if v:
+                return f"v{v}"
     except Exception:
         pass
-    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
+    return ""
+
+
+def main() -> None:
+    try:
+        json.load(sys.stdin)
+    except Exception:
+        pass
+    version = _installed_version()
+    if version:
+        sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()} · {version}")
+    else:
+        sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
 
 
 if __name__ == "__main__":
