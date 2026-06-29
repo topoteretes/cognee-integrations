@@ -86,10 +86,21 @@ def load_config() -> dict:
     config = dict(_DEFAULTS)
 
     # Layer 2: config file
+    # dataset is intentionally excluded here: it is always driven by the default
+    # or by COGNEE_PLUGIN_DATASET (env var, layer 3). Reading it from the file
+    # would create confusing precedence when users open a terminal without the
+    # env var set. The value is still written to the file for human visibility.
+    _file_excluded = {"dataset"}
     if _CONFIG_FILE.exists():
         try:
             file_cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-            config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
+            config.update(
+                {
+                    k: v
+                    for k, v in file_cfg.items()
+                    if v is not None and v != "" and k not in _file_excluded
+                }
+            )
         except Exception as exc:
             _config_log(
                 "config_file_load_failed", {"path": str(_CONFIG_FILE), "error": str(exc)[:200]}
@@ -121,12 +132,18 @@ def load_config() -> dict:
 def save_config(config: dict) -> None:
     """Write config to disk. Creates directory if needed."""
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    # Only save non-secret, non-default values
+    # Only save non-secret, non-default values.
+    # dataset is always written even when it equals the default so that users
+    # who open the file can see which dataset the plugin is using.
     transient_keys = {"api_key", "llm_api_key", "base_url", "backend"}
+    _always_include = {"dataset"}
     to_save = {
         k: v
         for k, v in config.items()
-        if k not in transient_keys and not k.startswith("_") and v and v != _DEFAULTS.get(k)
+        if k not in transient_keys
+        and not k.startswith("_")
+        and v
+        and (k in _always_include or v != _DEFAULTS.get(k))
     }
     _CONFIG_FILE.write_text(json.dumps(to_save, indent=2), encoding="utf-8")
 
