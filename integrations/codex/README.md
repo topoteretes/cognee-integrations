@@ -212,6 +212,9 @@ Config precedence:
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
+| recall timeout | `COGNEE_RECALL_TIMEOUT` | `20` | Per-request timeout (seconds) for recall/search |
+| remember timeout | `COGNEE_REMEMBER_TIMEOUT` | `30` | Per-request timeout (seconds) for remember (write), tunable independently of recall |
+| register timeout | `COGNEE_REGISTER_TIMEOUT` | `15` | Per-request timeout (seconds) for agent-session register |
 
 ## Troubleshooting
 

@@ -1036,20 +1036,35 @@ def _json_http_request(
         return json.loads(body)
 
 
+def _float_env(name: str, default: float) -> float:
+    """Read a float from the environment, falling back to default on absence/parse error."""
+    try:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
 def remember_entry_via_http(
     dataset: str,
     session_id: str,
     entry: dict,
     *,
-    timeout: float = 30.0,
+    timeout: float | None = None,
 ) -> dict | None:
     """Store a typed QA/trace entry through the backend API.
 
     API-mode hooks use this instead of importing Cognee's Python client,
     so they don't initialize local databases while talking to a backend.
+
+    The request timeout defaults to the per-operation ``COGNEE_REMEMBER_TIMEOUT``
+    env var (seconds, default 30), tunable independently of recall/register; an
+    explicit ``timeout`` argument still overrides it.
     """
     if not dataset or not session_id:
         return None
+    if timeout is None:
+        timeout = _float_env("COGNEE_REMEMBER_TIMEOUT", 30.0)
     return _json_http_request(
         "/api/v1/remember/entry",
         {
@@ -1066,8 +1081,10 @@ def register_agent_via_http(
     agent_session_name: str,
     session_id: str = "",
     dataset_names: list[str] | None = None,
-    timeout: float = 15.0,
+    timeout: float | None = None,
 ) -> tuple[bool, dict]:
+    if timeout is None:
+        timeout = _float_env("COGNEE_REGISTER_TIMEOUT", 15.0)
     payload = {
         "agent_session_name": agent_session_name,
         "type": "api",
