@@ -61,7 +61,7 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
         if http_api_ready():
             wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
             hook_log(
-                "auto_bridge_fired",
+                "bridge.auto_fired",
                 {"reason": reason, "session": session_id, "via": "http_remember", "wrote": wrote},
             )
             if wrote:
@@ -72,7 +72,7 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
         wrote = await persist_session_cache_to_graph(dataset, session_id, user)
         graph_result = await sync_graph_context_to_session(dataset, session_id, user)
         hook_log(
-            "auto_bridge_fired",
+            "bridge.auto_fired",
             {
                 "reason": reason,
                 "session": session_id,
@@ -82,7 +82,7 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
         )
         notify(f"session bridge persisted ({reason})")
     except Exception as exc:
-        hook_log("auto_bridge_error", {"reason": reason, "error": str(exc)[:200]})
+        hook_log("bridge.auto_error", {"reason": reason, "error": str(exc)[:200]})
 
 
 def _truncate_str(value, cap: int) -> str:
@@ -136,7 +136,7 @@ async def _store_tool_call(payload: dict) -> None:
         if isinstance(tool_input, dict):
             cmd = str(tool_input.get("command", ""))
         if "cognee" in cmd:
-            hook_log("skip_self_cognee_bash", {"cmd_prefix": cmd[:80]})
+            hook_log("store.skip_self_cognee_bash", {"cmd_prefix": cmd[:80]})
             return
 
     status, error_message = _infer_status(payload)
@@ -154,14 +154,14 @@ async def _store_tool_call(payload: dict) -> None:
 
     session_id, dataset, user_id = _load_session()
     if not session_id:
-        hook_log("no_session_id", {"tool": tool_name})
+        hook_log("session.no_id", {"tool": tool_name})
         return
 
     config = load_config()
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
     hook_log(
-        "mode_decision",
+        "session.mode_decision",
         {
             "hook": "store-to-session:tool",
             "mode": runtime["mode"],
@@ -182,7 +182,7 @@ async def _store_tool_call(payload: dict) -> None:
         )
         append_http_bridge_entry(dataset, session_id, trace=trace_text)
         bump_save_counter(session_id, "trace")
-        hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
+        hook_log("store.buffered_warming", {"hook": "tool", "tool": tool_name})
         return
     if not use_http:
         await ensure_cognee_ready(config)
@@ -217,7 +217,7 @@ async def _store_tool_call(payload: dict) -> None:
                 user=user,
             )
     except Exception as exc:
-        hook_log("trace_store_error", {"tool": tool_name, "error": str(exc)[:200]})
+        hook_log("store.trace_error", {"tool": tool_name, "error": str(exc)[:200]})
         notify(f"trace store failed ({exc})")
         return
 
@@ -228,7 +228,7 @@ async def _store_tool_call(payload: dict) -> None:
             else getattr(result, "entry_id", None)
         )
         hook_log(
-            "trace_stored",
+            "store.trace_stored",
             {
                 "tool": tool_name,
                 "status": status,
@@ -254,7 +254,7 @@ async def _store_tool_call(payload: dict) -> None:
         if should_improve:
             await _fire_improve_background(dataset, session_id, user, reason=f"turn_{count}")
     else:
-        hook_log("trace_store_noresult", {"tool": tool_name})
+        hook_log("store.trace_noresult", {"tool": tool_name})
 
 
 async def _store_assistant_stop(payload: dict) -> None:
@@ -267,14 +267,14 @@ async def _store_assistant_stop(payload: dict) -> None:
 
     session_id, dataset, user_id = _load_session()
     if not session_id:
-        hook_log("no_session_id", {"event": "stop"})
+        hook_log("session.no_id", {"event": "stop"})
         return
 
     config = load_config()
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
     hook_log(
-        "mode_decision",
+        "session.mode_decision",
         {
             "hook": "store-to-session:stop",
             "mode": runtime["mode"],
@@ -296,7 +296,7 @@ async def _store_assistant_stop(payload: dict) -> None:
             answer=msg,
         )
         bump_save_counter(session_id, "answer")
-        hook_log("store_buffered_warming", {"hook": "stop"})
+        hook_log("store.buffered_warming", {"hook": "stop"})
         return
     if not use_http:
         await ensure_cognee_ready(config)
@@ -330,7 +330,7 @@ async def _store_assistant_stop(payload: dict) -> None:
                 user=user,
             )
     except Exception as exc:
-        hook_log("stop_store_error", {"error": str(exc)[:200]})
+        hook_log("store.stop_error", {"error": str(exc)[:200]})
         notify(f"stop store failed ({exc})")
         return
 
@@ -347,7 +347,7 @@ async def _store_assistant_stop(payload: dict) -> None:
             if isinstance(result, dict)
             else getattr(result, "entry_id", None)
         )
-        hook_log("stop_stored", {"chars": len(msg), "qa_id": qa_id})
+        hook_log("store.stop_stored", {"chars": len(msg), "qa_id": qa_id})
         notify(f"assistant message stored ({len(msg)} chars)")
         bump_save_counter(session_id, "answer")
 
@@ -365,15 +365,15 @@ def main():
     try:
         payload = json.loads(payload_raw)
     except json.JSONDecodeError:
-        hook_log("invalid_payload_json")
+        hook_log("io.invalid_payload_json")
         return
 
     session_key_candidate, session_key_source = resolve_session_key_from_payload(payload)
     if session_key_candidate:
         set_session_key(session_key_candidate)
-    hook_log("store_session_key", {"source": session_key_source, "value": session_key_candidate})
+    hook_log("store.session_key", {"source": session_key_source, "value": session_key_candidate})
     if not get_session_key():
-        hook_log("store_missing_session_key")
+        hook_log("store.missing_session_key")
         return
 
     is_stop = "--stop" in sys.argv
@@ -384,7 +384,7 @@ def main():
             else:
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:
-        hook_log("run_exception", {"stop": is_stop, "error": str(exc)[:200]})
+        hook_log("store.run_exception", {"stop": is_stop, "error": str(exc)[:200]})
 
 
 if __name__ == "__main__":

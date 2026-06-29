@@ -220,6 +220,11 @@ tail -f ~/.cognee-plugin/claude-code/exit-watcher.log
 tail -f ~/.cognee-plugin/claude-code/recall-audit.log
 ```
 
+`hook.log` holds structured, single-line JSON events emitted by the hooks. Their
+names follow a `namespace.action` taxonomy (`recall.*`, `bridge.*`, `session.*`,
+…) so they can be filtered or shipped to a telemetry sink uniformly. See
+[EVENTS.md](EVENTS.md) for the full reference.
+
 Shared state (used by both Claude Code and Codex plugins):
 
 ```bash

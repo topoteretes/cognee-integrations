@@ -169,7 +169,7 @@ def _read_map_record(host_key: str) -> dict:
             if isinstance(data, dict):
                 return data
     except Exception as exc:
-        hook_log("session_map_read_failed", {"error": str(exc)[:200]})
+        hook_log("session.map_read_failed", {"error": str(exc)[:200]})
     return {}
 
 
@@ -199,7 +199,7 @@ def _create_map_record_if_absent(host_key: str, record: dict) -> dict:
     except FileExistsError:
         return _read_map_record(host_key) or record
     except Exception as exc:
-        hook_log("map_create_failed", {"error": str(exc)[:200]})
+        hook_log("session.map_create_failed", {"error": str(exc)[:200]})
         # Best-effort fallback: plain write, then read back whatever landed.
         _write_map_record(host_key, record)
         return _read_map_record(host_key) or record
@@ -387,7 +387,7 @@ def load_resolved(session_key: str = "") -> dict:
             if user_id:
                 resolved["user_id"] = user_id
     except Exception as exc:
-        hook_log("runtime_state_users_me_failed", {"error": str(exc)[:200]})
+        hook_log("state.users_me_failed", {"error": str(exc)[:200]})
 
     # Resolve active connection details. The connection is registered under the
     # per-launch conn_uuid handle, so query by that — not the session id (which
@@ -415,7 +415,7 @@ def load_resolved(session_key: str = "") -> dict:
                 status = str(agent.get("status") or "").strip().lower()
                 resolved["registered"] = status == "active"
     except Exception as exc:
-        hook_log("runtime_state_connection_lookup_failed", {"error": str(exc)[:200]})
+        hook_log("state.connection_lookup_failed", {"error": str(exc)[:200]})
 
     return resolved
 
@@ -430,7 +430,7 @@ def _load_json_file(path: Path) -> dict:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
-            hook_log("json_load_failed", {"path": str(path), "error": str(exc)[:200]})
+            hook_log("io.json_load_failed", {"path": str(path), "error": str(exc)[:200]})
     return {}
 
 
@@ -443,7 +443,7 @@ def _write_json_file(path: Path, data: dict) -> None:
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(tmp, path)
     except Exception as exc:
-        hook_log("json_write_failed", {"path": str(path), "error": str(exc)[:200]})
+        hook_log("io.json_write_failed", {"path": str(path), "error": str(exc)[:200]})
 
 
 def _bridge_cache_key(dataset: str, session_id: str) -> str:
@@ -518,7 +518,7 @@ async def resolve_user(user_id: str):
             if user:
                 return user
         except Exception as exc:
-            hook_log("resolve_user_failed", {"user_id": user_id, "error": str(exc)[:200]})
+            hook_log("agent.resolve_user_failed", {"user_id": user_id, "error": str(exc)[:200]})
     from cognee.modules.users.methods import get_default_user
 
     return await get_default_user()
@@ -575,7 +575,7 @@ def _reexec_into_venv() -> None:
         os.execv(str(vpy), [str(vpy), *sys.argv])
     except OSError as exc:
         # Better to run degraded under the host interpreter than to die.
-        hook_log("venv_reexec_failed", {"error": str(exc)[:200]})
+        hook_log("install.venv_reexec_failed", {"error": str(exc)[:200]})
 
 
 # Fired on import: every cognee-touching hook imports this module before any
@@ -604,7 +604,7 @@ def notify(msg: str) -> None:
             with _ACTIVITY_LOG.open("a", encoding="utf-8") as fh:
                 fh.write(f"{ts} {line}\n")
         except Exception as exc:
-            hook_log("activity_log_write_failed", {"error": str(exc)[:200]})
+            hook_log("state.activity_log_write_failed", {"error": str(exc)[:200]})
 
 
 @contextmanager
@@ -653,7 +653,9 @@ def bump_save_counter(session_id: str, kind: str) -> None:
             json.loads(_SAVE_COUNTER.read_text(encoding="utf-8")) if _SAVE_COUNTER.exists() else {}
         )
     except Exception as exc:
-        hook_log("save_counter_read_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]})
+        hook_log(
+            "state.save_counter_read_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]}
+        )
         data = {}
     sess = data.get(session_id) or {k: 0 for k in SAVE_KINDS}
     sess[kind] = int(sess.get(kind, 0)) + 1
@@ -662,7 +664,9 @@ def bump_save_counter(session_id: str, kind: str) -> None:
         _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         _SAVE_COUNTER.write_text(json.dumps(data), encoding="utf-8")
     except Exception as exc:
-        hook_log("save_counter_write_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]})
+        hook_log(
+            "state.save_counter_write_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]}
+        )
 
 
 def read_and_reset_save_counter(session_id: str) -> dict:
@@ -676,7 +680,8 @@ def read_and_reset_save_counter(session_id: str) -> dict:
         )
     except Exception as exc:
         hook_log(
-            "save_counter_reset_read_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]}
+            "state.save_counter_reset_read_failed",
+            {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]},
         )
         return zero
     sess = data.get(session_id) or zero
@@ -686,7 +691,8 @@ def read_and_reset_save_counter(session_id: str) -> dict:
         _SAVE_COUNTER.write_text(json.dumps(data), encoding="utf-8")
     except Exception as exc:
         hook_log(
-            "save_counter_reset_write_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]}
+            "state.save_counter_reset_write_failed",
+            {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]},
         )
     return {k: int(sess.get(k, 0)) for k in SAVE_KINDS}
 
@@ -774,7 +780,9 @@ def bump_turn_counter(session_id: str) -> tuple[int, bool]:
         _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         _COUNTER_FILE.write_text(json.dumps(data), encoding="utf-8")
     except Exception as exc:
-        hook_log("turn_counter_write_failed", {"path": str(_COUNTER_FILE), "error": str(exc)[:200]})
+        hook_log(
+            "state.turn_counter_write_failed", {"path": str(_COUNTER_FILE), "error": str(exc)[:200]}
+        )
 
     should_improve = threshold > 0 and count % threshold == 0
     return count, should_improve
@@ -786,7 +794,9 @@ def touch_activity() -> None:
         _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         _ACTIVITY_FILE.write_text(str(datetime.now(timezone.utc).timestamp()), encoding="utf-8")
     except Exception as exc:
-        hook_log("activity_touch_failed", {"path": str(_ACTIVITY_FILE), "error": str(exc)[:200]})
+        hook_log(
+            "state.activity_touch_failed", {"path": str(_ACTIVITY_FILE), "error": str(exc)[:200]}
+        )
 
 
 @contextmanager
@@ -802,7 +812,7 @@ def sync_lock(owner: str):
                 created_at = float(current.get("created_at", 0))
                 pid = int(current.get("pid", 0))
             except Exception as exc:
-                hook_log("sync_lock_read_failed", {"owner": owner, "error": str(exc)[:200]})
+                hook_log("sync.lock_read_failed", {"owner": owner, "error": str(exc)[:200]})
                 created_at = 0
                 pid = 0
             pid_alive = False
@@ -818,7 +828,7 @@ def sync_lock(owner: str):
                 try:
                     _SYNC_LOCK.unlink()
                 except Exception as exc:
-                    hook_log("sync_lock_unlink_failed", {"owner": owner, "error": str(exc)[:200]})
+                    hook_log("sync.lock_unlink_failed", {"owner": owner, "error": str(exc)[:200]})
         try:
             fd = os.open(str(_SYNC_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -826,14 +836,14 @@ def sync_lock(owner: str):
             acquired = True
             yield True
         except FileExistsError:
-            hook_log("sync_lock_busy", {"owner": owner})
+            hook_log("sync.lock_busy", {"owner": owner})
             yield False
     finally:
         if acquired:
             try:
                 _SYNC_LOCK.unlink()
             except Exception as exc:
-                hook_log("sync_lock_release_failed", {"owner": owner, "error": str(exc)[:200]})
+                hook_log("sync.lock_release_failed", {"owner": owner, "error": str(exc)[:200]})
 
 
 def _local_api_url_with_source() -> tuple[str, str]:
@@ -964,7 +974,7 @@ def mark_server_ready(service_url: str, version: str = "") -> None:
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, _SERVER_READY_MARKER)
     except Exception as exc:
-        hook_log("server_ready_mark_failed", {"error": str(exc)[:200]})
+        hook_log("server.ready_mark_failed", {"error": str(exc)[:200]})
 
 
 def clear_server_ready() -> None:
@@ -974,7 +984,7 @@ def clear_server_ready() -> None:
     except FileNotFoundError:
         return
     except Exception as exc:
-        hook_log("server_ready_clear_failed", {"error": str(exc)[:200]})
+        hook_log("server.ready_clear_failed", {"error": str(exc)[:200]})
 
 
 def server_ready_hint(service_url: str = "") -> bool:
@@ -1100,12 +1110,12 @@ def wait_for_cognify(
                 # Older server without the status route — can't confirm, don't loop.
                 return "unknown"
             hook_log(
-                "cognify_poll_transient",
+                "cognify.poll_transient",
                 {"dataset_id": dataset_id, "error": f"HTTP {exc.code}"},
             )
             result = None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            hook_log("cognify_poll_transient", {"dataset_id": dataset_id, "error": str(exc)[:120]})
+            hook_log("cognify.poll_transient", {"dataset_id": dataset_id, "error": str(exc)[:120]})
             result = None
 
         status = ""
@@ -1179,7 +1189,7 @@ def register_agent_via_http(
             return True, result
         return True, {}
     except Exception as exc:
-        hook_log("agent_register_failed", {"error": str(exc)[:200]})
+        hook_log("agent.register_failed", {"error": str(exc)[:200]})
         return False, {}
 
 
@@ -1198,7 +1208,7 @@ def unregister_agent_via_http(
             return True, count
         return True, 0
     except Exception as exc:
-        hook_log("agent_unregister_failed", {"error": str(exc)[:200]})
+        hook_log("agent.unregister_failed", {"error": str(exc)[:200]})
         return False, 0
 
 
@@ -1385,12 +1395,12 @@ def persist_session_cache_to_graph_via_http(
         return False
     api_key = _api_key()
     if not api_key:
-        hook_log("http_bridge_skipped_no_api_key", {"dataset": dataset, "session": session_id})
+        hook_log("bridge.skipped_no_api_key", {"dataset": dataset, "session": session_id})
         return False
 
     qa_doc, trace_doc = _format_cached_bridge_document(dataset, session_id)
     if not qa_doc and not trace_doc:
-        hook_log("http_bridge_skipped_empty_cache", {"dataset": dataset, "session": session_id})
+        hook_log("bridge.skipped_empty_cache", {"dataset": dataset, "session": session_id})
         return False
 
     # `timeout` is reinterpreted as the overall poll deadline (it used to be the
@@ -1420,7 +1430,7 @@ def persist_session_cache_to_graph_via_http(
             # poll_deadline is an OVERALL budget across all documents, not per-document,
             # so two documents can't compound to 2x the configured wait.
             if time.monotonic() - overall_start >= poll_deadline:
-                hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
+                hook_log("bridge.deadline_exceeded", {"dataset": dataset, "kind": kind})
                 break
             submitted = _post_remember_document(
                 base_url, api_key, dataset, document, node_set, submit_timeout
@@ -1429,7 +1439,7 @@ def persist_session_cache_to_graph_via_http(
                 # Skip this document (digest stays unmarked → retried later) but keep
                 # syncing the others; one bad/transient document must not abort the sync.
                 hook_log(
-                    "http_bridge_post_failed",
+                    "bridge.post_failed",
                     {"dataset": dataset, "kind": kind, "status": submitted.get("status")},
                 )
                 continue
@@ -1438,18 +1448,18 @@ def persist_session_cache_to_graph_via_http(
                 if submitted.get("parse_error"):
                     # 2xx but an unparseable body (e.g. a proxy/nginx error page): we
                     # can't trust the write landed, so leave the digest unmarked to retry.
-                    hook_log("http_bridge_parse_error", {"dataset": dataset, "kind": kind})
+                    hook_log("bridge.parse_error", {"dataset": dataset, "kind": kind})
                     continue
                 # Valid response with no handle to poll. Mark written so we don't
                 # resubmit and duplicate the cognify on every future sync.
                 state[state_key] = digest
                 wrote = True
-                hook_log("http_bridge_no_dataset_id", {"dataset": dataset, "kind": kind})
+                hook_log("bridge.no_dataset_id", {"dataset": dataset, "kind": kind})
                 continue
             remaining = poll_deadline - (time.monotonic() - overall_start)
             if remaining <= 0:
                 # The POST consumed the remaining budget — don't start a poll.
-                hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
+                hook_log("bridge.deadline_exceeded", {"dataset": dataset, "kind": kind})
                 break
             outcome = wait_for_cognify(
                 dataset_id,
@@ -1464,20 +1474,20 @@ def persist_session_cache_to_graph_via_http(
                 state[state_key] = digest
                 wrote = True
             hook_log(
-                "http_bridge_poll",
+                "bridge.poll",
                 {"dataset": dataset, "kind": kind, "outcome": outcome, "dataset_id": dataset_id},
             )
         if isinstance(bridge_cache, dict):
             bridge_cache["_state"] = state
             _write_json_file(bridge_path, bridge_cache)
         hook_log(
-            "http_bridge_done",
+            "bridge.done",
             {"dataset": dataset, "session": session_id, "wrote": wrote},
         )
         return wrote
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         hook_log(
-            "http_bridge_failed",
+            "bridge.failed",
             {"error": str(exc)[:200], "dataset": dataset, "session": session_id},
         )
         return False
