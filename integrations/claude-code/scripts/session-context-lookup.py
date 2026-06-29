@@ -137,7 +137,7 @@ async def _recent_trace_fallback(session_id: str, user_id: str, top_k: int) -> l
         raw_trace = await sm.get_agent_trace_session(user_id=user_id, session_id=session_id)
         entries = list(raw_trace or [])[-top_k:]
     except Exception as exc:
-        hook_log("trace_fallback_error", {"error": str(exc)[:200]})
+        hook_log("recall.trace_fallback_error", {"error": str(exc)[:200]})
         return []
 
     normalized: list[dict] = []
@@ -161,7 +161,7 @@ async def _run(prompt: str) -> dict | None:
     runtime = resolve_runtime_mode()
     cloud_mode = runtime["mode"] == "http"
     hook_log(
-        "mode_decision",
+        "session.mode_decision",
         {
             "hook": "session-context-lookup",
             "mode": runtime["mode"],
@@ -180,7 +180,7 @@ async def _run(prompt: str) -> dict | None:
         if server_health_ok(service_url, timeout=_float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)):
             mark_server_ready(service_url)
         else:
-            hook_log("recall_skipped_warming", {"base_url": service_url})
+            hook_log("recall.skipped_warming", {"base_url": service_url})
             return None
 
     if not cloud_mode:
@@ -188,7 +188,7 @@ async def _run(prompt: str) -> dict | None:
 
     session_id = _load_session_id()
     if not session_id:
-        hook_log("no_session_id", {"event": "context_lookup"})
+        hook_log("session.no_id", {"event": "context_lookup"})
         return None
 
     saves_last_turn = read_and_reset_save_counter(session_id)
@@ -227,11 +227,11 @@ async def _run(prompt: str) -> dict | None:
         except Exception:
             _bopen, _bretry = False, 0
         if _bopen:
-            hook_log("recall_breaker_open", {"retry_in": _bretry})
+            hook_log("recall.breaker_open", {"retry_in": _bretry})
             scope_specs = []
     for scope_list, qtype, context_profile in scope_specs:
         if time.monotonic() >= budget_deadline:
-            hook_log("recall_budget_exceeded", {"collected": len(results)})
+            hook_log("recall.budget_exceeded", {"collected": len(results)})
             break
         try:
             if cloud_mode:
@@ -263,7 +263,7 @@ async def _run(prompt: str) -> dict | None:
             if part:
                 results.extend(part)
         except Exception as exc:
-            hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
+            hook_log("recall.error", {"scope": scope_list, "error": str(exc)[:200]})
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
@@ -297,7 +297,7 @@ async def _run(prompt: str) -> dict | None:
         )
         if fallback_traces:
             by_source["trace"].extend(fallback_traces)
-            hook_log("trace_fallback_hit", {"count": len(fallback_traces)})
+            hook_log("recall.trace_fallback_hit", {"count": len(fallback_traces)})
 
     counts = {k: len(v) for k, v in by_source.items()}
     total = sum(counts.values())
@@ -323,7 +323,7 @@ async def _run(prompt: str) -> dict | None:
             encoding="utf-8",
         )
     except Exception as exc:
-        hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
+        hook_log("recall.last_write_failed", {"error": str(exc)[:200]})
 
     # Build a one-line visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
@@ -363,11 +363,11 @@ async def _run(prompt: str) -> dict | None:
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        hook_log("recall.hit", {"counts": counts, "saves_last_turn": saves_last_turn})
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
         full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+        hook_log("recall.empty", {"saves_last_turn": saves_last_turn})
         notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
@@ -393,7 +393,7 @@ async def _run(prompt: str) -> dict | None:
                 + "\n"
             )
     except Exception as exc:
-        hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
+        hook_log("recall.audit_write_failed", {"error": str(exc)[:200]})
 
     output = {
         "hookSpecificOutput": {
@@ -418,11 +418,9 @@ def main():
     session_key_candidate, session_key_source = resolve_session_key_from_payload(payload)
     if session_key_candidate:
         set_session_key(session_key_candidate)
-    hook_log(
-        "context_lookup_session_key", {"source": session_key_source, "value": session_key_candidate}
-    )
+    hook_log("recall.session_key", {"source": session_key_source, "value": session_key_candidate})
     if not get_session_key():
-        hook_log("context_lookup_missing_session_key")
+        hook_log("recall.missing_session_key")
         return
 
     prompt = payload.get("prompt", "")
@@ -434,7 +432,7 @@ def main():
         with quiet_hook_output("session-context-lookup"):
             output = asyncio.run(_run(prompt))
     except Exception as exc:
-        hook_log("context_lookup_exception", {"error": str(exc)[:200]})
+        hook_log("recall.exception", {"error": str(exc)[:200]})
     if output:
         print(json.dumps(output))
 

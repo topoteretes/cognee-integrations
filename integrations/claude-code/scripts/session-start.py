@@ -133,7 +133,7 @@ def _install_uv() -> str:
         if _UV_BIN.exists():
             return str(_UV_BIN)
     except Exception as exc:
-        hook_log("uv_install_failed", {"error": str(exc)[:300]})
+        hook_log("install.uv_failed", {"error": str(exc)[:300]})
     return ""
 
 
@@ -155,7 +155,7 @@ def _venv_cognee_version() -> str:
         if out.returncode == 0:
             return out.stdout.strip()
     except Exception as exc:
-        hook_log("cognee_version_probe_failed", {"error": str(exc)[:200]})
+        hook_log("install.version_probe_failed", {"error": str(exc)[:200]})
     return ""
 
 
@@ -170,7 +170,7 @@ def _write_venv_ready(version: str) -> None:
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, _VENV_READY_MARKER)
     except Exception as exc:
-        hook_log("venv_ready_write_failed", {"error": str(exc)[:200]})
+        hook_log("install.venv_ready_write_failed", {"error": str(exc)[:200]})
 
 
 def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
@@ -191,7 +191,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
             directory.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             hook_log(
-                "cognee_data_dir_mkdir_failed", {"dir": str(directory), "error": str(exc)[:200]}
+                "install.data_dir_mkdir_failed", {"dir": str(directory), "error": str(exc)[:200]}
             )
 
     owner = f"install:{os.getpid()}"
@@ -216,7 +216,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     try:
                         _VENV_INSTALL_LOCK.unlink()
                     except Exception as exc:
-                        hook_log("venv_install_lock_unlink_failed", {"error": str(exc)[:200]})
+                        hook_log("install.venv_lock_unlink_failed", {"error": str(exc)[:200]})
 
             try:
                 fd = os.open(str(_VENV_INSTALL_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -266,7 +266,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     timeout=timeout,
                 )
             except Exception as exc:
-                hook_log("cognee_install_failed", {"via": "uv", "error": str(exc)[:300]})
+                hook_log("install.cognee_failed", {"via": "uv", "error": str(exc)[:300]})
         elif not venv_present:
             # Last-resort fallback: stdlib venv + pip. Slower, and relies on the
             # system python3 being a cognee-compatible version (3.10-3.14).
@@ -293,21 +293,21 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     timeout=timeout,
                 )
             except Exception as exc:
-                hook_log("cognee_install_failed", {"via": "venv_pip", "error": str(exc)[:300]})
+                hook_log("install.cognee_failed", {"via": "venv_pip", "error": str(exc)[:300]})
 
         version = _venv_cognee_version()
         if not version:
-            hook_log("cognee_venv_unusable", {"venv_python": str(_VENV_PYTHON)})
+            hook_log("install.venv_unusable", {"venv_python": str(_VENV_PYTHON)})
             return False
         _write_venv_ready(version)
-        hook_log("cognee_install_ready", {"version": version})
+        hook_log("install.cognee_ready", {"version": version})
         return True
     finally:
         if acquired:
             try:
                 _VENV_INSTALL_LOCK.unlink()
             except Exception as exc:
-                hook_log("venv_install_lock_release_failed", {"error": str(exc)[:200]})
+                hook_log("install.venv_lock_release_failed", {"error": str(exc)[:200]})
 
 
 def _parse_host_port(url: str) -> tuple[str, int]:
@@ -402,16 +402,16 @@ def _ensure_local_server_running(
                 if stale:
                     try:
                         _SERVER_BOOT_LOCK.unlink()
-                        hook_log("server_bootstrap_lock_stale_reaped", {"owner": owner})
+                        hook_log("bootstrap.server_lock_stale_reaped", {"owner": owner})
                     except Exception as exc:
-                        hook_log("server_bootstrap_lock_unlink_failed", {"error": str(exc)[:200]})
+                        hook_log("bootstrap.server_lock_unlink_failed", {"error": str(exc)[:200]})
 
             try:
                 fd = os.open(str(_SERVER_BOOT_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
                 acquired = True
-                hook_log("server_bootstrap_lock_acquired", {"owner": owner})
+                hook_log("bootstrap.server_lock_acquired", {"owner": owner})
                 break
             except FileExistsError:
                 if _health_ok(health_url):
@@ -451,9 +451,9 @@ def _ensure_local_server_running(
         if acquired:
             try:
                 _SERVER_BOOT_LOCK.unlink()
-                hook_log("server_bootstrap_lock_released", {"owner": owner})
+                hook_log("bootstrap.server_lock_released", {"owner": owner})
             except Exception as exc:
-                hook_log("server_bootstrap_lock_release_failed", {"error": str(exc)[:200]})
+                hook_log("bootstrap.server_lock_release_failed", {"error": str(exc)[:200]})
 
 
 def _pid_alive(pid: int) -> bool:
@@ -592,7 +592,7 @@ async def _ensure_agent_credentials_and_register(
         raise RuntimeError(f"Failed to register session '{session_id}' on {service_url}.")
 
     hook_log(
-        "agent_register_result",
+        "agent.register_result",
         {
             "agent_session_name": agent_session_name,
             "registered": registered,
@@ -631,14 +631,14 @@ def _spawn_idle_watcher(
             pid = int(_WATCHER_PID.read_text(encoding="utf-8").strip())
             os.kill(pid, signal.SIGTERM)
         except Exception as exc:
-            hook_log("idle_watcher_kill_failed", {"error": str(exc)[:200]})
+            hook_log("watcher.idle_kill_failed", {"error": str(exc)[:200]})
 
     # Clear any stale stop sentinel from a previous run.
     try:
         if _WATCHER_STOP.exists():
             _WATCHER_STOP.unlink()
     except Exception as exc:
-        hook_log("watcher_stop_unlink_failed", {"error": str(exc)[:200]})
+        hook_log("watcher.stop_unlink_failed", {"error": str(exc)[:200]})
 
     # Only the non-secret surface of config needs to travel — the
     # watcher re-runs ``ensure_cognee_ready`` on its own.
@@ -659,7 +659,7 @@ def _spawn_idle_watcher(
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
-        hook_log("watcher_log_open_failed", {"error": str(exc)[:200]})
+        hook_log("watcher.log_open_failed", {"error": str(exc)[:200]})
         log_fh = subprocess.DEVNULL
 
     try:
@@ -690,7 +690,7 @@ def _find_claude_parent_pid() -> int:
             stderr=subprocess.DEVNULL,
         )
     except Exception as exc:
-        hook_log("find_claude_parent_failed", {"error": str(exc)[:200]})
+        hook_log("session.find_parent_failed", {"error": str(exc)[:200]})
         return fallback
 
     table: dict[int, tuple[int, str]] = {}
@@ -757,7 +757,7 @@ def _spawn_exit_watcher(
                 except Exception:
                     continue
     except Exception as exc:
-        hook_log("exit_watcher_prune_failed", {"error": str(exc)[:200]})
+        hook_log("watcher.exit_prune_failed", {"error": str(exc)[:200]})
 
     parent_pid = _find_claude_parent_pid()
     watcher_pidfile = _EXIT_WATCHERS_DIR / f"{parent_pid}.pid"
@@ -766,7 +766,7 @@ def _spawn_exit_watcher(
             existing = int(watcher_pidfile.read_text(encoding="utf-8").strip())
             if _pid_alive(existing):
                 hook_log(
-                    "exit_watcher_already_running",
+                    "watcher.exit_already_running",
                     {"parent_pid": parent_pid, "pidfile": str(watcher_pidfile)},
                 )
                 return
@@ -789,7 +789,7 @@ def _spawn_exit_watcher(
         _EXIT_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
-        hook_log("exit_watcher_log_open_failed", {"error": str(exc)[:200]})
+        hook_log("watcher.exit_log_open_failed", {"error": str(exc)[:200]})
         log_fh = subprocess.DEVNULL
 
     try:
@@ -806,7 +806,7 @@ def _spawn_exit_watcher(
             close_fds=True,
         )
         hook_log(
-            "exit_watcher_started",
+            "watcher.exit_started",
             {
                 "parent_pid": parent_pid,
                 "session_id": session_id,
@@ -815,7 +815,7 @@ def _spawn_exit_watcher(
             },
         )
     except Exception as e:
-        hook_log("exit_watcher_launch_failed", {"error": str(e)[:300]})
+        hook_log("watcher.exit_launch_failed", {"error": str(e)[:300]})
 
 
 def _purge_legacy_resolved_files() -> None:
@@ -825,12 +825,12 @@ def _purge_legacy_resolved_files() -> None:
         if legacy.exists():
             legacy.unlink()
     except Exception as exc:
-        hook_log("legacy_resolved_unlink_failed", {"error": str(exc)[:200]})
+        hook_log("session.legacy_resolved_unlink_failed", {"error": str(exc)[:200]})
     try:
         if scoped_dir.exists():
             shutil.rmtree(scoped_dir)
     except Exception as exc:
-        hook_log("legacy_resolved_dir_remove_failed", {"error": str(exc)[:200]})
+        hook_log("session.legacy_resolved_dir_remove_failed", {"error": str(exc)[:200]})
 
 
 @contextmanager
@@ -857,7 +857,7 @@ def _bootstrap_singleflight():
                 try:
                     _BOOTSTRAP_LOCK.unlink()
                 except Exception as exc:
-                    hook_log("bootstrap_lock_unlink_failed", {"error": str(exc)[:200]})
+                    hook_log("bootstrap.lock_unlink_failed", {"error": str(exc)[:200]})
         try:
             fd = os.open(str(_BOOTSTRAP_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -871,7 +871,7 @@ def _bootstrap_singleflight():
             try:
                 _BOOTSTRAP_LOCK.unlink()
             except Exception as exc:
-                hook_log("bootstrap_lock_release_failed", {"error": str(exc)[:200]})
+                hook_log("bootstrap.lock_release_failed", {"error": str(exc)[:200]})
 
 
 def _spawn_bootstrap(
@@ -896,7 +896,7 @@ def _spawn_bootstrap(
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
-        hook_log("bootstrap_log_open_failed", {"error": str(exc)[:200]})
+        hook_log("bootstrap.log_open_failed", {"error": str(exc)[:200]})
         log_fh = subprocess.DEVNULL
     try:
         env = os.environ.copy()
@@ -911,9 +911,9 @@ def _spawn_bootstrap(
             start_new_session=True,
             close_fds=True,
         )
-        hook_log("bootstrap_spawned", {"session_id": session_id})
+        hook_log("bootstrap.spawned", {"session_id": session_id})
     except Exception as exc:
-        hook_log("bootstrap_spawn_failed", {"error": str(exc)[:300]})
+        hook_log("bootstrap.spawn_failed", {"error": str(exc)[:300]})
 
 
 async def _run_heavy(
@@ -938,7 +938,7 @@ async def _run_heavy(
         try:
             _ensure_local_server_running(config, health_timeout=boot_timeout)
         except Exception as exc:
-            hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
+            hook_log("bootstrap.server_warning", {"error": str(exc)[:200]})
 
     # On a cold start this worker began under the host python3, so the
     # _plugin_common import-time guard could not re-exec us. The boot above
@@ -977,7 +977,7 @@ async def _run_heavy(
                 user_id = agent_id
         except Exception as exc:
             message = str(exc)[:300]
-            hook_log("agent_lifecycle_error", {"error": message})
+            hook_log("agent.lifecycle_error", {"error": message})
             print(f"cognee-plugin: agent lifecycle failed ({message})", file=sys.stderr)
             return "", "", False
     else:
@@ -1056,11 +1056,11 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                         config, health_timeout=_SERVER_BOOT_DEADLINE_SECONDS
                     )
                 except Exception as exc:
-                    hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
+                    hook_log("bootstrap.server_warning", {"error": str(exc)[:200]})
             else:
-                hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
+                hook_log("bootstrap.waiting_for_peer", {"session_id": session_id})
         if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
-            hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
+            hook_log("bootstrap.server_unhealthy", {"session_id": session_id})
             return
 
     # 2. Register this agent/session. Runs for every agent — NOT gated by the
@@ -1077,9 +1077,9 @@ async def _run_bootstrap(bootstrap: dict) -> None:
             managed_endpoint=False,
             boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
         )
-        hook_log("bootstrap_complete", {"session_id": session_id})
+        hook_log("bootstrap.complete", {"session_id": session_id})
     except Exception as exc:
-        hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+        hook_log("bootstrap.failed", {"error": str(exc)[:300]})
 
 
 def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: bool) -> dict:
@@ -1124,7 +1124,7 @@ def _ensure_statusline_configured() -> None:
 
     if not statusline_sh.exists():
         hook_log(
-            "statusline_setup_skipped", {"reason": "script_not_found", "path": str(statusline_sh)}
+            "statusline.setup_skipped", {"reason": "script_not_found", "path": str(statusline_sh)}
         )
         return
 
@@ -1155,9 +1155,9 @@ def _ensure_statusline_configured() -> None:
             except OSError:
                 pass
             raise
-        hook_log("statusline_configured", {"path": str(statusline_sh)})
+        hook_log("statusline.configured", {"path": str(statusline_sh)})
     except Exception as exc:
-        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
+        hook_log("statusline.setup_failed", {"error": str(exc)[:200]})
 
 
 _MEMORY_PREFERENCE_STEER = (
@@ -1222,7 +1222,7 @@ async def _start(payload: dict | None = None) -> dict:
     session_candidate, session_source = resolve_session_key_from_payload(payload)
     session_key = set_session_key(session_candidate)
     if not session_key:
-        hook_log("missing_payload_session_id", {"cwd": cwd, "payload": payload})
+        hook_log("session.missing_payload_id", {"cwd": cwd, "payload": payload})
         print(
             "cognee-plugin: missing payload session_id; refusing to register",
             file=sys.stderr,
@@ -1242,7 +1242,7 @@ async def _start(payload: dict | None = None) -> dict:
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
     hook_log(
-        "session_resolved",
+        "session.resolved",
         {
             "source": session_source,
             "session_key": session_key,
@@ -1262,7 +1262,7 @@ async def _start(payload: dict | None = None) -> dict:
     server_live = _health_ok(_health_url(target_url))
     will_boot = (not server_live) and _is_local_url(target_url)
     hook_log(
-        "endpoint_mode_selected",
+        "session.endpoint_mode_selected",
         {"base_url": target_url, "server_live": server_live, "will_boot": will_boot},
     )
     if will_boot and _LAZY_BOOTSTRAP:
@@ -1342,7 +1342,7 @@ def main():
         try:
             asyncio.run(_run_bootstrap(bootstrap))
         except Exception as exc:
-            hook_log("bootstrap_main_exception", {"error": str(exc)[:200]})
+            hook_log("bootstrap.main_exception", {"error": str(exc)[:200]})
         return
 
     payload_raw = sys.stdin.read()
@@ -1356,7 +1356,7 @@ def main():
         with quiet_hook_output("session-start"):
             output = asyncio.run(_start(payload))
     except Exception as exc:
-        hook_log("session_start_exception", {"error": str(exc)[:200]})
+        hook_log("session.start_exception", {"error": str(exc)[:200]})
     output = _apply_memory_preference(output)
     print(json.dumps(output or {}))
 

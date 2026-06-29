@@ -68,13 +68,13 @@ def _stop_idle_watcher() -> None:
         _WATCHER_STOP.parent.mkdir(parents=True, exist_ok=True)
         _WATCHER_STOP.write_text("stop", encoding="utf-8")
     except Exception as exc:
-        hook_log("watcher_stop_write_failed", {"error": str(exc)[:200]})
+        hook_log("watcher.stop_write_failed", {"error": str(exc)[:200]})
     if _WATCHER_PID.exists():
         try:
             pid = int(_WATCHER_PID.read_text(encoding="utf-8").strip())
             os.kill(pid, signal.SIGTERM)
         except Exception as exc:
-            hook_log("watcher_sigterm_failed", {"error": str(exc)[:200]})
+            hook_log("watcher.sigterm_failed", {"error": str(exc)[:200]})
 
 
 def _spawn_detached_sync() -> bool:
@@ -94,7 +94,7 @@ def _spawn_detached_sync() -> bool:
         )
         return True
     except Exception as exc:
-        hook_log("sync_detach_failed", {"error": str(exc)[:300]})
+        hook_log("sync.detach_failed", {"error": str(exc)[:300]})
         return False
 
 
@@ -116,7 +116,7 @@ def _claim_final_sync_once() -> bool:
     token, source = _final_sync_identity()
     if not token:
         # No stable identity available; do not risk skipping final sync.
-        hook_log("final_sync_once_no_token", {"source": source})
+        hook_log("sync.once_no_token", {"source": source})
         return True
 
     digest = hashlib.sha1(token.encode("utf-8")).hexdigest()
@@ -126,14 +126,14 @@ def _claim_final_sync_once() -> bool:
         fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(token)
-        hook_log("final_sync_once_claimed", {"source": source, "marker": str(marker)})
+        hook_log("sync.once_claimed", {"source": source, "marker": str(marker)})
         return True
     except FileExistsError:
-        hook_log("final_sync_once_already_claimed", {"source": source, "marker": str(marker)})
+        hook_log("sync.once_already_claimed", {"source": source, "marker": str(marker)})
         return False
     except Exception as exc:
         # On marker failure, prefer proceeding to avoid data loss.
-        hook_log("final_sync_once_claim_failed", {"source": source, "error": str(exc)[:200]})
+        hook_log("sync.once_claim_failed", {"source": source, "error": str(exc)[:200]})
         return True
 
 
@@ -156,11 +156,11 @@ def _prune_final_sync_markers() -> None:
                 continue
         if removed:
             hook_log(
-                "final_sync_once_pruned",
+                "sync.once_pruned",
                 {"removed": removed, "ttl_seconds": _FINAL_SYNC_ONCE_TTL_SECONDS},
             )
     except Exception as exc:
-        hook_log("final_sync_once_prune_failed", {"error": str(exc)[:200]})
+        hook_log("sync.once_prune_failed", {"error": str(exc)[:200]})
 
 
 def _is_session_end_payload(payload_raw: str) -> bool:
@@ -206,7 +206,7 @@ def _load_resolved() -> tuple:
     env_service_url = env_service_url or resolved_service_url
 
     if not session_key:
-        hook_log("sync_missing_session_key")
+        hook_log("sync.missing_session_key")
     data = load_resolved(session_key=session_key)
     if data:
         service_url = env_service_url or str(data.get("base_url", "") or "").strip()
@@ -246,7 +246,7 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
     )
     target_sessions = [session_id] if session_id else []
     hook_log(
-        "sync_start",
+        "sync.start",
         {
             "session": session_id,
             "targets": target_sessions,
@@ -259,26 +259,26 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
     try:
         if stop_watcher:
             _stop_idle_watcher()
-            hook_log("sync_stopped_watcher", {"session": session_id, "dataset": dataset})
+            hook_log("sync.stopped_watcher", {"session": session_id, "dataset": dataset})
 
         config = load_config()
         api_mode = http_api_ready()
         lock = nullcontext(True) if api_mode else sync_lock("sync-session-to-graph")
         with lock as acquired:
             if not acquired:
-                hook_log("sync_skipped_lock_busy", {"session": session_id, "dataset": dataset})
+                hook_log("sync.skipped_lock_busy", {"session": session_id, "dataset": dataset})
                 print("cognee-sync: skipped, another sync is running", file=sys.stderr)
                 return
 
             if not target_sessions:
-                hook_log("sync_no_target_sessions", {"dataset": dataset})
+                hook_log("sync.no_target_sessions", {"dataset": dataset})
                 return
 
             if api_mode:
                 for sid in target_sessions:
                     wrote = persist_session_cache_to_graph_via_http(dataset, sid)
                     hook_log(
-                        "sync_bridge_done",
+                        "sync.bridge_done",
                         {
                             "session": sid,
                             "dataset": dataset,
@@ -300,7 +300,7 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
                 wrote = await persist_session_cache_to_graph(dataset, sid, user)
                 graph_result = await sync_graph_context_to_session(dataset, sid, user)
                 hook_log(
-                    "sync_bridge_done",
+                    "sync.bridge_done",
                     {
                         "session": sid,
                         "dataset": dataset,
@@ -318,20 +318,20 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
         if unregister_on_finish:
             if not (was_registered or has_api_key):
                 hook_log(
-                    "agent_unregister_skipped_no_auth",
+                    "agent.unregister_skipped_no_auth",
                     {"session": session_id, "dataset": dataset},
                 )
             else:
                 unregister_name = str(agent_session_name or session_key or "").strip()
                 if not unregister_name:
                     hook_log(
-                        "agent_unregister_skipped_no_session_name",
+                        "agent.unregister_skipped_no_session_name",
                         {"session": session_id, "dataset": dataset},
                     )
                     return
                 ok, active = unregister_agent_via_http(agent_session_name=unregister_name)
                 hook_log(
-                    "agent_unregister_result",
+                    "agent.unregister_result",
                     {
                         "session": session_id,
                         "dataset": dataset,
@@ -355,10 +355,10 @@ def main():
         session_key_candidate, session_key_source = resolve_session_key_from_payload(payload)
         if session_key_candidate:
             set_session_key(session_key_candidate)
-        hook_log("sync_session_key", {"source": session_key_source, "value": session_key_candidate})
+        hook_log("sync.session_key", {"source": session_key_source, "value": session_key_candidate})
     is_session_end = forced_session_end or _is_session_end_payload(payload_raw)
     hook_log(
-        "sync_payload",
+        "sync.payload",
         {
             "is_session_end": is_session_end,
             "detached_final": detached_final,
@@ -374,10 +374,10 @@ def main():
         except ValueError:
             delay = 0.0
         if delay > 0:
-            hook_log("sync_start_delayed", {"seconds": delay})
+            hook_log("sync.start_delayed", {"seconds": delay})
             time.sleep(delay)
         if not _claim_final_sync_once():
-            hook_log("sync_detached_skipped_duplicate")
+            hook_log("sync.detached_skipped_duplicate")
             return
 
     unregister_on_finish = detached_final and os.environ.get(
@@ -390,7 +390,7 @@ def main():
     if is_session_end:
         _stop_idle_watcher()
         spawned = _spawn_detached_sync()
-        hook_log("sync_deferred_to_shutdown_worker", {"spawned": spawned})
+        hook_log("sync.deferred_to_shutdown_worker", {"spawned": spawned})
         return
 
     attempts = 1
@@ -413,12 +413,12 @@ def main():
         except Exception as exc:
             # Non-fatal: session sync failure should not crash Codex.
             hook_log(
-                "sync_failed",
+                "sync.failed",
                 {"attempt": attempt, "attempts": attempts, "error": str(exc)[:300]},
             )
             print(f"cognee-sync: failed ({exc})", file=sys.stderr)
             if attempt < attempts:
-                hook_log("sync_retry_scheduled", {"attempt": attempt + 1, "delay": retry_delay})
+                hook_log("sync.retry_scheduled", {"attempt": attempt + 1, "delay": retry_delay})
                 time.sleep(retry_delay)
 
 
