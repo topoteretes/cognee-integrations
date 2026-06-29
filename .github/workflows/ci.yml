@@ -4,15 +4,15 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'integrations/**'
-      - '.github/workflows/ci.yml'
-      - '.github/core-team.txt'
+      - "integrations/**"
+      - ".github/workflows/ci.yml"
+      - ".github/core-team.txt"
   push:
     branches: [main]
     paths:
-      - 'integrations/**'
-      - '.github/workflows/ci.yml'
-      - '.github/core-team.txt'
+      - "integrations/**"
+      - ".github/workflows/ci.yml"
+      - ".github/core-team.txt"
 
 jobs:
   detect-changes:
@@ -133,7 +133,7 @@ jobs:
   # core-team PRs only, advisory (continue-on-error — never blocks a merge).
   claude-review:
     name: Claude Code Review
-    needs: [ detect-changes, test-python, test-typescript ]
+    needs: [detect-changes, test-python, test-typescript]
     if: >-
       ${{ !cancelled()
           && github.event_name == 'pull_request'
@@ -219,3 +219,37 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           REPO: ${{ github.repository }}
         run: python3 .ci-private/scripts/pr_review_slack_notify.py
+
+  check-versions:
+    name: Check version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check plugin.json matches marketplace.json
+        run: |
+          python3 - <<'EOF'
+          import json, sys, glob
+
+          with open(".claude-plugin/marketplace.json") as f:
+              marketplace = json.load(f)
+
+          market_versions = {p["name"]: p["version"] for p in marketplace["plugins"]}
+
+          errors = []
+          for path in glob.glob("integrations/*/.claude-plugin/plugin.json"):
+              with open(path) as f:
+                  plugin = json.load(f)
+              name = plugin["name"]
+              if name in market_versions and plugin["version"] != market_versions[name]:
+                  errors.append(f"{path}: plugin.json={plugin['version']} vs marketplace={market_versions[name]}")
+
+          if errors:
+              print("Version mismatch(es) found:")
+              for e in errors:
+                  print(" ", e)
+              sys.exit(1)
+
+          print("All versions consistent ✓")
+          EOF
