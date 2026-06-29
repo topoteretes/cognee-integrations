@@ -524,6 +524,15 @@ async def resolve_user(user_id: str):
     return await get_default_user()
 
 
+def _elapsed_ms(start: float) -> int:
+    """Whole milliseconds elapsed since a ``time.monotonic()`` reference.
+
+    Floored at 0 so a non-monotonic clock reading can never yield a negative
+    duration in a ``hook_log`` ``elapsed_ms`` field.
+    """
+    return max(0, int((time.monotonic() - start) * 1000))
+
+
 def hook_log(event: str, detail: Optional[dict] = None) -> None:
     """Append one structured line to ~/.cognee-plugin/hook.log.
 
@@ -1422,6 +1431,7 @@ def persist_session_cache_to_graph_via_http(
             if time.monotonic() - overall_start >= poll_deadline:
                 hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
                 break
+            doc_started = time.monotonic()
             submitted = _post_remember_document(
                 base_url, api_key, dataset, document, node_set, submit_timeout
             )
@@ -1465,7 +1475,13 @@ def persist_session_cache_to_graph_via_http(
                 wrote = True
             hook_log(
                 "http_bridge_poll",
-                {"dataset": dataset, "kind": kind, "outcome": outcome, "dataset_id": dataset_id},
+                {
+                    "dataset": dataset,
+                    "kind": kind,
+                    "outcome": outcome,
+                    "dataset_id": dataset_id,
+                    "elapsed_ms": _elapsed_ms(doc_started),
+                },
             )
         if isinstance(bridge_cache, dict):
             bridge_cache["_state"] = state

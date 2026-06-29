@@ -87,6 +87,7 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
     sys.path.insert(0, os.path.dirname(__file__))
     try:
         from _plugin_common import (  # type: ignore
+            _elapsed_ms,
             http_api_ready,
             load_resolved,
             persist_session_cache_to_graph_via_http,
@@ -120,6 +121,7 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
             )
 
             if api_mode:
+                started = time.monotonic()
                 wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
                 _log(
                     "session_bridge_done",
@@ -127,6 +129,7 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                     dataset=dataset,
                     via="http_remember",
                     wrote=wrote,
+                    elapsed_ms=_elapsed_ms(started),
                 )
                 return True
 
