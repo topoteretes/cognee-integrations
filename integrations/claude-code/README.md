@@ -9,12 +9,27 @@ The integration:
 
 ## Install
 
-Install from the Claude Code marketplace. You can do this interactively by typing slash commands directly in the Claude Code chat:
+Add the marketplace once, then install the plugin — two slash commands typed directly in the Claude Code chat:
 
 ```
 /plugin marketplace add topoteretes/cognee-integrations
 /plugin install cognee-memory@cognee
 ```
+
+The same flow is available non-interactively from your shell:
+
+```bash
+claude plugin marketplace add topoteretes/cognee-integrations
+claude plugin install cognee-memory@cognee
+```
+
+To verify the install works end-to-end against a clean checkout — in an isolated config dir that never touches your real `~/.claude` — run the smoke script:
+
+```bash
+integrations/claude-code/scripts/smoke-install.sh
+```
+
+It validates the manifests, adds the marketplace, installs the plugin, and asserts it is enabled. Pass `--manifest-only` to check the manifests without the `claude` CLI. It exits `0` on success.
 
 Then set environment variables for your runtime mode.
 
@@ -229,23 +244,31 @@ Shared state (used by both Claude Code and Codex plugins):
 
 ## Update or remove
 
-Reinstall the plugin to pick up marketplace updates (run inside Claude Code chat):
+Update to the latest published version with a single command (run inside Claude Code chat, then restart to apply):
+
+```
+/plugin update cognee-memory@cognee
+```
+
+If the new version isn't picked up, refresh the marketplace source first, then update:
+
+```
+/plugin marketplace update cognee
+/plugin update cognee-memory@cognee
+```
+
+Both work non-interactively from your shell too:
+
+```bash
+claude plugin marketplace update cognee
+claude plugin update cognee-memory@cognee
+```
+
+To remove the plugin:
 
 ```
 /plugin uninstall cognee-memory@cognee
-/plugin install cognee-memory@cognee
 ```
-
-To also refresh the marketplace source:
-
-```
-/plugin uninstall cognee-memory@cognee
-/plugin marketplace remove topoteretes/cognee-integrations
-/plugin marketplace add topoteretes/cognee-integrations
-/plugin install cognee-memory@cognee
-```
-
-There is no automatic update mechanism — reinstall is the only way to pull in new plugin versions.
 
 ## Troubleshooting
 
