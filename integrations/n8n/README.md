@@ -169,7 +169,9 @@ End-to-end example workflow:
    - Resource: Delete → Operation: Delete Dataset
    - Dataset ID: UUID of the dataset to remove
 
-Troubleshooting:
+## Troubleshooting
+
+For a detailed walkthrough of common issues (cold-starts, dimension mismatches, environment issues, or empty recalls), please check the [Troubleshooting Guide](./TROUBLESHOOTING.md).
 
 - 401/403 errors: Check the API key and that `X-Api-Key` is accepted by your Cognee instance.
 - Connection errors: Verify Base URL and network access from your n8n host.

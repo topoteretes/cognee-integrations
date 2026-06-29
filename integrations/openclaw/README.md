@@ -322,3 +322,7 @@ npm run dev
 ```bash
 npm test
 ```
+
+## Troubleshooting
+
+For a detailed walkthrough of common issues (cold-starts, dimension mismatches, environment issues, or empty recalls), please check the [Troubleshooting Guide](./TROUBLESHOOTING.md).

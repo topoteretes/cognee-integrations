@@ -215,6 +215,8 @@ Config precedence:
 
 ## Troubleshooting
 
+For a detailed walkthrough of common issues (cold-starts, dimension mismatches, environment issues, or empty recalls), please check the [Troubleshooting Guide](./TROUBLESHOOTING.md).
+
 **Recall returns empty but data was ingested**
 - Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `config.json` / `agent_sessions`).
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
