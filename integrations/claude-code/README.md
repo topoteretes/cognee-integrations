@@ -16,6 +16,14 @@ Install from the Claude Code marketplace. You can do this interactively by typin
 /plugin install cognee-memory@cognee
 ```
 
+The first command registers this repo as a plugin marketplace; the second installs the
+`cognee-memory` plugin from it. To verify a fresh checkout still wires these commands up
+correctly (marketplace name, plugin name, and source path all resolve), run:
+
+```bash
+bash integrations/claude-code/scripts/smoke-install.sh
+```
+
 Then set environment variables for your runtime mode.
 
 **Cognee Cloud or a remote server** — set both:
@@ -246,6 +254,13 @@ To also refresh the marketplace source:
 ```
 
 There is no automatic update mechanism — reinstall is the only way to pull in new plugin versions.
+
+After reinstalling, you can re-run the smoke check to confirm the install/update commands
+still match the current marketplace manifest:
+
+```bash
+bash integrations/claude-code/scripts/smoke-install.sh
+```
 
 ## Troubleshooting
 
