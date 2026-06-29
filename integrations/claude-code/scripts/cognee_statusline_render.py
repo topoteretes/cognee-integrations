@@ -6,7 +6,10 @@ pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
 only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
 ``_plugin_common`` import.
 
-Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+Output:
+    cognee: <dataset-name> · local · v0.3.0
+or
+    cognee: <dataset-name> · cloud · v0.3.0
 """
 
 import json
@@ -20,6 +23,11 @@ _SHARED_ROOT = Path.home() / ".cognee-plugin"
 _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
+
+_PLUGIN_MANIFEST_PATH = (
+    Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
+)
+
 _DEFAULT_DATASET = "agent_sessions"
 
 
@@ -28,6 +36,7 @@ def _active_dataset() -> str:
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
+
     # 2. config file
     try:
         data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
@@ -37,6 +46,7 @@ def _active_dataset() -> str:
                 return v
     except Exception:
         pass
+
     # 3. default
     return _DEFAULT_DATASET
 
@@ -47,6 +57,7 @@ _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
 def _active_mode() -> str:
     # 1. env var
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
+
     # 2. config file
     if not url:
         try:
@@ -55,9 +66,24 @@ def _active_mode() -> str:
                 url = str(data.get("base_url") or "").strip()
         except Exception:
             pass
+
     if not url:
         return "local"
+
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
+
+
+def _plugin_version() -> str:
+    try:
+        data = json.loads(_PLUGIN_MANIFEST_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            version = str(data.get("version") or "").strip()
+            if version:
+                return version
+    except Exception:
+        pass
+
+    return ""
 
 
 def _health_prefix() -> str:
@@ -68,8 +94,10 @@ def _health_prefix() -> str:
                 return "✕ "
     except Exception:
         pass
+
     if _SERVER_READY_PATH.exists():
         return "● "
+
     return ""
 
 
@@ -78,7 +106,18 @@ def main() -> None:
         json.load(sys.stdin)  # consume stdin as required by Claude Code
     except Exception:
         pass
-    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
+
+    status = (
+        f"{_health_prefix()}cognee: "
+        f"{_active_dataset()} · {_active_mode()}"
+    )
+
+    version = _plugin_version()
+
+    if version:
+        status += f" · v{version}"
+
+    sys.stdout.write(status)
 
 
 if __name__ == "__main__":
