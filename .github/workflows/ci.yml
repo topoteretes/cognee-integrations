@@ -67,6 +67,9 @@ jobs:
 
           echo "Changed dirs: $CHANGED_DIRS"
 
+      - name: Check manifest version consistency
+        run: python3 .github/scripts/check_inventory_versions.py
+
   test-python:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.python != '[]' }}
