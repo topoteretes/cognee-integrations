@@ -157,6 +157,7 @@ async def _recent_trace_fallback(session_id: str, user_id: str, top_k: int) -> l
 
 
 async def _run(prompt: str) -> dict | None:
+    lookup_start = time.monotonic()
     config = load_config()
     runtime = resolve_runtime_mode()
     cloud_mode = runtime["mode"] == "http"
@@ -363,11 +364,24 @@ async def _run(prompt: str) -> dict | None:
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_hit",
+            {
+                "counts": counts,
+                "saves_last_turn": saves_last_turn,
+                "elapsed_ms": round((time.monotonic() - lookup_start) * 1000, 1),
+            },
+        )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
         full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_empty",
+            {
+                "saves_last_turn": saves_last_turn,
+                "elapsed_ms": round((time.monotonic() - lookup_start) * 1000, 1),
+            },
+        )
         notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
