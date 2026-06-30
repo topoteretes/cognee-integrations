@@ -140,6 +140,9 @@ hermes cognee install
 
 ## Development
 
+For common setup and runtime failures shared with the other Cognee agent integrations,
+see [`../TROUBLESHOOTING.md`](../TROUBLESHOOTING.md).
+
 ```bash
 cd integrations/hermes-agent
 uv sync --dev
