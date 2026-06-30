@@ -12,7 +12,7 @@
  * PID disappears, it starts the normal detached graph sync worker and exits.
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "bun";
 
@@ -102,9 +102,9 @@ export function spawnDetachedSync(params: {
     const proc = spawn({
       cmd: ["bun", "run", modulePath, "--detached-final"],
       cwd: process.cwd(),
-      stdin: "null",
-      stdout: "null",
-      stderr: "null",
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
       env,
       // start_new_session equivalent — detached so it survives the watcher.
       detached: true,
@@ -278,11 +278,12 @@ export function launchExitWatcher(bootstrap: ExitWatcherBootstrap): number {
     }
 
     const modulePath = new URL(import.meta.url).pathname;
+    const logFd = openSync(logPath(), "a");
     const proc = spawn({
       cmd: ["bun", "run", modulePath, JSON.stringify(fullBootstrap)],
-      stdin: "null",
-      stdout: logPath(),
-      stderr: logPath(),
+      stdin: "ignore",
+      stdout: logFd,
+      stderr: logFd,
       env,
       detached: true,
     });

@@ -12,7 +12,7 @@
  * bridged since that point, persists the session cache to the graph.
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "bun";
 
@@ -296,11 +296,12 @@ export function launchIdleWatcher(config: IdleWatcherConfig): number {
     }
 
     const modulePath = new URL(import.meta.url).pathname;
+    const logFd = openSync(logPath(), "a");
     const proc = spawn({
       cmd: ["bun", "run", modulePath, JSON.stringify(config)],
-      stdin: "null",
-      stdout: logPath(),
-      stderr: logPath(),
+      stdin: "ignore",
+      stdout: logFd,
+      stderr: logFd,
       env,
       detached: true,
     });

@@ -62,9 +62,12 @@ export default async function userPromptSubmit(
   try {
     const context = await searchContext(prompt, sessionId, cfg.dataset);
     if (context) {
+      // The Message contract only allows user/assistant roles with
+      // ContentBlock[] content, so inject recalled memory as a labeled
+      // user-role text block rather than a (disallowed) system message.
       const contextMessage: Message = {
-        role: "system",
-        content: context,
+        role: "user",
+        content: [{ type: "text", text: context }],
       };
       ctx.latestMessages.push(contextMessage);
     }

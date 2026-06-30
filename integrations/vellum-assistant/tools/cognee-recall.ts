@@ -7,7 +7,7 @@
  * (no subprocess, no shell).
  */
 
-import type { ToolDefinition } from "@vellumai/plugin-api";
+import { RiskLevel, type ToolDefinition, type ToolExecutionResult } from "@vellumai/plugin-api";
 
 import {
   loadConfig,
@@ -49,15 +49,15 @@ export const cogneeRecall: ToolDefinition = {
     },
     required: ["query"],
   },
-  defaultRiskLevel: "low",
+  defaultRiskLevel: RiskLevel.Low,
 
   async execute(
     input: Record<string, unknown>,
-  ): Promise<{ content: Array<{ type: string; text: string }> }> {
-    const params = input as RecallParams;
+  ): Promise<ToolExecutionResult> {
+    const params = input as unknown as RecallParams;
     const query = params.query;
     if (!query) {
-      return { content: [{ type: "text", text: "Error: no query provided" }] };
+      return { content: "Error: no query provided", isError: true };
     }
 
     const cfg = loadConfig();
@@ -65,10 +65,9 @@ export const cogneeRecall: ToolDefinition = {
 
     if (!apiKey) {
       return {
-        content: [{
-          type: "text",
-          text: "Cognee search failed: no API key configured. Set COGNEE_API_KEY or ensure the local cognee server is running.",
-        }],
+        content:
+          "Cognee search failed: no API key configured. Set COGNEE_API_KEY or ensure the local cognee server is running.",
+        isError: true,
       };
     }
 
@@ -98,22 +97,20 @@ export const cogneeRecall: ToolDefinition = {
 
       if (result === UNREACHABLE) {
         return {
-          content: [{
-            type: "text",
-            text: "Cognee search failed: server unreachable. The server may be down or not yet started.",
-          }],
+          content:
+            "Cognee search failed: server unreachable. The server may be down or not yet started.",
+          isError: true,
         };
       }
 
       if (Array.isArray(result)) {
         if (result.length === 0) {
           return {
-            content: [{
-              type: "text",
-              text: "No results found. The server returned an empty list (authoritative). " +
-                "Try using the cognee-sync skill to sync session data to the permanent graph, " +
-                "or the cognee-remember skill to ingest new data.",
-            }],
+            content:
+              "No results found. The server returned an empty list (authoritative). " +
+              "Try using the cognee-sync skill to sync session data to the permanent graph, " +
+              "or the cognee-remember skill to ingest new data.",
+            isError: false,
           };
         }
 
@@ -141,10 +138,8 @@ export const cogneeRecall: ToolDefinition = {
         }
 
         return {
-          content: [{
-            type: "text",
-            text: `Cognee memory search results (${result.length} hits):\n\n${lines.join("\n")}`,
-          }],
+          content: `Cognee memory search results (${result.length} hits):\n\n${lines.join("\n")}`,
+          isError: false,
         };
       }
 
@@ -152,25 +147,19 @@ export const cogneeRecall: ToolDefinition = {
       const errObj = result as Record<string, unknown>;
       if (errObj.error) {
         return {
-          content: [{
-            type: "text",
-            text: `Cognee search error: ${errObj.error}`,
-          }],
+          content: `Cognee search error: ${errObj.error}`,
+          isError: true,
         };
       }
 
       return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result, null, 2),
-        }],
+        content: JSON.stringify(result, null, 2),
+        isError: false,
       };
     } catch (err) {
       return {
-        content: [{
-          type: "text",
-          text: `Cognee search failed: ${String(err)}`,
-        }],
+        content: `Cognee search failed: ${String(err)}`,
+        isError: true,
       };
     }
   },

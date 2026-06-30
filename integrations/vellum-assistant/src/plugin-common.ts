@@ -707,16 +707,36 @@ function bridgeFilePath(sessionId: string): string {
   return join(bridgeDir(), `${sessionId}.json`);
 }
 
+interface SessionBridgeEntry {
+  qa?: Array<{ question: string; answer: string }>;
+  trace?: string[];
+}
+
+/**
+ * On-disk bridge cache. Session entries are keyed by `dataset:sessionId`; the
+ * reserved `_state` key holds posted-document dedup hashes. Both live in one
+ * flat map on disk, so the index signature carries their union.
+ */
 interface BridgeCache {
-  [key: string]: {
-    qa?: Array<{ question: string; answer: string }>;
-    trace?: string[];
-  };
+  [key: string]: SessionBridgeEntry | Record<string, string> | undefined;
   _state?: Record<string, string>;
 }
 
 function bridgeCacheKey(dataset: string, sessionId: string): string {
   return `${dataset}:${sessionId}`;
+}
+
+/**
+ * Resolve (creating if absent) the session entry for a `dataset:sessionId`
+ * key. Returns a live reference into `cache`, so mutations persist on write.
+ */
+function getSessionEntry(cache: BridgeCache, key: string): SessionBridgeEntry {
+  let entry = cache[key] as SessionBridgeEntry | undefined;
+  if (!entry) {
+    entry = {};
+    cache[key] = entry;
+  }
+  return entry;
 }
 
 function loadBridgeFile(sessionId: string): BridgeCache {
@@ -746,10 +766,9 @@ export function recordBridgeQA(
   answer: string,
 ): void {
   const cache = loadBridgeFile(sessionId);
-  const key = bridgeCacheKey(dataset, sessionId);
-  if (!cache[key]) cache[key] = {};
-  if (!cache[key].qa) cache[key].qa = [];
-  cache[key].qa!.push({ question, answer });
+  const entry = getSessionEntry(cache, bridgeCacheKey(dataset, sessionId));
+  if (!entry.qa) entry.qa = [];
+  entry.qa.push({ question, answer });
   writeBridgeFile(sessionId, cache);
 }
 
@@ -762,10 +781,9 @@ export function recordBridgeTrace(
   traceText: string,
 ): void {
   const cache = loadBridgeFile(sessionId);
-  const key = bridgeCacheKey(dataset, sessionId);
-  if (!cache[key]) cache[key] = {};
-  if (!cache[key].trace) cache[key].trace = [];
-  cache[key].trace!.push(traceText);
+  const entry = getSessionEntry(cache, bridgeCacheKey(dataset, sessionId));
+  if (!entry.trace) entry.trace = [];
+  entry.trace.push(traceText);
   writeBridgeFile(sessionId, cache);
 }
 
@@ -779,7 +797,7 @@ export function formatBridgeDocument(
 ): [string, string] {
   const cache = loadBridgeFile(sessionId);
   const key = bridgeCacheKey(dataset, sessionId);
-  const sessionCache = cache[key] ?? {};
+  const sessionCache = (cache[key] as SessionBridgeEntry | undefined) ?? {};
 
   const qaLines: string[] = [];
   for (const entry of sessionCache.qa ?? []) {

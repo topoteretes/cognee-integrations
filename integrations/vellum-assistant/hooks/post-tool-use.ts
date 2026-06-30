@@ -28,7 +28,7 @@ function resolveToolMeta(
     const content = msg.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
-      const b = block as Record<string, unknown>;
+      const b = block as unknown as Record<string, unknown>;
       if (b.type === "tool_use" && (b.id === toolUseId || b.tool_use_id === toolUseId)) {
         return {
           name: String(b.name ?? b.tool_name ?? "unknown"),
@@ -47,7 +47,7 @@ export default async function postToolUse(
   setSessionEnv(conversationId);
 
   // Extract tool result fields from the tool_response block.
-  const toolResponse = ctx.toolResponse as Record<string, unknown>;
+  const toolResponse = ctx.toolResponse as unknown as Record<string, unknown>;
   const toolUseId = String(toolResponse.tool_use_id ?? "");
   const toolOutput = toolResponse.content ?? toolResponse.output ?? "";
 

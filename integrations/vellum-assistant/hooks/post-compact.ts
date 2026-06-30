@@ -23,9 +23,12 @@ export default async function postCompactHook(
   try {
     const anchor = await postCompact(conversationId);
     if (anchor) {
+      // The Message contract only allows user/assistant roles with
+      // ContentBlock[] content, so re-inject the memory anchor as a
+      // user-role text block rather than a (disallowed) system message.
       const anchorMessage: Message = {
-        role: "system",
-        content: anchor,
+        role: "user",
+        content: [{ type: "text", text: anchor }],
       };
       ctx.history.unshift(anchorMessage);
     }
