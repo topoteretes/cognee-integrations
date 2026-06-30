@@ -8,10 +8,12 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Scope-aware routing**: Memory files are automatically routed to the correct dataset based on directory structure
 - **Multi-scope recall**: Before each agent run, searches across all configured scopes and injects labeled context
 - **Session tracking**: Multi-turn conversation context via Cognee's session system
+- **Agent lifecycle registration**: Registers/unregisters each agent session with the Cognee server on every prompt turn; combined with `COGNEE_AGENT_MODE=true` on the server, Cognee shuts down automatically when all agents disconnect
 - **14 search types**: From simple semantic search (CHUNKS) to chain-of-thought graph reasoning (GRAPH_COMPLETION_COT) to auto-selection (FEELING_LUCKY)
+- **Lazy dataset resolution**: On first prompt, if a dataset UUID is not cached locally, the plugin queries the Cognee server by name so you can connect to any pre-existing dataset without manual configuration
 - **Health check**: Verifies Cognee API connectivity before operations
 - **Auto-index**: Syncs memory markdown files to Cognee via `/remember` (add new, update changed, forget removed, skip unchanged). The `/remember` endpoint runs ingest, graph build, and graph enrichment in one server-side call.
-- **In-session memory**: each recall call auto-captures the turn as a `QAEntry` in Cognee's session cache; with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
+- **In-session memory**: Each recall call auto-captures the turn as a `QAEntry` in Cognee's session cache; with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
 - **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider
 - **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
 
@@ -19,32 +21,53 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 
 OpenClaw will auto-load any plugin it discovers if `plugins.allow` is not set. To restrict which plugins can load, add an explicit allowlist to your `~/.openclaw/openclaw.json`:
 
-```yaml
-plugins:
-  allow:
-    - cognee-openclaw
-    - cognee-openclaw-skills
+```json
+{
+  "plugins": {
+    "allow": ["cognee-openclaw"]
+  }
+}
 ```
+
+> **Important**: `plugins.allow` must be a JSON **array**, not an object. `{"cognee-openclaw": true}` is invalid and will cause a config parse error.
 
 Without this, any plugin found in your environment could be loaded automatically.
 
 ## Installation
 
-Install the plugin locally for development:
-
-```bash
-cd integrations/openclaw
-npm install
-npm run build
-openclaw plugins install -l .
-```
-
-Or once published:
+### Published package
 
 ```bash
 # Pin to an exact version to avoid unintended updates (supply-chain best practice)
 openclaw plugins install @cognee/cognee-openclaw@2026.3.0
 ```
+
+### Development install (symlink)
+
+When developing or modifying the plugin, install as a symlink so that `npm run build` takes effect immediately without reinstalling:
+
+```bash
+cd integrations/openclaw
+npm install
+npm run build
+openclaw plugins install --link .
+```
+
+> **Why `--link`?** A standard install copies the built files once. Any subsequent `npm run build` updates the source but not the installed copy — so OpenClaw keeps running the stale version. With `--link`, the installed path **is** the source directory, so every build is reflected on the next gateway start.
+
+After install, verify the install entry in `~/.openclaw/openclaw.json`:
+
+```json
+"installs": {
+  "cognee-openclaw": {
+    "source": "path",
+    "sourcePath": "/path/to/integrations/openclaw",
+    "installPath": "/path/to/integrations/openclaw"
+  }
+}
+```
+
+`sourcePath === installPath` confirms the symlink is in place.
 
 ## Quick Start
 
@@ -60,39 +83,107 @@ openclaw cognee setup --hybrid
 
 **Default mode** disables built-in memory providers — all recall comes from Cognee.
 
-**Hybrid mode** keeps `memory-core` enabled in config, but on OpenClaw versions with exclusive memory slots only the slot winner loads at runtime.
-This plugin registers its own memory flush plan, so pre-compaction flush works when Cognee owns the memory slot.
+**Hybrid mode** keeps `memory-core` enabled in config, but on OpenClaw versions with exclusive memory slots only the slot winner loads at runtime. This plugin registers its own memory flush plan, so pre-compaction flush works when Cognee owns the memory slot.
 
 Then configure the Cognee connection in `~/.openclaw/openclaw.json`:
 
-```yaml
-plugins:
-  entries:
-    cognee-openclaw:
-      enabled: true
-      hooks:
-        allowConversationAccess: true   # see note below
-      config:
-        baseUrl: "http://localhost:8000"
-        apiKey: "${COGNEE_API_KEY}"
-        datasetName: "my-project"
+```json
+{
+  "plugins": {
+    "allow": ["cognee-openclaw"],
+    "entries": {
+      "cognee-openclaw": {
+        "enabled": true,
+        "hooks": {
+          "allowPromptInjection": true
+        },
+        "config": {
+          "baseUrl": "http://localhost:8011",
+          "datasetName": "agent_sessions"
+        }
+      },
+      "memory-core": { "enabled": false },
+      "memory-lancedb": { "enabled": false }
+    },
+    "slots": {
+      "memory": "cognee-openclaw"
+    }
+  }
+}
 ```
 
-> `hooks.allowConversationAccess` -> OpenClaw ≥ 2026.4.27 blocks non-bundled plugins from registering the `agent_end` hook unless this flag is set. Without it, file sync memory operations after each agent turn is silently disabled. The gateway still loads the plugin, but file changes the agent makes won't reach Cognee until the next manual `openclaw cognee index` or gateway start. Restart the gateway after adding the flag: `openclaw gateway stop && openclaw gateway start`.
+> **`hooks.allowPromptInjection: true` is required.** Without it, OpenClaw blocks the plugin from reading the prompt content in the `before_prompt_build` hook — recall is silently skipped and no memories are injected. This key was named `allowConversationAccess` in versions before OpenClaw 2026.4.2; the old key is silently rejected, so if you copied config from an older guide, update to `allowPromptInjection`. Restart the gateway after adding or changing the flag.
+
+### Multi-Agent Quick Start
+
+For a gateway with multiple named agents sharing a default dataset:
+
+```json
+{
+  "plugins": {
+    "allow": ["cognee-openclaw"],
+    "entries": {
+      "cognee-openclaw": {
+        "enabled": true,
+        "hooks": { "allowPromptInjection": true }
+      },
+      "memory-core": { "enabled": false },
+      "memory-lancedb": { "enabled": false }
+    },
+    "slots": { "memory": "cognee-openclaw" }
+  },
+  "auth": {
+    "profiles": {
+      "openai:manual": { "provider": "openai", "mode": "token" }
+    }
+  },
+  "models": {
+    "providers": {
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "models": [{ "id": "gpt-4o-mini", "name": "GPT-4o mini" }]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "openai/gpt-4o-mini" },
+      "models": { "openai/gpt-4o-mini": {} }
+    },
+    "list": [
+      { "id": "Will", "name": "Will" },
+      { "id": "Elizabeth", "name": "Elizabeth" }
+    ]
+  },
+  "gateway": {
+    "auth": { "mode": "token", "token": "your-gateway-token" }
+  }
+}
+```
+
+> **Required fields when adding a `models.providers.<provider>` block**: `baseUrl` is required by the config schema. Omitting it causes a validation error that prevents the gateway from starting.
+
+For multi-agent gateways, set `perAgentMemory: true` explicitly to give each agent its own isolated dataset. Without it, all agents share a single dataset regardless of how many are configured.
 
 ### Cognee Cloud
 
 To use Cognee Cloud instead of a local instance, set `mode` to `"cloud"`:
 
-```yaml
-plugins:
-  entries:
-    cognee-openclaw:
-      enabled: true
-      config:
-        mode: "cloud"
-        baseUrl: "https://tenant-xxx.cloud.cognee.ai/api"
-        apiKey: "${COGNEE_API_KEY}"
+```json
+{
+  "plugins": {
+    "entries": {
+      "cognee-openclaw": {
+        "enabled": true,
+        "config": {
+          "mode": "cloud",
+          "baseUrl": "https://tenant-xxx.cloud.cognee.ai/api",
+          "apiKey": "${COGNEE_API_KEY}"
+        }
+      }
+    }
+  }
+}
 ```
 
 Or via environment variables:
@@ -107,34 +198,43 @@ export COGNEE_API_KEY=your-api-key
 
 **Known limitation**: Updating existing data (modifying a previously synced file) is not supported in cloud mode — `PATCH /update` is self-hosted only. In cloud mode the plugin's update path is a no-op; to edit a single file in place, delete it and re-add it via the [Cognee Cloud platform](https://platform.cognee.ai) or the API directly.
 
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COGNEE_BASE_URL` | `http://localhost:8011` | Cognee API base URL |
+| `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset name for single-scope mode. Overridden by `datasetName` in config if set. Same variable name used by the claude-code and codex Cognee integrations. |
+| `COGNEE_MODE` | `local` | `"local"` for self-hosted, `"cloud"` for Cognee Cloud |
+| `COGNEE_API_KEY` | — | API key (cloud mode or authenticated self-hosted) |
+| `COGNEE_USERNAME` | — | Login username (self-hosted with auth) |
+| `COGNEE_PASSWORD` | — | Login password (self-hosted with auth) |
+| `OPENCLAW_USER_ID` | — | User identifier for user-scoped memory |
+| `OPENCLAW_AGENT_ID` | `default` | Agent identifier for agent-scoped memory |
+
 ## Multi-Scope Memory
 
 For production use, enable multi-scope mode by setting any scope-specific dataset name:
 
-```yaml
-plugins:
-  entries:
-    cognee-openclaw:
-      enabled: true
-      config:
-        baseUrl: "http://localhost:8000"
-        apiKey: "${COGNEE_API_KEY}"
-
-        # Multi-scope datasets
-        companyDataset: "acme-shared"
-        userDatasetPrefix: "acme-user"
-        agentDatasetPrefix: "acme-agent"
-        userId: "${OPENCLAW_USER_ID}"
-        agentId: "code-assistant"
-
-        # Search all scopes during recall (in priority order)
-        recallScopes:
-          - agent
-          - user
-          - company
-
-        # Default scope for files not matching any route
-        defaultWriteScope: "agent"
+```json
+{
+  "plugins": {
+    "entries": {
+      "cognee-openclaw": {
+        "enabled": true,
+        "config": {
+          "baseUrl": "http://localhost:8011",
+          "companyDataset": "acme-shared",
+          "userDatasetPrefix": "acme-user",
+          "agentDatasetPrefix": "acme-agent",
+          "userId": "${OPENCLAW_USER_ID}",
+          "agentId": "code-assistant",
+          "recallScopes": ["agent", "user", "company"],
+          "defaultWriteScope": "agent"
+        }
+      }
+    }
+  }
+}
 ```
 
 ### Memory Scope Hierarchy
@@ -158,14 +258,14 @@ MEMORY.md          ->  agent scope
 
 Custom routing via config:
 
-```yaml
-scopeRouting:
-  - pattern: "memory/shared/**"
-    scope: company
-  - pattern: "memory/personal/**"
-    scope: user
-  - pattern: "memory/**"
-    scope: agent
+```json
+{
+  "scopeRouting": [
+    { "pattern": "memory/shared/**", "scope": "company" },
+    { "pattern": "memory/personal/**", "scope": "user" },
+    { "pattern": "memory/**", "scope": "agent" }
+  ]
+}
 ```
 
 ### Multi-Scope Recall
@@ -188,8 +288,16 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `baseUrl` | string | `http://localhost:8000` | Cognee API base URL |
+| `baseUrl` | string | `http://localhost:8011` | Cognee API base URL (also: `COGNEE_BASE_URL`) |
 | `apiKey` | string | `$COGNEE_API_KEY` | API key for authentication |
+| `username` | string | `$COGNEE_USERNAME` | Login username |
+| `password` | string | `$COGNEE_PASSWORD` | Login password |
+
+### Dataset
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `datasetName` | string | `agent_sessions` | Dataset name for single-scope mode (also: `COGNEE_PLUGIN_DATASET`) |
 
 ### Memory Scopes
 
@@ -198,11 +306,13 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `companyDataset` | string | — | Dataset for company-wide memory. Setting this enables multi-scope mode |
 | `userDatasetPrefix` | string | — | Prefix for user datasets (becomes `{prefix}-{userId}`) |
 | `agentDatasetPrefix` | string | — | Prefix for agent datasets (becomes `{prefix}-{agentId}`) |
+| `agentDatasetTemplate` | string | — | Template for per-agent dataset with `{agentId}` placeholder; takes precedence over `agentDatasetPrefix` |
 | `userId` | string | `$OPENCLAW_USER_ID` | User identifier for user-scoped memory |
-| `agentId` | string | `default` | Agent identifier for agent-scoped memory |
+| `agentId` | string | `default` | Agent identifier for agent-scoped memory (also: `OPENCLAW_AGENT_ID`) |
 | `recallScopes` | string[] | `["agent","user","company"]` | Scopes to search during recall, in priority order |
 | `defaultWriteScope` | string | `agent` | Default scope for files not matching any route |
 | `scopeRouting` | object[] | (see above) | Path-to-scope routing rules |
+| `perAgentMemory` | boolean | `false` | Give each agent its own dataset via `agentDatasetPrefix`. Must be set explicitly to `true` for multi-agent gateways that require dataset isolation. |
 
 ### Sessions
 
@@ -218,8 +328,9 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `searchType` | string | `GRAPH_COMPLETION` | Search strategy (see below) |
 | `maxResults` | number | `3` | Max memories to inject per scope (sent as `top_k` to Cognee) |
 | `minScore` | number | `0.3` | Minimum relevance score filter |
+| `maxTokens` | number | `512` | Token cap for recall per scope |
 | `searchPrompt` | string | `""` | System prompt to guide search |
-| ~~`maxTokens`~~ | number | `512` | **Deprecated** — Cognee 1.0.3's recall payload no longer accepts a token cap; use `maxResults` instead. Setting this is silently ignored. |
+| `recallInjectionPosition` | string | `prependContext` | Where recalled memories are injected: `prependSystemContext`, `appendSystemContext`, or `prependContext` |
 
 ### Search Types
 
@@ -233,7 +344,6 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `GRAPH_SUMMARY_COMPLETION` | Graph with pre-computed summaries |
 | `RAG_COMPLETION` | Traditional RAG with document chunks |
 | `TRIPLET_COMPLETION` | Subject-predicate-object search |
-| `CHUNKS` | Pure semantic vector search |
 | `CHUNKS_LEXICAL` | Keyword/lexical search |
 | `SUMMARIES` | Pre-computed hierarchical summaries |
 | `TEMPORAL` | Time-aware graph search |
@@ -248,9 +358,9 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `autoRecall` | boolean | `true` | Inject memories before agent runs |
 | `autoIndex` | boolean | `true` | Sync memory files on startup, after agent runs, and on session end |
 | `improveOnSessionEnd` | boolean | `true` | On `session_end`, call `/improve` with the session id to bridge session-cache QAs into the graph |
-| ~~`autoCognify`~~ | boolean | `true` | **Deprecated** — `/remember` runs the cognify step server-side. Setting this is silently ignored. |
-| ~~`autoMemify`~~ | boolean | `false` | **Deprecated** — graph enrichment now runs server-side via `/remember`'s `self_improvement` default. Setting this is silently ignored. |
-| ~~`deleteMode`~~ | string | `soft` | **Deprecated** — `/forget` always runs the equivalent of `soft`; the legacy `hard` mode is gone (cognee's source explicitly warns against it). Setting this is silently ignored. |
+| ~~`autoCognify`~~ | boolean | `true` | **Deprecated** — `/remember` runs the cognify step server-side |
+| ~~`autoMemify`~~ | boolean | `false` | **Deprecated** — graph enrichment now runs server-side via `/remember` |
+| ~~`deleteMode`~~ | string | `soft` | **Deprecated** — `/forget` always runs soft delete |
 
 ### Timeouts
 
@@ -266,7 +376,7 @@ Note: Files are stored in Cognee using sanitized relative paths as filenames (e.
 ```bash
 # Configure Cognee as the memory provider (run once after install)
 openclaw cognee setup              # Cognee only
-openclaw cognee setup --hybrid     # Keep built-ins enabled in config (runtime co-load depends on slot rules)
+openclaw cognee setup --hybrid     # Keep built-ins enabled in config
 
 # Manually sync memory files to Cognee
 openclaw cognee index
@@ -289,26 +399,13 @@ openclaw cognee improve                       # current dataset, all sessions
 openclaw cognee improve --session-id <id>     # scope to one session
 ```
 
-## How It Works
-
-1. **On startup**: Health check, then scan `memory/` directory and call `/api/v1/remember` (one batched multipart upload per scope). Cognee runs add + cognify + improve server-side.
-2. **Before each prompt**: Call `/api/v1/recall` for each configured scope in parallel, merge results with scope labels, inject as `<cognee_memories>` context. The openclaw session id is passed through; Cognee uses it to auto-capture the turn as a session QA and (with `AUTO_FEEDBACK=true`) auto-attach feedback to the prior QA when one is detected.
-3. **After each agent run**: Re-scan memory files; new files batch into `/remember`, changed files go through `PATCH /update` (self-hosted) with fallback to `/remember`, removed files are dropped via `/forget`.
-4. **On session end**: Final sync sweep. With `improveOnSessionEnd` on, also dispatches `/improve` for the just-ended session id to bridge session QAs into the permanent graph.
-5. **State tracking**:
-   - `~/.openclaw/memory/cognee/datasets.json` — dataset ID mapping
-   - `~/.openclaw/memory/cognee/scoped-sync-indexes.json` — per-scope file hashes and data IDs
-   - `~/.openclaw/memory/cognee/sync-index.json` — legacy single-scope index
-
-Memory files detected at: `MEMORY.md` and `memory/**/*.md` (recursive)
-
 ## Development
 
 ```bash
 cd integrations/openclaw
 npm install
 npm run build
-openclaw plugins install -l .
+openclaw plugins install --link .
 ```
 
 For live rebuilds during development:
@@ -316,6 +413,8 @@ For live rebuilds during development:
 ```bash
 npm run dev
 ```
+
+After each build, restart the OpenClaw gateway to pick up the new code.
 
 ## Testing
 

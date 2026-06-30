@@ -4,8 +4,8 @@ import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, Sco
 // Defaults
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_BASE_URL = "http://localhost:8000";
-export const DEFAULT_DATASET_NAME = "openclaw";
+export const DEFAULT_BASE_URL = "http://localhost:8011";
+export const DEFAULT_DATASET_NAME = "agent_sessions";
 export const DEFAULT_SEARCH_TYPE: CogneeSearchType = "GRAPH_COMPLETION";
 export const DEFAULT_DELETE_MODE = "soft" as const;
 export const DEFAULT_MAX_RESULTS = 3;
@@ -61,7 +61,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
 
   const mode: CogneeMode = raw.mode === "cloud" || process.env.COGNEE_MODE === "cloud" ? "cloud" : "local";
   const baseUrl = raw.baseUrl?.trim() || process.env.COGNEE_BASE_URL?.trim() || DEFAULT_BASE_URL;
-  const datasetName = raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
+  const datasetName = raw.datasetName?.trim() || process.env.COGNEE_PLUGIN_DATASET?.trim() || DEFAULT_DATASET_NAME;
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
   const searchPrompt = raw.searchPrompt || "";
   const deleteMode = raw.deleteMode === "hard" ? "hard" : DEFAULT_DELETE_MODE;

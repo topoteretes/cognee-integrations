@@ -535,6 +535,66 @@ export class CogneeHttpClient {
     return normalizeSearchResults(data);
   }
 
+  async registerAgent(params: {
+    agentSessionName: string;
+    sessionId?: string;
+    datasetNames?: string[];
+  }): Promise<{ ok: boolean; connectionId?: string }> {
+    const body: Record<string, unknown> = {
+      agent_session_name: params.agentSessionName,
+      type: "api",
+      memory_mode: "hybrid",
+      source: "api",
+    };
+    if (params.sessionId) body.session_id = params.sessionId;
+    if (params.datasetNames && params.datasetNames.length > 0) {
+      body.dataset_names = params.datasetNames.filter((n) => n.trim());
+    }
+    const result = await this.fetchAPI<Record<string, unknown>>(
+      "/api/v1/agents/register",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    );
+    return { ok: true, connectionId: typeof result.id === "string" ? result.id : undefined };
+  }
+
+  async unregisterAgent(params: {
+    agentSessionName: string;
+  }): Promise<{ ok: boolean; activeAgents: number }> {
+    try {
+      const result = await this.fetchAPI<Record<string, unknown>>(
+        "/api/v1/agents/unregister",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_session_name: params.agentSessionName }),
+        },
+      );
+      const raw = Number(result.activeAgents ?? result.active_agents ?? 0);
+      const activeAgents = Number.isFinite(raw) ? raw : 0;
+      return { ok: true, activeAgents };
+    } catch (error) {
+      return { ok: false, activeAgents: 0 };
+    }
+  }
+
+  async listApiKeys(): Promise<{ key: string; name?: string }[]> {
+    return this.fetchAPI<{ key: string; name?: string }[]>(
+      "/api/v1/auth/api-keys",
+      { method: "GET" },
+    );
+  }
+
+  async createApiKey(name: string): Promise<{ key: string }> {
+    return this.fetchAPI<{ key: string }>(
+      "/api/v1/auth/api-keys",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      },
+    );
+  }
+
   async listDatasets(): Promise<{ id: string; name: string }[]> {
     const path = this.isCloud ? "/datasets" : "/api/v1/datasets";
     return this.fetchAPI<{ id: string; name: string }[]>(path, { method: "GET" });

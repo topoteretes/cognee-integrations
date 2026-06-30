@@ -16,7 +16,7 @@
       },
       "baseUrl": {
         "type": "string",
-        "description": "Cognee API base URL (default: http://localhost:8000). Also settable via COGNEE_BASE_URL env var."
+        "description": "Cognee API base URL (default: http://localhost:8011). Also settable via COGNEE_BASE_URL env var."
       },
       "apiKey": {
         "type": "string",
@@ -32,7 +32,7 @@
       },
       "datasetName": {
         "type": "string",
-        "description": "Cognee dataset name for single-scope mode (default: openclaw). Ignored when multi-scope is enabled."
+        "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. Ignored when multi-scope is enabled."
       },
       "companyDataset": {
         "type": "string",
@@ -190,7 +190,7 @@
   "uiHints": {
     "baseUrl": {
       "label": "Base URL",
-      "placeholder": "http://localhost:8000"
+      "placeholder": "http://localhost:8011"
     },
     "apiKey": {
       "label": "API Key",
@@ -208,7 +208,7 @@
     },
     "datasetName": {
       "label": "Dataset Name (single-scope)",
-      "placeholder": "openclaw"
+      "placeholder": "agent_sessions"
     },
     "companyDataset": {
       "label": "Company Dataset",
