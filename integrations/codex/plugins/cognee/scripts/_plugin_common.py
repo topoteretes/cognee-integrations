@@ -1238,6 +1238,7 @@ def persist_session_cache_to_graph_via_http(
     shadow and this function posts that text to the backend remember
     endpoint as permanent graph data.
     """
+    overall_start = time.monotonic()
     base_url = _local_api_url()
     if not _backend_reachable(base_url):
         return False
@@ -1274,7 +1275,7 @@ def persist_session_cache_to_graph_via_http(
             _write_json_file(bridge_path, bridge_cache)
         hook_log(
             "http_bridge_done",
-            {"dataset": dataset, "session": session_id, "wrote": wrote},
+            {"dataset": dataset, "session": session_id, "wrote": wrote, "elapsed_ms": round((time.monotonic() - overall_start) * 1000, 1)},
         )
         return wrote
     except (urllib.error.URLError, TimeoutError, OSError) as exc:

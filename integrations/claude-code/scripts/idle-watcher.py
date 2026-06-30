@@ -84,6 +84,7 @@ def _install_signal_handlers() -> None:
 
 async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
     """Fire one session bridge cycle. Returns True on success."""
+    overall_start = time.monotonic()
     sys.path.insert(0, os.path.dirname(__file__))
     try:
         from _plugin_common import (  # type: ignore
@@ -127,6 +128,7 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                     dataset=dataset,
                     via="http_remember",
                     wrote=wrote,
+                    elapsed_ms=round((time.monotonic() - overall_start) * 1000, 1),
                 )
                 return True
 
@@ -147,6 +149,7 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                     user_id=str(user.id),
                     wrote=wrote,
                     graph_synced=graph_result.get("synced", 0),
+                    elapsed_ms=round((time.monotonic() - overall_start) * 1000, 1),
                 )
             return True
         except Exception as exc:
