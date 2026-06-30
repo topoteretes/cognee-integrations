@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -57,12 +58,13 @@ _MAX_ASSISTANT_BYTES = 8000
 
 async def _fire_improve_background(dataset: str, session_id: str, user, reason: str) -> None:
     """Fire-and-forget session bridge; failures are logged but never raised."""
+    overall_start = time.monotonic()
     try:
         if http_api_ready():
             wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
             hook_log(
                 "auto_bridge_fired",
-                {"reason": reason, "session": session_id, "via": "http_remember", "wrote": wrote},
+                {"reason": reason, "session": session_id, "via": "http_remember", "wrote": wrote, "elapsed_ms": round((time.monotonic() - overall_start) * 1000, 1)},
             )
             if wrote:
                 notify(f"session bridge persisted ({reason})")
@@ -78,6 +80,7 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
                 "session": session_id,
                 "wrote": wrote,
                 "graph_synced": graph_result.get("synced", 0),
+                "elapsed_ms": round((time.monotonic() - overall_start) * 1000, 1),
             },
         )
         notify(f"session bridge persisted ({reason})")
