@@ -92,6 +92,15 @@ def _timeout_result(timeout):
     return _error(0, "remember submitted; timed out after %ss waiting for confirmation" % timeout)
 
 
+def _float_env(name, default):
+    """Read a float from the environment, falling back to default on absence/parse error."""
+    try:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
 def do_remember(
     service_url,
     api_key,
@@ -100,9 +109,16 @@ def do_remember(
     node_set,
     *,
     opener=urllib.request.urlopen,
-    timeout=60.0,
+    timeout=None,
 ):
-    """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE."""
+    """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.
+
+    The request timeout defaults to ``COGNEE_REMEMBER_TIMEOUT`` (seconds), falling
+    back to 60s, so slow cognify writes can be tuned independently of recall. An
+    explicit ``timeout`` argument still wins.
+    """
+    if timeout is None:
+        timeout = _float_env("COGNEE_REMEMBER_TIMEOUT", 60.0)
     url = service_url.rstrip("/") + "/api/v1/remember"
     filename = f"{node_set or 'content'}.txt"
     body, boundary = _multipart_body(
