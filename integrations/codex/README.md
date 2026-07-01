@@ -213,6 +213,18 @@ Config precedence:
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
 
+### Per-operation timeouts
+
+Each operation has its own client timeout, tunable independently (all in seconds):
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_RECALL_TIMEOUT` | `20` | Client timeout for a recall request |
+| `COGNEE_REMEMBER_TIMEOUT` | `60` | Client timeout for remember writes (submit POST and per-turn entry store) |
+| `COGNEE_REGISTER_TIMEOUT` | `15` | Client timeout for the session register call |
+
+`COGNEE_REMEMBER_TIMEOUT` also caps the per-turn session-entry write (`/api/v1/remember/entry`); when the variable is unset that path uses 30s, while the explicit remember submit uses 60s.
+
 ## Troubleshooting
 
 **Recall returns empty but data was ingested**
