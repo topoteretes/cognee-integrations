@@ -291,3 +291,5 @@ Config precedence:
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
+| cold-start retries | `COGNEE_RECALL_COLDSTART_RETRIES` | `2` | Extra retries for the **first** recall of a session when it times out on a warming server (`0` disables). Later recalls never retry. |
+| cold-start backoff | `COGNEE_RECALL_COLDSTART_BACKOFF` | `0.5` | Base seconds for the first-recall retry backoff (jittered, exponential, capped by the recall budget) |
