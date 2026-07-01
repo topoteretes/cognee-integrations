@@ -1153,13 +1153,28 @@ def remember_entry_via_http(
     )
 
 
+def _register_timeout() -> float:
+    """Client timeout (seconds) for the agent register call.
+
+    Tunable independently of recall/remember via ``COGNEE_REGISTER_TIMEOUT``;
+    defaults to 15s to preserve the previous hardcoded behaviour.
+    """
+    try:
+        raw = os.environ.get("COGNEE_REGISTER_TIMEOUT", "").strip()
+        return float(raw) if raw else 15.0
+    except (TypeError, ValueError):
+        return 15.0
+
+
 def register_agent_via_http(
     *,
     agent_session_name: str,
     session_id: str = "",
     dataset_names: list[str] | None = None,
-    timeout: float = 15.0,
+    timeout: float | None = None,
 ) -> tuple[bool, dict]:
+    if timeout is None:
+        timeout = _register_timeout()
     payload = {
         "agent_session_name": agent_session_name,
         "type": "api",
