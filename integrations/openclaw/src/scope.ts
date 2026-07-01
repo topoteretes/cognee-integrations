@@ -127,7 +127,7 @@ export function normalizeAgentId(agentId: string | undefined, cfg: Required<Cogn
  * (`_sanitize_session_key`): keep alphanumerics plus `-` `_` `.`, replace anything
  * else with `_`, trim leading/trailing `.`/`_`, and cap length at 120.
  */
-function sanitizeSessionKey(value: string): string {
+export function sanitizeSessionKey(value: string): string {
   let safe = "";
   for (const ch of value) safe += /[A-Za-z0-9\-_.]/.test(ch) ? ch : "_";
   return safe.replace(/^[._]+/, "").replace(/[._]+$/, "").slice(0, 120);
