@@ -15,8 +15,11 @@ import shutil
 import sys
 import tempfile
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
+import _plugin_common as pc  # noqa: E402
 import config  # noqa: E402
 
 
@@ -119,6 +122,42 @@ def test_backend_clearing_native():
         # native backend forces local mode: base_url and api_key are cleared.
         assert merged["base_url"] == ""
         assert merged["api_key"] == ""
+    finally:
+        config._CONFIG_FILE = orig_file
+        _restore_env(saved)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "#3559: COGNEE_COGNIFY_POLL_INTERVAL is registered in _ENV_MAP for "
+        "config-file support, but consumers read it via _float_env() straight "
+        "from os.environ, so the config-file value never reaches runtime (dead "
+        "knob)."
+    ),
+)
+def test_footgun3_config_file_poll_interval_reaches_consumer():
+    # The poll interval is set ONLY in the config file, with the env var unset,
+    # to isolate the config-file path. load_config() surfaces it, but the real
+    # consumer reads it through _float_env(name, default) -- which ignores the
+    # merged config -- so the config-file value is silently dropped.
+    orig_file = config._CONFIG_FILE
+    saved = _snapshot_env("COGNEE_COGNIFY_POLL_INTERVAL")
+    tmpdir = tempfile.mkdtemp()
+    try:
+        config._CONFIG_FILE = _write_config_file(tmpdir, {"cognify_poll_interval": 99.0})
+        os.environ.pop("COGNEE_COGNIFY_POLL_INTERVAL", None)
+
+        # Sanity: load_config() DOES carry the config-file value through.
+        assert config.load_config()["cognify_poll_interval"] == 99.0
+
+        # Desired behavior: the value the consumer sees (via _float_env, exactly
+        # as scripts/_plugin_common.py:1401 calls it) should be the config-file
+        # value. Under current code _float_env returns the hardcoded 3.0 default
+        # because it reads os.environ (empty), so this assertion fails today.
+        consumer_value = pc._float_env("COGNEE_COGNIFY_POLL_INTERVAL", 3.0)
+        assert consumer_value == 99.0
     finally:
         config._CONFIG_FILE = orig_file
         _restore_env(saved)
