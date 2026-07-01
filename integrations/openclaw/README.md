@@ -261,6 +261,39 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 
 Note: Files are stored in Cognee using sanitized relative paths as filenames (e.g., `MEMORY.md.txt` for `MEMORY.md`, `memory.tools.md.txt` for `memory/tools.md`) for easy identification and to avoid path separator issues.
 
+## Configuration precedence
+
+Resolution order: **config > env > default** (the plugin config wins), resolved in
+`resolveConfig()` (`src/config.ts`). Behavior pinned by
+`__tests__/test_configPrecedence.ts`. Two settings are asymmetric — see the notes
+below.
+
+| Setting | Env var | Config key | Default | Who wins |
+| --- | --- | --- | --- | --- |
+| Base URL | `COGNEE_BASE_URL` | `baseUrl` | `http://localhost:8000` | config |
+| Dataset name | — (config-only) | `datasetName` | `openclaw` | config |
+| Mode | `COGNEE_MODE` | `mode` | `local` | config, except env can force `cloud` |
+| API key | `COGNEE_API_KEY` | `apiKey` | empty | see note |
+
+- **`mode`** — the env var can only *force* `"cloud"`; it can never force
+  `"local"`. If either the config or `COGNEE_MODE` is `"cloud"`, the mode is
+  `"cloud"`.
+- **`apiKey`** — `COGNEE_API_KEY` is read only when `mode` is `"cloud"`. A config
+  `apiKey` supports `${VAR}` interpolation from the environment, which throws if
+  the referenced variable is unset.
+- A config value that trims to empty (e.g. whitespace) is treated as unset and
+  falls through to env/default.
+
+### Testing & scope (#3559)
+
+- **Test + docs only** — no runtime config behavior was changed.
+- Precedence is documented per integration as it behaves today; the four Cognee
+  integrations are intentionally **not** converged (that is a product decision,
+  out of scope here).
+- These tests run locally today (`npm test`), not in CI (the openclaw CI job only
+  type-checks; jest is not run); wiring the jest suite into CI is deferred to a
+  follow-up issue.
+
 ## CLI Commands
 
 ```bash

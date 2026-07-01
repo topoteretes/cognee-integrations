@@ -127,6 +127,37 @@ COGNEE_DATASET=hermes
 > force it. Previously `improve()` was always synchronous; this is the one
 > behavior change to be aware of when upgrading.
 
+## Configuration precedence
+
+Resolution order: **config file > env > default** (the config file wins). The
+config dict is built from environment variables first, then
+`HERMES_HOME/cognee.json` is merged on top — see `load_config()` in
+`cognee_integration_hermes/config.py`. Behavior pinned by
+`tests/test_config_precedence.py`.
+
+| Setting | Env var | Config key | Default | Who wins |
+| --- | --- | --- | --- | --- |
+| Dataset | `COGNEE_DATASET` | `dataset` | `hermes` | config file |
+| Service URL | `COGNEE_BASE_URL` | `service_url` | empty | config file |
+| Top-K results | `COGNEE_TOP_K` | `top_k` | `5` | config file |
+| Local port | `COGNEE_LOCAL_PORT` | `local_port` | `8000` (clamped 1–65535) | config file |
+
+`COGNEE_SERVICE_URL` is a deprecated alias for `COGNEE_BASE_URL` (lower precedence).
+
+> **Empty strings in the config file behave differently by field type.** For a
+> plain string field (e.g. `dataset`) an empty string in the file overrides the
+> env/default layer. For a coerced field (`top_k`, `local_port`, run through
+> `str_to_int`/`str_to_bool`) an empty string fails to parse and falls back to the
+> default, so it does not override.
+
+### Testing & scope (#3559)
+
+- **Test + docs only** — no runtime config behavior was changed.
+- Precedence is documented per integration as it behaves today; the four Cognee
+  integrations are intentionally **not** converged (that is a product decision,
+  out of scope here).
+- These tests run in CI (`uv run pytest tests/`).
+
 ## Hermes Commands
 
 When Cognee is the active memory provider:
