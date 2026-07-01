@@ -192,6 +192,43 @@ export class CogneeHttpClient {
     }
   }
 
+  // -- Cold-start warmup (#3546) --------------------------------------------
+
+  /**
+   * Cold-start warmup for #3546: fire a non-blocking GET /health so a
+   * scale-to-zero cloud tenant starts warming up before the first real recall.
+   * Fire-and-forget, gated by COGNEE_WARMUP, all errors swallowed.
+   *
+   * Returns void (never a Promise): the async ping is void-discarded and every
+   * async error is caught internally, so it can never throw into or block the
+   * caller and never produces an unhandled rejection. The only synchronous work
+   * (env read, localhost check, URL build) is trivially throw-free.
+   */
+  fireWarmupPing(): void {
+    const enabled = (process.env.COGNEE_WARMUP ?? "").trim().toLowerCase();
+    if (!["1", "true", "yes", "on"].includes(enabled)) return;
+
+    // Cold start is a cloud problem — skip local backends.
+    if (this.baseUrl.includes("localhost") || this.baseUrl.includes("127.0.0.1")) return;
+
+    // Bad/missing value falls back to the default; never throws.
+    const parsed = Number(process.env.COGNEE_WARMUP_TIMEOUT_MS);
+    const warmupTimeoutMs = Number.isFinite(parsed) && parsed > 0 ? parsed : 5_000;
+
+    // Fire-and-forget — intentionally not awaited.
+    void (async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), warmupTimeoutMs);
+      try {
+        await fetch(`${this.baseUrl}/health`, { method: "GET", signal: controller.signal });
+      } catch {
+        // swallow — a failed/aborted warmup must never affect anything
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+  }
+
   // -- Data operations ------------------------------------------------------
 
   async add(params: {
@@ -517,7 +554,14 @@ export class CogneeHttpClient {
     topK?: number;
     sessionId?: string;
     scope?: string | string[];
+    firstRecall?: boolean;
   }): Promise<CogneeSearchResult[]> {
+    // Cold-start first-recall retry (#3546): the first recall of a session may
+    // hit a scale-to-zero tenant that is still warming, so route it through the
+    // retry wrapper. Non-first recalls keep the existing default path untouched.
+    if (params.firstRecall) {
+      return this.recallWithColdStartRetry(params);
+    }
     const recallPath = this.isCloud ? "/recall" : "/api/v1/recall";
     const data = await this.fetchAPI<unknown>(recallPath, {
       method: "POST",
@@ -533,6 +577,71 @@ export class CogneeHttpClient {
       }),
     });
     return normalizeSearchResults(data);
+  }
+
+  /**
+   * Cold-start first-recall retry (#3546). Sole retry source on the first-recall
+   * path: each attempt calls fetchAPI with retries=0 so its generic retry is
+   * intentionally bypassed and we never double-retry (generic loop × this loop).
+   * Non-first recalls (firstRecall falsy) keep the default MAX_RETRIES path
+   * untouched — this is NOT the #127 retries=0 regression, which zeroed retries
+   * for ALL recalls. Only 504 / AbortError are retried (see isColdStartRetryable).
+   */
+  private async recallWithColdStartRetry(params: {
+    queryText: string;
+    searchPrompt: string;
+    searchType: CogneeSearchType;
+    datasetIds: string[];
+    topK?: number;
+    sessionId?: string;
+    scope?: string | string[];
+  }): Promise<CogneeSearchResult[]> {
+    const recallPath = this.isCloud ? "/recall" : "/api/v1/recall";
+    const init: RequestInit = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: params.queryText,
+        search_type: params.searchType,
+        dataset_ids: params.datasetIds,
+        ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
+        ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
+        ...(params.sessionId ? { session_id: params.sessionId } : {}),
+        ...(params.scope ? { scope: params.scope } : {}),
+      }),
+    };
+
+    // Env reads parse safely: NaN / negative / missing fall back to the default.
+    const parsedRetries = Number(process.env.COGNEE_RECALL_RETRIES);
+    const maxRetries =
+      Number.isFinite(parsedRetries) && parsedRetries >= 0 ? Math.floor(parsedRetries) : 1;
+    const parsedBackoff = Number(process.env.COGNEE_RECALL_BACKOFF_MS);
+    const backoffMs =
+      Number.isFinite(parsedBackoff) && parsedBackoff >= 0 ? parsedBackoff : 500;
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        // Backoff = base*(retryIndex+1) + jitter; first retry (retryIndex 0)
+        // always waits ~base, never 0ms. Math.random() is fine in runtime code.
+        const retryIndex = attempt - 1;
+        const delay = backoffMs * (retryIndex + 1) + Math.floor(Math.random() * backoffMs);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+      try {
+        // retries=0 (5th arg): this wrapper owns the retry; fetchAPI's generic
+        // retry is bypassed so a first recall isn't retried twice.
+        const data = await this.fetchAPI<unknown>(recallPath, init, this.timeoutMs, undefined, 0);
+        return normalizeSearchResults(data);
+      } catch (err) {
+        if (attempt < maxRetries && isColdStartRetryable(err)) {
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError;
   }
 
   async listDatasets(): Promise<{ id: string; name: string }[]> {
@@ -569,6 +678,19 @@ export class CogneeHttpClient {
 // ---------------------------------------------------------------------------
 // Helpers (module-private)
 // ---------------------------------------------------------------------------
+
+// Cold-start retry predicate (#3546). NOTE: 504 is detected by matching
+// fetchAPI's own thrown error message `Cognee request failed (504)` — recall()
+// never sees the Response object. The match is anchored to that exact prefix so
+// it can only fire on the status token fetchAPI emits, never a stray "(504)"
+// inside an error body. Mirrors the existing precedent in forget()
+// (msg.includes("(404)")). If fetchAPI's error format changes, update this.
+function isColdStartRetryable(err: unknown): boolean {
+  if (err instanceof Error && err.name === "AbortError") return true;
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof Error && /Cognee request failed \(504\)/.test(err.message)) return true;
+  return false;
+}
 
 function sanitizeFilePath(filePath: string): string {
   var mutatedPath = filePath.replace(/\//g, '_');
