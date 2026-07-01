@@ -18,6 +18,7 @@ uses) would not survive between calls. State lives in the plugin state dir.
 import json
 import os
 import pathlib
+import random
 import sys
 import time
 
@@ -27,6 +28,101 @@ from _recall_http import UNREACHABLE, _error, do_recall
 _THRESHOLD = int(os.environ.get("COGNEE_BREAKER_THRESHOLD", "5"))
 _COOLDOWN = float(os.environ.get("COGNEE_BREAKER_COOLDOWN", "120"))
 _RECALL_TIMEOUT = float(os.environ.get("COGNEE_RECALL_TIMEOUT", "20"))
+
+_COLDSTART_SEEN_MAX = 256  # bound the marker file's session list
+
+
+def coldstart_config() -> tuple[int, float]:
+    """(extra_retries, base_backoff_seconds) for the first-recall cold-start path.
+
+    Read live so runtime/test env changes take effect. Named ``COLDSTART`` to
+    signal these apply only to the first recall of a session, not every recall.
+    """
+    try:
+        retries = int(os.environ.get("COGNEE_RECALL_COLDSTART_RETRIES", "2"))
+    except (TypeError, ValueError):
+        retries = 2
+    try:
+        backoff = float(os.environ.get("COGNEE_RECALL_COLDSTART_BACKOFF", "0.5"))
+    except (TypeError, ValueError):
+        backoff = 0.5
+    return max(0, retries), max(0.0, backoff)
+
+
+def _coldstart_state_path() -> pathlib.Path:
+    base = os.environ.get("COGNEE_PLUGIN_STATE_DIR") or os.path.expanduser("~/.cognee-plugin")
+    return pathlib.Path(base) / "recall-coldstart.json"
+
+
+def _coldstart_seen() -> list:
+    try:
+        data = json.loads(_coldstart_state_path().read_text(encoding="utf-8"))
+        seen = data.get("seen") if isinstance(data, dict) else None
+        return seen if isinstance(seen, list) else []
+    except Exception:
+        return []
+
+
+def is_first_recall(session_id: str) -> bool:
+    """True until ``mark_recall_seen`` records this session (unknown -> treat as first)."""
+    if not session_id:
+        return False
+    return session_id not in _coldstart_seen()
+
+
+def mark_recall_seen(session_id: str) -> None:
+    """Record that this session's first recall has resolved (success or exhausted)."""
+    if not session_id:
+        return
+    seen = _coldstart_seen()
+    if session_id in seen:
+        return
+    seen.append(session_id)
+    if len(seen) > _COLDSTART_SEEN_MAX:
+        seen = seen[-_COLDSTART_SEEN_MAX:]
+    try:
+        path = _coldstart_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"seen": seen}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def retry_cold_start(
+    attempt,
+    *,
+    retries: int,
+    backoff: float,
+    deadline=None,
+    sleep=None,
+    rng=None,
+    monotonic=None,
+):
+    """Retry ``attempt`` on a cold-start miss, with jittered exponential backoff.
+
+    ``attempt`` returns ``(ok, value)``: ``ok=False`` marks a retryable cold-start
+    failure (unreachable / timeout). Retries up to ``retries`` extra times. Sleeps
+    a jittered exponential backoff between tries and NEVER sleeps past ``deadline``
+    (a ``monotonic()`` value); once the budget is spent it stops. Returns the final
+    ``(ok, value)``. Injectable ``sleep``/``rng``/``monotonic`` keep it deterministic
+    in tests.
+    """
+    _sleep = sleep or time.sleep
+    _rand = rng or random.random
+    _now = monotonic or time.monotonic
+    ok, value = attempt()
+    tries = 0
+    while not ok and tries < retries:
+        if deadline is not None and (deadline - _now()) <= 0:
+            break
+        delay = backoff * (2**tries) * (0.5 + _rand())  # jitter in [0.5, 1.5)
+        if deadline is not None:
+            delay = min(delay, max(0.0, deadline - _now()))
+        if delay > 0:
+            _sleep(delay)
+        ok, value = attempt()
+        tries += 1
+    return ok, value
 
 
 def _state_path():
@@ -89,16 +185,30 @@ def recall(service_url, api_key, query, session_id, scope, top_k, dataset="", *,
         # which would just hammer the same down server).
         return _error(503, "cognee temporarily unavailable (circuit open, retry in ~%ds)" % retry)
 
-    result = do_recall(
-        service_url,
-        api_key,
-        query,
-        session_id,
-        scope,
-        top_k,
-        dataset,
-        timeout=timeout or _RECALL_TIMEOUT,
-    )
+    _timeout = timeout or _RECALL_TIMEOUT
+
+    def _once():
+        return do_recall(
+            service_url, api_key, query, session_id, scope, top_k, dataset, timeout=_timeout
+        )
+
+    # Only the FIRST recall of a session retries a warming/unreachable backend;
+    # every later recall is single-shot. The whole retry burst is ONE breaker
+    # event: the accounting below runs once on the final result, so a slow cold
+    # start can't prematurely trip the circuit. Only UNREACHABLE is retryable —
+    # an error envelope (4xx/5xx/auth) is terminal and must fail fast.
+    if session_id and is_first_recall(session_id):
+
+        def _attempt():
+            r = _once()
+            return (r != UNREACHABLE, r)  # ok unless the server was unreachable
+
+        retries, backoff = coldstart_config()
+        _ok, result = retry_cold_start(_attempt, retries=retries, backoff=backoff)
+        mark_recall_seen(session_id)
+    else:
+        result = _once()
+
     if result == UNREACHABLE:
         record_failure("unreachable")
     elif isinstance(result, dict) and int(result.get("status") or 0) >= 500:
