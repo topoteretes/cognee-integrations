@@ -264,9 +264,6 @@ async def _run(prompt: str) -> dict | None:
                         timeout=recall_timeout,
                     )
 
-                # Retry only the first scope of the first recall, and only on a
-                # cold-start error (timeout / connection). An HTTPError is reachable
-                # but rejected, so it fails fast. Backoff is bounded by the budget.
                 if coldstart_first and idx == 0 and cs_retries > 0:
 
                     def _attempt():
@@ -306,8 +303,6 @@ async def _run(prompt: str) -> dict | None:
         except Exception as exc:
             hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
 
-    # First recall resolved (success or exhausted): mark the session warm so later
-    # recalls take the fast, no-retry path and steady-state latency is unchanged.
     if coldstart_first and session_id:
         mark_recall_seen(session_id)
 

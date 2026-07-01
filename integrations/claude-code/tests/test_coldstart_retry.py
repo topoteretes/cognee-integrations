@@ -1,4 +1,4 @@
-"""Unit tests for cold-start recall retry (issue #3542).
+"""Unit tests for cold-start recall retry.
 
 The first recall of a session often lands while the server is still warming, so
 it times out even though a retry a moment later succeeds. These tests cover the
@@ -94,9 +94,6 @@ def test_core_backoff_never_exceeds_budget():
     assert ok is False
     assert sum(slept) <= 1.0 + 1e-9  # never sleeps past the budget
     assert clock["t"] <= 1.0 + 1e-9
-
-
-# ── recall() integration ───────────────────────────────────────────────────
 
 
 def test_first_recall_retries_then_returns_context():

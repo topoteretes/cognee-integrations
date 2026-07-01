@@ -98,15 +98,7 @@ def retry_cold_start(
     rng=None,
     monotonic=None,
 ):
-    """Retry ``attempt`` on a cold-start miss, with jittered exponential backoff.
-
-    ``attempt`` returns ``(ok, value)``: ``ok=False`` marks a retryable cold-start
-    failure (unreachable / timeout). Retries up to ``retries`` extra times. Sleeps
-    a jittered exponential backoff between tries and NEVER sleeps past ``deadline``
-    (a ``monotonic()`` value); once the budget is spent it stops. Returns the final
-    ``(ok, value)``. Injectable ``sleep``/``rng``/``monotonic`` keep it deterministic
-    in tests.
-    """
+    """Retry ``attempt`` on a cold-start miss, with jittered exponential backoff"""
     _sleep = sleep or time.sleep
     _rand = rng or random.random
     _now = monotonic or time.monotonic
@@ -192,11 +184,6 @@ def recall(service_url, api_key, query, session_id, scope, top_k, dataset="", *,
             service_url, api_key, query, session_id, scope, top_k, dataset, timeout=_timeout
         )
 
-    # Only the FIRST recall of a session retries a warming/unreachable backend;
-    # every later recall is single-shot. The whole retry burst is ONE breaker
-    # event: the accounting below runs once on the final result, so a slow cold
-    # start can't prematurely trip the circuit. Only UNREACHABLE is retryable —
-    # an error envelope (4xx/5xx/auth) is terminal and must fail fast.
     if session_id and is_first_recall(session_id):
 
         def _attempt():
