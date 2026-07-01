@@ -585,6 +585,91 @@ async def resolve_user(user_id: str):
     return await get_default_user()
 
 
+# --- Embedding-dimension mismatch detection ---------------------------------
+# When the embedding model changes between writing and reading, stored vectors
+# and fresh query vectors have different dimensions, so recall silently matches
+# nothing. These helpers turn that silent miss into a one-line actionable error
+# naming both dimensions and the active embedder. Strictly best-effort and
+# fail-safe: any uncertainty returns None, preserving the normal "no matches"
+# behavior. Only valid against a *local* store this process can introspect
+# (gate callers with ``service_url_is_local``); a remote/cloud store is owned
+# by the server and isn't reflected by the in-process engine here.
+_DIM_PROBE_COLLECTIONS = (
+    "Entity_name",
+    "TextSummary_text",
+    "EntityType_name",
+    "DocumentChunk_text",
+)
+
+
+def service_url_is_local(url: str = "") -> bool:
+    """True when the resolved service URL points at this machine (loopback)."""
+    host = (urllib.parse.urlparse(url or _local_api_url()).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+async def _sample_stored_vector_dim(engine) -> Optional[int]:
+    """Length of one stored vector from any known collection, or None. Never raises.
+
+    Reads are cheap and safe for concurrent access on both supported backends
+    (LanceDB row sample; pgvector column type). Each probe is independently
+    guarded so a single unreadable collection can't abort the scan.
+    """
+    is_pgvector = type(engine).__name__ == "PGVectorAdapter"
+    for name in _DIM_PROBE_COLLECTIONS:
+        try:
+            if not await engine.has_collection(name):
+                continue
+            if is_pgvector:
+                table = await engine.get_table(name)
+                dim = getattr(getattr(table.c.vector, "type", None), "dim", None)
+                if dim:
+                    return int(dim)
+            else:
+                collection = await engine.get_collection(name)
+                rows = await collection.query().limit(1).to_list()
+                if rows:
+                    vector = rows[0].get("vector")
+                    if vector is not None:
+                        return len(vector)
+        except Exception:
+            continue
+    return None
+
+
+async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
+    """Return a one-line actionable error if the active embedder's vector size
+    differs from the stored vector dimension; else None.
+
+    Best-effort and fail-safe: on any error (cognee not importable, store
+    unreadable, dims indeterminate, or matching) returns None so callers fall
+    back to the normal empty-result path. ``engine`` is injectable for testing;
+    when omitted the in-process cognee vector engine is used.
+    """
+    try:
+        if engine is None:
+            from cognee.infrastructure.databases.vector import get_vector_engine
+
+            engine = get_vector_engine()
+        embed = getattr(engine, "embedding_engine", None)
+        if embed is None:
+            return None
+        query_dim = int(embed.get_vector_size())
+        stored_dim = await _sample_stored_vector_dim(engine)
+        if not stored_dim or not query_dim or stored_dim == query_dim:
+            return None
+        model = getattr(embed, "model", None) or "unknown-model"
+        provider = getattr(embed, "provider", None) or "unknown-provider"
+        return (
+            "Cognee recall found nothing because the embedder changed: stored vectors are "
+            f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
+            f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
+            f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
+        )
+    except Exception:
+        return None
+
+
 def hook_log(event: str, detail: Optional[dict] = None) -> None:
     """Append one structured line to ~/.cognee-plugin/codex/hook.log.
 
