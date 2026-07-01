@@ -20,7 +20,7 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
-    embedding_dimension_mismatch_hint,
+    embedding_dimension_report,
     get_session_key,
     hook_log,
     load_resolved,
@@ -373,18 +373,20 @@ async def _run(prompt: str) -> dict | None:
         # match). Only the local store is introspectable here; surface a one-line
         # actionable error when a mismatch is positively confirmed, else fall back
         # to the normal "no matches" line.
-        mismatch = None
+        dim_status, dim_message = "no_data", None
         if service_url_is_local(service_url):
             try:
-                mismatch = await asyncio.wait_for(
-                    embedding_dimension_mismatch_hint(), timeout=2.0
+                dim_status, dim_message = await asyncio.wait_for(
+                    embedding_dimension_report(), timeout=2.0
                 )
             except Exception as exc:
                 hook_log("dim_check_error", {"error": str(exc)[:200]})
-        if mismatch:
-            full_context = f"{header}\n\n{mismatch}"
-            hook_log("context_lookup_dim_mismatch", {"message": mismatch})
-            notify(mismatch)
+        if dim_message and dim_status in ("mismatch", "unverified"):
+            full_context = f"{header}\n\n{dim_message}"
+            hook_log(
+                "context_lookup_dim_mismatch", {"status": dim_status, "message": dim_message}
+            )
+            notify(dim_message)
         else:
             full_context = f"{header}\n\n(no memory matches for this prompt)"
             hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
