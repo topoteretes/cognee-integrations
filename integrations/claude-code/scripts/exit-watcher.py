@@ -171,6 +171,14 @@ def main() -> None:
     )
 
     try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from telemetry import emit_session_end
+
+        emit_session_end(session_id, mode="http" if service_url else "local_sdk")
+    except Exception:
+        pass
+
+    try:
         if _owns_pidfile(pidfile):
             pidfile.unlink()
     except Exception as exc:
