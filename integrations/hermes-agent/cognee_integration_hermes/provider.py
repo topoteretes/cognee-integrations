@@ -733,10 +733,14 @@ class CogneeMemoryProvider(MemoryProvider):
             if not items:
                 # Distinguish a genuine miss from an embedding-model change that
                 # makes recall structurally unable to match (stored vs query
-                # vectors differ in size). Embedded mode only.
-                hint = self._embedding_dimension_mismatch_hint()
-                if hint:
-                    return json.dumps({"error": hint, "count": 0})
+                # vectors differ in size). Embedded mode only. A confirmed mismatch
+                # is a hard error; a data-present-but-unverifiable store gets a
+                # softer informational note.
+                dim_status, dim_message = self._embedding_dimension_report()
+                if dim_status == "mismatch":
+                    return json.dumps({"error": dim_message, "count": 0})
+                if dim_status == "unverified":
+                    return json.dumps({"result": dim_message, "count": 0})
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
             return json.dumps({"results": items, "count": len(items)})
         except Exception as exc:
@@ -801,19 +805,19 @@ class CogneeMemoryProvider(MemoryProvider):
             lines.append(f"- [{source}] {text[:500]}")
         return lines
 
-    def _embedding_dimension_mismatch_hint(self) -> Optional[str]:
-        """Actionable one-line error when the embedder changed (embedded mode only).
+    def _embedding_dimension_report(self) -> tuple[str, Optional[str]]:
+        """Classify a zero-result recall (embedded mode only). Returns (status, message).
 
         In server/remote mode the server owns the vector store, so introspecting
-        the local in-process engine would be meaningless — skip. Best-effort;
-        never raises.
+        the local in-process engine would be meaningless — skip (``"no_data"``).
+        Best-effort; never raises.
         """
         if self._remote_mode:
-            return None
+            return ("no_data", None)
         try:
-            return self._bridge.run(_dimension_mismatch_hint(), timeout=5.0)
+            return self._bridge.run(_dimension_report(), timeout=5.0)
         except Exception:
-            return None
+            return ("no_data", None)
 
     def _is_breaker_open(self) -> bool:
         if self._consecutive_failures < _BREAKER_THRESHOLD:
@@ -853,36 +857,61 @@ _DIM_PROBE_COLLECTIONS = (
 )
 
 
-async def _sample_stored_vector_dim(engine) -> Optional[int]:
-    """Length of one stored vector from any known collection, or None. Never raises."""
+# One hedged, low-noise line for the "data present but dim unverifiable" case
+# (store unreadable / read errored). Softer than the confirmed-mismatch diagnostic.
+_UNVERIFIED_EMBEDDER_HINT = (
+    "Cognee recall found nothing and could not verify the active embedder against the "
+    "stored vectors (store unreadable or timed out). If memory seems missing after an "
+    "embedding-model change, check EMBEDDING_MODEL / EMBEDDING_DIMENSIONS."
+)
+
+
+async def _probe_stored_dim(engine):
+    """Probe the stored vector dimension across known collections. Never raises.
+
+    Returns ``(status, dim)``: ``("dim", n)`` when a stored vector's dimension was
+    read; ``("unverified", None)`` when a collection exists but its dim could not be
+    read (open/query raised); ``("no_data", None)`` when no collection exists or the
+    collections hold no vectors (a normal fresh/empty state).
+    """
     is_pgvector = type(engine).__name__ == "PGVectorAdapter"
+    saw_collection = False
+    saw_error = False
     for name in _DIM_PROBE_COLLECTIONS:
         try:
             if not await engine.has_collection(name):
                 continue
+            saw_collection = True
             if is_pgvector:
                 table = await engine.get_table(name)
                 dim = getattr(getattr(table.c.vector, "type", None), "dim", None)
                 if dim:
-                    return int(dim)
+                    return ("dim", int(dim))
             else:
                 collection = await engine.get_collection(name)
                 rows = await collection.query().limit(1).to_list()
                 if rows:
                     vector = rows[0].get("vector")
                     if vector is not None:
-                        return len(vector)
+                        return ("dim", len(vector))
         except Exception:
+            saw_error = True
             continue
-    return None
+    if saw_collection and saw_error:
+        return ("unverified", None)
+    return ("no_data", None)
 
 
-async def _dimension_mismatch_hint(engine=None) -> Optional[str]:
-    """One-line actionable error if the active embedder's vector size differs from
-    the stored vector dimension; else None. ``engine`` is injectable for testing.
+async def _dimension_report(engine=None):
+    """Classify a zero-result recall against the embedder/store dimensions.
 
-    Best-effort and fail-safe: on any error (cognee not importable, store
-    unreadable, dims indeterminate, or matching) returns None.
+    Returns ``(status, message)``: ``"mismatch"`` (dims differ; message is the
+    actionable diagnostic), ``"unverified"`` (data present but dim unreadable;
+    message is a hedged hint), ``"match"`` (dims agree; message None), or
+    ``"no_data"`` (nothing to compare / cannot introspect; message None).
+    ``engine`` is injectable for testing. Best-effort and fail-safe: any error
+    stays quiet (``"no_data"``); the hedged hint fires only when a populated store
+    was seen but its dim couldn't be read — never on fresh/empty sessions.
     """
     try:
         if engine is None:
@@ -891,21 +920,26 @@ async def _dimension_mismatch_hint(engine=None) -> Optional[str]:
             engine = get_vector_engine()
         embed = getattr(engine, "embedding_engine", None)
         if embed is None:
-            return None
+            return ("no_data", None)
         query_dim = int(embed.get_vector_size())
-        stored_dim = await _sample_stored_vector_dim(engine)
-        if not stored_dim or not query_dim or stored_dim == query_dim:
-            return None
+        status, stored_dim = await _probe_stored_dim(engine)
+        if status == "unverified":
+            return ("unverified", _UNVERIFIED_EMBEDDER_HINT)
+        if status != "dim" or not stored_dim or not query_dim:
+            return ("no_data", None)
+        if stored_dim == query_dim:
+            return ("match", None)
         model = getattr(embed, "model", None) or "unknown-model"
         provider = getattr(embed, "provider", None) or "unknown-provider"
-        return (
+        message = (
             "Cognee recall found nothing because the embedder changed: stored vectors are "
             f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
             f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
             f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
         )
+        return ("mismatch", message)
     except Exception:
-        return None
+        return ("no_data", None)
 
 
 def _resolve_search_type(search_type: str):

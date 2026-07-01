@@ -610,43 +610,72 @@ def service_url_is_local(url: str = "") -> bool:
     return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
-async def _sample_stored_vector_dim(engine) -> Optional[int]:
-    """Length of one stored vector from any known collection, or None. Never raises.
+# One hedged, low-noise line for the "data present but dim unverifiable" case
+# (store unreadable / read errored). Deliberately softer than the confirmed
+# mismatch diagnostic so it never reads like a hard error.
+_UNVERIFIED_EMBEDDER_HINT = (
+    "Cognee recall found nothing and could not verify the active embedder against the "
+    "stored vectors (store unreadable or timed out). If memory seems missing after an "
+    "embedding-model change, check EMBEDDING_MODEL / EMBEDDING_DIMENSIONS."
+)
+
+
+async def _probe_stored_dim(engine):
+    """Probe the stored vector dimension across known collections. Never raises.
+
+    Returns ``(status, dim)``:
+      - ``("dim", n)``          — read a stored vector's dimension
+      - ``("unverified", None)``— a collection exists but its dim could not be read
+        (open/query raised): a real store is present, we just can't compare
+      - ``("no_data", None)``   — no known collection exists, or collections exist but
+        hold no vectors (a normal fresh/empty state)
 
     Reads are cheap and safe for concurrent access on both supported backends
     (LanceDB row sample; pgvector column type). Each probe is independently
     guarded so a single unreadable collection can't abort the scan.
     """
     is_pgvector = type(engine).__name__ == "PGVectorAdapter"
+    saw_collection = False
+    saw_error = False
     for name in _DIM_PROBE_COLLECTIONS:
         try:
             if not await engine.has_collection(name):
                 continue
+            saw_collection = True
             if is_pgvector:
                 table = await engine.get_table(name)
                 dim = getattr(getattr(table.c.vector, "type", None), "dim", None)
                 if dim:
-                    return int(dim)
+                    return ("dim", int(dim))
             else:
                 collection = await engine.get_collection(name)
                 rows = await collection.query().limit(1).to_list()
                 if rows:
                     vector = rows[0].get("vector")
                     if vector is not None:
-                        return len(vector)
+                        return ("dim", len(vector))
         except Exception:
+            saw_error = True
             continue
-    return None
+    if saw_collection and saw_error:
+        return ("unverified", None)
+    return ("no_data", None)
 
 
-async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
-    """Return a one-line actionable error if the active embedder's vector size
-    differs from the stored vector dimension; else None.
+async def embedding_dimension_report(engine=None):
+    """Classify a zero-result recall against the embedder/store dimensions.
 
-    Best-effort and fail-safe: on any error (cognee not importable, store
-    unreadable, dims indeterminate, or matching) returns None so callers fall
-    back to the normal empty-result path. ``engine`` is injectable for testing;
-    when omitted the in-process cognee vector engine is used.
+    Returns ``(status, message)`` where status is one of:
+      - ``"mismatch"``  — dims differ; ``message`` is a one-line actionable diagnostic
+      - ``"unverified"``— data present but dim unreadable; ``message`` is a hedged hint
+      - ``"match"``     — dims agree (a genuine miss); ``message`` is None
+      - ``"no_data"``   — nothing to compare / cannot introspect; ``message`` is None
+
+    Best-effort and fail-safe: any error resolving the engine/embedder stays quiet
+    (``"no_data"``) so callers fall back to the normal empty-result path. Crucially,
+    the hedged ``"unverified"`` hint fires ONLY when a populated store was seen but
+    its dim couldn't be read — never on fresh/empty sessions (``"no_data"``), so it
+    doesn't nag on every early miss. ``engine`` is injectable for testing.
     """
     try:
         if engine is None:
@@ -655,21 +684,36 @@ async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
             engine = get_vector_engine()
         embed = getattr(engine, "embedding_engine", None)
         if embed is None:
-            return None
+            return ("no_data", None)
         query_dim = int(embed.get_vector_size())
-        stored_dim = await _sample_stored_vector_dim(engine)
-        if not stored_dim or not query_dim or stored_dim == query_dim:
-            return None
+        status, stored_dim = await _probe_stored_dim(engine)
+        if status == "unverified":
+            return ("unverified", _UNVERIFIED_EMBEDDER_HINT)
+        if status != "dim" or not stored_dim or not query_dim:
+            return ("no_data", None)
+        if stored_dim == query_dim:
+            return ("match", None)
         model = getattr(embed, "model", None) or "unknown-model"
         provider = getattr(embed, "provider", None) or "unknown-provider"
-        return (
+        message = (
             "Cognee recall found nothing because the embedder changed: stored vectors are "
             f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
             f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
             f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
         )
+        return ("mismatch", message)
     except Exception:
-        return None
+        return ("no_data", None)
+
+
+async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
+    """Back-compat wrapper: the confirmed-mismatch diagnostic string, or None.
+
+    Prefer ``embedding_dimension_report``, which also distinguishes the
+    ``"unverified"`` (data present, dim unreadable) case.
+    """
+    status, message = await embedding_dimension_report(engine)
+    return message if status == "mismatch" else None
 
 
 def hook_log(event: str, detail: Optional[dict] = None) -> None:

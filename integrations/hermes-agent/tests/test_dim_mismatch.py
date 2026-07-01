@@ -1,10 +1,9 @@
-"""Tests for the embedding-dimension mismatch hint in the Hermes provider.
+"""Tests for the embedding-dimension probe in the Hermes provider.
 
-When the embedding model changes between writing and reading, stored vectors and
-fresh query vectors differ in size, so recall silently matches nothing. The hint
-turns that silent miss into a one-line actionable error naming both dimensions
-and the active embedder. A fake vector engine is injected so cognee is not
-required; the provider imports it lazily.
+``_dimension_report`` classifies a zero-result recall as "mismatch" (actionable
+diagnostic), "unverified" (data present but dim unreadable -> hedged hint),
+"match" (genuine miss), or "no_data" (nothing to compare / cannot introspect).
+A fake vector engine is injected so cognee is not required.
 
 Runs under pytest or standalone (``python3 tests/test_dim_mismatch.py``).
 """
@@ -64,55 +63,73 @@ class _FakeLanceEngine:
         return _FakeCollection(rows)
 
 
-def _hint(engine):
-    return asyncio.run(provider_mod._dimension_mismatch_hint(engine))
+class _FakeErrorEngine:
+    def __init__(self, query_size):
+        self.embedding_engine = _FakeEmbed(query_size)
+
+    async def has_collection(self, name):
+        return name == "Entity_name"
+
+    async def get_collection(self, _name):
+        raise RuntimeError("store locked")
 
 
-class TestDimensionMismatchHint(unittest.TestCase):
+def _report(engine):
+    return asyncio.run(provider_mod._dimension_report(engine))
+
+
+class TestDimensionReport(unittest.TestCase):
     def test_mismatch_names_both_dims_and_model(self):
-        msg = _hint(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536))
-        self.assertIsNotNone(msg)
+        status, msg = _report(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536))
+        self.assertEqual(status, "mismatch")
         self.assertIn("1536", msg)
         self.assertIn("3072", msg)
         self.assertIn("text-embedding-3-large", msg)
 
-    def test_matching_dims_returns_none(self):
-        self.assertIsNone(_hint(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)))
-
-    def test_no_collections_returns_none(self):
-        self.assertIsNone(
-            _hint(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536, present=()))
+    def test_matching_dims_is_match(self):
+        self.assertEqual(
+            _report(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)), ("match", None)
         )
 
-    def test_broken_engine_never_raises(self):
+    def test_no_collections_is_no_data(self):
+        engine = _FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536, present=())
+        self.assertEqual(_report(engine), ("no_data", None))
+
+    def test_unreadable_store_is_unverified(self):
+        status, msg = _report(_FakeErrorEngine(query_size=3072))
+        self.assertEqual(status, "unverified")
+        self.assertIn("could not verify", msg)
+
+    def test_broken_engine_is_no_data(self):
         class _Broken:
             @property
             def embedding_engine(self):
                 raise RuntimeError("boom")
 
-        self.assertIsNone(_hint(_Broken()))
+        self.assertEqual(_report(_Broken()), ("no_data", None))
 
 
 class TestProviderGate(unittest.TestCase):
     def test_remote_mode_skips_check(self):
         provider = provider_mod.CogneeMemoryProvider()
         provider._remote_mode = True
-        # No bridge work and no cognee import in remote mode.
-        self.assertIsNone(provider._embedding_dimension_mismatch_hint())
+        self.assertEqual(provider._embedding_dimension_report(), ("no_data", None))
 
     def test_embedded_mode_runs_check_via_bridge(self):
         provider = provider_mod.CogneeMemoryProvider()
         provider._remote_mode = False
 
-        async def _fake_hint():
-            return "DIM MISMATCH"
+        async def _fake_report():
+            return ("mismatch", "DIM MISMATCH")
 
-        original = provider_mod._dimension_mismatch_hint
-        provider_mod._dimension_mismatch_hint = _fake_hint
+        original = provider_mod._dimension_report
+        provider_mod._dimension_report = _fake_report
         try:
-            self.assertEqual(provider._embedding_dimension_mismatch_hint(), "DIM MISMATCH")
+            self.assertEqual(
+                provider._embedding_dimension_report(), ("mismatch", "DIM MISMATCH")
+            )
         finally:
-            provider_mod._dimension_mismatch_hint = original
+            provider_mod._dimension_report = original
             provider._bridge.shutdown()
 
 
