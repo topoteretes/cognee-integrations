@@ -291,3 +291,39 @@ Config precedence:
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
+
+## Configuration precedence
+
+Resolution order: **env > config file > default** (env wins). See `load_config()`
+in `scripts/config.py`. Behavior pinned by `tests/test_config_precedence.py`.
+
+| Setting | Env var | Config key | Default | Who wins |
+| --- | --- | --- | --- | --- |
+| Dataset | `COGNEE_PLUGIN_DATASET` | `dataset` | `agent_sessions` | env |
+| Service URL | `COGNEE_BASE_URL` | `base_url` | unset | env |
+| API key | `COGNEE_API_KEY` | `api_key` | unset | env |
+| Backend | `COGNEE_CLAUDE_BACKEND` | `backend` | `auto` | env |
+
+An empty string cannot override on either layer: an empty config-file value is
+dropped (`v != ""`) and an empty env value is skipped (`if val:`).
+
+Backend `native` (or `local`/`sdk`) forces local mode: `base_url` and `api_key`
+are cleared to empty after the merge.
+
+> **Known issue (#3559): config-file values for the poll/timeout knobs are
+> ignored.** `COGNEE_COGNIFY_POLL_INTERVAL`, `COGNEE_BRIDGE_POLL_DEADLINE`,
+> `COGNEE_BRIDGE_SUBMIT_TIMEOUT`, `COGNEE_REMEMBER_WAIT_SECONDS`, and
+> `COGNEE_STATUS_REQUEST_TIMEOUT` are registered in `_ENV_MAP` (so they appear in
+> the config file), but consumers read them from the environment only (via
+> `_float_env`), so a value set only in the config file has no effect. Captured as
+> a strict `xfail` in `tests/test_config_precedence.py`.
+
+### Testing & scope (#3559)
+
+- **Test + docs only** — no runtime config behavior was changed.
+- Precedence is documented per integration as it behaves today; the four Cognee
+  integrations are intentionally **not** converged (that is a product decision,
+  out of scope here).
+- These tests run locally today, not in CI (`ci.yml` runs pytest only for
+  integrations with their own `pyproject.toml`); wiring claude-code into CI is
+  deferred to a follow-up issue.
