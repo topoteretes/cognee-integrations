@@ -29,20 +29,11 @@ _THRESHOLD = int(os.environ.get("COGNEE_BREAKER_THRESHOLD", "5"))
 _COOLDOWN = float(os.environ.get("COGNEE_BREAKER_COOLDOWN", "120"))
 _RECALL_TIMEOUT = float(os.environ.get("COGNEE_RECALL_TIMEOUT", "20"))
 
-# Cold-start retry: the very first recall of a session often lands while the
-# server is still warming (booting, migrating, cold DB/embedding pools), so the
-# connection times out even though a retry a moment later succeeds. We retry ONLY
-# that first recall; steady-state recalls stay single-shot so the per-prompt
-# latency budget is untouched. Defaults are conservative and env-tunable.
 _COLDSTART_SEEN_MAX = 256  # bound the marker file's session list
 
 
 def coldstart_config() -> tuple[int, float]:
-    """(extra_retries, base_backoff_seconds) for the first-recall cold-start path.
-
-    Read live so runtime/test env changes take effect. Named ``COLDSTART`` to
-    signal these apply only to the first recall of a session, not every recall.
-    """
+    """(extra_retries, base_backoff_seconds) for the first-recall cold-start path."""
     try:
         retries = int(os.environ.get("COGNEE_RECALL_COLDSTART_RETRIES", "2"))
     except (TypeError, ValueError):
@@ -103,15 +94,7 @@ def retry_cold_start(
     rng=None,
     monotonic=None,
 ):
-    """Retry ``attempt`` on a cold-start miss, with jittered exponential backoff.
-
-    ``attempt`` returns ``(ok, value)``: ``ok=False`` marks a retryable cold-start
-    failure (unreachable / timeout). Retries up to ``retries`` extra times. Sleeps
-    a jittered exponential backoff between tries and NEVER sleeps past ``deadline``
-    (a ``monotonic()`` value); once the budget is spent it stops. Returns the final
-    ``(ok, value)``. Injectable ``sleep``/``rng``/``monotonic`` keep it deterministic
-    in tests.
-    """
+    """Retry ``attempt`` on a cold-start miss, with jittered exponential backoff."""
     _sleep = sleep or time.sleep
     _rand = rng or random.random
     _now = monotonic or time.monotonic
@@ -197,11 +180,6 @@ def recall(service_url, api_key, query, session_id, scope, top_k, dataset="", *,
             service_url, api_key, query, session_id, scope, top_k, dataset, timeout=_timeout
         )
 
-    # Only the FIRST recall of a session retries a warming/unreachable backend;
-    # every later recall is single-shot. The whole retry burst is ONE breaker
-    # event: the accounting below runs once on the final result, so a slow cold
-    # start can't prematurely trip the circuit. Only UNREACHABLE is retryable —
-    # an error envelope (4xx/5xx/auth) is terminal and must fail fast.
     if session_id and is_first_recall(session_id):
 
         def _attempt():
