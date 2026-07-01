@@ -49,39 +49,33 @@ def config_path(hermes_home: str | Path | None = None) -> Path | None:
 
 
 def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
-    """Load plugin config from environment variables and HERMES_HOME/cognee.json."""
-    # COGNEE_BASE_URL is the canonical name; COGNEE_SERVICE_URL is a deprecated alias
-    # kept for backward compatibility. A set service_url selects remote/cloud mode.
-    service_url = os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_SERVICE_URL", "")
+    """Load merged config: defaults -> file -> environment variables."""
     config: dict[str, Any] = {
-        "llm_api_key": os.environ.get("LLM_API_KEY", ""),
-        "llm_model": os.environ.get("LLM_MODEL", ""),
-        "service_url": service_url,
-        "api_key": os.environ.get("COGNEE_API_KEY", ""),
+        "llm_api_key": "",
+        "llm_model": "",
+        "service_url": "",
+        "api_key": "",
         # Connection mode knobs (see provider.initialize / README "Modes").
         # embedded=true runs cognee in-process (single-process/offline only);
         # otherwise local mode ensures a local server on local_port (DB-safe).
-        "embedded": str_to_bool(os.environ.get("COGNEE_EMBEDDED"), False),
-        "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), 8000),
-        "server_boot_timeout": str_to_int(os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), 30),
-        "dataset": os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
-        "top_k": str_to_int(os.environ.get("COGNEE_TOP_K"), 5),
-        "auto_route": str_to_bool(os.environ.get("COGNEE_AUTO_ROUTE"), True),
-        "improve_on_end": str_to_bool(os.environ.get("COGNEE_IMPROVE_ON_END"), True),
+        "embedded": False,
+        "local_port": 8000,
+        "server_boot_timeout": 30,
+        "dataset": DEFAULT_DATASET,
+        "top_k": 5,
+        "auto_route": True,
+        "improve_on_end": True,
         # Tri-state: "" = auto (background only in server/remote mode, where the
         # server outlives this process; synchronous in embedded). Set to force.
-        "improve_background": os.environ.get("COGNEE_IMPROVE_BACKGROUND", ""),
-        "session_prefix": os.environ.get("COGNEE_SESSION_PREFIX", "hermes"),
-        "data_root": os.environ.get("COGNEE_DATA_ROOT", ""),
-        "system_root": os.environ.get("COGNEE_SYSTEM_ROOT", ""),
-        "identity_email": os.environ.get("COGNEE_HERMES_USER_EMAIL", DEFAULT_IDENTITY_EMAIL),
-        "identity_password": os.environ.get(
-            "COGNEE_HERMES_USER_PASSWORD",
-            DEFAULT_IDENTITY_PASSWORD,
-        ),
-        "recall_timeout": str_to_int(os.environ.get("COGNEE_RECALL_TIMEOUT"), 60),
-        "write_timeout": str_to_int(os.environ.get("COGNEE_WRITE_TIMEOUT"), 120),
-        "improve_timeout": str_to_int(os.environ.get("COGNEE_IMPROVE_TIMEOUT"), 300),
+        "improve_background": "",
+        "session_prefix": "hermes",
+        "data_root": "",
+        "system_root": "",
+        "identity_email": DEFAULT_IDENTITY_EMAIL,
+        "identity_password": DEFAULT_IDENTITY_PASSWORD,
+        "recall_timeout": 60,
+        "write_timeout": 120,
+        "improve_timeout": 300,
     }
 
     path = config_path(hermes_home)
@@ -94,6 +88,38 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
                 )
         except Exception:
             pass
+
+    env_map = {
+        "LLM_API_KEY": "llm_api_key",
+        "LLM_MODEL": "llm_model",
+        "COGNEE_API_KEY": "api_key",
+        "COGNEE_EMBEDDED": "embedded",
+        "COGNEE_LOCAL_PORT": "local_port",
+        "COGNEE_SERVER_BOOT_TIMEOUT": "server_boot_timeout",
+        "COGNEE_DATASET": "dataset",
+        "COGNEE_TOP_K": "top_k",
+        "COGNEE_AUTO_ROUTE": "auto_route",
+        "COGNEE_IMPROVE_ON_END": "improve_on_end",
+        "COGNEE_IMPROVE_BACKGROUND": "improve_background",
+        "COGNEE_SESSION_PREFIX": "session_prefix",
+        "COGNEE_DATA_ROOT": "data_root",
+        "COGNEE_SYSTEM_ROOT": "system_root",
+        "COGNEE_HERMES_USER_EMAIL": "identity_email",
+        "COGNEE_HERMES_USER_PASSWORD": "identity_password",
+        "COGNEE_RECALL_TIMEOUT": "recall_timeout",
+        "COGNEE_WRITE_TIMEOUT": "write_timeout",
+        "COGNEE_IMPROVE_TIMEOUT": "improve_timeout",
+    }
+    for env_key, config_key in env_map.items():
+        if os.environ.get(env_key, "") != "":
+            config[config_key] = os.environ[env_key]
+
+    # COGNEE_BASE_URL is the canonical name; COGNEE_SERVICE_URL is a deprecated
+    # alias kept for backward compatibility.
+    if os.environ.get("COGNEE_SERVICE_URL", "") != "":
+        config["service_url"] = os.environ["COGNEE_SERVICE_URL"]
+    if os.environ.get("COGNEE_BASE_URL", "") != "":
+        config["service_url"] = os.environ["COGNEE_BASE_URL"]
 
     config["top_k"] = max(1, str_to_int(config.get("top_k"), 5))
     config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 60))

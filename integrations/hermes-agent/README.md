@@ -101,6 +101,15 @@ COGNEE_DATASET=hermes
 
 ### Optional settings
 
+Config precedence is the same for every setting below:
+1. environment variables
+2. `$HERMES_HOME/cognee.json`
+3. defaults
+
+`COGNEE_BASE_URL` is the canonical service URL environment variable and wins
+over the legacy `COGNEE_SERVICE_URL` alias when both are set. Empty environment
+variables are treated as unset, so they do not override `$HERMES_HOME/cognee.json`.
+
 | Setting | Env var | Default |
 | --- | --- | --- |
 | `dataset` | `COGNEE_DATASET` | `hermes` |
@@ -115,6 +124,14 @@ COGNEE_DATASET=hermes
 | `server_boot_timeout` | `COGNEE_SERVER_BOOT_TIMEOUT` | `30` |
 | `data_root` | `COGNEE_DATA_ROOT` | `$HERMES_HOME/cognee/data` |
 | `system_root` | `COGNEE_SYSTEM_ROOT` | `$HERMES_HOME/cognee/system` |
+| `llm_api_key` | `LLM_API_KEY` | empty |
+| `llm_model` | `LLM_MODEL` | empty |
+| `api_key` | `COGNEE_API_KEY` | empty |
+| `identity_email` | `COGNEE_HERMES_USER_EMAIL` | `hermes-agent@cognee.local` |
+| `identity_password` | `COGNEE_HERMES_USER_PASSWORD` | `hermes-agent-plugin` |
+| `recall_timeout` | `COGNEE_RECALL_TIMEOUT` | `60` |
+| `write_timeout` | `COGNEE_WRITE_TIMEOUT` | `120` |
+| `improve_timeout` | `COGNEE_IMPROVE_TIMEOUT` | `300` |
 
 > `COGNEE_SERVICE_URL` is a deprecated alias for `COGNEE_BASE_URL`. It still works
 > (with lower precedence) but new setups should use `COGNEE_BASE_URL`.
@@ -146,4 +163,3 @@ uv sync --dev
 uv run pytest -q
 uv run ruff check .
 ```
-

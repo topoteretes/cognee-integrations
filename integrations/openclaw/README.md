@@ -184,42 +184,57 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 
 ## Configuration Options
 
+Config precedence is:
+1. environment variables
+2. plugin config in `~/.openclaw/openclaw.json`
+3. defaults
+
+Environment variables are trimmed before use. Empty environment variables are
+treated as unset, so they do not override plugin config.
+
 ### Connection
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `baseUrl` | string | `http://localhost:8000` | Cognee API base URL |
-| `apiKey` | string | `$COGNEE_API_KEY` | API key for authentication |
+| Option | Env var | Type | Default | Description |
+|--------|---------|------|---------|-------------|
+| `mode` | `COGNEE_MODE` | string | `local` | `local` or `cloud` |
+| `baseUrl` | `COGNEE_BASE_URL` | string | `http://localhost:8000` | Cognee API base URL |
+| `apiKey` | `COGNEE_API_KEY` | string | empty | API key for authentication |
+| `username` | `COGNEE_USERNAME` | string | empty | Cognee login username |
+| `password` | `COGNEE_PASSWORD` | string | empty | Cognee login password |
+| `datasetName` | `COGNEE_OPENCLAW_DATASET_NAME` | string | `openclaw` | Single-scope dataset name |
 
 ### Memory Scopes
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `companyDataset` | string | — | Dataset for company-wide memory. Setting this enables multi-scope mode |
-| `userDatasetPrefix` | string | — | Prefix for user datasets (becomes `{prefix}-{userId}`) |
-| `agentDatasetPrefix` | string | — | Prefix for agent datasets (becomes `{prefix}-{agentId}`) |
-| `userId` | string | `$OPENCLAW_USER_ID` | User identifier for user-scoped memory |
-| `agentId` | string | `default` | Agent identifier for agent-scoped memory |
-| `recallScopes` | string[] | `["agent","user","company"]` | Scopes to search during recall, in priority order |
-| `defaultWriteScope` | string | `agent` | Default scope for files not matching any route |
-| `scopeRouting` | object[] | (see above) | Path-to-scope routing rules |
+| Option | Env var | Type | Default | Description |
+|--------|---------|------|---------|-------------|
+| `companyDataset` | `COGNEE_OPENCLAW_COMPANY_DATASET` | string | empty | Dataset for company-wide memory. Setting this enables multi-scope mode |
+| `userDatasetPrefix` | `COGNEE_OPENCLAW_USER_DATASET_PREFIX` | string | empty | Prefix for user datasets (becomes `{prefix}-{userId}`) |
+| `agentDatasetPrefix` | `COGNEE_OPENCLAW_AGENT_DATASET_PREFIX` | string | empty | Prefix for agent datasets (becomes `{prefix}-{agentId}`) |
+| `agentDatasetTemplate` | `COGNEE_OPENCLAW_AGENT_DATASET_TEMPLATE` | string | empty | Template for agent datasets with `{agentId}` |
+| `userId` | `OPENCLAW_USER_ID`, `COGNEE_OPENCLAW_USER_ID` | string | empty | User identifier for user-scoped memory |
+| `agentId` | `OPENCLAW_AGENT_ID`, `COGNEE_OPENCLAW_AGENT_ID` | string | `default` | Agent identifier for agent-scoped memory |
+| `recallScopes` | `COGNEE_OPENCLAW_RECALL_SCOPES` | string[] | `["agent","user","company"]` | Comma-separated or JSON array scopes to search during recall |
+| `defaultWriteScope` | `COGNEE_OPENCLAW_DEFAULT_WRITE_SCOPE` | string | `agent` | Default scope for files not matching any route |
+| `scopeRouting` | `COGNEE_OPENCLAW_SCOPE_ROUTING` | object[] | (see above) | JSON path-to-scope routing rules |
+| `perAgentMemory` | `COGNEE_OPENCLAW_PER_AGENT_MEMORY` | boolean | `false` | Enable per-agent workspace and dataset tracking |
 
 ### Sessions
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enableSessions` | boolean | `true` | Enable session-based conversation tracking |
-| `persistSessionsAfterEnd` | boolean | `true` | Persist session Q&A into the knowledge graph |
+| Option | Env var | Type | Default | Description |
+|--------|---------|------|---------|-------------|
+| `enableSessions` | `COGNEE_OPENCLAW_ENABLE_SESSIONS` | boolean | `true` | Enable session-based conversation tracking |
+| `persistSessionsAfterEnd` | `COGNEE_OPENCLAW_PERSIST_SESSIONS_AFTER_END` | boolean | `true` | Persist session Q&A into the knowledge graph |
 
 ### Search
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `searchType` | string | `GRAPH_COMPLETION` | Search strategy (see below) |
-| `maxResults` | number | `3` | Max memories to inject per scope (sent as `top_k` to Cognee) |
-| `minScore` | number | `0.3` | Minimum relevance score filter |
-| `searchPrompt` | string | `""` | System prompt to guide search |
-| ~~`maxTokens`~~ | number | `512` | **Deprecated** — Cognee 1.0.3's recall payload no longer accepts a token cap; use `maxResults` instead. Setting this is silently ignored. |
+| Option | Env var | Type | Default | Description |
+|--------|---------|------|---------|-------------|
+| `searchType` | `COGNEE_OPENCLAW_SEARCH_TYPE` | string | `GRAPH_COMPLETION` | Search strategy (see below) |
+| `maxResults` | `COGNEE_OPENCLAW_MAX_RESULTS` | number | `3` | Max memories to inject per scope (sent as `top_k` to Cognee) |
+| `minScore` | `COGNEE_OPENCLAW_MIN_SCORE` | number | `0.3` | Minimum relevance score filter |
+| `searchPrompt` | `COGNEE_OPENCLAW_SEARCH_PROMPT` | string | `""` | System prompt to guide search |
+| `recallInjectionPosition` | `COGNEE_OPENCLAW_RECALL_INJECTION_POSITION` | string | `prependContext` | Where recalled memories are injected |
+| ~~`maxTokens`~~ | `COGNEE_OPENCLAW_MAX_TOKENS` | number | `512` | **Deprecated** — Cognee 1.0.3's recall payload no longer accepts a token cap; use `maxResults` instead. Setting this is silently ignored. |
 
 ### Search Types
 
@@ -243,21 +258,21 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 
 ### Automation
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `autoRecall` | boolean | `true` | Inject memories before agent runs |
-| `autoIndex` | boolean | `true` | Sync memory files on startup, after agent runs, and on session end |
-| `improveOnSessionEnd` | boolean | `true` | On `session_end`, call `/improve` with the session id to bridge session-cache QAs into the graph |
-| ~~`autoCognify`~~ | boolean | `true` | **Deprecated** — `/remember` runs the cognify step server-side. Setting this is silently ignored. |
-| ~~`autoMemify`~~ | boolean | `false` | **Deprecated** — graph enrichment now runs server-side via `/remember`'s `self_improvement` default. Setting this is silently ignored. |
-| ~~`deleteMode`~~ | string | `soft` | **Deprecated** — `/forget` always runs the equivalent of `soft`; the legacy `hard` mode is gone (cognee's source explicitly warns against it). Setting this is silently ignored. |
+| Option | Env var | Type | Default | Description |
+|--------|---------|------|---------|-------------|
+| `autoRecall` | `COGNEE_OPENCLAW_AUTO_RECALL` | boolean | `true` | Inject memories before agent runs |
+| `autoIndex` | `COGNEE_OPENCLAW_AUTO_INDEX` | boolean | `true` | Sync memory files on startup, after agent runs, and on session end |
+| `improveOnSessionEnd` | `COGNEE_OPENCLAW_IMPROVE_ON_SESSION_END` | boolean | `true` | On `session_end`, call `/improve` with the session id to bridge session-cache QAs into the graph |
+| ~~`autoCognify`~~ | `COGNEE_OPENCLAW_AUTO_COGNIFY` | boolean | `true` | **Deprecated** — `/remember` runs the cognify step server-side. Setting this is silently ignored. |
+| ~~`autoMemify`~~ | `COGNEE_OPENCLAW_AUTO_MEMIFY` | boolean | `false` | **Deprecated** — graph enrichment now runs server-side via `/remember`'s `self_improvement` default. Setting this is silently ignored. |
+| ~~`deleteMode`~~ | `COGNEE_OPENCLAW_DELETE_MODE` | string | `soft` | **Deprecated** — `/forget` always runs the equivalent of `soft`; the legacy `hard` mode is gone (cognee's source explicitly warns against it). Setting this is silently ignored. |
 
 ### Timeouts
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `requestTimeoutMs` | number | `60000` | HTTP timeout for Cognee requests |
-| `ingestionTimeoutMs` | number | `300000` | HTTP timeout for add/update requests |
+| Option | Env var | Type | Default | Description |
+|--------|---------|------|---------|-------------|
+| `requestTimeoutMs` | `COGNEE_OPENCLAW_REQUEST_TIMEOUT_MS` | number | `60000` | HTTP timeout for Cognee requests |
+| `ingestionTimeoutMs` | `COGNEE_OPENCLAW_INGESTION_TIMEOUT_MS` | number | `300000` | HTTP timeout for add/update requests |
 
 Note: Files are stored in Cognee using sanitized relative paths as filenames (e.g., `MEMORY.md.txt` for `MEMORY.md`, `memory.tools.md.txt` for `memory/tools.md`) for easy identification and to avoid path separator issues.
 
