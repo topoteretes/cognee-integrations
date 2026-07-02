@@ -1065,6 +1065,15 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def elapsed_ms(start: float) -> int:
+    """Whole milliseconds elapsed since a ``time.monotonic()`` start marker.
+
+    Monotonic-based so it is immune to wall-clock jumps / NTP drift, and rounded to
+    an int so the ``elapsed_ms`` fields in hook.log stay compact and easy to query.
+    """
+    return int(round((time.monotonic() - start) * 1000))
+
+
 def wait_for_cognify(
     dataset_id: str,
     *,
@@ -1422,15 +1431,25 @@ def persist_session_cache_to_graph_via_http(
             if time.monotonic() - overall_start >= poll_deadline:
                 hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
                 break
+            # Time the POST + wait_for_cognify poll together so http_bridge_poll
+            # reports the full latency the caller waited on (submit + confirm).
+            doc_start = time.monotonic()
             submitted = _post_remember_document(
                 base_url, api_key, dataset, document, node_set, submit_timeout
             )
             if not submitted.get("ok"):
                 # Skip this document (digest stays unmarked → retried later) but keep
                 # syncing the others; one bad/transient document must not abort the sync.
+                # Emit elapsed_ms on the failure path too, so slow-failing submits
+                # (e.g. a POST that times out) are still visible in latency logs.
                 hook_log(
                     "http_bridge_post_failed",
-                    {"dataset": dataset, "kind": kind, "status": submitted.get("status")},
+                    {
+                        "dataset": dataset,
+                        "kind": kind,
+                        "status": submitted.get("status"),
+                        "elapsed_ms": elapsed_ms(doc_start),
+                    },
                 )
                 continue
             dataset_id = submitted.get("dataset_id") or ""
@@ -1438,13 +1457,19 @@ def persist_session_cache_to_graph_via_http(
                 if submitted.get("parse_error"):
                     # 2xx but an unparseable body (e.g. a proxy/nginx error page): we
                     # can't trust the write landed, so leave the digest unmarked to retry.
-                    hook_log("http_bridge_parse_error", {"dataset": dataset, "kind": kind})
+                    hook_log(
+                        "http_bridge_parse_error",
+                        {"dataset": dataset, "kind": kind, "elapsed_ms": elapsed_ms(doc_start)},
+                    )
                     continue
                 # Valid response with no handle to poll. Mark written so we don't
                 # resubmit and duplicate the cognify on every future sync.
                 state[state_key] = digest
                 wrote = True
-                hook_log("http_bridge_no_dataset_id", {"dataset": dataset, "kind": kind})
+                hook_log(
+                    "http_bridge_no_dataset_id",
+                    {"dataset": dataset, "kind": kind, "elapsed_ms": elapsed_ms(doc_start)},
+                )
                 continue
             remaining = poll_deadline - (time.monotonic() - overall_start)
             if remaining <= 0:
@@ -1465,7 +1490,13 @@ def persist_session_cache_to_graph_via_http(
                 wrote = True
             hook_log(
                 "http_bridge_poll",
-                {"dataset": dataset, "kind": kind, "outcome": outcome, "dataset_id": dataset_id},
+                {
+                    "dataset": dataset,
+                    "kind": kind,
+                    "outcome": outcome,
+                    "dataset_id": dataset_id,
+                    "elapsed_ms": elapsed_ms(doc_start),
+                },
             )
         if isinstance(bridge_cache, dict):
             bridge_cache["_state"] = state
