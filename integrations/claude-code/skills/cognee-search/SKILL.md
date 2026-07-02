@@ -80,6 +80,8 @@ Results include a `_source` field:
 
 Session entries tagged with `[category:agent]` are automatic tool call logs.
 
+An object with a `captured_pending` field (`{"recall": [], "captured_pending": {...}, "hint": ...}`) means the server found nothing **yet**, but content captured this session is still waiting on cognify — it is not "no memory". Retry shortly (the background sync picks it up) or run `/cognee-memory:cognee-sync` instead of falling back to transcript search.
+
 ## Decision table
 
 | Signal | Action |
@@ -89,4 +91,5 @@ Session entries tagged with `[category:agent]` are automatic tool call logs.
 | "what does the codebase do" / "what did we do last time" | `cognee-search.sh "<query>" 10 --graph` |
 | Need a specific category | use the `node_name` curl form above (`["user_context"\|"project_docs"\|"agent_actions"]`) |
 | Auto context insufficient | `cognee-search.sh "<query>" 10 --session` |
+| Output has `captured_pending` | Content captured but not yet cognified — retry shortly or run `/cognee-memory:cognee-sync`; do **not** transcript-grep |
 | **Result empty but you expect content** | **Ground-truth via the `curl` above before concluding "not found"** |

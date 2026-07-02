@@ -1447,11 +1447,13 @@ def _multipart_body(
     return b"".join(chunks), boundary
 
 
-def _format_cached_bridge_document(dataset: str, session_id: str) -> tuple[str, str]:
-    cache = _load_json_file(_bridge_file(session_id))
-    key = _bridge_cache_key(dataset, session_id)
-    session_cache = cache.get(key, {})
+def _format_bridge_docs(session_cache: dict, session_id: str) -> tuple[str, str]:
+    """Build the (qa_doc, trace_doc) pair for one bridge-cache key.
 
+    Shared by the drain (which hashes + posts the docs) and
+    ``pending_capture_counts`` (which hashes them to detect not-yet-cognified
+    content), so both always compute identical digests for identical content.
+    """
     qa_lines: list[str] = []
     for entry in session_cache.get("qa", []) or []:
         question = str(entry.get("question") or "").strip()
@@ -1473,6 +1475,65 @@ def _format_cached_bridge_document(dataset: str, session_id: str) -> tuple[str, 
     if trace_doc:
         trace_doc = f"Session ID: {session_id}\n\n{trace_doc}"
     return qa_doc, trace_doc
+
+
+def _format_cached_bridge_document(dataset: str, session_id: str) -> tuple[str, str]:
+    cache = _load_json_file(_bridge_file(session_id))
+    key = _bridge_cache_key(dataset, session_id)
+    return _format_bridge_docs(cache.get(key, {}), session_id)
+
+
+def pending_capture_counts(session_id: str) -> dict:
+    """Count bridge entries captured this session but not yet confirmed cognified.
+
+    The drain (``persist_session_cache_to_graph_via_http``) marks each qa/trace
+    document as cognified by storing its sha256 digest under
+    ``_state["{dataset}:{session_id}:{kind}"]``. A kind whose current digest is
+    absent or stale is captured-but-not-yet-queryable, which lets callers tell
+    "nothing stored" apart from "stored, cognify still pending" on empty recall.
+
+    Scans every file in ``_BRIDGE_DIR`` rather than only ``_bridge_file(session_id)``:
+    bridge filenames are scoped by COGNEE_SESSION_KEY, which hook processes set but
+    the ``cognee-search.sh`` shell environment may not, so matching by the
+    ``:{session_id}`` key suffix works from both paths (session ids are sanitized
+    to ``[alnum-_.]``, so the suffix match cannot split a session id).
+
+    Best-effort, never raises: any read/parse failure counts as zero pending.
+    """
+    pending = {"qa": 0, "trace": 0}
+    if not session_id:
+        return pending
+    try:
+        bridge_paths = sorted(_BRIDGE_DIR.glob("*.json")) if _BRIDGE_DIR.exists() else []
+    except OSError as exc:
+        hook_log("pending_capture_scan_failed", {"error": str(exc)[:200]})
+        return pending
+    suffix = f":{session_id}"
+    for path in bridge_paths:
+        # Per-file guard: a bridge file with a corrupt SHAPE (valid JSON, wrong
+        # entry types) must skip that file, not abort the caller's hook output.
+        try:
+            cache = _load_json_file(path)
+            if not isinstance(cache, dict):
+                continue
+            state = cache.get("_state") if isinstance(cache.get("_state"), dict) else {}
+            for key, session_cache in cache.items():
+                if (
+                    key == "_state"
+                    or not key.endswith(suffix)
+                    or not isinstance(session_cache, dict)
+                ):
+                    continue
+                qa_doc, trace_doc = _format_bridge_docs(session_cache, session_id)
+                for kind, document in (("qa", qa_doc), ("trace", trace_doc)):
+                    if not document:
+                        continue
+                    digest = hashlib.sha256(document.encode("utf-8")).hexdigest()
+                    if state.get(f"{key}:{kind}") != digest:
+                        pending[kind] += len(session_cache.get(kind) or [])
+        except Exception as exc:
+            hook_log("pending_capture_read_failed", {"path": str(path), "error": str(exc)[:200]})
+    return pending
 
 
 def _post_remember_document(
