@@ -76,7 +76,7 @@ async def _recall(session_id: str, dataset: str, query: str, scope: list[str], t
         )
         return list(results) if results else []
     except Exception as exc:
-        hook_log("precompact_recall_error", {"scope": scope, "error": str(exc)[:200]})
+        hook_log("precompact.recall_error", {"scope": scope, "error": str(exc)[:200]})
         return []
 
 
@@ -139,7 +139,7 @@ def _format_graph_section(entries: list) -> str:
 async def _run():
     session_id, dataset = _load_resolved_fields()
     if not session_id:
-        hook_log("no_session_id", {"event": "precompact"})
+        hook_log("session.no_session_id", {"event": "precompact"})
         return
 
     config = load_config()
@@ -177,7 +177,7 @@ async def _run():
                     )
                     trace_entries = list(raw_trace)[-_TRACE_TOP_K:] if raw_trace else []
         except Exception as exc:
-            hook_log("precompact_direct_fetch_error", {"error": str(exc)[:200]})
+            hook_log("precompact.direct_fetch_error", {"error": str(exc)[:200]})
 
     session_entries = session_entries[-_SESSION_TOP_K:]
     trace_entries = trace_entries[-_TRACE_TOP_K:]
@@ -211,7 +211,7 @@ async def _run():
             sections.append(s)
 
     if not sections:
-        hook_log("precompact_empty")
+        hook_log("precompact.empty")
         return
 
     header = (
@@ -221,7 +221,7 @@ async def _run():
     anchor = header + "\n\n".join(sections)
 
     hook_log(
-        "precompact_anchor",
+        "precompact.anchor",
         {
             "session_entries": len(session_entries),
             "trace_entries": len(trace_entries),
@@ -248,7 +248,7 @@ def main():
     try:
         asyncio.run(_run())
     except Exception as exc:
-        hook_log("precompact_run_exception", {"error": str(exc)[:200]})
+        hook_log("precompact.run_exception", {"error": str(exc)[:200]})
 
 
 if __name__ == "__main__":
