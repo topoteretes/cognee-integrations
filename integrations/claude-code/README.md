@@ -99,9 +99,23 @@ Or persist it in `~/.cognee-plugin/claude-code/config.json`:
 { "dataset": "my-project-memory" }
 ```
 
-The dataset is fixed for the lifetime of a launch. Recall searches only the active dataset. If you want to
-change the active dataset, you have to exit Claude, change the dataset via env, and then start Claude again.
-Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
+Recall searches only the active dataset. Data added outside of Claude to the dataset (via SDK or the server
+for example) is visible in Claude via the Cognee plugin.
+
+### Switching datasets mid-session
+
+You can change the active dataset **without restarting Claude** and without losing the current conversation:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/dataset-switch.py my-other-dataset
+# or the skill: /cognee-memory:cognee-dataset-switch
+```
+
+The switch seals the old dataset's bridge (flushing its pending writes to the old graph, never orphaning
+them), re-registers the agent on the new dataset, and keeps the same `session_id`. Because the session cache
+is keyed by `session_id` — not the dataset — prior-conversation `recall` still works after the switch, while
+new memory is written only to the new dataset (no duplicate graph writes). Switching to the already-active
+dataset is a no-op.
 
 ## Hooks
 
@@ -155,6 +169,7 @@ Final sync on session end is triggered by the `SessionEnd` detached worker, with
 - `/cognee-memory:cognee-remember`
 - `/cognee-memory:cognee-search`
 - `/cognee-memory:cognee-sync`
+- `/cognee-memory:cognee-dataset-switch`
 
 ## Remember (write) behavior
 
