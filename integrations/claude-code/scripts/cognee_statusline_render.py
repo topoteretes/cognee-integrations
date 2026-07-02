@@ -28,9 +28,11 @@ def _active_dataset(cwd: str = "") -> str:
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. project picker (.cognee/session-config.json)
+    # 2. project picker (.cognee/session-config.json). Mirror config.py's
+    # project-root resolution: explicit cwd > CLAUDE_CWD > os.getcwd().
     try:
-        picker_path = Path(cwd or os.getcwd()) / ".cognee" / "session-config.json"
+        root = cwd or os.environ.get("CLAUDE_CWD") or os.getcwd()
+        picker_path = Path(root) / ".cognee" / "session-config.json"
         data = json.loads(picker_path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             v = str(data.get("dataset") or "").strip()

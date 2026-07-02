@@ -77,12 +77,30 @@ def _stop_idle_watcher() -> None:
             hook_log("watcher_sigterm_failed", {"error": str(exc)[:200]})
 
 
-def _spawn_detached_sync() -> bool:
-    """Run the expensive sync outside a short hook window."""
+def _spawn_detached_sync(cwd: str = "") -> bool:
+    """Run the expensive sync outside a short hook window.
+
+    The detached worker gets no stdin payload, so it can't recover the project
+    ``cwd`` on its own. Propagate it (and the picker-resolved dataset) via env so
+    the final session-end flush targets the dataset the project picked, not the
+    global default — otherwise a ``.cognee/session-config.json`` dataset would be
+    honored all session and then silently dropped at the final sync.
+    """
     try:
         env = os.environ.copy()
         env.setdefault("COGNEE_SYNC_START_DELAY", str(_SESSION_END_START_DELAY_DEFAULT))
         env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
+        if cwd:
+            env["CLAUDE_CWD"] = cwd
+        # Resolve the active (picker-aware) dataset now, while cwd is known, and
+        # pin it for the detached worker. setdefault so an explicit
+        # COGNEE_SYNC_DATASET from an upstream spawner still wins.
+        try:
+            picked_dataset = str(get_dataset(load_config(cwd)) or "").strip()
+            if picked_dataset:
+                env.setdefault("COGNEE_SYNC_DATASET", picked_dataset)
+        except Exception as exc:
+            hook_log("sync_detach_dataset_resolve_failed", {"error": str(exc)[:200]})
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],
             cwd=os.getcwd(),
@@ -357,7 +375,7 @@ def main():
         if session_key_candidate:
             set_session_key(session_key_candidate)
         hook_log("sync_session_key", {"source": session_key_source, "value": session_key_candidate})
-    
+
     cwd = str(payload.get("cwd") or "")
     is_session_end = forced_session_end or _is_session_end_payload(payload_raw)
     hook_log(
@@ -392,7 +410,7 @@ def main():
     # there prevents later idle persistence.
     if is_session_end:
         _stop_idle_watcher()
-        spawned = _spawn_detached_sync()
+        spawned = _spawn_detached_sync(cwd)
         hook_log("sync_deferred_to_shutdown_worker", {"spawned": spawned})
         return
 

@@ -101,6 +101,16 @@ _ENV_MAP = {
 }
 
 
+# Keys a project-committed picker file may set. Deliberately excludes secrets
+# and backend routing (api_key, llm_api_key, base_url, backend, user_*) so that
+# merely opening a repo with a `.cognee/session-config.json` can never redirect
+# your Cognee backend or inject credentials — the picker's job is dataset/session
+# selection only (issue #3686: "the dataset configuration key").
+_PICKER_ALLOWED_KEYS = frozenset(
+    {"dataset", "session_strategy", "session_prefix", "agent_name", "top_k"}
+)
+
+
 def _read_project_picker(cwd: Optional[str] = None) -> dict:
     """Read .cognee/session-config.json from the project directory.
 
@@ -108,6 +118,10 @@ def _read_project_picker(cwd: Optional[str] = None) -> dict:
     payload) > CLAUDE_CWD env (background workers with no payload) >
     os.getcwd() (last resort — NOT reliable inside a global-plugin hook
     process, kept only as a final fallback).
+
+    Only the non-sensitive keys in ``_PICKER_ALLOWED_KEYS`` are honored; any
+    other key in the file is ignored so an untrusted repo file cannot influence
+    auth or backend routing.
     """
     project_dir = Path(cwd or os.environ.get("CLAUDE_CWD") or os.getcwd())
     picker_path = project_dir / ".cognee" / "session-config.json"
@@ -123,11 +137,18 @@ def _read_project_picker(cwd: Optional[str] = None) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    # Only non-null AND non-empty-string values fall through — matches the
-    # existing config-file layer's semantics (line 112: `v is not None and v != ""`)
-    # so an explicit `{"dataset": null}` or `{"dataset": ""}` cleanly no-ops
-    # instead of resolving to an empty dataset name downstream.
-    return {k: v for k, v in data.items() if v is not None and v != ""}
+    # Only allowlisted, non-null AND non-empty-string values fall through — the
+    # empty/null check matches the config-file layer's semantics (line 112:
+    # `v is not None and v != ""`) so an explicit `{"dataset": null}` or
+    # `{"dataset": ""}` cleanly no-ops instead of resolving to an empty name.
+    ignored = [k for k in data if k not in _PICKER_ALLOWED_KEYS]
+    if ignored:
+        _config_log("session_picker_ignored_keys", {"keys": sorted(ignored)[:20]})
+    return {
+        k: v
+        for k, v in data.items()
+        if k in _PICKER_ALLOWED_KEYS and v is not None and v != ""
+    }
 
 
 def load_config(cwd: Optional[str] = None) -> dict:

@@ -99,6 +99,13 @@ Or persist it per-project in `.cognee/session-config.json` in your workspace roo
 { "dataset": "my-project-memory" }
 ```
 
+For safety, the project picker file only honors non-sensitive selection keys
+(`dataset`, `session_strategy`, `session_prefix`, `agent_name`, `top_k`) — any
+other key (e.g. `base_url`, `api_key`) is ignored, so opening a repo that ships a
+`.cognee/session-config.json` can never redirect your backend or inject
+credentials. Commit it for a shared project default, or `.gitignore` it for a
+personal local override.
+
 Or persist it globally in `~/.cognee-plugin/claude-code/config.json`:
 
 ```json
