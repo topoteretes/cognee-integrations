@@ -1,27 +1,16 @@
 import pytest
-from unittest.mock import patch
-from cognee_integration_aider.tools import add_project_memory
+from unittest.mock import patch, AsyncMock
+from cognee_integration_aider.tools import add_project_memory, search_project_memory
 
-@patch("cognee_integration_aider.tools.asyncio.run")
-def test_remember_codebase_intent(mock_run):
-    """
-    Validates that complex codebase documentation chunks can be pushed
-    to the Cognee memory layout without failure.
-    """
-    mock_run.return_value = "Successfully added context to session graph: aider_session_wsl_test"
-    
-    # Simulating saving an active design block
-    complex_context = """
-    Architecture Guideline:
-    - All API endpoints must be defined inside /routes/
-    - Database layers must use SQLAlchemy async sessions.
-    """
-    
-    response = add_project_memory(
-        session_id="wsl_test",
-        content=complex_context
-    )
-    
-    assert "Successfully added" in response
-    assert "aider_session_wsl_test" in response
-    mock_run.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_remember_codebase_intent():
+    """Test that a memory can be added and then retrieved."""
+    with patch("cognee.add", new_callable=AsyncMock) as mock_add:
+        await add_project_memory("project_x", "Use pytest for testing")
+        mock_add.assert_called_once_with("Use pytest for testing", dataset_name="session_project_x")
+
+    with patch("cognee.search", new_callable=AsyncMock) as mock_search:
+        mock_search.return_value = ["Use pytest for testing"]
+        result = await search_project_memory("project_x", "testing framework")
+        assert "Use pytest for testing" in result
