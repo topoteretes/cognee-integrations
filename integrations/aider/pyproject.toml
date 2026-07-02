@@ -10,6 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "cognee>=0.5.1,<0.6.0",
+    "google-generativeai>=0.8.6",
+    "python-dotenv>=1.2.2",
+    "transformers>=4.36.0",
+    "sentence-transformers>=2.2.0",
 ]
 
 [project.urls]
