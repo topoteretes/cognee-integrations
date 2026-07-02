@@ -107,6 +107,13 @@ Or persist it per-project in `.cognee/session-config.json` in your workspace roo
 { "dataset": "my-project-memory" }
 ```
 
+For safety, the project picker file only honors non-sensitive selection keys
+(`dataset`, `session_strategy`, `session_prefix`, `agent_name`, `top_k`) — any
+other key (e.g. `base_url`, `api_key`) is ignored, so opening a repo that ships a
+`.cognee/session-config.json` can never redirect your backend or inject
+credentials. Commit it for a shared project default, or `.gitignore` it for a
+personal local override.
+
 Dataset resolution precedence is `COGNEE_PLUGIN_DATASET` (env) > the project
 picker > the built-in default (`agent_sessions`). The global
 `~/.cognee-plugin/claude-code/config.json` may still show a `dataset` value for
