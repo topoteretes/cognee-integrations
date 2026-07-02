@@ -101,6 +101,17 @@ export type CogneePluginConfig = {
   // --- Timeouts ---
   requestTimeoutMs?: number;
   ingestionTimeoutMs?: number;
+  /** Timeout for read operations (search / recall). Defaults to requestTimeoutMs. */
+  recallTimeoutMs?: number;
+
+  // --- Circuit breaker ---
+  /** Trip the breaker after repeated backend failures so a down server isn't
+   *  hammered on every call. Default: true. */
+  breakerEnabled?: boolean;
+  /** Consecutive UNREACHABLE / 5xx failures before the breaker opens. Default: 5. */
+  breakerThreshold?: number;
+  /** How long the breaker stays open before allowing a retry, in ms. Default: 120000. */
+  breakerCooldownMs?: number;
 };
 
 export type CogneeAddResponse = {

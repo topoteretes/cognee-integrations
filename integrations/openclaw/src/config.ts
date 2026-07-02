@@ -20,6 +20,13 @@ export const DEFAULT_IMPROVE_ON_SESSION_END = true;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 export const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 
+// Circuit breaker — defaults mirror the Python clients (Hermes provider,
+// claude-code recall client): open after 5 consecutive UNREACHABLE / 5xx
+// failures, stay open for 120s.
+export const DEFAULT_BREAKER_ENABLED = true;
+export const DEFAULT_BREAKER_THRESHOLD = 5;
+export const DEFAULT_BREAKER_COOLDOWN_MS = 120_000;
+
 export const DEFAULT_RECALL_SCOPES: MemoryScope[] = ["agent", "user", "company"];
 export const DEFAULT_WRITE_SCOPE: MemoryScope = "agent";
 export const DEFAULT_SCOPE_ROUTING: ScopeRoute[] = [
@@ -75,6 +82,12 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const improveOnSessionEnd = typeof raw.improveOnSessionEnd === "boolean" ? raw.improveOnSessionEnd : DEFAULT_IMPROVE_ON_SESSION_END;
   const requestTimeoutMs = typeof raw.requestTimeoutMs === "number" ? raw.requestTimeoutMs : DEFAULT_REQUEST_TIMEOUT_MS;
   const ingestionTimeoutMs = typeof raw.ingestionTimeoutMs === "number" ? raw.ingestionTimeoutMs : DEFAULT_INGESTION_TIMEOUT_MS;
+  // Read ops share the request timeout unless a tighter recall bound is configured.
+  const recallTimeoutMs = typeof raw.recallTimeoutMs === "number" ? raw.recallTimeoutMs : requestTimeoutMs;
+
+  const breakerEnabled = typeof raw.breakerEnabled === "boolean" ? raw.breakerEnabled : DEFAULT_BREAKER_ENABLED;
+  const breakerThreshold = typeof raw.breakerThreshold === "number" ? raw.breakerThreshold : DEFAULT_BREAKER_THRESHOLD;
+  const breakerCooldownMs = typeof raw.breakerCooldownMs === "number" ? raw.breakerCooldownMs : DEFAULT_BREAKER_COOLDOWN_MS;
 
   const apiKey =
     raw.apiKey && raw.apiKey.length > 0 ? resolveEnvVars(raw.apiKey)
@@ -119,6 +132,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify, improveOnSessionEnd,
-    requestTimeoutMs, ingestionTimeoutMs,
+    requestTimeoutMs, ingestionTimeoutMs, recallTimeoutMs,
+    breakerEnabled, breakerThreshold, breakerCooldownMs,
   };
 }
