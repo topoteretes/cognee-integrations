@@ -9,11 +9,18 @@ The integration:
 
 ## Install
 
-Install from the Claude Code marketplace. You can do this interactively by typing slash commands directly in the Claude Code chat:
+Install from the Claude Code marketplace by typing these slash commands in the Claude Code chat:
 
 ```
 /plugin marketplace add topoteretes/cognee-integrations
 /plugin install cognee-memory@cognee
+```
+
+Or run the equivalent from your terminal (same two steps, scriptable):
+
+```bash
+claude plugin marketplace add topoteretes/cognee-integrations
+claude plugin install cognee-memory@cognee
 ```
 
 Then set environment variables for your runtime mode.
@@ -227,25 +234,40 @@ Shared state (used by both Claude Code and Codex plugins):
 ~/.cognee-plugin/venv/            # shared Cognee virtualenv
 ```
 
-## Update or remove
+## Update
 
-Reinstall the plugin to pick up marketplace updates (run inside Claude Code chat):
+Update the plugin in place. In the Claude Code chat:
+
+```
+/plugin update cognee-memory@cognee
+```
+
+Or from your terminal:
+
+```bash
+claude plugin update cognee-memory@cognee
+```
+
+Updating requires a restart to apply. If you don't see the newest version, refresh the marketplace source first, then update:
+
+```bash
+claude plugin marketplace update cognee
+claude plugin update cognee-memory@cognee
+```
+
+## Remove
+
+In the Claude Code chat:
 
 ```
 /plugin uninstall cognee-memory@cognee
-/plugin install cognee-memory@cognee
 ```
 
-To also refresh the marketplace source:
+Or from your terminal:
 
+```bash
+claude plugin uninstall cognee-memory@cognee
 ```
-/plugin uninstall cognee-memory@cognee
-/plugin marketplace remove topoteretes/cognee-integrations
-/plugin marketplace add topoteretes/cognee-integrations
-/plugin install cognee-memory@cognee
-```
-
-There is no automatic update mechanism — reinstall is the only way to pull in new plugin versions.
 
 ## Troubleshooting
 
