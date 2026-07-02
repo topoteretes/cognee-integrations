@@ -21,7 +21,7 @@ It enables terminal‑based developers to store and retrieve project context, de
 Clone the [cognee‑integrations](https://github.com/topoteretes/cognee-integrations) monorepo and install dependencies:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/cognee-integrations.git
+git clone https://github.com/jaya6400/cognee-integrations.git
 cd cognee-integrations
 uv sync
 ```
@@ -77,38 +77,85 @@ If it outputs the stored memories, your integration is ready.
 
 ---
 
-## 🧑‍💻 Using with Aider
+## 🧑‍💻 Using with Aider (Experimental)
 
-Aider can load custom tools from any Python module that exposes a `get_tools()` function.  
-We provide an adapter at `cognee_integration_aider.aider_adapter` that wraps our tools in Aider’s expected format.
+We provide a forward‑compatible adapter at `cognee_integration_aider.aider_adapter` that exposes sync wrappers for the tools.
 
-### 1. Launch Aider with the integration
+### 🛠️ Setup
+
+1. **Install Aider** (in a separate environment to avoid dependency conflicts):
+   ```bash
+   python -m venv aider_env
+   source aider_env/bin/activate
+   pip install aider-chat
+   ```
+
+2. **Install this integration** in the same environment (editable mode):
+   ```bash
+   cd /path/to/cognee-integrations
+   pip install -e integrations/aider
+   ```
+
+3. **Set environment variables** – copy `.env.example` to `.env` and fill in your provider details (e.g., Ollama):
+   ```bash
+   cp integrations/aider/.env.example integrations/aider/.env
+   # Edit .env with your LLM and embedding settings
+   ```
+
+4. **Export the environment** (or load via `source .env`):
+   ```bash
+   export $(grep -v '^#' integrations/aider/.env | xargs)
+   ```
+
+### 🧪 Current Workaround (demo script)
+
+Because **Aider v0.86.2 does not yet support loading Python modules as custom tools**, the only way to test the integration right now is via the included demo script:
 
 ```bash
-aider --tools cognee_integration_aider.aider_adapter
+cd integrations/aider
+uv run --active python examples/aider_memory_demo.py
 ```
 
-### 2. Use the tools in your chat
+This script:
+- Adds two sample memories (database choices).
+- Searches for “What database should I connect to?” and prints the results.
 
-Once inside Aider, you can ask it to **remember** something:
+If it outputs the stored memories, your integration is correctly configured.
+
+### ❌ What does **not** work (yet)
+
+As shown in the screenshot below, running:
+
+```bash
+aider --load /path/to/aider_adapter.py
+```
+
+**fails** – because `--load` is for chat scripts, not Python modules.  
+Aider tries to execute the Python code line by line as chat commands, resulting in `Invalid command` errors, and later triggers a known bug (`PermissionDeniedError` in litellm).
+
+![Attempt to load adapter with --load fails](c:\Users\Administrator\OneDrive\Desktop\Capture.PNG)
+
+> ⚠️ **Note**: The `--load` flag in Aider is **not** for loading Python modules.  
+> The `--tool` flag is ambiguous (matches `--tool-output-color` etc.) and not intended for this purpose.
+
+### 🔮 Future usage (when Aider adds support)
+
+Once Aider introduces a flag like `--tool-module` (or equivalent), you will be able to launch it with:
+
+```bash
+aider --tool-module cognee_integration_aider.aider_adapter
+```
+
+Then inside the chat, you can ask:
 
 ```
 > Remember that we decided to use PostgreSQL with pgvector.
-```
-
-Aider will call `add_project_memory` behind the scenes.
-
-Later, you can **retrieve** that context:
-
-```
 > What database did we decide to use?
 ```
 
-Aider will invoke `search_project_memory` and answer based on the stored memories.
+Aider will call `add_project_memory` and `search_project_memory` via the adapter.
 
-> 🔍 **How it works** – Aider’s background tool‑calling loop will automatically invoke the tools when it detects a relevant user prompt. You don't need to manually call them.
-
----
+**Until then, use the demo script to verify the integration works.**
 
 ## 🧩 Project Structure
 
@@ -137,6 +184,7 @@ integrations/aider/
 | `PermissionDeniedError` when adding/searching | Set `ENABLE_BACKEND_ACCESS_CONTROL=false` and `COGNEE_USER_ID=00000000-0000-0000-0000-000000000001` in your environment. |
 | `LLM_API_KEY` missing | Even for Ollama, set `LLM_API_KEY=ollama` (dummy value) to satisfy validation. |
 | Embedding endpoint timeout | Ensure `EMBEDDING_ENDPOINT` points to the correct URL (e.g., `http://localhost:11434/api/embed`) and that Ollama is running. |
+| `ValueError: PermissionDeniedError is in litellm but not in aider's exceptions list` | This is a known bug in Aider 0.86.2. It is not related to this integration. Please report to the Aider team. |
 
 ---
 
