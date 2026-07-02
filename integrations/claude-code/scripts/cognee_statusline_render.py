@@ -37,12 +37,25 @@ _USER_SETTINGS = Path.home() / ".claude" / "settings.json"
 _OWNED_STATUSLINE_MARKER = "cognee-statusline"
 
 
-def _active_dataset() -> str:
+def _active_dataset(cwd: str = "") -> str:
     # 1. env var (inherited from the shell that launched Claude Code)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. default
+    # 2. project picker (.cognee/session-config.json). Mirror config.py's root
+    # resolution (cwd > CLAUDE_CWD > getcwd) so the displayed dataset matches
+    # what the hooks resolve. The global config file is deliberately not read
+    # here — like load_config, it does not drive the dataset (visibility-only).
+    try:
+        root = cwd or os.environ.get("CLAUDE_CWD") or os.getcwd()
+        picker = json.loads((Path(root) / ".cognee" / "session-config.json").read_text("utf-8"))
+        if isinstance(picker, dict):
+            v = str(picker.get("dataset") or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    # 3. default
     return _DEFAULT_DATASET
 
 
@@ -193,7 +206,7 @@ def main() -> None:
         return
 
     sys.stdout.write(
-        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
+        f"{_health_prefix()}cognee: {_active_dataset(cwd)} · {_active_mode()}{_update_segment()}"
     )
 
 

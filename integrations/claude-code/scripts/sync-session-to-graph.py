@@ -189,7 +189,7 @@ def _is_session_end_payload(payload_raw: str) -> bool:
     return event == "SessionEnd" or _contains_session_end(payload)
 
 
-def _load_resolved() -> tuple:
+def _load_resolved(cwd: str = "") -> tuple:
     """
     Load session ID, dataset, user ID,
     agent session name, registration marker, and API key marker.
@@ -226,8 +226,8 @@ def _load_resolved() -> tuple:
             session_key,
         )
 
-    config = load_config()
-    fallback_session_id = get_session_id(config)
+    config = load_config(cwd)
+    fallback_session_id = get_session_id(config, cwd)
     fallback_agent_session_name = session_key or ""
     if env_service_url:
         os.environ["COGNEE_BASE_URL"] = env_service_url
@@ -242,9 +242,11 @@ def _load_resolved() -> tuple:
     )
 
 
-async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: bool = False):
+async def _sync(
+    stop_watcher: bool, unregister_on_finish: bool = False, strict: bool = False, cwd: str = ""
+):
     session_id, dataset, user_id, agent_session_name, was_registered, has_api_key, session_key = (
-        _load_resolved()
+        _load_resolved(cwd)
     )
     target_sessions = [session_id] if session_id else []
     hook_log(
@@ -263,7 +265,7 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
             _stop_idle_watcher()
             hook_log("sync_stopped_watcher", {"session": session_id, "dataset": dataset})
 
-        config = load_config()
+        config = load_config(cwd)
         api_mode = http_api_ready()
         lock = nullcontext(True) if api_mode else sync_lock("sync-session-to-graph")
         with lock as acquired:
@@ -363,6 +365,7 @@ def main():
     detached_final = _DETACHED_ARG in sys.argv
     forced_session_end = _SESSION_END_ARG in sys.argv
     payload_raw = "" if detached_final else sys.stdin.read()
+    payload = {}
     if not detached_final and payload_raw.strip():
         try:
             payload = json.loads(payload_raw)
@@ -372,6 +375,8 @@ def main():
         if session_key_candidate:
             set_session_key(session_key_candidate)
         hook_log("sync_session_key", {"source": session_key_source, "value": session_key_candidate})
+    
+    cwd = str(payload.get("cwd") or "")
     is_session_end = forced_session_end or _is_session_end_payload(payload_raw)
     hook_log(
         "sync_payload",
@@ -426,6 +431,7 @@ def main():
                     # The detached-final run is the session's last sync: an
                     # incomplete result raises so this loop retries it.
                     strict=detached_final,
+                    cwd=cwd,
                 )
             )
             return

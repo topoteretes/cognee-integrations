@@ -101,6 +101,14 @@ Set a custom dataset at launch:
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
 
+Or persist it per-project in `.cognee/session-config.json` in your workspace root:
+
+```json
+{ "dataset": "my-project-memory" }
+```
+
+Dataset resolution precedence is `COGNEE_PLUGIN_DATASET` (env) > the project
+picker > the built-in default (`agent_sessions`). The global
 `~/.cognee-plugin/claude-code/config.json` may still show a `dataset` value for
 visibility, but runtime dataset selection does not read it.
 
@@ -327,8 +335,9 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 
 Config precedence:
 1. env vars
-2. `~/.cognee-plugin/claude-code/config.json`
-3. defaults
+2. project picker (`.cognee/session-config.json` in workspace root)
+3. global config (`~/.cognee-plugin/claude-code/config.json`)
+4. defaults
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|

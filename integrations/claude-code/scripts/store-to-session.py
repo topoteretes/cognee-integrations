@@ -113,15 +113,15 @@ def _infer_status(payload: dict) -> tuple[str, str]:
     return "success", ""
 
 
-def _load_session() -> tuple[str, str, str]:
+def _load_session(cwd: str = "") -> tuple[str, str, str]:
     """Load session_id, dataset, user_id from resolved cache with fallbacks."""
     resolved = load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
     if not session_id or not dataset:
-        config = load_config()
-        session_id = session_id or get_session_id(config)
+        config = load_config(cwd)
+        session_id = session_id or get_session_id(config, cwd)
         dataset = dataset or get_dataset(config)
     return session_id, dataset, user_id
 
@@ -155,12 +155,13 @@ async def _store_tool_call(payload: dict) -> None:
 
     return_value = _truncate_str(tool_output, _MAX_RETURN_BYTES)
 
-    session_id, dataset, user_id = _load_session()
+    cwd = str(payload.get("cwd") or "")
+    session_id, dataset, user_id = _load_session(cwd)
     if not session_id:
         hook_log("no_session_id", {"tool": tool_name})
         return
 
-    config = load_config()
+    config = load_config(cwd)
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
     hook_log(
@@ -270,12 +271,13 @@ async def _store_assistant_stop(payload: dict) -> None:
 
     msg = _truncate_str(msg, _MAX_ASSISTANT_BYTES)
 
-    session_id, dataset, user_id = _load_session()
+    cwd = str(payload.get("cwd") or "")
+    session_id, dataset, user_id = _load_session(cwd)
     if not session_id:
         hook_log("no_session_id", {"event": "stop"})
         return
 
-    config = load_config()
+    config = load_config(cwd)
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
     hook_log(
