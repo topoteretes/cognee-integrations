@@ -524,13 +524,22 @@ async def persist_session_cache_to_graph(dataset: str, session_id: str, user) ->
     bridge_state = _load_bridge_state()
     state_changed = False
 
+    # After a mid-session dataset switch the whole session cache (keyed by
+    # session_id) still contains the pre-switch turns. Skip everything before
+    # this dataset's high-water baseline so the new dataset's graph receives
+    # only post-switch content — the "no duplicate graph writes" guarantee.
+    # A session that never switched has baseline (0, 0): unchanged behavior.
+    from _plugin_common import dataset_baseline
+
+    qa_start, trace_start = dataset_baseline(session_id, dataset)
+
     qa_entries = await session_manager.get_session(
         user_id=user_id,
         session_id=session_id,
         formatted=False,
     )
     qa_lines: list[str] = []
-    for entry in qa_entries or []:
+    for entry in (qa_entries or [])[qa_start:]:
         question = _read_field(entry, "question").strip()
         answer = _read_field(entry, "answer").strip()
         if question:
@@ -565,7 +574,8 @@ async def persist_session_cache_to_graph(dataset: str, session_id: str, user) ->
         user_id=user_id,
         session_id=session_id,
     )
-    trace_text = "\n".join(str(value).strip() for value in trace_values or [] if str(value).strip())
+    trace_values = (trace_values or [])[trace_start:]
+    trace_text = "\n".join(str(value).strip() for value in trace_values if str(value).strip())
     if trace_text:
         trace_document = f"Session ID: {session_id}\n\n{trace_text}"
         trace_key = _bridge_state_key(dataset, session_id, user_id, "trace")
@@ -591,6 +601,120 @@ async def persist_session_cache_to_graph(dataset: str, session_id: str, user) ->
         _save_bridge_state(bridge_state)
 
     return wrote
+
+
+def set_active_dataset(new_dataset: str, cwd: Optional[str] = None) -> dict:
+    """Persist ``new_dataset`` as the active dataset for subsequent hooks.
+
+    Each hook runs as a fresh process, so an in-process env change wouldn't
+    survive. The dataset is written to the global plugin config (effective in
+    every mode) and, when a project-level picker file already exists, to that
+    file too — it is the higher-precedence layer the picker owns, so leaving it
+    stale would shadow the switch. Also sets the env for the current process so
+    an in-process caller sees the change immediately.
+
+    Returns ``{"config": bool, "picker": bool}`` recording which stores changed.
+    """
+    result = {"config": False, "picker": False}
+    dataset = str(new_dataset or "").strip()
+    if not dataset:
+        return result
+
+    os.environ["COGNEE_PLUGIN_DATASET"] = dataset
+
+    # Global plugin config: merge-preserving so unrelated keys survive.
+    try:
+        _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        current = {}
+        if _CONFIG_FILE.exists():
+            try:
+                current = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                current = {}
+        if not isinstance(current, dict):
+            current = {}
+        current["dataset"] = dataset
+        _CONFIG_FILE.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        result["config"] = True
+    except Exception as exc:
+        _config_log("set_active_dataset_config_failed", {"error": str(exc)[:200]})
+
+    # Project picker file (.cognee/session-config.json): only update if present,
+    # so we don't litter a repo on installs without the picker, but stay in sync
+    # when the picker is in use (it takes precedence over global config).
+    try:
+        project_dir = Path(cwd or os.environ.get("CLAUDE_CWD") or os.getcwd())
+        picker_path = project_dir / ".cognee" / "session-config.json"
+        if picker_path.exists():
+            try:
+                picker = json.loads(picker_path.read_text(encoding="utf-8"))
+            except Exception:
+                picker = {}
+            if not isinstance(picker, dict):
+                picker = {}
+            picker["dataset"] = dataset
+            picker_path.write_text(json.dumps(picker, indent=2), encoding="utf-8")
+            result["picker"] = True
+    except Exception as exc:
+        _config_log("set_active_dataset_picker_failed", {"error": str(exc)[:200]})
+
+    return result
+
+
+async def seal_session_bridge_local(old_dataset: str, session_id: str, user) -> dict:
+    """Local-SDK seal: flush the old dataset (delta only) and mark it sealed.
+
+    Returns the high-water entry counts ``{"qa_count", "trace_count", ...}`` so
+    the caller can seed the new dataset's baseline, keeping post-switch turns out
+    of the old dataset's re-persist and pre-switch turns out of the new one.
+    """
+    from _plugin_common import hook_log, mark_dataset_sealed
+
+    qa_count = 0
+    trace_count = 0
+    flushed = False
+    if session_id and user:
+        try:
+            from cognee.infrastructure.session.get_session_manager import get_session_manager
+
+            session_manager = get_session_manager()
+            if session_manager.is_available:
+                user_id = str(user.id)
+                qa_entries = await session_manager.get_session(
+                    user_id=user_id, session_id=session_id, formatted=False
+                )
+                trace_values = await session_manager.get_agent_trace_feedback(
+                    user_id=user_id, session_id=session_id
+                )
+                qa_count = len(qa_entries or [])
+                trace_count = len(trace_values or [])
+        except Exception as exc:
+            _config_log("seal_local_count_failed", {"error": str(exc)[:200]})
+        try:
+            flushed = await persist_session_cache_to_graph(old_dataset, session_id, user)
+        except Exception as exc:
+            _config_log("seal_local_flush_failed", {"error": str(exc)[:200]})
+        mark_dataset_sealed(session_id, old_dataset)
+
+    hook_log(
+        "dataset_switch_bridge_sealed",
+        {
+            "message": "old bridge sealed",
+            "old_dataset": old_dataset,
+            "session": session_id,
+            "qa": qa_count,
+            "trace": trace_count,
+            "flushed": flushed,
+            "mode": "local",
+        },
+    )
+    return {
+        "sealed": True,
+        "old_dataset": old_dataset,
+        "qa_count": qa_count,
+        "trace_count": trace_count,
+        "flushed": flushed,
+    }
 
 
 def _get_git_branch(cwd: str) -> str:
