@@ -25,6 +25,7 @@ from _plugin_common import (
     load_resolved,
     mark_server_ready,
     notify,
+    pending_capture_counts,
     quiet_hook_output,
     read_and_reset_save_counter,
     recall_via_http,
@@ -366,9 +367,28 @@ async def _run(prompt: str) -> dict | None:
         hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
+        # Empty recall is not always "no memory": content captured this session
+        # may still be waiting on cognify. Surface that so the agent does not
+        # silently fall back to transcript grep.
+        pending = pending_capture_counts(session_id)
+        if any(pending.values()):
+            full_context = (
+                f"{header}\n\n(no cognified memory matches yet: "
+                f"{pending['qa']} QA / {pending['trace']} trace entries captured this session "
+                "are not yet confirmed cognified; retry next turn or run "
+                "/cognee-memory:cognee-sync; do not fall back to transcript search)"
+            )
+            hook_log(
+                "context_lookup_pending_cognify",
+                {"pending": pending, "saves_last_turn": saves_last_turn},
+            )
+            notify(
+                f"recall empty but capture pending ({pending}); saves last turn {saves_last_turn}"
+            )
+        else:
+            full_context = f"{header}\n\n(no memory matches for this prompt)"
+            hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+            notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.

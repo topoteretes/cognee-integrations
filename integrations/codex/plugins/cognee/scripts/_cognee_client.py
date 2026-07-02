@@ -108,10 +108,45 @@ def recall(service_url, api_key, query, session_id, scope, top_k, dataset="", *,
     return result
 
 
+def annotate_empty_recall(result, session_id):
+    """Distinguish "nothing stored" from "captured, not yet cognified" on empty recall.
+
+    A 2xx empty list stays authoritative, but when the local session-cache bridge
+    still holds qa/trace content whose digest the drain has not marked cognified,
+    a bare ``[]`` would read as "no memory" and push the caller to transcript
+    grep. Return a distinct envelope carrying the pending counts instead. Every
+    non-empty result (hits, error envelope, UNREACHABLE) passes through unchanged,
+    as does a genuine empty (no pending captures).
+    """
+    if result != []:
+        return result
+    try:
+        # Lazy import: _plugin_common is stdlib-only, but keep this script
+        # functional standalone even if the module is absent/unreadable.
+        from _plugin_common import pending_capture_counts
+
+        pending = pending_capture_counts(session_id)
+    except Exception:
+        return result
+    if not any(pending.values()):
+        return result
+    return {
+        "recall": [],
+        "captured_pending": pending,
+        "authoritative": True,
+        "hint": (
+            "content captured this session is not yet cognified; "
+            "retry shortly (the background sync picks it up) or run "
+            'python3 "${CODEX_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"; '
+            "do not fall back to transcript search"
+        ),
+    }
+
+
 def main(argv):
     # argv: service_url, api_key, query, session_id, scope, top_k[, dataset]
     a = list(argv) + [""] * 7
-    result = recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
+    result = annotate_empty_recall(recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6]), a[3])
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
 
 
