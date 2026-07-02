@@ -133,7 +133,7 @@ aider --load /path/to/aider_adapter.py
 **fails** – because `--load` is for chat scripts, not Python modules.  
 Aider tries to execute the Python code line by line as chat commands, resulting in `Invalid command` errors, and later triggers a known bug (`PermissionDeniedError` in litellm).
 
-![Attempt to load adapter with --load fails](c:\Users\Administrator\OneDrive\Desktop\Capture.PNG)
+>![Attempt to load adapter with --load fails](https://github.com/user-attachments/assets/33710208-334e-4530-9ee0-e1dd4666bb56)
 
 > ⚠️ **Note**: The `--load` flag in Aider is **not** for loading Python modules.  
 > The `--tool` flag is ambiguous (matches `--tool-output-color` etc.) and not intended for this purpose.
