@@ -245,3 +245,16 @@ curl -sS http://localhost:8011/health
 **Final sync diagnostics**
 - Check `~/.cognee-plugin/codex/hook.log` and `~/.cognee-plugin/codex/exit-watcher.log`.
 - Relevant logs: `sync_deferred_to_shutdown_worker`, `final_sync_once_*`, `agent_unregister_result`.
+
+## Testing
+
+An **opt-in end-to-end smoke test** (`tests/test_integration_smoke.py`) boots a
+throwaway local Cognee server, remembers a tiny unique document, then recalls it
+and asserts the token comes back. It needs cognee installed plus LLM creds for the
+cognify write, so it is **skipped by default** (which keeps CI green) and only runs
+when you opt in:
+
+```bash
+uv sync --locked --dev
+COGNEE_RUN_INTEGRATION=1 LLM_API_KEY=sk-... uv run pytest tests/test_integration_smoke.py -v
+```
