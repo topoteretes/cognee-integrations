@@ -93,7 +93,20 @@ Set a custom dataset at launch:
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
 
-Or persist it in `~/.cognee-plugin/claude-code/config.json`:
+Or persist it per-project in `.cognee/session-config.json` in your workspace root:
+
+```json
+{ "dataset": "my-project-memory" }
+```
+
+For safety, the project picker file only honors non-sensitive selection keys
+(`dataset`, `session_strategy`, `session_prefix`, `agent_name`, `top_k`) — any
+other key (e.g. `base_url`, `api_key`) is ignored, so opening a repo that ships a
+`.cognee/session-config.json` can never redirect your backend or inject
+credentials. Commit it for a shared project default, or `.gitignore` it for a
+personal local override.
+
+Or persist it globally in `~/.cognee-plugin/claude-code/config.json`:
 
 ```json
 { "dataset": "my-project-memory" }
@@ -274,8 +287,9 @@ There is no automatic update mechanism — reinstall is the only way to pull in 
 
 Config precedence:
 1. env vars
-2. `~/.cognee-plugin/claude-code/config.json`
-3. defaults
+2. project picker (`.cognee/session-config.json` in workspace root)
+3. global config (`~/.cognee-plugin/claude-code/config.json`)
+4. defaults
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|

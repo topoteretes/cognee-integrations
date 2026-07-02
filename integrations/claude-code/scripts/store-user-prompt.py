@@ -42,14 +42,14 @@ _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _WATCHER_SCRIPT = Path(__file__).with_name("idle-watcher.py")
 
 
-def _load_session() -> tuple[str, str, str]:
+def _load_session(cwd: str = "") -> tuple[str, str, str]:
     resolved = load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
     if not session_id or not dataset:
-        config = load_config()
-        session_id = session_id or get_session_id(config)
+        config = load_config(cwd)
+        session_id = session_id or get_session_id(config, cwd)
         dataset = dataset or get_dataset(config)
     return session_id, dataset, user_id
 
@@ -126,12 +126,13 @@ def _prompt_context(payload: dict) -> str:
 
 
 async def _store(prompt: str, payload: dict):
-    session_id, dataset, user_id = _load_session()
+    cwd = str(payload.get("cwd") or "")
+    session_id, dataset, user_id = _load_session(cwd)
     if not session_id:
         hook_log("no_session_id", {"event": "prompt"})
         return
 
-    config = load_config()
+    config = load_config(cwd)
     touch_activity()
     _ensure_idle_watcher(session_id, dataset, user_id, config)
 
