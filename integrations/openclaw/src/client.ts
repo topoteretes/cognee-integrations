@@ -57,7 +57,8 @@ export class CogneeHttpClient {
     private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
     readonly ingestionTimeoutMs: number = DEFAULT_INGESTION_TIMEOUT_MS,
     readonly mode: CogneeMode = "local",
-    private readonly recallTimeoutMs: number = DEFAULT_TIMEOUT_MS,
+    // Read ops share the request timeout unless a tighter recall bound is given.
+    private readonly recallTimeoutMs: number = timeoutMs,
     private readonly breakerEnabled: boolean = true,
     private readonly breakerThreshold: number = DEFAULT_BREAKER_THRESHOLD,
     private readonly breakerCooldownMs: number = DEFAULT_BREAKER_COOLDOWN_MS,

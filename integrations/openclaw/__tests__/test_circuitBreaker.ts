@@ -155,6 +155,30 @@ describe("circuit breaker", () => {
     expect(mockFetch).toHaveBeenCalledTimes(THRESHOLD + 1);
   });
 
+  it("does not reopen immediately when the post-cooldown probe fails", async () => {
+    // Mirrors the Python reference (_is_breaker_open): the half-open transition
+    // resets the counter, so a failing probe starts a fresh streak rather than
+    // reopening after a single failure.
+    const client = makeClient();
+    let now = 10_000;
+    jest.spyOn(Date, "now").mockImplementation(() => now);
+    mockFetch.mockRejectedValue(new TypeError("unreachable"));
+
+    for (let i = 0; i < THRESHOLD; i++) {
+      await expect(call(client)).rejects.toThrow();
+    }
+    await expect(call(client)).rejects.toThrow(/circuit open/);
+    expect(mockFetch).toHaveBeenCalledTimes(THRESHOLD);
+
+    // Cooldown elapses → the probe and the call after it both reach the server
+    // (counter reset to 0, then 1 — still below the threshold).
+    now += COOLDOWN_MS + 1;
+    await expect(call(client)).rejects.toThrow(/unreachable/);
+    expect(mockFetch).toHaveBeenCalledTimes(THRESHOLD + 1);
+    await expect(call(client)).rejects.toThrow(/unreachable/);
+    expect(mockFetch).toHaveBeenCalledTimes(THRESHOLD + 2);
+  });
+
   it("stays closed when disabled", async () => {
     const client = makeClient({ breakerEnabled: false });
     mockFetch.mockRejectedValue(new TypeError("unreachable"));
