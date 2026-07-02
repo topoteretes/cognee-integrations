@@ -223,6 +223,15 @@ async def _run(prompt: str) -> dict | None:
 
         user = await resolve_user(_load_user_id())
 
+    # Per-scope instrumentation (WS7 observability): capture {hits, elapsed_ms}
+    # for every scope — including scopes that error or are skipped by the budget
+    # — keyed by a stable, human-readable label derived from scope_specs. Purely
+    # additive: it must not touch recall results, ordering, or control flow, and
+    # must never raise into the keystroke->answer path. Captured before the
+    # breaker-open branch below can blank scope_specs, so all 5 labels survive.
+    scope_labels = [spec[0][0] for spec in scope_specs]
+    per_scope: dict[str, dict] = {}
+
     # Hard time-box: this hook is on the keystroke->answer path, so recall must
     # never be the long pole. Each scope gets a short per-call timeout, and the
     # whole loop stops once the overall budget is spent. Partial results are fine.
@@ -242,9 +251,12 @@ async def _run(prompt: str) -> dict | None:
             hook_log("recall_breaker_open", {"retry_in": _bretry})
             scope_specs = []
     for scope_list, qtype, context_profile in scope_specs:
+        label = scope_list[0]
         if time.monotonic() >= budget_deadline:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
+        part = None
+        t0 = time.monotonic()
         try:
             if cloud_mode:
                 part = recall_via_http(
@@ -276,6 +288,19 @@ async def _run(prompt: str) -> dict | None:
                 results.extend(part)
         except Exception as exc:
             hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
+        finally:
+            # hits = raw count from this scope's call (pre-bucketing/filtering);
+            # elapsed_ms measured around the call, recorded even when it errored.
+            per_scope[label] = {
+                "hits": len(part or []),
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+
+    # Backfill scopes that never ran — skipped by the budget break above or by
+    # the breaker-open reset (scope_specs = []) — so the event always carries all
+    # 5 scopes in their canonical order with a 0-hit/0-ms skipped marker.
+    for label in scope_labels:
+        per_scope.setdefault(label, {"hits": 0, "elapsed_ms": 0, "skipped": True})
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
@@ -329,6 +354,7 @@ async def _run(prompt: str) -> dict | None:
                     .datetime.now(__import__("datetime").timezone.utc)
                     .isoformat(timespec="seconds"),
                     "hits": counts,
+                    "per_scope": per_scope,
                     "saves_last_turn": saves_last_turn,
                 }
             ),
@@ -375,11 +401,17 @@ async def _run(prompt: str) -> dict | None:
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_hit",
+            {"counts": counts, "per_scope": per_scope, "saves_last_turn": saves_last_turn},
+        )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
         full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_empty",
+            {"per_scope": per_scope, "saves_last_turn": saves_last_turn},
+        )
         notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
@@ -399,6 +431,7 @@ async def _run(prompt: str) -> dict | None:
                         "session_id": session_id,
                         "prompt": prompt,
                         "hits": counts,
+                        "per_scope": per_scope,
                         "context": full_context,
                     }
                 )
