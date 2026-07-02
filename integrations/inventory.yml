@@ -49,6 +49,17 @@ integrations:
     migration_status: done
     notes: "Vellum Assistant plugin integrating Cognee as the primary memory system. Pure TypeScript hooks talk to the Cognee HTTP API, session storage via hooks, recall via model-visible tool, session-to-graph sync; can optionally provision and manage a local Cognee server"
 
+  - slug: vellum
+    name: "Cognee memory for Vellum Workflows"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-vellum"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Python package of Vellum Workflows SDK nodes (CogneeRememberNode/CogneeRecallNode) and Agent Node tools, built on cognee's remember/recall API. Distinct from vellum-assistant (that is a TypeScript plugin for the Vellum Assistant product; this targets the Vellum Workflows SDK)."
+
   - slug: codex
     name: "Cognee Plugin for Codex"
     owner: cognee
