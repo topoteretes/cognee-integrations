@@ -23,12 +23,22 @@ _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _DEFAULT_DATASET = "agent_sessions"
 
 
-def _active_dataset() -> str:
+def _active_dataset(cwd: str = "") -> str:
     # 1. env var (inherited from the shell that launched Claude Code)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. config file
+    # 2. project picker (.cognee/session-config.json)
+    try:
+        picker_path = Path(cwd or os.getcwd()) / ".cognee" / "session-config.json"
+        data = json.loads(picker_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            v = str(data.get("dataset") or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    # 3. config file
     try:
         data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
         if isinstance(data, dict):
@@ -37,7 +47,7 @@ def _active_dataset() -> str:
                 return v
     except Exception:
         pass
-    # 3. default
+    # 4. default
     return _DEFAULT_DATASET
 
 
@@ -74,11 +84,14 @@ def _health_prefix() -> str:
 
 
 def main() -> None:
+    cwd = ""
     try:
-        json.load(sys.stdin)  # consume stdin as required by Claude Code
+        ctx = json.load(sys.stdin)  # consume stdin as required by Claude Code
+        if isinstance(ctx, dict):
+            cwd = str(ctx.get("cwd") or (ctx.get("workspace") or {}).get("current_dir") or "")
     except Exception:
         pass
-    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
+    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset(cwd)} · {_active_mode()}")
 
 
 if __name__ == "__main__":

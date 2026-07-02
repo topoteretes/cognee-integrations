@@ -101,8 +101,37 @@ _ENV_MAP = {
 }
 
 
-def load_config() -> dict:
-    """Load merged config: defaults → file → env vars."""
+def _read_project_picker(cwd: Optional[str] = None) -> dict:
+    """Read .cognee/session-config.json from the project directory.
+
+    Resolution order for the project root: explicit cwd arg (from a hook's
+    payload) > CLAUDE_CWD env (background workers with no payload) >
+    os.getcwd() (last resort — NOT reliable inside a global-plugin hook
+    process, kept only as a final fallback).
+    """
+    project_dir = Path(cwd or os.environ.get("CLAUDE_CWD") or os.getcwd())
+    picker_path = project_dir / ".cognee" / "session-config.json"
+
+    if not picker_path.exists():
+        return {}
+    try:
+        data = json.loads(picker_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        _config_log(
+            "session_picker_load_failed", {"path": str(picker_path), "error": str(exc)[:200]}
+        )
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # Only non-null AND non-empty-string values fall through — matches the
+    # existing config-file layer's semantics (line 112: `v is not None and v != ""`)
+    # so an explicit `{"dataset": null}` or `{"dataset": ""}` cleanly no-ops
+    # instead of resolving to an empty dataset name downstream.
+    return {k: v for k, v in data.items() if v is not None and v != ""}
+
+
+def load_config(cwd: Optional[str] = None) -> dict:
+    """Load merged config: defaults → file → project picker → env vars."""
     config = dict(_DEFAULTS)
 
     # Layer 2: config file
@@ -115,7 +144,10 @@ def load_config() -> dict:
                 "config_file_load_failed", {"path": str(_CONFIG_FILE), "error": str(exc)[:200]}
             )
 
-    # Layer 3: env vars (highest priority)
+    # Layer 3: project-level picker (.cognee/session-config.json)
+    config.update(_read_project_picker(cwd))
+
+    # Layer 4: env vars (highest priority)
     for env_key, config_key in _ENV_MAP.items():
         val = os.environ.get(env_key, "")
         if val:
