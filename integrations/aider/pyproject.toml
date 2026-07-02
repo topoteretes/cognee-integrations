@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-aider"
+version = "0.1.0"
+description = "Native Cognee graph memory support for Aider CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "cognee>=0.5.1,<0.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/aider"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_aider*"]
+exclude = ["examples*"]
+
+[tool.uv]
+managed = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]

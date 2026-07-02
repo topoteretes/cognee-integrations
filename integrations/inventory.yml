@@ -154,6 +154,13 @@ integrations:
     source_repo: https://github.com/topoteretes/cognee-integration-crewai
     notes: "CrewAI agent tools – add, search, session management"
 
+  - slug: aider
+    name: "cognee-aider-integration"
+    path: integrations/aider
+    type: python
+    language: python
+    status: active
+
   # ── Pending migrations ─────────────────────────────────────────────
 
   - slug: claude
