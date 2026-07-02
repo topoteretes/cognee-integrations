@@ -16,6 +16,22 @@ Install from the Claude Code marketplace. You can do this interactively by typin
 /plugin install cognee-memory@cognee
 ```
 
+The first command registers this repo as a plugin marketplace; the second installs the
+`cognee-memory` plugin from it.
+
+**Verify the install (optional).** To confirm a fresh checkout would install and run
+cleanly — before or without typing the slash commands — run the smoke check:
+
+```bash
+bash integrations/claude-code/scripts/smoke-install.sh
+```
+
+It validates the full install path end-to-end without needing a running Cognee server:
+the marketplace/plugin manifests are valid and agree on name and version, the
+`/plugin install` target resolves, every hook script the plugin registers exists on disk,
+and every declared skill is present. It exits `0` when the plugin is install-ready and
+non-zero with a clear list of what's wrong otherwise.
+
 Then set environment variables for your runtime mode.
 
 **Cognee Cloud or a remote server** — set both:
@@ -229,23 +245,45 @@ Shared state (used by both Claude Code and Codex plugins):
 
 ## Update or remove
 
-Reinstall the plugin to pick up marketplace updates (run inside Claude Code chat):
+### Update
+
+Updating is a one-command refresh — **no uninstall + reinstall needed**. Refresh the
+`cognee` marketplace and hot-reload:
+
+```
+/plugin marketplace update cognee
+/reload-plugins
+```
+
+Claude Code re-fetches the marketplace and updates the installed `cognee-memory` plugin
+to the latest version, then `/reload-plugins` applies it without restarting.
+
+To keep it current automatically, enable auto-update once: run `/plugin`, open the
+**Marketplaces** tab, select `cognee`, and choose **Enable auto-update**. Claude Code then
+refreshes the marketplace and updates the plugin at startup, prompting a reload when a new
+version lands. (Third-party marketplaces have auto-update off by default, which is why the
+manual refresh above exists.)
+
+After updating, re-run the smoke check to confirm the new version still wires up cleanly
+(manifests agree on version, hook scripts and skills all resolve):
+
+```bash
+bash integrations/claude-code/scripts/smoke-install.sh
+```
+
+### Remove
+
+Uninstall the plugin:
 
 ```
 /plugin uninstall cognee-memory@cognee
-/plugin install cognee-memory@cognee
 ```
 
-To also refresh the marketplace source:
+To also remove the marketplace source:
 
 ```
-/plugin uninstall cognee-memory@cognee
 /plugin marketplace remove topoteretes/cognee-integrations
-/plugin marketplace add topoteretes/cognee-integrations
-/plugin install cognee-memory@cognee
 ```
-
-There is no automatic update mechanism — reinstall is the only way to pull in new plugin versions.
 
 ## Troubleshooting
 
