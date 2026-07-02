@@ -17,6 +17,21 @@ const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 3_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
+// Circuit breaker defaults mirror the Python clients (Hermes provider,
+// claude-code recall client): open after 5 consecutive UNREACHABLE / 5xx
+// failures, stay open for 120s.
+const DEFAULT_BREAKER_THRESHOLD = 5;
+const DEFAULT_BREAKER_COOLDOWN_MS = 120_000;
+
+// Thrown for reachable HTTP error responses. Carries the status so the circuit
+// breaker can tell a server-side 5xx (trip-worthy) from a reachable 4xx like
+// 401/403 (a config problem that must NOT trip the breaker).
+class CogneeHttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "CogneeHttpError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // CogneeHttpClient — shared HTTP transport with auth, retry, timeout
@@ -29,6 +44,11 @@ export class CogneeHttpClient {
   private authToken: string | undefined;
   private loginPromise: Promise<void> | undefined;
 
+  // Circuit breaker state, kept in-memory: this client is long-lived (mirroring
+  // the Hermes provider), unlike the file-based short-lived plugin hooks.
+  private consecutiveFailures = 0;
+  private breakerOpenUntil = 0;
+
   constructor(
     readonly baseUrl: string,
     private readonly apiKey?: string,
@@ -37,6 +57,11 @@ export class CogneeHttpClient {
     private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
     readonly ingestionTimeoutMs: number = DEFAULT_INGESTION_TIMEOUT_MS,
     readonly mode: CogneeMode = "local",
+    // Read ops share the request timeout unless a tighter recall bound is given.
+    private readonly recallTimeoutMs: number = timeoutMs,
+    private readonly breakerEnabled: boolean = true,
+    private readonly breakerThreshold: number = DEFAULT_BREAKER_THRESHOLD,
+    private readonly breakerCooldownMs: number = DEFAULT_BREAKER_COOLDOWN_MS,
   ) { }
 
   private get isCloud(): boolean {
@@ -108,8 +133,41 @@ export class CogneeHttpClient {
     responseParser: (r: Response) => Promise<T> = async (r: Response) => (await r.json()) as T,
     retries = MAX_RETRIES,
   ): Promise<T> {
+    // Short-circuit while the breaker is open so a down backend isn't hammered.
+    if (this.isBreakerOpen()) {
+      throw new CogneeHttpError(
+        503,
+        `Cognee request failed (503): circuit open, retry in ~${this.breakerRetrySecs()}s`,
+      );
+    }
+
+    // Auth is resolved outside the classified block: a login failure is a
+    // config problem, not a down backend, so it must not count toward the breaker.
     await this.ensureAuth();
 
+    try {
+      const result = await this.fetchWithRetry<T>(path, init, timeoutMs, responseParser, retries);
+      this.recordSuccess();
+      return result;
+    } catch (error) {
+      // UNREACHABLE (connection failure / timeout) and 5xx trip the breaker;
+      // a reachable 4xx (e.g. 401/403 auth) is surfaced but does not.
+      if (this.isTripworthy(error)) {
+        this.recordFailure();
+      } else {
+        this.recordSuccess();
+      }
+      throw error;
+    }
+  }
+
+  private async fetchWithRetry<T>(
+    path: string,
+    init: RequestInit,
+    timeoutMs: number,
+    responseParser: (r: Response) => Promise<T>,
+    retries: number,
+  ): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) {
@@ -143,7 +201,7 @@ export class CogneeHttpClient {
             });
             if (!retryResponse.ok) {
               const errorText = await retryResponse.text();
-              throw new Error(`Cognee request failed (${retryResponse.status}): ${errorText}`);
+              throw new CogneeHttpError(retryResponse.status, `Cognee request failed (${retryResponse.status}): ${errorText}`);
             }
             return responseParser(retryResponse);
           } finally {
@@ -153,9 +211,11 @@ export class CogneeHttpClient {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(`Cognee request failed (${response.status}): ${errorText}`);
+          throw new CogneeHttpError(response.status, `Cognee request failed (${response.status}): ${errorText}`);
         }
-        return (await response.json()) as T;
+        const data = (await response.json()) as T;
+        clearTimeout(timer);
+        return data;
       } catch (error) {
         clearTimeout(timer);
         const isTimeout =
@@ -169,6 +229,46 @@ export class CogneeHttpClient {
       }
     }
     throw lastError;
+  }
+
+  // -- Circuit breaker ------------------------------------------------------
+  // In-memory, consecutive-failure breaker ported from the Python clients.
+  // Only genuine backend trouble trips it: UNREACHABLE (connection failure /
+  // timeout) or a 5xx. A reachable 4xx (401/403) is surfaced but never trips —
+  // waiting wouldn't fix an auth/config problem.
+
+  private isBreakerOpen(): boolean {
+    if (!this.breakerEnabled) return false;
+    if (this.consecutiveFailures < this.breakerThreshold) return false;
+    // Cooldown elapsed → half-open: reset the counter and allow one probe.
+    if (Date.now() >= this.breakerOpenUntil) {
+      this.consecutiveFailures = 0;
+      return false;
+    }
+    return true;
+  }
+
+  private breakerRetrySecs(): number {
+    return Math.max(0, Math.ceil((this.breakerOpenUntil - Date.now()) / 1000));
+  }
+
+  private recordSuccess(): void {
+    this.consecutiveFailures = 0;
+  }
+
+  private recordFailure(): void {
+    this.consecutiveFailures += 1;
+    if (this.consecutiveFailures >= this.breakerThreshold) {
+      this.breakerOpenUntil = Date.now() + this.breakerCooldownMs;
+    }
+  }
+
+  private isTripworthy(error: unknown): boolean {
+    // Reachable HTTP responses carry a status: only 5xx trips.
+    if (error instanceof CogneeHttpError) return error.status >= 500;
+    // Anything else here is a transport failure (connection refused, DNS, or a
+    // timeout/abort after retries) — i.e. UNREACHABLE — which trips.
+    return true;
   }
 
   // -- Health ---------------------------------------------------------------
@@ -502,7 +602,7 @@ export class CogneeHttpClient {
         ...(params.searchPrompt ? { systemPrompt: params.searchPrompt } : {}),
         ...(params.sessionId ? { session_id: params.sessionId } : {}),
       }),
-    });
+    }, this.recallTimeoutMs);
     return normalizeSearchResults(data);
   }
 
@@ -531,7 +631,7 @@ export class CogneeHttpClient {
         ...(params.sessionId ? { session_id: params.sessionId } : {}),
         ...(params.scope ? { scope: params.scope } : {}),
       }),
-    });
+    }, this.recallTimeoutMs);
     return normalizeSearchResults(data);
   }
 
