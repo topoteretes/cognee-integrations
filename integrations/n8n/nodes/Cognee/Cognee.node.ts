@@ -1,11 +1,24 @@
 import type {
+  IDataObject,
   IExecuteSingleFunctions,
+  IHttpRequestOptions,
   IN8nHttpFullResponse,
   INodeExecutionData,
+  INodePropertyOptions,
   INodeType,
   INodeTypeDescription,
 } from 'n8n-workflow';
 import { NodeConnectionTypes } from 'n8n-workflow';
+
+/**
+ * Completion search strategies shared by the Search and Recall operations, so
+ * the two ops never drift apart. Recall prepends an Auto entry to this list.
+ */
+const SEARCH_COMPLETION_TYPES: INodePropertyOptions[] = [
+  { name: 'GraphCompletion', value: 'GRAPH_COMPLETION' },
+  { name: 'ChainOfThought', value: 'GRAPH_COMPLETION_COT' },
+  { name: 'RagCompletion', value: 'RAG_COMPLETION' },
+];
 
 /**
  * Pull the agent's answer text out of the /v1/search response envelope.
@@ -129,6 +142,93 @@ async function parseReviewScore(
   ];
 }
 
+/**
+ * Multi-value string parameters reach preSend as whatever the user's
+ * expression resolved to, so a single expression yielding a plain string must
+ * become a one-element array rather than being iterated character by character.
+ */
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  return value ? [String(value)] : [];
+}
+
+/**
+ * preSend for the Recall operation. Builds the whole JSON body in one place:
+ * search_type is an explicit null for Auto (the backend's opt-in to
+ * auto-routing), and the optional fields (datasets, session_id, node_name) are
+ * omitted entirely when empty instead of being sent as null.
+ */
+async function buildRecallBody(
+  this: IExecuteSingleFunctions,
+  requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+  const searchType = this.getNodeParameter('recallSearchType', 'AUTO') as string;
+  const datasets = toStringArray(this.getNodeParameter('recallDatasets', []));
+  const sessionId = this.getNodeParameter('recallSessionId', '') as string;
+  const nodeName = toStringArray(this.getNodeParameter('recallNodeName', []));
+  const topK = this.getNodeParameter('recallTopK', 15) as number;
+
+  const body: IDataObject = {
+    search_type: searchType === 'AUTO' ? null : searchType,
+    query: this.getNodeParameter('recallQuery', '') as string,
+    scope: this.getNodeParameter('recallScope', 'auto') as string,
+  };
+  if (datasets.length) body.datasets = datasets;
+  if (sessionId) body.session_id = sessionId;
+  if (nodeName.length) body.node_name = nodeName;
+  if (topK > 0) body.top_k = topK;
+  requestOptions.body = body;
+  return requestOptions;
+}
+
+/** One plain (non-file) field of a multipart/form-data body. */
+function multipartField(boundary: string, name: string, value: string): string {
+  return `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+}
+
+/**
+ * preSend for the Remember operation. /v1/remember is multipart ingest, so the
+ * Text field is sent as an uploaded note.txt file part alongside datasetName,
+ * datasetId, session_id, run_in_background and one node_set form field per
+ * tag. The multipart body is assembled by hand into a Buffer with an explicit
+ * boundary header: n8n Cloud forbids the form-data package (no runtime deps
+ * for community nodes) and a native WHATWG FormData body is only serialized
+ * correctly on hosts bundling a new-enough axios, so neither is portable.
+ * This is the one-shot add+cognify path with session attribution and node-set
+ * tagging.
+ */
+async function buildRememberForm(
+  this: IExecuteSingleFunctions,
+  requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+  const text = this.getNodeParameter('rememberText', '') as string;
+  const datasetName = this.getNodeParameter('rememberDatasetName', '') as string;
+  const datasetId = this.getNodeParameter('rememberDatasetId', '') as string;
+  const sessionId = this.getNodeParameter('rememberSessionId', '') as string;
+  const nodeSet = toStringArray(this.getNodeParameter('rememberNodeSet', []));
+  const runInBackground = this.getNodeParameter('rememberRunInBackground', true) as boolean;
+
+  const boundary = `----n8nCogneeRemember${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  const parts: string[] = [
+    `--${boundary}\r\nContent-Disposition: form-data; name="data"; filename="note.txt"\r\nContent-Type: text/plain\r\n\r\n${text}\r\n`,
+    multipartField(boundary, 'datasetName', datasetName),
+  ];
+  if (datasetId) parts.push(multipartField(boundary, 'datasetId', datasetId));
+  if (sessionId) parts.push(multipartField(boundary, 'session_id', sessionId));
+  for (const tag of nodeSet) {
+    parts.push(multipartField(boundary, 'node_set', tag));
+  }
+  parts.push(multipartField(boundary, 'run_in_background', runInBackground ? 'true' : 'false'));
+  parts.push(`--${boundary}--\r\n`);
+
+  requestOptions.body = Buffer.from(parts.join(''), 'utf-8');
+  requestOptions.headers = {
+    ...requestOptions.headers,
+    'Content-Type': `multipart/form-data; boundary=${boundary}`,
+  };
+  return requestOptions;
+}
+
 export class Cognee implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'Cognee',
@@ -138,7 +238,7 @@ export class Cognee implements INodeType {
     usableAsTool: true,
     version: 1,
     subtitle: '={{$parameter["resource"] + ": " + $parameter["operation"]}}',
-    description: 'Add text data to a Cognee dataset, build a knowledge graph, search Cognee memory, manage datasets, and run the self-improving skill loop (ingest, review, propose, apply)',
+    description: 'Add text data to a Cognee dataset, build a knowledge graph, search Cognee memory, recall from memory with session and node-set filtering, remember text in one add+cognify call, manage datasets, and run the self-improving skill loop (ingest, review, propose, apply)',
     defaults: {
       name: 'Cognee',
     },
@@ -167,6 +267,8 @@ export class Cognee implements INodeType {
           { name: 'Add Data', value: 'addData' },
           { name: 'Cognify', value: 'cognify' },
           { name: 'Delete', value: 'delete' },
+          { name: 'Recall', value: 'recall' },
+          { name: 'Remember', value: 'remember' },
           { name: 'Search', value: 'search' },
           { name: 'Skill', value: 'skill' },
         ],
@@ -261,6 +363,69 @@ export class Cognee implements INodeType {
           },
         ],
         default: 'search',
+      },
+      {
+        displayName: 'Operation',
+        name: 'operation',
+        type: 'options',
+        noDataExpression: true,
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+          },
+        },
+        options: [
+          {
+            name: 'Recall',
+            value: 'recall',
+            action: 'Recall from cognee memory',
+            description: 'Memory-oriented search over cognee: like Search, with session, node-set and auto-routing (search_type null)',
+            routing: {
+              send: {
+                preSend: [buildRecallBody],
+              },
+              request: {
+                method: 'POST',
+                url: '/v1/recall',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                timeout: 300000, // 5 minutes
+              },
+            },
+          },
+        ],
+        default: 'recall',
+      },
+      {
+        displayName: 'Operation',
+        name: 'operation',
+        type: 'options',
+        noDataExpression: true,
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+          },
+        },
+        options: [
+          {
+            name: 'Remember',
+            value: 'remember',
+            action: 'Remember data into cognee memory',
+            description: 'One-shot add + cognify of text with session attribution and node-set tagging',
+            routing: {
+              send: {
+                preSend: [buildRememberForm],
+              },
+              request: {
+                method: 'POST',
+                url: '/v1/remember',
+                timeout: 600000, // 10 minutes
+              },
+            },
+          },
+        ],
+        default: 'remember',
       },
       {
         displayName: 'Operation',
@@ -560,11 +725,7 @@ export class Cognee implements INodeType {
         displayName: 'Search Type',
         name: 'searchType',
         type: 'options',
-        options: [
-          { name: 'GraphCompletion', value: 'GRAPH_COMPLETION' },
-          { name: 'ChainOfThought', value: 'GRAPH_COMPLETION_COT' },
-          { name: 'RagCompletion', value: 'RAG_COMPLETION' },
-        ],
+        options: SEARCH_COMPLETION_TYPES,
         default: 'GRAPH_COMPLETION',
         description: 'Selection of search types to query the cognee memory engine',
         displayOptions: {
@@ -643,6 +804,201 @@ export class Cognee implements INodeType {
             body: {
               topK: '={{$value}}',
             },
+          },
+        },
+      },
+      // Recall action fields
+      {
+        displayName: 'Search Type',
+        name: 'recallSearchType',
+        type: 'options',
+        options: [{ name: 'Auto (Let Cognee Route)', value: 'AUTO' }, ...SEARCH_COMPLETION_TYPES],
+        default: 'AUTO',
+        description: 'Search strategy for recall. Auto sends search_type null so cognee routes the query for you.',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+      },
+      {
+        displayName: 'Query',
+        name: 'recallQuery',
+        type: 'string',
+        default: '',
+        required: true,
+        description: 'The text query to recall from cognee memory',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+      },
+      {
+        displayName: 'Datasets',
+        name: 'recallDatasets',
+        type: 'string',
+        typeOptions: {
+          multipleValues: true,
+        },
+        default: [],
+        description: 'Dataset names to recall from. Leave empty to search all datasets you can read.',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+      },
+      {
+        displayName: 'Session ID',
+        name: 'recallSessionId',
+        type: 'string',
+        default: '',
+        description: 'Session whose cached QA/trace entries should be recalled. Leave empty to search the graph only.',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+      },
+      {
+        displayName: 'Node Names',
+        name: 'recallNodeName',
+        type: 'string',
+        typeOptions: {
+          multipleValues: true,
+        },
+        default: [],
+        description: 'Restrict recall to these node sets (the node_set tags passed to Remember/Add). Leave empty to search all nodes.',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+      },
+      {
+        displayName: 'Scope',
+        name: 'recallScope',
+        type: 'options',
+        options: [
+          { name: 'All', value: 'all' },
+          { name: 'Auto', value: 'auto' },
+          { name: 'Graph', value: 'graph' },
+          { name: 'Graph Context', value: 'graph_context' },
+          { name: 'Session', value: 'session' },
+          { name: 'Trace', value: 'trace' },
+        ],
+        default: 'auto',
+        description: 'Which memory sources to include. Auto uses the session first when a Session ID is set, else the graph.',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+      },
+      {
+        displayName: 'Top K',
+        name: 'recallTopK',
+        type: 'number',
+        default: 15,
+        description: 'Number of elements to retrieve during context creation. Set 0 or empty to use the recall backend default of 15 (Search defaults to 10).',
+        displayOptions: {
+          show: {
+            resource: ['recall'],
+            operation: ['recall'],
+          },
+        },
+      },
+      // Remember action fields
+      {
+        displayName: 'Dataset Name',
+        name: 'rememberDatasetName',
+        type: 'string',
+        default: '',
+        required: true,
+        description: 'Name of the target dataset (created if it does not exist)',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+      },
+      {
+        displayName: 'Dataset ID',
+        name: 'rememberDatasetId',
+        type: 'string',
+        default: '',
+        description: 'UUID of an existing dataset to target instead of resolving by name. Leave empty to use the Dataset Name.',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+      },
+      {
+        displayName: 'Text',
+        name: 'rememberText',
+        type: 'string',
+        typeOptions: {
+          rows: 6,
+        },
+        default: '',
+        required: true,
+        description: 'Text to remember. It is ingested as an uploaded .txt file and cognified in one call.',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+      },
+      {
+        displayName: 'Session ID',
+        name: 'rememberSessionId',
+        type: 'string',
+        default: '',
+        description: 'Session to attribute this memory to (e.g. claude-code-1718000000). Leave empty for a direct add+cognify.',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+      },
+      {
+        displayName: 'Node Sets',
+        name: 'rememberNodeSet',
+        type: 'string',
+        typeOptions: {
+          multipleValues: true,
+        },
+        default: [],
+        description: 'Tags the ingested data with these node sets so recall/search can later be restricted to them',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
+          },
+        },
+      },
+      {
+        displayName: 'Run in Background',
+        name: 'rememberRunInBackground',
+        type: 'boolean',
+        default: true,
+        description: 'Whether the server should cognify asynchronously. When enabled the request returns as soon as the work is enqueued. Disable to wait synchronously, but note that the Cognee Cloud gateway closes long-running connections around the 4-minute mark, so non-trivial texts will fail with ECONNRESET in sync mode.',
+        displayOptions: {
+          show: {
+            resource: ['remember'],
+            operation: ['remember'],
           },
         },
       },
