@@ -42,6 +42,32 @@ You can also set config in `~/.cognee-plugin/claude-code/config.json`:
 
 On startup you should see a "Cognee Memory Connected" system message.
 
+## Modes
+
+The plugin connects to Cognee in one of three modes. It picks the mode
+automatically from your config:
+
+| Mode | When it's used | How it talks to Cognee |
+| --- | --- | --- |
+| **local-server** (default) | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | bootstraps a local Cognee API at `http://localhost:8011` and connects as a thin HTTP client |
+| **remote** | `COGNEE_BASE_URL` is set | thin HTTP client to your managed / cloud Cognee |
+| **embedded** | `COGNEE_EMBEDDED=true` | runs Cognee in-process (Python SDK directly) |
+
+**Why local-server is the default.** Cognee's local stores (SQLite, Kuzu/Ladybug,
+LanceDB) are single-writer. Driving them in-process from the plugin's background
+threads — or from a second process sharing the same `data_root` — risks
+`database is locked` errors and corruption. A local Cognee server is the single
+owner that serializes all access, so the plugin just makes HTTP calls. This is the
+same design the Codex and Hermes Agent plugins use. **`embedded` is opt-in and is
+safe for single-process / offline use only.**
+
+**No silent fallbacks.** The plugin never downgrades modes behind your back. If
+`COGNEE_BASE_URL` is set but unreachable, or the local server fails to start,
+initialization raises rather than quietly switching to a different mode — silent
+fallback would either mask a config error (remote → local data divergence) or
+reintroduce the very DB-lock risk this design removes (local-server → embedded).
+To accept the single-process trade-off, set `COGNEE_EMBEDDED=true` explicitly.
+
 ## Auth
 
 The integration uses a **single auth principal** — one API key, one user.

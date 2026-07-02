@@ -39,6 +39,26 @@ npm install n8n-nodes-cognee
 
 Restart n8n after installation if required.
 
+## Modes
+
+The node connects to Cognee over HTTP using the credentials you configure.
+The mode depends on what **Base URL** you enter:
+
+| Mode | When it's used | How it talks to Cognee |
+| --- | --- | --- |
+| **local-server** | Base URL points to `http://localhost:8000` (or another local address) | HTTP client to a self-hosted Cognee server on your machine or network |
+| **cloud** | Base URL points to your Cognee Cloud tenant (e.g. `https://tenant-xxx.aws.cognee.ai`) | HTTP client to your managed Cognee Cloud instance |
+
+**Why a separate server.** Cognee's local stores (SQLite, Kuzu/Ladybug,
+LanceDB) are single-writer. The Cognee server is the single owner that serializes
+all access, so the n8n node just makes HTTP calls. This is the same design the
+Claude Code, Codex, Hermes Agent, and OpenClaw plugins use.
+
+> **Embedded mode is not available** for this integration. n8n community nodes
+> always connect over HTTP via credentials. For single-process / offline use, see
+> the Python-based integrations (Claude Code, Codex, Hermes Agent) which support
+> `COGNEE_EMBEDDED=true`.
+
 ## Credentials
 
 Get your Cognee API key and Base URL from your [Cognee Cloud dashboard](https://docs.cognee.ai/how-to-guides/cognee-cloud) (API Keys page).

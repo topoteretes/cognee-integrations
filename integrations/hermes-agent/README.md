@@ -48,9 +48,9 @@ cognee = "cognee_integration_hermes"
 The setup wizard writes non-secret settings to `$HERMES_HOME/cognee.json` and
 secrets to `$HERMES_HOME/.env`.
 
-### Modes
+## Modes
 
-The provider connects to cognee in one of three modes. It picks the mode
+The provider connects to Cognee in one of three modes. It picks the mode
 automatically from your config:
 
 | Mode | When it's used | How it talks to cognee |
