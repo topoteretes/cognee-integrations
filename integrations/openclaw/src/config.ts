@@ -1,4 +1,5 @@
 import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, ScopeRoute } from "./types.js";
+import { DEFAULT_RECALL_TIMEOUT_MS, DEFAULT_SEARCH_TIMEOUT_MS, DEFAULT_BREAKER_THRESHOLD, DEFAULT_BREAKER_COOLDOWN_MS } from "./client.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -75,6 +76,10 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const improveOnSessionEnd = typeof raw.improveOnSessionEnd === "boolean" ? raw.improveOnSessionEnd : DEFAULT_IMPROVE_ON_SESSION_END;
   const requestTimeoutMs = typeof raw.requestTimeoutMs === "number" ? raw.requestTimeoutMs : DEFAULT_REQUEST_TIMEOUT_MS;
   const ingestionTimeoutMs = typeof raw.ingestionTimeoutMs === "number" ? raw.ingestionTimeoutMs : DEFAULT_INGESTION_TIMEOUT_MS;
+  const recallTimeoutMs = typeof raw.recallTimeoutMs === "number" ? raw.recallTimeoutMs : DEFAULT_RECALL_TIMEOUT_MS;
+  const searchTimeoutMs = typeof raw.searchTimeoutMs === "number" ? raw.searchTimeoutMs : DEFAULT_SEARCH_TIMEOUT_MS;
+  const breakerThreshold = typeof raw.breakerThreshold === "number" ? raw.breakerThreshold : DEFAULT_BREAKER_THRESHOLD;
+  const breakerCooldownMs = typeof raw.breakerCooldownMs === "number" ? raw.breakerCooldownMs : DEFAULT_BREAKER_COOLDOWN_MS;
 
   const apiKey =
     raw.apiKey && raw.apiKey.length > 0 ? resolveEnvVars(raw.apiKey)
@@ -120,5 +125,6 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify, improveOnSessionEnd,
     requestTimeoutMs, ingestionTimeoutMs,
+    recallTimeoutMs, searchTimeoutMs, breakerThreshold, breakerCooldownMs,
   };
 }

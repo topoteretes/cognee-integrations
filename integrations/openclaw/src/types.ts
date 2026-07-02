@@ -101,6 +101,10 @@ export type CogneePluginConfig = {
   // --- Timeouts ---
   requestTimeoutMs?: number;
   ingestionTimeoutMs?: number;
+  recallTimeoutMs?: number;
+  searchTimeoutMs?: number;
+  breakerThreshold?: number;
+  breakerCooldownMs?: number;
 };
 
 export type CogneeAddResponse = {
