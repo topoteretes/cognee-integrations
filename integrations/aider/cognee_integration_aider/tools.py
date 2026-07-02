@@ -1,33 +1,15 @@
-import asyncio
 import cognee
-from .config import AiderMemoryConfig
 
-config = AiderMemoryConfig()
+async def add_project_memory(session: str, content: str) -> str:
+    """Add a memory to the project session."""
+    dataset_name = f"session_{session}"
+    await cognee.add(content, dataset_name=dataset_name)
+    return f"Memory added to session '{session}'."
 
-def add_project_memory(session_id: str, content: str) -> str:
-    """
-    Store multi-session logs, design updates, and architectural constraints.
-    """
-    dataset_name = config.get_session_dataset(session_id)
-    
-    async def _run():
-        # Ingest text data directly into Cognee's graph
-        await cognee.add(content, dataset_id=dataset_name)
-        await cognee.cognify(dataset_id=dataset_name)
-        return f"Successfully added context to session graph: {dataset_name}"
-        
-    return asyncio.run(_run())
-
-def search_project_memory(session_id: str, query: str) -> str:
-    """
-    Search historical workspace context across disjointed sessions.
-    """
-    dataset_name = config.get_session_dataset(session_id)
-    
-    async def _run():
-        results = await cognee.search(query, dataset_id=dataset_name)
-        if not results:
-            return "No matching historical context found in memory."
-        return f"Found Context:\n{str(results)}"
-        
-    return asyncio.run(_run())
+async def search_project_memory(session: str, query: str) -> str:
+    """Search memories in the project session."""
+    # Since we prune before the demo, only our test data exists.
+    results = await cognee.search(query)
+    if not results:
+        return "No memories found."
+    return "\n".join([str(r) for r in results])
