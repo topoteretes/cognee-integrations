@@ -27,6 +27,7 @@ import { RecallBreaker, isBreakerError } from "./breaker.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
 import { bootServerIfNeeded, waitForServerHealth, isLocalUrl, resolveOrMintApiKey, spawnExitWatcher, exitWatcherPidfilePath } from "./server.js";
+import { PLUGIN_VERSION, formatUpdateBadge, readUpdateCache, runUpdateCheck } from "./version.js";
 
 /** Expand a leading `~` in a workspace path to the user's home directory. */
 function expandHome(p: string | undefined): string | undefined {
@@ -58,6 +59,12 @@ const memoryCogneePlugin = {
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
 
+    // Installed plugin version. OpenClaw populates `api.version` from the
+    // plugin's package.json at load time; PLUGIN_VERSION is the fallback for
+    // load paths that leave it unset.
+    const pluginVersion = api.version ?? PLUGIN_VERSION;
+    api.logger.info?.(`cognee-openclaw: v${pluginVersion} loaded`);
+
     const raw = api.pluginConfig as Record<string, unknown> | null | undefined;
     if (!raw?.datasetName && !process.env.COGNEE_PLUGIN_DATASET) {
       api.logger.warn?.(
@@ -65,6 +72,24 @@ const memoryCogneePlugin = {
         'If upgrading from an older version where the default was "openclaw", ' +
         'add datasetName: "openclaw" to your plugin config to preserve access to existing data.',
       );
+    }
+
+    // Auto-enable per-agent memory when the gateway hosts more than one agent,
+    // unless the plugin config set `perAgentMemory` explicitly. This keeps
+    // single-agent installs (the common case) on the legacy shared behavior so
+    // the upgrade is non-breaking; multi-agent gateways get per-agent isolation.
+    const perAgentExplicit =
+      typeof (api.pluginConfig as { perAgentMemory?: unknown } | undefined)?.perAgentMemory === "boolean";
+    if (!perAgentExplicit) {
+      try {
+        const agentList = api.runtime?.config?.loadConfig?.()?.agents?.list;
+        if (Array.isArray(agentList) && agentList.length > 1) {
+          cfg.perAgentMemory = true;
+          api.logger.info?.(`cognee-openclaw: per-agent memory auto-enabled (${agentList.length} agents configured)`);
+        }
+      } catch (error) {
+        api.logger.debug?.(`cognee-openclaw: could not read agents.list for perAgentMemory auto-enable: ${String(error)}`);
+      }
     }
 
     const client = new CogneeHttpClient(cfg.baseUrl, cfg.apiKey, cfg.username, cfg.password, cfg.requestTimeoutMs, cfg.ingestionTimeoutMs, cfg.mode);
@@ -501,6 +526,20 @@ const memoryCogneePlugin = {
 
       autoSyncStarted = true;
 
+      // Print the installed version and an "update available" badge. Reads the
+      // local cache by default; with `checkNow` it forces a live npm check first.
+      async function printVersionLine(checkNow?: boolean): Promise<void> {
+        console.log(`Plugin: cognee-openclaw v${pluginVersion}`);
+        const record = checkNow
+          ? await runUpdateCheck({ installed: pluginVersion, force: true })
+          : await readUpdateCache();
+        if (record?.updateAvailable && record.latest) {
+          console.log(formatUpdateBadge(record.latest));
+        } else if (checkNow) {
+          console.log("No newer version found.");
+        }
+      }
+
       cognee
         .command("index")
         .description("Sync memory files to Cognee (add new, update changed, skip unchanged)")
@@ -532,8 +571,10 @@ const memoryCogneePlugin = {
       cognee
         .command("status")
         .description("Show Cognee sync state")
-        .action(async () => {
+        .option("--check-updates", "Check npm for a newer plugin version now")
+        .action(async (opts: { checkUpdates?: boolean }) => {
           await stateReady;
+          await printVersionLine(opts.checkUpdates);
           const files = await collectMemoryFiles(cliWorkspaceDir);
 
           if (multiScope) {
@@ -596,6 +637,15 @@ const memoryCogneePlugin = {
               `Sync index: ${SYNC_INDEX_PATH}`,
             ].join("\n"));
           }
+          process.exit(0);
+        });
+
+      cognee
+        .command("version")
+        .description("Show the installed plugin version (add --check-updates to check npm)")
+        .option("--check-updates", "Check npm for a newer plugin version now")
+        .action(async (opts: { checkUpdates?: boolean }) => {
+          await printVersionLine(opts.checkUpdates);
           process.exit(0);
         });
 
@@ -852,6 +902,11 @@ const memoryCogneePlugin = {
           logger.info?.(`cognee-openclaw: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted, ${result.skipped} unchanged`);
           if (perAgentMemory) await seedAllAgents(wsDir, logger);
         };
+
+        // Background, TTL-gated check for a newer published version. Fail-silent
+        // and cached; the `cognee status`/`version` surface reads the cache
+        // locally without ever hitting the network.
+        runUpdateCheck({ installed: pluginVersion }).catch(() => {});
 
         doSync().catch((e) => logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(e)}`));
       }

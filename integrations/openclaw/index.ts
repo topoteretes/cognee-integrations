@@ -19,6 +19,16 @@ export { matchGlob, routeFileToScope, datasetNameForScope, isMultiScopeEnabled }
 // Config
 export { resolveConfig } from "./src/config.js";
 
+// Version + update check
+export {
+  PLUGIN_VERSION,
+  compareVersions,
+  formatUpdateBadge,
+  isNewer,
+  runUpdateCheck,
+  readUpdateCache,
+} from "./src/version.js";
+
 // Files
 export { collectMemoryFiles, hashText } from "./src/files.js";
 
