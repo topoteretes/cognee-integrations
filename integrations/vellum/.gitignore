@@ -217,4 +217,7 @@ __marimo__/
 
 .cognee
 
+# Vellum CLI (`vellum workflows push`) writes a local, workspace-specific sandbox id here
+vellum.lock.json
+
 .DS_Store

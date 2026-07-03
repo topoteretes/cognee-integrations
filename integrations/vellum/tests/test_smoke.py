@@ -55,3 +55,19 @@ def test_tools_are_valid_agent_node_tools():
     recall_def = compile_function_definition(cognee_recall)
     assert recall_def.name == "cognee_recall"
     assert "query" in (recall_def.parameters or {}).get("properties", {})
+
+
+def test_example_workflow_imports_and_wires_cognee_nodes():
+    """The shipped example is a valid Vellum workflow that wires both cognee
+    nodes — importable with no cognee/LLM call, so it runs in CI."""
+    from cognee_integration_vellum import CogneeRecallNode, CogneeRememberNode
+    from examples.support_assistant.workflow import (
+        AnswerFromMemory,
+        RememberConversation,
+        SupportAssistantWorkflow,
+    )
+    from vellum.workflows import BaseWorkflow
+
+    assert issubclass(SupportAssistantWorkflow, BaseWorkflow)
+    assert issubclass(RememberConversation, CogneeRememberNode)
+    assert issubclass(AnswerFromMemory, CogneeRecallNode)

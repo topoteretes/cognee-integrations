@@ -42,3 +42,31 @@ def test_remember_then_recall_round_trip():
 
     recalled = Recall(state=BaseState()).run()
     assert "Paris" in recalled.answer
+
+
+@pytest.mark.skipif(
+    not RUN_E2E,
+    reason="set COGNEE_VELLUM_E2E=1 (with a configured cognee) to run the live round trip",
+)
+def test_support_assistant_workflow_end_to_end():
+    """Run the shipped example workflow (RememberConversation >> AnswerFromMemory)
+    against a real cognee: it stores a support conversation and then answers a
+    new question from that memory, with citations. This is the real end-to-end
+    path — the same one shown in the demo."""
+    from examples.support_assistant.workflow import Inputs, SupportAssistantWorkflow
+
+    event = SupportAssistantWorkflow().run(
+        inputs=Inputs(
+            user_id="user-e2e",
+            conversation=(
+                "Customer couldn't reset their password; fixed by clearing the auth cache."
+            ),
+            question="How do I fix a stuck password reset?",
+        )
+    )
+
+    assert event.name == "workflow.execution.fulfilled", event
+    outputs = event.outputs
+    assert outputs.answer, "expected a non-empty answer from memory"
+    assert "cache" in outputs.answer.lower()
+    assert len(outputs.citations) >= 1

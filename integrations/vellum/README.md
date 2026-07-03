@@ -98,6 +98,24 @@ class MemoryAgent(ToolCallingNode):
     functions = [cognee_remember, cognee_recall]
 ```
 
+## Testing
+
+All tests are real — **no cognee is mocked**:
+
+- **`tests/test_smoke.py`** + **`tests/test_client.py`** run in CI (keyless):
+  the package imports, the nodes are genuine Vellum `BaseNode`s, the Agent Node
+  tools compile to Vellum `FunctionDefinition`s, the example workflow wires both
+  cognee nodes, and the answer/citation extraction produces the right typed
+  citations — all pure, deterministic checks that need no LLM or database.
+- **`tests/test_e2e.py`** is the real remember→recall round trip through the
+  nodes and the example workflow against a **live cognee**. It's **opt-in**
+  (skipped unless `COGNEE_VELLUM_E2E=1`) so CI stays keyless:
+  ```bash
+  COGNEE_VELLUM_E2E=1 uv run pytest tests/test_e2e.py -v
+  ```
+  The monorepo CI has no LLM keys so it can't run this, but it passes against a
+  configured cognee (e.g. Gemini + local `fastembed` embeddings).
+
 ## Memory mapping
 
 - One Vellum **workflow deployment** ↦ one cognee **dataset** (`dataset_name`).
