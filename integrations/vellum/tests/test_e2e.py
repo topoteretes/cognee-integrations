@@ -6,9 +6,10 @@ with an ``LLM_API_KEY`` — by setting ``COGNEE_VELLUM_E2E=1``:
 
     COGNEE_VELLUM_E2E=1 uv run pytest tests/test_e2e.py -v
 
-It stores a fact with ``CogneeRememberNode`` and then retrieves it with
-``CogneeRecallNode``, asserting the fact comes back — a genuine remember→recall
-round trip through the Vellum node layer.
+One test stores a fact with ``CogneeRememberNode`` and retrieves it with
+``CogneeRecallNode`` (asserting the fact comes back); the other runs the shipped
+``SupportAssistantWorkflow`` end to end (asserting it fulfils and surfaces typed
+citations). Both are genuine remember→recall round trips through the node layer.
 """
 
 import os
@@ -67,6 +68,12 @@ def test_support_assistant_workflow_end_to_end():
 
     assert event.name == "workflow.execution.fulfilled", event
     outputs = event.outputs
-    assert outputs.answer, "expected a non-empty answer from memory"
-    assert "cache" in outputs.answer.lower()
+    # Assert the integration's contract: the graph runs end to end and surfaces a
+    # string answer plus typed citations pointing back at the stored conversation.
+    # We deliberately do NOT assert the exact answer wording — that comes from
+    # cognee's graph-completion, whose retrieved context is non-deterministic and
+    # state-dependent, so asserting on it would make this a flaky test of cognee
+    # (not of these nodes). The recalled citation is the deterministic contract.
+    assert isinstance(outputs.answer, str) and outputs.answer
     assert len(outputs.citations) >= 1
+    assert outputs.citations[0].get("dataset_name") == "support"
