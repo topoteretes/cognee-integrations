@@ -24,6 +24,13 @@ where = ["."]
 include = ["cognee_integration_vellum*"]
 exclude = ["examples*", "tests*"]
 
+# Registers the example workflow so `vellum workflows push examples.support_assistant`
+# can serialize it and render the cognee nodes as blocks in the Vellum editor.
+[tool.vellum]
+workflows = [
+    { module = "examples.support_assistant" },
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

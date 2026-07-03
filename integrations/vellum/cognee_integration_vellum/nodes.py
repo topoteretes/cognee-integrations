@@ -1,7 +1,7 @@
 """Vellum Workflows SDK nodes backed by cognee memory.
 
-Pushed to Vellum (``vellum push``), these render as first-class drag-and-drop
-blocks in the visual editor, docstring included.
+Pushed to Vellum with ``vellum workflows push``, these appear as named node
+blocks in the visual editor (docstring included).
 """
 
 from typing import Any

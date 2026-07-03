@@ -8,30 +8,49 @@ It ships two things, both built on cognee's public `remember()` / `recall()` API
 (no reimplemented ingestion or session handling):
 
 - **Workflow nodes** (`CogneeRememberNode`, `CogneeRecallNode`) — Vellum
-  Workflows SDK `BaseNode` subclasses. Once pushed, they render as first-class
-  drag-and-drop blocks in the visual editor.
+  Workflows SDK `BaseNode` subclasses. Once pushed, they appear as named,
+  connectable node blocks in the visual editor.
 - **Agent Node tools** (`cognee_remember`, `cognee_recall`) — thin functions to
   register as custom tools so a Vellum agent can decide *when* to read or write
   memory.
 
-## Run your own in 5 minutes
+## Try the example in 5 minutes
 
-1. **Install**
+The bundled `examples/support_assistant` workflow wires `CogneeRememberNode` →
+`CogneeRecallNode` into one graph: remember a resolved conversation, then answer
+a new question from that memory with citations.
+
+1. **Clone + install** (the examples live in the repo, not the published wheel):
    ```bash
-   pip install cognee-integration-vellum
+   git clone https://github.com/topoteretes/cognee-integrations
+   cd cognee-integrations/integrations/vellum && uv sync
    ```
-2. **Set two env vars** (cognee endpoint + API key — never hardcode them in a
-   node; use Vellum workspace secrets in the editor):
+2. **Point it at cognee** — Cognee Cloud, or a local cognee with an LLM +
+   embedding provider (never hardcode secrets in a node; use Vellum workspace
+   secrets in the editor):
    ```bash
    export COGNEE_BASE_URL="http://localhost:8000"   # or your Cognee Cloud URL
    export COGNEE_API_KEY="your_cognee_api_key"
    ```
-3. **Push the example workflow** so the cognee nodes appear in the editor:
+3. **Push it to Vellum** so the cognee nodes appear in the editor:
    ```bash
-   vellum push examples/support_assistant_workflow.py
+   export VELLUM_API_KEY="your_vellum_api_key"
+   uv run vellum workflows push examples.support_assistant
    ```
-4. Open the workflow in Vellum — `CogneeRememberNode` and `CogneeRecallNode` are
-   now reusable blocks you can drag into any workflow.
+4. Open the workflow in Vellum — `CogneeRememberNode` and `CogneeRecallNode` show
+   up as node blocks you can drag into any workflow.
+
+Prefer to try it without a Vellum account? Run it locally:
+```bash
+uv run python -m examples.run_support_assistant   # prints the answer + citations
+```
+
+### Use the nodes in your own workflow
+`pip install cognee-integration-vellum`, then define a `<your_module>/workflow.py`
+that wires the nodes, register it in `pyproject.toml` under
+`[tool.vellum]` (`workflows = [{ module = "<your_module>" }]`), and
+`vellum workflows push <your_module>`. Vellum expects exactly one `BaseWorkflow`
+per `<module>/workflow.py`.
 
 ## Nodes
 
@@ -93,6 +112,6 @@ Vellum's Agent Node already supports MCP tools, so
 [`cognee-mcp`](https://github.com/topoteretes/cognee/tree/main/cognee-mcp) works
 inside an Agent Node with **zero code**. Prefer that when you want the quickest
 generic setup and don't need memory to be visible in the editor. Prefer the
-**native nodes here** when you want first-class drag-and-drop blocks, typed
+**native nodes here** when you want named node blocks in the editor, typed
 citation outputs, and memory that non-technical builders can see and wire up in
 the visual editor.
