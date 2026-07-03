@@ -1,8 +1,8 @@
 """Live end-to-end round trip through the nodes against a real cognee.
 
 Skipped by default (so CI stays keyless/deterministic). Run it with a configured
-cognee — Cognee Cloud (``COGNEE_BASE_URL`` + ``COGNEE_API_KEY``) or local cognee
-with an ``LLM_API_KEY`` — by setting ``COGNEE_VELLUM_E2E=1``:
+cognee — the simplest is a local cognee with an ``LLM_API_KEY`` (and an embedding
+provider); the nodes run cognee in-process — by setting ``COGNEE_VELLUM_E2E=1``:
 
     COGNEE_VELLUM_E2E=1 uv run pytest tests/test_e2e.py -v
 

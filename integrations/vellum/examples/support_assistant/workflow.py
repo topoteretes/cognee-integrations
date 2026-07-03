@@ -7,9 +7,9 @@ pushed. From ``integrations/vellum`` (with ``VELLUM_API_KEY`` set)::
 
     vellum workflows push examples.support_assistant
 
-A live run additionally needs a configured cognee — Cognee Cloud
-(``COGNEE_BASE_URL`` + ``COGNEE_API_KEY``) or a local cognee with an LLM +
-embedding provider set via env. See ``examples/run_support_assistant.py``.
+A live run additionally needs a configured cognee — the simplest is a local cognee
+with an LLM (and an embedding provider) set via env; the nodes run cognee
+in-process. See ``examples/run_support_assistant.py``.
 
 Vellum requires exactly one ``BaseWorkflow`` per ``<module>/workflow.py``, so
 this file defines a single ``SupportAssistantWorkflow`` (the nodes it wires are

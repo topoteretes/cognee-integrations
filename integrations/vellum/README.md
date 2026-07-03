@@ -25,13 +25,15 @@ a new question from that memory with citations.
    git clone https://github.com/topoteretes/cognee-integrations
    cd cognee-integrations/integrations/vellum && uv sync
    ```
-2. **Point it at cognee** — Cognee Cloud, or a local cognee with an LLM +
-   embedding provider (never hardcode secrets in a node; use Vellum workspace
+2. **Configure cognee** — the nodes run cognee **in-process**, so it just needs an
+   LLM to build the graph (never hardcode secrets in a node; use Vellum workspace
    secrets in the editor):
    ```bash
-   export COGNEE_BASE_URL="http://localhost:8000"   # or your Cognee Cloud URL
-   export COGNEE_API_KEY="your_cognee_api_key"
+   export LLM_API_KEY="your_openai_api_key"   # cognee uses this to build the graph
+   # optional — local embeddings with no separate embedding key:
+   # export EMBEDDING_PROVIDER=fastembed EMBEDDING_MODEL="BAAI/bge-small-en-v1.5" EMBEDDING_DIMENSIONS=384
    ```
+   See `.env.example` for other providers (Gemini, etc.) and the advanced remote option.
 3. **Push it to Vellum** so the cognee nodes appear in the editor:
    ```bash
    export VELLUM_API_KEY="your_vellum_api_key"
@@ -40,10 +42,12 @@ a new question from that memory with citations.
 4. Open the workflow in Vellum — `CogneeRememberNode` and `CogneeRecallNode` show
    up as node blocks you can drag into any workflow.
 
-> **Running it inside the Vellum editor** executes in Vellum's cloud, which can't
-> reach a `localhost` cognee — point `COGNEE_BASE_URL` at **Cognee Cloud** (set as
-> a Vellum workspace secret) for in-editor runs. To just see it work end to end
-> with a local cognee, use the local run below.
+> **Where does cognee run?** These nodes call cognee **in-process**, so the workflow
+> runs wherever your Python runs — locally (the command below), or on any host that
+> has cognee configured. Running it *inside* the Vellum editor executes in Vellum's
+> cloud, which has no local cognee to reach; that path needs a **remote** cognee via
+> `cognee.serve(url=..., api_key=...)`, which this example does not set up. For a
+> straightforward "it works" run, use the local run below.
 
 Prefer to try it without a Vellum account? Run it locally:
 ```bash
