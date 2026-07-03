@@ -12,6 +12,7 @@ export const STATE_PATH = join(STATE_DIR, "datasets.json");
 export const SYNC_INDEX_PATH = join(STATE_DIR, "sync-index.json");
 export const SCOPED_SYNC_INDEX_PATH = join(STATE_DIR, "scoped-sync-indexes.json");
 export const AGENT_SYNC_INDEX_PATH = join(STATE_DIR, "agent-sync-indexes.json");
+export const UPDATE_CHECK_PATH = join(STATE_DIR, "update-check.json");
 
 // ---------------------------------------------------------------------------
 // Dataset state (maps dataset name -> dataset ID)
