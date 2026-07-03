@@ -40,6 +40,11 @@ a new question from that memory with citations.
 4. Open the workflow in Vellum — `CogneeRememberNode` and `CogneeRecallNode` show
    up as node blocks you can drag into any workflow.
 
+> **Running it inside the Vellum editor** executes in Vellum's cloud, which can't
+> reach a `localhost` cognee — point `COGNEE_BASE_URL` at **Cognee Cloud** (set as
+> a Vellum workspace secret) for in-editor runs. To just see it work end to end
+> with a local cognee, use the local run below.
+
 Prefer to try it without a Vellum account? Run it locally:
 ```bash
 uv run python -m examples.run_support_assistant   # prints the answer + citations
