@@ -193,10 +193,46 @@ describe("runUpdateCheck", () => {
     expect(record?.latest).toBe("2026.9.9");
     expect(record?.updateAvailable).toBe(true);
   });
+
+  it("recomputes updateAvailable within the TTL when the installed version changed", async () => {
+    const statePath = tmpStatePath();
+    // Cache written while on 2026.6.11, when 2026.7.0 was a real update.
+    writeFileSync(
+      statePath,
+      JSON.stringify({ checkedAt: 1_000_000, installed: "2026.6.11", latest: "2026.7.0", updateAvailable: true }),
+    );
+    const fetchImpl = jest.fn(() => {
+      throw new Error("should not hit the network within the TTL");
+    }) as unknown as typeof fetch;
+
+    // The plugin was upgraded to 2026.7.0 since the cache was written.
+    const record = await runUpdateCheck({
+      installed: "2026.7.0",
+      statePath,
+      env: enabledEnv,
+      now: () => 1_000_000 + 60_000,
+      fetchImpl,
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(record?.installed).toBe("2026.7.0");
+    expect(record?.updateAvailable).toBe(false);
+    // The corrected record is persisted so the stale hint does not linger.
+    const onDisk = JSON.parse(readFileSync(statePath, "utf8")) as UpdateCheckRecord;
+    expect(onDisk.installed).toBe("2026.7.0");
+    expect(onDisk.updateAvailable).toBe(false);
+  });
 });
 
 describe("readUpdateCache", () => {
   it("returns null when the cache file is missing", async () => {
     expect(await readUpdateCache(join(tmpdir(), "does-not-exist-cognee.json"))).toBeNull();
+  });
+
+  it("returns null for a malformed record", async () => {
+    const statePath = tmpStatePath();
+    // latest is not a string and checkedAt is missing.
+    writeFileSync(statePath, JSON.stringify({ latest: 123, updateAvailable: "yes" }));
+    expect(await readUpdateCache(statePath)).toBeNull();
   });
 });

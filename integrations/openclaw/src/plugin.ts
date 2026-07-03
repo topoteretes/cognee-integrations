@@ -27,7 +27,7 @@ import { RecallBreaker, isBreakerError } from "./breaker.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
 import { bootServerIfNeeded, waitForServerHealth, isLocalUrl, resolveOrMintApiKey, spawnExitWatcher, exitWatcherPidfilePath } from "./server.js";
-import { PLUGIN_VERSION, formatUpdateHint, readUpdateCache, runUpdateCheck } from "./version.js";
+import { PLUGIN_VERSION, formatUpdateHint, isNewer, readUpdateCache, runUpdateCheck } from "./version.js";
 
 /** Expand a leading `~` in a workspace path to the user's home directory. */
 function expandHome(p: string | undefined): string | undefined {
@@ -533,8 +533,11 @@ const memoryCogneePlugin = {
         const record = checkNow
           ? await runUpdateCheck({ installed: pluginVersion, force: true })
           : await readUpdateCache();
-        if (record?.updateAvailable && record.latest) {
-          console.log(formatUpdateHint(record.latest));
+        // Decide from the cached latest against the running version, not the
+        // stored updateAvailable, which can be stale after a plugin upgrade.
+        const latest = record?.latest ?? "";
+        if (isNewer(latest, pluginVersion)) {
+          console.log(formatUpdateHint(latest));
         } else if (checkNow) {
           console.log("No newer version found.");
         }

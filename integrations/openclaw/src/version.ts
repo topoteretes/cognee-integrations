@@ -87,15 +87,25 @@ function ttlHours(env: NodeJS.ProcessEnv): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TTL_HOURS;
 }
 
-/** Read the cached check result. Returns null when the file is missing or invalid. */
+function isUpdateCheckRecord(value: unknown): value is UpdateCheckRecord {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  return (
+    typeof r.checkedAt === "number" &&
+    Number.isFinite(r.checkedAt) &&
+    typeof r.installed === "string" &&
+    typeof r.latest === "string" &&
+    typeof r.updateAvailable === "boolean"
+  );
+}
+
+/** Read the cached check result. Returns null when the file is missing or malformed. */
 export async function readUpdateCache(
   statePath: string = UPDATE_CHECK_PATH,
 ): Promise<UpdateCheckRecord | null> {
   try {
-    const raw = await fs.readFile(statePath, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    return parsed as UpdateCheckRecord;
+    const parsed = JSON.parse(await fs.readFile(statePath, "utf-8"));
+    return isUpdateCheckRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -161,16 +171,27 @@ export async function runUpdateCheck(
   if (!updateCheckEnabled(env)) return null;
 
   const prev = await readUpdateCache(statePath);
-  if (!force && prev && now() - (prev.checkedAt ?? 0) < ttlHours(env) * 3_600_000) {
-    return prev;
+
+  // Within the interval, reuse the cached latest without a network call. The
+  // installed version can change (a plugin upgrade) while that latest is still
+  // valid, so recompute updateAvailable against the current installed version
+  // rather than trusting the stored value, which would be stale.
+  if (!force && prev && now() - prev.checkedAt < ttlHours(env) * 3_600_000) {
+    const updateAvailable = isNewer(prev.latest, installed);
+    if (prev.installed === installed && prev.updateAvailable === updateAvailable) {
+      return prev;
+    }
+    const refreshed: UpdateCheckRecord = { ...prev, installed, updateAvailable };
+    await persistRecord(statePath, refreshed);
+    return refreshed;
   }
 
   let latest: string;
   try {
     latest = await fetchLatestVersion(registryUrl, timeoutMs, fetchImpl);
   } catch {
-    // Keep the last known latest version and refresh the timestamp, so a
-    // temporary outage neither clears the notice nor triggers repeated retries.
+    // Keep the last known latest version, so a temporary outage neither clears
+    // the notice nor triggers repeated retries before the next interval.
     latest = prev?.latest ?? "";
   }
 
@@ -180,13 +201,16 @@ export async function runUpdateCheck(
     latest,
     updateAvailable: isNewer(latest, installed),
   };
+  await persistRecord(statePath, record);
+  return record;
+}
 
+/** Best-effort cache write. A failure here must not fail the caller. */
+async function persistRecord(statePath: string, record: UpdateCheckRecord): Promise<void> {
   try {
     await fs.mkdir(dirname(statePath), { recursive: true });
     await fs.writeFile(statePath, JSON.stringify(record), "utf-8");
   } catch {
-    // The cache write is best effort and must not fail the caller.
+    // ignore
   }
-
-  return record;
 }
