@@ -25,12 +25,8 @@ _SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-# ---------------------------------------------------------------------------
-# Plugin-version resolution
-# ---------------------------------------------------------------------------
 
 _INVENTORY_SLUG = "codex"
-
 
 def _resolve_plugin_version() -> str:
     """Read the plugin version from inventory.yml.
@@ -71,28 +67,29 @@ def _parse_inventory_version(path: pathlib.Path, slug: str) -> str:
     return "Unknown"
 
 
-# ---------------------------------------------------------------------------
-# Mode resolution
-# ---------------------------------------------------------------------------
-
-
 def _resolve_mode() -> str:
-    """Return the resolved operating mode: Cloud, Local, or Server."""
-    from config import is_cloud_mode, is_local_mode, load_config
+    """Return the resolved operating mode: Local, Local Managed, or Cloud.
+
+    - No base_url configured → Local
+    - base_url pointing to localhost / 127.0.0.1 / ::1 → Local Managed
+    - Remote base_url → Cloud
+    """
+    import urllib.parse
+
+    from config import load_config
 
     cfg = load_config()
-    if is_cloud_mode(cfg):
-        return "Cloud"
-    if is_local_mode(cfg):
+    base_url = str(cfg.get("base_url") or "").strip()
+
+    if not base_url:
         return "Local"
-    if cfg.get("base_url"):
-        return "Server"
-    return "Local"
 
+    hostname = urllib.parse.urlparse(base_url).hostname or ""
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return "Local Managed"
 
-# ---------------------------------------------------------------------------
-# Server URL resolution
-# ---------------------------------------------------------------------------
+    return "Cloud"
+
 
 _DEFAULT_LOCAL_SERVICE_URL = "http://localhost:8011"
 
@@ -114,10 +111,6 @@ def _resolve_server_url() -> tuple:
     display = "-" if mode == "Local" else raw_url
     return display, raw_url
 
-
-# ---------------------------------------------------------------------------
-# API-key source resolution
-# ---------------------------------------------------------------------------
 
 _SHARED_PLUGIN_ROOT = pathlib.Path.home() / ".cognee-plugin"
 _API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"
@@ -145,11 +138,6 @@ def _resolve_api_key_source() -> str:
     return "Default"
 
 
-# ---------------------------------------------------------------------------
-# Health check (reachability + latency)
-# ---------------------------------------------------------------------------
-
-
 def _check_health(server_url: str, timeout: float = 5.0) -> dict:
     """Probe GET /health and return reachability + latency.
 
@@ -175,10 +163,6 @@ def _check_health(server_url: str, timeout: float = 5.0) -> dict:
         return {"reachable": False, "latency_ms": None, "raw_body": None}
 
 
-# ---------------------------------------------------------------------------
-# Server version
-# ---------------------------------------------------------------------------
-
 
 def _resolve_server_version(health_body: dict | None) -> str:
     """Extract a server version from the health response, if present."""
@@ -187,11 +171,6 @@ def _resolve_server_version(health_body: dict | None) -> str:
         if version and str(version).strip():
             return str(version).strip()
     return "Unknown"
-
-
-# ---------------------------------------------------------------------------
-# Circuit breaker state
-# ---------------------------------------------------------------------------
 
 
 def _resolve_circuit_breaker() -> str:
@@ -203,10 +182,6 @@ def _resolve_circuit_breaker() -> str:
         return f"Open (retry in ~{retry}s)"
     return "Closed"
 
-
-# ---------------------------------------------------------------------------
-# Assemble the full report
-# ---------------------------------------------------------------------------
 
 
 def collect_report() -> dict:
@@ -232,10 +207,6 @@ def collect_report() -> dict:
         "circuit_breaker": circuit_breaker,
     }
 
-
-# ---------------------------------------------------------------------------
-# Output formatters
-# ---------------------------------------------------------------------------
 
 _DISPLAY_ORDER = [
     ("Mode", "mode"),
@@ -280,10 +251,6 @@ def format_json(report: dict) -> str:
     """Render the report as pretty-printed JSON."""
     return json.dumps(report, indent=2)
 
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> None:

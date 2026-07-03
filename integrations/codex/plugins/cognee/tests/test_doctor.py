@@ -21,22 +21,15 @@ import tempfile
 import textwrap
 import urllib.error
 
-# Put the scripts dir on sys.path so doctor.py and its siblings resolve.
 _SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parents[1] / "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-# Isolate the circuit-breaker state dir before importing _cognee_client.
 _TMP = tempfile.mkdtemp(prefix="cognee-doctor-codex-test-")
 os.environ["COGNEE_PLUGIN_STATE_DIR"] = _TMP
 
-import doctor  # noqa: E402
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
+# pyrefly: ignore [missing-import]
+import doctor  
 
 def _reset_env(*keys):
     """Remove env vars that affect config resolution."""
@@ -67,30 +60,49 @@ class _FakeResponse:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Mode resolution
-# ---------------------------------------------------------------------------
-
-
 def test_local_mode_when_no_base_url():
     _reset_env("COGNEE_BASE_URL", "COGNEE_LOCAL_API_URL", "COGNEE_API_KEY", "LLM_API_KEY")
     mode = doctor._resolve_mode()
     assert mode == "Local", f"expected Local, got {mode}"
 
 
-def test_server_mode_with_base_url():
-    os.environ["COGNEE_BASE_URL"] = "http://test-server:8011"
+def test_managed_mode_with_localhost():
+    os.environ["COGNEE_BASE_URL"] = "http://localhost:8011"
     try:
         mode = doctor._resolve_mode()
-        assert mode in ("Cloud", "Server"), f"expected Cloud or Server, got {mode}"
+        assert mode == "Local Managed", f"expected Local Managed, got {mode}"
     finally:
         _reset_env("COGNEE_BASE_URL")
 
 
-# ---------------------------------------------------------------------------
-# Server URL display
-# ---------------------------------------------------------------------------
+def test_managed_mode_with_127():
+    os.environ["COGNEE_BASE_URL"] = "http://127.0.0.1:8000"
+    try:
+        mode = doctor._resolve_mode()
+        assert mode == "Local Managed", f"expected Local Managed, got {mode}"
+    finally:
+        _reset_env("COGNEE_BASE_URL")
 
+
+def test_managed_mode_with_ipv6_loopback():
+    os.environ["COGNEE_BASE_URL"] = "http://[::1]:8000"
+    try:
+        mode = doctor._resolve_mode()
+        assert mode == "Local Managed", f"expected Local Managed, got {mode}"
+    finally:
+        _reset_env("COGNEE_BASE_URL")
+
+
+def test_cloud_mode_with_remote_url():
+    os.environ["COGNEE_BASE_URL"] = "https://company.cognee.ai"
+    try:
+        mode = doctor._resolve_mode()
+        assert mode == "Cloud", f"expected Cloud, got {mode}"
+    finally:
+        _reset_env("COGNEE_BASE_URL")
+
+
+# Server URL display
 
 def test_server_url_dash_in_local_mode():
     _reset_env("COGNEE_BASE_URL", "COGNEE_LOCAL_API_URL", "LLM_API_KEY")
@@ -107,10 +119,7 @@ def test_server_url_shown_in_server_mode():
         _reset_env("COGNEE_BASE_URL")
 
 
-# ---------------------------------------------------------------------------
 # API key source
-# ---------------------------------------------------------------------------
-
 
 def test_api_key_source_env():
     os.environ["COGNEE_API_KEY"] = "test-key-from-env"
@@ -135,10 +144,7 @@ def test_api_key_source_config(tmp_path):
         doctor._API_KEY_CACHE = original
 
 
-# ---------------------------------------------------------------------------
 # Health check
-# ---------------------------------------------------------------------------
-
 
 def test_health_reachable(monkeypatch):
     body = json.dumps({"status": "ok"}).encode()
@@ -161,10 +167,7 @@ def test_health_unreachable(monkeypatch):
     assert result["latency_ms"] is None
 
 
-# ---------------------------------------------------------------------------
 # Server version
-# ---------------------------------------------------------------------------
-
 
 def test_server_version_unknown_when_not_in_body():
     assert doctor._resolve_server_version({"status": "ok"}) == "Unknown"
@@ -175,10 +178,7 @@ def test_server_version_extracted_when_present():
     assert doctor._resolve_server_version({"version": "1.2.3"}) == "1.2.3"
 
 
-# ---------------------------------------------------------------------------
 # Circuit breaker
-# ---------------------------------------------------------------------------
-
 
 def test_breaker_closed():
     _reset_breaker()
@@ -199,10 +199,7 @@ def test_breaker_open():
     _reset_breaker()
 
 
-# ---------------------------------------------------------------------------
 # Plugin version (inventory lookup)
-# ---------------------------------------------------------------------------
-
 
 def test_parse_inventory_version(tmp_path):
     inventory = tmp_path / "inventory.yml"
@@ -221,10 +218,7 @@ def test_parse_inventory_version(tmp_path):
     assert doctor._parse_inventory_version(inventory, "nonexistent") == "Unknown"
 
 
-# ---------------------------------------------------------------------------
 # JSON output
-# ---------------------------------------------------------------------------
-
 
 def test_json_output(monkeypatch):
     body = json.dumps({"status": "ok"}).encode()
@@ -247,11 +241,6 @@ def test_json_output(monkeypatch):
     assert expected_keys == set(parsed.keys()), f"missing keys: {expected_keys - set(parsed.keys())}"
 
 
-# ---------------------------------------------------------------------------
-# Human-readable output
-# ---------------------------------------------------------------------------
-
-
 def test_human_output_contains_header():
     _reset_breaker()
     report = doctor.collect_report()
@@ -260,10 +249,6 @@ def test_human_output_contains_header():
     assert "Mode:" in text
     assert "Circuit Breaker:" in text
 
-
-# ---------------------------------------------------------------------------
-# Standalone runner
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     failures = 0
