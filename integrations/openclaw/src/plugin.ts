@@ -27,7 +27,7 @@ import { RecallBreaker, isBreakerError } from "./breaker.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
 import { bootServerIfNeeded, waitForServerHealth, isLocalUrl, resolveOrMintApiKey, spawnExitWatcher, exitWatcherPidfilePath } from "./server.js";
-import { PLUGIN_VERSION, formatUpdateBadge, readUpdateCache, runUpdateCheck } from "./version.js";
+import { PLUGIN_VERSION, formatUpdateHint, readUpdateCache, runUpdateCheck } from "./version.js";
 
 /** Expand a leading `~` in a workspace path to the user's home directory. */
 function expandHome(p: string | undefined): string | undefined {
@@ -526,15 +526,15 @@ const memoryCogneePlugin = {
 
       autoSyncStarted = true;
 
-      // Print the installed version and an "update available" badge. Reads the
-      // local cache by default; with `checkNow` it forces a live npm check first.
+      // Print the installed version and, when one is available, an update hint.
+      // Reads the cached result by default; checkNow forces a live npm check.
       async function printVersionLine(checkNow?: boolean): Promise<void> {
         console.log(`Plugin: cognee-openclaw v${pluginVersion}`);
         const record = checkNow
           ? await runUpdateCheck({ installed: pluginVersion, force: true })
           : await readUpdateCache();
         if (record?.updateAvailable && record.latest) {
-          console.log(formatUpdateBadge(record.latest));
+          console.log(formatUpdateHint(record.latest));
         } else if (checkNow) {
           console.log("No newer version found.");
         }
@@ -903,9 +903,9 @@ const memoryCogneePlugin = {
           if (perAgentMemory) await seedAllAgents(wsDir, logger);
         };
 
-        // Background, TTL-gated check for a newer published version. Fail-silent
-        // and cached; the `cognee status`/`version` surface reads the cache
-        // locally without ever hitting the network.
+        // Refresh the cached update check in the background. It is rate-limited
+        // and best effort, so a failure here is ignored; the status command
+        // reads the cached result without hitting the network itself.
         runUpdateCheck({ installed: pluginVersion }).catch(() => {});
 
         doSync().catch((e) => logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(e)}`));

@@ -1,55 +1,43 @@
-// ---------------------------------------------------------------------------
-// Plugin version + "update available" check.
+// Plugin version reporting and a background npm update check.
 //
-// Ported from the claude-code integration's version_check pattern:
-//   - installed version comes from the plugin manifest (here: api.version, which
-//     OpenClaw populates from package.json; PLUGIN_VERSION is the fallback);
-//   - the latest published version comes from the plugin's distribution channel
-//     (here: the npm registry, since OpenClaw installs via
-//     `openclaw plugins install @cognee/cognee-openclaw`);
-//   - the network check is TTL-gated and fail-silent, writing a small cache file
-//     so the status surface reads it locally without ever hitting the network;
-//   - a transient network error preserves the last known `latest` (never a false
-//     "up to date", never a thrown error in a status command).
+// The installed version comes from api.version, which OpenClaw fills in from
+// package.json when it loads the plugin. PLUGIN_VERSION is only a fallback for
+// the load paths that leave api.version unset.
 //
-// Env knobs (shared with the claude-code integration for uniform behaviour):
-//   COGNEE_UPDATE_CHECK=false             disable the check entirely
-//   COGNEE_UPDATE_CHECK_INTERVAL_HOURS    re-check interval (default 24)
-// ---------------------------------------------------------------------------
+// The update check queries the npm registry, since the plugin installs with
+// `openclaw plugins install @cognee/cognee-openclaw`. It is rate-limited and
+// writes its result to a cache file, so the status command reads that result
+// locally and never blocks on the network. A failed check keeps the last known
+// result rather than clearing it.
+//
+// Environment variables:
+//   COGNEE_UPDATE_CHECK=false            turn the check off
+//   COGNEE_UPDATE_CHECK_INTERVAL_HOURS   hours between checks (default 24)
 
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import { UPDATE_CHECK_PATH } from "./persistence.js";
 
 /**
- * Fallback version, surfaced only when `api.version` is undefined (some load
- * paths leave it unset). `__tests__/test_version.ts` asserts this equals
- * package.json's version so the two can never drift apart.
+ * Fallback version used when api.version is unset. The test in
+ * __tests__/test_version.ts asserts this stays equal to package.json.
  */
 export const PLUGIN_VERSION = "2026.6.11";
 
-/** npm registry endpoint returning the latest published `{ version }`. */
-export const NPM_LATEST_URL = "https://registry.npmjs.org/@cognee/cognee-openclaw/latest";
-
+const NPM_LATEST_URL = "https://registry.npmjs.org/@cognee/cognee-openclaw/latest";
 const DEFAULT_TTL_HOURS = 24;
 const DEFAULT_TIMEOUT_MS = 2500;
 
 export interface UpdateCheckRecord {
-  /** Epoch millis of the last completed check. */
   checkedAt: number;
   installed: string;
   latest: string;
   updateAvailable: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Version parsing / comparison
-// ---------------------------------------------------------------------------
-
 /**
- * Parse a dotted version into comparable integer segments. Tolerates a leading
- * `v` and a pre-release/build suffix (e.g. `v1.2.3-rc1` -> [1, 2, 3]) by
- * stopping each segment at the first non-digit.
+ * Split a version into integer parts for comparison. A leading "v" and any
+ * pre-release suffix are ignored, so "v1.2.3-rc1" becomes [1, 2, 3].
  */
 export function parseVersion(version: string): number[] {
   const parts: number[] = [];
@@ -64,7 +52,7 @@ export function parseVersion(version: string): number[] {
   return parts;
 }
 
-/** Compare two versions numerically (so 4.2 < 4.12). Returns -1, 0, or 1. */
+/** Compare two versions numerically, so that 4.2 sorts below 4.12. */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   const pa = parseVersion(a);
   const pb = parseVersion(b);
@@ -77,39 +65,29 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   return 0;
 }
 
-/** True only when both versions are known and `latest` is strictly newer. */
+/** True only when both versions are known and latest is strictly newer. */
 export function isNewer(latest: string, installed: string): boolean {
   if (!latest || !installed) return false;
   return compareVersions(latest, installed) > 0;
 }
 
-/** A compact one-line badge pointing at the npm update command. */
-export function formatUpdateBadge(latest: string): string {
-  return `⬆ v${latest} available — openclaw plugins install @cognee/cognee-openclaw@latest`;
+/** One-line notice shown when a newer version is available. */
+export function formatUpdateHint(latest: string): string {
+  return `Update available: v${latest}. Run: openclaw plugins install @cognee/cognee-openclaw@latest`;
 }
 
-// ---------------------------------------------------------------------------
-// Env knobs
-// ---------------------------------------------------------------------------
-
-/** Whether the update check is enabled (COGNEE_UPDATE_CHECK not falsey). */
-export function updateCheckEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+function updateCheckEnabled(env: NodeJS.ProcessEnv): boolean {
   const value = (env.COGNEE_UPDATE_CHECK ?? "").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(value);
 }
 
-/** Re-check interval in hours (COGNEE_UPDATE_CHECK_INTERVAL_HOURS, default 24). */
-export function ttlHours(env: NodeJS.ProcessEnv = process.env): number {
+function ttlHours(env: NodeJS.ProcessEnv): number {
   const raw = (env.COGNEE_UPDATE_CHECK_INTERVAL_HOURS ?? "").trim();
   const parsed = raw ? Number(raw) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TTL_HOURS;
 }
 
-// ---------------------------------------------------------------------------
-// Cache read + check runner
-// ---------------------------------------------------------------------------
-
-/** Read the cached check result. Pure-local, returns null on any failure. */
+/** Read the cached check result. Returns null when the file is missing or invalid. */
 export async function readUpdateCache(
   statePath: string = UPDATE_CHECK_PATH,
 ): Promise<UpdateCheckRecord | null> {
@@ -123,7 +101,7 @@ export async function readUpdateCache(
   }
 }
 
-/** Fetch the latest published version from npm. Throws on network/non-2xx. */
+/** Fetch the latest published version from npm. Throws on a network or non-2xx error. */
 async function fetchLatestVersion(
   url: string,
   timeoutMs: number,
@@ -149,23 +127,22 @@ export interface RunUpdateCheckOptions {
   installed: string;
   statePath?: string;
   timeoutMs?: number;
-  /** Bypass the TTL gate and check now. */
+  /** Skip the interval gate and check now. */
   force?: boolean;
   env?: NodeJS.ProcessEnv;
-  /** Injectable clock (millis) for testing. */
+  /** Clock override for tests. */
   now?: () => number;
-  /** Injectable fetch for testing. */
+  /** fetch override for tests. */
   fetchImpl?: typeof fetch;
   registryUrl?: string;
 }
 
 /**
- * Run the (TTL-gated, fail-silent) update check and refresh the cache.
+ * Run the update check and refresh the cache.
  *
- * Returns null only when the check is disabled. On a recent check it returns the
- * cached record without any network call. On a network error it preserves the
- * previously-known `latest` so a transient outage never clears a real
- * notification.
+ * Returns null when the check is disabled. Within the interval it returns the
+ * cached record without any network call. If the fetch fails it keeps the last
+ * known latest version so a temporary outage does not clear a real notice.
  */
 export async function runUpdateCheck(
   opts: RunUpdateCheckOptions,
@@ -184,9 +161,7 @@ export async function runUpdateCheck(
   if (!updateCheckEnabled(env)) return null;
 
   const prev = await readUpdateCache(statePath);
-
-  // TTL gate: a recent check is a no-op — no network.
-  if (!force && prev && now() - (prev.checkedAt ?? 0) < ttlHours(env) * 3600_000) {
+  if (!force && prev && now() - (prev.checkedAt ?? 0) < ttlHours(env) * 3_600_000) {
     return prev;
   }
 
@@ -194,9 +169,8 @@ export async function runUpdateCheck(
   try {
     latest = await fetchLatestVersion(registryUrl, timeoutMs, fetchImpl);
   } catch {
-    // Network/parse failure: keep the last known `latest` so a transient outage
-    // doesn't clear a real notification (and we still refresh checkedAt below,
-    // so we don't hammer the registry on every trigger).
+    // Keep the last known latest version and refresh the timestamp, so a
+    // temporary outage neither clears the notice nor triggers repeated retries.
     latest = prev?.latest ?? "";
   }
 
@@ -211,7 +185,7 @@ export async function runUpdateCheck(
     await fs.mkdir(dirname(statePath), { recursive: true });
     await fs.writeFile(statePath, JSON.stringify(record), "utf-8");
   } catch {
-    // best-effort cache write; a failure here must not break the caller
+    // The cache write is best effort and must not fail the caller.
   }
 
   return record;

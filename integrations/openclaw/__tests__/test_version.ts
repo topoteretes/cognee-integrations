@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   PLUGIN_VERSION,
   compareVersions,
-  formatUpdateBadge,
+  formatUpdateHint,
   isNewer,
   parseVersion,
   readUpdateCache,
@@ -93,11 +93,11 @@ describe("isNewer", () => {
   });
 });
 
-describe("formatUpdateBadge", () => {
+describe("formatUpdateHint", () => {
   it("mentions the version and the install command", () => {
-    const badge = formatUpdateBadge("2026.7.2");
-    expect(badge).toContain("2026.7.2");
-    expect(badge).toContain("@cognee/cognee-openclaw@latest");
+    const hint = formatUpdateHint("2026.7.2");
+    expect(hint).toContain("2026.7.2");
+    expect(hint).toContain("@cognee/cognee-openclaw@latest");
   });
 });
 
