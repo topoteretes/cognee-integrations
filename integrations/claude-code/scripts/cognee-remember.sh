@@ -100,6 +100,15 @@ PY
 [ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 [ -z "$DATASET" ] && DATASET="${COGNEE_PLUGIN_DATASET:-agent_sessions}"
 
+COMPANION_ENABLED=false
+if [ "${COGNEE_SESSION_COMPANION_DATASET:-}" = "true" ] || [ "${COGNEE_SESSION_COMPANION_DATASET:-}" = "1" ] || [ "${COGNEE_SESSION_COMPANION_DATASET:-}" = "yes" ] || [ "${COGNEE_SESSION_COMPANION_DATASET:-}" = "on" ]; then
+    COMPANION_ENABLED=true
+fi
+
+if [ "$COMPANION_ENABLED" = "true" ] && [ "$DATASET" != "agent_sessions" ]; then
+    DATASET="${DATASET}-agent_sessions"
+fi
+
 # Parse arguments: content is first positional; flags follow
 CONTENT="${1:-}"
 NODE_SET="user_context"
