@@ -42,6 +42,7 @@ _DEFAULTS = {
     # Local mode
     "llm_api_key": "",
     "llm_model": "",
+    "session_companion_dataset": False,
 }
 
 
@@ -76,6 +77,7 @@ _ENV_MAP = {
     "COGNEE_USER_PASSWORD": "user_password",
     "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
+    "COGNEE_SESSION_COMPANION_DATASET": "session_companion_dataset",
     # Legacy compat
     "COGNEE_SESSION_ID": "_static_session_id",
 }
@@ -181,6 +183,91 @@ def is_cloud_mode(config: dict) -> bool:
 def is_local_mode(config: dict) -> bool:
     """Check if local mode (has LLM key, no cloud URL)."""
     return bool(config.get("llm_api_key")) and not is_cloud_mode(config)
+
+
+def is_companion_enabled(config: dict) -> bool:
+    """Check if companion sessions option is enabled."""
+    val = config.get("session_companion_dataset", False)
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_companion_dataset_name(primary_dataset: str) -> str:
+    """Derive companion dataset name from the primary dataset name."""
+    if not primary_dataset or primary_dataset == "agent_sessions":
+        return primary_dataset
+    return f"{primary_dataset}-agent_sessions"
+
+
+def resolve_write_dataset(config: dict, primary_dataset: str | None = None) -> str:
+    """Resolve the target dataset for conversation/trace writes."""
+    dataset = primary_dataset or get_dataset(config)
+    if is_companion_enabled(config):
+        return get_companion_dataset_name(dataset)
+    return dataset
+
+
+def resolve_recall_datasets(config: dict, primary_dataset: str | None = None) -> list[str]:
+    """Resolve the list of datasets to recall from."""
+    dataset = primary_dataset or get_dataset(config)
+    if is_companion_enabled(config) and dataset != "agent_sessions":
+        return [dataset, get_companion_dataset_name(dataset)]
+    return [dataset]
+
+
+async def replicate_dataset_acls(primary_dataset_name: str, companion_dataset_name: str) -> None:
+    """Query all ACLs for the primary dataset and grant identical permissions on the companion."""
+    try:
+        from cognee.infrastructure.databases.relational import get_relational_engine
+        from cognee.modules.data.models.Dataset import Dataset
+        from cognee.modules.users.models.ACL import ACL
+        from cognee.modules.users.permissions.methods import give_permission_on_dataset
+        from sqlalchemy import select
+        from sqlalchemy.orm import joinedload
+
+        db_engine = get_relational_engine()
+        async with db_engine.get_async_session() as session:
+            primary_ds = (
+                (
+                    await session.execute(
+                        select(Dataset).filter(Dataset.name == primary_dataset_name)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not primary_ds:
+                return
+
+            companion_ds = (
+                (
+                    await session.execute(
+                        select(Dataset).filter(Dataset.name == companion_dataset_name)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not companion_ds:
+                return
+
+            result = await session.execute(
+                select(ACL)
+                .options(joinedload(ACL.principal), joinedload(ACL.permission))
+                .filter(ACL.dataset_id == primary_ds.id)
+            )
+            acls = result.scalars().all()
+
+            for acl in acls:
+                try:
+                    await give_permission_on_dataset(
+                        principal=acl.principal,
+                        dataset_id=companion_ds.id,
+                        permission_name=acl.permission.name,
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"cognee-plugin: ACL replication warning ({e})", file=sys.stderr)
 
 
 async def ensure_identity(config: dict):
