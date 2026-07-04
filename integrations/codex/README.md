@@ -119,6 +119,17 @@ The dataset is fixed for the lifetime of a launch. Recall searches only the acti
 change the active dataset, you have to exit Claude, change the dataset via env, and then start Claude again.
 Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
 
+### Companion Sessions Dataset
+
+By default, conversation logs, Q&A turns, and execution traces are written to the active dataset (mixing conversational chatter with your document/codebase ingestion). To keep your primary codebase dataset clean, you can enable the opt-in companion sessions dataset:
+
+```bash
+export COGNEE_SESSION_COMPANION_DATASET=true
+```
+
+When enabled, conversation Q&A/traces are automatically routed to a companion dataset (`<dataset>-agent_sessions`), while codebase/document ingestion continues to target the primary dataset. At search/recall time, Cognee queries both datasets simultaneously (`[primary, companion]`) to combine codebase knowledge with conversation history.
+
+
 ## Hooks
 
 | Hook | Behavior |
