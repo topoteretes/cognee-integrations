@@ -11,6 +11,54 @@ DEFAULT_DATASET = "hermes"
 DEFAULT_IDENTITY_EMAIL = "hermes-agent@cognee.local"
 DEFAULT_IDENTITY_PASSWORD = "hermes-agent-plugin"
 
+_DEFAULTS: dict[str, Any] = {
+    "llm_api_key": "",
+    "llm_model": "",
+    "service_url": "",
+    "api_key": "",
+    "embedded": False,
+    "local_port": 8000,
+    "server_boot_timeout": 30,
+    "dataset": DEFAULT_DATASET,
+    "top_k": 5,
+    "auto_route": True,
+    "improve_on_end": True,
+    "improve_background": "",
+    "session_prefix": "hermes",
+    "data_root": "",
+    "system_root": "",
+    "identity_email": DEFAULT_IDENTITY_EMAIL,
+    "identity_password": DEFAULT_IDENTITY_PASSWORD,
+    "recall_timeout": 60,
+    "write_timeout": 120,
+    "improve_timeout": 300,
+}
+
+# Env var overrides (env var name → config key). COGNEE_SERVICE_URL is handled
+# separately as a deprecated alias for COGNEE_BASE_URL.
+_ENV_MAP: dict[str, str] = {
+    "LLM_API_KEY": "llm_api_key",
+    "LLM_MODEL": "llm_model",
+    "COGNEE_BASE_URL": "service_url",
+    "COGNEE_API_KEY": "api_key",
+    "COGNEE_EMBEDDED": "embedded",
+    "COGNEE_LOCAL_PORT": "local_port",
+    "COGNEE_SERVER_BOOT_TIMEOUT": "server_boot_timeout",
+    "COGNEE_DATASET": "dataset",
+    "COGNEE_TOP_K": "top_k",
+    "COGNEE_AUTO_ROUTE": "auto_route",
+    "COGNEE_IMPROVE_ON_END": "improve_on_end",
+    "COGNEE_IMPROVE_BACKGROUND": "improve_background",
+    "COGNEE_SESSION_PREFIX": "session_prefix",
+    "COGNEE_DATA_ROOT": "data_root",
+    "COGNEE_SYSTEM_ROOT": "system_root",
+    "COGNEE_HERMES_USER_EMAIL": "identity_email",
+    "COGNEE_HERMES_USER_PASSWORD": "identity_password",
+    "COGNEE_RECALL_TIMEOUT": "recall_timeout",
+    "COGNEE_WRITE_TIMEOUT": "write_timeout",
+    "COGNEE_IMPROVE_TIMEOUT": "improve_timeout",
+}
+
 
 def str_to_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
@@ -48,53 +96,20 @@ def config_path(hermes_home: str | Path | None = None) -> Path | None:
     return home / "cognee.json" if home else None
 
 
-def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
-    """Load plugin config from environment variables and HERMES_HOME/cognee.json."""
-    # COGNEE_BASE_URL is the canonical name; COGNEE_SERVICE_URL is a deprecated alias
-    # kept for backward compatibility. A set service_url selects remote/cloud mode.
-    service_url = os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_SERVICE_URL", "")
-    config: dict[str, Any] = {
-        "llm_api_key": os.environ.get("LLM_API_KEY", ""),
-        "llm_model": os.environ.get("LLM_MODEL", ""),
-        "service_url": service_url,
-        "api_key": os.environ.get("COGNEE_API_KEY", ""),
-        # Connection mode knobs (see provider.initialize / README "Modes").
-        # embedded=true runs cognee in-process (single-process/offline only);
-        # otherwise local mode ensures a local server on local_port (DB-safe).
-        "embedded": str_to_bool(os.environ.get("COGNEE_EMBEDDED"), False),
-        "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), 8000),
-        "server_boot_timeout": str_to_int(os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), 30),
-        "dataset": os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
-        "top_k": str_to_int(os.environ.get("COGNEE_TOP_K"), 5),
-        "auto_route": str_to_bool(os.environ.get("COGNEE_AUTO_ROUTE"), True),
-        "improve_on_end": str_to_bool(os.environ.get("COGNEE_IMPROVE_ON_END"), True),
-        # Tri-state: "" = auto (background only in server/remote mode, where the
-        # server outlives this process; synchronous in embedded). Set to force.
-        "improve_background": os.environ.get("COGNEE_IMPROVE_BACKGROUND", ""),
-        "session_prefix": os.environ.get("COGNEE_SESSION_PREFIX", "hermes"),
-        "data_root": os.environ.get("COGNEE_DATA_ROOT", ""),
-        "system_root": os.environ.get("COGNEE_SYSTEM_ROOT", ""),
-        "identity_email": os.environ.get("COGNEE_HERMES_USER_EMAIL", DEFAULT_IDENTITY_EMAIL),
-        "identity_password": os.environ.get(
-            "COGNEE_HERMES_USER_PASSWORD",
-            DEFAULT_IDENTITY_PASSWORD,
-        ),
-        "recall_timeout": str_to_int(os.environ.get("COGNEE_RECALL_TIMEOUT"), 60),
-        "write_timeout": str_to_int(os.environ.get("COGNEE_WRITE_TIMEOUT"), 120),
-        "improve_timeout": str_to_int(os.environ.get("COGNEE_IMPROVE_TIMEOUT"), 300),
-    }
+def _apply_env_overrides(config: dict[str, Any]) -> None:
+    for env_key, config_key in _ENV_MAP.items():
+        val = os.environ.get(env_key, "")
+        if val:
+            config[config_key] = val
 
-    path = config_path(hermes_home)
-    if path and path.exists():
-        try:
-            file_config = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(file_config, dict):
-                config.update(
-                    {key: value for key, value in file_config.items() if value is not None}
-                )
-        except Exception:
-            pass
+    # Deprecated alias — only when canonical COGNEE_BASE_URL is unset.
+    if not os.environ.get("COGNEE_BASE_URL", ""):
+        legacy = os.environ.get("COGNEE_SERVICE_URL", "")
+        if legacy:
+            config["service_url"] = legacy
 
+
+def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     config["top_k"] = max(1, str_to_int(config.get("top_k"), 5))
     config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 60))
     config["write_timeout"] = max(1, str_to_int(config.get("write_timeout"), 120))
@@ -105,6 +120,29 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     config["improve_on_end"] = str_to_bool(config.get("improve_on_end"), True)
     config["embedded"] = str_to_bool(config.get("embedded"), False)
     return config
+
+
+def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
+    """Load merged config: defaults → file → env vars."""
+    config = dict(_DEFAULTS)
+
+    path = config_path(hermes_home)
+    if path and path.exists():
+        try:
+            file_config = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(file_config, dict):
+                config.update(
+                    {
+                        key: value
+                        for key, value in file_config.items()
+                        if value is not None and value != ""
+                    }
+                )
+        except Exception:
+            pass
+
+    _apply_env_overrides(config)
+    return _normalize_config(config)
 
 
 def save_config(values: dict[str, Any], hermes_home: str | Path) -> Path:
