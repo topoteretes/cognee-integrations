@@ -134,7 +134,14 @@ def do_recall(
     # When dataset is empty (standalone invocation without shell), fall back to
     # the original search-all behaviour to avoid breaking direct callers.
     if dataset:
-        body["datasets"] = [dataset]
+        try:
+            sys.path.insert(0, os.path.dirname(__file__))
+            from config import load_config, resolve_recall_datasets
+
+            config = load_config()
+            body["datasets"] = resolve_recall_datasets(config, dataset)
+        except Exception:
+            body["datasets"] = [dataset]
     if context_profile:
         body["context_profile"] = context_profile
     headers = {"Content-Type": "application/json"}
