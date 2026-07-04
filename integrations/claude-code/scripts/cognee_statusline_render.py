@@ -73,12 +73,28 @@ def _health_prefix() -> str:
     return ""
 
 
+def _plugin_version() -> str:
+    """Return `` · v<version>`` or ``""``, pure-local and fail-silent."""
+    try:
+        root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+        if not root:
+            return ""
+        manifest = Path(root) / ".claude-plugin" / "plugin.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        version = str(data.get("version", "") or "").strip()
+        if version:
+            return f" · v{version}"
+    except Exception:
+        pass
+    return ""
+
+
 def main() -> None:
     try:
         json.load(sys.stdin)  # consume stdin as required by Claude Code
     except Exception:
         pass
-    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
+    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_plugin_version()}")
 
 
 if __name__ == "__main__":
