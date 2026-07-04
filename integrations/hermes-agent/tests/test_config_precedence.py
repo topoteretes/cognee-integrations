@@ -52,7 +52,7 @@ def test_base_url_prefers_canonical_over_alias(tmp_path):
         assert load_config(tmp_path)["service_url"] == "https://canonical"
 
 
-def test_footgun1a_plain_field_accepts_empty(tmp_path, monkeypatch):
+def test_empty_string_overrides_plain_field(tmp_path, monkeypatch):
     from cognee_integration_hermes.config import load_config, save_config
 
     # Plain string field: the file merge drops only None (not ""), so an empty
@@ -63,11 +63,12 @@ def test_footgun1a_plain_field_accepts_empty(tmp_path, monkeypatch):
     assert load_config(tmp_path)["dataset"] == ""
 
 
-def test_footgun1b_coerced_field_rejects_empty(tmp_path, monkeypatch):
+def test_empty_string_rejected_by_coerced_field(tmp_path, monkeypatch):
     from cognee_integration_hermes.config import load_config, save_config
 
     # Coerced fields run through str_to_int(), where "" fails to parse and falls
-    # back to the default -- so an empty string does NOT override here, unlike 1a.
+    # back to the default -- so an empty string does NOT override here, unlike a
+    # plain string field.
     monkeypatch.delenv("COGNEE_TOP_K", raising=False)
     monkeypatch.delenv("COGNEE_LOCAL_PORT", raising=False)
     save_config({"top_k": "", "local_port": ""}, tmp_path)

@@ -56,7 +56,7 @@ describe("resolveConfig precedence (file-wins)", () => {
     expect(resolveConfig({}).baseUrl).toBe("http://localhost:8000");
   });
 
-  test("footgun 1: whitespace-only config value trims to falsy and falls through", () => {
+  test("whitespace-only config value trims to falsy and falls through", () => {
     // No env set -> trimmed "" is falsy -> falls through to the default.
     expect(resolveConfig({ baseUrl: "   " }).baseUrl).toBe("http://localhost:8000");
   });

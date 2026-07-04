@@ -86,7 +86,13 @@ def test_default_alone():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_footgun1_empty_ignored():
+def test_empty_string_never_overrides():
+    """An empty string cannot override on either layer.
+
+    Setting a value to "" (in the config file or an env var) does not clear it:
+    the file merge drops "" (`v != ""`) and the env loop skips "" (`if val:`),
+    so the previous layer's value stands.
+    """
     orig_file = config._CONFIG_FILE
     saved = _snapshot_env("COGNEE_PLUGIN_DATASET")
     tmpdir = tempfile.mkdtemp()
@@ -137,7 +143,7 @@ def test_backend_clearing_native():
         "knob)."
     ),
 )
-def test_footgun3_config_file_poll_interval_reaches_consumer():
+def test_config_file_poll_interval_reaches_consumer():
     # The poll interval is set ONLY in the config file, with the env var unset,
     # to isolate the config-file path. load_config() surfaces it, but the real
     # consumer reads it through _float_env(name, default) -- which ignores the

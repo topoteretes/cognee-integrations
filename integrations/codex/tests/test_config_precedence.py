@@ -85,7 +85,13 @@ def test_default_alone():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_footgun1_empty_ignored():
+def test_empty_string_never_overrides():
+    """An empty string cannot override on either layer.
+
+    Setting a value to "" (in the config file or an env var) does not clear it:
+    the file merge drops "" (`v != ""`) and the env loop skips "" (`if val:`),
+    so the previous layer's value stands.
+    """
     orig_file = config._CONFIG_FILE
     saved = _snapshot_env("COGNEE_PLUGIN_DATASET")
     tmpdir = tempfile.mkdtemp()
