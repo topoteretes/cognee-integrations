@@ -99,7 +99,9 @@ skills explicitly:
 ```
 
 For full configuration (datasets, sessions, sync watchers, cloud mode), see
-[`integrations/claude-code/README.md`](integrations/claude-code/README.md).
+[`integrations/claude-code/README.md`](integrations/claude-code/README.md). For a
+single reference of every environment variable the integrations read — with
+defaults and effects — see [`integrations/ENV_VARS.md`](integrations/ENV_VARS.md).
 
 > **Using an agent framework instead?** The Python SDK integrations (Strands, CrewAI,
 > LangGraph, Google ADK, Claude Agent SDK) follow a `pip install` →
