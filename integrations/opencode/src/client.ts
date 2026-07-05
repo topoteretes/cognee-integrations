@@ -158,6 +158,16 @@ export class CogneeHttpClient {
     throw lastError;
   }
 
+  async fetchJson<T>(
+    path: string,
+    init: RequestInit,
+    timeoutMs = this.timeoutMs,
+    responseParser: (r: Response) => Promise<T> = async (r: Response) => (await r.json()) as T,
+    retries = MAX_RETRIES,
+  ): Promise<T> {
+    return this.fetchAPI<T>(path, init, timeoutMs, responseParser, retries);
+  }
+
   async health(): Promise<{ status: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
