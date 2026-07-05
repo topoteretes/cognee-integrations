@@ -14,7 +14,7 @@ fi
 if [[ "${1:-}" == "doctor" ]]; then
   shift
   SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
-  exec python "${SELF_DIR}/doctor.py" "$@"
+  exec python3 "${SELF_DIR}/doctor.py" "$@"
 fi
 
 exec uv run cognee-cli "$@"
