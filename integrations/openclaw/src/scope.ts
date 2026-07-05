@@ -133,6 +133,14 @@ function sanitizeSessionKey(value: string): string {
   return safe.replace(/^[._]+/, "").replace(/[._]+$/, "").slice(0, 120);
 }
 
+export function sanitizeDatasetName(value: string | undefined, fallback = "openclaw"): string {
+  let safe = "";
+  for (const ch of (value ?? "").trim()) {
+    safe += /[A-Za-z0-9\-_.]/.test(ch) ? ch : "_";
+  }
+  return safe.replace(/^[._]+/, "").replace(/[._]+$/, "").slice(0, 120) || fallback;
+}
+
 /**
  * Build the Cognee session id from the host (OpenClaw) session id, following the
  * cross-integration convention `{agent}_{native_session_id}` —
@@ -158,13 +166,16 @@ export function datasetNameForScope(
   cfg: Required<CogneePluginConfig>,
   runtimeAgentId?: string,
 ): string {
+  let name: string;
   switch (scope) {
     case "company":
-      return cfg.companyDataset || `${cfg.datasetName}-company`;
+      name = cfg.companyDataset || `${cfg.datasetName}-company`;
+      break;
     case "user":
-      return cfg.userDatasetPrefix
+      name = cfg.userDatasetPrefix
         ? `${cfg.userDatasetPrefix}-${cfg.userId || "default"}`
         : `${cfg.datasetName}-user-${cfg.userId || "default"}`;
+      break;
     case "agent": {
       const rawId = runtimeAgentId?.trim() || cfg.agentId || "default";
       // Lowercase ONLY in per-agent mode, so existing single-agent / non-per-agent
@@ -173,11 +184,14 @@ export function datasetNameForScope(
       // stays internally consistent across startup-seed and runtime hooks.
       const id = cfg.perAgentMemory ? rawId.toLowerCase() : rawId;
       if (cfg.agentDatasetTemplate) {
-        return cfg.agentDatasetTemplate.replace(/\{agentId\}/g, id);
+        name = cfg.agentDatasetTemplate.replace(/\{agentId\}/g, id);
+        break;
       }
-      return cfg.agentDatasetPrefix
+      name = cfg.agentDatasetPrefix
         ? `${cfg.agentDatasetPrefix}-${id}`
         : `${cfg.datasetName}-agent-${id}`;
+      break;
     }
   }
+  return sanitizeDatasetName(name);
 }

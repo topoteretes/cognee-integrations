@@ -23,18 +23,26 @@ _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _DEFAULT_DATASET = "agent_sessions"
 
 
+def _sanitize_dataset_name(value: object) -> str:
+    safe = "".join(
+        ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
+        for ch in str(value or "").strip()
+    )
+    return safe.strip("._")[:120] or _DEFAULT_DATASET
+
+
 def _active_dataset() -> str:
     # 1. env var (inherited from the shell that launched Claude Code)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
-        return v
+        return _sanitize_dataset_name(v)
     # 2. config file
     try:
         data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             v = str(data.get("dataset") or "").strip()
             if v:
-                return v
+                return _sanitize_dataset_name(v)
     except Exception:
         pass
     # 3. default

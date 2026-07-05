@@ -14,6 +14,7 @@ from typing import Any, Optional
 from .config import (
     DEFAULT_DATASET,
     load_config,
+    sanitize_dataset_name,
     str_to_bool,
     write_env_vars,
 )
@@ -282,7 +283,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._hermes_home = kwargs.get("hermes_home")
         self._config = load_config(self._hermes_home)
         self._session_id = session_id
-        self._dataset = str(self._config.get("dataset") or DEFAULT_DATASET)
+        self._dataset = sanitize_dataset_name(self._config.get("dataset"))
         self._top_k = int(self._config.get("top_k") or 5)
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
         self._improve_on_end = str_to_bool(self._config.get("improve_on_end"), True)
@@ -741,7 +742,7 @@ class CogneeMemoryProvider(MemoryProvider):
         content = str(args.get("content") or "").strip()
         if not content:
             return json.dumps({"error": "Missing required parameter: content"})
-        dataset = str(args.get("dataset") or self._dataset)
+        dataset = sanitize_dataset_name(args.get("dataset") or self._dataset)
 
         try:
             result = self._bridge.run(

@@ -42,6 +42,7 @@ from config import (
     get_session_id,
     load_config,
     persist_session_cache_to_graph,
+    sanitize_dataset_name,
     sync_graph_context_to_session,
 )
 
@@ -197,7 +198,8 @@ def _load_resolved() -> tuple:
     """
     session_key = set_session_key(get_session_key())
     env_session_id = str(os.environ.get("COGNEE_SYNC_SESSION_ID", "") or "").strip()
-    env_dataset = str(os.environ.get("COGNEE_SYNC_DATASET", "") or "").strip()
+    raw_env_dataset = str(os.environ.get("COGNEE_SYNC_DATASET", "") or "").strip()
+    env_dataset = sanitize_dataset_name(raw_env_dataset) if raw_env_dataset else ""
     env_agent_session_name = str(os.environ.get("COGNEE_AGENT_SESSION_NAME", "") or "").strip()
     env_api_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
     env_service_url = str(os.environ.get("COGNEE_BASE_URL", "") or "").strip()

@@ -12,6 +12,14 @@ DEFAULT_IDENTITY_EMAIL = "hermes-agent@cognee.local"
 DEFAULT_IDENTITY_PASSWORD = "hermes-agent-plugin"
 
 
+def sanitize_dataset_name(value: Any, default: str = DEFAULT_DATASET) -> str:
+    safe = "".join(
+        ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
+        for ch in str(value or "").strip()
+    )
+    return safe.strip("._")[:120] or default
+
+
 def str_to_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -104,6 +112,7 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     config["auto_route"] = str_to_bool(config.get("auto_route"), True)
     config["improve_on_end"] = str_to_bool(config.get("improve_on_end"), True)
     config["embedded"] = str_to_bool(config.get("embedded"), False)
+    config["dataset"] = sanitize_dataset_name(config.get("dataset"))
     return config
 
 

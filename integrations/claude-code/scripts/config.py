@@ -101,6 +101,14 @@ _ENV_MAP = {
 }
 
 
+def sanitize_dataset_name(value: object, default: str = _DEFAULTS["dataset"]) -> str:
+    safe = "".join(
+        ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
+        for ch in str(value or "").strip()
+    )
+    return safe.strip("._")[:120] or default
+
+
 def load_config() -> dict:
     """Load merged config: defaults → file → env vars."""
     config = dict(_DEFAULTS)
@@ -135,6 +143,7 @@ def load_config() -> dict:
             config["api_key"] = ""
             config["base_url"] = ""
 
+    config["dataset"] = sanitize_dataset_name(config.get("dataset"))
     return config
 
 
@@ -173,7 +182,7 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
 
 def get_dataset(config: dict) -> str:
     """Get the dataset name from config."""
-    return config.get("dataset", "agent_sessions")
+    return sanitize_dataset_name(config.get("dataset"))
 
 
 def is_cloud_mode(config: dict) -> bool:
