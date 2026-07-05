@@ -14,6 +14,8 @@ default, so separate projects do not share context accidentally.
 - `cognee_search`: retrieve relevant graph/session memory for a question.
 - Project-scoped session IDs derived from the current repository path.
 - Config precedence: environment variables, project config, defaults.
+- `doctor` diagnostics for Python, Cognee packages, config, env vars, storage, Docker,
+  database endpoints, and Cognee service health.
 - JSON tool specs that can be injected into Aider prompts or wrapper workflows.
 - Local-first tests that do not require paid model endpoints.
 
@@ -90,6 +92,18 @@ Print the tool contract as JSON:
 
 ```bash
 cognee-aider specs
+```
+
+Validate the local environment before using memory flows:
+
+```bash
+cognee-aider doctor
+```
+
+For CI or wrapper scripts, use JSON output and `--strict` to fail on warnings:
+
+```bash
+cognee-aider doctor --json --strict
 ```
 
 ## Aider Workflow
