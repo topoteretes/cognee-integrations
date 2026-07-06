@@ -119,12 +119,24 @@ def test_improve_network_error_is_graceful():
     assert "error" in res
 
 
-def _run_session_improve(improve_result, *, unsupported_marker=False):
+def _run_session_improve(improve_result, *, unsupported_marker=False, drain_results=None):
+    """Drive run_session_improve with all seams mocked; return (result, calls).
+
+    ``drain_results`` is an optional list of (drained, remaining) tuples returned
+    per drain call, defaulting to a clean (0, 0).
+    """
     calls = {"drain": 0, "improve": 0, "legacy": 0}
+
+    def _drain(d, s):
+        calls["drain"] += 1
+        if drain_results:
+            return drain_results[min(calls["drain"] - 1, len(drain_results) - 1)]
+        return (0, 0)
+
     saved = _with_seams(
         _local_api_url=lambda: "http://x",
         _backend_reachable=lambda url: True,
-        drain_warmup_entries=lambda d, s: calls.__setitem__("drain", calls["drain"] + 1) or 0,
+        drain_warmup_entries=_drain,
         improve_unsupported=lambda url: unsupported_marker,
         improve_session_via_http=lambda d, s, **k: (
             calls.__setitem__("improve", calls["improve"] + 1) or improve_result
@@ -133,6 +145,7 @@ def _run_session_improve(improve_result, *, unsupported_marker=False):
             calls.__setitem__("legacy", calls["legacy"] + 1) or True
         ),
         hook_log=lambda *a, **k: None,
+        _DRAIN_RETRY_PAUSE_SECONDS=0.0,
     )
     try:
         wrote = pc.run_session_improve("ds", "sid")
@@ -203,7 +216,7 @@ def test_run_session_improve_retries_busy_until_lock_frees():
     saved = _with_seams(
         _local_api_url=lambda: "http://x",
         _backend_reachable=lambda url: True,
-        drain_warmup_entries=lambda d, s: 0,
+        drain_warmup_entries=lambda d, s: (0, 0),
         improve_unsupported=lambda url: False,
         improve_session_via_http=_improve,
         hook_log=lambda *a, **k: None,
@@ -216,6 +229,32 @@ def test_run_session_improve_retries_busy_until_lock_frees():
 
     assert wrote is True
     assert calls["improve"] == 3
+
+
+def test_incomplete_drain_returns_false_but_improve_still_runs():
+    # Undelivered warmup entries mean the improve persisted an incomplete
+    # session: the improve must still run (partial persist beats none), but the
+    # sync must report failure so the caller's retry loop re-drives it.
+    wrote, calls = _run_session_improve({"ok": True}, drain_results=[(0, 3), (0, 3)])
+    assert wrote is False
+    assert calls["improve"] == 1  # improve ran despite the incomplete drain
+    assert calls["drain"] == 2  # one in-place retry happened
+    assert calls["legacy"] == 0
+
+
+def test_drain_retry_recovers_and_sync_succeeds():
+    # First drain fails on a blip, the in-place retry delivers the tail →
+    # the sync is complete and reports success.
+    wrote, calls = _run_session_improve({"ok": True}, drain_results=[(0, 3), (3, 0)])
+    assert wrote is True
+    assert calls["drain"] == 2
+    assert calls["improve"] == 1
+
+
+def test_clean_drain_skips_retry():
+    wrote, calls = _run_session_improve({"ok": True}, drain_results=[(2, 0)])
+    assert wrote is True
+    assert calls["drain"] == 1  # nothing remaining → no retry
 
 
 def test_run_session_improve_busy_deadline_gives_up():
@@ -232,7 +271,7 @@ def test_run_session_improve_busy_deadline_gives_up():
     saved = _with_seams(
         _local_api_url=lambda: "http://x",
         _backend_reachable=lambda url: True,
-        drain_warmup_entries=lambda d, s: 0,
+        drain_warmup_entries=lambda d, s: (0, 0),
         improve_unsupported=lambda url: False,
         improve_session_via_http=_always_busy,
         hook_log=lambda *a, **k: None,

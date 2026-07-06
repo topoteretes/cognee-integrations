@@ -242,7 +242,7 @@ def _load_resolved() -> tuple:
     )
 
 
-async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
+async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: bool = False):
     session_id, dataset, user_id, agent_session_name, was_registered, has_api_key, session_key = (
         _load_resolved()
     )
@@ -276,9 +276,12 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
                 hook_log("sync_no_target_sessions", {"dataset": dataset})
                 return
 
+            incomplete: list[str] = []
             if api_mode:
                 for sid in target_sessions:
                     wrote = run_session_improve(dataset, sid)
+                    if not wrote:
+                        incomplete.append(sid)
                     hook_log(
                         "sync_bridge_done",
                         {
@@ -293,6 +296,14 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
                         f"via=http_improve wrote={wrote}",
                         file=sys.stderr,
                     )
+                if strict and incomplete:
+                    # The detached final worker retries on exceptions only. This
+                    # is the session's LAST sync — an incomplete one (failed
+                    # improve or undelivered warmup entries) must re-drive the
+                    # whole drain+improve, not silently report success.
+                    raise RuntimeError(
+                        f"final session sync incomplete for: {', '.join(incomplete)}"
+                    )
                 return
 
             await ensure_cognee_ready(config)
@@ -300,6 +311,8 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
             await ensure_dataset_ready(dataset, user)
             for sid in target_sessions:
                 result = await improve_session_local(dataset, sid, user)
+                if not result.get("ok"):
+                    incomplete.append(sid)
                 hook_log(
                     "sync_bridge_done",
                     {
@@ -315,6 +328,8 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
                     f"via=local_improve ok={result.get('ok')}",
                     file=sys.stderr,
                 )
+            if strict and incomplete:
+                raise RuntimeError(f"final session sync incomplete for: {', '.join(incomplete)}")
     finally:
         if unregister_on_finish:
             if not (was_registered or has_api_key):
@@ -408,6 +423,9 @@ def main():
                 _sync(
                     stop_watcher=False,
                     unregister_on_finish=unregister_on_finish,
+                    # The detached-final run is the session's last sync: an
+                    # incomplete result raises so this loop retries it.
+                    strict=detached_final,
                 )
             )
             return

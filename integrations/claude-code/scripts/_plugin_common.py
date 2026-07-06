@@ -1535,38 +1535,101 @@ def append_warmup_entry(dataset: str, session_id: str, entry: dict) -> None:
     _write_json_file(_bridge_file(session_id), cache)
 
 
-def drain_warmup_entries(dataset: str, session_id: str) -> int:
+_DRAIN_LOCK = _PLUGIN_DIR / "drain.lock"
+_DRAIN_LOCK_STALE_SECONDS = 60.0
+# Pause before the one in-place drain retry in run_session_improve: long enough
+# for a momentary server blip to pass, short enough not to hold up a sync.
+_DRAIN_RETRY_PAUSE_SECONDS = 2.0
+
+
+def _try_acquire_drain_lock() -> bool:
+    """Single-drainer guard: concurrent drains would double-replay entries into
+    the server cache and clobber each other's buffer write-backs."""
+    try:
+        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+        if _DRAIN_LOCK.exists():
+            try:
+                if time.time() - _DRAIN_LOCK.stat().st_mtime > _DRAIN_LOCK_STALE_SECONDS:
+                    _DRAIN_LOCK.unlink()
+            except FileNotFoundError:
+                pass
+        fd = os.open(str(_DRAIN_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception as exc:
+        # Fail open: a rare double replay (deduped server-side per entry write)
+        # is better than a buffer that can never drain.
+        hook_log("drain_lock_error", {"error": str(exc)[:200]})
+        return True
+
+
+def _release_drain_lock() -> None:
+    try:
+        _DRAIN_LOCK.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        hook_log("drain_lock_release_failed", {"error": str(exc)[:200]})
+
+
+def drain_warmup_entries(dataset: str, session_id: str) -> tuple:
     """Replay warmup-buffered entries into the server session cache, in order.
 
-    Returns the number of entries replayed. Stops at the first failure so the
-    unreplayed tail stays buffered for the next attempt (order preserved).
+    Returns ``(drained, remaining)``. Stops at the first replay failure so the
+    unreplayed tail stays buffered (order preserved). Guarded by a single-drainer
+    lock, and the buffer trim is computed against a FRESH re-read of the file so
+    entries appended while the replay was in flight are never lost — the replay
+    is N sequential HTTP calls, a wide window for concurrent async hooks.
     """
     if not dataset or not session_id:
-        return 0
+        return 0, 0
     path = _bridge_file(session_id)
-    cache = _load_json_file(path)
     key = _bridge_cache_key(dataset, session_id)
-    session_cache = cache.get(key) or {}
-    pending = list(session_cache.get("pending_entries") or [])
-    if not pending:
-        return 0
-    drained = 0
-    for entry in pending:
-        try:
-            remember_entry_via_http(dataset, session_id, entry)
-            drained += 1
-        except Exception as exc:
-            hook_log("warmup_drain_error", {"error": str(exc)[:200], "drained": drained})
-            break
-    if drained:
-        session_cache["pending_entries"] = pending[drained:]
-        cache[key] = session_cache
-        _write_json_file(path, cache)
-        hook_log(
-            "warmup_drained",
-            {"session": session_id, "count": drained, "left": len(pending) - drained},
-        )
-    return drained
+    snapshot = list((_load_json_file(path).get(key) or {}).get("pending_entries") or [])
+    if not snapshot:
+        return 0, 0
+    if not _try_acquire_drain_lock():
+        hook_log("warmup_drain_skipped_locked", {"session": session_id, "pending": len(snapshot)})
+        return 0, len(snapshot)
+    try:
+        drained = 0
+        for entry in snapshot:
+            try:
+                remember_entry_via_http(dataset, session_id, entry)
+                drained += 1
+            except Exception as exc:
+                hook_log("warmup_drain_error", {"error": str(exc)[:200], "drained": drained})
+                break
+        remaining = len(snapshot) - drained
+        if drained:
+            # Re-read before trimming: hooks may have appended new pending
+            # entries (or qa/trace mirror text) during the replay; writing back
+            # the stale snapshot would silently delete them.
+            cache = _load_json_file(path)
+            session_cache = cache.get(key) or {}
+            fresh = list(session_cache.get("pending_entries") or [])
+            if fresh[:drained] == snapshot[:drained]:
+                fresh = fresh[drained:]
+            else:
+                # Unexpected interleaving — remove the replayed entries by value.
+                for entry in snapshot[:drained]:
+                    try:
+                        fresh.remove(entry)
+                    except ValueError:
+                        pass
+            session_cache["pending_entries"] = fresh
+            cache[key] = session_cache
+            _write_json_file(path, cache)
+            remaining = len(fresh)
+            hook_log(
+                "warmup_drained",
+                {"session": session_id, "count": drained, "left": remaining},
+            )
+        return drained, remaining
+    finally:
+        _release_drain_lock()
 
 
 def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = None) -> dict:
@@ -1639,7 +1702,12 @@ def run_session_improve(dataset: str, session_id: str) -> bool:
     base_url = _local_api_url()
     if not _backend_reachable(base_url):
         return False
-    drain_warmup_entries(dataset, session_id)
+    _, remaining = drain_warmup_entries(dataset, session_id)
+    if remaining:
+        # One bounded retry after a short pause: the tail usually failed on a
+        # momentary blip, and improve reads only what reached the server cache.
+        time.sleep(_DRAIN_RETRY_PAUSE_SECONDS)
+        _, remaining = drain_warmup_entries(dataset, session_id)
     if improve_unsupported(base_url):
         return persist_session_cache_to_graph_via_http(dataset, session_id)
     outcome = improve_session_via_http(dataset, session_id)
@@ -1668,4 +1736,19 @@ def run_session_improve(dataset: str, session_id: str) -> bool:
             "error": str(outcome.get("error") or "")[:120],
         },
     )
+    if remaining:
+        # Buffered entries never reached the server cache, so the improve above
+        # persisted an incomplete session. Partial persist beats none (hence the
+        # improve still ran), but report not-synced so the caller's retry loop
+        # re-drives the whole drain+improve — dedup makes the re-run cheap.
+        hook_log(
+            "improve_incomplete_drain",
+            {
+                "dataset": dataset,
+                "session": session_id,
+                "remaining": remaining,
+                "improve_ok": bool(outcome.get("ok")),
+            },
+        )
+        return False
     return bool(outcome.get("ok"))
