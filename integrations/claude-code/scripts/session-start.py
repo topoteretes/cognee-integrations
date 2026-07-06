@@ -991,12 +991,21 @@ async def _run_heavy(
             print(f"cognee-plugin: identity warning ({e})", file=sys.stderr)
 
     try:
+        from config import get_companion_dataset_name, is_companion_enabled, replicate_dataset_acls
+
         if user_id and is_cloud_mode(config):
             await ensure_dataset_ready_via_api(
                 config.get("base_url", ""),
                 agent_api_key or config.get("api_key", ""),
                 dataset,
             )
+            if is_companion_enabled(config) and dataset != "agent_sessions":
+                companion_dataset = get_companion_dataset_name(dataset)
+                await ensure_dataset_ready_via_api(
+                    config.get("base_url", ""),
+                    agent_api_key or config.get("api_key", ""),
+                    companion_dataset,
+                )
         elif user_id:
             from uuid import UUID
 
@@ -1004,6 +1013,10 @@ async def _run_heavy(
 
             user = await get_user(UUID(user_id))
             await ensure_dataset_ready(dataset, user)
+            if is_companion_enabled(config) and dataset != "agent_sessions":
+                companion_dataset = get_companion_dataset_name(dataset)
+                await ensure_dataset_ready(companion_dataset, user)
+                await replicate_dataset_acls(dataset, companion_dataset)
     except Exception as e:
         print(f"cognee-plugin: dataset warning ({e})", file=sys.stderr)
     if user_id:

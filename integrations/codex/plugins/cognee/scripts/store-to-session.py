@@ -158,6 +158,10 @@ async def _store_tool_call(payload: dict) -> None:
         return
 
     config = load_config()
+    from config import resolve_write_dataset
+
+    write_dataset = resolve_write_dataset(config)
+
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
     if not server_ready_hint(runtime.get("base_url", "")):
@@ -169,7 +173,7 @@ async def _store_tool_call(payload: dict) -> None:
             f"Params: {json.dumps(params, ensure_ascii=False)}\n"
             f"Return: {return_value}"
         )
-        append_http_bridge_entry(dataset, session_id, trace=trace_text)
+        append_http_bridge_entry(write_dataset, session_id, trace=trace_text)
         bump_save_counter(session_id, "trace")
         hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
         return
@@ -191,7 +195,7 @@ async def _store_tool_call(payload: dict) -> None:
 
     try:
         if use_http:
-            result = remember_entry_via_http(dataset, session_id, entry)
+            result = remember_entry_via_http(write_dataset, session_id, entry)
             user = None
         else:
             import cognee
@@ -200,7 +204,7 @@ async def _store_tool_call(payload: dict) -> None:
             user = await resolve_user(user_id)
             result = await cognee.remember(
                 TraceEntry(**entry),
-                dataset_name=dataset,
+                dataset_name=write_dataset,
                 session_id=session_id,
                 self_improvement=False,
                 user=user,
@@ -232,7 +236,7 @@ async def _store_tool_call(payload: dict) -> None:
                 f"Return: {return_value}"
             )
             append_http_bridge_entry(
-                dataset,
+                write_dataset,
                 session_id,
                 trace=trace_text,
             )
@@ -241,7 +245,7 @@ async def _store_tool_call(payload: dict) -> None:
         touch_activity()
         count, should_improve = bump_turn_counter(session_id)
         if should_improve:
-            await _fire_improve_background(dataset, session_id, user, reason=f"turn_{count}")
+            await _fire_improve_background(write_dataset, session_id, user, reason=f"turn_{count}")
     else:
         hook_log("trace_store_noresult", {"tool": tool_name})
 
@@ -260,6 +264,10 @@ async def _store_assistant_stop(payload: dict) -> None:
         return
 
     config = load_config()
+    from config import resolve_write_dataset
+
+    write_dataset = resolve_write_dataset(config)
+
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
     if not server_ready_hint(runtime.get("base_url", "")):
@@ -268,7 +276,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         # the server is ready.
         pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
         append_http_bridge_entry(
-            dataset,
+            write_dataset,
             session_id,
             question=pending.get("prompt", ""),
             answer=msg,
@@ -293,7 +301,7 @@ async def _store_assistant_stop(payload: dict) -> None:
 
     try:
         if use_http:
-            result = remember_entry_via_http(dataset, session_id, entry)
+            result = remember_entry_via_http(write_dataset, session_id, entry)
             user = None
         else:
             import cognee
@@ -302,7 +310,7 @@ async def _store_assistant_stop(payload: dict) -> None:
             user = await resolve_user(user_id)
             result = await cognee.remember(
                 QAEntry(**entry),
-                dataset_name=dataset,
+                dataset_name=write_dataset,
                 session_id=session_id,
                 self_improvement=False,
                 user=user,
@@ -315,7 +323,7 @@ async def _store_assistant_stop(payload: dict) -> None:
     if result:
         if use_http:
             append_http_bridge_entry(
-                dataset,
+                write_dataset,
                 session_id,
                 question=pending.get("prompt", ""),
                 answer=msg,
@@ -332,7 +340,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         touch_activity()
         count, should_improve = bump_turn_counter(session_id)
         if should_improve:
-            await _fire_improve_background(dataset, session_id, user, reason=f"turn_{count}")
+            await _fire_improve_background(write_dataset, session_id, user, reason=f"turn_{count}")
 
 
 def main():

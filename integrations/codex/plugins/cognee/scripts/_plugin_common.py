@@ -1128,6 +1128,13 @@ def recall_via_http(
         "scope": scope,
         "only_context": only_context,
     }
+    try:
+        from config import load_config, resolve_recall_datasets
+
+        config = load_config()
+        payload["datasets"] = resolve_recall_datasets(config)
+    except Exception:
+        pass
     if search_type:
         payload["search_type"] = search_type
     if context_profile:
@@ -1246,6 +1253,11 @@ def persist_session_cache_to_graph_via_http(
         hook_log("http_bridge_skipped_no_api_key", {"dataset": dataset, "session": session_id})
         return False
 
+    from config import load_config, resolve_write_dataset
+
+    config = load_config()
+    write_dataset = resolve_write_dataset(config)
+
     qa_doc, trace_doc = _format_cached_bridge_document(dataset, session_id)
     if not qa_doc and not trace_doc:
         hook_log("http_bridge_skipped_empty_cache", {"dataset": dataset, "session": session_id})
@@ -1266,7 +1278,10 @@ def persist_session_cache_to_graph_via_http(
             digest = hashlib.sha256(document.encode("utf-8")).hexdigest()
             if state.get(state_key) == digest:
                 continue
-            if _post_remember_document(base_url, api_key, dataset, document, node_set, timeout):
+            submitted = _post_remember_document(
+                base_url, api_key, write_dataset, document, node_set, timeout
+            )
+            if submitted:
                 state[state_key] = digest
                 wrote = True
         if isinstance(bridge_cache, dict):

@@ -128,10 +128,17 @@ async def _recall(
             from cognee.modules.search.types import SearchType
 
             query_type = SearchType.GRAPH_COMPLETION if "graph" in scope else None
+            try:
+                from config import resolve_recall_datasets
+
+                datasets = resolve_recall_datasets(config, dataset) if "graph" in scope else None
+            except Exception:
+                datasets = [dataset] if "graph" in scope else None
+
             results = await cognee.recall(
                 query,
                 session_id=session_id,
-                datasets=[dataset] if "graph" in scope else None,
+                datasets=datasets,
                 top_k=top_k,
                 scope=scope,
                 query_type=query_type,

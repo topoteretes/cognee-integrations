@@ -67,10 +67,18 @@ async def _recall(session_id: str, dataset: str, query: str, scope: list[str], t
     import cognee
 
     try:
+        from config import load_config, resolve_recall_datasets
+
+        config = load_config()
+        datasets = resolve_recall_datasets(config, dataset) if "graph" in scope else None
+    except Exception:
+        datasets = [dataset] if "graph" in scope else None
+
+    try:
         results = await cognee.recall(
             query,
             session_id=session_id,
-            datasets=[dataset] if "graph" in scope else None,
+            datasets=datasets,
             top_k=top_k,
             scope=scope,
         )

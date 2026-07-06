@@ -262,6 +262,10 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
             hook_log("sync_stopped_watcher", {"session": session_id, "dataset": dataset})
 
         config = load_config()
+        from config import resolve_write_dataset
+
+        write_dataset = resolve_write_dataset(config)
+
         api_mode = http_api_ready()
         lock = nullcontext(True) if api_mode else sync_lock("sync-session-to-graph")
         with lock as acquired:
@@ -276,18 +280,18 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
 
             if api_mode:
                 for sid in target_sessions:
-                    wrote = persist_session_cache_to_graph_via_http(dataset, sid)
+                    wrote = persist_session_cache_to_graph_via_http(write_dataset, sid)
                     hook_log(
                         "sync_bridge_done",
                         {
                             "session": sid,
-                            "dataset": dataset,
+                            "dataset": write_dataset,
                             "via": "http_remember",
                             "wrote": wrote,
                         },
                     )
                     print(
-                        f"cognee-sync: dataset={dataset} session={sid} "
+                        f"cognee-sync: dataset={write_dataset} session={sid} "
                         f"via=http_remember wrote={wrote}",
                         file=sys.stderr,
                     )
@@ -295,9 +299,9 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
 
             await ensure_cognee_ready(config)
             user = await resolve_user(user_id)
-            await ensure_dataset_ready(dataset, user)
+            await ensure_dataset_ready(write_dataset, user)
             for sid in target_sessions:
-                wrote = await persist_session_cache_to_graph(dataset, sid, user)
+                wrote = await persist_session_cache_to_graph(write_dataset, sid, user)
                 graph_result = await sync_graph_context_to_session(dataset, sid, user)
                 hook_log(
                     "sync_bridge_done",

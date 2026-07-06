@@ -236,11 +236,15 @@ async def _run(prompt: str) -> dict | None:
                     timeout=recall_timeout,
                 )
             else:
+                from config import resolve_recall_datasets
+
+                datasets = resolve_recall_datasets(config)
                 query_type = getattr(SearchType, qtype, None) if qtype else None
                 part = await asyncio.wait_for(
                     cognee.recall(
                         prompt,
                         session_id=session_id,
+                        datasets=datasets,
                         top_k=TOP_K,
                         scope=scope_list,
                         only_context=True,
