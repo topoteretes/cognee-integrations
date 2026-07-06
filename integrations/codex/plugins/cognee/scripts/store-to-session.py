@@ -21,7 +21,6 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     append_http_bridge_entry,
-    append_warmup_entry,
     bump_save_counter,
     bump_turn_counter,
     get_session_key,
@@ -29,13 +28,13 @@ from _plugin_common import (
     http_api_ready,
     load_resolved,
     notify,
+    persist_session_cache_to_graph_via_http,
     pop_pending_prompt,
     quiet_hook_output,
     remember_entry_via_http,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
     resolve_user,
-    run_session_improve,
     server_ready_hint,
     set_session_key,
     touch_activity,
@@ -45,8 +44,9 @@ from config import (
     ensure_dataset_ready,
     get_dataset,
     get_session_id,
-    improve_session_local,
     load_config,
+    persist_session_cache_to_graph,
+    sync_graph_context_to_session,
 )
 
 # Hard cap per field to avoid ballooning the cache with massive tool outputs.
@@ -56,36 +56,33 @@ _MAX_ASSISTANT_BYTES = 8000
 
 
 async def _fire_improve_background(dataset: str, session_id: str, user, reason: str) -> None:
-    """Fire-and-forget session improve; failures are logged but never raised.
-
-    The server bridges the session itself from its session cache (improve),
-    instead of the old client-side full-document re-post — see run_session_improve.
-    """
+    """Fire-and-forget session bridge; failures are logged but never raised."""
     try:
         if http_api_ready():
-            wrote = run_session_improve(dataset, session_id)
+            wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
             hook_log(
-                "auto_improve_fired",
-                {"reason": reason, "session": session_id, "via": "http_improve", "wrote": wrote},
+                "auto_bridge_fired",
+                {"reason": reason, "session": session_id, "via": "http_remember", "wrote": wrote},
             )
             if wrote:
-                notify(f"session improve submitted ({reason})")
+                notify(f"session bridge persisted ({reason})")
             return
 
         await ensure_dataset_ready(dataset, user)
-        result = await improve_session_local(dataset, session_id, user)
+        wrote = await persist_session_cache_to_graph(dataset, session_id, user)
+        graph_result = await sync_graph_context_to_session(dataset, session_id, user)
         hook_log(
-            "auto_improve_fired",
+            "auto_bridge_fired",
             {
                 "reason": reason,
                 "session": session_id,
-                "via": "local_improve",
-                "ok": bool(result.get("ok")),
+                "wrote": wrote,
+                "graph_synced": graph_result.get("synced", 0),
             },
         )
-        notify(f"session improve completed ({reason})")
+        notify(f"session bridge persisted ({reason})")
     except Exception as exc:
-        hook_log("auto_improve_error", {"reason": reason, "error": str(exc)[:200]})
+        hook_log("auto_bridge_error", {"reason": reason, "error": str(exc)[:200]})
 
 
 def _truncate_str(value, cap: int) -> str:
@@ -163,6 +160,22 @@ async def _store_tool_call(payload: dict) -> None:
     config = load_config()
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
+    if not server_ready_hint(runtime.get("base_url", "")):
+        # Server still warming: don't block the tool call and don't lose the
+        # trace. Mirror it into the local bridge shadow; the session->graph
+        # sync drains it once the server is ready.
+        trace_text = (
+            f"{tool_name} [{status}]\n"
+            f"Params: {json.dumps(params, ensure_ascii=False)}\n"
+            f"Return: {return_value}"
+        )
+        append_http_bridge_entry(dataset, session_id, trace=trace_text)
+        bump_save_counter(session_id, "trace")
+        hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
+        return
+    if not use_http:
+        await ensure_cognee_ready(config)
+
     entry = {
         "type": "trace",
         "origin_function": tool_name,
@@ -175,24 +188,6 @@ async def _store_tool_call(payload: dict) -> None:
         # LLM summary can flip this in a future config.
         "generate_feedback_with_llm": False,
     }
-
-    if not server_ready_hint(runtime.get("base_url", "")):
-        # Server still warming: don't block the tool call and don't lose the
-        # trace. Buffer the structured entry for a later /remember/entry replay
-        # (improve bridges only what the server session cache holds), and keep
-        # the legacy text mirror for the document-bridge fallback path.
-        append_warmup_entry(dataset, session_id, entry)
-        trace_text = (
-            f"{tool_name} [{status}]\n"
-            f"Params: {json.dumps(params, ensure_ascii=False)}\n"
-            f"Return: {return_value}"
-        )
-        append_http_bridge_entry(dataset, session_id, trace=trace_text)
-        bump_save_counter(session_id, "trace")
-        hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
-        return
-    if not use_http:
-        await ensure_cognee_ready(config)
 
     try:
         if use_http:
@@ -267,24 +262,11 @@ async def _store_assistant_stop(payload: dict) -> None:
     config = load_config()
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
-    pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
-
-    # Codex intentionally differs from Claude here: store one paired
-    # prompt/answer row so Cognee's filesystem session cache does not get
-    # separate question-only and answer-only QA entries for the same turn.
-    entry = {
-        "type": "qa",
-        "question": pending.get("prompt", ""),
-        "answer": msg,
-        "context": pending.get("context", ""),
-    }
-
     if not server_ready_hint(runtime.get("base_url", "")):
-        # Server still warming: buffer the structured entry for a later
-        # /remember/entry replay (improve bridges only what the server session
-        # cache holds), and keep the legacy text mirror for the document-bridge
-        # fallback path.
-        append_warmup_entry(dataset, session_id, entry)
+        # Server still warming: buffer the prompt+answer into the local bridge
+        # shadow instead of dropping it; the session->graph sync drains it once
+        # the server is ready.
+        pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
         append_http_bridge_entry(
             dataset,
             session_id,
@@ -296,6 +278,18 @@ async def _store_assistant_stop(payload: dict) -> None:
         return
     if not use_http:
         await ensure_cognee_ready(config)
+
+    pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
+
+    # Codex intentionally differs from Claude here: store one paired
+    # prompt/answer row so Cognee's filesystem session cache does not get
+    # separate question-only and answer-only QA entries for the same turn.
+    entry = {
+        "type": "qa",
+        "question": pending.get("prompt", ""),
+        "answer": msg,
+        "context": pending.get("context", ""),
+    }
 
     try:
         if use_http:

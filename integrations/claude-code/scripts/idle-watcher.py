@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import Optional
 
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
-# threshold means you have to actively pause a full minute, and the 10-minute
-# improve cooldown prevents back-to-back improve runs when activity is sporadic.
+# threshold means you have to actively pause a full minute, and the 20s
+# bridge cooldown prevents back-to-back runs when activity is sporadic.
 POLL_SECONDS = float(os.environ.get("COGNEE_IDLE_POLL", "10"))
 IDLE_SECONDS = float(os.environ.get("COGNEE_IDLE_THRESHOLD", "60"))
-IMPROVE_COOLDOWN = float(os.environ.get("COGNEE_IMPROVE_COOLDOWN", "600"))
+IMPROVE_COOLDOWN = float(os.environ.get("COGNEE_IMPROVE_COOLDOWN", "120"))
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _ACTIVITY = _PLUGIN_DIR / "activity.ts"
@@ -83,14 +83,14 @@ def _install_signal_handlers() -> None:
 
 
 async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
-    """Fire one session improve cycle. Returns True on success."""
+    """Fire one session bridge cycle. Returns True on success."""
     sys.path.insert(0, os.path.dirname(__file__))
     try:
         from _plugin_common import (  # type: ignore
             http_api_ready,
             load_resolved,
+            persist_session_cache_to_graph_via_http,
             resolve_user,
-            run_session_improve,
             set_session_key,
             sync_lock,
         )
@@ -99,8 +99,6 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
         if session_key:
             set_session_key(session_key)
         api_mode = http_api_ready()
-        # Server-side improve has its own per-session lock; only local SDK
-        # mode needs the cross-hook file lock.
         lock = nullcontext(True) if api_mode else sync_lock("idle-watcher")
     except Exception as exc:
         _log("sync_lock_import_error", error=str(exc)[:200])
@@ -117,16 +115,17 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                 ensure_cognee_ready,
                 ensure_dataset_ready,
                 ensure_identity,
-                improve_session_local,
+                persist_session_cache_to_graph,
+                sync_graph_context_to_session,
             )
 
             if api_mode:
-                wrote = run_session_improve(dataset, session_id)
+                wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
                 _log(
                     "session_bridge_done",
                     session=session_id,
                     dataset=dataset,
-                    via="http_improve",
+                    via="http_remember",
                     wrote=wrote,
                 )
                 return True
@@ -139,14 +138,15 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
             user = await resolve_user(user_id) if user_id else None
             if user:
                 await ensure_dataset_ready(dataset, user)
-                result = await improve_session_local(dataset, session_id, user)
+                wrote = await persist_session_cache_to_graph(dataset, session_id, user)
+                graph_result = await sync_graph_context_to_session(dataset, session_id, user)
                 _log(
                     "session_bridge_done",
                     session=session_id,
                     dataset=dataset,
                     user_id=str(user.id),
-                    via="local_improve",
-                    ok=bool(result.get("ok")),
+                    wrote=wrote,
+                    graph_synced=graph_result.get("synced", 0),
                 )
             return True
         except Exception as exc:

@@ -27,10 +27,10 @@ from _plugin_common import (
     hook_log,
     http_api_ready,
     load_resolved,
+    persist_session_cache_to_graph_via_http,
     resolve_session_key_from_payload,
     resolve_user,
     resolved_http_endpoint_auth,
-    run_session_improve,
     set_session_key,
     sync_lock,
     unregister_agent_via_http,
@@ -40,8 +40,9 @@ from config import (
     ensure_dataset_ready,
     get_dataset,
     get_session_id,
-    improve_session_local,
     load_config,
+    persist_session_cache_to_graph,
+    sync_graph_context_to_session,
 )
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "codex"
@@ -215,10 +216,7 @@ def _load_resolved() -> tuple:
             os.environ["COGNEE_USER_ID"] = str(data.get("user_id"))
         return (
             env_session_id or data.get("session_id", ""),
-            # load_resolved() carries no dataset key, so without the env
-            # override (only the exit watcher sets it) this must fall back to
-            # config, or the SessionEnd worker syncs with an empty dataset.
-            env_dataset or data.get("dataset", "") or get_dataset(load_config()),
+            env_dataset or data.get("dataset", ""),
             data.get("user_id", ""),
             env_agent_session_name or data.get("agent_session_name", ""),
             bool(data.get("registered", False)),
@@ -242,7 +240,7 @@ def _load_resolved() -> tuple:
     )
 
 
-async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: bool = False):
+async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
     session_id, dataset, user_id, agent_session_name, was_registered, has_api_key, session_key = (
         _load_resolved()
     )
@@ -276,33 +274,22 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
                 hook_log("sync_no_target_sessions", {"dataset": dataset})
                 return
 
-            incomplete: list[str] = []
             if api_mode:
                 for sid in target_sessions:
-                    wrote = run_session_improve(dataset, sid)
-                    if not wrote:
-                        incomplete.append(sid)
+                    wrote = persist_session_cache_to_graph_via_http(dataset, sid)
                     hook_log(
                         "sync_bridge_done",
                         {
                             "session": sid,
                             "dataset": dataset,
-                            "via": "http_improve",
+                            "via": "http_remember",
                             "wrote": wrote,
                         },
                     )
                     print(
                         f"cognee-sync: dataset={dataset} session={sid} "
-                        f"via=http_improve wrote={wrote}",
+                        f"via=http_remember wrote={wrote}",
                         file=sys.stderr,
-                    )
-                if strict and incomplete:
-                    # The detached final worker retries on exceptions only. This
-                    # is the session's LAST sync — an incomplete one (failed
-                    # improve or undelivered warmup entries) must re-drive the
-                    # whole drain+improve, not silently report success.
-                    raise RuntimeError(
-                        f"final session sync incomplete for: {', '.join(incomplete)}"
                     )
                 return
 
@@ -310,26 +297,23 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
             user = await resolve_user(user_id)
             await ensure_dataset_ready(dataset, user)
             for sid in target_sessions:
-                result = await improve_session_local(dataset, sid, user)
-                if not result.get("ok"):
-                    incomplete.append(sid)
+                wrote = await persist_session_cache_to_graph(dataset, sid, user)
+                graph_result = await sync_graph_context_to_session(dataset, sid, user)
                 hook_log(
                     "sync_bridge_done",
                     {
                         "session": sid,
                         "dataset": dataset,
                         "user_id": str(getattr(user, "id", "")),
-                        "via": "local_improve",
-                        "ok": bool(result.get("ok")),
+                        "wrote": wrote,
+                        "graph_synced": graph_result.get("synced", 0),
                     },
                 )
                 print(
-                    f"cognee-sync: dataset={dataset} session={sid} "
-                    f"via=local_improve ok={result.get('ok')}",
+                    f"cognee-sync: dataset={dataset} session={sid} wrote={wrote} "
+                    f"graph_synced={graph_result.get('synced', 0)}",
                     file=sys.stderr,
                 )
-            if strict and incomplete:
-                raise RuntimeError(f"final session sync incomplete for: {', '.join(incomplete)}")
     finally:
         if unregister_on_finish:
             if not (was_registered or has_api_key):
@@ -423,9 +407,6 @@ def main():
                 _sync(
                     stop_watcher=False,
                     unregister_on_finish=unregister_on_finish,
-                    # The detached-final run is the session's last sync: an
-                    # incomplete result raises so this loop retries it.
-                    strict=detached_final,
                 )
             )
             return
