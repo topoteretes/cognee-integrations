@@ -236,6 +236,8 @@ async def _run(prompt: str) -> dict | None:
                     timeout=recall_timeout,
                 )
             else:
+                from _plugin_common import check_embedding_dimensions
+                await check_embedding_dimensions()
                 query_type = getattr(SearchType, qtype, None) if qtype else None
                 part = await asyncio.wait_for(
                     cognee.recall(
