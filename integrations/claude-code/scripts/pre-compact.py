@@ -32,14 +32,14 @@ _TRACE_TOP_K = 8
 _GRAPH_TOP_K = 3
 
 
-def _load_resolved_fields() -> tuple[str, str]:
+def _load_resolved_fields(cwd: str = "") -> tuple[str, str]:
     """Return (session_id, dataset) from resolved cache or config."""
     resolved = load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     if not session_id or not dataset:
-        config = load_config()
-        session_id = session_id or get_session_id(config)
+        config = load_config(cwd)
+        session_id = session_id or get_session_id(config, cwd)
         dataset = dataset or get_dataset(config)
     return session_id, dataset
 
@@ -136,13 +136,13 @@ def _format_graph_section(entries: list) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-async def _run():
-    session_id, dataset = _load_resolved_fields()
+async def _run(cwd: str = ""):
+    session_id, dataset = _load_resolved_fields(cwd)
     if not session_id:
         hook_log("no_session_id", {"event": "precompact"})
         return
 
-    config = load_config()
+    config = load_config(cwd)
     await ensure_cognee_ready(config)
 
     # Short queries: use the session's recent activity as the seed
@@ -245,8 +245,9 @@ def main():
     if session_key_candidate:
         set_session_key(session_key_candidate)
 
+    cwd = str(payload.get("cwd") or "")
     try:
-        asyncio.run(_run())
+        asyncio.run(_run(cwd))
     except Exception as exc:
         hook_log("precompact_run_exception", {"error": str(exc)[:200]})
 
