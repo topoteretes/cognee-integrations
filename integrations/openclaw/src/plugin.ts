@@ -23,6 +23,7 @@ import {
 } from "./persistence.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
+import { PLUGIN_VERSION, formatUpdateHint, isNewer, readUpdateCache, runUpdateCheck } from "./version.js";
 
 /** Expand a leading `~` in a workspace path to the user's home directory. */
 function expandHome(p: string | undefined): string | undefined {
@@ -53,6 +54,12 @@ const memoryCogneePlugin = {
   kind: "memory" as const,
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
+
+    // Installed plugin version. OpenClaw populates `api.version` from the
+    // plugin's package.json at load time; PLUGIN_VERSION is the fallback for
+    // load paths that leave it unset.
+    const pluginVersion = api.version ?? PLUGIN_VERSION;
+    api.logger.info?.(`cognee-openclaw: v${pluginVersion} loaded`);
 
     // Auto-enable per-agent memory when the gateway hosts more than one agent,
     // unless the plugin config set `perAgentMemory` explicitly. This keeps
@@ -403,6 +410,23 @@ const memoryCogneePlugin = {
 
       autoSyncStarted = true;
 
+      // Print the installed version and, when one is available, an update hint.
+      // Reads the cached result by default; checkNow forces a live npm check.
+      async function printVersionLine(checkNow?: boolean): Promise<void> {
+        console.log(`Plugin: cognee-openclaw v${pluginVersion}`);
+        const record = checkNow
+          ? await runUpdateCheck({ installed: pluginVersion, force: true })
+          : await readUpdateCache();
+        // Decide from the cached latest against the running version, not the
+        // stored updateAvailable, which can be stale after a plugin upgrade.
+        const latest = record?.latest ?? "";
+        if (isNewer(latest, pluginVersion)) {
+          console.log(formatUpdateHint(latest));
+        } else if (checkNow) {
+          console.log("No newer version found.");
+        }
+      }
+
       cognee
         .command("index")
         .description("Sync memory files to Cognee (add new, update changed, skip unchanged)")
@@ -434,8 +458,10 @@ const memoryCogneePlugin = {
       cognee
         .command("status")
         .description("Show Cognee sync state")
-        .action(async () => {
+        .option("--check-updates", "Check npm for a newer plugin version now")
+        .action(async (opts: { checkUpdates?: boolean }) => {
           await stateReady;
+          await printVersionLine(opts.checkUpdates);
           const files = await collectMemoryFiles(cliWorkspaceDir);
 
           if (multiScope) {
@@ -498,6 +524,15 @@ const memoryCogneePlugin = {
               `Sync index: ${SYNC_INDEX_PATH}`,
             ].join("\n"));
           }
+          process.exit(0);
+        });
+
+      cognee
+        .command("version")
+        .description("Show the installed plugin version (add --check-updates to check npm)")
+        .option("--check-updates", "Check npm for a newer plugin version now")
+        .action(async (opts: { checkUpdates?: boolean }) => {
+          await printVersionLine(opts.checkUpdates);
           process.exit(0);
         });
 
@@ -700,6 +735,11 @@ const memoryCogneePlugin = {
           logger.warn?.(`cognee-openclaw: Cognee API unreachable at ${cfg.baseUrl} — auto-sync disabled for this session. Error: ${String(error)}`);
           return;
         }
+
+        // Refresh the cached update check in the background. It is rate-limited
+        // and best effort, so a failure here is ignored; the status command
+        // reads the cached result without hitting the network itself.
+        runUpdateCheck({ installed: pluginVersion }).catch(() => {});
 
         try {
           const result = await runSync(resolvedWorkspaceDir, logger);
