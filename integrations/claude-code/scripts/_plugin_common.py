@@ -379,19 +379,13 @@ def load_resolved(session_key: str = "") -> dict:
     if api_key:
         resolved["api_key"] = api_key
 
-    # Resolve caller identity.
-    try:
-        me = _json_http_request("/api/v1/users/me", method="GET", timeout=10.0)
-        if isinstance(me, dict):
-            user_id = str(me.get("id") or "").strip()
-            if user_id:
-                resolved["user_id"] = user_id
-    except Exception as exc:
-        hook_log("runtime_state_users_me_failed", {"error": str(exc)[:200]})
-
-    # Resolve active connection details. The connection is registered under the
-    # per-launch conn_uuid handle, so query by that — not the session id (which
-    # can change on a switch) and not the host correlation key.
+    # Resolve active connection details FIRST — it doubles as the primary
+    # identity source. The connection is registered under the per-launch
+    # conn_uuid handle, so query by that — not the session id (which can change
+    # on a switch) and not the host correlation key. Its agent.user_id is
+    # served by both OSS servers and cloud tenants, whereas /users/me is absent
+    # on some tenants (404 on every hook), so the users/me probe below runs
+    # only when identity is still unresolved.
     try:
         query = ""
         if conn_uuid:
@@ -410,12 +404,24 @@ def load_resolved(session_key: str = "") -> dict:
                 if agent_session_name:
                     resolved["agent_session_name"] = agent_session_name
                 agent_user_id = str(agent.get("user_id") or "").strip()
-                if agent_user_id and not resolved.get("user_id"):
+                if agent_user_id:
                     resolved["user_id"] = agent_user_id
                 status = str(agent.get("status") or "").strip().lower()
                 resolved["registered"] = status == "active"
     except Exception as exc:
         hook_log("runtime_state_connection_lookup_failed", {"error": str(exc)[:200]})
+
+    # Fallback identity probe — only when the connection lookup yielded none
+    # (e.g. before registration on a fresh launch).
+    if not resolved.get("user_id"):
+        try:
+            me = _json_http_request("/api/v1/users/me", method="GET", timeout=10.0)
+            if isinstance(me, dict):
+                user_id = str(me.get("id") or "").strip()
+                if user_id:
+                    resolved["user_id"] = user_id
+        except Exception as exc:
+            hook_log("runtime_state_users_me_failed", {"error": str(exc)[:200]})
 
     return resolved
 
@@ -1749,6 +1755,60 @@ def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = 
     return outcome
 
 
+def ensure_dataset_via_http(dataset: str) -> None:
+    """Best-effort create/authorize the dataset before an improve.
+
+    improve() resolves *existing* authorized datasets and fails NON-FATALLY
+    (returning 2xx) when there are none — unlike the legacy /remember bridge,
+    whose add() implicitly created the dataset. Creating here (idempotent
+    POST) means one skipped SessionStart ensure can never silently strand a
+    whole session's sync. Failures are logged and never block the improve —
+    if the dataset truly cannot be created, the improve outcome reports it.
+    """
+    if not dataset:
+        return
+    try:
+        _json_http_request("/api/v1/datasets", {"name": dataset}, timeout=15.0)
+        hook_log("dataset_ensured", {"dataset": dataset})
+        return
+    except urllib.error.HTTPError as exc:
+        # Some deployments route the collection at /datasets/ and answer the
+        # non-slash path with a 307/308, which urllib refuses to follow for a
+        # POST body. Re-issue the POST at the (same-origin) redirect target.
+        if exc.code in (301, 302, 307, 308):
+            base_url = _local_api_url().rstrip("/")
+            target = urllib.parse.urljoin(
+                f"{base_url}/api/v1/datasets", str(exc.headers.get("Location") or "")
+            )
+            if urllib.parse.urlparse(target).netloc == urllib.parse.urlparse(base_url).netloc:
+                headers = {"Content-Type": "application/json"}
+                api_key = _api_key()
+                if api_key:
+                    headers["X-Api-Key"] = api_key
+                req = urllib.request.Request(
+                    target,
+                    data=json.dumps({"name": dataset}).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=15.0) as resp:
+                        resp.read()
+                    hook_log("dataset_ensured", {"dataset": dataset, "via": "redirect"})
+                    return
+                except Exception as exc2:
+                    hook_log(
+                        "dataset_ensure_redirect_failed",
+                        {"dataset": dataset, "target": target[:120], "error": str(exc2)[:200]},
+                    )
+                    return
+        # An already-existing dataset may come back 4xx on some servers; log
+        # and proceed rather than blocking the sync on a pre-flight.
+        hook_log("dataset_ensure_http_status", {"dataset": dataset, "status": exc.code})
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        hook_log("dataset_ensure_failed", {"dataset": dataset, "error": str(exc)[:200]})
+
+
 def run_session_improve(dataset: str, session_id: str) -> bool:
     """API-mode session->graph sync: drain warmup entries, then improve.
 
@@ -1766,6 +1826,7 @@ def run_session_improve(dataset: str, session_id: str) -> bool:
         _, remaining = drain_warmup_entries(dataset, session_id)
     if improve_unsupported(base_url):
         return persist_session_cache_to_graph_via_http(dataset, session_id)
+    ensure_dataset_via_http(dataset)
     outcome = improve_session_via_http(dataset, session_id)
     if outcome.get("unsupported"):
         hook_log("improve_unsupported_fallback", {"dataset": dataset, "session": session_id})

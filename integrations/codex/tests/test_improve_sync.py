@@ -137,6 +137,7 @@ def _run_session_improve(improve_result, *, unsupported_marker=False, drain_resu
         _local_api_url=lambda: "http://x",
         _backend_reachable=lambda url: True,
         drain_warmup_entries=_drain,
+        ensure_dataset_via_http=lambda d: None,
         improve_unsupported=lambda url: unsupported_marker,
         improve_session_via_http=lambda d, s, **k: (
             calls.__setitem__("improve", calls["improve"] + 1) or improve_result

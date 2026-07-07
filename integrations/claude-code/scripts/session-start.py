@@ -991,7 +991,11 @@ async def _run_heavy(
             print(f"cognee-plugin: identity warning ({e})", file=sys.stderr)
 
     try:
-        if user_id and is_cloud_mode(config):
+        # Cloud: the API key IS the identity (the server derives the principal
+        # from X-Api-Key), so dataset creation must NOT be gated on user_id —
+        # servers without /users/me (e.g. cloud tenants) leave user_id empty
+        # while auth works fine. Only the SDK branch below needs a User object.
+        if is_cloud_mode(config):
             await ensure_dataset_ready_via_api(
                 config.get("base_url", ""),
                 agent_api_key or config.get("api_key", ""),
