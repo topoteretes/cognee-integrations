@@ -46,4 +46,10 @@ describe("cognee-openclaw memory flush registration", () => {
       "memory/2026-04-03.md",
     );
   });
+  it("logs the plugin version on registration", () => {
+    const api = createApi();
+    expect(api.logger.info).toHaveBeenCalledWith(
+      expect.stringMatching(/cognee-openclaw: plugin version \d{4}\.\d+\.\d+/),
+    );
+  });
 });

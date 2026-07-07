@@ -23,6 +23,7 @@ import {
 } from "./persistence.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
+import { PLUGIN_NAME, PLUGIN_VERSION } from "./version.js";
 
 /** Expand a leading `~` in a workspace path to the user's home directory. */
 function expandHome(p: string | undefined): string | undefined {
@@ -53,6 +54,7 @@ const memoryCogneePlugin = {
   kind: "memory" as const,
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
+    api.logger.info?.(`cognee-openclaw: plugin version ${PLUGIN_VERSION}`);
 
     // Auto-enable per-agent memory when the gateway hosts more than one agent,
     // unless the plugin config set `perAgentMemory` explicitly. This keeps
@@ -436,6 +438,7 @@ const memoryCogneePlugin = {
         .description("Show Cognee sync state")
         .action(async () => {
           await stateReady;
+          console.log(`Plugin: ${PLUGIN_NAME} v${PLUGIN_VERSION}`);
           const files = await collectMemoryFiles(cliWorkspaceDir);
 
           if (multiScope) {
