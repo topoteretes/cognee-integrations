@@ -48,50 +48,40 @@ cognee = "cognee_integration_hermes"
 The setup wizard writes non-secret settings to `$HERMES_HOME/cognee.json` and
 secrets to `$HERMES_HOME/.env`.
 
-### Modes
+### Runtime modes
 
-The provider connects to cognee in one of three modes. It picks the mode
-automatically from your config:
+Cognee integrations use the same runtime model:
 
-| Mode | When it's used | How it talks to cognee |
+| Mode | When to use it | How it talks to Cognee |
 | --- | --- | --- |
-| **local-server** (default) | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
-| **remote** | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
-| **embedded** | `COGNEE_EMBEDDED=true` | runs cognee in-process |
+| **local-server** (default) | You want local data with safe concurrent access | Starts or connects to a local Cognee server, then uses HTTP as a thin client |
+| **cloud** | `COGNEE_BASE_URL` points to a managed or remote Cognee service | Uses HTTP as a thin client with `COGNEE_API_KEY` |
+| **embedded** | You explicitly choose in-process Cognee for a single process or offline run | Runs Cognee inside the integration process |
 
-**Why local-server is the default.** cognee's local stores (SQLite, Kuzu/Ladybug,
-LanceDB) are single-writer. Driving them in-process from the agent's background
-threads — or from a second Hermes process sharing the same `data_root` — risks
-`database is locked` errors and corruption. A local cognee server is the single
-owner that serializes all access, so the agent just makes HTTP calls. This is the
-same design the Claude Code and Codex plugins use. **`embedded` is opt-in and is
-safe for single-process / offline use only.**
+**Why local-server is the safe default.** Cognee local stores, including SQLite, Kuzu, Ladybug, and LanceDB, are single-writer stores. If hooks, multiple terminals, or another integration use the same data root in embedded mode, they can hit `database is locked` errors or corrupt local state. A local Cognee server avoids that by owning the stores and serializing access. Each integration talks to it over HTTP.
 
-**No silent fallbacks.** The provider never downgrades modes behind your back. If
-`COGNEE_BASE_URL` is set but unreachable, or the local server fails to start,
-initialization raises rather than quietly switching to a different mode — silent
-fallback would either mask a config error (remote → local data divergence) or
-reintroduce the very DB-lock risk this design removes (local-server → embedded).
-To accept the single-process trade-off, set `COGNEE_EMBEDDED=true` explicitly.
+**No silent fallbacks.** A configured cloud endpoint should fail clearly if it is unreachable. A local server should fail clearly if it cannot start. Falling back to another mode can hide configuration errors or write data to the wrong store. Use embedded mode only when you accept the single-process tradeoff.
 
-local-server mode (default — just set your LLM creds):
+### Runtime mode examples
+
+local-server mode:
 
 ```bash
 LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
 COGNEE_DATASET=hermes
-# COGNEE_LOCAL_PORT=8000   # optional; point at a shared server for a unified brain
+# COGNEE_LOCAL_PORT=8000
 ```
 
-Remote / cloud mode:
+cloud mode:
 
 ```bash
-COGNEE_BASE_URL=https://your-cognee-service.example   # canonical name
+COGNEE_BASE_URL=https://your-cognee-service.example
 COGNEE_API_KEY=...
 COGNEE_DATASET=hermes
 ```
 
-Embedded (in-process) mode — single-process / offline only:
+embedded mode:
 
 ```bash
 COGNEE_EMBEDDED=true
