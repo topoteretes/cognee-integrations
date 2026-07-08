@@ -28,16 +28,7 @@ def _active_dataset() -> str:
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. config file
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            v = str(data.get("dataset") or "").strip()
-            if v:
-                return v
-    except Exception:
-        pass
-    # 3. default
+    # 2. default
     return _DEFAULT_DATASET
 
 

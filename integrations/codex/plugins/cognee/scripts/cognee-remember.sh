@@ -6,10 +6,11 @@
 #
 # --node-set: node set for categorization (default: user_context)
 #             user_context | project_docs | agent_actions
-# --dataset:  dataset name (default: from env or connection lookup)
+# --dataset:  dataset name (default: COGNEE_PLUGIN_DATASET or agent_sessions)
 #
 # Configuration:
-#   Resolves auth and dataset from api_key.json and Cognee endpoints.
+#   Resolves auth from env/api_key.json.
+#   Dataset is env-driven: COGNEE_PLUGIN_DATASET, then agent_sessions.
 #   Falls back to cognee-cli only if the server is unreachable.
 
 set -euo pipefail
@@ -19,9 +20,6 @@ runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" 2>/dev/null || true
 import json
 import pathlib
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 
 plugin_dir = pathlib.Path(sys.argv[1])
 import os
@@ -41,31 +39,7 @@ if not api_key:
         except Exception:
             pass
 
-dataset = ""
-if service_url and api_key:
-    try:
-        session_key = (os.environ.get("COGNEE_SESSION_KEY") or "").strip()
-        query = ""
-        if session_key:
-            query = "?agent_session_name=" + urllib.parse.quote(session_key, safe="")
-        req = urllib.request.Request(
-            service_url.rstrip("/") + "/api/v1/agents/connections/me" + query,
-            headers={"X-Api-Key": api_key},
-        )
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            payload = json.loads(resp.read().decode("utf-8") or "{}")
-        if isinstance(payload, dict):
-            agent = payload.get("agent") if isinstance(payload.get("agent"), dict) else {}
-            if isinstance(agent, dict):
-                datasets = agent.get("datasets") if isinstance(agent.get("datasets"), list) else []
-                for item in datasets:
-                    if isinstance(item, dict):
-                        name = str(item.get("name") or "").strip()
-                        if name:
-                            dataset = name
-                            break
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
-        pass
+dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
 
 print(json.dumps({"service_url": service_url, "api_key": api_key, "dataset": dataset}))
 PY
