@@ -1404,15 +1404,15 @@ def persist_session_cache_to_graph_via_http(
     bridge_path = _bridge_file(session_id)
     bridge_cache = _load_json_file(bridge_path)
     state = bridge_cache.get("_state", {}) if isinstance(bridge_cache, dict) else {}
-    
+
     companion_enabled = str(os.environ.get("COGNEE_SESSION_COMPANION_DATASET", "")).lower() in ("true", "1", "yes")
     write_dataset = dataset
     if companion_enabled and dataset and dataset != "agent_sessions":
         write_dataset = f"{dataset}-agent_sessions"
         try:
-            import urllib.request
-            import urllib.parse
             import json
+            import urllib.parse
+            import urllib.request
             req = urllib.request.Request(
                 f"{base_url.rstrip('/')}/api/v1/datasets",
                 data=json.dumps({"name": write_dataset}).encode("utf-8"),
@@ -1432,7 +1432,7 @@ def persist_session_cache_to_graph_via_http(
         except Exception as e:
             hook_log("companion_provisioning_failed", {"error": str(e)[:200]})
             write_dataset = dataset
-    
+
     wrote = False
     overall_start = time.monotonic()
     try:

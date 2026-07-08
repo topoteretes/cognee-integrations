@@ -430,7 +430,7 @@ async def persist_session_cache_to_graph(dataset: str, session_id: str, user) ->
     write_dataset = dataset
     if companion_enabled and dataset and dataset != "agent_sessions":
         write_dataset = f"{dataset}-agent_sessions"
-        
+
         # 3. Lazily ensure the companion dataset exists and the user has permissions
         try:
             await ensure_dataset_ready(write_dataset, user)

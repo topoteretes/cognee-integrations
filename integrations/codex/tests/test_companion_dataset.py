@@ -1,9 +1,9 @@
-import os
-import json
 import asyncio
-import sys
+import json
+import os
 import pathlib
-from unittest.mock import patch, MagicMock, AsyncMock
+import sys
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Point to codex plugin scripts
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "plugins" / "cognee" / "scripts"))
@@ -15,9 +15,10 @@ sys.modules['cognee.infrastructure.session'] = MagicMock()
 sys.modules['cognee.infrastructure.session.get_session_manager'] = MagicMock()
 
 # Import the modules we need to test
-import config
 import _plugin_common as plugin_common
 import _recall_http as recall_http
+import config
+
 
 def test_env_var_boolean_coercion():
     os.environ["COGNEE_SESSION_COMPANION_DATASET"] = "false"
@@ -44,15 +45,15 @@ def test_local_mode_remember_routes_to_companion(mock_remember, mock_gsm, mock_l
     mock_session.get_session = AsyncMock(return_value=[{"question": "test", "answer": "test"}])
     mock_session.get_agent_trace_feedback = AsyncMock(return_value=[])
     mock_gsm.return_value = mock_session
-    
+
     user = MagicMock()
     user.id = "user1"
-    
+
     os.environ["COGNEE_SESSION_COMPANION_DATASET"] = "true"
-    
+
     # Run async function
     asyncio.run(config.persist_session_cache_to_graph("my_dataset", "session1", user))
-    
+
     # Assert
     mock_ensure.assert_called_with("my_dataset-agent_sessions", user)
     mock_remember.assert_called_once()
@@ -71,15 +72,15 @@ def test_companion_dataset_name_resolution(mock_remember, mock_gsm, mock_load, m
     mock_session.get_session = AsyncMock(return_value=[{"question": "test", "answer": "test"}])
     mock_session.get_agent_trace_feedback = AsyncMock(return_value=[])
     mock_gsm.return_value = mock_session
-    
+
     user = MagicMock()
     user.id = "user1"
-    
+
     os.environ["COGNEE_SESSION_COMPANION_DATASET"] = "true"
-    
+
     # Should not double-suffix if dataset is "agent_sessions"
     asyncio.run(config.persist_session_cache_to_graph("agent_sessions", "session1", user))
-    
+
     mock_ensure.assert_called_with("agent_sessions", user)
     kwargs = mock_remember.call_args[1]
     assert kwargs["dataset_name"] == "agent_sessions"
@@ -89,14 +90,14 @@ def test_companion_dataset_name_resolution(mock_remember, mock_gsm, mock_load, m
 @patch("urllib.request.urlopen")
 def test_cloud_mode_remember_routes_to_companion(mock_urlopen, mock_post):
     os.environ["COGNEE_SESSION_COMPANION_DATASET"] = "true"
-    
+
     # Setup mocks
     mock_response = MagicMock()
     mock_response.status = 200
     mock_urlopen.return_value.__enter__.return_value = mock_response
-    
+
     mock_post.return_value = {"ok": True}
-    
+
     # Needs to bypass other checks in the function
     with patch("_plugin_common._local_api_url", return_value="http://local"), \
          patch("_plugin_common._backend_reachable", return_value=True), \
@@ -104,15 +105,15 @@ def test_cloud_mode_remember_routes_to_companion(mock_urlopen, mock_post):
          patch("_plugin_common._format_cached_bridge_document", return_value=("qa_doc", "trace_doc")), \
          patch("_plugin_common._bridge_file", return_value="bridge.json"), \
          patch("_plugin_common._load_json_file", return_value={}):
-         
+
         plugin_common.persist_session_cache_to_graph_via_http("my_dataset", "session1")
-    
+
     # Assert
     mock_urlopen.assert_called_once()
     req = mock_urlopen.call_args[0][0]
     assert req.full_url == "http://local/api/v1/datasets"
     assert json.loads(req.data.decode("utf-8")) == {"name": "my_dataset-agent_sessions"}
-    
+
     # Check _post_remember_document was called with the companion dataset
     mock_post.assert_any_call("http://local", "key", "my_dataset-agent_sessions", "qa_doc", "user_sessions_from_cache", 600.0)
 
@@ -121,14 +122,14 @@ def test_cloud_mode_remember_routes_to_companion(mock_urlopen, mock_post):
 @patch("urllib.request.urlopen")
 def test_companion_provisioning_fallback(mock_urlopen, mock_post):
     os.environ["COGNEE_SESSION_COMPANION_DATASET"] = "true"
-    
+
     # Setup mocks to simulate provisioning failure
     mock_response = MagicMock()
     mock_response.status = 500
     mock_urlopen.return_value.__enter__.return_value = mock_response
-    
+
     mock_post.return_value = {"ok": True}
-    
+
     # Needs to bypass other checks in the function
     with patch("_plugin_common._local_api_url", return_value="http://local"), \
          patch("_plugin_common._backend_reachable", return_value=True), \
@@ -137,12 +138,12 @@ def test_companion_provisioning_fallback(mock_urlopen, mock_post):
          patch("_plugin_common._bridge_file", return_value="bridge.json"), \
          patch("_plugin_common._load_json_file", return_value={}), \
          patch("_plugin_common.hook_log") as mock_log:
-         
+
         plugin_common.persist_session_cache_to_graph_via_http("my_dataset", "session1")
-    
+
     # Assert
     mock_log.assert_any_call("companion_provisioning_failed", {"error": "HTTP 500"})
-    
+
     # Check fallback to primary dataset
     mock_post.assert_any_call("http://local", "key", "my_dataset", "qa_doc", "user_sessions_from_cache", 600.0)
 
@@ -157,12 +158,12 @@ class MockResponse:
 
 def test_recall_queries_both_datasets():
     os.environ["COGNEE_SESSION_COMPANION_DATASET"] = "true"
-    
+
     mock_opener = MagicMock()
     mock_opener.return_value = MockResponse()
-    
+
     recall_http.do_recall("http://local", "key", "test", "session1", "auto", 5, "my_dataset", opener=mock_opener)
-    
+
     # Assert
     mock_opener.assert_called_once()
     req = mock_opener.call_args[0][0]

@@ -1260,9 +1260,9 @@ def persist_session_cache_to_graph_via_http(
     if companion_enabled and dataset and dataset != "agent_sessions":
         write_dataset = f"{dataset}-agent_sessions"
         try:
-            import urllib.request
-            import urllib.parse
             import json
+            import urllib.parse
+            import urllib.request
             req = urllib.request.Request(
                 f"{base_url.rstrip('/')}/api/v1/datasets",
                 data=json.dumps({"name": write_dataset}).encode("utf-8"),
