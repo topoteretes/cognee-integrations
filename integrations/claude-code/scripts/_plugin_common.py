@@ -1422,15 +1422,18 @@ def persist_session_cache_to_graph_via_http(
             if time.monotonic() - overall_start >= poll_deadline:
                 hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
                 break
+            post_start = time.monotonic()   
             submitted = _post_remember_document(
                 base_url, api_key, dataset, document, node_set, submit_timeout
             )
+            post_elapsed_ms = round((time.monotonic() - post_start) * 1000, 2)
+
             if not submitted.get("ok"):
                 # Skip this document (digest stays unmarked → retried later) but keep
                 # syncing the others; one bad/transient document must not abort the sync.
                 hook_log(
                     "http_bridge_post_failed",
-                    {"dataset": dataset, "kind": kind, "status": submitted.get("status")},
+                    {"dataset": dataset, "kind": kind, "status": submitted.get("status"), "elapsed_ms" : post_elapsed_ms},
                 )
                 continue
             dataset_id = submitted.get("dataset_id") or ""
@@ -1438,13 +1441,13 @@ def persist_session_cache_to_graph_via_http(
                 if submitted.get("parse_error"):
                     # 2xx but an unparseable body (e.g. a proxy/nginx error page): we
                     # can't trust the write landed, so leave the digest unmarked to retry.
-                    hook_log("http_bridge_parse_error", {"dataset": dataset, "kind": kind})
+                    hook_log("http_bridge_parse_error", {"dataset": dataset, "kind": kind , "elapsed_ms" : post_elapsed_ms})
                     continue
                 # Valid response with no handle to poll. Mark written so we don't
                 # resubmit and duplicate the cognify on every future sync.
                 state[state_key] = digest
                 wrote = True
-                hook_log("http_bridge_no_dataset_id", {"dataset": dataset, "kind": kind})
+                hook_log("http_bridge_no_dataset_id", {"dataset": dataset, "kind": kind , "elapsed_ms" : post_elapsed_ms})
                 continue
             remaining = poll_deadline - (time.monotonic() - overall_start)
             if remaining <= 0:
