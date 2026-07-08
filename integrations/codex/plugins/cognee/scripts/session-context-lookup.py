@@ -20,6 +20,7 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    embedding_dimension_report,
     get_session_key,
     hook_log,
     load_resolved,
@@ -33,6 +34,7 @@ from _plugin_common import (
     resolve_user,
     server_health_ok,
     server_ready_hint,
+    service_url_is_local,
     set_session_key,
 )
 from cognee_statusline_render import render_status_for_host
@@ -358,9 +360,29 @@ async def _run(prompt: str) -> dict | None:
         hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
+        # Zero results can mean a genuine miss OR that the embedding model changed
+        # since indexing (stored vs query vectors differ in size, so nothing can
+        # match). Only the local store is introspectable here; surface a one-line
+        # actionable error when a mismatch is positively confirmed, else fall back
+        # to the normal "no matches" line.
+        dim_status, dim_message = "no_data", None
+        if service_url_is_local(service_url):
+            try:
+                dim_status, dim_message = await asyncio.wait_for(
+                    embedding_dimension_report(), timeout=2.0
+                )
+            except Exception as exc:
+                hook_log("dim_check_error", {"error": str(exc)[:200]})
+        if dim_message and dim_status in ("mismatch", "unverified"):
+            full_context = f"{header}\n\n{dim_message}"
+            hook_log(
+                "context_lookup_dim_mismatch", {"status": dim_status, "message": dim_message}
+            )
+            notify(dim_message)
+        else:
+            full_context = f"{header}\n\n(no memory matches for this prompt)"
+            hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+            notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.
