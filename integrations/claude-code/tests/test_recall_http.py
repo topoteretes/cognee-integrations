@@ -115,17 +115,19 @@ def test_malformed_json_is_error_not_unreachable():
     assert out != rh.UNREACHABLE
 
 
-def test_no_cloud_key_sent_to_localhost():
+def test_key_attached_to_localhost_and_remote():
+    # Issue #106: the bundled local server requires X-Api-Key (401 without it), so
+    # the key must be attached for localhost too — not just remote/cloud targets.
     captured = {}
 
     def _capture(req, timeout=None):
         captured["xapikey"] = req.get_header("X-api-key")  # urllib title-cases header names
         return _Resp("[]")
 
-    # localhost target → cloud key must NOT be attached
-    rh.do_recall("http://localhost:8011", "cloud-key", "q", "", '["graph"]', "5", opener=_capture)
-    assert captured["xapikey"] is None
-    # remote target → key IS attached
+    # localhost target → key IS attached (previously stripped, which broke local auth)
+    rh.do_recall("http://localhost:8011", "local-key", "q", "", '["graph"]', "5", opener=_capture)
+    assert captured["xapikey"] == "local-key"
+    # remote target → key IS attached (unchanged)
     rh.do_recall(
         "https://tenant.cognee.ai", "cloud-key", "q", "", '["graph"]', "5", opener=_capture
     )

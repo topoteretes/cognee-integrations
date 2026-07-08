@@ -138,10 +138,10 @@ def do_recall(
     if context_profile:
         body["context_profile"] = context_profile
     headers = {"Content-Type": "application/json"}
-    # COGNEE_API_KEY is a *cloud* credential; the local single-user server needs no
-    # auth and ignores it. Only attach it for a remote/cloud target, so we don't send
-    # a meaningless (and confusing) cloud key to localhost.
-    if api_key and not _is_local(service_url):
+    # Attach the API key whenever we have one. The bundled local server *requires*
+    # X-Api-Key (returns 401 without it); a server that needs no auth ignores the
+    # extra header. Previously stripped for loopback, which broke local writes (#106).
+    if api_key:
         headers["X-Api-Key"] = api_key
 
     req = urllib.request.Request(
