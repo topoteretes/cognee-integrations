@@ -374,8 +374,7 @@ async def _run(prompt: str) -> dict | None:
         hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
         notify(f"no recall matches; saves last turn {saves_last_turn}")
 
-    # Audit log: persist full recall details per turn. The hook output stays a
-    # short summary because Codex renders additionalContext in the terminal.
+    # Audit log: persist full recall details per turn for debugging.
     try:
         from datetime import datetime as _dt
         from datetime import timezone as _tz
@@ -399,10 +398,16 @@ async def _run(prompt: str) -> dict | None:
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 
+    # additionalContext is the MODEL injection channel and must carry the full
+    # recalled content — trimming it to the status line would silently disable
+    # memory for the model. systemMessage carries the short status for the
+    # terminal (mirrors the claude-code integration); hosts that render
+    # additionalContext directly will still show the full block.
     output = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": full_context,
+            "systemMessage": header,
         }
     }
     return output
