@@ -205,8 +205,12 @@ Config precedence:
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `codex` | Prefix for auto-generated session IDs |
+| `agent_name` | `COGNEE_AGENT_NAME` | `codex-agent` | Agent display name |
+| `backend` | `COGNEE_CODEX_BACKEND` | `auto` | Backend routing override |
 | `base_url` | `COGNEE_BASE_URL` | unset | Set to enable managed endpoint mode |
 | `api_key` | `COGNEE_API_KEY` | unset | API key; auto-minted if absent in local mode |
+| `user_email` | `COGNEE_USER_EMAIL` | `default_user@example.com` | Local bootstrap user email |
+| `user_password` | `COGNEE_USER_PASSWORD` | `default_password` | Local bootstrap user password |
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |
 | local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
