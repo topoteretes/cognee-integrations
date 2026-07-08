@@ -186,6 +186,21 @@ The node depends on `n8n-workflow` at runtime (peer dependency). It should work 
 - [Cognee Cloud docs](https://docs.cognee.ai/how-to-guides/cognee-cloud)
 - [Package homepage](https://github.com/topoteretes/cognee-n8n)
 
+## Testing
+
+An **opt-in live smoke test** (`__tests__/integration-smoke.test.ts`) exercises the
+node's core contract end to end — `add_text → cognify → search` — and asserts a
+remembered token comes back. Because the node targets the Cognee **Cloud** REST API
+(not a local server), point it at a real endpoint via env. It is **skipped by
+default** (so CI stays green), and only runs when opted in:
+
+```bash
+COGNEE_RUN_INTEGRATION=1 \
+COGNEE_BASE_URL=https://tenant-xxx.aws.cognee.ai \
+COGNEE_API_KEY=ck_... \
+npm test
+```
+
 ## Version history
 
 - **0.5.0**: Add the **Skill** resource (self-improving skill loop) targeting the `/api/v1` API: Ingest Skill, Review Skill (agentic), Propose Improvement, Apply Improvement, Get Skill, Get Proposal. Existing Add/Cognify/Search/Delete operations are unchanged.
