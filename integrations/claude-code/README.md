@@ -9,14 +9,24 @@ The integration:
 
 ## Install
 
-Install from the Claude Code marketplace. You can do this interactively by typing slash commands directly in the Claude Code chat:
+Install from the Claude Code marketplace. Run these commands inside Claude Code:
 
-```
+```claude
 /plugin marketplace add topoteretes/cognee-integrations
 /plugin install cognee-memory@cognee
 ```
 
-Then set environment variables for your runtime mode.
+Then close and restart Claude Code (the plugin activates on the next launch).
+
+> **Tip:** For a first-time install, make sure no existing `~/.cognee-plugin/` directory interferes — the plugin bootstraps itself on first launch.
+
+Set environment variables **before** launching Claude Code (or in the shell that launches it):
+
+**Local mode** (default, no `COGNEE_BASE_URL`) — the plugin bootstraps a local Cognee API at `http://localhost:8011`. Only `LLM_API_KEY` is required:
+
+```bash
+export LLM_API_KEY="sk-..."
+```
 
 **Cognee Cloud or a remote server** — set both:
 
@@ -25,13 +35,7 @@ export COGNEE_BASE_URL="https://your-instance.cognee.ai"
 export COGNEE_API_KEY="ck_..."
 ```
 
-**Local mode** (default when `COGNEE_BASE_URL` is not set) — the plugin bootstraps a local Cognee API at `http://localhost:8011`. Only `LLM_API_KEY` is required; `COGNEE_API_KEY` is auto-minted if absent:
-
-```bash
-export LLM_API_KEY="sk-..."
-```
-
-You can also set config in `~/.cognee-plugin/claude-code/config.json`:
+You can also persist config in `~/.cognee-plugin/claude-code/config.json`:
 
 ```json
 {
@@ -40,7 +44,7 @@ You can also set config in `~/.cognee-plugin/claude-code/config.json`:
 }
 ```
 
-On startup you should see a "Cognee Memory Connected" system message.
+On startup you should see a **"Cognee Memory Connected"** system message and the status line will show `cognee: agent_sessions · local · v0.2.0`.
 
 ## Auth
 
@@ -229,20 +233,37 @@ Shared state (used by both Claude Code and Codex plugins):
 
 ## Update or remove
 
-Reinstall the plugin to pick up marketplace updates (run inside Claude Code chat):
+### Quick update (reinstall)
+Run inside Claude Code:
 
-```
+```claude
 /plugin uninstall cognee-memory@cognee
 /plugin install cognee-memory@cognee
 ```
 
-To also refresh the marketplace source:
+Restart Claude Code to activate the updated plugin.
 
-```
+### Full refresh (marketplace source + plugin)
+If the quick update doesn't pick up the latest version (e.g. after a marketplace-source update):
+
+```claude
 /plugin uninstall cognee-memory@cognee
 /plugin marketplace remove topoteretes/cognee-integrations
 /plugin marketplace add topoteretes/cognee-integrations
 /plugin install cognee-memory@cognee
+```
+
+### One-command install smoke test
+Run the smoke script from this repo to verify the marketplace JSON and plugin manifest are internally consistent:
+
+```bash
+python3 scripts/check_version_consistency.py
+```
+
+### Uninstall
+```claude
+/plugin uninstall cognee-memory@cognee
+/plugin marketplace remove topoteretes/cognee-integrations
 ```
 
 There is no automatic update mechanism — reinstall is the only way to pull in new plugin versions.
