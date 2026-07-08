@@ -640,6 +640,9 @@ class CogneeMemoryProvider(MemoryProvider):
     ) -> list[Any]:
         import cognee
 
+        if not self._remote_mode:
+            await _check_embedding_dimensions()
+
         kwargs: dict[str, Any] = {
             "top_k": top_k,
             "auto_route": self._auto_route,
@@ -855,3 +858,145 @@ def _prompt_secret(label: str, *, keep: bool) -> str:
         return input(f"  {label}{suffix}: ").strip()
     except (EOFError, KeyboardInterrupt):
         return ""
+
+
+async def _check_embedding_dimensions() -> None:
+    """Check for dimension mismatch between the query embedder and stored collections."""
+    try:
+        from cognee.infrastructure.databases.vector.get_vector_engine import get_vector_engine
+        from cognee.infrastructure.databases.vector.embeddings.get_embedding_engine import get_embedding_engine
+
+        vector_engine = get_vector_engine()
+        embedding_engine = get_embedding_engine()
+
+        query_dim = embedding_engine.get_vector_size()
+        query_model = getattr(embedding_engine, "model", None)
+        if not query_model:
+            try:
+                from cognee.infrastructure.databases.vector.embeddings.config import get_embedding_context_config
+                query_model = get_embedding_context_config().embedding_model
+            except Exception:
+                pass
+        if not query_model:
+            query_model = "unknown-model"
+        if "/" in query_model:
+            query_model = query_model.split("/")[-1]
+
+        collection_names = []
+        if hasattr(vector_engine, "get_connection"):
+            try:
+                conn = await vector_engine.get_connection()
+                collection_names = await conn.table_names()
+            except Exception:
+                pass
+        elif hasattr(vector_engine, "get_table_names"):
+            try:
+                collection_names = await vector_engine.get_table_names()
+            except Exception:
+                pass
+
+        for col_name in collection_names:
+            try:
+                collection = None
+                if hasattr(vector_engine, "get_collection"):
+                    collection = await vector_engine.get_collection(col_name)
+                elif hasattr(vector_engine, "get_table"):
+                    collection = await vector_engine.get_table(col_name)
+
+                if collection is not None:
+                    stored_dim = await _get_stored_dimension_from_obj(collection)
+                    if stored_dim is not None and query_dim != stored_dim:
+                        stored_model = _resolve_model_from_dimension_val(stored_dim)
+                        raise ValueError(
+                            f"Embedding-dimension mismatch: stored dim {stored_dim} ({stored_model}) "
+                            f"!= query dim {query_dim} ({query_model})"
+                        )
+            except ValueError:
+                raise
+            except Exception:
+                pass
+    except ValueError:
+        raise
+    except Exception:
+        pass
+
+
+async def _get_stored_dimension_from_obj(collection) -> Optional[int]:
+    """Resiliently extract stored dimension from collection object."""
+    # 1. Try to read from Arrow schema (LanceDB)
+    if hasattr(collection, "schema"):
+        try:
+            arrow_schema = collection.schema
+            vector_field = arrow_schema.field("vector")
+            dim = getattr(vector_field.type, "list_size", None)
+            if dim is not None:
+                return int(dim)
+        except Exception:
+            pass
+
+    # 2. Try SQLAlchemy column definition (PGVector)
+    if hasattr(collection, "c") and hasattr(collection.c, "vector"):
+        try:
+            dim = getattr(collection.c.vector.type, "dim", None)
+            if dim is not None:
+                return int(dim)
+        except Exception:
+            pass
+
+    # 3. Try common attributes (Qdrant / Milvus / Custom)
+    for attr in ("vector_size", "dim", "dimension", "size"):
+        if hasattr(collection, attr):
+            try:
+                val = getattr(collection, attr)
+                if isinstance(val, int):
+                    return val
+            except Exception:
+                pass
+
+    # 4. Try Qdrant config structure
+    try:
+        config = getattr(collection, "config", None)
+        if config:
+            params = getattr(config, "params", None)
+            if params:
+                vectors_config = getattr(params, "vectors", None)
+                if vectors_config and hasattr(vectors_config, "size"):
+                    return int(vectors_config.size)
+    except Exception:
+        pass
+
+    return None
+
+
+def _resolve_model_from_dimension_val(dimension: int) -> str:
+    """Best-effort reverse lookup of embedding model name from its dimension."""
+    common_dims = {
+        3072: "text-embedding-3-large",
+        1536: "text-embedding-3-small",
+        384: "bge-small-en-v1.5",
+        768: "nomic-embed-text",
+        1024: "bge-large-en-v1.5",
+    }
+    if dimension in common_dims:
+        return common_dims[dimension]
+
+    try:
+        from fastembed import TextEmbedding
+        for entry in TextEmbedding.list_supported_models():
+            dim = entry.get("dim") or entry.get("embed_dim")
+            if dim and int(dim) == dimension:
+                model = entry.get("model", "")
+                return model.split("/")[-1] if "/" in model else model
+    except Exception:
+        pass
+
+    try:
+        import litellm
+        for model_name, info in litellm.model_cost.items():
+            if info and info.get("output_vector_size") == dimension:
+                return model_name.split("/")[-1] if "/" in model_name else model_name
+    except Exception:
+        pass
+
+    return "unknown-model"
+
