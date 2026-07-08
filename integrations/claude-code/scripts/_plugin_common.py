@@ -1465,7 +1465,7 @@ def persist_session_cache_to_graph_via_http(
                 wrote = True
             hook_log(
                 "http_bridge_poll",
-                {"dataset": dataset, "kind": kind, "outcome": outcome, "dataset_id": dataset_id},
+                {"dataset": dataset, "kind": kind, "outcome": outcome, "dataset_id": dataset_id, "elapsed_ms": round((time.monotonic() - overall_start) * 1000, 1)},
             )
         if isinstance(bridge_cache, dict):
             bridge_cache["_state"] = state
