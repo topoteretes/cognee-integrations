@@ -3,10 +3,12 @@
 
 Invoked by Claude Code's ``statusLine`` (via ``cognee-statusline.sh``), which
 pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
-only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
-``_plugin_common`` import.
+only environment variables, ``~/.cognee-plugin/config.json``, and the plugin
+manifest under ``CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json`` — no network
+calls, no ``_plugin_common`` import.
 
-Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+Output: ``cognee: <dataset-name> · local · v0.3.0`` or
+``cognee: <dataset-name> · cloud · v0.3.0``
 """
 
 import json
@@ -73,12 +75,41 @@ def _health_prefix() -> str:
     return ""
 
 
+def _plugin_version() -> str:
+    """Read the plugin version from CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json.
+
+    Returns the version string (e.g. "0.3.0") or empty string if the manifest
+    is missing, unreadable, malformed, or has no version field.
+    """
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if not root:
+        return ""
+    try:
+        manifest = Path(root, ".claude-plugin", "plugin.json")
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            v = str(data.get("version") or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return ""
+
+
+def _version_suffix() -> str:
+    """Return ' · v<version>' if a version is available, else ''."""
+    version = _plugin_version()
+    return f" · v{version}" if version else ""
+
+
 def main() -> None:
     try:
         json.load(sys.stdin)  # consume stdin as required by Claude Code
     except Exception:
         pass
-    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
+    sys.stdout.write(
+        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_version_suffix()}"
+    )
 
 
 if __name__ == "__main__":
