@@ -61,10 +61,10 @@ def test_save_and_load_config(tmp_path, monkeypatch):
     assert config["auto_route"] is False
 
 
-def test_empty_service_url_clears_remote_mode(tmp_path, monkeypatch):
+def test_env_service_url_overrides_empty_config_file(tmp_path, monkeypatch):
     from cognee_integration_hermes.config import load_config, save_config
 
     monkeypatch.setenv("COGNEE_SERVICE_URL", "https://remote.example")
     save_config({"service_url": ""}, tmp_path)
 
-    assert load_config(tmp_path)["service_url"] == ""
+    assert load_config(tmp_path)["service_url"] == "https://remote.example"

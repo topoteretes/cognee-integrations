@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-aider"
+version = "0.1.0"
+description = "Cognee memory tools for Aider, the terminal-native AI coding assistant."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Cognee team"}
+]
+dependencies = [
+    "cognee>=1.0.0,<=1.1.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/aider"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[project.scripts]
+cognee-aider = "cognee_integration_aider.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_aider*"]
+exclude = ["examples*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.14.6",
+]

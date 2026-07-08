@@ -282,11 +282,21 @@ Config precedence:
 | `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall |
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
-| `session_prefix` | `COGNEE_SESSION_PREFIX` | `cc` | Prefix for auto-generated session IDs |
+| `session_prefix` | `COGNEE_SESSION_PREFIX` | `claude` | Prefix for auto-generated session IDs |
+| `agent_name` | `COGNEE_AGENT_NAME` | `claude-code-agent` | Agent display name |
+| `backend` | `COGNEE_CLAUDE_BACKEND`, `COGNEE_CODEX_BACKEND` | `auto` | Backend routing override |
 | `base_url` | `COGNEE_BASE_URL` | unset | Set to enable managed endpoint mode |
 | `api_key` | `COGNEE_API_KEY` | unset | API key; auto-minted if absent in local mode |
+| `user_email` | `COGNEE_USER_EMAIL` | `default_user@example.com` | Local bootstrap user email |
+| `user_password` | `COGNEE_USER_PASSWORD` | `default_password` | Local bootstrap user password |
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |
 | local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
+| `prefer_cognee_memory` | `COGNEE_PREFER_MEMORY` | `true` | Inject SessionStart steer asserting Cognee as preferred memory |
+| `cognify_poll_interval` | `COGNEE_COGNIFY_POLL_INTERVAL` | `3.0` | Seconds between graph status polls |
+| `bridge_poll_deadline` | `COGNEE_BRIDGE_POLL_DEADLINE` | `600.0` | Overall wait for session-to-graph bridge completion |
+| `bridge_submit_timeout` | `COGNEE_BRIDGE_SUBMIT_TIMEOUT` | `30.0` | Background bridge POST timeout |
+| `remember_wait_seconds` | `COGNEE_REMEMBER_WAIT_SECONDS` | `8.0` | Bounded wait after explicit remember |
+| `status_request_timeout` | `COGNEE_STATUS_REQUEST_TIMEOUT` | `10.0` | Per-poll status request timeout |
 | demo auto-clear | `COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE` | disabled | Clear transcript on Stop after capture |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |

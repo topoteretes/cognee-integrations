@@ -49,6 +49,7 @@ Install these from their public registries — you do **not** need to clone this
 | Google ADK | `cognee-integration-google-adk` | `pip install cognee-integration-google-adk` |
 | Claude Agent SDK | `cognee-integration-claude` | `pip install cognee-integration-claude` |
 | Hermes Agent | `cognee-integration-hermes-agent` | `pip install cognee-integration-hermes-agent` |
+| Aider | `cognee-integration-aider` | `pip install cognee-integration-aider` |
 | OpenClaw | `@cognee/cognee-openclaw` | `npm install @cognee/cognee-openclaw` |
 | n8n | `n8n-nodes-cognee` | install via n8n community nodes |
 | Dify (Cloud) | `cognee` | install from the Dify marketplace |
@@ -135,6 +136,7 @@ The tools come in two styles depending on the integration's version:
 | CrewAI | `cognee-integration-crewai` | `from … import add_tool, search_tool` | `add_tool`, `search_tool` |
 | Google ADK | `cognee-integration-google-adk` | `from … import add_tool, search_tool` | `add_tool`, `search_tool` |
 | LangGraph | `cognee-integration-langgraph` | `get_sessionized_cognee_tools(user_id)` | `add_tool`, `search_tool` |
+| Aider | `cognee-integration-aider` | `cognee-aider` or `from … import cognee_tool_specs` | `cognee_remember`, `cognee_search` |
 
 **`cognee_tools()` style** (cognee v1.0 — Strands, Claude Agent SDK). Writes go to the
 permanent graph; pass `session_id=...` to use the session cache instead:
@@ -179,6 +181,7 @@ integrations/
   openclaw/           -> @openclaw/memory-cognee (npm)
   claude-code/        -> Cognee plugin for Claude Code
   codex/              -> Cognee plugin marketplace for Codex
+  aider/              -> Cognee memory tools for Aider
 ```
 
 ## Adding a New Integration

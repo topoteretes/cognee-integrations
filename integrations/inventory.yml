@@ -72,6 +72,17 @@ integrations:
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: "Standalone Hermes memory provider plugin; replaces closed in-tree PR path"
 
+  - slug: aider
+    name: "Cognee Integration for Aider"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-aider"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Aider terminal memory tools for remember, search, and project-scoped sessions"
+
   - slug: dify
     name: "Cognee Tool Plugin for Dify"
     owner: cognee
