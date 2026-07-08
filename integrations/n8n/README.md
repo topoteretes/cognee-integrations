@@ -48,6 +48,20 @@ Create credentials of type `Cognee API` in n8n. The node uses these values to au
 - **Base URL**: The base URL of your Cognee Cloud tenant, e.g. `https://tenant-xxx.aws.cognee.ai`. Do not include a trailing `/api` — the node appends it automatically.
 - **API Key**: Your Cognee API key, sent via the `X-Api-Key` header.
 
+## Runtime modes
+
+Cognee integrations use the same runtime model:
+
+| Mode | When to use it | How it talks to Cognee |
+| --- | --- | --- |
+| **local-server** (default) | You want local data with safe concurrent access | Starts or connects to a local Cognee server, then uses HTTP as a thin client |
+| **cloud** | `COGNEE_BASE_URL` points to a managed or remote Cognee service | Uses HTTP as a thin client with `COGNEE_API_KEY` |
+| **embedded** | You explicitly choose in-process Cognee for a single process or offline run | Runs Cognee inside the integration process |
+
+**Why local-server is the safe default.** Cognee local stores, including SQLite, Kuzu, Ladybug, and LanceDB, are single-writer stores. If hooks, multiple terminals, or another integration use the same data root in embedded mode, they can hit `database is locked` errors or corrupt local state. A local Cognee server avoids that by owning the stores and serializing access. Each integration talks to it over HTTP.
+
+**No silent fallbacks.** A configured cloud endpoint should fail clearly if it is unreachable. A local server should fail clearly if it cannot start. Falling back to another mode can hide configuration errors or write data to the wrong store. Use embedded mode only when you accept the single-process tradeoff.
+
 ## Operations
 
 The node exposes five resources. Each operation maps to a Cognee API endpoint.

@@ -30,16 +30,16 @@ codex plugin marketplace add topoteretes/cognee-integrations --ref main
 codex plugin add cognee@cognee
 ```
 
-Then set environment variables for your runtime mode.
+Then set environment variables for your runtime mode. See [Runtime modes](#runtime-modes) for the shared mode model and safety notes.
 
-**Cognee Cloud or a remote server** — set both:
+**Cloud or remote server:**
 
 ```bash
 export COGNEE_BASE_URL="https://your-instance.cognee.ai"
 export COGNEE_API_KEY="ck_..."
 ```
 
-**Local mode** (default when `COGNEE_BASE_URL` is not set) — the plugin bootstraps a local Cognee API at `http://localhost:8011`. Only `LLM_API_KEY` is required; `COGNEE_API_KEY` is auto-minted if absent:
+**Local server:**
 
 ```bash
 export LLM_API_KEY="sk-..."
@@ -65,17 +65,19 @@ Key resolution order:
 2. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
 3. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
 
-## Mode selection rules
+## Runtime modes
 
-At startup (`SessionStart`):
-- `COGNEE_BASE_URL` set → `managed_endpoint`
-- otherwise → `integration_local` (local API bootstrap)
+Cognee integrations use the same runtime model:
 
-At hook runtime:
-- hooks resolve mode through runtime endpoint auth (env + `api_key.json`), not only config intent
-- `http` mode skips local SDK initialization
+| Mode | When to use it | How it talks to Cognee |
+| --- | --- | --- |
+| **local-server** (default) | You want local data with safe concurrent access | Starts or connects to a local Cognee server, then uses HTTP as a thin client |
+| **cloud** | `COGNEE_BASE_URL` points to a managed or remote Cognee service | Uses HTTP as a thin client with `COGNEE_API_KEY` |
+| **embedded** | You explicitly choose in-process Cognee for a single process or offline run | Runs Cognee inside the integration process |
 
-The hooks emit `mode_decision` logs with `mode`, `service_url`, `url_source`, `key_source`, `api_key_present`.
+**Why local-server is the safe default.** Cognee local stores, including SQLite, Kuzu, Ladybug, and LanceDB, are single-writer stores. If hooks, multiple terminals, or another integration use the same data root in embedded mode, they can hit `database is locked` errors or corrupt local state. A local Cognee server avoids that by owning the stores and serializing access. Each integration talks to it over HTTP.
+
+**No silent fallbacks.** A configured cloud endpoint should fail clearly if it is unreachable. A local server should fail clearly if it cannot start. Falling back to another mode can hide configuration errors or write data to the wrong store. Use embedded mode only when you accept the single-process tradeoff.
 
 ## Sessions
 
