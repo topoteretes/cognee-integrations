@@ -1404,6 +1404,35 @@ def persist_session_cache_to_graph_via_http(
     bridge_path = _bridge_file(session_id)
     bridge_cache = _load_json_file(bridge_path)
     state = bridge_cache.get("_state", {}) if isinstance(bridge_cache, dict) else {}
+    
+    companion_enabled = str(os.environ.get("COGNEE_SESSION_COMPANION_DATASET", "")).lower() in ("true", "1", "yes")
+    write_dataset = dataset
+    if companion_enabled and dataset and dataset != "agent_sessions":
+        write_dataset = f"{dataset}-agent_sessions"
+        try:
+            import urllib.request
+            import urllib.parse
+            import json
+            req = urllib.request.Request(
+                f"{base_url.rstrip('/')}/api/v1/datasets",
+                data=json.dumps({"name": write_dataset}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                if resp.status not in (200, 201):
+                    raise RuntimeError(f"HTTP {resp.status}")
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                # 409 Conflict means the dataset already exists, which is fine
+                pass
+            else:
+                hook_log("companion_provisioning_failed", {"error": str(e)[:200]})
+                write_dataset = dataset
+        except Exception as e:
+            hook_log("companion_provisioning_failed", {"error": str(e)[:200]})
+            write_dataset = dataset
+    
     wrote = False
     overall_start = time.monotonic()
     try:
@@ -1423,7 +1452,7 @@ def persist_session_cache_to_graph_via_http(
                 hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
                 break
             submitted = _post_remember_document(
-                base_url, api_key, dataset, document, node_set, submit_timeout
+                base_url, api_key, write_dataset, document, node_set, submit_timeout
             )
             if not submitted.get("ok"):
                 # Skip this document (digest stays unmarked → retried later) but keep

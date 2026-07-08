@@ -158,7 +158,14 @@ else
         if [ -n "$RESULT" ] && [ "$RESULT" != "[]" ]; then
             echo "$RESULT"
         else
-            cognee-cli recall "$QUERY" -d "$DATASET" -k "$TOP_K" -f json 2>/dev/null || true
+            RESULT=$(cognee-cli recall "$QUERY" -d "$DATASET" -k "$TOP_K" -f json 2>/dev/null || true)
+            if ( [ -z "$RESULT" ] || [ "$RESULT" = "[]" ] ) && [ -n "${COGNEE_SESSION_COMPANION_DATASET:-}" ] && [ "$DATASET" != "agent_sessions" ]; then
+                case "${COGNEE_SESSION_COMPANION_DATASET,,}" in
+                    true|1|yes) RESULT=$(cognee-cli recall "$QUERY" -d "${DATASET}-agent_sessions" -k "$TOP_K" -f json 2>/dev/null || true) ;;
+                esac
+            fi
+            echo "$RESULT"
         fi
     fi
 fi
+
