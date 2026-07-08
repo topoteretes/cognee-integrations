@@ -138,6 +138,24 @@ in the launching shell, if your Claude Code version supports it).
 |---|---|---|
 | `COGNEE_PREFER_MEMORY` | `true` | Inject SessionStart steer asserting Cognee as the preferred memory |
 
+## Cold-start warmup
+
+When using Cognee Cloud (or any scale-to-zero deployment), the first recall of a session
+may hit a cold tenant and time out before the server is ready. Setting `COGNEE_WARMUP=true`
+fires a single non-blocking `GET /health` ping immediately after the session URL is resolved
+at `SessionStart`. This warms the tenant in the background before the first real recall
+arrives, shaving cold-start latency off the first query.
+
+The warmup:
+- runs once per session, at `SessionStart`
+- never blocks or errors the session — it runs in a daemon thread and fails silently
+- is off by default (`COGNEE_WARMUP` unset or any value other than `true`)
+- is only useful for cloud/remote deployments; local mode has no cold-start problem
+
+```bash
+export COGNEE_WARMUP=true   # enable for cloud deployments
+```
+
 ## Session sync and watchers
 
 An idle watcher runs in the background for the lifetime of each launch. It polls activity every `COGNEE_IDLE_POLL` seconds and persists the session cache when the session has been quiet for `COGNEE_IDLE_THRESHOLD` seconds, then waits at least `COGNEE_IMPROVE_COOLDOWN` seconds before the next run.
@@ -288,6 +306,7 @@ Config precedence:
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |
 | local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
 | demo auto-clear | `COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE` | disabled | Clear transcript on Stop after capture |
+| warmup ping | `COGNEE_WARMUP` | `false` | Fire a non-blocking GET /health at session start to warm up a scale-to-zero cloud tenant before the first recall. Set to `true` to enable. |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
