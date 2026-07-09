@@ -3,7 +3,7 @@
 
 Invoked by Claude Code's ``statusLine`` (via ``cognee-statusline.sh``), which
 pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
-only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
+only env vars and ``~/.cognee-plugin/config.json`` - no network calls, no
 ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
@@ -20,6 +20,9 @@ _SHARED_ROOT = Path.home() / ".cognee-plugin"
 _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
+_PLUGIN_MANIFEST_PATH = (
+    Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "")) / ".claude-plugin" / "plugin.json"
+)
 _DEFAULT_DATASET = "agent_sessions"
 
 
@@ -64,12 +67,29 @@ def _health_prefix() -> str:
     return ""
 
 
+def _installed_version() -> str:
+    try:
+        raw = json.loads(_PLUGIN_MANIFEST_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return str(raw.get("version") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _version_suffix() -> str:
+    version = _installed_version()
+    return f" · v{version}" if version else ""
+
+
 def main() -> None:
     try:
         json.load(sys.stdin)  # consume stdin as required by Claude Code
     except Exception:
         pass
-    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
+    sys.stdout.write(
+        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_version_suffix()}"
+    )
 
 
 if __name__ == "__main__":
