@@ -1,0 +1,28 @@
+# The Claude Code integration is a *scripts-only* plugin (standalone, stdlib-only
+# scripts under scripts/), not an importable/installable package. This file exists
+# so the monorepo CI (.github/workflows/ci.yml) discovers claude-code as a Python
+# integration — the matrix is built from dirs that contain a pyproject.toml — and
+# runs `uv sync --locked --dev` + `uv run pytest tests/`.
+#
+# Deps are intentionally empty: the unit tests are stdlib-only, and the opt-in
+# integration smoke test skips unless cognee is installed AND COGNEE_RUN_INTEGRATION=1,
+# so we do NOT pull the heavy cognee stack into the default CI run.
+
+[project]
+name = "cognee-integration-claude-code"
+version = "0.0.0"
+description = "Cognee memory plugin for Claude Code (scripts-only plugin; project metadata exists to run the test suite in CI)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.14.6",
+]
+
+[tool.uv]
+# There is no package to build/install — treat this as a virtual project so
+# `uv sync` only provisions the dev tools (pytest/ruff) without a build step.
+package = false

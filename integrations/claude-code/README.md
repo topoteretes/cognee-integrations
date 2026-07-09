@@ -299,6 +299,28 @@ Config precedence:
 | local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
 | demo auto-clear | `COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE` | disabled | Clear transcript on Stop after capture |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
+| idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
+| idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
+
+## Testing
+
+Unit tests are stdlib-only and run in CI on every change:
+
+```bash
+uv sync --locked --dev
+uv run pytest tests/ -v
+```
+
+There is also an **opt-in end-to-end smoke test** (`tests/test_integration_smoke.py`)
+that boots a throwaway local Cognee server, remembers a tiny unique document, then
+recalls it and asserts the token comes back — the real `remember → cognify → recall`
+loop, not the mocked-HTTP unit tests. It needs cognee installed plus LLM creds for
+the cognify write, so it is **skipped by default** (which keeps CI green) and only
+runs when you opt in:
+
+```bash
+COGNEE_RUN_INTEGRATION=1 LLM_API_KEY=sk-... uv run pytest tests/test_integration_smoke.py -v
+```
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle improve fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `600` | Minimum seconds between idle improve runs |
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (0 disables) |
