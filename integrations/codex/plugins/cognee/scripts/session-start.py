@@ -1208,6 +1208,18 @@ async def _start(payload: dict | None = None) -> dict:
         file=sys.stderr,
     )
 
+    # Cloud cold-start warmup: fire a non-blocking GET /health when
+    # COGNEE_WARMUP is enabled so scale-to-zero tenants are warm
+    # before the first real request. Fails silently — never blocks
+    # the session or errors on timeout/unreachable.
+    if os.environ.get("COGNEE_WARMUP", "").strip().lower() in ("1", "true", "yes"):
+        import threading
+
+        warmup_url = _health_url(target_url)
+        threading.Thread(
+            target=_health_ok, args=(warmup_url, 2.0), daemon=True, name="cognee-warmup"
+        ).start()
+
     status_line = render_status_for_host(session_key)
     return {
         "hookSpecificOutput": {
