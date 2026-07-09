@@ -1482,6 +1482,7 @@ def persist_session_cache_to_graph_via_http(
             if time.monotonic() - overall_start >= poll_deadline:
                 hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
                 break
+            start_time = time.monotonic()
             submitted = _post_remember_document(
                 base_url, api_key, dataset, document, node_set, submit_timeout
             )
@@ -1517,6 +1518,7 @@ def persist_session_cache_to_graph_via_http(
                 interval_seconds=poll_interval,
                 request_timeout=status_timeout,
             )
+            elapsed_ms = ((time.monotonic() - start_time) * 1000)
             # Only mark written once the graph is confirmed queryable (completed) or we
             # genuinely cannot poll (older server). errored/timeout stay unmarked so the
             # detached retry (COGNEE_SYNC_RETRIES) re-submits.
@@ -1525,7 +1527,7 @@ def persist_session_cache_to_graph_via_http(
                 wrote = True
             hook_log(
                 "http_bridge_poll",
-                {"dataset": dataset, "kind": kind, "outcome": outcome, "dataset_id": dataset_id},
+                {"dataset": dataset, "kind": kind, "outcome": outcome, "dataset_id": dataset_id, "elapsed_ms": elapsed_ms},
             )
         if isinstance(bridge_cache, dict):
             bridge_cache["_state"] = state
