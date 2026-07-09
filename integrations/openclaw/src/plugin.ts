@@ -2,7 +2,9 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { readFileSync, existsSync } from "node:fs";
 import type { AgentSyncIndexes, CogneeSearchResult, MemoryScope, ScopedSyncIndexes, SyncIndex, SyncResult } from "./types.js";
 // SyncResult is used as the return type of the per-agent sync helpers below.
 import { MEMORY_SCOPES } from "./types.js";
@@ -49,6 +51,55 @@ type MemoryFlushPlanRegistrant = OpenClawPluginApi & {
 // same workspace. The in-closure autoSyncStarted flag inside register() can't
 // catch this because each register() call gets its own closure.
 const autoSyncedWorkspaces = new Set<string>();
+
+function getPluginVersion(): string {
+  try {
+    let dir = "";
+    if (typeof __dirname !== "undefined") {
+      dir = __dirname;
+    } else {
+      const metaUrl = new Function("return import.meta.url")();
+      const filename = fileURLToPath(metaUrl);
+      dir = dirname(filename);
+    }
+    let pkgPath = resolve(dir, "../package.json");
+    if (!existsSync(pkgPath)) {
+      pkgPath = resolve(dir, "../../package.json");
+    }
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return pkg.version || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function checkLatestVersion(): Promise<string | null> {
+  try {
+    const res = await fetch("https://registry.npmjs.org/@cognee/cognee-openclaw/latest", {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { version?: string };
+      return data.version ?? null;
+    }
+  } catch {
+    // Ignore network errors/timeouts
+  }
+  return null;
+}
+
+function isNewerVersion(current: string, latest: string): boolean {
+  const parse = (v: string) => v.split(".").map(Number);
+  const cParts = parse(current);
+  const lParts = parse(latest);
+  for (let i = 0; i < Math.max(cParts.length, lParts.length); i++) {
+    const c = cParts[i] ?? 0;
+    const l = lParts[i] ?? 0;
+    if (l > c) return true;
+    if (c > l) return false;
+  }
+  return false;
+}
 
 const memoryCogneePlugin = {
   id: "cognee-openclaw",
@@ -533,6 +584,14 @@ const memoryCogneePlugin = {
         .command("status")
         .description("Show Cognee sync state")
         .action(async () => {
+          const currentVersion = getPluginVersion();
+          console.log(`Plugin Version: ${currentVersion}`);
+          const latestVersion = await checkLatestVersion();
+          if (latestVersion && isNewerVersion(currentVersion, latestVersion)) {
+            console.log(`Update available: ${latestVersion} (current: ${currentVersion})`);
+            console.log(`Run 'npm install -g @cognee/cognee-openclaw' to update.`);
+          }
+
           await stateReady;
           const files = await collectMemoryFiles(cliWorkspaceDir);
 
