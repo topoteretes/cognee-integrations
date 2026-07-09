@@ -182,6 +182,31 @@ With this, agent `Will` writes to dataset `myorg-agent-will`, agent `Elizabeth` 
 
 > **Both settings are required.** `perAgentMemory: true` on its own does nothing — isolation only activates when an `agentDatasetPrefix` or `agentDatasetTemplate` is also set. Per-agent memory is never enabled automatically.
 
+## Modes
+
+The plugin connects to Cognee in one of two modes. It picks the mode
+from the `mode` config key (or `COGNEE_MODE` env var):
+
+| Mode | When it's used | How it talks to Cognee |
+| --- | --- | --- |
+| **local** (default) | `mode` unset or `"local"` | HTTP client to a local Cognee server (default `http://localhost:8000`); start one with `cognee-docker-compose.yaml` |
+| **cloud** | `mode: "cloud"` or `COGNEE_MODE=cloud` | HTTP client to your managed / Cognee Cloud instance |
+
+**Why local uses a separate server.** Cognee's local stores (SQLite, Kuzu/Ladybug,
+LanceDB) are single-writer. The Cognee server is the single owner that serializes
+all access, so the plugin just makes HTTP calls. This is the same design the
+Claude Code, Codex, and Hermes Agent plugins use.
+
+> **Embedded mode is not available** for this integration. OpenClaw plugins run as
+> TypeScript processes and always connect to Cognee over HTTP. For single-process /
+> offline use, see the Python-based integrations (Claude Code, Codex, Hermes Agent)
+> which support `COGNEE_EMBEDDED=true`.
+
+**No silent fallbacks.** The plugin does not switch modes behind your back. If
+`baseUrl` is unreachable, the operation fails rather than quietly falling back —
+silent fallback would mask a config error or cause data divergence between local
+and cloud instances.
+
 ### Cognee Cloud
 
 Cognee Cloud tenants (staging and production) serve the **same `/api/v1/*` API as a self-hosted server**, so connecting to the cloud is just the default configuration pointed at your tenant URL, with an API key:
