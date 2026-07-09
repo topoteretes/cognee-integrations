@@ -182,6 +182,31 @@ With this, agent `Will` writes to dataset `myorg-agent-will`, agent `Elizabeth` 
 
 > **Both settings are required.** `perAgentMemory: true` on its own does nothing — isolation only activates when an `agentDatasetPrefix` or `agentDatasetTemplate` is also set. Per-agent memory is never enabled automatically.
 
+## Modes
+
+The plugin connects to cognee in one of three modes. It picks the mode
+automatically from your config:
+
+| Mode | When it's used | How it talks to cognee |
+| --- | --- | --- |
+| **local-server** (default) | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
+| **remote** | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
+| **embedded** | `COGNEE_EMBEDDED=true` | runs cognee in-process |
+
+**Why local-server is the default.** cognee's local stores (SQLite, Kuzu/Ladybug,
+LanceDB) are single-writer. Driving them in-process from the agent's background
+threads — or from a second process sharing the same `data_root` — risks
+`database is locked` errors and corruption. A local cognee server is the single
+owner that serializes all access, so the agent just makes HTTP calls.
+**`embedded` is opt-in and is safe for single-process / offline use only.**
+
+**No silent fallbacks.** The plugin never downgrades modes behind your back. If
+`COGNEE_BASE_URL` is set but unreachable, or the local server fails to start,
+initialization raises rather than quietly switching to a different mode — silent
+fallback would either mask a config error (remote → local data divergence) or
+reintroduce the very DB-lock risk this design removes (local-server → embedded).
+To accept the single-process trade-off, set `COGNEE_EMBEDDED=true` explicitly.
+
 ### Cognee Cloud
 
 Cognee Cloud tenants (staging and production) serve the **same `/api/v1/*` API as a self-hosted server**, so connecting to the cloud is just the default configuration pointed at your tenant URL, with an API key:

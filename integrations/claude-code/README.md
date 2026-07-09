@@ -57,17 +57,30 @@ Key resolution order:
 2. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
 3. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
 
-## Mode selection rules
+## Modes
 
-At startup (`SessionStart`):
-- `COGNEE_BASE_URL` set → `managed_endpoint`, either local, or on Cognee Cloud (API key needed in cloud case)
-- otherwise → `integration_local` (local API bootstrap)
+The plugin connects to cognee in one of three modes. It picks the mode
+automatically from your config:
 
-At hook runtime:
-- hooks resolve mode through runtime endpoint auth (env + `api_key.json`), not only config intent
-- `http` mode skips local SDK initialization
+| Mode | When it's used | How it talks to cognee |
+| --- | --- | --- |
+| **local-server** (default) | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
+| **remote** | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
+| **embedded** | `COGNEE_EMBEDDED=true` | runs cognee in-process |
 
-The hooks emit `mode_decision` logs with `mode`, `service_url`, `url_source`, `key_source`, `api_key_present`.
+**Why local-server is the default.** cognee's local stores (SQLite, Kuzu/Ladybug,
+LanceDB) are single-writer. Driving them in-process from the agent's background
+threads — or from a second process sharing the same `data_root` — risks
+`database is locked` errors and corruption. A local cognee server is the single
+owner that serializes all access, so the agent just makes HTTP calls.
+**`embedded` is opt-in and is safe for single-process / offline use only.**
+
+**No silent fallbacks.** The plugin never downgrades modes behind your back. If
+`COGNEE_BASE_URL` is set but unreachable, or the local server fails to start,
+initialization raises rather than quietly switching to a different mode — silent
+fallback would either mask a config error (remote → local data divergence) or
+reintroduce the very DB-lock risk this design removes (local-server → embedded).
+To accept the single-process trade-off, set `COGNEE_EMBEDDED=true` explicitly.
 
 ## Sessions
 

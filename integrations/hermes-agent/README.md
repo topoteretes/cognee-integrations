@@ -50,7 +50,7 @@ secrets to `$HERMES_HOME/.env`.
 
 ### Modes
 
-The provider connects to cognee in one of three modes. It picks the mode
+The plugin connects to cognee in one of three modes. It picks the mode
 automatically from your config:
 
 | Mode | When it's used | How it talks to cognee |
@@ -61,13 +61,12 @@ automatically from your config:
 
 **Why local-server is the default.** cognee's local stores (SQLite, Kuzu/Ladybug,
 LanceDB) are single-writer. Driving them in-process from the agent's background
-threads — or from a second Hermes process sharing the same `data_root` — risks
+threads — or from a second process sharing the same `data_root` — risks
 `database is locked` errors and corruption. A local cognee server is the single
-owner that serializes all access, so the agent just makes HTTP calls. This is the
-same design the Claude Code and Codex plugins use. **`embedded` is opt-in and is
-safe for single-process / offline use only.**
+owner that serializes all access, so the agent just makes HTTP calls.
+**`embedded` is opt-in and is safe for single-process / offline use only.**
 
-**No silent fallbacks.** The provider never downgrades modes behind your back. If
+**No silent fallbacks.** The plugin never downgrades modes behind your back. If
 `COGNEE_BASE_URL` is set but unreachable, or the local server fails to start,
 initialization raises rather than quietly switching to a different mode — silent
 fallback would either mask a config error (remote → local data divergence) or
