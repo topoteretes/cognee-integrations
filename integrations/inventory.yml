@@ -34,7 +34,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "0.1.0"
+    current_version: "0.2.0"
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
@@ -148,7 +148,7 @@ integrations:
     registry: npm
     package_name: "n8n-nodes-cognee"
     cognee_dependency: http-api
-    current_version: "0.4.1"
+    current_version: "0.5.1"
     migration_status: done
     source_repo: https://github.com/topoteretes/cognee-n8n
     notes: "n8n community node – add data, cognify, search, delete. Published via .github/workflows/n8n-publish.yml on `n8n-v*.*.*` tags."
