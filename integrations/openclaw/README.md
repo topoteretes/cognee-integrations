@@ -451,3 +451,7 @@ After each build, restart the OpenClaw gateway to pick up the new code.
 ```bash
 npm test
 ```
+
+## Troubleshooting
+
+For a detailed walkthrough of common issues (cold-starts, dimension mismatches, environment issues, or empty recalls), please check the [Troubleshooting Guide](./TROUBLESHOOTING.md).
