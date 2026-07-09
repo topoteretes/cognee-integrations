@@ -88,6 +88,20 @@ def _safe_session_component(value: str) -> str:
     return safe.strip("._")[:120] or "session"
 
 
+def _sanitize_dataset_name(name: str, default: str) -> str:
+    """Apply the same character rules as _safe_session_component to a dataset name.
+
+    Keeps ASCII alphanumerics and ``-`` ``_`` ``.'``; replaces everything else
+    with ``_``; strips leading/trailing ``'.'`` and ``'_'``; caps at 120 chars.
+    Falls back to *default* when the result is empty (e.g. "###" or "___").
+    """
+    safe = "".join(
+        ch if (ch.isascii() and ch.isalnum()) or ch in ("-", "_", ".") else "_"
+        for ch in str(name or "")
+    )
+    return safe.strip("._")[:120] or default
+
+
 def _format_turn(user_content: str, assistant_content: str) -> str:
     return f"User: {user_content}\nAssistant: {assistant_content}"
 
@@ -282,7 +296,9 @@ class CogneeMemoryProvider(MemoryProvider):
         self._hermes_home = kwargs.get("hermes_home")
         self._config = load_config(self._hermes_home)
         self._session_id = session_id
-        self._dataset = str(self._config.get("dataset") or DEFAULT_DATASET)
+        self._dataset = _sanitize_dataset_name(
+            str(self._config.get("dataset") or ""), DEFAULT_DATASET
+        )
         self._top_k = int(self._config.get("top_k") or 5)
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
         self._improve_on_end = str_to_bool(self._config.get("improve_on_end"), True)
@@ -741,7 +757,7 @@ class CogneeMemoryProvider(MemoryProvider):
         content = str(args.get("content") or "").strip()
         if not content:
             return json.dumps({"error": "Missing required parameter: content"})
-        dataset = str(args.get("dataset") or self._dataset)
+        dataset = _sanitize_dataset_name(str(args.get("dataset") or ""), self._dataset)
 
         try:
             result = self._bridge.run(
@@ -756,7 +772,8 @@ class CogneeMemoryProvider(MemoryProvider):
             return json.dumps({"error": f"Cognee remember failed: {exc}"})
 
     def _handle_forget(self, args: dict[str, Any]) -> str:
-        dataset = args.get("dataset")
+        _raw_dataset = args.get("dataset")
+        dataset = _sanitize_dataset_name(str(_raw_dataset), self._dataset) if _raw_dataset else None
         everything = bool(args.get("everything", False))
         memory_only = bool(args.get("memory_only", False))
         if not dataset and not everything:

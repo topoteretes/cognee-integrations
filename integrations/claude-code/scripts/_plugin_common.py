@@ -106,6 +106,22 @@ def _sanitize_session_key(value: str) -> str:
     return "".join(safe).strip("._")[:120]
 
 
+def sanitize_dataset_name(name: str, default: str) -> str:
+    """Apply the same character rules as _sanitize_session_key to a dataset name.
+
+    Keeps ASCII alphanumerics and ``-`` ``_`` ``.'``; replaces everything else
+    with ``_``; strips leading/trailing ``'.'`` and ``'_'``; caps at 120 chars.
+    Falls back to *default* when the result is empty (e.g. "###" or "___").
+    """
+    safe = []
+    for ch in str(name or ""):
+        if (ch.isascii() and ch.isalnum()) or ch in ("-", "_", "."):
+            safe.append(ch)
+        else:
+            safe.append("_")
+    return "".join(safe).strip("._")[:120] or default
+
+
 def get_session_key() -> str:
     candidates = [
         os.environ.get("COGNEE_SESSION_KEY"),

@@ -169,8 +169,10 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
 
 
 def get_dataset(config: dict) -> str:
-    """Get the dataset name from config."""
-    return config.get("dataset", "agent_sessions")
+    """Get the sanitized dataset name from config."""
+    from _plugin_common import sanitize_dataset_name  # noqa: PLC0415
+
+    return sanitize_dataset_name(config.get("dataset") or "", "agent_sessions")
 
 
 def is_cloud_mode(config: dict) -> bool:
