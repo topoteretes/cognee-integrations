@@ -1114,17 +1114,66 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
     }
 
 
+# Namespaced keys Cognee adds to the user's global settings.json.
+#   _MANAGED: the exact ``command`` string Cognee last installed. Ownership is
+#             tracked explicitly (not guessed from the path) so a user's own
+#             script is never mistaken for ours, and so our own line can be
+#             self-healed to a new path across plugin upgrades.
+#   _BACKUP:  a user status line displaced by COGNEE_FORCE_STATUSLINE, restored
+#             when the override is later cleared.
+_STATUSLINE_MANAGED_KEY = "statusLineCogneeManaged"
+_STATUSLINE_BACKUP_KEY = "statusLineCogneeBackup"
+_STATUSLINE_SCRIPT = "cognee-statusline.sh"
+
+
+def _looks_like_cognee_install(command: object) -> bool:
+    """True if a status-line command path was installed by some Cognee plugin version.
+
+    Used only to recognise a *pre-marker* (legacy) install so it can be adopted
+    and self-healed. Requires both the script basename and the ``cognee-memory``
+    package directory in the path — a stable segment across plugin versions — so a
+    user's own script that merely shares the basename (but lives elsewhere) is
+    never mistaken for ours.
+    """
+    return (
+        isinstance(command, str)
+        and command.endswith("/" + _STATUSLINE_SCRIPT)
+        and "cognee-memory" in Path(command).parts
+    )
+
+
 def _ensure_statusline_configured() -> None:
-    """Write the statusLine entry to ~/.claude/settings.json if not already set.
+    """Install Cognee's statusLine in ~/.claude/settings.json without clobbering a user's own.
+
+    ``~/.claude/settings.json`` is global, shared Claude Code config, so the
+    ``statusLine`` key may already hold a status line the user wrote themselves
+    (path / branch / model / context, etc.). Seizing it unconditionally would
+    destroy that with no backup, and — since this runs on every SessionStart —
+    a restored custom status line would just be clobbered again.
+
+    Ownership is tracked explicitly via ``statusLineCogneeManaged`` (the command
+    Cognee last wrote); a pre-marker install is recognised as ours only when its
+    path is exactly the current one or clearly inside a Cognee plugin dir (see
+    ``_looks_like_cognee_install``). Policy (default):
+      * no/empty statusLine               -> install Cognee's;
+      * our own statusLine, stale path      -> self-heal to the current path;
+      * any other (user-owned) statusLine   -> preserve it, do nothing.
+
+    Override: ``COGNEE_FORCE_STATUSLINE`` (1/true/yes/on) forces Cognee's status
+    line, stashing any displaced user value under ``statusLineCogneeBackup``. The
+    override is reversible: clear the env var and the next SessionStart restores
+    the stashed value — but only from a slot Cognee still owns, so a status line
+    the user has since taken over or deliberately cleared is never resurrected.
+    Non-dict / unrecognised statusLine values are left untouched (user-owned).
 
     Claude Code hot-reloads settings.json, so the status line becomes active on
     the next status refresh without requiring a restart.
     """
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     if plugin_root:
-        statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
+        statusline_sh = Path(plugin_root) / "scripts" / _STATUSLINE_SCRIPT
     else:
-        statusline_sh = Path(__file__).resolve().parent / "cognee-statusline.sh"
+        statusline_sh = Path(__file__).resolve().parent / _STATUSLINE_SCRIPT
 
     if not statusline_sh.exists():
         hook_log(
@@ -1134,25 +1183,103 @@ def _ensure_statusline_configured() -> None:
 
     settings_path = Path.home() / ".claude" / "settings.json"
     desired = {"type": "command", "command": str(statusline_sh)}
+    force = os.environ.get("COGNEE_FORCE_STATUSLINE", "").strip().lower() in ("1", "true", "yes", "on")
 
     try:
+        # Read inline (not via _load_json_file) so corrupt JSON raises into the
+        # except below and we touch nothing, rather than silently overwriting a
+        # settings file we failed to parse.
         settings: dict = {}
+        original_mode = None
         if settings_path.exists():
+            original_mode = settings_path.stat().st_mode & 0o777  # capture once, pre-write
             text = settings_path.read_text(encoding="utf-8").strip()
             if text:
-                settings = json.loads(text)
+                loaded = json.loads(text)
+                if not isinstance(loaded, dict):
+                    # Valid JSON but not an object — not something we can safely
+                    # merge into; leave it alone (fail closed).
+                    hook_log("statusline_setup_skipped", {"reason": "settings_not_object"})
+                    return
+                settings = loaded
 
-        if settings.get("statusLine") == desired:
-            return
+        def _install():
+            settings["statusLine"] = desired
+            settings[_STATUSLINE_MANAGED_KEY] = desired["command"]
 
-        settings["statusLine"] = desired
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
+        def _drop_bookkeeping():
+            settings.pop(_STATUSLINE_BACKUP_KEY, None)
+            settings.pop(_STATUSLINE_MANAGED_KEY, None)
+
+        # Snapshot to detect whether we actually change anything (avoids a
+        # needless rewrite — and its mtime churn — on every SessionStart).
+        before = json.dumps(settings, sort_keys=True)
+
+        existing = settings.get("statusLine")
+        managed_cmd = settings.get(_STATUSLINE_MANAGED_KEY)
+        existing_cmd = existing.get("command") if isinstance(existing, dict) else None
+
+        is_ours = isinstance(existing, dict) and (
+            (isinstance(managed_cmd, str) and existing_cmd == managed_cmd)
+            # Pre-marker install: recognise our own line by exact path or by a
+            # clearly-Cognee path, so upgrades self-heal it (and it gets a marker).
+            or (
+                managed_cmd is None
+                and (existing_cmd == desired["command"] or _looks_like_cognee_install(existing_cmd))
+            )
+        )
+        is_user_statusline = bool(existing) and not is_ours
+        backup = settings.get(_STATUSLINE_BACKUP_KEY)
+
+        if force:
+            if is_user_statusline:
+                # Stash the displaced user value (newest wins — not setdefault).
+                settings[_STATUSLINE_BACKUP_KEY] = existing
+            _install()
+        elif is_user_statusline:
+            # The user owns the slot — never clobber it. Drop any stale Cognee
+            # bookkeeping so an old backup can't be resurrected later.
+            _drop_bookkeeping()
+        elif is_ours and backup is not None:
+            # A forced override is being lifted from a slot we still own — restore
+            # the user's stashed value. (Gated on is_ours so a slot the user has
+            # cleared or taken over is never resurrected.)
+            settings["statusLine"] = backup
+            _drop_bookkeeping()
+        else:
+            # Absent, empty, or our own stale-path line, with no override to lift.
+            _drop_bookkeeping()  # never resurrect an orphaned backup
+            _install()
+
+        if json.dumps(settings, sort_keys=True) == before:
+            return  # nothing changed
+
+        # Follow a symlinked settings.json (e.g. a dotfiles repo) so we rewrite
+        # its target in place rather than replacing the symlink with a plain file.
+        write_path = settings_path
+        try:
+            if settings_path.is_symlink():
+                write_path = settings_path.resolve()
+        except OSError:
+            pass
+
+        write_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=write_path.parent, prefix=".settings-", suffix=".json")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
                 f.write("\n")
-            os.replace(tmp, settings_path)
+            # Best-effort: preserve the original file's permissions. mkstemp creates
+            # a private 0600 file; for a brand-new settings.json we keep that, since
+            # it can hold secrets and shouldn't be broadened. chmod is best-effort so
+            # a filesystem that doesn't support it (some FAT/network mounts) can't
+            # abort an otherwise-successful write.
+            if original_mode is not None:
+                try:
+                    os.chmod(tmp, original_mode)
+                except OSError:
+                    pass
+            os.replace(tmp, write_path)
         except Exception:
             try:
                 os.unlink(tmp)
