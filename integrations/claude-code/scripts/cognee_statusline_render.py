@@ -6,7 +6,8 @@ pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
 only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
 ``_plugin_common`` import.
 
-Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``,
+optionally suffixed with `` · v<version>`` when the plugin manifest is readable.
 """
 
 import json
@@ -64,12 +65,35 @@ def _health_prefix() -> str:
     return ""
 
 
+def _plugin_version() -> str:
+    # Read the installed plugin version from the manifest Claude Code points at.
+    # Pure-local and fail-silent: a missing env var or unreadable/malformed
+    # manifest yields "" (no version shown), never an exception.
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if not root:
+        return ""
+    try:
+        manifest = Path(root) / ".claude-plugin" / "plugin.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            v = str(data.get("version") or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return ""
+
+
 def main() -> None:
     try:
         json.load(sys.stdin)  # consume stdin as required by Claude Code
     except Exception:
         pass
-    sys.stdout.write(f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}")
+    version = _plugin_version()
+    suffix = f" · v{version}" if version else ""
+    sys.stdout.write(
+        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{suffix}"
+    )
 
 
 if __name__ == "__main__":
