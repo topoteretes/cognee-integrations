@@ -58,7 +58,7 @@ curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
   -d '{"query": "<question>", "top_k": 10, "only_context": true, "scope": ["graph"]}'
 ```
 
-Omit `-H "X-Api-Key: ..."` for a local single-user server (auth is optional). An empty list `[]` from the server is authoritative — the server searched and found nothing.
+Omit `-H "X-Api-Key: ..."` for a local single-user server (auth is optional). An empty list `[]` from the server is authoritative — the server searched and found nothing. One exception: if the plugin's search wrapper returns an object with `captured_pending`, content captured this session is still waiting on cognify — retry shortly or run `python3 "${CODEX_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"` instead of treating it as "no memory" or grepping the transcript.
 
 **Fallback only — server unreachable:**
 

@@ -113,6 +113,70 @@ def test_dataset_forwarded_to_transport():
     assert captured.get("dataset") == "my_dataset"
 
 
+def _patched_pending(value):
+    """Temporarily replace _plugin_common.pending_capture_counts; return a restorer."""
+    import _plugin_common as pc
+
+    orig = pc.pending_capture_counts
+    pc.pending_capture_counts = value if callable(value) else (lambda session_id: value)
+
+    def _restore():
+        pc.pending_capture_counts = orig
+
+    return _restore
+
+
+def test_annotate_empty_recall_with_pending_returns_envelope():
+    # topoteretes/cognee#3553: empty recall + captured-but-uncognified bridge
+    # content must be distinguishable from a genuine empty.
+    restore = _patched_pending({"qa": 2, "trace": 1})
+    try:
+        out = cc.annotate_empty_recall([], "claude_abc123")
+    finally:
+        restore()
+    assert isinstance(out, dict)
+    assert out["recall"] == []
+    assert out["captured_pending"] == {"qa": 2, "trace": 1}
+    # It is NOT an error envelope: the empty recall itself was authoritative.
+    assert out["authoritative"] is True and "error" not in out
+    assert "not yet cognified" in out["hint"]
+
+
+def test_annotate_empty_recall_without_pending_stays_empty():
+    restore = _patched_pending({"qa": 0, "trace": 0})
+    try:
+        assert cc.annotate_empty_recall([], "claude_abc123") == []
+    finally:
+        restore()
+
+
+def test_annotate_passes_through_non_empty_results():
+    def _boom(session_id):
+        raise AssertionError("pending check must not run for non-empty results")
+
+    restore = _patched_pending(_boom)
+    try:
+        hits = [{"text": "hit"}]
+        err = {"error": "boom", "status": 500, "authoritative": False}
+        assert cc.annotate_empty_recall(hits, "s") == hits
+        assert cc.annotate_empty_recall(err, "s") == err
+        assert cc.annotate_empty_recall(UNREACHABLE, "s") == UNREACHABLE
+    finally:
+        restore()
+
+
+def test_annotate_never_raises_when_pending_check_fails():
+    # A broken bridge read must degrade to the plain authoritative empty.
+    def _boom(session_id):
+        raise OSError("disk on fire")
+
+    restore = _patched_pending(_boom)
+    try:
+        assert cc.annotate_empty_recall([], "claude_abc123") == []
+    finally:
+        restore()
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
