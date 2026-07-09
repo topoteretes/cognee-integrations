@@ -170,6 +170,10 @@ LangGraph is the same style but builds its tools per user:
 Each integration's `README.md` under `integrations/<name>/` has a complete runnable
 example (`examples/`) and the full tool reference.
 
+For common setup and runtime failures across Claude Code, Codex, OpenClaw,
+Hermes Agent, and n8n, see the shared
+[`integrations/TROUBLESHOOTING.md`](integrations/TROUBLESHOOTING.md) guide.
+
 ## Structure
 
 Each integration lives under `integrations/<name>/` and is an independently publishable package.
