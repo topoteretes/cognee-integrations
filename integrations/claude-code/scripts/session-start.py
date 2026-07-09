@@ -63,6 +63,7 @@ _WATCHER_PID = _STATE_DIR / "watcher.pid"
 _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _WATCHER_SCRIPT = Path(__file__).with_name("idle-watcher.py")
 _EXIT_WATCHER_SCRIPT = Path(__file__).with_name("exit-watcher.py")
+_VERSION_CHECK_SCRIPT = Path(__file__).with_name("version_check.py")
 _EXIT_WATCHERS_DIR = _STATE_DIR / "exit-watchers"
 _LOCAL_SERVICE_URL = "http://localhost:8011"
 _HEALTH_URL = f"{_LOCAL_SERVICE_URL}/health"
@@ -678,6 +679,28 @@ def _spawn_idle_watcher(
         print("cognee-plugin: idle watcher started", file=sys.stderr)
     except Exception as e:
         print(f"cognee-plugin: idle watcher launch failed ({e})", file=sys.stderr)
+
+
+def _spawn_version_check() -> None:
+    """Fire-and-forget the plugin-update check (detached, never blocks).
+
+    version_check.py is TTL-gated + fail-silent internally (so this runs at most
+    once per interval and a network error is a no-op); here we only launch it.
+    Opt out with COGNEE_UPDATE_CHECK=false.
+    """
+    if os.environ.get("COGNEE_UPDATE_CHECK", "").strip().lower() in ("0", "false", "no", "off"):
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, str(_VERSION_CHECK_SCRIPT), os.environ.get("CLAUDE_PLUGIN_ROOT", "")],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception as exc:
+        hook_log("version_check_spawn_failed", {"error": str(exc)[:200]})
 
 
 def _find_claude_parent_pid() -> int:
@@ -1321,6 +1344,9 @@ async def _start(payload: dict | None = None) -> dict:
         api_key=agent_api_key,
         service_url=str(config.get("base_url", "") or ""),
     )
+
+    # Background, TTL-gated check for a newer plugin version (status line shows a badge).
+    _spawn_version_check()
 
     mode = "cloud" if config.get("base_url") else "local"
     print(
