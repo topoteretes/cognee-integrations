@@ -368,6 +368,37 @@ async def sync_graph_context_to_session(dataset: str, session_id: str, user) -> 
     )
 
 
+async def improve_session_local(dataset: str, session_id: str, user) -> dict:
+    """Bridge one session into the graph via the SDK's session-aware improve.
+
+    ``cognee.improve(session_ids=[...])`` reads the session cache itself and
+    runs feedback weights, QA persist, trace-feedback persist (the compact
+    per-step feedback lines — not raw tool output), distillation, enrichment,
+    and (in foreground mode) the graph→session sync — so the explicit
+    persist+sync pair below is only kept as a fallback for older cognee
+    versions without session-aware improve.
+    """
+    if not session_id or not user:
+        return {"ok": False, "error": "missing session/user"}
+
+    import cognee
+
+    try:
+        result = await cognee.improve(
+            dataset,
+            session_ids=[session_id],
+            user=user,
+            run_in_background=False,
+        )
+        return {"ok": True, "result": result}
+    except TypeError as exc:
+        # Older cognee without session-aware improve: legacy persist + sync.
+        _config_log("improve_local_unsupported", {"error": str(exc)[:200]})
+        wrote = await persist_session_cache_to_graph(dataset, session_id, user)
+        graph_result = await sync_graph_context_to_session(dataset, session_id, user)
+        return {"ok": wrote, "legacy": True, "graph_synced": graph_result.get("synced", 0)}
+
+
 def _read_field(entry, field: str) -> str:
     if isinstance(entry, dict):
         return str(entry.get(field) or "")

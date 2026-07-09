@@ -9,8 +9,8 @@
 # No flag:   search session first, then graph if empty
 #
 # Configuration:
-#   Resolves session ID and dataset from Cognee endpoints using API auth.
-#   Falls back to env vars when endpoint lookup is unavailable.
+#   Resolves session ID from Cognee endpoints using API auth.
+#   Dataset is env-driven: COGNEE_PLUGIN_DATASET, then agent_sessions.
 
 set -euo pipefail
 
@@ -41,7 +41,7 @@ if not api_key:
             pass
 
 session_id = ""
-dataset = ""
+dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
 if service_url and api_key:
     try:
         query = ""
@@ -58,13 +58,6 @@ if service_url and api_key:
             agent = payload.get("agent") if isinstance(payload.get("agent"), dict) else {}
             if isinstance(agent, dict):
                 session_id = str(agent.get("session_id") or "").strip()
-                datasets = agent.get("datasets") if isinstance(agent.get("datasets"), list) else []
-                for item in datasets:
-                    if isinstance(item, dict):
-                        name = str(item.get("name") or "").strip()
-                        if name:
-                            dataset = name
-                            break
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
         pass
 
@@ -137,7 +130,7 @@ esac
 # Only a 2xx response is authoritative (an empty list = genuinely no hits).
 # Any non-2xx / error / unreachable returns the UNREACHABLE sentinel so we fall
 # back to cognee-cli and warn — never reporting a server failure as "not found".
-# $DATASET is resolved above (connections/me → COGNEE_PLUGIN_DATASET → default)
+# $DATASET is resolved above (COGNEE_PLUGIN_DATASET → default)
 # and scopes the search to the plugin's dataset so unrelated datasets don't bleed in.
 # Logic lives in _recall_http.py (stdlib-only, unit-tested); stderr is surfaced.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"

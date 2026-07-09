@@ -30,12 +30,6 @@ import uuid
 UNREACHABLE = "UNREACHABLE"
 
 
-def _is_local(url):
-    """True for a localhost/loopback target (where a cloud API key is meaningless)."""
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
-
-
 def _multipart_body(fields, files):
     boundary = f"----cogneeRemember{uuid.uuid4().hex}"
     chunks = []
@@ -114,9 +108,10 @@ def do_remember(
         [("data", filename, content.encode("utf-8") if isinstance(content, str) else content)],
     )
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-    # COGNEE_API_KEY is a cloud credential; local single-user servers need no
-    # auth and ignore it. Only attach it for a remote/cloud target.
-    if api_key and not _is_local(service_url):
+    # Always attach the key when present: cognee >=1.2.2 enforces auth on its
+    # API routes even on localhost (the local key is auto-minted at bootstrap),
+    # and a server running with auth disabled simply ignores the header.
+    if api_key:
         headers["X-Api-Key"] = api_key
 
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
