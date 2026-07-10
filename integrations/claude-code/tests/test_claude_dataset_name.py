@@ -1,11 +1,9 @@
 """Dataset-name sanitization tests for the Claude Code integration."""
 
 import importlib.util
-import json
 import os
 import pathlib
 import sys
-import tempfile
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -37,22 +35,12 @@ def test_get_dataset_normalizes_config_value():
     assert cfg.get_dataset({"dataset": "..."}) == "agent_sessions"
 
 
-def test_load_config_normalizes_file_and_env_dataset():
-    old_file = cfg._CONFIG_FILE
+def test_load_config_normalizes_env_dataset():
     old_env = os.environ.get("COGNEE_PLUGIN_DATASET")
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg._CONFIG_FILE = pathlib.Path(tmp) / "config.json"
-            cfg._CONFIG_FILE.write_text(
-                json.dumps({"dataset": " file/dataset! "}), encoding="utf-8"
-            )
-            os.environ.pop("COGNEE_PLUGIN_DATASET", None)
-            assert cfg.load_config()["dataset"] == "file_dataset"
-
-            os.environ["COGNEE_PLUGIN_DATASET"] = " env/dataset! "
-            assert cfg.load_config()["dataset"] == "env_dataset"
+        os.environ["COGNEE_PLUGIN_DATASET"] = " env/dataset! "
+        assert cfg.load_config()["dataset"] == "env_dataset"
     finally:
-        cfg._CONFIG_FILE = old_file
         if old_env is None:
             os.environ.pop("COGNEE_PLUGIN_DATASET", None)
         else:

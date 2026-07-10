@@ -133,7 +133,7 @@ function sanitizeSessionKey(value: string): string {
   return safe.replace(/^[._]+/, "").replace(/[._]+$/, "").slice(0, 120);
 }
 
-export function sanitizeDatasetName(value: string | undefined, fallback = "openclaw"): string {
+export function sanitizeDatasetName(value: string | undefined, fallback = "agent_sessions"): string {
   let safe = "";
   for (const ch of (value ?? "").trim()) {
     safe += /[A-Za-z0-9\-_.]/.test(ch) ? ch : "_";

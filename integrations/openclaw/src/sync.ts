@@ -32,6 +32,35 @@ export async function syncFiles(
   const result: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   const dsName = sanitizeDatasetName(overrideDatasetName || cfg.datasetName);
   let datasetId = syncIndex.datasetId;
+  if (datasetId && syncIndex.datasetName && syncIndex.datasetName !== dsName) {
+    logger.info?.(
+      `cognee-openclaw: cached datasetId belongs to "${syncIndex.datasetName}" but current dataset is "${dsName}" — ignoring stale datasetId`,
+    );
+    datasetId = undefined;
+    syncIndex.datasetId = undefined;
+  }
+
+  function isDatasetAccessError(message: string): boolean {
+    const msg = message.toLowerCase();
+    return (
+      msg.includes("(401)") ||
+      msg.includes("(403)") ||
+      msg.includes("(404)") ||
+      msg.includes("unauthorizeddataaccesserror") ||
+      msg.includes("not accessible") ||
+      msg.includes("permission denied")
+    );
+  }
+
+  function isUpdateFallbackError(message: string): boolean {
+    const msg = message.toLowerCase();
+    return (
+      msg.includes("404") ||
+      msg.includes("409") ||
+      msg.includes("not found") ||
+      isDatasetAccessError(message)
+    );
+  }
 
   // Partition changed files into "needs add" vs "needs update".
   // We process updates per-file (PATCH /update) and batch all adds into a
@@ -68,7 +97,11 @@ export async function syncFiles(
         continue;
       } catch (updateError) {
         const errorMsg = updateError instanceof Error ? updateError.message : String(updateError);
-        if (errorMsg.includes("404") || errorMsg.includes("409") || errorMsg.includes("not found")) {
+        if (isUpdateFallbackError(errorMsg)) {
+          if (isDatasetAccessError(errorMsg)) {
+            datasetId = undefined;
+            syncIndex.datasetId = undefined;
+          }
           logger.info?.(`cognee-openclaw: update failed for ${file.path}, falling back to remember`);
           // fall through to add path
         } else {
@@ -83,11 +116,11 @@ export async function syncFiles(
   }
 
   if (toAdd.length > 0) {
-    try {
+    const rememberBatch = async (resolvedDatasetId: string | undefined) => {
       const rememberResponse = await client.remember({
         files: toAdd.map((f) => ({ filePath: f.path, data: wrapWithMetadata(f) })),
         datasetName: dsName,
-        datasetId,
+        datasetId: resolvedDatasetId,
       });
 
       if (rememberResponse.datasetId && rememberResponse.datasetId !== datasetId) {
@@ -110,12 +143,30 @@ export async function syncFiles(
       }
       syncIndex.datasetId = datasetId;
       syncIndex.datasetName = dsName;
+    };
+
+    try {
+      await rememberBatch(datasetId);
     } catch (error) {
-      // One failed batch fails every queued file — surface them all so the
-      // caller's error count reflects the actual workload, not just one entry.
-      for (const file of toAdd) {
-        result.errors++;
-        logger.warn?.(`cognee-openclaw: failed to sync ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (isDatasetAccessError(errorMsg)) {
+        datasetId = undefined;
+        syncIndex.datasetId = undefined;
+        try {
+          await rememberBatch(undefined);
+        } catch (retryError) {
+          for (const file of toAdd) {
+            result.errors++;
+            logger.warn?.(`cognee-openclaw: failed to sync ${file.path}: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+          }
+        }
+      } else {
+        // One failed batch fails every queued file — surface them all so the
+        // caller's error count reflects the actual workload, not just one entry.
+        for (const file of toAdd) {
+          result.errors++;
+          logger.warn?.(`cognee-openclaw: failed to sync ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
   }
