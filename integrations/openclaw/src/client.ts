@@ -31,7 +31,7 @@ export class CogneeHttpClient {
 
   constructor(
     readonly baseUrl: string,
-    private readonly apiKey?: string,
+    private apiKey?: string,
     private readonly username?: string,
     private readonly password?: string,
     private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
@@ -41,6 +41,19 @@ export class CogneeHttpClient {
 
   private get isCloud(): boolean {
     return this.mode === "cloud";
+  }
+
+  /**
+   * Inject an API key resolved/minted after construction (resolveOrMintApiKey).
+   * From then on every request authenticates with X-Api-Key and the JWT login
+   * fallback is never used again — the key is the principal identity, matching
+   * the claude-code/codex integrations. JWT login remains only as the one-time
+   * bootstrap that mints a key on a fresh LOCAL server (cloud has no login
+   * route, which is why COGNEE_API_KEY is mandatory there).
+   */
+  setApiKey(key: string): void {
+    const trimmed = (key ?? "").trim();
+    if (trimmed) this.apiKey = trimmed;
   }
 
   async login(): Promise<void> {
@@ -90,10 +103,11 @@ export class CogneeHttpClient {
       return { "X-Api-Key": this.apiKey! };
     }
     if (this.apiKey) {
-      return {
-        Authorization: `Bearer ${this.apiKey}`,
-        "X-Api-Key": this.apiKey,
-      };
+      // X-Api-Key ONLY — an API key is not a JWT, and servers that validate
+      // Authorization as a JWT (e.g. cloud pods) can reject the request on a
+      // bogus Bearer before the API key is even considered. Parity with the
+      // claude-code/codex integrations, which send only X-Api-Key.
+      return { "X-Api-Key": this.apiKey };
     }
     if (this.authToken) {
       return { Authorization: `Bearer ${this.authToken}` };
@@ -546,6 +560,11 @@ export class CogneeHttpClient {
   // POST /api/v1/recall — Cognee 1.0.3's memory-oriented alias for /search.
   // Mirrors the search payload but adds session_id + scope, so results can
   // mix session-cache hits with graph hits when sessions are enabled.
+  //
+  // only_context defaults to true (same as the claude-code/codex plugins):
+  // the server returns the retrieved context and SKIPS the LLM completion
+  // step, which dominates recall latency in the *_COMPLETION search types.
+  // Injected memories should be stored context, not generated answers.
   async recall(params: {
     queryText: string;
     searchPrompt: string;
@@ -554,94 +573,117 @@ export class CogneeHttpClient {
     topK?: number;
     sessionId?: string;
     scope?: string | string[];
-    firstRecall?: boolean;
+    onlyContext?: boolean;
+    /** Per-call timeout for the prompt hot path. When set, retries are
+     *  disabled so a slow server fails fast instead of eating the budget. */
+    timeoutMs?: number;
   }): Promise<CogneeSearchResult[]> {
-    // Cold-start first-recall retry (#3546): the first recall of a session may
-    // hit a scale-to-zero tenant that is still warming, so route it through the
-    // retry wrapper. Non-first recalls keep the existing default path untouched.
-    if (params.firstRecall) {
-      return this.recallWithColdStartRetry(params);
-    }
     const recallPath = this.isCloud ? "/recall" : "/api/v1/recall";
-    const data = await this.fetchAPI<unknown>(recallPath, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: params.queryText,
-        search_type: params.searchType,
-        dataset_ids: params.datasetIds,
-        ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
-        ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
-        ...(params.sessionId ? { session_id: params.sessionId } : {}),
-        ...(params.scope ? { scope: params.scope } : {}),
-      }),
-    });
+    const data = await this.fetchAPI<unknown>(
+      recallPath,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: params.queryText,
+          search_type: params.searchType,
+          dataset_ids: params.datasetIds,
+          only_context: params.onlyContext ?? true,
+          ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
+          ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
+          ...(params.sessionId ? { session_id: params.sessionId } : {}),
+          ...(params.scope ? { scope: params.scope } : {}),
+        }),
+      },
+      params.timeoutMs ?? this.timeoutMs,
+      undefined,
+      params.timeoutMs ? 0 : undefined,
+    );
     return normalizeSearchResults(data);
   }
 
-  /**
-   * Cold-start first-recall retry (#3546). Sole retry source on the first-recall
-   * path: each attempt calls fetchAPI with retries=0 so its generic retry is
-   * intentionally bypassed and we never double-retry (generic loop × this loop).
-   * Non-first recalls (firstRecall falsy) keep the default MAX_RETRIES path
-   * untouched — this is NOT the #127 retries=0 regression, which zeroed retries
-   * for ALL recalls. Only 504 / AbortError are retried (see isColdStartRetryable).
-   */
-  private async recallWithColdStartRetry(params: {
-    queryText: string;
-    searchPrompt: string;
-    searchType: CogneeSearchType;
-    datasetIds: string[];
-    topK?: number;
+  // POST /api/v1/remember/entry — store a typed QA/trace entry in the server's
+  // session cache. Same contract as the claude-code/codex plugins'
+  // remember_entry_via_http: body is { entry, dataset_name, session_id }.
+  async rememberEntry(params: {
+    datasetName: string;
+    sessionId: string;
+    entry: Record<string, unknown>;
+  }): Promise<{ entryId?: string }> {
+    const result = await this.fetchAPI<Record<string, unknown>>(
+      "/api/v1/remember/entry",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entry: params.entry,
+          dataset_name: params.datasetName,
+          session_id: params.sessionId,
+        }),
+      },
+      30_000,
+    );
+    return { entryId: typeof result.entry_id === "string" ? result.entry_id : undefined };
+  }
+
+  async registerAgent(params: {
+    agentSessionName: string;
     sessionId?: string;
-    scope?: string | string[];
-  }): Promise<CogneeSearchResult[]> {
-    const recallPath = this.isCloud ? "/recall" : "/api/v1/recall";
-    const init: RequestInit = {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: params.queryText,
-        search_type: params.searchType,
-        dataset_ids: params.datasetIds,
-        ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
-        ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
-        ...(params.sessionId ? { session_id: params.sessionId } : {}),
-        ...(params.scope ? { scope: params.scope } : {}),
-      }),
+    datasetNames?: string[];
+  }): Promise<{ ok: boolean; connectionId?: string }> {
+    const body: Record<string, unknown> = {
+      agent_session_name: params.agentSessionName,
+      type: "api",
+      memory_mode: "hybrid",
+      source: "api",
     };
-
-    // Env reads parse safely: NaN / negative / missing fall back to the default.
-    const parsedRetries = Number(process.env.COGNEE_RECALL_RETRIES);
-    const maxRetries =
-      Number.isFinite(parsedRetries) && parsedRetries >= 0 ? Math.floor(parsedRetries) : 1;
-    const parsedBackoff = Number(process.env.COGNEE_RECALL_BACKOFF_MS);
-    const backoffMs =
-      Number.isFinite(parsedBackoff) && parsedBackoff >= 0 ? parsedBackoff : 500;
-
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      if (attempt > 0) {
-        // Backoff = base*(retryIndex+1) + jitter; first retry (retryIndex 0)
-        // always waits ~base, never 0ms. Math.random() is fine in runtime code.
-        const retryIndex = attempt - 1;
-        const delay = backoffMs * (retryIndex + 1) + Math.floor(Math.random() * backoffMs);
-        await new Promise((r) => setTimeout(r, delay));
-      }
-      try {
-        // retries=0 (5th arg): this wrapper owns the retry; fetchAPI's generic
-        // retry is bypassed so a first recall isn't retried twice.
-        const data = await this.fetchAPI<unknown>(recallPath, init, this.timeoutMs, undefined, 0);
-        return normalizeSearchResults(data);
-      } catch (err) {
-        if (attempt < maxRetries && isColdStartRetryable(err)) {
-          lastError = err;
-          continue;
-        }
-        throw err;
-      }
+    if (params.sessionId) body.session_id = params.sessionId;
+    if (params.datasetNames && params.datasetNames.length > 0) {
+      body.dataset_names = params.datasetNames.filter((n) => n.trim());
     }
-    throw lastError;
+    const result = await this.fetchAPI<Record<string, unknown>>(
+      "/api/v1/agents/register",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    );
+    return { ok: true, connectionId: typeof result.id === "string" ? result.id : undefined };
+  }
+
+  async unregisterAgent(params: {
+    agentSessionName: string;
+  }): Promise<{ ok: boolean; activeAgents: number }> {
+    try {
+      const result = await this.fetchAPI<Record<string, unknown>>(
+        "/api/v1/agents/unregister",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_session_name: params.agentSessionName }),
+        },
+      );
+      const raw = Number(result.activeAgents ?? result.active_agents ?? 0);
+      const activeAgents = Number.isFinite(raw) ? raw : 0;
+      return { ok: true, activeAgents };
+    } catch (error) {
+      return { ok: false, activeAgents: 0 };
+    }
+  }
+
+  async listApiKeys(): Promise<{ key: string; name?: string }[]> {
+    return this.fetchAPI<{ key: string; name?: string }[]>(
+      "/api/v1/auth/api-keys",
+      { method: "GET" },
+    );
+  }
+
+  async createApiKey(name: string): Promise<{ key: string }> {
+    return this.fetchAPI<{ key: string }>(
+      "/api/v1/auth/api-keys",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      },
+    );
   }
 
   async listDatasets(): Promise<{ id: string; name: string }[]> {
@@ -679,18 +721,7 @@ export class CogneeHttpClient {
 // Helpers (module-private)
 // ---------------------------------------------------------------------------
 
-// Cold-start retry predicate (#3546). NOTE: 504 is detected by matching
-// fetchAPI's own thrown error message `Cognee request failed (504)` — recall()
-// never sees the Response object. The match is anchored to that exact prefix so
-// it can only fire on the status token fetchAPI emits, never a stray "(504)"
-// inside an error body. Mirrors the existing precedent in forget()
-// (msg.includes("(404)")). If fetchAPI's error format changes, update this.
-function isColdStartRetryable(err: unknown): boolean {
-  if (err instanceof Error && err.name === "AbortError") return true;
-  if (err instanceof DOMException && err.name === "AbortError") return true;
-  if (err instanceof Error && /Cognee request failed \(504\)/.test(err.message)) return true;
-  return false;
-}
+
 
 function sanitizeFilePath(filePath: string): string {
   var mutatedPath = filePath.replace(/\//g, '_');

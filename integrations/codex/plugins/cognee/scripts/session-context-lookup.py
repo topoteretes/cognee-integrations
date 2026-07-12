@@ -20,6 +20,7 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    drain_warmup_entries,
     get_session_key,
     hook_log,
     load_resolved,
@@ -36,7 +37,7 @@ from _plugin_common import (
     set_session_key,
 )
 from cognee_statusline_render import render_status_for_host
-from config import ensure_cognee_ready, get_session_id, load_config
+from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 
 def _float_env(name: str, default: float) -> float:
@@ -166,9 +167,11 @@ async def _run(prompt: str) -> dict | None:
     # short /health probe and record the result. If still not ready, skip recall
     # entirely so the prompt is answered at full speed (memory turns on later).
     service_url = runtime.get("base_url", "")
+    just_became_ready = False
     if not server_ready_hint(service_url):
         if server_health_ok(service_url, timeout=_float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)):
             mark_server_ready(service_url)
+            just_became_ready = True
         else:
             hook_log("recall_skipped_warming", {"base_url": service_url})
             return None
@@ -180,6 +183,15 @@ async def _run(prompt: str) -> dict | None:
     if not session_id:
         hook_log("no_session_id", {"event": "context_lookup"})
         return None
+
+    if just_became_ready:
+        # First prompt after the server came up: replay any entries buffered
+        # while it was warming so the server session cache (which improve
+        # bridges from) holds the full session.
+        try:
+            drain_warmup_entries(get_dataset(config), session_id)
+        except Exception as exc:
+            hook_log("warmup_drain_failed", {"error": str(exc)[:200]})
 
     saves_last_turn = read_and_reset_save_counter(session_id)
 
@@ -362,8 +374,7 @@ async def _run(prompt: str) -> dict | None:
         hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
         notify(f"no recall matches; saves last turn {saves_last_turn}")
 
-    # Audit log: persist full recall details per turn. The hook output stays a
-    # short summary because Codex renders additionalContext in the terminal.
+    # Audit log: persist full recall details per turn for debugging.
     try:
         from datetime import datetime as _dt
         from datetime import timezone as _tz
@@ -387,10 +398,16 @@ async def _run(prompt: str) -> dict | None:
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 
+    # additionalContext is the MODEL injection channel and must carry the full
+    # recalled content — trimming it to the status line would silently disable
+    # memory for the model. systemMessage carries the short status for the
+    # terminal (mirrors the claude-code integration); hosts that render
+    # additionalContext directly will still show the full block.
     output = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": full_context,
+            "systemMessage": header,
         }
     }
     return output

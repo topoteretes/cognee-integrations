@@ -106,10 +106,21 @@ def load_config() -> dict:
     config = dict(_DEFAULTS)
 
     # Layer 2: config file
+    # dataset is intentionally excluded here: it is always driven by the default
+    # or by COGNEE_PLUGIN_DATASET (env var, layer 3). Reading it from the file
+    # would create confusing precedence when users open a terminal without the
+    # env var set. The value is still written to the file for human visibility.
+    _file_excluded = {"dataset"}
     if _CONFIG_FILE.exists():
         try:
             file_cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-            config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
+            config.update(
+                {
+                    k: v
+                    for k, v in file_cfg.items()
+                    if v is not None and v != "" and k not in _file_excluded
+                }
+            )
         except Exception as exc:
             _config_log(
                 "config_file_load_failed", {"path": str(_CONFIG_FILE), "error": str(exc)[:200]}
@@ -141,12 +152,18 @@ def load_config() -> dict:
 def save_config(config: dict) -> None:
     """Write config to disk. Creates directory if needed."""
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    # Only save non-secret, non-default values
+    # Only save non-secret, non-default values.
+    # dataset is always written even when it equals the default so that users
+    # who open the file can see which dataset the plugin is using.
     transient_keys = {"api_key", "llm_api_key", "base_url", "backend"}
+    _always_include = {"dataset"}
     to_save = {
         k: v
         for k, v in config.items()
-        if k not in transient_keys and not k.startswith("_") and v and v != _DEFAULTS.get(k)
+        if k not in transient_keys
+        and not k.startswith("_")
+        and v
+        and (k in _always_include or v != _DEFAULTS.get(k))
     }
     _CONFIG_FILE.write_text(json.dumps(to_save, indent=2), encoding="utf-8")
 
@@ -369,6 +386,37 @@ async def sync_graph_context_to_session(dataset: str, session_id: str, user) -> 
         dataset_id=authorized_datasets[0].id,
         dataset_name=dataset,
     )
+
+
+async def improve_session_local(dataset: str, session_id: str, user) -> dict:
+    """Bridge one session into the graph via the SDK's session-aware improve.
+
+    ``cognee.improve(session_ids=[...])`` reads the session cache itself and
+    runs feedback weights, QA persist, trace-feedback persist (the compact
+    per-step feedback lines — not raw tool output), distillation, enrichment,
+    and (in foreground mode) the graph→session sync — so the explicit
+    persist+sync pair below is only kept as a fallback for older cognee
+    versions without session-aware improve.
+    """
+    if not session_id or not user:
+        return {"ok": False, "error": "missing session/user"}
+
+    import cognee
+
+    try:
+        result = await cognee.improve(
+            dataset,
+            session_ids=[session_id],
+            user=user,
+            run_in_background=False,
+        )
+        return {"ok": True, "result": result}
+    except TypeError as exc:
+        # Older cognee without session-aware improve: legacy persist + sync.
+        _config_log("improve_local_unsupported", {"error": str(exc)[:200]})
+        wrote = await persist_session_cache_to_graph(dataset, session_id, user)
+        graph_result = await sync_graph_context_to_session(dataset, session_id, user)
+        return {"ok": wrote, "legacy": True, "graph_synced": graph_result.get("synced", 0)}
 
 
 def _read_field(entry, field: str) -> str:

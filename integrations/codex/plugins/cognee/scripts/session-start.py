@@ -93,7 +93,7 @@ _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.2.2.dev0"
+_PINNED_COGNEE_VERSION = "1.2.2.dev3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Install single-flight. Distinct from the server boot lock (which is short): a
@@ -990,7 +990,11 @@ async def _run_heavy(
             print(f"cognee-plugin: identity warning ({e})", file=sys.stderr)
 
     try:
-        if user_id and is_cloud_mode(config):
+        # Cloud: the API key IS the identity (the server derives the principal
+        # from X-Api-Key), so dataset creation must NOT be gated on user_id —
+        # servers without /users/me (e.g. cloud tenants) leave user_id empty
+        # while auth works fine. Only the SDK branch below needs a User object.
+        if is_cloud_mode(config):
             await ensure_dataset_ready_via_api(
                 config.get("base_url", ""),
                 agent_api_key or config.get("api_key", ""),

@@ -1,0 +1,12 @@
+{
+  "name": "cognee-memory",
+  "version": "0.2.0",
+  "description": "Cognee knowledge graph memory for Vellum Assistant — session-aware storage, auto-routing recall, and persistent learning across sessions. Supports local mode and Cognee Cloud.",
+  "author": {
+    "name": "Cognee"
+  },
+  "keywords": ["memory", "knowledge-graph", "cognee", "reasoning", "session"],
+  "peerDependencies": {
+    "@vellumai/plugin-api": "^0.10.3"
+  }
+}
