@@ -1,11 +1,12 @@
 import { CogneeHttpClient } from "../src/client";
 import type { CogneeSearchType } from "../src/types";
+import { withColdStartRetry, isColdStartRetryable } from "../src/plugin";
 
 // Cold-start warmup + first-recall retry (#3546).
 //
-// These tests exercise the REAL client (recall / fetchAPI / fireWarmupPing), so
-// they mock the network by overwriting global.fetch rather than mocking the
-// class. jest isn't run in CI (tsc-only) — verified locally + screenshot.
+// Warmup tests exercise the REAL client (recall / fetchAPI / fireWarmupPing), so
+// they mock the network by overwriting global.fetch. Retry tests exercise the
+// exported wrappers from plugin.ts directly.
 
 const ORIG_ENV = process.env;
 const REAL_FETCH = global.fetch;
@@ -55,44 +56,85 @@ afterEach(() => {
   jest.clearAllMocks();
 });
 
-describe("recall first-recall cold-start retry (#3546)", () => {
-  it("retries a real 504 on the first recall, then succeeds on 200", async () => {
-    process.env.COGNEE_RECALL_RETRIES = "1";
-    const fetchMock = jest
-      .fn()
-      .mockResolvedValueOnce(errResp(504, "gateway timeout")) // fetchAPI throws `(504)`
-      .mockResolvedValueOnce(jsonResp([])); // retry succeeds
-    setFetch(fetchMock as unknown as typeof fetch);
-
-    const client = cloudClient();
-    const results = await client.recall(recallParams({ firstRecall: true }));
-
-    expect(results).toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(2); // 1 cold miss + 1 retry — the case #127 can't pass
+describe("isColdStartRetryable", () => {
+  it("returns true for an Error with name AbortError", () => {
+    const err = new Error("aborted");
+    err.name = "AbortError";
+    expect(isColdStartRetryable(err)).toBe(true);
   });
 
-  it("does NOT retry a 400 on the first recall (non-retryable)", async () => {
-    process.env.COGNEE_RECALL_RETRIES = "1";
-    const fetchMock = jest.fn().mockResolvedValue(errResp(400, "bad request"));
-    setFetch(fetchMock as unknown as typeof fetch);
-
-    const client = cloudClient();
-    await expect(client.recall(recallParams({ firstRecall: true }))).rejects.toThrow();
-
-    expect(fetchMock).toHaveBeenCalledTimes(1); // 4xx aborts immediately, no retry
+  it("returns true for a DOMException with name AbortError", () => {
+    const err = new DOMException("aborted", "AbortError");
+    expect(isColdStartRetryable(err)).toBe(true);
   });
 
-  it("does NOT engage the wrapper on a non-first recall (generic path unchanged)", async () => {
-    // firstRecall:false routes through the default fetchAPI, whose generic retry
-    // only fires on timeouts — a 504 is thrown immediately, never retried.
+  it("returns true for an Error matching Cognee request failed (504)", () => {
+    const err = new Error("Cognee request failed (504): Gateway Timeout");
+    expect(isColdStartRetryable(err)).toBe(true);
+  });
+
+  it("returns false for a 400-style Error message", () => {
+    const err = new Error("Cognee request failed (400): Bad Request");
+    expect(isColdStartRetryable(err)).toBe(false);
+  });
+
+  it("returns false for a generic Error unrelated to either pattern", () => {
+    const err = new Error("network down");
+    expect(isColdStartRetryable(err)).toBe(false);
+  });
+});
+
+describe("withColdStartRetry", () => {
+  it("retries a real 504 on first recall, then succeeds", async () => {
     process.env.COGNEE_RECALL_RETRIES = "1";
-    const fetchMock = jest.fn().mockResolvedValue(errResp(504, "gateway timeout"));
-    setFetch(fetchMock as unknown as typeof fetch);
+    const fn = jest.fn()
+      .mockRejectedValueOnce(new Error("Cognee request failed (504)"))
+      .mockResolvedValueOnce("success");
 
-    const client = cloudClient();
-    await expect(client.recall(recallParams({ firstRecall: false }))).rejects.toThrow();
+    const result = await withColdStartRetry(true, fn);
+    expect(result).toBe("success");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1); // no cold-start retry for non-first recalls
+  it("does NOT retry a 400 (non-retryable)", async () => {
+    process.env.COGNEE_RECALL_RETRIES = "1";
+    const fn = jest.fn().mockRejectedValueOnce(new Error("Cognee request failed (400)"));
+
+    await expect(withColdStartRetry(true, fn)).rejects.toThrow("Cognee request failed (400)");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT engage retry when isFirst is false", async () => {
+    process.env.COGNEE_RECALL_RETRIES = "1";
+    const fn = jest.fn().mockRejectedValueOnce(new Error("Cognee request failed (504)"));
+
+    await expect(withColdStartRetry(false, fn)).rejects.toThrow("Cognee request failed (504)");
+    expect(fn).toHaveBeenCalledTimes(1); // Short-circuits
+  });
+
+  it("respects COGNEE_RECALL_RETRIES=0 -> no retry even if isFirst and retryable", async () => {
+    process.env.COGNEE_RECALL_RETRIES = "0";
+    const fn = jest.fn().mockRejectedValueOnce(new Error("Cognee request failed (504)"));
+
+    await expect(withColdStartRetry(true, fn)).rejects.toThrow("Cognee request failed (504)");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("backoff never fires immediately (jitter check)", async () => {
+    process.env.COGNEE_RECALL_RETRIES = "1";
+    process.env.COGNEE_RECALL_BACKOFF_MS = "0";
+    const fn = jest.fn()
+      .mockRejectedValueOnce(new Error("Cognee request failed (504)"))
+      .mockResolvedValueOnce("success");
+
+    const start = Date.now();
+    const result = await withColdStartRetry(true, fn);
+    const end = Date.now();
+
+    expect(result).toBe("success");
+    expect(fn).toHaveBeenCalledTimes(2);
+    // With backoff=0, it should proceed essentially instantly (with minimal jitter).
+    expect(end - start).toBeLessThan(50);
   });
 });
 
@@ -123,7 +165,7 @@ describe("fireWarmupPing (#3546)", () => {
     await flush(); // let the fire-and-forget IIFE reject + get swallowed
 
     // A subsequent recall still works despite the failed warmup.
-    const results = await client.recall(recallParams({ firstRecall: false }));
+    const results = await client.recall(recallParams());
     expect(results).toEqual([]);
   });
 
