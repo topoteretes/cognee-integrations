@@ -149,7 +149,7 @@ function defaultServerSpec(): CogneeServerSpec {
     venvDir: join(sharedStateDir(), "server-venv"),
     host: DEFAULT_SERVER_HOST,
     port: DEFAULT_SERVER_PORT,
-    env: { COGNEE_AGENT_MODE: "true" },
+    env: { COGNEE_AGENT_MODE: "true", ENABLE_BACKEND_ACCESS_CONTROL: "false" },
   };
 }
 

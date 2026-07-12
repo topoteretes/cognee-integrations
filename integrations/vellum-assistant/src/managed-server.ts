@@ -140,16 +140,37 @@ async function ensureVenv(
     }
   }
 
-  // Install (or repair) cognee into the venv.
-  logger.info({ venvDir: spec.venvDir }, "installing cognee into managed venv");
+  // Ensure pip is available in the venv. Some base images (e.g. Debian
+  // without python3-pip) create venvs without pip. Bootstrap it via
+  // get-pip.py if the venv python can't import pip.
+  const pipCheck = await run([py, "-c", "import pip"], { timeoutMs: 10_000 });
+  if (!pipCheck.ok) {
+    logger.info({ venvDir: spec.venvDir }, "pip not found in venv — bootstrapping via get-pip.py");
+    const bootstrapped = await run(
+      [py, "-c", "import urllib.request, sys; urllib.request.urlretrieve('https://bootstrap.pypa.io/get-pip.py', '/tmp/get-pip.py'); import subprocess; sys.exit(subprocess.call([sys.executable, '/tmp/get-pip.py']))"],
+      { timeoutMs: 120_000 },
+    );
+    if (!bootstrapped.ok) {
+      logger.error(
+        { output: bootstrapped.output },
+        "pip bootstrap failed — managed server unavailable",
+      );
+      hookLog("managed_pip_bootstrap_failed", { output: bootstrapped.output });
+      return false;
+    }
+  }
+
+  // Install (or repair) cognee + uvicorn into the venv. Cognee 1.3+ may
+  // not pull uvicorn as a dependency, so install it explicitly.
+  logger.info({ venvDir: spec.venvDir }, "installing cognee + uvicorn into managed venv");
   const pip = await run(
-    [py, "-m", "pip", "install", "--upgrade", "cognee"],
+    [py, "-m", "pip", "install", "--upgrade", "cognee", "uvicorn"],
     { timeoutMs: PROVISION_TIMEOUT_MS },
   );
   if (!pip.ok) {
     logger.error(
       { output: pip.output },
-      "pip install cognee failed — managed server unavailable",
+      "pip install cognee+uvicorn failed — managed server unavailable",
     );
     hookLog("managed_pip_install_failed", { output: pip.output });
     return false;

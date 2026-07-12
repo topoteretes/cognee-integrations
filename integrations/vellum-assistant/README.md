@@ -152,3 +152,11 @@ The init hook checks for an LLM key and logs a warning if none is configured.
 2. `COGNEE_API_KEY` env var (manual override)
 3. Cached key at `$VELLUM_WORKSPACE_DIR/plugins/cognee/data/api_key.json` (auto-minted on first init for local servers)
 4. For local servers with no key: the init hook mints one via `/api/v1/auth/login` + `/api/v1/auth/api-keys`
+
+## Development
+
+The quick start uses `assistant plugins install cognee`, which pulls from the Vellum marketplace (pinned to a specific commit of the upstream repo). To install from a fork or branch instead, use the full GitHub URL form:
+
+```bash
+assistant plugins install https://github.com/vellum-ai/cognee-integrations/tree/<branch>/integrations/vellum-assistant --name cognee
+```

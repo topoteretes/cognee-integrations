@@ -222,6 +222,16 @@ export default async function init(ctx: InitContext): Promise<void> {
   if (!apiKey && reachable && isLocalUrl(baseUrl)) {
     apiKey = await mintApiKey(baseUrl);
   }
+  if (!apiKey && reachable && cfg.mode === "local") {
+    // Cognee 1.3+ with ENABLE_BACKEND_ACCESS_CONTROL=false (which we set
+    // for local servers) accepts all requests without auth. Minting may
+    // fail because the login endpoint changed in 1.3, but the server works
+    // without a key. Cache a sentinel so the runtime hooks don't skip.
+    apiKey = "local-no-auth";
+    cacheApiKey(apiKey, baseUrl);
+    process.env.COGNEE_API_KEY = apiKey;
+    hookLog("init_local_no_auth", { baseUrl });
+  }
   if (!apiKey) {
     hookLog("init_no_api_key", { baseUrl });
     ctx.logger.warn(
