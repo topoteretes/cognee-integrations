@@ -16,7 +16,7 @@
       },
       "baseUrl": {
         "type": "string",
-        "description": "Cognee API base URL (default: http://localhost:8000). Also settable via COGNEE_BASE_URL env var."
+        "description": "Cognee API base URL (default: http://localhost:8011). Also settable via COGNEE_BASE_URL env var."
       },
       "apiKey": {
         "type": "string",
@@ -32,7 +32,7 @@
       },
       "datasetName": {
         "type": "string",
-        "description": "Cognee dataset name for single-scope mode (default: openclaw). Ignored when multi-scope is enabled."
+        "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. Ignored when multi-scope is enabled."
       },
       "companyDataset": {
         "type": "string",
@@ -112,9 +112,14 @@
         "type": "boolean",
         "description": "Persist session Q&A pairs into the knowledge graph after agent ends (default: true)"
       },
+      "captureSession": {
+        "type": "boolean",
+        "description": "Capture each tool call as a trace entry and each prompt/answer pair as a QA entry in Cognee's session cache (default: true; requires enableSessions)"
+      },
       "searchType": {
         "type": "string",
         "enum": [
+          "HYBRID_COMPLETION",
           "GRAPH_COMPLETION",
           "GRAPH_COMPLETION_COT",
           "GRAPH_COMPLETION_CONTEXT_EXTENSION",
@@ -130,7 +135,7 @@
           "CODING_RULES",
           "FEELING_LUCKY"
         ],
-        "description": "Cognee search mode (default: FEELING_LUCKY — auto-selects best strategy per query)"
+        "description": "Cognee search mode (default: HYBRID_COMPLETION — combined vector + graph retrieval)"
       },
       "deleteMode": {
         "type": "string",
@@ -173,6 +178,22 @@
         "type": "boolean",
         "description": "Run memify (graph enrichment) after cognify completes (default: false)"
       },
+      "recallTimeoutMs": {
+        "type": "number",
+        "description": "Per recall HTTP call timeout on the prompt path, no retries (default: 2500)"
+      },
+      "recallBudgetMs": {
+        "type": "number",
+        "description": "Overall wall-clock budget for the recall step per prompt; when exceeded the turn proceeds without memories (default: 4000)"
+      },
+      "recallBreakerThreshold": {
+        "type": "number",
+        "description": "Consecutive recall failures (network/timeout/5xx) before recall is temporarily skipped (default: 5)"
+      },
+      "recallBreakerCooldownMs": {
+        "type": "number",
+        "description": "How long recall is skipped after the breaker opens (default: 120000)"
+      },
       "requestTimeoutMs": {
         "type": "number",
         "description": "HTTP timeout in milliseconds for Cognee requests (default: 60000)"
@@ -190,7 +211,7 @@
   "uiHints": {
     "baseUrl": {
       "label": "Base URL",
-      "placeholder": "http://localhost:8000"
+      "placeholder": "http://localhost:8011"
     },
     "apiKey": {
       "label": "API Key",
@@ -208,7 +229,7 @@
     },
     "datasetName": {
       "label": "Dataset Name (single-scope)",
-      "placeholder": "openclaw"
+      "placeholder": "agent_sessions"
     },
     "companyDataset": {
       "label": "Company Dataset",
@@ -243,9 +264,12 @@
     "persistSessionsAfterEnd": {
       "label": "Persist Sessions"
     },
+    "captureSession": {
+      "label": "Capture Session"
+    },
     "searchType": {
       "label": "Search Type",
-      "placeholder": "FEELING_LUCKY"
+      "placeholder": "HYBRID_COMPLETION"
     },
     "deleteMode": {
       "label": "Delete Mode",
@@ -286,6 +310,22 @@
     "ingestionTimeoutMs": {
       "label": "Ingestion Timeout (ms)",
       "placeholder": "300000"
+    },
+    "recallTimeoutMs": {
+      "label": "Recall Timeout (ms)",
+      "placeholder": "2500"
+    },
+    "recallBudgetMs": {
+      "label": "Recall Budget (ms)",
+      "placeholder": "4000"
+    },
+    "recallBreakerThreshold": {
+      "label": "Recall Breaker Threshold",
+      "placeholder": "5"
+    },
+    "recallBreakerCooldownMs": {
+      "label": "Recall Breaker Cooldown (ms)",
+      "placeholder": "120000"
     }
   }
 }

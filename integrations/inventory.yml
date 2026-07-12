@@ -38,6 +38,17 @@ integrations:
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
+  - slug: vellum-assistant
+    name: "Cognee Plugin for Vellum Assistant"
+    owner: vellum
+    language: typescript
+    registry: none
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Vellum Assistant plugin integrating Cognee as the primary memory system. Pure TypeScript hooks talk to the Cognee HTTP API, session storage via hooks, recall via model-visible tool, session-to-graph sync; can optionally provision and manage a local Cognee server"
+
   - slug: codex
     name: "Cognee Plugin for Codex"
     owner: cognee
