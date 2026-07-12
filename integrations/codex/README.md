@@ -218,6 +218,35 @@ Config precedence:
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (0 disables) |
 | improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `180` | Read timeout for the improve POST |
 
+## Configuration precedence
+
+Resolution order: **env > config file > default** (env wins). See `load_config()`
+in `plugins/cognee/scripts/config.py`. Behavior pinned by
+`tests/test_config_precedence.py`.
+
+| Setting | Env var | Config key | Default | Who wins |
+| --- | --- | --- | --- | --- |
+| Dataset | `COGNEE_PLUGIN_DATASET` | `dataset` | `agent_sessions` | env |
+| Service URL | `COGNEE_BASE_URL` | `base_url` | unset | env |
+| API key | `COGNEE_API_KEY` | `api_key` | unset | env |
+| Backend | `COGNEE_CODEX_BACKEND` | `backend` | `auto` | env |
+
+An empty string cannot override on either layer: an empty config-file value is
+dropped (`v != ""`) and an empty env value is skipped (`if val:`).
+
+Backend `native` (or `local`/`sdk`) forces local mode: `base_url` and `api_key`
+are cleared to empty after the merge.
+
+### Testing & scope (#3559)
+
+- **Test + docs only** — no runtime config behavior was changed.
+- Precedence is documented per integration as it behaves today; the four Cognee
+  integrations are intentionally **not** converged (that is a product decision,
+  out of scope here).
+- These tests run locally today, not in CI (`ci.yml` runs pytest only for
+  integrations with their own `pyproject.toml`); wiring codex into CI is deferred
+  to a follow-up issue.
+
 ## Troubleshooting
 
 **Recall returns empty but data was ingested**
