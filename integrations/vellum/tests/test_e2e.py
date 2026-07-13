@@ -76,4 +76,6 @@ def test_support_assistant_workflow_end_to_end():
     # (not of these nodes). The recalled citation is the deterministic contract.
     assert isinstance(outputs.answer, str) and outputs.answer
     assert len(outputs.citations) >= 1
-    assert outputs.citations[0].get("dataset_name") == "support"
+    # Order-independent: recall returns a mix of entry types and only graph hits
+    # carry dataset_name, so don't assume the first citation is the graph one.
+    assert any(c.get("dataset_name") == "support" for c in outputs.citations)
