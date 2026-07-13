@@ -16,11 +16,24 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect and classify changed integrations
+        id: changes
+        uses: ./.github/actions/changed-integrations
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Check cognee version pinning
-        run: python scripts/check_version_pins.py
+      # Validate only the Python integrations this push/PR changed (via the same
+      # detect-changes action ci.yml uses), so a PR is not blocked by pre-existing
+      # pinning debt in integrations it doesn't touch. check_version_pins.py with
+      # no args still audits every integration for a manual/scheduled full sweep.
+      - name: Check cognee version pinning (changed integrations only)
+        if: ${{ steps.changes.outputs.python != '[]' }}
+        env:
+          CHANGED: ${{ join(fromJSON(steps.changes.outputs.python), ' ') }}
+        run: python scripts/check_version_pins.py $CHANGED

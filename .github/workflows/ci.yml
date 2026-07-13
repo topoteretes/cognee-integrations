@@ -28,44 +28,7 @@ jobs:
 
       - name: Detect and classify changed integrations
         id: classify
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE=${{ github.event.pull_request.base.sha }}
-          else
-            BASE=${{ github.event.before }}
-          fi
-
-          # Find changed integration directories (exclude dotfiles like inventory.yml edits)
-          CHANGED_DIRS=$(git diff --name-only "$BASE" HEAD -- integrations/ \
-            | grep -E '^integrations/[^/]+/' \
-            | cut -d/ -f2 | sort -u || true)
-
-          PY_LIST=""
-          TS_LIST=""
-
-          for dir in $CHANGED_DIRS; do
-            [ ! -d "integrations/$dir" ] && continue
-            if [ -f "integrations/$dir/pyproject.toml" ]; then
-              PY_LIST="${PY_LIST}\"${dir}\","
-            elif [ -f "integrations/$dir/package.json" ]; then
-              TS_LIST="${TS_LIST}\"${dir}\","
-            fi
-          done
-
-          # Build JSON arrays
-          if [ -n "$PY_LIST" ]; then
-            echo "python=[${PY_LIST%,}]" >> "$GITHUB_OUTPUT"
-          else
-            echo "python=[]" >> "$GITHUB_OUTPUT"
-          fi
-
-          if [ -n "$TS_LIST" ]; then
-            echo "typescript=[${TS_LIST%,}]" >> "$GITHUB_OUTPUT"
-          else
-            echo "typescript=[]" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "Changed dirs: $CHANGED_DIRS"
+        uses: ./.github/actions/changed-integrations
 
   test-python:
     needs: detect-changes

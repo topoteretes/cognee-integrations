@@ -1,0 +1,59 @@
+name: Detect changed integrations
+description: >-
+  Classify the integration directories changed vs the PR base (or the previous
+  push) into JSON arrays of Python and TypeScript slugs. Requires the repo to be
+  checked out with fetch-depth 0 first. Shared by ci.yml and check-pinning.yml so
+  the change-detection logic lives in one place.
+
+outputs:
+  python:
+    description: JSON array of changed Python integration slugs (dirs with a pyproject.toml).
+    value: ${{ steps.classify.outputs.python }}
+  typescript:
+    description: JSON array of changed TypeScript integration slugs (dirs with a package.json).
+    value: ${{ steps.classify.outputs.typescript }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect and classify changed integrations
+      id: classify
+      shell: bash
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          BASE=${{ github.event.pull_request.base.sha }}
+        else
+          BASE=${{ github.event.before }}
+        fi
+
+        # Find changed integration directories (exclude dotfiles like inventory.yml edits)
+        CHANGED_DIRS=$(git diff --name-only "$BASE" HEAD -- integrations/ \
+          | grep -E '^integrations/[^/]+/' \
+          | cut -d/ -f2 | sort -u || true)
+
+        PY_LIST=""
+        TS_LIST=""
+
+        for dir in $CHANGED_DIRS; do
+          [ ! -d "integrations/$dir" ] && continue
+          if [ -f "integrations/$dir/pyproject.toml" ]; then
+            PY_LIST="${PY_LIST}\"${dir}\","
+          elif [ -f "integrations/$dir/package.json" ]; then
+            TS_LIST="${TS_LIST}\"${dir}\","
+          fi
+        done
+
+        # Build JSON arrays
+        if [ -n "$PY_LIST" ]; then
+          echo "python=[${PY_LIST%,}]" >> "$GITHUB_OUTPUT"
+        else
+          echo "python=[]" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [ -n "$TS_LIST" ]; then
+          echo "typescript=[${TS_LIST%,}]" >> "$GITHUB_OUTPUT"
+        else
+          echo "typescript=[]" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "Changed dirs: $CHANGED_DIRS"
