@@ -44,6 +44,20 @@ session_id = ""
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
 if service_url and api_key:
     try:
+        import ssl
+        try:
+            import certifi
+            _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            # macOS host python often lacks root CAs; fall back like the recall path.
+            _ssl_ctx = ssl.create_default_context()
+            for _p in filter(None, [os.environ.get("SSL_CERT_FILE"), "/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"]):
+                if os.path.exists(_p):
+                    try:
+                        _ssl_ctx.load_verify_locations(_p)
+                        break
+                    except Exception:
+                        pass
         query = ""
         session_key = (os.environ.get("COGNEE_SESSION_KEY") or "").strip()
         if session_key:
@@ -52,7 +66,7 @@ if service_url and api_key:
             service_url.rstrip("/") + "/api/v1/agents/connections/me" + query,
             headers={"X-Api-Key": api_key},
         )
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
+        with urllib.request.urlopen(req, timeout=3.0, context=_ssl_ctx) as resp:
             payload = json.loads(resp.read().decode("utf-8") or "{}")
         if isinstance(payload, dict):
             agent = payload.get("agent") if isinstance(payload.get("agent"), dict) else {}

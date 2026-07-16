@@ -8,6 +8,7 @@ they run on every user prompt / tool call.
 import hashlib
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.error
@@ -606,6 +607,51 @@ def hook_log(event: str, detail: Optional[dict] = None) -> None:
         pass
 
 
+_SSL_CONTEXT: "ssl.SSLContext | None" = None
+
+
+def _https_context() -> ssl.SSLContext:
+    """Shared TLS context for every urllib HTTPS call (cloud/remote mode).
+
+    macOS Python builds often ship without root CA certs in the default
+    context, so HTTPS verification against Cognee Cloud fails with
+    CERTIFICATE_VERIFY_FAILED. Mirror the recall path's resolution once, here,
+    so all HTTPS traffic shares it: prefer certifi, else walk SSL_CERT_FILE and
+    known system cert bundles. Built once and cached. Passing this to urlopen
+    for an http:// (localhost) URL is harmless — urllib ignores the context for
+    non-HTTPS requests.
+    """
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is not None:
+        return _SSL_CONTEXT
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
+        loaded = False
+        for path in filter(
+            None,
+            [
+                os.environ.get("SSL_CERT_FILE"),
+                "/etc/ssl/cert.pem",
+                "/etc/ssl/certs/ca-certificates.crt",
+            ],
+        ):
+            if os.path.exists(path):
+                try:
+                    ctx.load_verify_locations(path)
+                    loaded = True
+                    break
+                except Exception:
+                    pass
+        if not loaded:
+            hook_log("https_context_no_ca_bundle", {})
+    _SSL_CONTEXT = ctx
+    return ctx
+
+
 def _reexec_into_venv() -> None:
     """Re-exec the current hook under the shared plugin-owned venv interpreter.
 
@@ -989,7 +1035,9 @@ def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
     if not base:
         return False
     try:
-        with urllib.request.urlopen(f"{base}/health", timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            f"{base}/health", timeout=timeout, context=_https_context()
+        ) as resp:
             return resp.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
@@ -1090,7 +1138,7 @@ def _json_http_request(
         headers=headers,
         method=method,
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
         body = resp.read().decode("utf-8")
         if not body:
             return None
@@ -1199,7 +1247,9 @@ def recall_via_http(
 
 def _backend_reachable(base_url: str, timeout: float = 1.5) -> bool:
     try:
-        with urllib.request.urlopen(f"{base_url.rstrip('/')}/docs", timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            f"{base_url.rstrip('/')}/docs", timeout=timeout, context=_https_context()
+        ) as resp:
             return 200 <= resp.status < 500
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
@@ -1282,7 +1332,7 @@ def _post_remember_document(
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
         return 200 <= resp.status < 300
 
 
@@ -1593,7 +1643,9 @@ def ensure_dataset_via_http(dataset: str) -> None:
                     method="POST",
                 )
                 try:
-                    with urllib.request.urlopen(req, timeout=15.0) as resp:
+                    with urllib.request.urlopen(
+                        req, timeout=15.0, context=_https_context()
+                    ) as resp:
                         resp.read()
                     hook_log("dataset_ensured", {"dataset": dataset, "via": "redirect"})
                     return

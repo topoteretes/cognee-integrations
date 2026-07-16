@@ -255,6 +255,8 @@ def _cloud_http_request(
     import urllib.parse
     import urllib.request
 
+    from _plugin_common import _https_context
+
     headers: dict[str, str] = {}
     data: bytes | None = None
     if json_body is not None:
@@ -270,7 +272,7 @@ def _cloud_http_request(
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
             return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         try:

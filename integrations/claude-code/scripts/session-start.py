@@ -33,6 +33,7 @@ from _plugin_common import (
     _VENV_DIR,
     _VENV_PYTHON,
     _VENV_READY_MARKER,
+    _https_context,
     _reexec_into_venv,
     apply_cognee_env,
     ensure_launch_record,
@@ -336,7 +337,7 @@ def _health_url(service_url: str) -> str:
 
 def _health_ok(url: str = _HEALTH_URL, timeout: float = 2.0) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with urllib.request.urlopen(url, timeout=timeout, context=_https_context()) as response:
             return response.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
