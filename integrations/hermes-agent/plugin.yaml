@@ -1,0 +1,9 @@
+name: cognee
+kind: exclusive
+version: 0.1.0
+description: "Cognee memory provider for Hermes Agent: session-aware graph memory, recall, forget, and session-end improvement."
+pip_dependencies:
+  - cognee>=1.0.0,<2.0.0
+hooks:
+  - on_session_end
+  - on_memory_write

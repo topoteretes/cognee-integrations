@@ -8,6 +8,7 @@ This community node lets you:
 - Turn data into AI memory with cognify to build knowledge-graph-based memory
 - Run search over your AI memory datasets
 - Delete datasets or individual data items
+- Run the self-improving skill loop: ingest a SKILL.md, review a task with the skill loaded, propose an improvement, review the before/after diff, and apply it
 
 [n8n](https://n8n.io/) is a fair-code licensed workflow automation platform.
 
@@ -49,7 +50,9 @@ Create credentials of type `Cognee API` in n8n. The node uses these values to au
 
 ## Operations
 
-The node exposes four resources. Each operation maps to a Cognee API endpoint.
+The node exposes five resources. Each operation maps to a Cognee API endpoint.
+
+> **Two API surfaces.** The **Add Data / Cognify / Search / Delete** resources call Cognee Cloud's `/api/*` endpoints. The **Skill** resource (self-improving loop) calls the `/api/v1/*` endpoints — available on a self-hosted cognee server today, and on Cognee Cloud as its `/api/v1` surface rolls out. Point the credential **Base URL** at whichever backend exposes the routes you need (e.g. `http://localhost:8000` for a self-hosted server). The connection test hits `GET /health`.
 
 ### Resource: Add Data
 
@@ -120,6 +123,31 @@ Example body sent by the node:
   - Dataset ID (`datasetId`, required): The UUID of the dataset
   - Data ID (`dataId`, required): The UUID of the data item to remove
 
+### Resource: Skill (`/api/v1`)
+
+The self-improving skill loop. A weak run becomes a reviewable, approvable edit to a skill's instructions.
+
+- **Operation: Ingest Skill** — `POST /api/v1/skills`
+  - Fields: Skill Name, Dataset Name, Skill Markdown (inline SKILL.md body)
+  - Ingests the markdown as a dataset-scoped Skill node (no file upload needed). Returns the dataset id.
+- **Operation: Review Skill** — `POST /api/v1/search` (`search_type=AGENTIC_COMPLETION`)
+  - Fields: Skill Name, Dataset Name, Query, Max Iterations, Top K
+  - Runs an agentic completion with the skill loaded, so you can grade how well the skill handled the task.
+- **Operation: Propose Improvement** — `POST /api/v1/remember/entry`
+  - Fields: Skill Name, Dataset Name, Task Text, Result Summary, Success Score, Score Threshold
+  - Records the weak run and creates a `SkillImprovementProposal` (status `proposed`, **not** applied). Returns `proposal_id`.
+- **Operation: Get Proposal** — `GET /api/v1/proposals/{proposalId}`
+  - Fields: Proposal ID, Dataset ID
+  - Returns `old_procedure`, `proposed_procedure`, `rationale`, `confidence` — review the diff **before** approving.
+- **Operation: Apply Improvement** — `POST /api/v1/remember/entry` (`skill_improvement.apply=true`)
+  - Fields: Skill Name, Dataset Name, Proposal ID
+  - Applies the approved proposal, writing the new procedure into the skill.
+- **Operation: Get Skill** — `GET /api/v1/skills/{skillId}`
+  - Fields: Skill ID, Dataset ID
+  - Returns one skill including its full `procedure` body (useful to confirm the applied change).
+
+Loop wiring: **Ingest Skill** → **Review Skill** → (score in n8n) → **Propose Improvement** → **Get Proposal** (show diff for approval) → **Apply Improvement** → **Get Skill**.
+
 ## Usage examples
 
 End-to-end example workflow:
@@ -159,6 +187,8 @@ The node depends on `n8n-workflow` at runtime (peer dependency). It should work 
 - [Package homepage](https://github.com/topoteretes/cognee-n8n)
 
 ## Version history
+
+- **0.5.0**: Add the **Skill** resource (self-improving skill loop) targeting the `/api/v1` API: Ingest Skill, Review Skill (agentic), Propose Improvement, Apply Improvement, Get Skill, Get Proposal. Existing Add/Cognify/Search/Delete operations are unchanged.
 
  - **0.4.0**: Prefix `/api` to all endpoint URLs and update Base URL format to `https://tenant-xxx.aws.cognee.ai` (breaking change — re-enter
   credential). Address n8n marketplace review

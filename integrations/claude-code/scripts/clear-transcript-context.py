@@ -14,7 +14,7 @@ from pathlib import Path
 
 ENV_NAME = "COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE"
 TRUTHY = {"1", "true", "yes", "on"}
-PLUGIN_DIR = Path.home() / ".cognee-plugin"
+PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 LOG_FILE = PLUGIN_DIR / "hook.log"
 
 

@@ -87,15 +87,22 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
     sys.path.insert(0, os.path.dirname(__file__))
     try:
         from _plugin_common import (  # type: ignore
+            http_api_ready,
             load_resolved,
             persist_session_cache_to_graph_via_http,
             resolve_user,
+            set_session_key,
             sync_lock,
         )
 
-        lock = sync_lock("idle-watcher")
+        session_key = str(config.get("session_key") or "").strip()
+        if session_key:
+            set_session_key(session_key)
+        api_mode = http_api_ready()
+        lock = nullcontext(True) if api_mode else sync_lock("idle-watcher")
     except Exception as exc:
         _log("sync_lock_import_error", error=str(exc)[:200])
+        api_mode = False
         lock = nullcontext(True)
 
     with lock as acquired:
@@ -108,12 +115,11 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                 ensure_cognee_ready,
                 ensure_dataset_ready,
                 ensure_identity,
-                is_cloud_mode,
                 persist_session_cache_to_graph,
                 sync_graph_context_to_session,
             )
 
-            if is_cloud_mode(config):
+            if api_mode:
                 wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
                 _log(
                     "session_bridge_done",
@@ -236,8 +242,9 @@ def main():
         sys.exit(1)
 
     session_id = bootstrap.get("session_id", "")
-    dataset = bootstrap.get("dataset", "codex_sessions")
+    dataset = bootstrap.get("dataset", "agent_sessions")
     user_id = bootstrap.get("user_id", "")
+    session_key = str(bootstrap.get("session_key", "") or "").strip()
     try:
         from config import load_config  # type: ignore
 
@@ -251,6 +258,10 @@ def main():
         sys.exit(1)
     if user_id:
         config["user_id"] = user_id
+        os.environ["COGNEE_USER_ID"] = user_id
+    if session_key:
+        config["session_key"] = session_key
+        os.environ["COGNEE_SESSION_KEY"] = session_key
 
     try:
         _PIDFILE.write_text(str(os.getpid()), encoding="utf-8")

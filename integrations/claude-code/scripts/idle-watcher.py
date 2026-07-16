@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idle watcher daemon — persists quiet sessions into Cognee.
+"""Idle watcher daemon - persists quiet Codex sessions into Cognee.
 
 Launched detached from ``session-start.py``. Polls
 ``~/.cognee-plugin/activity.ts`` every ``POLL_SECONDS``. When the last
@@ -11,8 +11,7 @@ Stops cleanly on:
   * Receiving SIGTERM (from SessionEnd hook or manual kill).
   * The pidfile being overwritten by a newer watcher (restart case).
 
-Survives SessionEnd / Claude crashes better than the SessionEnd hook
-does — that hook won't run if Claude was killed hard.
+Survives Codex crashes better than foreground hooks.
 """
 
 import asyncio
@@ -32,7 +31,7 @@ POLL_SECONDS = float(os.environ.get("COGNEE_IDLE_POLL", "10"))
 IDLE_SECONDS = float(os.environ.get("COGNEE_IDLE_THRESHOLD", "60"))
 IMPROVE_COOLDOWN = float(os.environ.get("COGNEE_IMPROVE_COOLDOWN", "120"))
 
-_PLUGIN_DIR = Path.home() / ".cognee-plugin"
+_PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _ACTIVITY = _PLUGIN_DIR / "activity.ts"
 _PIDFILE = _PLUGIN_DIR / "watcher.pid"
 _STOPFILE = _PLUGIN_DIR / "watcher.stop"
@@ -59,7 +58,8 @@ def _read_activity_ts() -> Optional[float]:
         return None
     try:
         return float(_ACTIVITY.read_text(encoding="utf-8").strip())
-    except Exception:
+    except Exception as exc:
+        _log("activity_read_failed", error=str(exc)[:200])
         return None
 
 
@@ -67,7 +67,8 @@ def _owns_pidfile() -> bool:
     """Return True if the pidfile still points at us."""
     try:
         return int(_PIDFILE.read_text(encoding="utf-8").strip()) == os.getpid()
-    except Exception:
+    except Exception as exc:
+        _log("pidfile_read_failed", error=str(exc)[:200])
         return False
 
 
@@ -86,13 +87,22 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
     sys.path.insert(0, os.path.dirname(__file__))
     try:
         from _plugin_common import (  # type: ignore
+            http_api_ready,
+            load_resolved,
             persist_session_cache_to_graph_via_http,
+            resolve_user,
+            set_session_key,
             sync_lock,
         )
 
-        lock = sync_lock("idle-watcher")
+        session_key = str(config.get("session_key") or "").strip()
+        if session_key:
+            set_session_key(session_key)
+        api_mode = http_api_ready()
+        lock = nullcontext(True) if api_mode else sync_lock("idle-watcher")
     except Exception as exc:
         _log("sync_lock_import_error", error=str(exc)[:200])
+        api_mode = False
         lock = nullcontext(True)
 
     with lock as acquired:
@@ -105,12 +115,11 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                 ensure_cognee_ready,
                 ensure_dataset_ready,
                 ensure_identity,
-                is_cloud_mode,
                 persist_session_cache_to_graph,
                 sync_graph_context_to_session,
             )
 
-            if is_cloud_mode(config):
+            if api_mode:
                 wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
                 _log(
                     "session_bridge_done",
@@ -122,13 +131,11 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                 return True
 
             await ensure_cognee_ready(config)
-            user_id, _ = await ensure_identity(config)
+            user_id = str(config.get("user_id") or load_resolved().get("user_id") or "")
+            if not user_id:
+                user_id, _ = await ensure_identity(config)
 
-            from uuid import UUID
-
-            from cognee.modules.users.methods import get_user
-
-            user = await get_user(UUID(user_id)) if user_id else None
+            user = await resolve_user(user_id) if user_id else None
             if user:
                 await ensure_dataset_ready(dataset, user)
                 wrote = await persist_session_cache_to_graph(dataset, session_id, user)
@@ -137,6 +144,7 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                     "session_bridge_done",
                     session=session_id,
                     dataset=dataset,
+                    user_id=str(user.id),
                     wrote=wrote,
                     graph_synced=graph_result.get("synced", 0),
                 )
@@ -147,9 +155,17 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
 
 
 async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
-    _log("started", session=session_id, dataset=dataset, poll=POLL_SECONDS, idle=IDLE_SECONDS)
+    _log(
+        "started",
+        session=session_id,
+        dataset=dataset,
+        user_id=config.get("user_id", ""),
+        poll=POLL_SECONDS,
+        idle=IDLE_SECONDS,
+    )
     last_improved_at = 0.0
     exit_reason = "loop_complete"
+    bridge_disabled = False
 
     while not _should_stop:
         if _STOPFILE.exists():
@@ -169,7 +185,11 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
 
         idle_for = now - ts
         time_since_improve = now - last_improved_at
-        if idle_for >= IDLE_SECONDS and time_since_improve >= IMPROVE_COOLDOWN:
+        if (
+            not bridge_disabled
+            and idle_for >= IDLE_SECONDS
+            and time_since_improve >= IMPROVE_COOLDOWN
+        ):
             _log("idle_trigger", idle_for=round(idle_for, 1))
             ok = await _improve_once(session_id, dataset, config)
             if ok:
@@ -177,6 +197,8 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
                 _log("bridge_done")
                 exit_reason = "bridge_complete"
                 break
+            bridge_disabled = True
+            _log("bridge_disabled_after_failure")
 
         await asyncio.sleep(POLL_SECONDS)
 
@@ -184,7 +206,12 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         exit_reason = "signal"
 
     ts = _read_activity_ts()
-    if exit_reason in {"signal", "stop_sentinel"} and ts and ts > last_improved_at:
+    if (
+        not bridge_disabled
+        and exit_reason in {"signal", "stop_sentinel"}
+        and ts
+        and ts > last_improved_at
+    ):
         _log("shutdown_trigger", reason=exit_reason, activity_age=round(time.time() - ts, 1))
         ok = await _improve_once(session_id, dataset, config)
         if ok:
@@ -197,8 +224,8 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
     try:
         if _owns_pidfile():
             _PIDFILE.unlink()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log("pidfile_unlink_failed", error=str(exc)[:200])
 
 
 def main():
@@ -215,17 +242,26 @@ def main():
         sys.exit(1)
 
     session_id = bootstrap.get("session_id", "")
-    dataset = bootstrap.get("dataset", "claude_sessions")
+    dataset = bootstrap.get("dataset", "agent_sessions")
+    user_id = bootstrap.get("user_id", "")
+    session_key = str(bootstrap.get("session_key", "") or "").strip()
     try:
         from config import load_config  # type: ignore
 
         config = load_config()
         config.update({k: v for k, v in bootstrap.get("config", {}).items() if v})
-    except Exception:
+    except Exception as exc:
+        _log("config_load_failed", error=str(exc)[:200])
         config = bootstrap.get("config", {})
     if not session_id:
         _log("fatal_no_session_id")
         sys.exit(1)
+    if user_id:
+        config["user_id"] = user_id
+        os.environ["COGNEE_USER_ID"] = user_id
+    if session_key:
+        config["session_key"] = session_key
+        os.environ["COGNEE_SESSION_KEY"] = session_key
 
     try:
         _PIDFILE.write_text(str(os.getpid()), encoding="utf-8")
@@ -238,8 +274,8 @@ def main():
     try:
         if _STOPFILE.exists():
             _STOPFILE.unlink()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log("stopfile_unlink_failed", error=str(exc)[:200])
 
     _install_signal_handlers()
 

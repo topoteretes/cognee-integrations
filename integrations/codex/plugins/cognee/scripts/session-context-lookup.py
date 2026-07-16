@@ -8,26 +8,43 @@ graph-knowledge snapshot from ``improve()``) flows back into Codex's
 context.
 
 Configuration:
-    Uses resolved session ID from SessionStart hook (via ~/.cognee-plugin/codex/resolved.json).
+    Resolves session state via Cognee HTTP endpoints.
 """
 
 import asyncio
 import json
 import os
 import sys
+import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    get_session_key,
     hook_log,
     load_resolved,
+    mark_server_ready,
     notify,
     quiet_hook_output,
     read_and_reset_save_counter,
     recall_via_http,
+    resolve_runtime_mode,
+    resolve_session_key_from_payload,
     resolve_user,
+    server_health_ok,
+    server_ready_hint,
+    set_session_key,
 )
-from config import ensure_cognee_ready, get_session_id, is_cloud_mode, load_config
+from cognee_statusline_render import render_status_for_host
+from config import ensure_cognee_ready, get_session_id, load_config
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
 
 TOP_K = 5
 TRUNCATE_ANSWER = 500
@@ -58,6 +75,10 @@ def _format_entry(entry: dict) -> str:
         # (folded in from scope=graph) carry `text`. Try both.
         content = str(entry.get("content", "") or entry.get("text", ""))[:TRUNCATE_GRAPH_CTX]
         return f"[graph-snapshot]\n{content}"
+
+    if source == "session_context":
+        content = str(entry.get("content", "") or entry.get("text", ""))[:TRUNCATE_GRAPH_CTX]
+        return f"[agent-guidance]\n{content}"
 
     if source == "trace":
         origin = entry.get("origin_function", "?")
@@ -91,6 +112,8 @@ def _has_entry_content(entry: dict) -> bool:
     """Return True when a recall entry has useful content to inject."""
     source = entry.get("source", "")
     if source == "graph_context":
+        return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
+    if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "trace":
         fields = ("origin_function", "status", "session_feedback", "method_return_value")
@@ -136,7 +159,22 @@ async def _recent_trace_fallback(session_id: str, user_id: str, top_k: int) -> l
 
 async def _run(prompt: str) -> dict | None:
     config = load_config()
-    await ensure_cognee_ready(config)
+    runtime = resolve_runtime_mode()
+    cloud_mode = runtime["mode"] == "http"
+    # Readiness gate: never block the user's prompt on a warming/migrating
+    # backend. Trust a fresh readiness marker (zero-network); on a miss, do one
+    # short /health probe and record the result. If still not ready, skip recall
+    # entirely so the prompt is answered at full speed (memory turns on later).
+    service_url = runtime.get("base_url", "")
+    if not server_ready_hint(service_url):
+        if server_health_ok(service_url, timeout=_float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)):
+            mark_server_ready(service_url)
+        else:
+            hook_log("recall_skipped_warming", {"base_url": service_url})
+            return None
+
+    if not cloud_mode:
+        await ensure_cognee_ready(config)
 
     session_id = _load_session_id()
     if not session_id:
@@ -151,19 +189,40 @@ async def _run(prompt: str) -> dict | None:
     # so we call it once per scope and collect whatever succeeds.
     results: list = []
     scope_specs = [
-        (["session"], None),
-        (["trace"], None),
-        (["graph_context"], None),
-        (["graph"], "GRAPH_COMPLETION"),
+        (["session"], None, None),
+        (["trace"], None, None),
+        (["graph_context"], None, None),
+        (["graph"], "HYBRID_COMPLETION", None),
+        (["session_context"], None, "agent"),
     ]
-    cloud_mode = is_cloud_mode(config)
     if not cloud_mode:
         import cognee
         from cognee.modules.search.types import SearchType
 
         user = await resolve_user(_load_user_id())
 
-    for scope_list, qtype in scope_specs:
+    # Hard time-box: this hook is on the keystroke->answer path, so recall must
+    # never be the long pole. Each scope gets a short per-call timeout, and the
+    # whole loop stops once the overall budget is spent. Partial results are fine.
+    recall_timeout = _float_env("COGNEE_RECALL_TIMEOUT", 2.5)
+    budget_deadline = time.monotonic() + _float_env("COGNEE_RECALL_BUDGET", 4.0)
+    # Respect the shared circuit breaker: when the server has been failing (tripped
+    # by the explicit recall path), skip this per-prompt recall rather than hammering
+    # a down backend on every keystroke. HTTP/cloud mode only.
+    if cloud_mode:
+        try:
+            from _cognee_client import breaker_open
+
+            _bopen, _bretry = breaker_open()
+        except Exception:
+            _bopen, _bretry = False, 0
+        if _bopen:
+            hook_log("recall_breaker_open", {"retry_in": _bretry})
+            scope_specs = []
+    for scope_list, qtype, context_profile in scope_specs:
+        if time.monotonic() >= budget_deadline:
+            hook_log("recall_budget_exceeded", {"collected": len(results)})
+            break
         try:
             if cloud_mode:
                 part = recall_via_http(
@@ -173,17 +232,23 @@ async def _run(prompt: str) -> dict | None:
                     scope=scope_list,
                     only_context=True,
                     search_type=qtype,
+                    context_profile=context_profile,
+                    timeout=recall_timeout,
                 )
             else:
-                query_type = SearchType.GRAPH_COMPLETION if qtype == "GRAPH_COMPLETION" else None
-                part = await cognee.recall(
-                    prompt,
-                    session_id=session_id,
-                    top_k=TOP_K,
-                    scope=scope_list,
-                    only_context=True,
-                    query_type=query_type,
-                    user=user,
+                query_type = getattr(SearchType, qtype, None) if qtype else None
+                part = await asyncio.wait_for(
+                    cognee.recall(
+                        prompt,
+                        session_id=session_id,
+                        top_k=TOP_K,
+                        scope=scope_list,
+                        only_context=True,
+                        query_type=query_type,
+                        user=user,
+                        **({"context_profile": context_profile} if context_profile else {}),
+                    ),
+                    timeout=recall_timeout,
                 )
             if part:
                 results.extend(part)
@@ -193,14 +258,19 @@ async def _run(prompt: str) -> dict | None:
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
     # mode returns plain dicts via HTTP. Normalize to dicts here.
-    by_source: dict[str, list] = {"session": [], "trace": [], "graph_context": []}
+    by_source: dict[str, list] = {
+        "session": [],
+        "trace": [],
+        "graph_context": [],
+        "session_context": [],
+    }
     for r in results or []:
         if hasattr(r, "model_dump"):
             r = r.model_dump()
         if not isinstance(r, dict):
             continue
         src = r.get("source", "session")
-        # Fold scope=graph (GRAPH_COMPLETION) results into the graph_context
+        # Fold scope=graph (HYBRID_COMPLETION) results into the graph_context
         # bucket so the displayed `g` counter reflects what was retrieved.
         if src == "graph":
             r["source"] = "graph_context"
@@ -245,18 +315,25 @@ async def _run(prompt: str) -> dict | None:
     except Exception as exc:
         hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
 
-    # Build a one-line visibility header so the user (via the assistant's
+    # Build a visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
+    status_line = render_status_for_host(get_session_key())
     header = (
+        f"{status_line}\n"
         "Cognee memory: recall "
         f"{counts['session']} session / {counts['trace']} trace / "
-        f"{counts['graph_context']} graph; saved last turn "
+        f"{counts['graph_context']} graph / {counts['session_context']} agent; saved last turn "
         f"{saves_last_turn['prompt']} prompt / {saves_last_turn['trace']} trace / "
         f"{saves_last_turn['answer']} answer"
     )
 
     section_lines = []
+    if by_source.get("session_context"):
+        section_lines.append("=== Active agent guidance ===")
+        for e in by_source["session_context"]:
+            section_lines.append(_format_entry(e))
+            section_lines.append("")
     if by_source.get("graph_context"):
         section_lines.append("=== Knowledge graph snapshot ===")
         for e in by_source["graph_context"]:
@@ -327,6 +404,16 @@ def main():
     try:
         payload = json.loads(payload_raw)
     except json.JSONDecodeError:
+        return
+
+    session_key_candidate, session_key_source = resolve_session_key_from_payload(payload)
+    if session_key_candidate:
+        set_session_key(session_key_candidate)
+    hook_log(
+        "context_lookup_session_key", {"source": session_key_source, "value": session_key_candidate}
+    )
+    if not get_session_key():
+        hook_log("context_lookup_missing_session_key")
         return
 
     prompt = payload.get("prompt", "")

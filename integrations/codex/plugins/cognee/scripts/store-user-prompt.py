@@ -6,7 +6,7 @@ parallel context-lookup hook. Unlike the Claude integration, Codex keeps
 the prompt pending and writes a single paired QAEntry on Stop.
 
 Configuration:
-    Uses resolved session ID from SessionStart hook (via ~/.cognee-plugin/codex/resolved.json).
+    Resolves session state via Cognee HTTP endpoints.
 """
 
 import asyncio
@@ -20,15 +20,20 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     bump_save_counter,
+    get_session_key,
     hook_log,
     load_resolved,
     notify,
     quiet_hook_output,
     remember_pending_prompt,
+    resolve_runtime_mode,
+    resolve_session_key_from_payload,
     resolve_user,
+    server_ready_hint,
+    set_session_key,
     touch_activity,
 )
-from config import ensure_cognee_ready, get_dataset, get_session_id, is_cloud_mode, load_config
+from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
 _STATE_DIR = Path.home() / ".cognee-plugin" / "codex"
@@ -78,8 +83,9 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
         "session_id": session_id,
         "dataset": dataset,
         "user_id": user_id,
+        "session_key": os.environ.get("COGNEE_SESSION_KEY", ""),
         "config": {
-            "service_url": config.get("service_url", ""),
+            "base_url": config.get("base_url", ""),
             "llm_model": config.get("llm_model", ""),
             "dataset": dataset,
         },
@@ -94,11 +100,13 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
         log_fh = subprocess.DEVNULL
 
     try:
+        env = os.environ.copy()
         subprocess.Popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=log_fh,
+            env=env,
             start_new_session=True,
             close_fds=True,
         )
@@ -127,14 +135,17 @@ async def _store(prompt: str, payload: dict):
     touch_activity()
     _ensure_idle_watcher(session_id, dataset, user_id, config)
 
-    # Keep Cognee initialization parity with Claude so fresh local databases,
-    # identities, and datasets are ready before the paired Stop write arrives.
-    try:
-        await ensure_cognee_ready(config)
-        if not is_cloud_mode(config):
+    runtime = resolve_runtime_mode()
+    if runtime["mode"] == "local_sdk" and server_ready_hint(runtime.get("base_url", "")):
+        # Keep Cognee initialization parity with Claude so fresh local
+        # databases, identities, and datasets are ready before Stop writes.
+        # Skipped while the server is still warming so this hook never blocks;
+        # the prompt is still buffered below and flushed once the server is up.
+        try:
+            await ensure_cognee_ready(config)
             await resolve_user(user_id)
-    except Exception as exc:
-        hook_log("prompt_prepare_warning", {"error": str(exc)[:200]})
+        except Exception as exc:
+            hook_log("prompt_prepare_warning", {"error": str(exc)[:200]})
 
     remember_pending_prompt(
         session_id,
@@ -156,6 +167,14 @@ def main():
         payload = json.loads(payload_raw)
     except json.JSONDecodeError:
         hook_log("invalid_payload_json", {"event": "prompt"})
+        return
+
+    session_key_candidate, session_key_source = resolve_session_key_from_payload(payload)
+    if session_key_candidate:
+        set_session_key(session_key_candidate)
+    hook_log("prompt_session_key", {"source": session_key_source, "value": session_key_candidate})
+    if not get_session_key():
+        hook_log("prompt_missing_session_key")
         return
 
     prompt = payload.get("prompt", "")

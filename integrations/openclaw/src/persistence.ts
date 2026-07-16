@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import type { DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
+import type { AgentSyncIndexes, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // State file paths
@@ -11,6 +11,7 @@ export const STATE_DIR = join(homedir(), ".openclaw", "memory", "cognee");
 export const STATE_PATH = join(STATE_DIR, "datasets.json");
 export const SYNC_INDEX_PATH = join(STATE_DIR, "sync-index.json");
 export const SCOPED_SYNC_INDEX_PATH = join(STATE_DIR, "scoped-sync-indexes.json");
+export const AGENT_SYNC_INDEX_PATH = join(STATE_DIR, "agent-sync-indexes.json");
 
 // ---------------------------------------------------------------------------
 // Dataset state (maps dataset name -> dataset ID)
@@ -108,4 +109,64 @@ export async function migrateLegacyIndex(defaultScope: MemoryScope): Promise<Sco
   };
   await saveScopedSyncIndexes(scoped);
   return scoped;
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent sync indexes (agent scope, keyed by normalized agentId)
+//
+// The `agent` scope is private per agent, so it lives here instead of in the
+// shared ScopedSyncIndexes. `company`/`user` stay shared in
+// scoped-sync-indexes.json.
+// ---------------------------------------------------------------------------
+
+export async function loadAgentSyncIndexes(): Promise<AgentSyncIndexes> {
+  try {
+    const raw = await fs.readFile(AGENT_SYNC_INDEX_PATH, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const result: AgentSyncIndexes = {};
+    for (const [agentId, value] of Object.entries(parsed)) {
+      if (value && typeof value === "object") {
+        const idx = value as SyncIndex;
+        idx.entries ??= {};
+        result[agentId] = idx;
+      }
+    }
+    return result;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+export async function saveAgentSyncIndexes(indexes: AgentSyncIndexes): Promise<void> {
+  await fs.mkdir(dirname(AGENT_SYNC_INDEX_PATH), { recursive: true });
+  await fs.writeFile(AGENT_SYNC_INDEX_PATH, JSON.stringify(indexes, null, 2), "utf-8");
+}
+
+/**
+ * One-time migration: when upgrading to per-agent memory, move any legacy shared
+ * `agent` scope entry from scoped-sync-indexes.json into the per-agent map under
+ * the given agentId, and drop it from the shared file. Idempotent: a no-op once
+ * the agent-sync-indexes file exists or there is no shared agent entry.
+ *
+ * Returns the migrated AgentSyncIndexes if a migration happened, else null.
+ */
+export async function migrateAgentScopeToPerAgent(agentId: string): Promise<AgentSyncIndexes | null> {
+  // Already migrated? (file exists and non-empty)
+  try {
+    await fs.access(AGENT_SYNC_INDEX_PATH);
+    return null;
+  } catch { /* file absent — proceed */ }
+
+  const shared = await loadScopedSyncIndexes();
+  const legacyAgent = shared.agent;
+  if (!legacyAgent || Object.keys(legacyAgent.entries).length === 0) return null;
+
+  const agentIndexes: AgentSyncIndexes = { [agentId]: { ...legacyAgent } };
+  await saveAgentSyncIndexes(agentIndexes);
+
+  delete shared.agent;
+  await saveScopedSyncIndexes(shared);
+  return agentIndexes;
 }

@@ -22,6 +22,12 @@ export async function syncFiles(
   cfg: Required<CogneePluginConfig>,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
   overrideDatasetName?: string,
+  /**
+   * Persist the mutated syncIndex to the legacy single-scope file. Callers that
+   * own their own persistence (scoped sync, per-agent sync) pass false so they
+   * don't clobber sync-index.json. Defaults to true for legacy single-scope use.
+   */
+  persistIndex = true,
 ): Promise<SyncResult & { datasetId?: string }> {
   const result: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   const dsName = overrideDatasetName || cfg.datasetName;
@@ -144,7 +150,7 @@ export async function syncFiles(
     }
   }
 
-  await saveSyncIndex(syncIndex);
+  if (persistIndex) await saveSyncIndex(syncIndex);
   return { ...result, datasetId };
 }
 
@@ -160,6 +166,12 @@ export async function syncFilesScoped(
   cfg: Required<CogneePluginConfig>,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
   runtimeAgentId?: string,
+  /**
+   * Restrict processing to these scopes. Used to sync only the shared scopes
+   * (`company`/`user`) from the default workspace when per-agent memory owns
+   * the `agent` scope. When omitted, all scopes are processed (legacy behavior).
+   */
+  onlyScopes?: MemoryScope[],
 ): Promise<SyncResult & { datasetIds: Record<MemoryScope, string | undefined> }> {
   const totalResult: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   const datasetIds: Record<MemoryScope, string | undefined> = { company: undefined, user: undefined, agent: undefined };
@@ -183,12 +195,14 @@ export async function syncFilesScoped(
   }
 
   // Determine which scopes need processing
+  const scopeFilter = onlyScopes ? new Set<MemoryScope>(onlyScopes) : null;
   const allScopes = new Set<MemoryScope>([
     ...changedByScope.keys(),
     ...(Object.keys(scopedIndexes) as MemoryScope[]),
   ]);
 
   for (const scope of allScopes) {
+    if (scopeFilter && !scopeFilter.has(scope)) continue;
     const dsName = datasetNameForScope(scope, cfg, runtimeAgentId);
     const scopeChanged = changedByScope.get(scope) ?? [];
     const scopeFull = fullByScope.get(scope) ?? [];
@@ -205,7 +219,7 @@ export async function syncFilesScoped(
 
     logger.info?.(`cognee-openclaw: [${scope}] syncing ${scopeChanged.length} changed file(s) to dataset "${dsName}"${hasDeletedFiles ? " + deletions" : ""}`);
 
-    const result = await syncFiles(client, scopeChanged, scopeFull, scopeIndex, cfg, logger, dsName);
+    const result = await syncFiles(client, scopeChanged, scopeFull, scopeIndex, cfg, logger, dsName, false);
     totalResult.added += result.added;
     totalResult.updated += result.updated;
     totalResult.skipped += result.skipped;

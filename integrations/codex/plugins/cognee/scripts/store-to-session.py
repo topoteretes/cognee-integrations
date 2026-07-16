@@ -9,8 +9,7 @@ Runs async on the PostToolUse / Stop hooks - fire-and-forget, never
 blocks Codex.
 
 Configuration:
-    Uses resolved session ID from SessionStart hook (via ~/.cognee-plugin/codex/resolved.json).
-    Falls back to COGNEE_SESSION_ID / COGNEE_PLUGIN_DATASET env vars.
+    Resolves session state via Cognee HTTP endpoints.
 """
 
 import asyncio
@@ -24,14 +23,20 @@ from _plugin_common import (
     append_http_bridge_entry,
     bump_save_counter,
     bump_turn_counter,
+    get_session_key,
     hook_log,
+    http_api_ready,
     load_resolved,
     notify,
     persist_session_cache_to_graph_via_http,
     pop_pending_prompt,
     quiet_hook_output,
     remember_entry_via_http,
+    resolve_runtime_mode,
+    resolve_session_key_from_payload,
     resolve_user,
+    server_ready_hint,
+    set_session_key,
     touch_activity,
 )
 from config import (
@@ -39,7 +44,6 @@ from config import (
     ensure_dataset_ready,
     get_dataset,
     get_session_id,
-    is_cloud_mode,
     load_config,
     persist_session_cache_to_graph,
     sync_graph_context_to_session,
@@ -54,7 +58,7 @@ _MAX_ASSISTANT_BYTES = 8000
 async def _fire_improve_background(dataset: str, session_id: str, user, reason: str) -> None:
     """Fire-and-forget session bridge; failures are logged but never raised."""
     try:
-        if is_cloud_mode(load_config()):
+        if http_api_ready():
             wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
             hook_log(
                 "auto_bridge_fired",
@@ -154,7 +158,23 @@ async def _store_tool_call(payload: dict) -> None:
         return
 
     config = load_config()
-    await ensure_cognee_ready(config)
+    runtime = resolve_runtime_mode()
+    use_http = runtime["mode"] == "http"
+    if not server_ready_hint(runtime.get("base_url", "")):
+        # Server still warming: don't block the tool call and don't lose the
+        # trace. Mirror it into the local bridge shadow; the session->graph
+        # sync drains it once the server is ready.
+        trace_text = (
+            f"{tool_name} [{status}]\n"
+            f"Params: {json.dumps(params, ensure_ascii=False)}\n"
+            f"Return: {return_value}"
+        )
+        append_http_bridge_entry(dataset, session_id, trace=trace_text)
+        bump_save_counter(session_id, "trace")
+        hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
+        return
+    if not use_http:
+        await ensure_cognee_ready(config)
 
     entry = {
         "type": "trace",
@@ -170,7 +190,7 @@ async def _store_tool_call(payload: dict) -> None:
     }
 
     try:
-        if is_cloud_mode(config):
+        if use_http:
             result = remember_entry_via_http(dataset, session_id, entry)
             user = None
         else:
@@ -205,7 +225,7 @@ async def _store_tool_call(payload: dict) -> None:
             },
         )
         notify(f"trace stored ({tool_name}, {status})")
-        if is_cloud_mode(config):
+        if use_http:
             trace_text = (
                 f"{tool_name} [{status}]\n"
                 f"Params: {json.dumps(params, ensure_ascii=False)}\n"
@@ -240,7 +260,24 @@ async def _store_assistant_stop(payload: dict) -> None:
         return
 
     config = load_config()
-    await ensure_cognee_ready(config)
+    runtime = resolve_runtime_mode()
+    use_http = runtime["mode"] == "http"
+    if not server_ready_hint(runtime.get("base_url", "")):
+        # Server still warming: buffer the prompt+answer into the local bridge
+        # shadow instead of dropping it; the session->graph sync drains it once
+        # the server is ready.
+        pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
+        append_http_bridge_entry(
+            dataset,
+            session_id,
+            question=pending.get("prompt", ""),
+            answer=msg,
+        )
+        bump_save_counter(session_id, "answer")
+        hook_log("store_buffered_warming", {"hook": "stop"})
+        return
+    if not use_http:
+        await ensure_cognee_ready(config)
 
     pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
 
@@ -255,7 +292,7 @@ async def _store_assistant_stop(payload: dict) -> None:
     }
 
     try:
-        if is_cloud_mode(config):
+        if use_http:
             result = remember_entry_via_http(dataset, session_id, entry)
             user = None
         else:
@@ -276,7 +313,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         return
 
     if result:
-        if is_cloud_mode(config):
+        if use_http:
             append_http_bridge_entry(
                 dataset,
                 session_id,
@@ -307,6 +344,14 @@ def main():
         payload = json.loads(payload_raw)
     except json.JSONDecodeError:
         hook_log("invalid_payload_json")
+        return
+
+    session_key_candidate, session_key_source = resolve_session_key_from_payload(payload)
+    if session_key_candidate:
+        set_session_key(session_key_candidate)
+    hook_log("store_session_key", {"source": session_key_source, "value": session_key_candidate})
+    if not get_session_key():
+        hook_log("store_missing_session_key")
         return
 
     is_stop = "--stop" in sys.argv

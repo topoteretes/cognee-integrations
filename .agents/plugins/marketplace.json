@@ -1,0 +1,22 @@
+{
+  "name": "cognee",
+  "interface": {
+    "displayName": "Cognee"
+  },
+  "plugins": [
+    {
+      "name": "cognee",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/topoteretes/cognee-integrations.git",
+        "path": "./integrations/codex/plugins/cognee",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Engineering"
+    }
+  ]
+}

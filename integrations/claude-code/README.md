@@ -1,192 +1,293 @@
 # Cognee Memory Plugin for Claude Code
 
-Gives Claude Code persistent memory across sessions using Cognee's knowledge graph. Tool calls and responses are automatically captured into session memory, relevant context is injected on every prompt, and session data is bridged into the permanent knowledge graph at session end.
+Adds persistent memory to Claude Code through Cognee.
+
+The integration:
+- captures prompts, tool traces, and assistant responses into session memory
+- injects relevant context on prompt submit
+- syncs session memory into graph memory on session end/final exit
 
 ## Install
 
-### 1. Install Cognee
+Install from the Claude Code marketplace. You can do this interactively by typing slash commands directly in the Claude Code chat:
 
-```bash
-pip install cognee
+```
+/plugin marketplace add topoteretes/cognee-integrations
+/plugin install cognee-memory@cognee
 ```
 
-### 2. Configure
+Then set environment variables for your runtime mode.
 
-**Local mode** (cognee runs in-process, no server needed):
-
-```bash
-export LLM_API_KEY="your-openai-key"
-export CACHING=true   # required for session memory
-```
-
-**Backend mode** (connect to a local or remote Cognee API server):
+**Cognee Cloud or a remote server** — set both:
 
 ```bash
-export COGNEE_SERVICE_URL="http://localhost:8000"   # or your cloud URL
-export COGNEE_API_KEY="your-api-key"                # optional if auth is disabled
-export CACHING=true
-```
-
-On first start, the plugin auto-registers as `claude-code@cognee.agent` on the backend — it creates an agent user, logs in, obtains an API key, and reconnects with agent-specific credentials. The agent then appears in the Cognee UI's agents list.
-
-If you already have an agent API key, set `COGNEE_API_KEY` directly and the plugin will use it without re-registering.
-
-**Cognee Cloud**:
-
-```bash
-export COGNEE_SERVICE_URL="https://your-instance.cognee.ai"
+export COGNEE_BASE_URL="https://your-instance.cognee.ai"
 export COGNEE_API_KEY="ck_..."
 ```
 
-Or create `~/.cognee-plugin/config.json`:
+**Local mode** (default when `COGNEE_BASE_URL` is not set) — the plugin bootstraps a local Cognee API at `http://localhost:8011`. Only `LLM_API_KEY` is required; `COGNEE_API_KEY` is auto-minted if absent:
+
+```bash
+export LLM_API_KEY="sk-..."
+```
+
+You can also set config in `~/.cognee-plugin/claude-code/config.json`:
 
 ```json
 {
-  "service_url": "http://localhost:8000",
-  "dataset": "claude_sessions"
+  "base_url": "https://your-instance.cognee.ai",
+  "dataset": "agent_sessions"
 }
 ```
 
-### 3. Enable the plugin
+On startup you should see a "Cognee Memory Connected" system message.
 
-**Option A — permanent (recommended):**
+## Auth
 
-Add the plugin directory to your shell profile so it loads on every session:
+The integration uses a **single auth principal** — one API key, one user.
+
+Key resolution order:
+1. `COGNEE_API_KEY` env var
+2. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
+3. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
+
+## Mode selection rules
+
+At startup (`SessionStart`):
+- `COGNEE_BASE_URL` set → `managed_endpoint`, either local, or on Cognee Cloud (API key needed in cloud case)
+- otherwise → `integration_local` (local API bootstrap)
+
+At hook runtime:
+- hooks resolve mode through runtime endpoint auth (env + `api_key.json`), not only config intent
+- `http` mode skips local SDK initialization
+
+The hooks emit `mode_decision` logs with `mode`, `service_url`, `url_source`, `key_source`, `api_key_present`.
+
+## Sessions
+
+Each terminal launch maintains a small map file:
+
+```
+~/.cognee-plugin/claude-code/sessions/<host_session_id>.json
+  → { "conn_uuid": "...", "session_id": "...", "host_key": "..." }
+```
+
+- **`session_id`** — which Cognee session this terminal writes to and recalls from. Fixed at launch.
+- **`conn_uuid`** — per-launch liveness handle used for agent registration and server shutdown counting.
+
+By default a new `session_id` is generated each launch. Set `COGNEE_SESSION_ID` to resume a specific session:
 
 ```bash
-# Add to ~/.zshrc or ~/.bashrc
-alias claude="claude --plugin-dir /path/to/cognee-integrations/integrations/claude-code"
+export COGNEE_SESSION_ID="my-project"
 ```
 
-Then reload: `source ~/.zshrc`
+Two terminals can deliberately share a session by setting the same `COGNEE_SESSION_ID`.
 
-**Option B — single session:**
+## Dataset
+
+All writes and recall are scoped to a single dataset. By default both the Claude Code and Codex plugins use `agent_sessions`, so memory is shared across both integrations automatically.
+
+Set a custom dataset at launch:
 
 ```bash
-claude --plugin-dir /path/to/cognee-integrations/integrations/claude-code
+export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
 
-**Option C — validate first:**
+Or persist it in `~/.cognee-plugin/claude-code/config.json`:
 
-```bash
-claude plugin validate /path/to/cognee-integrations/integrations/claude-code
+```json
+{ "dataset": "my-project-memory" }
 ```
 
-When the plugin loads, you'll see "Cognee Memory Connected" with the mode, dataset, and session ID at the start of your session.
+The dataset is fixed for the lifetime of a launch. Recall searches only the active dataset. If you want to
+change the active dataset, you have to exit Claude, change the dataset via env, and then start Claude again.
+Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
 
-## How it works
+## Hooks
 
-The plugin hooks into six Claude Code lifecycle events:
+| Hook | Behavior |
+|---|---|
+| `SessionStart` | mode select, identity setup, dataset readiness, watcher bootstrap |
+| `UserPromptSubmit` | dataset-scoped context lookup + async prompt staging |
+| `PostToolUse` | async trace write |
+| `Stop` | assistant answer write + optional transcript clear hook |
+| `PreCompact` | memory anchor build before compaction |
+| `SessionEnd` | trigger detached final sync worker |
 
-| Hook | What it does |
-|------|-------------|
-| **SessionStart** | Loads config, computes a per-directory session ID, connects to Cognee Cloud if configured |
-| **UserPromptSubmit** | Searches the session cache for context relevant to your prompt and injects it (3s timeout, fails silently) |
-| **PostToolUse** | Captures tool name, input, and output into the session cache with `[category:agent]` tag (async, non-blocking) |
-| **Stop** | Captures the final assistant response when you interrupt |
-| **PreCompact** | Before context window compaction, builds a memory anchor from session + graph context so key knowledge survives the reset |
-| **SessionEnd** | Runs `cognee.improve()` to bridge session data into the permanent knowledge graph |
+Claude-specific contracts are preserved:
+- `hookSpecificOutput` payload format
+- async hook behavior for write hooks
 
-## Data categories
+## Memory preference
 
-The plugin organizes knowledge into three categories via `node_set` tagging:
+With the plugin active, Cognee is the **preferred** memory system: relevant memory is
+auto-recalled into context on every `UserPromptSubmit` and writes are captured
+automatically, so Claude consults Cognee first when answering. To reinforce this, the
+`SessionStart` hook injects an `additionalContext` instruction telling Claude to treat
+Cognee as authoritative and prefer the Cognee tools/skills over Claude Code's built-in
+file memory (`MEMORY.md`).
 
-| Category | Node set | What belongs here |
-|----------|----------|-------------------|
-| **user** | `user_context` | User preferences, corrections, personal facts |
-| **project** | `project_docs` | Repository docs, code context, architecture decisions |
-| **agent** | `agent_actions` | Tool call logs, reasoning traces (auto-captured by hooks) |
+Note: a plugin **cannot reliably disable** Claude Code's native auto memory
+(`MEMORY.md` is injected as context, not a tool call that hooks can intercept). This
+feature steers the model toward Cognee rather than hard-disabling native memory. To
+turn the steer off, set `COGNEE_PREFER_MEMORY=false`. To additionally suppress native
+auto memory yourself, disable it in Claude Code (e.g. `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`
+in the launching shell, if your Claude Code version supports it).
 
-When using `/cognee-memory:cognee-remember`, Claude routes data to the correct category based on context. When searching with `/cognee-memory:cognee-search`, you can filter by category using `--node-set`.
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_PREFER_MEMORY` | `true` | Inject SessionStart steer asserting Cognee as the preferred memory |
 
-## Session naming
+## Session sync and watchers
 
-Sessions are scoped per working directory by default. The session ID is derived from a prefix + directory name + hash:
+An idle watcher runs in the background for the lifetime of each launch. It polls activity every `COGNEE_IDLE_POLL` seconds and persists the session cache when the session has been quiet for `COGNEE_IDLE_THRESHOLD` seconds, then waits at least `COGNEE_IMPROVE_COOLDOWN` seconds before the next run.
 
-```
-cc_my-project_a1b2c3d4e5f6
-```
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
+| `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
+| `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |
 
-You can change the strategy via config or env vars:
-
-| Strategy | Env var | Behavior |
-|----------|---------|----------|
-| `per-directory` (default) | `COGNEE_SESSION_STRATEGY=per-directory` | One session per project directory |
-| `git-branch` | `COGNEE_SESSION_STRATEGY=git-branch` | Includes git branch in session ID |
-| `static` | `COGNEE_SESSION_ID=my-session` | Fixed session ID (legacy compat) |
+Final sync on session end is triggered by the `SessionEnd` detached worker, with an exit watcher as fallback if the process exits without firing `SessionEnd`.
 
 ## Skills
 
-Three skills are available as slash commands:
+- `/cognee-memory:cognee-remember`
+- `/cognee-memory:cognee-search`
+- `/cognee-memory:cognee-sync`
 
-- **`/cognee-memory:cognee-remember`** — permanently store data in the knowledge graph (full add + cognify + improve pipeline). Routes to user/project/agent category.
-- **`/cognee-memory:cognee-search`** — explicitly search session or graph memory, optionally filtered by category. Automatic search happens on every prompt via hooks.
-- **`/cognee-memory:cognee-sync`** — force-sync session data to the permanent graph without waiting for session end
+## Remember (write) behavior
 
-## Status line (optional)
+`cognee-remember` and the auto-capture hooks POST to the server's `/api/v1/remember`
+and ask it to build the graph **in the background** (`run_in_background=true`), so the
+write returns as soon as it's enqueued instead of blocking the turn on a synchronous
+cognify. A synchronous build can take tens of seconds, exceed the client timeout, and be
+misread as "server unreachable" — which then triggers a `cognee-cli` fallback that can
+double-write. The graph populates shortly after the call, so a recall in the same breath
+may not see the new entry yet.
 
-Adds a one-line status display at the bottom of your terminal showing cognee mode/dataset/session, recall hit counts from the most recent prompt, and saves accumulated for the current turn.
-
-The script ships in the plugin at `scripts/cognee-statusline.sh`. Claude Code's `statusLine` setting is per-user, so you wire it into `~/.claude/settings.json`:
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "/absolute/path/to/cognee-integrations/integrations/claude-code/scripts/cognee-statusline.sh"
-  }
-}
-```
-
-Example output:
-
-```
-cognee[local] ds=claude_sessions sess=74f2b7ad530a | 🔍 recall: 5s/5t/1g | saving: 1p/0t/1a
-```
-
-The script reads three small JSON state files written by the plugin:
-
-| File | Source | Surfaces |
+| Env var | Default | Effect |
 |---|---|---|
-| `~/.cognee-plugin/resolved.json` | SessionStart hook | mode, dataset, short session id |
-| `~/.cognee-plugin/last_recall.json` | UserPromptSubmit hook | session/trace/graph_context hit counts |
-| `~/.cognee-plugin/save_counter.json` | per-turn save hooks | prompt/trace/answer save counts (resets each prompt) |
+| `COGNEE_REMEMBER_BACKGROUND` | `true` | Build the graph in the background; set `false` for a synchronous, immediately-queryable write |
 
-Any missing piece is silently omitted, so the line stays short on idle turns.
+A write that *times out* is reported as "submitted; timed out waiting for confirmation"
+and does **not** fall back to `cognee-cli` (the write likely landed — a fallback would
+risk a duplicate). Only a genuine connection failure falls back.
+
+## Status line
+
+The status line displays `cognee: <dataset> · <mode>`, for example:
+
+```
+cognee: agent_sessions · local
+cognee: my-project · cloud
+```
+
+`<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host.
+
+It is configured automatically on first launch — no manual steps needed. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward.
+
+The status line reads only local state — no network calls on every refresh:
+1. `COGNEE_PLUGIN_DATASET` / `COGNEE_BASE_URL` env vars (if set in the terminal that launched Claude Code)
+2. `~/.cognee-plugin/claude-code/config.json` → `dataset` and `base_url` keys
+3. Default: `cognee: agent_sessions · local`
 
 ## Auto-clear demo hook
 
-For demos where each response should leave Claude with an empty transcript context, enable the Stop-hook clear path:
+For demo flows where each response should clear local transcript context:
 
 ```bash
 export COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE=true
-claude --plugin-dir /path/to/cognee-integrations/integrations/claude-code
 ```
 
-When enabled, the plugin's `Stop` hook empties Claude Code's `transcript_path` after each assistant response. Memory capture runs first, so the response can still be stored in Cognee before the local Claude context is deleted.
+This clears the transcript file on `Stop` after memory capture.
 
-This is a demo-only workaround. Claude Code hooks do not expose a supported action for executing built-in slash commands like `/clear`, so the hook clears the backing transcript file directly.
+## Logs and state
 
-## Audit log
-
-The UserPromptSubmit hook also appends a JSONL entry per prompt to `~/.cognee-plugin/recall-audit.log`, recording the timestamp, session_id, prompt text, hit counts, and the full `additionalContext` injected into Claude's input. This is the source of truth for "what did the plugin give Claude on prompt X" — Claude Code does not persist hook `additionalContext` into its JSONL transcript.
+Claude Code-specific plugin state and logs are written under:
 
 ```bash
-tail -n 1 ~/.cognee-plugin/recall-audit.log | jq -r .context
+~/.cognee-plugin/claude-code/
 ```
+
+Useful logs:
+
+```bash
+tail -f ~/.cognee-plugin/claude-code/hook.log
+tail -f ~/.cognee-plugin/claude-code/subprocess.log
+tail -f ~/.cognee-plugin/claude-code/watcher.log
+tail -f ~/.cognee-plugin/claude-code/exit-watcher.log
+tail -f ~/.cognee-plugin/claude-code/recall-audit.log
+```
+
+Shared state (used by both Claude Code and Codex plugins):
+
+```bash
+~/.cognee-plugin/api_key.json     # cached API key
+~/.cognee-plugin/venv/            # shared Cognee virtualenv
+```
+
+## Update or remove
+
+Reinstall the plugin to pick up marketplace updates (run inside Claude Code chat):
+
+```
+/plugin uninstall cognee-memory@cognee
+/plugin install cognee-memory@cognee
+```
+
+To also refresh the marketplace source:
+
+```
+/plugin uninstall cognee-memory@cognee
+/plugin marketplace remove topoteretes/cognee-integrations
+/plugin marketplace add topoteretes/cognee-integrations
+/plugin install cognee-memory@cognee
+```
+
+There is no automatic update mechanism — reinstall is the only way to pull in new plugin versions.
+
+## Troubleshooting
+
+**Recall returns empty but data was ingested**
+- Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `config.json` / `agent_sessions`).
+- Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
+- To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
+
+**Session not resolving / wrong session shown**
+- Check `~/.cognee-plugin/claude-code/sessions/<host_session_id>.json` — this is the map file for your terminal.
+- If it's missing, SessionStart may not have completed; check `~/.cognee-plugin/claude-code/hook.log`.
+
+**Unauthorized / key errors**
+- Check `~/.cognee-plugin/api_key.json`. Delete it to force a re-mint.
+- Relevant logs: `api_key_cached`, `api_key_minted`, `agent_register_result`.
+
+**Missing session key at startup**
+- If the payload session key is missing, SessionStart refuses registration.
+- Relevant logs: `session_key_resolved`, `missing_payload_session_id`.
+
+**Final sync diagnostics**
+- Check `~/.cognee-plugin/claude-code/hook.log` and `~/.cognee-plugin/claude-code/exit-watcher.log`.
+- Relevant logs: `sync_deferred_to_shutdown_worker`, `final_sync_once_*`, `agent_unregister_result`.
 
 ## Configuration reference
 
-| Key | Env var | Default | Description |
-|-----|---------|---------|-------------|
-| `dataset` | `COGNEE_PLUGIN_DATASET` | `claude_sessions` | Dataset name for permanent storage |
-| `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | Session naming strategy |
-| `session_prefix` | `COGNEE_SESSION_PREFIX` | `cc` | Prefix for session IDs |
-| `service_url` | `COGNEE_SERVICE_URL` | -- | Cognee Cloud URL |
-| `api_key` | `COGNEE_API_KEY` | -- | Cognee Cloud API key |
-| `llm_api_key` | `LLM_API_KEY` | -- | LLM provider key (local mode) |
-| `llm_model` | `LLM_MODEL` | -- | LLM model name (local mode) |
-| demo auto-clear | `COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE` | disabled | When truthy, empties Claude transcript context after each assistant response |
-| `top_k` | -- | `5` | Results returned by automatic session search (per scope) |
+Config precedence:
+1. env vars
+2. `~/.cognee-plugin/claude-code/config.json`
+3. defaults
 
-Config is resolved in order: env vars > `~/.cognee-plugin/config.json` > defaults.
+| Key | Env var(s) | Default | Notes |
+|---|---|---|---|
+| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall |
+| `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
+| `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
+| `session_prefix` | `COGNEE_SESSION_PREFIX` | `cc` | Prefix for auto-generated session IDs |
+| `base_url` | `COGNEE_BASE_URL` | unset | Set to enable managed endpoint mode |
+| `api_key` | `COGNEE_API_KEY` | unset | API key; auto-minted if absent in local mode |
+| local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |
+| local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
+| demo auto-clear | `COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE` | disabled | Clear transcript on Stop after capture |
+| idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
+| idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle sync fires |
+| idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `120` | Minimum seconds between idle sync runs |

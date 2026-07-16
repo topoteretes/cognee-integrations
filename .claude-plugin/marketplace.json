@@ -1,0 +1,25 @@
+{
+  "name": "cognee",
+  "owner": {
+    "name": "Cognee",
+    "url": "https://github.com/topoteretes"
+  },
+  "metadata": {
+    "description": "Cognee integrations for Claude Code.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "cognee-memory",
+      "source": "./integrations/claude-code",
+      "description": "Cognee knowledge graph memory for Claude Code — session-aware storage, auto-routing recall, and persistent learning across sessions. Supports local mode and Cognee Cloud.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Cognee"
+      },
+      "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/claude-code",
+      "keywords": ["memory", "knowledge-graph", "cognee", "reasoning", "session"],
+      "category": "memory"
+    }
+  ]
+}

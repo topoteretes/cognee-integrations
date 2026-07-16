@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py --session-end"
           }
         ]
       }

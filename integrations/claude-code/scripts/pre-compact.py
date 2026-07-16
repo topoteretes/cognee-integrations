@@ -11,13 +11,19 @@ is connected locally or over HTTP.
 """
 
 import asyncio
+import json
 import os
 import re
 import sys
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
-from _plugin_common import hook_log, load_resolved
+from _plugin_common import (
+    hook_log,
+    load_resolved,
+    resolve_session_key_from_payload,
+    set_session_key,
+)
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 _MIN_WORD_LEN = 3
@@ -227,8 +233,17 @@ async def _run():
 
 
 def main():
-    # Read stdin (PreCompact payload); we don't use the body, just the trigger.
-    sys.stdin.read()
+    # Read the PreCompact payload to recover the host session id, which lets the
+    # session resolver map back to this launch's Cognee session id (the body is
+    # otherwise unused — PreCompact is just a trigger).
+    payload_raw = sys.stdin.read()
+    try:
+        payload = json.loads(payload_raw) if payload_raw.strip() else {}
+    except json.JSONDecodeError:
+        payload = {}
+    session_key_candidate, _ = resolve_session_key_from_payload(payload)
+    if session_key_candidate:
+        set_session_key(session_key_candidate)
 
     try:
         asyncio.run(_run())

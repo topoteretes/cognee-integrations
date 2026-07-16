@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-crewai"
+version = "0.1.1"
+description = "CrewAI integration for Cognee - enables AI agents to store and retrieve information from Cognee's knowledge graph"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "cognee>=0.4.0",
+    "crewai>=1.5.0",
+    "crewai-tools>=1.5.0",
+    "pydantic>=2.12.4",
+    "python-dotenv>=1.2.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_crewai*"]
+exclude = ["examples*"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.5",
+]

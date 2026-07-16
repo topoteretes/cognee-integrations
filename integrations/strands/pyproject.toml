@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-strands"
+version = "0.2.0"
+description = "A powerful integration between Strands and Cognee providing intelligent knowledge management and retrieval capabilities for AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "cognee>=1.0.0,<=1.1.2",
+    "strands-agents>=1.42.0,<2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/strands"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_strands*"]
+exclude = ["examples*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.14.6",
+    # The examples drive an OpenAI model via strands.models.openai.
+    "strands-agents[openai]>=1.42.0,<2.0.0",
+]

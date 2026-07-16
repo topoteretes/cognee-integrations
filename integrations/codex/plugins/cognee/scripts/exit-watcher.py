@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "codex"
+_EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"
 _PIDFILE = _PLUGIN_DIR / "exit-watcher.pid"
 _LOGFILE = _PLUGIN_DIR / "exit-watcher.log"
 _SYNC_SCRIPT = Path(__file__).with_name("sync-session-to-graph.py")
@@ -50,18 +51,39 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _owns_pidfile() -> bool:
+def _owns_pidfile(pidfile: Path) -> bool:
     try:
-        return int(_PIDFILE.read_text(encoding="utf-8").strip()) == os.getpid()
+        return int(pidfile.read_text(encoding="utf-8").strip()) == os.getpid()
     except Exception as exc:
-        _log("pidfile_read_failed", error=str(exc)[:200])
+        _log("pidfile_read_failed", pidfile=str(pidfile), error=str(exc)[:200])
         return False
 
 
-def _spawn_sync(session_id: str, dataset: str) -> None:
+def _spawn_sync(
+    session_id: str,
+    dataset: str,
+    *,
+    session_key: str = "",
+    agent_session_name: str = "",
+    api_key: str = "",
+    service_url: str = "",
+) -> None:
     try:
         env = os.environ.copy()
         env.setdefault("COGNEE_SYNC_START_DELAY", str(_SYNC_START_DELAY))
+        env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
+        if session_id:
+            env["COGNEE_SYNC_SESSION_ID"] = session_id
+        if dataset:
+            env["COGNEE_SYNC_DATASET"] = dataset
+        if session_key:
+            env["COGNEE_SESSION_KEY"] = session_key
+        if agent_session_name:
+            env["COGNEE_AGENT_SESSION_NAME"] = agent_session_name
+        if api_key:
+            env["COGNEE_API_KEY"] = api_key
+        if service_url:
+            env["COGNEE_BASE_URL"] = service_url
         subprocess.Popen(
             [sys.executable, str(_SYNC_SCRIPT), _DETACHED_SYNC_ARG],
             cwd=os.getcwd(),
@@ -88,35 +110,72 @@ def main() -> None:
 
     parent_pid = int(bootstrap.get("parent_pid") or 0)
     session_id = str(bootstrap.get("session_id") or "")
-    dataset = str(bootstrap.get("dataset") or "codex_sessions")
+    dataset = str(bootstrap.get("dataset") or "agent_sessions")
+    session_key = str(bootstrap.get("session_key") or "")
+    agent_session_name = str(bootstrap.get("agent_session_name") or "")
+    api_key = str(bootstrap.get("api_key") or "")
+    service_url = str(bootstrap.get("base_url") or "")
+    pidfile_raw = str(bootstrap.get("pidfile") or "").strip()
+    pidfile = Path(pidfile_raw) if pidfile_raw else _PIDFILE
     if not parent_pid:
         _log("fatal_no_parent_pid", session=session_id, dataset=dataset)
         return
 
     try:
         _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-        _PIDFILE.write_text(str(os.getpid()), encoding="utf-8")
+        _EXIT_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
+
+        if pidfile.exists():
+            try:
+                existing = int(pidfile.read_text(encoding="utf-8").strip())
+                if _pid_alive(existing):
+                    _log(
+                        "already_running_for_parent",
+                        parent_pid=parent_pid,
+                        session=session_id,
+                        dataset=dataset,
+                        pidfile=str(pidfile),
+                        existing_pid=existing,
+                    )
+                    return
+            except Exception:
+                pass
+
+        pidfile.write_text(str(os.getpid()), encoding="utf-8")
     except Exception as exc:
-        _log("pidfile_write_failed", error=str(exc)[:200])
+        _log("pidfile_write_failed", pidfile=str(pidfile), error=str(exc)[:200])
         return
 
-    _log("started", parent_pid=parent_pid, session=session_id, dataset=dataset)
-    while _owns_pidfile() and _pid_alive(parent_pid):
+    _log(
+        "started",
+        parent_pid=parent_pid,
+        session=session_id,
+        dataset=dataset,
+        pidfile=str(pidfile),
+    )
+    while _owns_pidfile(pidfile) and _pid_alive(parent_pid):
         time.sleep(_POLL_SECONDS)
 
-    if not _owns_pidfile():
-        _log("pidfile_replaced", parent_pid=parent_pid)
+    if not _owns_pidfile(pidfile):
+        _log("pidfile_replaced", parent_pid=parent_pid, pidfile=str(pidfile))
         return
 
     _log("parent_exited", parent_pid=parent_pid, session=session_id, dataset=dataset)
-    _spawn_sync(session_id, dataset)
+    _spawn_sync(
+        session_id,
+        dataset,
+        session_key=session_key,
+        agent_session_name=agent_session_name,
+        api_key=api_key,
+        service_url=service_url,
+    )
 
     try:
-        if _owns_pidfile():
-            _PIDFILE.unlink()
+        if _owns_pidfile(pidfile):
+            pidfile.unlink()
     except Exception as exc:
-        _log("pidfile_unlink_failed", error=str(exc)[:200])
-    _log("exiting")
+        _log("pidfile_unlink_failed", pidfile=str(pidfile), error=str(exc)[:200])
+    _log("exiting", parent_pid=parent_pid, pidfile=str(pidfile))
 
 
 if __name__ == "__main__":

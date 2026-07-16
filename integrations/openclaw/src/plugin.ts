@@ -1,5 +1,8 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import type { CogneeSearchResult, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { AgentSyncIndexes, CogneeSearchResult, MemoryScope, ScopedSyncIndexes, SyncIndex, SyncResult } from "./types.js";
+// SyncResult is used as the return type of the per-agent sync helpers below.
 import { MEMORY_SCOPES } from "./types.js";
 import { CogneeHttpClient } from "./client.js";
 import { resolveConfig } from "./config.js";
@@ -9,14 +12,25 @@ import {
   loadDatasetState,
   loadScopedSyncIndexes,
   loadSyncIndex,
+  loadAgentSyncIndexes,
   saveDatasetState,
   saveScopedSyncIndexes,
   saveSyncIndex,
+  saveAgentSyncIndexes,
   migrateLegacyIndex,
+  migrateAgentScopeToPerAgent,
   SYNC_INDEX_PATH,
 } from "./persistence.js";
-import { datasetNameForScope, isMultiScopeEnabled, routeFileToScope } from "./scope.js";
+import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
+
+/** Expand a leading `~` in a workspace path to the user's home directory. */
+function expandHome(p: string | undefined): string | undefined {
+  if (!p) return p;
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+}
 
 // ---------------------------------------------------------------------------
 // Plugin registration
@@ -39,6 +53,25 @@ const memoryCogneePlugin = {
   kind: "memory" as const,
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
+
+    // Auto-enable per-agent memory when the gateway hosts more than one agent,
+    // unless the plugin config set `perAgentMemory` explicitly. This keeps
+    // single-agent installs (the common case) on the legacy shared behavior so
+    // the upgrade is non-breaking; multi-agent gateways get per-agent isolation.
+    const perAgentExplicit =
+      typeof (api.pluginConfig as { perAgentMemory?: unknown } | undefined)?.perAgentMemory === "boolean";
+    if (!perAgentExplicit) {
+      try {
+        const agentList = api.runtime?.config?.loadConfig?.()?.agents?.list;
+        if (Array.isArray(agentList) && agentList.length > 1) {
+          cfg.perAgentMemory = true;
+          api.logger.info?.(`cognee-openclaw: per-agent memory auto-enabled (${agentList.length} agents configured)`);
+        }
+      } catch (error) {
+        api.logger.debug?.(`cognee-openclaw: could not read agents.list for perAgentMemory auto-enable: ${String(error)}`);
+      }
+    }
+
     const client = new CogneeHttpClient(cfg.baseUrl, cfg.apiKey, cfg.username, cfg.password, cfg.requestTimeoutMs, cfg.ingestionTimeoutMs, cfg.mode);
     const multiScope = isMultiScopeEnabled(cfg);
 
@@ -49,13 +82,45 @@ const memoryCogneePlugin = {
     let datasetId: string | undefined;
     let syncIndex: SyncIndex = { entries: {} };
 
-    // Multi-scope state
+    // Multi-scope state (company/user shared; agent scope lives in agentIndexes
+    // when perAgentMemory is on).
     let scopedIndexes: ScopedSyncIndexes = {};
+
+    // Per-agent agent-scope state (perAgentMemory mode), keyed by normalized agentId.
+    let agentIndexes: AgentSyncIndexes = {};
+    const perAgentMemory = multiScope && cfg.perAgentMemory;
+
+    // Serialize sync work per agent so concurrent turns of the SAME agent don't
+    // double-run. Keyed by normalized agentId.
+    const agentLocks = new Map<string, Promise<unknown>>();
+    function withAgentLock<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
+      const prev = agentLocks.get(agentId) ?? Promise.resolve();
+      const next = prev.catch(() => {}).then(fn);
+      agentLocks.set(agentId, next.catch(() => {}));
+      return next;
+    }
+
+    // Global lock around the read-modify-write of agent-sync-indexes.json.
+    // DIFFERENT agents are NOT serialized by agentLocks, so without this their
+    // concurrent load→mutate→save would clobber each other's bucket (they share
+    // one file). This makes the reload+set+save atomic so distinct buckets merge.
+    let indexSaveChain: Promise<unknown> = Promise.resolve();
+    function withIndexSaveLock<T>(fn: () => Promise<T>): Promise<T> {
+      const next = indexSaveChain.catch(() => {}).then(fn);
+      indexSaveChain = next.catch(() => {});
+      return next;
+    }
 
     // Session state
     let sessionId: string | undefined;
-    // Cached because session_end fires without ctx.
+    // Cached as a fallback for paths that may lack ctx.
     let lastAgentId: string | undefined;
+    let lastWorkspaceDir: string | undefined;
+    // Per-agent workspace cache (normalized agentId -> workspaceDir), populated
+    // on agent_end. session_end's ctx carries agentId but NOT workspaceDir, so
+    // this lets the final sweep find the right agent's workspace without falling
+    // back to a single global (which mis-attributes when >1 agent is active).
+    const agentWorkspaces = new Map<string, string>();
 
     let resolvedWorkspaceDir: string | undefined;
     let resolveServiceReady: (() => void) | undefined;
@@ -88,6 +153,17 @@ const memoryCogneePlugin = {
             }
             scopedIndexes = indexes;
           })
+          .then(async () => {
+            if (!perAgentMemory) return;
+            // Move any legacy shared `agent` scope entry into the per-agent map.
+            const migrated = await migrateAgentScopeToPerAgent(normalizeAgentId(undefined, cfg));
+            if (migrated) {
+              api.logger.info?.("cognee-openclaw: migrated shared agent scope index to per-agent");
+              // Reload shared indexes (migration removed the agent entry from them).
+              scopedIndexes = await loadScopedSyncIndexes();
+            }
+            agentIndexes = await loadAgentSyncIndexes();
+          })
           .catch((error) => {
             api.logger.warn?.(`cognee-openclaw: failed to load scoped sync indexes: ${String(error)}`);
           })
@@ -103,6 +179,16 @@ const memoryCogneePlugin = {
           }),
     ]);
 
+    // Resolve the locally-cached fallback dataset id for a scope. For the agent
+    // scope under perAgentMemory, that's the per-agent index; otherwise the
+    // shared scoped index.
+    function scopeFallbackDatasetId(scope: MemoryScope, runtimeAgentId?: string): string | undefined {
+      if (scope === "agent" && perAgentMemory) {
+        return agentIndexes[normalizeAgentId(runtimeAgentId, cfg)]?.datasetId;
+      }
+      return scopedIndexes[scope]?.datasetId;
+    }
+
     // Fix #8: Log when scopes have no dataset ID during recall
     async function getRecallDatasetIds(
       runtimeAgentId?: string,
@@ -114,7 +200,7 @@ const memoryCogneePlugin = {
       if (multiScope) {
         for (const scope of cfg.recallScopes) {
           const dsName = datasetNameForScope(scope, cfg, runtimeAgentId);
-          const dsId = state[dsName] ?? scopedIndexes[scope]?.datasetId;
+          const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, runtimeAgentId);
           if (dsId) {
             ids.push(dsId);
           } else {
@@ -126,6 +212,91 @@ const memoryCogneePlugin = {
       }
 
       return { ids, missingScopes };
+    }
+
+    // Sync ONE agent's `agent`-scope files from its own workspace into its own
+    // dataset + per-agent index. Serialized per agentId. Used by per-agent mode.
+    async function syncAgentScope(
+      workspaceDir: string,
+      rawAgentId: string | undefined,
+      logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
+    ): Promise<SyncResult> {
+      await stateReady;
+      const agentId = normalizeAgentId(rawAgentId, cfg);
+      return withAgentLock(agentId, async () => {
+        const allFiles = await collectMemoryFiles(workspaceDir);
+        const agentFiles = allFiles.filter(
+          (f) => routeFileToScope(f.path, cfg.scopeRouting, cfg.defaultWriteScope) === "agent",
+        );
+        // Start from this agent's latest persisted bucket.
+        const idx = (await loadAgentSyncIndexes())[agentId] ?? { entries: {} };
+        const dsName = datasetNameForScope("agent", cfg, agentId);
+        // syncFiles mutates `idx` in place (entries/dataIds) but does not persist
+        // it (persistIndex=false); we own persistence below.
+        const result = await syncFiles(client, agentFiles, agentFiles, idx, cfg, logger, dsName, false);
+        // Atomic merge-save: reload the latest on-disk map (may include other
+        // agents' buckets written meanwhile), set just our bucket, save.
+        await withIndexSaveLock(async () => {
+          const latest = await loadAgentSyncIndexes();
+          latest[agentId] = idx;
+          await saveAgentSyncIndexes(latest);
+          agentIndexes = latest;
+        });
+        return result;
+      });
+    }
+
+    // Sync ONLY the shared scopes (company/user) from a workspace. Never run
+    // from a per-agent workspace (it lacks company/user files and would forget
+    // them); only from the default/gateway workspace at startup.
+    async function syncSharedScopes(
+      workspaceDir: string,
+      logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
+    ): Promise<SyncResult> {
+      await stateReady;
+      const files = await collectMemoryFiles(workspaceDir);
+      return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, undefined, ["company", "user"]);
+    }
+
+    // Seed every configured agent's files from its own workspace (startup/CLI).
+    async function seedAllAgents(
+      defaultWorkspace: string,
+      logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
+    ): Promise<void> {
+      const config = api.runtime?.config?.loadConfig?.();
+      const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
+      const defWs = expandHome(config?.agents?.defaults?.workspace) || defaultWorkspace;
+      const agents = Array.isArray(list) && list.length > 0
+        ? list
+        : [{ id: cfg.agentId, workspace: defWs }];
+      for (const a of agents) {
+        const ws = expandHome(a.workspace) || defWs;
+        if (!ws) continue;
+        try {
+          const r = await syncAgentScope(ws, a.id, logger);
+          logger.info?.(`cognee-openclaw: seeded agent "${normalizeAgentId(a.id, cfg)}": ${r.added} added, ${r.updated} updated, ${r.deleted} deleted, ${r.skipped} unchanged`);
+        } catch (e) {
+          logger.warn?.(`cognee-openclaw: failed to seed agent "${a.id}": ${String(e)}`);
+        }
+      }
+    }
+
+    // Resolve an agent's workspace from OpenClaw config (agents.list[].workspace
+    // by agentId), with sensible fallbacks. Used by the per-agent file paths so
+    // startup seeding and the agent_end/session_end sweeps always read the SAME
+    // directory — otherwise a runtime ctx.workspaceDir that differs from the
+    // seed workspace makes the sweep see the seeded file as "missing" and forget
+    // it. Resolving from config (the single source of truth) avoids that.
+    function resolveAgentWorkspace(rawAgentId: string | undefined): string | undefined {
+      const target = normalizeAgentId(rawAgentId, cfg);
+      try {
+        const config = api.runtime?.config?.loadConfig?.();
+        const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
+        const match = list?.find((a) => normalizeAgentId(a.id, cfg) === target);
+        return expandHome(match?.workspace) || expandHome(config?.agents?.defaults?.workspace) || resolvedWorkspaceDir;
+      } catch {
+        return resolvedWorkspaceDir;
+      }
     }
 
     async function runSync(
@@ -143,7 +314,12 @@ const memoryCogneePlugin = {
 
       logger.info?.(`cognee-openclaw: found ${files.length} memory file(s), syncing...`);
 
-      if (multiScope) {
+      if (perAgentMemory) {
+        // Per-agent mode: this path syncs only the shared scopes (company/user)
+        // from the given workspace; the `agent` scope is handled per agent via
+        // syncAgentScope/seedAllAgents (each from its own workspace).
+        return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, runtimeAgentId, ["company", "user"]);
+      } else if (multiScope) {
         return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, runtimeAgentId);
       } else {
         const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
@@ -156,11 +332,13 @@ const memoryCogneePlugin = {
       datasetId = undefined;
       syncIndex = { entries: {} };
       scopedIndexes = {};
+      agentIndexes = {};
 
       await Promise.all([
         saveDatasetState({}),
         saveSyncIndex({ entries: {} }),
         saveScopedSyncIndexes({}),
+        saveAgentSyncIndexes({}),
       ]);
     }
 
@@ -184,6 +362,7 @@ const memoryCogneePlugin = {
       if (multiScope) {
         let changed = false;
         for (const scope of MEMORY_SCOPES) {
+          if (scope === "agent" && perAgentMemory) continue; // handled per-agent below
           const expectedName = datasetNameForScope(scope, cfg);
           const idx = scopedIndexes[scope];
           const actualName = idx?.datasetName ?? expectedName;
@@ -197,6 +376,20 @@ const memoryCogneePlugin = {
         if (changed) {
           await saveScopedSyncIndexes(scopedIndexes);
         }
+      }
+
+      if (perAgentMemory) {
+        agentIndexes = await loadAgentSyncIndexes();
+        let agentChanged = false;
+        for (const [agentId, idx] of Object.entries(agentIndexes)) {
+          const expectedName = datasetNameForScope("agent", cfg, agentId);
+          const actualName = idx.datasetName ?? expectedName;
+          if (actualName === datasetName || expectedName === datasetName) {
+            delete agentIndexes[agentId];
+            agentChanged = true;
+          }
+        }
+        if (agentChanged) await saveAgentSyncIndexes(agentIndexes);
       }
     }
 
@@ -213,7 +406,24 @@ const memoryCogneePlugin = {
       cognee
         .command("index")
         .description("Sync memory files to Cognee (add new, update changed, skip unchanged)")
-        .action(async () => {
+        .option("--agent <id>", "Per-agent mode: sync only this agent's workspace")
+        .action(async (opts: { agent?: string }) => {
+          if (perAgentMemory) {
+            if (opts.agent) {
+              // Resolve this agent's workspace from config; fall back to cwd.
+              const config = api.runtime?.config?.loadConfig?.();
+              const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
+              const match = list?.find((a) => normalizeAgentId(a.id, cfg) === normalizeAgentId(opts.agent, cfg));
+              const ws = expandHome(match?.workspace) || cliWorkspaceDir;
+              const r = await syncAgentScope(ws, opts.agent, ctx.logger);
+              console.log(`Sync complete [agent=${normalizeAgentId(opts.agent, cfg)}]: ${r.added} added, ${r.updated} updated, ${r.deleted} deleted, ${r.skipped} unchanged, ${r.errors} errors`);
+              process.exit(0);
+            }
+            const shared = await runSync(cliWorkspaceDir, ctx.logger);   // company/user
+            await seedAllAgents(cliWorkspaceDir, ctx.logger);            // each agent's own files
+            console.log(`Shared sync complete: ${shared.added} added, ${shared.updated} updated, ${shared.deleted} deleted, ${shared.skipped} unchanged. Per-agent files seeded (see log).`);
+            process.exit(0);
+          }
           const result = await runSync(cliWorkspaceDir, ctx.logger);
           const summary = `Sync complete: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted, ${result.skipped} unchanged, ${result.errors} errors`;
           ctx.logger.info?.(summary);
@@ -230,7 +440,10 @@ const memoryCogneePlugin = {
 
           if (multiScope) {
             const state = await loadDatasetState();
-            for (const scope of MEMORY_SCOPES) {
+            // Shared scopes (company/user). In per-agent mode the agent scope is
+            // reported per-agent below instead of here.
+            const scopesToShow = perAgentMemory ? (["company", "user"] as MemoryScope[]) : MEMORY_SCOPES;
+            for (const scope of scopesToShow) {
               const dsName = datasetNameForScope(scope, cfg);
               const scopeIndex = scopedIndexes[scope] ?? { entries: {} };
               const entryCount = Object.keys(scopeIndex.entries).length;
@@ -249,6 +462,22 @@ const memoryCogneePlugin = {
               console.log(`  Workspace files: ${scopeFiles.length}`);
               console.log(`  New (unindexed): ${newCount}`);
               console.log(`  Changed (dirty): ${dirty}`);
+            }
+
+            if (perAgentMemory) {
+              agentIndexes = await loadAgentSyncIndexes();
+              const config = api.runtime?.config?.loadConfig?.();
+              const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
+              const agentKeys = new Set<string>(Object.keys(agentIndexes));
+              for (const a of list ?? []) agentKeys.add(normalizeAgentId(a.id, cfg));
+              if (agentKeys.size === 0) agentKeys.add(normalizeAgentId(undefined, cfg));
+              for (const agentId of agentKeys) {
+                const idx = agentIndexes[agentId] ?? { entries: {} };
+                const dsName = datasetNameForScope("agent", cfg, agentId);
+                console.log(`\n[AGENT:${agentId}] Dataset: ${dsName}`);
+                console.log(`  Dataset ID: ${state[dsName] ?? idx.datasetId ?? "(not set)"}`);
+                console.log(`  Indexed files: ${Object.keys(idx.entries).length}`);
+              }
             }
           } else {
             const entryCount = Object.keys(syncIndex.entries).length;
@@ -475,6 +704,11 @@ const memoryCogneePlugin = {
         try {
           const result = await runSync(resolvedWorkspaceDir, logger);
           logger.info?.(`cognee-openclaw: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted, ${result.skipped} unchanged`);
+          // Per-agent mode: seed each configured agent's files from its OWN
+          // workspace (runSync above only handled the shared company/user scopes).
+          if (perAgentMemory) {
+            await seedAllAgents(resolvedWorkspaceDir, logger);
+          }
         } catch (error) {
           logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(error)}`);
         }
@@ -513,7 +747,7 @@ const memoryCogneePlugin = {
         await stateReady;
 
         // session_start isn't fired in every openclaw flow; sync from ctx on every hook.
-        if (cfg.enableSessions && ctx.sessionId) sessionId = ctx.sessionId;
+        if (cfg.enableSessions && ctx.sessionId) sessionId = cogneeSessionId(ctx.sessionId);
 
         if (!event.prompt || event.prompt.length < 5) {
           api.logger.debug?.("cognee-openclaw: skipping recall (prompt too short)");
@@ -539,7 +773,7 @@ const memoryCogneePlugin = {
 
             const searchPromises = cfg.recallScopes.map(async (scope): Promise<{ scope: MemoryScope; results: CogneeSearchResult[] } | null> => {
               const dsName = datasetNameForScope(scope, cfg, ctx.agentId);
-              const dsId = state[dsName] ?? scopedIndexes[scope]?.datasetId;
+              const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, ctx.agentId);
               if (!dsId) return null;
 
               const results = await client.recall({
@@ -638,12 +872,25 @@ const memoryCogneePlugin = {
         await Promise.all([stateReady, serviceReady]);
 
         lastAgentId = ctx.agentId;
-        if (cfg.enableSessions && ctx.sessionId) sessionId = ctx.sessionId;
+        lastWorkspaceDir = ctx.workspaceDir || resolvedWorkspaceDir;
+        if (cfg.enableSessions && ctx.sessionId) sessionId = cogneeSessionId(ctx.sessionId);
 
-        const workspaceDir = resolvedWorkspaceDir!;
+        const workspaceDir = ctx.workspaceDir || resolvedWorkspaceDir!;
+        // Remember this agent's workspace so session_end can sweep the right one.
+        if (workspaceDir) agentWorkspaces.set(normalizeAgentId(ctx.agentId, cfg), workspaceDir);
 
         try {
-          if (multiScope) {
+          if (perAgentMemory) {
+            // Sync ONLY this agent's agent-scope files from its OWN workspace
+            // into its own dataset + per-agent index. Resolve the workspace from
+            // config (not ctx.workspaceDir) so it matches the startup seed and a
+            // mismatched runtime cwd can't make the sweep "forget" the seed file.
+            const agentWs = resolveAgentWorkspace(ctx.agentId) || workspaceDir;
+            const result = await syncAgentScope(agentWs, ctx.agentId, api.logger);
+            if (result.added || result.updated || result.deleted) {
+              api.logger.info?.(`cognee-openclaw: post-agent sync [agent=${normalizeAgentId(ctx.agentId, cfg)}]: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
+            }
+          } else if (multiScope) {
             try {
               scopedIndexes = await loadScopedSyncIndexes();
             } catch { /* keep cached scopedIndexes */ }
@@ -704,30 +951,56 @@ const memoryCogneePlugin = {
       });
 
       api.on("session_start", async (event) => {
-        if (cfg.enableSessions) sessionId = event.sessionId;
+        if (cfg.enableSessions) sessionId = cogneeSessionId(event.sessionId);
       });
 
       // Final sweep when the openclaw session closes. Catches memory file
       // edits that happened outside an agent_end.
-      api.on("session_end", async (event) => {
+      //
+      // CRITICAL: resolve the agent + session from THIS event's ctx, not the
+      // global lastAgentId. With >1 agent active, lastAgentId is whichever agent
+      // ran most recently, so using it would bridge one agent's session into
+      // another agent's dataset.
+      // PluginHookSessionContext carries agentId + sessionId, so prefer those.
+      api.on("session_end", async (event, ctx) => {
         await Promise.all([stateReady, serviceReady]);
-        if (!resolvedWorkspaceDir) {
-          sessionId = undefined;
-          return;
-        }
-        try {
-          const result = await runSync(resolvedWorkspaceDir, api.logger, lastAgentId);
-          api.logger.info?.(`cognee-openclaw: session-end sync: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
-        } catch (error) {
-          api.logger.warn?.(`cognee-openclaw: session-end sync failed: ${String(error)}`);
+
+        const endAgentId = ctx?.agentId ?? lastAgentId;
+        // Wrap to the same {agent}_{id} form data was saved under, so improve()
+        // looks up the right session (must match the session_start/hook wrapping).
+        const endSessionId = cogneeSessionId(ctx?.sessionId ?? event.sessionId);
+        if (!ctx?.agentId) {
+          api.logger.debug?.(`cognee-openclaw: session_end without ctx.agentId; falling back to lastAgentId="${endAgentId ?? "(none)"}"`);
         }
 
-        // Bridge session-cache QAs (including any auto-captured feedback) into the graph.
-        if (cfg.improveOnSessionEnd && event.sessionId) {
-          const dsName = multiScope ? datasetNameForScope("agent", cfg, lastAgentId) : cfg.datasetName;
+        // Per-agent: resolve from config (matches the startup seed). Otherwise
+        // fall back to the cached workspace for this agent.
+        const sweepWorkspace = perAgentMemory
+          ? (resolveAgentWorkspace(endAgentId) || lastWorkspaceDir || resolvedWorkspaceDir)
+          : (agentWorkspaces.get(normalizeAgentId(endAgentId, cfg)) || lastWorkspaceDir || resolvedWorkspaceDir);
+
+        if (sweepWorkspace) {
           try {
-            const result = await client.improve({ datasetName: dsName, sessionIds: [event.sessionId] });
-            api.logger.info?.(`cognee-openclaw: session-end improve dispatched for session ${event.sessionId} (status=${result.status ?? "?"})`);
+            if (perAgentMemory) {
+              // Final sweep for THIS session's agent, from its own workspace.
+              const result = await syncAgentScope(sweepWorkspace, endAgentId, api.logger);
+              api.logger.info?.(`cognee-openclaw: session-end sync [agent=${normalizeAgentId(endAgentId, cfg)}]: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
+            } else {
+              const result = await runSync(sweepWorkspace, api.logger, endAgentId);
+              api.logger.info?.(`cognee-openclaw: session-end sync: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
+            }
+          } catch (error) {
+            api.logger.warn?.(`cognee-openclaw: session-end sync failed: ${String(error)}`);
+          }
+        }
+
+        // Bridge session-cache QAs (including any auto-captured feedback) into
+        // THIS session's agent dataset — keyed by endAgentId + endSessionId.
+        if (cfg.improveOnSessionEnd && endSessionId) {
+          const dsName = multiScope ? datasetNameForScope("agent", cfg, endAgentId) : cfg.datasetName;
+          try {
+            const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId] });
+            api.logger.info?.(`cognee-openclaw: session-end improve dispatched for session ${endSessionId} -> dataset "${dsName}" (status=${result.status ?? "?"})`);
           } catch (error) {
             api.logger.warn?.(`cognee-openclaw: session-end improve failed: ${error instanceof Error ? error.message : String(error)}`);
           }

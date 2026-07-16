@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-cognee",
-  "version": "0.4.1",
+  "version": "0.5.1",
   "description": "n8n node to call Cognee Cloud API and its memory services",
   "keywords": [
     "n8n-community-node-package"
@@ -27,7 +27,8 @@
     "lintfix": "n8n-node lint --fix",
     "format": "prettier nodes credentials --write",
     "release": "n8n-node release",
-    "prepublishOnly": "npm run build && npm run lint"
+    "prepublishOnly": "npm run build && npm run lint",
+    "test": "jest"
   },
   "files": [
     "dist"
@@ -43,9 +44,13 @@
   },
   "devDependencies": {
     "@n8n/node-cli": "^0.23.1",
+    "@types/jest": "^30.0.0",
+    "@types/mocha": "^10.0.10",
     "@typescript-eslint/typescript-estree": "^8.57.2",
     "eslint": "^9.39.4",
+    "jest": "^29.7.0",
     "prettier": "^3.5.3",
+    "ts-jest": "^29.4.11",
     "typescript": "^5.8.2"
   },
   "peerDependencies": {

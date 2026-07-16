@@ -1,0 +1,517 @@
+{
+  "id": "cognee-skill-self-improve-nocode",
+  "name": "Cognee - Self Improve Skill (no-code / Verified Node)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -860,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "skill-name",
+              "name": "skill_name",
+              "value": "code-review",
+              "type": "string"
+            },
+            {
+              "id": "dataset-name",
+              "name": "dataset_name",
+              "value": "n8n-skill-self-improvement",
+              "type": "string"
+            },
+            {
+              "id": "skill-markdown",
+              "name": "skill_markdown",
+              "value": "---\ndescription: Review code changes for bugs, regressions, and missing tests.\nallowed-tools: memory_search\n---\n# code-review\n\n1. Read the diff file-by-file and hunk-by-hunk. Do not run or apply changes.\n\n2. Produce concrete issues first as a numbered list. For each issue include exactly: file path, line numbers or hunk context, concise title, severity (critical/high/medium/low), one-line impact, minimal actionable fix (diff-level pseudo-code), and specific tests to add (exact test names and expected assertions).\n\n3. Authorization and data-access checks (follow exactly):\n   - If any change replaces a direct return of a requested resource (e.g., \"return requested_dataset\" or similar) with a call to get_dataset(requested_dataset) (or equivalent), enforce access validation immediately before any return. Apply one of these two patterns and verify the diff shows it:\n     - Caller-side validation pattern (preferred if get_dataset does not accept a requesting user):\n       - Confirm the diff includes lines exactly equivalent to:\n         dataset = get_dataset(requested_dataset)\n         if dataset is None:\n             return 404  # or raise NotFound\n         if dataset.owner_id != user.id and not user_has_access(user, dataset):\n             return 403  # or raise PermissionError\n       - Confirm the code does not return dataset or expose dataset fields before these checks.\n     - get_dataset-enforces-acl pattern (alternative):\n       - Confirm get_dataset signature in the diff accepts the requesting user (e.g., get_dataset(id, requesting_user)) and that all call sites in the diff pass the requesting user.\n       - Confirm get_dataset enforces ACLs internally and that callers handle get_dataset returning None or raising for missing/unauthorized resources (404/403) where appropriate.\n   - If access enforcement was removed, weakened, or omitted by the change, mark the issue Critical. Provide exact diff-level pseudo-code to restore the caller-side checks above or to modify get_dataset signature and update call sites. Do not propose any fix that writes to persistent state; only propose code changes as pseudo-diffs.\n\n4. Tests (follow exactly):\n   - Confirm presence in the diff or associated test changes of unit/integration tests covering:\n     - existing owner access (allowed)\n     - non-owner access (denied)\n     - missing dataset (404)\n   - If any are missing, list explicit test names to add and the expected assertions, exactly as examples below:\n     - test_get_dataset_returns_403_for_non_owner -> assert status == 403 or raises PermissionError\n     - test_get_dataset_returns_404_for_missing_dataset -> assert status == 404 or raises NotFound\n     - test_get_dataset_allows_owner -> assert returned dataset == expected\n   - For each added test, include minimal setup lines (pseudo-code) and expected assertions.\n\n5. Logging & auditing (follow exactly):\n   - Check for an audit/log entry at the access decision point that includes user id, dataset id (or requested id if dataset is None), and result (\"allowed\"/\"denied\").\n   - If missing, propose adding a single audit line at the decision point. Example minimal placement and fields (use verbatim or equivalent):\n     audit.log(\"dataset.access\", user_id=user.id, dataset_id=(dataset.id if dataset else requested_dataset), result=\"allowed\"/\"denied\")\n   - Do not propose logging that would mutate state beyond minimal audit calls.\n\n6. Regression & call-site checks:\n   - Search the diff and nearby files for all other call sites of get_dataset or any direct returns of requested_dataset. List all impacted call sites with file and context.\n   - For each inconsistent call site, propose consistent fixes (provide diff-level pseudo-code similar to step 3) and corresponding tests to add or update.\n\n7. Output format required from this review (follow exactly):\n   - Produce a numbered list of issues as required in step 2.\n   - For each issue include a one-line recommended patch (pseudo-diff) and specific tests to add or update.\n   - For Critical issues include reproduction steps and a short-term mitigation before merge (e.g., reintroduce owner check at caller).\n   - Do not modify repository state; only report findings and suggested patches.\n\n8. Severity guidance (use these labels):\n   - Critical: removed or weakened authorization checks that may expose data.\n   - High: missing tests for critical access paths.\n   - Medium: missing logging/audit or non-security regressions.\n   - Low: style/clarity suggestions.\n\n9. Failures found in CI or prior runs:\n   - Summarize as issues following step 2. For Critical failures include reproduction steps and a short-term mitigation.\n\n10. Additional strict rules:\n   - Never propose fixes that require executing writes or mutating production data as part of the fix.\n   - When proposing signature changes (e.g., get_dataset(id, requesting_user)), include pseudo-diff changes for all affected call sites in the diff.\n   - When proposing a caller-side enforcement patch, include the exact minimal lines to add in the pseudo-diff and the single audit line placement.\n   - Always keep recommendations minimal and actionable (diff-level pseudo-code and test names/assertions only).\n\n11. Final delivery rule:\n   - Follow the output format specified in the task query exactly. If the query ends with JSON format instructions, wrap all output (including the full issues report) inside the specified JSON shape without adding prose outside it.\n",
+              "type": "string"
+            },
+            {
+              "id": "task-text",
+              "name": "task_text",
+              "value": "Review this change: a dataset endpoint was refactored so it now does `return get_dataset(requested_dataset)`. Identify concrete bugs, missing authorization/ownership checks, missing-record handling, and missing tests. Output a numbered issue list with file/lines, severity, a minimal fix, and specific test names.",
+              "type": "string"
+            },
+            {
+              "id": "score-threshold",
+              "name": "score_threshold",
+              "value": 0.9,
+              "type": "number"
+            },
+            {
+              "id": "approved",
+              "name": "approved",
+              "value": "1",
+              "type": "string"
+            },
+            {
+              "id": "score-instructions",
+              "name": "score_instructions",
+              "value": "When you have completed the review, critically grade YOUR OWN review against the change described in the task. Score each dimension from 0.0 to 1.0:\n- coverage: did the review catch the issues actually present in the change?\n- correctness: are the reported findings valid (no hallucinated or wrong issues)?\n- actionability: does each finding include a concrete fix and specific tests?\n- instruction_adherence: did the output follow the skill's required format and rules?\n- severity_calibration: are the severities assigned sensibly?\nSet \"score\" to the simple average (arithmetic mean) of these five dimension scores, rounded to two decimals. Set \"missing_instruction\" to the single most impactful instruction the skill should ADD to fix its biggest weakness. Set \"result_summary\" to one or two sentences describing what the review got wrong or missed.\nRespond with ONLY a single JSON object and nothing else (no prose, no markdown code fences), exactly in this shape:\n{\"review\": \"<full review text>\", \"dimensions\": [{\"name\": \"coverage\", \"score\": 0.0}, {\"name\": \"correctness\", \"score\": 0.0}, {\"name\": \"actionability\", \"score\": 0.0}, {\"name\": \"instruction_adherence\", \"score\": 0.0}, {\"name\": \"severity_calibration\", \"score\": 0.0}], \"score\": 0.0, \"missing_instruction\": \"...\", \"result_summary\": \"...\"}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "demo-controls",
+      "name": "Demo Controls",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "skill",
+        "operation": "ingestSkill",
+        "skillName": "={{$('Demo Controls').item.json.skill_name}}",
+        "skillDatasetName": "={{$('Demo Controls').item.json.dataset_name}}",
+        "skillsText": "={{$('Demo Controls').item.json.skill_markdown}}"
+      },
+      "id": "ingest-skill",
+      "name": "Ingest Skill",
+      "type": "n8n-nodes-cognee.cognee",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        0
+      ],
+      "credentials": {
+        "cogneeApi": {
+          "id": "REPLACE_WITH_YOUR_COGNEE_CREDENTIAL",
+          "name": "Cognee API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "skill",
+        "operation": "reviewSkill",
+        "skillName": "={{$('Demo Controls').item.json.skill_name}}",
+        "skillDatasetName": "={{$('Demo Controls').item.json.dataset_name}}",
+        "reviewQuery": "={{$('Demo Controls').item.json.task_text + '\\n\\n' + $('Demo Controls').item.json.score_instructions}}",
+        "reviewMaxIter": 6,
+        "reviewTopK": 15
+      },
+      "id": "review-skill",
+      "name": "Review Skill",
+      "type": "n8n-nodes-cognee.cognee",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        0
+      ],
+      "credentials": {
+        "cogneeApi": {
+          "id": "REPLACE_WITH_YOUR_COGNEE_CREDENTIAL",
+          "name": "Cognee API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "should-improve",
+              "leftValue": "={{$('Review Skill').item.json.score}}",
+              "rightValue": "={{$('Demo Controls').item.json.score_threshold}}",
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "should-improve?",
+      "name": "Should Improve?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        40,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "skill",
+        "operation": "proposeImprovement",
+        "skillName": "={{$('Demo Controls').item.json.skill_name}}",
+        "skillDatasetName": "={{$('Demo Controls').item.json.dataset_name}}",
+        "taskText": "={{$('Demo Controls').item.json.task_text}}",
+        "resultSummary": "=Review missed: {{$('Review Skill').item.json.result_summary}}\nMissing instruction: {{$('Review Skill').item.json.missing_instruction}}",
+        "successScore": "={{$('Review Skill').item.json.score}}",
+        "scoreThreshold": "={{$('Demo Controls').item.json.score_threshold}}"
+      },
+      "id": "propose-improvement",
+      "name": "Propose Improvement",
+      "type": "n8n-nodes-cognee.cognee",
+      "typeVersion": 1,
+      "position": [
+        280,
+        -140
+      ],
+      "credentials": {
+        "cogneeApi": {
+          "id": "REPLACE_WITH_YOUR_COGNEE_CREDENTIAL",
+          "name": "Cognee API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $json.items || [];\nconst prop = items.find((i) => i.kind === 'skill_improvement_proposal');\nif (!prop || !prop.proposal_id) {\n  throw new Error('No proposal_id in remember/entry response: ' + JSON.stringify($json));\n}\nreturn [{ json: { proposal_id: prop.proposal_id, skill_name: prop.skill_name } }];"
+      },
+      "id": "extract-proposal",
+      "name": "Extract Proposal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "skill",
+        "operation": "getProposal",
+        "proposalId": "={{$json.proposal_id}}",
+        "getDatasetId": "={{$('Ingest Skill').item.json.dataset_id}}"
+      },
+      "id": "get-proposal",
+      "name": "Get Proposal",
+      "type": "n8n-nodes-cognee.cognee",
+      "typeVersion": 1,
+      "position": [
+        680,
+        -140
+      ],
+      "credentials": {
+        "cogneeApi": {
+          "id": "REPLACE_WITH_YOUR_COGNEE_CREDENTIAL",
+          "name": "Cognee API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json;\nconst before = (p.old_procedure || '').split('\\n');\nconst after = (p.proposed_procedure || '').split('\\n');\nconst n = before.length, m = after.length;\nconst dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));\nfor (let i = n - 1; i >= 0; i--) {\n  for (let j = m - 1; j >= 0; j--) {\n    dp[i][j] = before[i] === after[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);\n  }\n}\nconst out = [];\nlet i = 0, j = 0;\nwhile (i < n && j < m) {\n  if (before[i] === after[j]) { out.push('  ' + before[i]); i++; j++; }\n  else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push('- ' + before[i]); i++; }\n  else { out.push('+ ' + after[j]); j++; }\n}\nwhile (i < n) out.push('- ' + before[i++]);\nwhile (j < m) out.push('+ ' + after[j++]);\nconst diff = out.join('\\n');\nconst md = [\n  `## Skill Delta proposal: ${p.skill_name}`, '',\n  `Proposal: ${p.proposal_id}`,\n  `Confidence: ${p.confidence}`,\n  `Rationale: ${p.rationale}`, '',\n  '```diff', diff, '```',\n].join('\\n');\nreturn [{ json: {\n  proposal_id: p.proposal_id, skill_id: p.skill_id, skill_name: p.skill_name,\n  confidence: p.confidence, rationale: p.rationale,\n  old_procedure: p.old_procedure, proposed_procedure: p.proposed_procedure,\n  skill_delta: diff, skill_delta_markdown: md,\n  approved: $('Demo Controls').item.json.approved,\n} }];"
+      },
+      "id": "build-review-packet",
+      "name": "Build Review Packet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "approved",
+              "leftValue": "={{$json.approved}}",
+              "rightValue": "1",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "approved?",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "skill",
+        "operation": "applyImprovement",
+        "skillName": "={{$('Demo Controls').item.json.skill_name}}",
+        "skillDatasetName": "={{$('Demo Controls').item.json.dataset_name}}",
+        "proposalId": "={{$('Get Proposal').item.json.proposal_id}}",
+        "successScore": "={{$('Demo Controls').item.json.eval_score}}"
+      },
+      "id": "apply-improvement",
+      "name": "Apply Improvement",
+      "type": "n8n-nodes-cognee.cognee",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        -240
+      ],
+      "credentials": {
+        "cogneeApi": {
+          "id": "REPLACE_WITH_YOUR_COGNEE_CREDENTIAL",
+          "name": "Cognee API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "skill",
+        "operation": "getSkill",
+        "skillId": "={{$('Get Proposal').item.json.skill_id}}",
+        "getDatasetId": "={{$('Ingest Skill').item.json.dataset_id}}"
+      },
+      "id": "get-skill",
+      "name": "Get Skill",
+      "type": "n8n-nodes-cognee.cognee",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        -240
+      ],
+      "credentials": {
+        "cogneeApi": {
+          "id": "REPLACE_WITH_YOUR_COGNEE_CREDENTIAL",
+          "name": "Cognee API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const packet = $('Build Review Packet').item.json;\nconst updated = ($json && $json.procedure) || '';\nreturn [{ json: {\n  status: 'completed',\n  skill_to_improve: packet.skill_name,\n  proposal_id: packet.proposal_id,\n  applied: true,\n  confidence: packet.confidence,\n  rationale: packet.rationale,\n  skill_delta: packet.skill_delta,\n  skill_delta_markdown: packet.skill_delta_markdown,\n  updated_procedure: updated,\n} }];"
+      },
+      "id": "show-skill-delta",
+      "name": "Show Skill Delta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: {\n  status: 'waiting_for_review',\n  proposal_id: $('Build Review Packet').item.json.proposal_id,\n  skill_delta_markdown: $('Build Review Packet').item.json.skill_delta_markdown,\n  message: 'Proposal created and the before/after diff is ready, but it was not approved. Replace the Demo Controls approved flag with a Slack/Wait approval to gate this in production.',\n} }];"
+      },
+      "id": "waiting-for-review",
+      "name": "Waiting For Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: {\n  status: 'no_improvement_needed',\n  eval_score: $('Demo Controls').item.json.eval_score,\n  score_threshold: $('Demo Controls').item.json.score_threshold,\n  message: 'Score met or exceeded the threshold, so no skill-improvement proposal was requested.',\n} }];"
+      },
+      "id": "no-improvement-needed",
+      "name": "No Improvement Needed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Approval gate\n\nThis demo approves via the **Demo Controls** `approved` flag.\n\nFor production, replace the **Approved?** branch with:\n- a **Slack** node that posts `skill_delta_markdown` (the before/after diff + rationale), then\n- a **Wait for webhook** / approval node, and gate **Apply Improvement** on the response.\n\nThe proposal is created but NOT applied until approval \u2014 review the diff first.",
+        "height": 260,
+        "width": 360
+      },
+      "id": "sticky-approval",
+      "name": "Approval gate note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        -440
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Demo Controls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Demo Controls": {
+      "main": [
+        [
+          {
+            "node": "Ingest Skill",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest Skill": {
+      "main": [
+        [
+          {
+            "node": "Review Skill",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Skill": {
+      "main": [
+        [
+          {
+            "node": "Should Improve?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Improve?": {
+      "main": [
+        [
+          {
+            "node": "Propose Improvement",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Improvement Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Propose Improvement": {
+      "main": [
+        [
+          {
+            "node": "Extract Proposal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Proposal": {
+      "main": [
+        [
+          {
+            "node": "Get Proposal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Proposal": {
+      "main": [
+        [
+          {
+            "node": "Build Review Packet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Review Packet": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Apply Improvement",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Waiting For Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Improvement": {
+      "main": [
+        [
+          {
+            "node": "Get Skill",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Skill": {
+      "main": [
+        [
+          {
+            "node": "Show Skill Delta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

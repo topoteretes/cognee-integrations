@@ -14,6 +14,10 @@ dependencies = [
     "python-dotenv>=1.2.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/google-adk"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cognee_integration_google_adk*"]

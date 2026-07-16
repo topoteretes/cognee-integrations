@@ -23,7 +23,7 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.2.4"
+    current_version: "2026.6.11"
     migration_status: done
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
@@ -38,6 +38,17 @@ integrations:
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
+  - slug: vellum-assistant
+    name: "Cognee Plugin for Vellum Assistant"
+    owner: vellum
+    language: typescript
+    registry: none
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Vellum Assistant plugin integrating Cognee as the primary memory system. Pure TypeScript hooks talk to the Cognee HTTP API, session storage via hooks, recall via model-visible tool, session-to-graph sync; can optionally provision and manage a local Cognee server"
+
   - slug: codex
     name: "Cognee Plugin for Codex"
     owner: cognee
@@ -48,6 +59,18 @@ integrations:
     current_version: "1.0.3-local"
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
+
+  - slug: hermes-agent
+    name: "Cognee Memory Plugin for Hermes Agent"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-hermes-agent"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
+    notes: "Standalone Hermes memory provider plugin; replaces closed in-tree PR path"
 
   - slug: dify
     name: "Cognee Tool Plugin for Dify"
@@ -95,6 +118,29 @@ integrations:
     source_repo: https://github.com/topoteretes/cognee-integration-langgraph
     notes: "LangGraph agent tools – add, search, session management"
 
+  - slug: strands
+    name: "Cognee Integration for Strands"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-strands"
+    cognee_dependency: sdk
+    current_version: "0.2.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee-integration-strands
+    notes: "Strands agent tools – remember, recall, session management (cognee v1.0)"
+  - slug: claude-agent-sdk
+    name: "Cognee Integration for Claude Agent SDK"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-claude"
+    cognee_dependency: sdk
+    current_version: "0.2.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee-integration-claude
+    notes: "Claude Agent SDK tools – remember, recall, session management (cognee v1.0)"
+
   - slug: n8n
     name: "Cognee Nodes for n8n"
     owner: cognee
@@ -107,8 +153,6 @@ integrations:
     source_repo: https://github.com/topoteretes/cognee-n8n
     notes: "n8n community node – add data, cognify, search, delete. Published via .github/workflows/n8n-publish.yml on `n8n-v*.*.*` tags."
 
-  # ── Pending migrations ─────────────────────────────────────────────
-
   - slug: crewai
     name: "Cognee Integration for CrewAI"
     owner: cognee
@@ -117,21 +161,11 @@ integrations:
     package_name: "cognee-integration-crewai"
     cognee_dependency: sdk
     current_version: "0.1.1"
-    migration_status: pending
+    migration_status: done
     source_repo: https://github.com/topoteretes/cognee-integration-crewai
     notes: "CrewAI agent tools – add, search, session management"
 
-  - slug: strands
-    name: "Cognee Integration for Strands"
-    owner: cognee
-    language: python
-    registry: pypi
-    package_name: "cognee-integration-strands"
-    cognee_dependency: sdk
-    current_version: "0.1.1"
-    migration_status: pending
-    source_repo: https://github.com/topoteretes/cognee-integration-strands
-    notes: "Strands agent tools – add, search, session management"
+  # ── Pending migrations ─────────────────────────────────────────────
 
   - slug: claude
     name: "Cognee Integration for Claude Agent SDK"
@@ -144,6 +178,17 @@ integrations:
     migration_status: pending
     source_repo: https://github.com/topoteretes/cognee-integration-claude
     notes: "Claude Agent SDK tools – add, search, session management"
+  - slug: strands
+    name: "Cognee Integration for Strands"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-strands"
+    cognee_dependency: sdk
+    current_version: "0.2.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee-integration-strands
+    notes: "Strands agent tools – remember, recall, session management (cognee v1.0)"
 
   - slug: vercel-ai-sdk
     name: "Cognee for Vercel AI SDK"

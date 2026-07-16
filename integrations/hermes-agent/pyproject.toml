@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-hermes-agent"
+version = "0.1.0"
+description = "Standalone Cognee memory provider plugin for Hermes Agent."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Cognee team"}
+]
+dependencies = [
+    "cognee>=1.0.0,<2.0.0",
+]
+
+[project.entry-points."hermes_agent.plugins"]
+cognee = "cognee_integration_hermes"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_hermes*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.14.6",
+]
+

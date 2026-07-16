@@ -11,6 +11,7 @@ synthetic text back into Cognee as if it were a user question.
 """
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -19,11 +20,14 @@ from pathlib import Path
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    get_session_key,
     hook_log,
     load_resolved,
     quiet_hook_output,
     recall_via_http,
+    resolve_session_key_from_payload,
     resolve_user,
+    set_session_key,
 )
 from config import (
     ensure_cognee_ready,
@@ -42,7 +46,10 @@ _SYNC_START_DELAY_SECONDS = "2"
 
 
 def _load_resolved_fields() -> tuple[str, str, str]:
-    """Return (session_id, dataset, user_id) from resolved cache or config."""
+    """Return (session_id, dataset, user_id) from runtime endpoint state or config."""
+    if not get_session_key():
+        hook_log("precompact_missing_session_key")
+        return "", "", ""
     resolved = load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
@@ -267,8 +274,17 @@ async def _run():
 
 
 def main():
-    # Read stdin (PreCompact payload); we don't use the body, just the trigger.
-    sys.stdin.read()
+    # Read the PreCompact payload to recover the host session id, which lets the
+    # session resolver map back to this launch's Cognee session id (the body is
+    # otherwise unused — PreCompact is just a trigger).
+    payload_raw = sys.stdin.read()
+    try:
+        payload = json.loads(payload_raw) if payload_raw.strip() else {}
+    except json.JSONDecodeError:
+        payload = {}
+    session_key_candidate, _ = resolve_session_key_from_payload(payload)
+    if session_key_candidate:
+        set_session_key(session_key_candidate)
 
     anchor = ""
     try:

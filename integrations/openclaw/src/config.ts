@@ -94,6 +94,12 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const defaultWriteScope = raw.defaultWriteScope || DEFAULT_WRITE_SCOPE;
   const scopeRouting = Array.isArray(raw.scopeRouting) ? raw.scopeRouting : DEFAULT_SCOPE_ROUTING;
 
+  // Per-agent memory: opt-in. Explicit config wins. When unset, it defaults to
+  // false here and is auto-enabled in plugin.ts only when the gateway hosts
+  // multiple agents (agents.list.length > 1) — so single-agent installs keep
+  // the legacy shared behavior and are unaffected by the upgrade.
+  const perAgentMemory = typeof raw.perAgentMemory === "boolean" ? raw.perAgentMemory : false;
+
   // Recall injection
   const validPositions = ["prependSystemContext", "appendSystemContext", "prependContext"] as const;
   const recallInjectionPosition = raw.recallInjectionPosition && validPositions.includes(raw.recallInjectionPosition)
@@ -107,7 +113,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   return {
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
-    recallScopes, defaultWriteScope, scopeRouting,
+    recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
     recallInjectionPosition,
     enableSessions, persistSessionsAfterEnd,
     searchType, searchPrompt, deleteMode,

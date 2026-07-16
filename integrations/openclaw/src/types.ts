@@ -63,6 +63,15 @@ export type CogneePluginConfig = {
   recallScopes?: MemoryScope[];
   defaultWriteScope?: MemoryScope;
   scopeRouting?: ScopeRoute[];
+  /**
+   * Per-agent memory mode. When enabled, the `agent` scope is keyed by the
+   * runtime agentId: each agent's files are read from its own workspace
+   * (`ctx.workspaceDir`) and tracked in a per-agent sync index, so multiple
+   * agents in one gateway each get their own dataset/graph without colliding.
+   * Defaults to true when multi-scope is active (any agent dataset
+   * prefix/template set). `company`/`user` scopes remain shared.
+   */
+  perAgentMemory?: boolean;
 
   // --- Session ---
   enableSessions?: boolean;
@@ -140,6 +149,13 @@ export type SyncIndex = {
 
 /** Per-scope sync indexes, keyed by MemoryScope */
 export type ScopedSyncIndexes = Partial<Record<MemoryScope, SyncIndex>>;
+
+/**
+ * Per-agent sync indexes for the `agent` scope, keyed by (normalized) agentId.
+ * Each entry tracks that agent's files + its agent-scope dataset id/name.
+ * `company`/`user` scopes stay in ScopedSyncIndexes (shared across agents).
+ */
+export type AgentSyncIndexes = Record<string, SyncIndex>;
 
 export type MemoryFile = {
   /** Relative path from workspace root (e.g. "MEMORY.md", "memory/tools.md") */

@@ -15,12 +15,6 @@ Run the sync script:
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py
 ```
 
-Or equivalently via CLI:
-
-```bash
-cognee-cli improve -d "${COGNEE_PLUGIN_DATASET:-claude_sessions}" -s "${COGNEE_SESSION_ID:-claude_code_session}"
-```
-
 ## What this does
 
 1. **Apply feedback weights** -- session entries with feedback scores update graph node/edge weights
