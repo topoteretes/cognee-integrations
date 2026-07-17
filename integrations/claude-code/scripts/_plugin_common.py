@@ -95,12 +95,41 @@ def apply_cognee_env() -> None:
     inherits a stable, upgrade-safe data location. CACHING and AUTO_FEEDBACK are
     already cognee's defaults but are set explicitly so a future default change
     can't silently disable session-context distillation.
+
+    LLM_INSTRUCTOR_MODE (found live-diagnosed, 2026-07-17): cognee's structured-
+    output calls (cognify summarization, graph extraction, AND the AUTO_FEEDBACK
+    distillation path) all go through instructor's default `json_mode`, which
+    pastes the target JSON schema into the prompt as text and asks a local model
+    to follow it. Small local models are unreliable at this -- empirically
+    reproduced against this exact installed stack: repeated schema-validation
+    failures (missing fields, the model echoing the schema back instead of an
+    answer, unbounded runaway generation) driving thousands of
+    InstructorRetryException retries and, combined with cognee's own retry floor
+    (>=240s before giving up) exceeding this plugin's submit timeout below,
+    guaranteed "timed out" on every single improve() call -- confirmed via
+    hook.log (25 ok vs 189 failed improves since 2026-07-10) and a growing,
+    never-draining backlog counter. `json_schema_mode` uses Ollama's native
+    grammar-constrained decoding instead (the model is physically constrained to
+    valid JSON token-by-token, not just asked nicely) -- reproduced 3/3 valid,
+    sub-second responses against the SAME model/hardware with this mode, vs 0/3
+    valid (or indefinite hangs) in the default mode. Fixes all three failing
+    paths at once; no model swap needed.
+
+    COGNEE_IMPROVE_SUBMIT_TIMEOUT (companion fix, same diagnosis): raised from
+    the prior 180s default (see improve_session_via_http()'s own fallback
+    below) to comfortably clear cognee's own >=240s LLM-retry floor -- with the
+    mode fix above this is now a safety margin rather than the primary fix
+    (json_schema_mode succeeds in under a second in practice), but a genuinely
+    slow moment should no longer be guaranteed to trip the client-side timeout
+    before cognee's own retry logic has even finished one full cycle.
     """
     os.environ.setdefault("SYSTEM_ROOT_DIRECTORY", str(_COGNEE_SYSTEM_DIR))
     os.environ.setdefault("DATA_ROOT_DIRECTORY", str(_COGNEE_DATA_DIR))
     os.environ.setdefault("CACHE_ROOT_DIRECTORY", str(_COGNEE_CACHE_DIR))
     os.environ.setdefault("CACHING", "true")
     os.environ.setdefault("AUTO_FEEDBACK", "true")
+    os.environ.setdefault("LLM_INSTRUCTOR_MODE", "json_schema_mode")
+    os.environ.setdefault("COGNEE_IMPROVE_SUBMIT_TIMEOUT", "420")
 
 
 apply_cognee_env()
