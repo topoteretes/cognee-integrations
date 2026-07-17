@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-second-brain"
+version = "0.1.0"
+description = "Cross-transport personal second-brain memory bot — Telegram + web feed one per-user memory you can capture, recall (with citations), link across apps, and forget."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Cognee team" }]
+dependencies = [
+    "fastapi>=0.110,<1",
+    "uvicorn>=0.27,<1",
+    "httpx>=0.27,<1",
+]
+
+[project.scripts]
+cognee-second-brain = "cognee_integration_second_brain.run:main"
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/second-brain"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_second_brain*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.14.6",
+]
