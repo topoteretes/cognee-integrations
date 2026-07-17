@@ -239,6 +239,17 @@ integrations:
     source_repo: https://github.com/topoteretes/cognee/pull/4067
     notes: "VS Code extension – remember/recall + 'ask my project memory' with citations linked back to source files; per-repo dataset isolation."
 
+  - slug: aider
+    name: "Cognee Integration for Aider"
+    owner: cognee
+    language: python
+    registry: none
+    package_name: null
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Aider CLI memory tools – sessionized add/cognify/search with per-project isolation (CHUNKS-scoped recall)"
+
   # ── Pending migrations ─────────────────────────────────────────────
 
   - slug: claude
