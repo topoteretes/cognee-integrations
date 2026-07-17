@@ -302,6 +302,12 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 
 ## Troubleshooting
 
+Run the doctor script for a one-page health snapshot before digging into logs:
+
+```bash
+python3 ~/.claude/plugins/cognee/scripts/cognee-doctor.py
+```
+
 **Recall returns empty but data was ingested**
 - Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `agent_sessions`).
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
