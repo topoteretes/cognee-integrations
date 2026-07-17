@@ -59,6 +59,21 @@ reference and runnable examples. The table above is generated from
 [`integrations/inventory.yml`](integrations/inventory.yml) — see it for ownership,
 versions, and compatible cognee ranges.
 
+### Chat bots & editor
+
+Memory apps and editor tooling that talk to a running **cognee server**
+(`COGNEE_BASE_URL`) over its HTTP API — no in-process cognee. Each lives under
+`integrations/<name>/` with a runnable example and its own `README.md`.
+
+| Integration | Package | What it does |
+|---|---|---|
+| Chat-memory core | `cognee-integration-chat-memory` | the shared `ChatMemoryAdapter` every cognee chat bot builds on |
+| Telegram | `cognee-integration-telegram` | each chat is a memory; `/ask` with cited message links |
+| Slack | `cognee-integration-slack` | per-channel memory; `@cognee` / `/recall` cited answers |
+| Web chat widget | `cognee-integration-web-widget` | one-script-tag embeddable widget + "ask our docs" |
+| Second brain | `cognee-integration-second-brain` | cross-transport personal memory (Telegram + web), `/link` identity merge |
+| VS Code | `cognee-vscode` | remember/recall + "ask my project memory" with source-file citations |
+
 ## Quickstart
 
 The Claude Code integration is a **plugin** — it gives Claude Code persistent memory

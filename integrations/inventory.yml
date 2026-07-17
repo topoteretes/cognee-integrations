@@ -165,6 +165,80 @@ integrations:
     source_repo: https://github.com/topoteretes/cognee-integration-crewai
     notes: "CrewAI agent tools – add, search, session management"
 
+  # ── Chat bots & editor (memory over the cognee HTTP API) ───────────
+
+  - slug: chat-memory
+    name: "Shared Chat-Memory Adapter Core"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-chat-memory"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee/pull/4018
+    notes: "Framework-agnostic ChatMemoryAdapter every cognee chat bot plugs into (ingest/answer/forget, scopes, consent, citations). Default HTTP backend; optional [sdk] extra for in-process cognee."
+
+  - slug: telegram
+    name: "Cognee Memory Bot for Telegram"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-telegram"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee/pull/4012
+    notes: "Telegram bot – each chat is a cognee memory; passive capture, /ask with cited message links, /forget, per-chat opt-out."
+
+  - slug: slack
+    name: "Cognee Memory Bot for Slack"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-slack"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee/pull/4019
+    notes: "Slack bot – per-channel memory, @cognee / /recall cited answers, batched ingestion, dataset-level forget."
+
+  - slug: web-widget
+    name: "Cognee Web Chat Widget"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-web-widget"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee/pull/4014
+    notes: "Embeddable web chat widget + 'ask our docs' assistant; a CORS FastAPI proxy to a cognee server, with inline citations."
+
+  - slug: second-brain
+    name: "Cognee Cross-Transport Second-Brain Bot"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-second-brain"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee/pull/4009
+    notes: "Personal cross-transport memory (Telegram + web) over one per-user brain; /link merges identities, cited recall, /forget me."
+
+  - slug: vscode
+    name: "Cognee Project-Memory Extension for VS Code"
+    owner: cognee
+    language: typescript
+    registry: none
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee/pull/4067
+    notes: "VS Code extension – remember/recall + 'ask my project memory' with citations linked back to source files; per-repo dataset isolation."
+
   # ── Pending migrations ─────────────────────────────────────────────
 
   - slug: claude
