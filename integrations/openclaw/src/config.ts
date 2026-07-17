@@ -4,9 +4,9 @@ import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, Sco
 // Defaults
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_BASE_URL = "http://localhost:8000";
-export const DEFAULT_DATASET_NAME = "openclaw";
-export const DEFAULT_SEARCH_TYPE: CogneeSearchType = "GRAPH_COMPLETION";
+export const DEFAULT_BASE_URL = "http://localhost:8011";
+export const DEFAULT_DATASET_NAME = "agent_sessions";
+export const DEFAULT_SEARCH_TYPE: CogneeSearchType = "HYBRID_COMPLETION";
 export const DEFAULT_DELETE_MODE = "soft" as const;
 export const DEFAULT_MAX_RESULTS = 3;
 export const DEFAULT_MIN_SCORE = 0.3;
@@ -19,6 +19,14 @@ export const DEFAULT_AUTO_MEMIFY = false;
 export const DEFAULT_IMPROVE_ON_SESSION_END = true;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 export const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
+
+// Recall hot path — same defaults as the claude-code/codex integrations
+// (COGNEE_RECALL_TIMEOUT=2.5s, COGNEE_RECALL_BUDGET=4s,
+//  COGNEE_BREAKER_THRESHOLD=5, COGNEE_BREAKER_COOLDOWN=120s).
+export const DEFAULT_RECALL_TIMEOUT_MS = 2_500;
+export const DEFAULT_RECALL_BUDGET_MS = 4_000;
+export const DEFAULT_RECALL_BREAKER_THRESHOLD = 5;
+export const DEFAULT_RECALL_BREAKER_COOLDOWN_MS = 120_000;
 
 export const DEFAULT_RECALL_SCOPES: MemoryScope[] = ["agent", "user", "company"];
 export const DEFAULT_WRITE_SCOPE: MemoryScope = "agent";
@@ -61,7 +69,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
 
   const mode: CogneeMode = raw.mode === "cloud" || process.env.COGNEE_MODE === "cloud" ? "cloud" : "local";
   const baseUrl = raw.baseUrl?.trim() || process.env.COGNEE_BASE_URL?.trim() || DEFAULT_BASE_URL;
-  const datasetName = raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
+  const datasetName = process.env.COGNEE_PLUGIN_DATASET?.trim() || raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
   const searchPrompt = raw.searchPrompt || "";
   const deleteMode = raw.deleteMode === "hard" ? "hard" : DEFAULT_DELETE_MODE;
@@ -75,6 +83,10 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const improveOnSessionEnd = typeof raw.improveOnSessionEnd === "boolean" ? raw.improveOnSessionEnd : DEFAULT_IMPROVE_ON_SESSION_END;
   const requestTimeoutMs = typeof raw.requestTimeoutMs === "number" ? raw.requestTimeoutMs : DEFAULT_REQUEST_TIMEOUT_MS;
   const ingestionTimeoutMs = typeof raw.ingestionTimeoutMs === "number" ? raw.ingestionTimeoutMs : DEFAULT_INGESTION_TIMEOUT_MS;
+  const recallTimeoutMs = typeof raw.recallTimeoutMs === "number" ? raw.recallTimeoutMs : DEFAULT_RECALL_TIMEOUT_MS;
+  const recallBudgetMs = typeof raw.recallBudgetMs === "number" ? raw.recallBudgetMs : DEFAULT_RECALL_BUDGET_MS;
+  const recallBreakerThreshold = typeof raw.recallBreakerThreshold === "number" ? raw.recallBreakerThreshold : DEFAULT_RECALL_BREAKER_THRESHOLD;
+  const recallBreakerCooldownMs = typeof raw.recallBreakerCooldownMs === "number" ? raw.recallBreakerCooldownMs : DEFAULT_RECALL_BREAKER_COOLDOWN_MS;
 
   const apiKey =
     raw.apiKey && raw.apiKey.length > 0 ? resolveEnvVars(raw.apiKey)
@@ -94,10 +106,11 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const defaultWriteScope = raw.defaultWriteScope || DEFAULT_WRITE_SCOPE;
   const scopeRouting = Array.isArray(raw.scopeRouting) ? raw.scopeRouting : DEFAULT_SCOPE_ROUTING;
 
-  // Per-agent memory: opt-in. Explicit config wins. When unset, it defaults to
-  // false here and is auto-enabled in plugin.ts only when the gateway hosts
-  // multiple agents (agents.list.length > 1) — so single-agent installs keep
-  // the legacy shared behavior and are unaffected by the upgrade.
+  // Per-agent memory: strictly opt-in, never auto-enabled. All agents share
+  // one dataset by default (matching the claude-code/codex integrations).
+  // Note that isolation also requires multi-scope to be active: plugin.ts
+  // gates on `multiScope && cfg.perAgentMemory`, so users must set an
+  // agentDatasetPrefix/agentDatasetTemplate alongside this flag.
   const perAgentMemory = typeof raw.perAgentMemory === "boolean" ? raw.perAgentMemory : false;
 
   // Recall injection
@@ -109,16 +122,18 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   // Session
   const enableSessions = typeof raw.enableSessions === "boolean" ? raw.enableSessions : true;
   const persistSessionsAfterEnd = typeof raw.persistSessionsAfterEnd === "boolean" ? raw.persistSessionsAfterEnd : true;
+  const captureSession = typeof raw.captureSession === "boolean" ? raw.captureSession : true;
 
   return {
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
     recallInjectionPosition,
-    enableSessions, persistSessionsAfterEnd,
+    enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify, improveOnSessionEnd,
     requestTimeoutMs, ingestionTimeoutMs,
+    recallTimeoutMs, recallBudgetMs, recallBreakerThreshold, recallBreakerCooldownMs,
   };
 }
