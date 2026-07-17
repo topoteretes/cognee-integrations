@@ -365,6 +365,54 @@ def _resolve_agent_name() -> str:
     return _normalize("claude-code-agent")
 
 
+def _connections_me_lookup_with_retry(conn_uuid: str):
+    """GET /api/v1/agents/connections/me, retrying once with the bare
+    session-key value if the conn_uuid-keyed lookup 404s or returns a
+    non-dict body.
+
+    Thessary change 7 (OPTIONAL defense-in-depth; sequenced strictly AFTER
+    change 6's spawn_server_healer() fix, which registers connections under
+    resolve_conn_uuid(get_session_key()) going forward). This retry exists
+    only to bridge an in-flight window -- e.g. a connection registered under
+    the bare session-key value by a process that started before change 6's
+    fix rolled out -- it is NOT a substitute for change 6. Deliberately
+    retries with the bare get_session_key() value, NOT
+    resolve_cognee_session_id()'s output (a different, differently-prefixed
+    string that would not match how older registrations were keyed).
+    """
+
+    def _attempt(agent_session_name: str):
+        query = ""
+        if agent_session_name:
+            query = f"?agent_session_name={urllib.parse.quote(agent_session_name, safe='')}"
+        return _json_http_request(
+            f"/api/v1/agents/connections/me{query}",
+            method="GET",
+            timeout=10.0,
+        )
+
+    first_result = None
+    try:
+        first_result = _attempt(conn_uuid)
+        if isinstance(first_result, dict):
+            return first_result
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+    # First attempt either 404'd or returned a non-dict body: retry once with
+    # the bare session key, if it differs from what we already tried.
+    bare_key = get_session_key()
+    if not bare_key or bare_key == conn_uuid:
+        return first_result
+    retried = _attempt(bare_key)
+    hook_log(
+        "connections_me_retry",
+        {"first_result_type": type(first_result).__name__, "retried_with": "bare_session_key"},
+    )
+    return retried
+
+
 def load_resolved(session_key: str = "") -> dict:
     """Load runtime state from Cognee HTTP endpoints (no file cache)."""
     resolved: dict = {}
@@ -389,22 +437,17 @@ def load_resolved(session_key: str = "") -> dict:
     if api_key:
         resolved["api_key"] = api_key
 
-    # Resolve active connection details FIRST — it doubles as the primary
-    # identity source. The connection is registered under the per-launch
-    # conn_uuid handle, so query by that — not the session id (which can change
-    # on a switch) and not the host correlation key. Its agent.user_id is
-    # served by both OSS servers and cloud tenants, whereas /users/me is absent
-    # on some tenants (404 on every hook), so the users/me probe below runs
-    # only when identity is still unresolved.
+    # Resolve active connection details — the sole identity source. The
+    # connection is registered under the per-launch conn_uuid handle, so query
+    # by that — not the session id (which can change on a switch) and not the
+    # host correlation key. Its agent.user_id is served by both OSS servers
+    # and cloud tenants. (Thessary change 5: the old /api/v1/users/me fallback
+    # probe below this block was deleted — it was dead code that never ran in
+    # practice, since /users/me is absent/404s on some tenants and carries no
+    # "id" field on others; do NOT resurrect it or swap to /api/v1/auth/me,
+    # which returns only {"email": ...}, no "id" field either.)
     try:
-        query = ""
-        if conn_uuid:
-            query = f"?agent_session_name={urllib.parse.quote(conn_uuid, safe='')}"
-        conn = _json_http_request(
-            f"/api/v1/agents/connections/me{query}",
-            method="GET",
-            timeout=10.0,
-        )
+        conn = _connections_me_lookup_with_retry(conn_uuid)
         if isinstance(conn, dict):
             agent = conn.get("agent") if isinstance(conn.get("agent"), dict) else {}
             if isinstance(agent, dict):
@@ -420,18 +463,6 @@ def load_resolved(session_key: str = "") -> dict:
                 resolved["registered"] = status == "active"
     except Exception as exc:
         hook_log("runtime_state_connection_lookup_failed", {"error": str(exc)[:200]})
-
-    # Fallback identity probe — only when the connection lookup yielded none
-    # (e.g. before registration on a fresh launch).
-    if not resolved.get("user_id"):
-        try:
-            me = _json_http_request("/api/v1/users/me", method="GET", timeout=10.0)
-            if isinstance(me, dict):
-                user_id = str(me.get("id") or "").strip()
-                if user_id:
-                    resolved["user_id"] = user_id
-        except Exception as exc:
-            hook_log("runtime_state_users_me_failed", {"error": str(exc)[:200]})
 
     return resolved
 
@@ -1178,7 +1209,8 @@ def spawn_server_healer(cwd: str = "") -> bool:
         return False
 
     payload = {"session_id": get_session_key(), "session_key": get_session_key(),
-               "cwd": cwd or os.getcwd()}
+               "cwd": cwd or os.getcwd(),
+               "agent_session_name": resolve_conn_uuid(get_session_key())}
     try:
         try:
             log_fh = _HEALER_LOG.open("a", encoding="utf-8")
