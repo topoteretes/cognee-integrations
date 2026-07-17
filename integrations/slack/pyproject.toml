@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-slack"
+version = "0.1.0"
+description = "Slack bot powered by cognee memory — per-channel memory with cited recall."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Cognee team" }]
+dependencies = [
+    "slack-bolt>=1.18,<2",
+    "aiohttp>=3.9,<4",
+    "httpx>=0.27,<1",
+]
+
+[project.scripts]
+cognee-slack = "cognee_integration_slack.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/slack"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_slack*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.14.6",
+]
