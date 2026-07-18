@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1262,6 +1263,9 @@ async def _start(payload: dict | None = None) -> dict:
     target_url = configured_url or _LOCAL_SERVICE_URL
     config["base_url"] = target_url
     os.environ["COGNEE_BASE_URL"] = target_url
+    if os.environ.get("COGNEE_WARMUP", "").lower() == "true":
+        _warmup_url = _health_url(target_url)
+        threading.Thread(target=_health_ok, args=(_warmup_url, 2.0), daemon=True).start()
     if api_key:
         os.environ["COGNEE_API_KEY"] = api_key
 
