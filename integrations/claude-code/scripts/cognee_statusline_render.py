@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -21,7 +22,18 @@ _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
+_PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _DEFAULT_DATASET = "agent_sessions"
+
+# Passive, app-closed-safe mitigation for the pipeline-health sweep (Layer 1, a
+# Windows Scheduled Task) -- PushNotification (Layer 2) only fires while the app
+# is open, so this is what lets Mike see a stuck-pipeline finding the INSTANT he
+# next opens any terminal running the plugin, even after a period the app was
+# closed. Older than this many seconds, treat the file as stale/unknown rather
+# than showing a possibly-outdated warning -- the sweep runs every 2-5 minutes,
+# so anything older than that means the sweep itself has stopped, which is its
+# own separate (unmonitored-by-this-glyph) problem, not something to imply here.
+_PIPELINE_HEALTH_STALE_SECONDS = 30 * 60
 
 # Self-eviction: when the plugin is uninstalled/disabled but its files still
 # linger in the version cache (Claude Code does not remove the statusLine key we
@@ -100,6 +112,40 @@ def _update_segment() -> str:
     if not (installed and latest):
         return ""
     return f"   \033[1;33m⬆ Cognee update available {installed}→{latest}\033[0m"
+
+
+def _pipeline_health_glyph() -> str:
+    """"⚠ N " when the pipeline sweep (scripts/pipeline_sweep.py) has a fresh,
+    non-stale finding of one or more stuck runs or a down server; "" otherwise
+    (no file yet, stale, or everything's clean). See
+    docs/KB/pipeline-monitor-notify-policy.md for the full monitoring design this
+    is one small passive piece of.
+    """
+    try:
+        raw = json.loads(_PIPELINE_HEALTH_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    try:
+        generated_at = datetime.fromisoformat(str(raw.get("generated_at", "")))
+        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
+        if age_seconds > _PIPELINE_HEALTH_STALE_SECONDS:
+            return ""
+    except (ValueError, TypeError):
+        return ""
+    server = raw.get("server") or {}
+    if server.get("up") is False:
+        return "⚠ server-down "
+    summary = raw.get("summary") or {}
+    total_open = int(summary.get("total_open") or 0)
+    worst = str(summary.get("worst_classification") or "ok")
+    flagged = sum((summary.get("by_classification") or {}).values()) if isinstance(
+        summary.get("by_classification"), dict
+    ) else 0
+    if worst in ("alert", "critical") and flagged > 0:
+        return f"⚠ {flagged} pipeline(s) stuck "
+    return ""
 
 
 def _read_json(path: Path) -> dict:
@@ -193,7 +239,7 @@ def main() -> None:
         return
 
     sys.stdout.write(
-        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
+        f"{_pipeline_health_glyph()}{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
     )
 
 
