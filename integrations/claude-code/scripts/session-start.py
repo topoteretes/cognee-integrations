@@ -1114,11 +1114,15 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
 
 
 def _ensure_statusline_configured() -> None:
-    """Write the statusLine entry to ~/.claude/settings.json if not already set.
+    """Write the statusLine entry to ~/.claude/settings.json when safe.
 
     Claude Code hot-reloads settings.json, so the status line becomes active on
     the next status refresh without requiring a restart.
     """
+    if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
+        hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
+        return
+
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     if plugin_root:
         statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
@@ -1149,6 +1153,11 @@ def _ensure_statusline_configured() -> None:
                 settings = json.loads(text)
 
         if settings.get("statusLine") == desired:
+            return
+
+        current_statusline = settings.get("statusLine")
+        if current_statusline and "cognee-statusline" not in json.dumps(current_statusline):
+            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
             return
 
         settings["statusLine"] = desired
