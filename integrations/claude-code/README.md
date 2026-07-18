@@ -197,7 +197,11 @@ cognee: my-project · cloud
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host.
 
-It is configured automatically on first launch — no manual steps needed. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward.
+It is configured automatically on first launch — no manual steps needed. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward. If you already have your own `statusLine` configured, the plugin leaves it untouched; to switch to Cognee's, set it manually in `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "[ -x \"<plugin>/scripts/cognee-statusline.sh\" ] && exec \"<plugin>/scripts/cognee-statusline.sh\" || true" }
+```
 
 The status line reads only local state — no network calls on every refresh:
 1. Dataset: `COGNEE_PLUGIN_DATASET` env var, otherwise `agent_sessions`
