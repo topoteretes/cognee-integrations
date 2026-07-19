@@ -1,181 +1,232 @@
+"""Mid-session COGNEE_BASE_URL switch -> re-register on the new target (gh #3544).
+
+Standalone-runnable (python3 tests/test_mid_session_reregister.py) and
+pytest-discoverable. Uses in-process mock Cognee servers on ephemeral ports; no
+cognee install, network, or LLM key required.
+"""
+
 import json
 import os
 import pathlib
+import socket
 import sys
 import tempfile
 import threading
-import time
-import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-# Adjust sys.path to find the scripts folder
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
-
-# Redirect plugin directory to a temp folder BEFORE importing common plugin module
-_TMP_DIR = tempfile.mkdtemp(prefix="cognee-reregister-test-")
-os.environ["COGNEE_PLUGIN_STATE_DIR"] = _TMP_DIR
 
 import _plugin_common  # noqa: E402
 
-# Force path variables to point to our temp folder so we don't mess up real data
-_TMP_PATH = pathlib.Path(_TMP_DIR)
-_plugin_common._SHARED_PLUGIN_ROOT = _TMP_PATH
-_plugin_common._PLUGIN_DIR = _TMP_PATH / "claude-code"
-_plugin_common._HOOK_LOG = _plugin_common._PLUGIN_DIR / "hook.log"
-_plugin_common._COUNTER_FILE = _plugin_common._PLUGIN_DIR / "counter.json"
-_plugin_common._ACTIVITY_FILE = _plugin_common._PLUGIN_DIR / "activity.ts"
-_plugin_common._ACTIVITY_LOG = _plugin_common._PLUGIN_DIR / "activity.log"
-_plugin_common._SAVE_COUNTER = _plugin_common._PLUGIN_DIR / "save_counter.json"
-_plugin_common._SERVER_READY_MARKER = _TMP_PATH / "server-ready.json"
-_plugin_common._SYNC_LOCK = _plugin_common._PLUGIN_DIR / "sync.lock"
-_plugin_common._BRIDGE_DIR = _plugin_common._PLUGIN_DIR / "bridge"
-_plugin_common._PENDING_DIR = _plugin_common._PLUGIN_DIR / "pending"
-_plugin_common._SUBPROCESS_LOG = _plugin_common._PLUGIN_DIR / "subprocess.log"
-_plugin_common._API_KEY_CACHE = _TMP_PATH / "api_key.json"
-_plugin_common._SESSIONS_MAP_DIR = _plugin_common._PLUGIN_DIR / "sessions"
+
+def _point_plugin_dirs(tmp: pathlib.Path) -> None:
+    """Redirect the module's on-disk state into a throwaway temp dir."""
+    _plugin_common._SHARED_PLUGIN_ROOT = tmp
+    _plugin_common._PLUGIN_DIR = tmp / "claude-code"
+    _plugin_common._PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+    _plugin_common._SERVER_READY_MARKER = tmp / "server-ready.json"
+    _plugin_common._API_KEY_CACHE = tmp / "api_key.json"
+    _plugin_common._HOOK_LOG = _plugin_common._PLUGIN_DIR / "hook.log"
 
 
-class MockServerRequestHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
+class _MockHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_):  # silence
         pass
 
+    def _record(self, method, body=""):
+        self.server.calls.append(
+            {
+                "method": method,
+                "path": self.path,
+                "body": body,
+                "api_key": self.headers.get("X-Api-Key", ""),
+            }
+        )
+
+    def _json(self, code, payload):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(payload).encode("utf-8"))
+
     def do_GET(self):
-        self.server.calls.append(("GET", self.path))
+        self._record("GET")
         if self.path == "/health":
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
         elif self.path.startswith("/api/v1/users/me"):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"id": "user_123"}).encode("utf-8"))
+            self._json(200, {"id": "user_123"})
         elif self.path.startswith("/api/v1/agents/connections/me"):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"agent": {"agent_session_name": "some_conn", "status": "active"}}).encode("utf-8"))
+            self._json(200, {"agent": {"agent_session_name": "conn", "status": "active"}})
         elif self.path.startswith("/api/v1/auth/api-keys"):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps([{"key": "test_api_key"}]).encode("utf-8"))
+            self._json(200, [{"key": "minted_key"}])
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else ""
-        self.server.calls.append(("POST", self.path, body))
-
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8") if length else ""
+        self._record("POST", body)
         if self.path == "/api/v1/agents/register":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"id": "conn_registered"}).encode("utf-8"))
+            self._json(200, {"id": "conn_registered"})
         elif self.path == "/api/v1/datasets":
-            self.send_response(201)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"name": "dataset_123"}).encode("utf-8"))
+            self._json(201, {"name": "dataset_123"})
         elif self.path == "/api/v1/agents/unregister":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"activeAgents": 0}).encode("utf-8"))
+            self._json(200, {"activeAgents": 0})
         elif self.path == "/api/v1/auth/login":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"access_token": "token_123"}).encode("utf-8"))
+            self._json(200, {"access_token": "token_123"})
         elif self.path == "/api/v1/auth/api-keys":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"key": "test_api_key"}).encode("utf-8"))
+            self._json(200, {"key": "minted_key"})
         else:
             self.send_response(404)
             self.end_headers()
 
 
-def test_mid_session_reregister():
-    # Spin up Server A and Server B on dynamic ports
-    server_a = HTTPServer(("localhost", 0), MockServerRequestHandler)
-    server_a.calls = []
-    thread_a = threading.Thread(target=server_a.serve_forever)
-    thread_a.daemon = True
-    thread_a.start()
+def _start_server():
+    srv = HTTPServer(("localhost", 0), _MockHandler)
+    srv.calls = []
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://localhost:{srv.server_port}"
 
-    server_b = HTTPServer(("localhost", 0), MockServerRequestHandler)
-    server_b.calls = []
-    thread_b = threading.Thread(target=server_b.serve_forever)
-    thread_b.daemon = True
-    thread_b.start()
 
-    url_a = f"http://localhost:{server_a.server_port}"
-    url_b = f"http://localhost:{server_b.server_port}"
+def _closed_url() -> str:
+    """A URL whose port is bound then freed -> connection refused (unreachable)."""
+    s = socket.socket()
+    s.bind(("localhost", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return f"http://localhost:{port}"
 
-    # Setup the initial session on Server A
-    os.environ["COGNEE_SESSION_KEY"] = "test-session-key"
-    os.environ["COGNEE_BASE_URL"] = url_a
-    _plugin_common.mark_server_ready(url_a)
 
-    # Resolve initial status to make sure we're on Server A
-    resolved = _plugin_common.load_resolved()
-    assert resolved.get("base_url") == url_a
+def _registers(calls):
+    return [c for c in calls if c["path"] == "/api/v1/agents/register"]
 
-    # Now change COGNEE_BASE_URL to Server B
-    os.environ["COGNEE_BASE_URL"] = url_b
 
-    # Mock subprocess.Popen and os.kill so we don't start real processes or kill things
-    with patch("subprocess.Popen") as mock_popen, patch("os.kill") as mock_kill:
-        mock_popen.return_value = MagicMock()
+def _run(fn):
+    """Run one test with fresh plugin state and a restored environment."""
+    saved_env = dict(os.environ)
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cognee-reregister-"))
+    _point_plugin_dirs(tmp)
+    # os.kill / check_output / Popen are stubbed so the switch touches no real
+    # processes; the check_output stub keeps _find_parent_pid off real `ps`.
+    with (
+        patch("subprocess.Popen") as popen,
+        patch("os.kill"),
+        patch("subprocess.check_output", return_value=""),
+    ):
+        try:
+            fn(popen)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved_env)
 
-        # Trigger load_resolved, which should detect the mismatch
-        resolved_new = _plugin_common.load_resolved()
 
-        # Assertions:
-        # 1. Base URL has switched to B
-        assert resolved_new.get("base_url") == url_b
+def test_switch_registers_on_new_target():
+    """The connection lands on the NEW target, not the old one (issue done-when)."""
 
-        # 2. server-ready.json was updated to url_b
-        assert _plugin_common._SERVER_READY_MARKER.exists()
-        ready_data = json.loads(_plugin_common._SERVER_READY_MARKER.read_text(encoding="utf-8"))
-        assert ready_data.get("base_url") == url_b
+    def body(popen):
+        srv_a, url_a = _start_server()
+        srv_b, url_b = _start_server()
+        try:
+            os.environ["COGNEE_SESSION_KEY"] = "k"
+            os.environ["COGNEE_BASE_URL"] = url_a
+            _plugin_common.mark_server_ready(url_a)
 
-        # 3. Server B received the registration and dataset requests
-        register_calls = [c for c in server_b.calls if c[1] == "/api/v1/agents/register"]
-        dataset_calls = [c for c in server_b.calls if c[1] == "/api/v1/datasets"]
-        assert len(register_calls) > 0
-        assert len(dataset_calls) > 0
+            os.environ["COGNEE_BASE_URL"] = url_b
+            _plugin_common.load_resolved()
 
-        # 4. Mock popen was called to restart watchers with B config
-        # (check that popen args contain B's url)
-        assert mock_popen.call_count >= 2
-        called_args = [call[0][0] for call in mock_popen.call_args_list]
-        called_envs = [call[1].get("env", {}) for call in mock_popen.call_args_list]
+            # Registration + dataset landed on B, and B is now the ready marker.
+            assert _registers(srv_b.calls), "no register on the new target"
+            assert any(c["path"] == "/api/v1/datasets" for c in srv_b.calls)
+            marker = json.loads(_plugin_common._SERVER_READY_MARKER.read_text())
+            assert marker["base_url"] == url_b
+            # The switch must not register on the OLD target.
+            assert not _registers(srv_a.calls), "unexpected register on the old target"
+            # Both watchers restarted, pointed at B and flagged as watchers.
+            assert popen.call_count >= 2
+            scripts = [str(c[0][0]) for c in popen.call_args_list]
+            envs = [c.kwargs.get("env", {}) for c in popen.call_args_list]
+            assert any("idle-watcher.py" in s for s in scripts)
+            assert any("exit-watcher.py" in s for s in scripts)
+            assert all(e.get("COGNEE_BASE_URL") == url_b for e in envs if "COGNEE_BASE_URL" in e)
+            assert all(e.get("COGNEE_IN_WATCHER") == "1" for e in envs)
+        finally:
+            srv_a.shutdown()
+            srv_b.shutdown()
 
-        # Verify idle-watcher and exit-watcher arguments
-        assert any("idle-watcher.py" in str(arg) for arg in called_args)
-        assert any("exit-watcher.py" in str(arg) for arg in called_args)
-        assert any(url_b in str(env.get("COGNEE_BASE_URL")) for env in called_envs)
+    _run(body)
 
-    # Clean up mock servers
-    server_a.shutdown()
-    server_b.shutdown()
-    thread_a.join()
-    thread_b.join()
+
+def test_stale_key_not_sent_to_new_target():
+    """A key cached/env-set for the OLD target must not be posted to the NEW one."""
+
+    def body(_popen):
+        srv_a, url_a = _start_server()
+        srv_b, url_b = _start_server()
+        try:
+            os.environ["COGNEE_SESSION_KEY"] = "k"
+            os.environ["COGNEE_BASE_URL"] = url_a
+            os.environ["COGNEE_API_KEY"] = "key_a"
+            _plugin_common.save_cached_api_key(url_a, "key_a")
+            _plugin_common.mark_server_ready(url_a)
+
+            os.environ["COGNEE_BASE_URL"] = url_b
+            _plugin_common.load_resolved()
+
+            regs = _registers(srv_b.calls)
+            assert regs, "no register on the new target"
+            # It must carry B's freshly minted key, never A's stale key.
+            assert all(c["api_key"] != "key_a" for c in regs)
+            assert regs[0]["api_key"] == "minted_key"
+        finally:
+            srv_a.shutdown()
+            srv_b.shutdown()
+
+    _run(body)
+
+
+def test_down_target_is_skipped():
+    """An unreachable new target: no re-registration, marker untouched, cooldown set."""
+
+    def body(_popen):
+        srv_a, url_a = _start_server()
+        down = _closed_url()
+        try:
+            os.environ["COGNEE_SESSION_KEY"] = "k"
+            os.environ["COGNEE_BASE_URL"] = url_a
+            _plugin_common.mark_server_ready(url_a)
+
+            os.environ["COGNEE_BASE_URL"] = down
+            _plugin_common.load_resolved()
+
+            # Marker unchanged (still A), so a later healthy hook re-tries.
+            marker = json.loads(_plugin_common._SERVER_READY_MARKER.read_text())
+            assert marker["base_url"] == url_a
+            assert (_plugin_common._PLUGIN_DIR / "reregister-cooldown.json").exists()
+        finally:
+            srv_a.shutdown()
+
+    _run(body)
 
 
 if __name__ == "__main__":
-    try:
-        test_mid_session_reregister()
-        print("PASS test_mid_session_reregister")
-        sys.exit(0)
-    except AssertionError as e:
-        import traceback
-        traceback.print_exc()
-        print("FAIL test_mid_session_reregister")
-        sys.exit(1)
+    tests = [
+        test_switch_registers_on_new_target,
+        test_stale_key_not_sent_to_new_target,
+        test_down_target_is_skipped,
+    ]
+    failures = 0
+    for t in tests:
+        try:
+            t()
+            print("PASS", t.__name__)
+        except AssertionError as exc:
+            failures += 1
+            import traceback
+
+            traceback.print_exc()
+            print("FAIL", t.__name__, exc)
+    sys.exit(1 if failures else 0)
