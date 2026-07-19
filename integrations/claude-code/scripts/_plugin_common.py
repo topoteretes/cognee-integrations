@@ -357,6 +357,11 @@ def _resolve_agent_name() -> str:
 
 
 def _login_default_user_via_http(service_url: str, config: dict) -> str:
+    """Mint (or reuse) the default-user API key on service_url over HTTP.
+
+    Best-effort: returns "" on any failure so the caller can fall back or retry.
+    Sync sibling of session-start's async _login_default_user_for_owner_api_key;
+    it lives here because that one cannot be imported from this lower layer."""
     base = _normalize_service_url(service_url)
     email = config.get("user_email") or "default_user@example.com"
     password = config.get("user_password") or "default_password"
@@ -369,7 +374,7 @@ def _login_default_user_via_http(service_url: str, config: dict) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
+        with urllib.request.urlopen(req, timeout=10.0, context=_https_context()) as resp:
             if resp.status != 200:
                 return ""
             login_data = json.loads(resp.read().decode("utf-8"))
@@ -387,7 +392,7 @@ def _login_default_user_via_http(service_url: str, config: dict) -> str:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req_keys, timeout=10.0) as resp:
+        with urllib.request.urlopen(req_keys, timeout=10.0, context=_https_context()) as resp:
             if resp.status == 200:
                 keys = json.loads(resp.read().decode("utf-8"))
                 if isinstance(keys, list) and keys:
@@ -400,14 +405,11 @@ def _login_default_user_via_http(service_url: str, config: dict) -> str:
     req_mint = urllib.request.Request(
         f"{base}/api/v1/auth/api-keys",
         data=json.dumps({"name": "claude-owner-bootstrap"}).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Cookie": f"auth_token={jwt}"
-        },
+        headers={"Content-Type": "application/json", "Cookie": f"auth_token={jwt}"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req_mint, timeout=10.0) as resp:
+        with urllib.request.urlopen(req_mint, timeout=10.0, context=_https_context()) as resp:
             if resp.status == 200:
                 payload = json.loads(resp.read().decode("utf-8"))
                 return str(payload.get("key", "") or "")
