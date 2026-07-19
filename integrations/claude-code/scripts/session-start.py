@@ -17,8 +17,8 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
