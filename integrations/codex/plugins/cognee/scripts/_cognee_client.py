@@ -214,7 +214,16 @@ def recall(service_url, api_key, query, session_id, scope, top_k, dataset="", *,
             return (r != UNREACHABLE, r)  # ok unless the server was unreachable
 
         retries, backoff = coldstart_config()
-        _ok, result = retry_cold_start(_attempt, retries=retries, backoff=backoff)
+        # Bound the whole cold-start burst to ~one recall timeout: a warming
+        # server that *times out* (rather than refusing fast) must not turn the
+        # first search into retries x timeout of blocking before the CLI
+        # fallback. The same deadline also caps the exponential backoff sleep.
+        _ok, result = retry_cold_start(
+            _attempt,
+            retries=retries,
+            backoff=backoff,
+            deadline=time.monotonic() + _timeout,
+        )
         mark_recall_seen(session_id)
     else:
         result = _once()
