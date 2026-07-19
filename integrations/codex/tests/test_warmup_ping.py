@@ -7,7 +7,7 @@ threading.Thread that records the spawn, so no live server is needed. Local endp
 and falsey/unset flags must not spawn anything; the ping target (_health_ok) must never
 raise so the daemon thread can fail silently.
 
-Run: python integrations/claude-code/tests/test_warmup_ping.py (or via pytest).
+Run: python integrations/codex/tests/test_warmup_ping.py (or via pytest).
 """
 
 import importlib.util
@@ -16,7 +16,7 @@ import pathlib
 import sys
 import types
 
-_SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+_SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "plugins" / "cognee" / "scripts"
 
 
 def _load():
