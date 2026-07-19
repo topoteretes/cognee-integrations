@@ -193,10 +193,8 @@ Each operation has its own client timeout, tunable independently (all in seconds
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_RECALL_TIMEOUT` | `20` | Client timeout for a recall request |
-| `COGNEE_REMEMBER_TIMEOUT` | `60` | Client timeout for remember writes (submit POST and per-turn entry store) |
+| `COGNEE_REMEMBER_TIMEOUT` | `60` | Client timeout for the remember submit POST |
 | `COGNEE_REGISTER_TIMEOUT` | `15` | Client timeout for the session register call |
-
-`COGNEE_REMEMBER_TIMEOUT` also caps the per-turn session-entry write (`/api/v1/remember/entry`); when the variable is unset that path uses 30s, while the explicit remember submit uses 60s.
 
 ## Status line
 

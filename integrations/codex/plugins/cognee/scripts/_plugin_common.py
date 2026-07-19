@@ -1317,26 +1317,12 @@ def _json_http_request(
         return json.loads(body)
 
 
-def _remember_entry_timeout() -> float:
-    """Client timeout (seconds) for the ``/remember/entry`` submit POST.
-
-    Honors ``COGNEE_REMEMBER_TIMEOUT`` (shared with the explicit remember command
-    in _remember_http.py), so per-turn session-entry writes are tunable too;
-    defaults to 30s to preserve the previous hardcoded behaviour.
-    """
-    try:
-        raw = os.environ.get("COGNEE_REMEMBER_TIMEOUT", "").strip()
-        return float(raw) if raw else 30.0
-    except (TypeError, ValueError):
-        return 30.0
-
-
 def remember_entry_via_http(
     dataset: str,
     session_id: str,
     entry: dict,
     *,
-    timeout: float | None = None,
+    timeout: float = 30.0,
 ) -> dict | None:
     """Store a typed QA/trace entry through the backend API.
 
@@ -1345,8 +1331,6 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
-    if timeout is None:
-        timeout = _remember_entry_timeout()
     return _json_http_request(
         "/api/v1/remember/entry",
         {

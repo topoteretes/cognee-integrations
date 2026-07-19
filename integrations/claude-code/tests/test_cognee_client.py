@@ -135,29 +135,6 @@ def test_register_timeout_bad_value_falls_back_to_default():
         os.environ.pop("COGNEE_REGISTER_TIMEOUT", None)
 
 
-def test_remember_entry_timeout_default_is_30():
-    # The per-turn /remember/entry write keeps its 30s default when the var is unset.
-    os.environ.pop("COGNEE_REMEMBER_TIMEOUT", None)
-    assert pc._remember_entry_timeout() == 30.0
-
-
-def test_remember_entry_timeout_reads_env():
-    # Setting COGNEE_REMEMBER_TIMEOUT also tunes the entry-store path.
-    try:
-        os.environ["COGNEE_REMEMBER_TIMEOUT"] = "45"
-        assert pc._remember_entry_timeout() == 45.0
-    finally:
-        os.environ.pop("COGNEE_REMEMBER_TIMEOUT", None)
-
-
-def test_remember_entry_timeout_bad_value_falls_back_to_default():
-    try:
-        os.environ["COGNEE_REMEMBER_TIMEOUT"] = "nope"
-        assert pc._remember_entry_timeout() == 30.0
-    finally:
-        os.environ.pop("COGNEE_REMEMBER_TIMEOUT", None)
-
-
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
