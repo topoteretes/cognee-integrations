@@ -154,8 +154,8 @@ arrives, shaving cold-start latency off the first query.
 The warmup:
 - runs once per session, at `SessionStart`
 - never blocks or errors the session — it runs in a daemon thread and fails silently
-- is off by default (`COGNEE_WARMUP` unset or any value other than `true`)
-- is only useful for cloud/remote deployments; local mode has no cold-start problem
+- is off by default; enable with `COGNEE_WARMUP=true` (or `1`/`yes`)
+- only fires for remote/cloud endpoints — it is a no-op in local mode, which has no cold start
 
 ```bash
 export COGNEE_WARMUP=true   # enable for cloud deployments
@@ -359,7 +359,7 @@ Config precedence:
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |
 | local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
 | demo auto-clear | `COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE` | disabled | Clear transcript on Stop after capture |
-| warmup ping | `COGNEE_WARMUP` | `false` | Fire a non-blocking GET /health at session start to warm up a scale-to-zero cloud tenant before the first recall. Set to `true` to enable. |
+| warmup ping | `COGNEE_WARMUP` | `false` | Fire a non-blocking GET /health at session start to warm up a scale-to-zero cloud tenant before the first recall. Set to `true` (or `1`/`yes`) to enable; no-op in local mode. |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle improve fires |
 | idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `600` | Minimum seconds between idle improve runs |
