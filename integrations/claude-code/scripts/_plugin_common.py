@@ -1457,11 +1457,7 @@ def _register_timeout() -> float:
     Tunable independently of recall/remember via ``COGNEE_REGISTER_TIMEOUT``;
     defaults to 15s to preserve the previous hardcoded behaviour.
     """
-    try:
-        raw = os.environ.get("COGNEE_REGISTER_TIMEOUT", "").strip()
-        return float(raw) if raw else 15.0
-    except (TypeError, ValueError):
-        return 15.0
+    return _float_env("COGNEE_REGISTER_TIMEOUT", 15.0)
 
 
 def register_agent_via_http(
