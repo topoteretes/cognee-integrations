@@ -279,6 +279,11 @@ async def _run(prompt: str) -> dict | None:
                         backoff=cs_backoff,
                         deadline=budget_deadline,
                     )
+                    if not _ok:
+                        # The retry burst proved the backend unreachable; don't
+                        # re-probe it with the remaining scopes this turn.
+                        hook_log("recall_coldstart_exhausted", {"scope": scope_list})
+                        break
                 else:
                     part = _do_recall_call()
             else:
