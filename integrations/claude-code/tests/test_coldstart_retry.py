@@ -4,7 +4,9 @@ The first recall of a session often lands while the server is still warming, so
 it times out even though a retry a moment later succeeds. These tests cover the
 pure retry core (`retry_cold_start`) plus its integration into `_cognee_client.recall`:
 first-recall gating, graceful degrade, no-retry on 4xx, budget-bounded backoff,
-and breaker coherence (a retry burst is one failure).
+and breaker coherence (a retry burst is one failure). They also cover the
+auto-recall hook's error contract (`coldstart_recall_attempt`) and the explicit
+path's deadline bound.
 
 State is file-based, so we point COGNEE_PLUGIN_STATE_DIR at a temp dir and patch
 the transport (`do_recall`).
@@ -16,6 +18,8 @@ Run: `pytest integrations/claude-code/tests/test_coldstart_retry.py`
 import pathlib
 import sys
 import tempfile
+import time
+import urllib.error
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -149,6 +153,71 @@ def test_no_session_id_is_single_shot():
     cc.do_recall = stub
     cc.recall("http://x", "", "q", "", '["graph"]', "5")
     assert calls["n"] == 1  # no session id => steady-state path, no retry
+
+
+# ── auto-recall hook contract (coldstart_recall_attempt) ─────────────────────
+
+
+def _raising_transport(values):
+    """Return a do_call stub that raises each Exception in `values` and returns the rest."""
+    seq = iter(values)
+    calls = {"n": 0}
+
+    def _call():
+        calls["n"] += 1
+        v = next(seq)
+        if isinstance(v, BaseException):
+            raise v
+        return v
+
+    return _call, calls
+
+
+def test_hook_attempt_retries_on_connection_error_then_returns_context():
+    """The hook's attempt: a timeout/connection error retries, then returns context."""
+    call, calls = _raising_transport([urllib.error.URLError("refused"), [{"text": "hit"}]])
+    attempt = cc.coldstart_recall_attempt(call)
+    ok, value = cc.retry_cold_start(attempt, retries=2, backoff=0, sleep=lambda _d: None)
+    assert ok is True and value == [{"text": "hit"}]
+    assert calls["n"] == 2  # retried once
+
+
+def test_hook_attempt_does_not_retry_httperror():
+    """A reachable-but-rejected 4xx (HTTPError) fails fast: re-raised, never retried."""
+    err = urllib.error.HTTPError("http://x", 403, "forbidden", {}, None)
+    call, calls = _raising_transport([err, [{"text": "unreached"}]])
+    attempt = cc.coldstart_recall_attempt(call)
+    raised = False
+    try:
+        cc.retry_cold_start(attempt, retries=2, backoff=0, sleep=lambda _d: None)
+    except urllib.error.HTTPError:
+        raised = True
+    assert raised and calls["n"] == 1  # failed fast, no retry
+
+
+def test_hook_attempt_on_retry_receives_exception():
+    """The on_retry hook fires with the caught exception before each retry."""
+    seen = []
+    call, _ = _raising_transport([TimeoutError("slow"), []])
+    attempt = cc.coldstart_recall_attempt(call, on_retry=seen.append)
+    cc.retry_cold_start(attempt, retries=1, backoff=0, sleep=lambda _d: None)
+    assert len(seen) == 1 and isinstance(seen[0], TimeoutError)
+
+
+def test_explicit_deadline_bounds_slow_retries():
+    """A slow (full-timeout) first recall must not stack retries past the deadline."""
+    _reset()
+    calls = {"n": 0}
+
+    def _slow(*a, **k):
+        calls["n"] += 1
+        time.sleep(0.05)  # each attempt consumes the whole (tiny) recall timeout
+        return UNREACHABLE
+
+    cc.do_recall = _slow
+    out = cc.recall("http://x", "", "q", "sess-slow", '["graph"]', "5", timeout=0.05)
+    assert out == UNREACHABLE  # graceful degrade
+    assert calls["n"] == 1  # deadline stops it after one slow attempt (no ~3x block)
 
 
 if __name__ == "__main__":
