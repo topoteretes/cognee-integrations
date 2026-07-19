@@ -16,7 +16,6 @@ import json
 import os
 import sys
 import time
-import urllib.error
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -230,6 +229,7 @@ async def _run(prompt: str) -> dict | None:
             from _cognee_client import (
                 breaker_open,
                 coldstart_config,
+                coldstart_recall_attempt,
                 is_first_recall,
                 mark_recall_seen,
                 retry_cold_start,
@@ -267,16 +267,12 @@ async def _run(prompt: str) -> dict | None:
                     )
 
                 if coldstart_first and idx == 0 and cs_retries > 0:
-
-                    def _attempt():
-                        try:
-                            return True, _do_recall_call()
-                        except urllib.error.HTTPError:
-                            raise
-                        except (TimeoutError, urllib.error.URLError, OSError) as exc:
-                            hook_log("recall_coldstart_retry", {"error": str(exc)[:160]})
-                            return False, []
-
+                    _attempt = coldstart_recall_attempt(
+                        _do_recall_call,
+                        on_retry=lambda exc: hook_log(
+                            "recall_coldstart_retry", {"error": str(exc)[:160]}
+                        ),
+                    )
                     _ok, part = retry_cold_start(
                         _attempt,
                         retries=cs_retries,

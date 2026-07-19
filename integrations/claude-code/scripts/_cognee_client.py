@@ -21,6 +21,7 @@ import pathlib
 import random
 import sys
 import time
+import urllib.error
 
 from _recall_http import UNREACHABLE, _error, do_recall
 
@@ -98,7 +99,7 @@ def retry_cold_start(
     rng=None,
     monotonic=None,
 ):
-    """Retry ``attempt`` on a cold-start miss, with jittered exponential backoff"""
+    """Retry ``attempt`` on a cold-start miss, with jittered exponential backoff."""
     _sleep = sleep or time.sleep
     _rand = rng or random.random
     _now = monotonic or time.monotonic
@@ -115,6 +116,28 @@ def retry_cold_start(
         ok, value = attempt()
         tries += 1
     return ok, value
+
+
+def coldstart_recall_attempt(do_call, on_retry=None):
+    """Adapt a *raising* recall call into a ``retry_cold_start`` attempt.
+
+    Returns ``(ok, value)``: a reachable-but-rejected response (``HTTPError``)
+    fails fast (re-raised, never retried); a timeout / connection error yields
+    ``(False, [])`` so ``retry_cold_start`` retries. ``on_retry``, if given, is
+    called with the caught exception before each retry.
+    """
+
+    def _attempt():
+        try:
+            return True, do_call()
+        except urllib.error.HTTPError:
+            raise
+        except (TimeoutError, urllib.error.URLError, OSError) as exc:
+            if on_retry is not None:
+                on_retry(exc)
+            return False, []
+
+    return _attempt
 
 
 def _state_path():

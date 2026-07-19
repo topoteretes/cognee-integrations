@@ -21,6 +21,7 @@ import pathlib
 import random
 import sys
 import time
+import urllib.error
 
 from _recall_http import UNREACHABLE, _error, do_recall
 
@@ -33,7 +34,11 @@ _COLDSTART_SEEN_MAX = 256  # bound the marker file's session list
 
 
 def coldstart_config() -> tuple[int, float]:
-    """(extra_retries, base_backoff_seconds) for the first-recall cold-start path."""
+    """(extra_retries, base_backoff_seconds) for the first-recall cold-start path.
+
+    Read live so runtime/test env changes take effect. Named ``COLDSTART`` to
+    signal these apply only to the first recall of a session, not every recall.
+    """
     try:
         retries = int(os.environ.get("COGNEE_RECALL_COLDSTART_RETRIES", "2"))
     except (TypeError, ValueError):
@@ -111,6 +116,28 @@ def retry_cold_start(
         ok, value = attempt()
         tries += 1
     return ok, value
+
+
+def coldstart_recall_attempt(do_call, on_retry=None):
+    """Adapt a *raising* recall call into a ``retry_cold_start`` attempt.
+
+    Returns ``(ok, value)``: a reachable-but-rejected response (``HTTPError``)
+    fails fast (re-raised, never retried); a timeout / connection error yields
+    ``(False, [])`` so ``retry_cold_start`` retries. ``on_retry``, if given, is
+    called with the caught exception before each retry.
+    """
+
+    def _attempt():
+        try:
+            return True, do_call()
+        except urllib.error.HTTPError:
+            raise
+        except (TimeoutError, urllib.error.URLError, OSError) as exc:
+            if on_retry is not None:
+                on_retry(exc)
+            return False, []
+
+    return _attempt
 
 
 def _state_path():
