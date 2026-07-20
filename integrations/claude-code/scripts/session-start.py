@@ -1152,11 +1152,15 @@ def _ensure_statusline_configured() -> None:
             if text:
                 settings = json.loads(text)
 
-        if settings.get("statusLine") == desired:
+        existing = settings.get("statusLine")
+        if existing == desired:
             return
 
-        current_statusline = settings.get("statusLine")
-        if current_statusline and "cognee-statusline" not in json.dumps(current_statusline):
+        existing_command = existing.get("command") if isinstance(existing, dict) else None
+        is_cognee_owned = (
+            isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command
+        )
+        if existing and not is_cognee_owned:
             hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
             return
 
