@@ -5,14 +5,16 @@ Loads the shared case table in integrations/conformance/session_id_cases.json
 the codex sanitizer against it. If any implementation drifts from the shared
 rule, its test fails.
 
-Run: python integrations/codex/plugins/cognee/tests/test_session_id_conformance.py (or via pytest).
+Run: python integrations/codex/tests/test_session_id_conformance.py (or via pytest).
 """
 
 import json
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(
+    0, str(pathlib.Path(__file__).resolve().parents[1] / "plugins" / "cognee" / "scripts")
+)
 
 import _plugin_common as pc  # noqa: E402
 

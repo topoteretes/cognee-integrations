@@ -14,7 +14,7 @@ list of `{ "input", "expected", "note" }` cases. Each integration has a small
 test that loads this file and checks its own sanitizer against it:
 
 - claude-code: `integrations/claude-code/tests/test_session_id_conformance.py`
-- codex: `integrations/codex/plugins/cognee/tests/test_session_id_conformance.py`
+- codex: `integrations/codex/tests/test_session_id_conformance.py`
 - hermes-agent: `integrations/hermes-agent/tests/test_session_id_conformance.py`
 - openclaw: `integrations/openclaw/__tests__/test_session_id_conformance.ts`
 
