@@ -1,9 +1,9 @@
 """Tests for the embedding-dimension probe in the Hermes provider.
 
-``_dimension_report`` classifies a zero-result recall as "mismatch" (actionable
-diagnostic), "unverified" (data present but dim unreadable -> hedged hint),
-"match" (genuine miss), or "no_data" (nothing to compare / cannot introspect).
-A fake vector engine is injected so cognee is not required.
+``_dimension_mismatch_hint`` returns a one-line actionable diagnostic naming both
+dims and the active model on a confirmed mismatch, and None in every other case
+(matching dims, no data, or any error) so recall keeps its normal empty-result
+behavior. A fake vector engine is injected so cognee is not required.
 
 Runs under pytest or standalone (``python3 tests/test_dim_mismatch.py``).
 """
@@ -74,62 +74,57 @@ class _FakeErrorEngine:
         raise RuntimeError("store locked")
 
 
-def _report(engine):
-    return asyncio.run(provider_mod._dimension_report(engine))
+def _hint(engine):
+    return asyncio.run(provider_mod._dimension_mismatch_hint(engine))
 
 
-class TestDimensionReport(unittest.TestCase):
+class TestDimensionMismatchHint(unittest.TestCase):
     def test_mismatch_names_both_dims_and_model(self):
-        status, msg = _report(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536))
-        self.assertEqual(status, "mismatch")
+        msg = _hint(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536))
+        self.assertIsNotNone(msg)
         self.assertIn("1536", msg)
         self.assertIn("3072", msg)
         self.assertIn("text-embedding-3-large", msg)
 
-    def test_matching_dims_is_match(self):
-        self.assertEqual(
-            _report(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)), ("match", None)
-        )
+    def test_matching_dims_returns_none(self):
+        self.assertIsNone(_hint(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)))
 
-    def test_no_collections_is_no_data(self):
+    def test_no_collections_returns_none(self):
         engine = _FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536, present=())
-        self.assertEqual(_report(engine), ("no_data", None))
+        self.assertIsNone(_hint(engine))
 
-    def test_unreadable_store_is_unverified(self):
-        status, msg = _report(_FakeErrorEngine(query_size=3072))
-        self.assertEqual(status, "unverified")
-        self.assertIn("could not verify", msg)
+    def test_unreadable_store_returns_none(self):
+        # A read error must not surface a hint (no false alarm on a healthy store).
+        self.assertIsNone(_hint(_FakeErrorEngine(query_size=3072)))
 
-    def test_broken_engine_is_no_data(self):
+    def test_broken_engine_returns_none(self):
         class _Broken:
             @property
             def embedding_engine(self):
                 raise RuntimeError("boom")
 
-        self.assertEqual(_report(_Broken()), ("no_data", None))
+        self.assertIsNone(_hint(_Broken()))
 
 
 class TestProviderGate(unittest.TestCase):
     def test_remote_mode_skips_check(self):
         provider = provider_mod.CogneeMemoryProvider()
         provider._remote_mode = True
-        self.assertEqual(provider._embedding_dimension_report(), ("no_data", None))
+        self.assertIsNone(provider._embedding_dimension_mismatch_hint())
 
     def test_embedded_mode_runs_check_via_bridge(self):
         provider = provider_mod.CogneeMemoryProvider()
         provider._remote_mode = False
 
-        async def _fake_report():
-            return ("mismatch", "DIM MISMATCH")
+        async def _fake_hint():
+            return "DIM MISMATCH"
 
-        original = provider_mod._dimension_report
-        provider_mod._dimension_report = _fake_report
+        original = provider_mod._dimension_mismatch_hint
+        provider_mod._dimension_mismatch_hint = _fake_hint
         try:
-            self.assertEqual(
-                provider._embedding_dimension_report(), ("mismatch", "DIM MISMATCH")
-            )
+            self.assertEqual(provider._embedding_dimension_mismatch_hint(), "DIM MISMATCH")
         finally:
-            provider_mod._dimension_report = original
+            provider_mod._dimension_mismatch_hint = original
             provider._bridge.shutdown()
 
 
