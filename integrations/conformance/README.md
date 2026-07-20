@@ -19,7 +19,10 @@ test that loads this file and checks its own sanitizer against it:
 - openclaw: `integrations/openclaw/__tests__/test_session_id_conformance.ts`
 
 Because every test reads the same file, any implementation that drifts from the
-rule fails its test.
+rule fails its test. CI runs all four on every pull request: hermes-agent via
+the `test-python` job (it has a `pyproject.toml`), and claude-code, codex and
+openclaw via the dedicated `test-conformance` job in
+`.github/workflows/ci.yml`.
 
 ## Note on empty results
 
