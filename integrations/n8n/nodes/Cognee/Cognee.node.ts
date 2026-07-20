@@ -167,6 +167,7 @@ export class Cognee implements INodeType {
           { name: 'Add Data', value: 'addData' },
           { name: 'Cognify', value: 'cognify' },
           { name: 'Delete', value: 'delete' },
+          { name: 'Memory', value: 'memory' },
           { name: 'Search', value: 'search' },
           { name: 'Skill', value: 'skill' },
         ],
@@ -321,6 +322,56 @@ export class Cognee implements INodeType {
           },
         ],
         default: 'deleteDataset',
+      },
+      {
+        displayName: 'Operation',
+        name: 'operation',
+        type: 'options',
+        noDataExpression: true,
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+          },
+        },
+        options: [
+          {
+            name: 'Recall',
+            value: 'recall',
+            action: 'Recall information from the knowledge graph',
+            description: 'Query the Cognee knowledge graph and/or session cache with natural language (POST /api/v1/recall)',
+            routing: {
+              request: {
+                method: 'POST',
+                url: '/v1/recall',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                timeout: 300000, // 5 minutes
+              },
+            },
+          },
+          {
+            name: 'Remember',
+            value: 'remember',
+            action: 'Ingest text and build the knowledge graph',
+            // POST /api/v1/remember is a multipart/form-data endpoint (supports file uploads
+            // via the SDK). Through the n8n node, only the text-only path is exposed:
+            // the text is sent as a plain-text form field and the server stores it inline.
+            // File uploads require direct SDK or API usage.
+            description: 'Ingest text into a Cognee dataset and build the knowledge graph (POST /api/v1/remember, text-only; file uploads require the SDK)',
+            routing: {
+              request: {
+                method: 'POST',
+                url: '/v1/remember',
+                headers: {
+                  'Content-Type': 'multipart/form-data',
+                },
+                timeout: 600000, // 10 minutes
+              },
+            },
+          },
+        ],
+        default: 'recall',
       },
       {
         displayName: 'Operation',
@@ -642,6 +693,207 @@ export class Cognee implements INodeType {
           request: {
             body: {
               topK: '={{$value}}',
+            },
+          },
+        },
+      },
+      // Memory — Recall fields
+      {
+        displayName: 'Query',
+        name: 'recallQuery',
+        type: 'string',
+        default: '',
+        required: true,
+        description: 'The natural-language question or query to run against the knowledge graph',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              query: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Datasets',
+        name: 'recallDatasets',
+        type: 'string',
+        typeOptions: {
+          multipleValues: true,
+        },
+        default: [],
+        description: 'Dataset names to search within. Leave empty to search all datasets you have access to',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              datasets: '={{$value.length ? $value : undefined}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Search Type',
+        name: 'recallSearchType',
+        type: 'options',
+        options: [
+          { name: 'Graph Completion', value: 'GRAPH_COMPLETION' },
+          { name: 'Chain of Thought', value: 'GRAPH_COMPLETION_COT' },
+          { name: 'RAG Completion', value: 'RAG_COMPLETION' },
+          { name: 'Chunks', value: 'CHUNKS' },
+          { name: 'Summaries', value: 'SUMMARIES' },
+        ],
+        default: 'GRAPH_COMPLETION',
+        description: 'Search strategy to use when querying the knowledge graph',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              search_type: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Top K',
+        name: 'recallTopK',
+        type: 'number',
+        default: 15,
+        description: 'Maximum number of results to return',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              top_k: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Session ID',
+        name: 'recallSessionId',
+        type: 'string',
+        default: '',
+        description: 'Session ID whose cached QA and trace entries should be included in the search (optional)',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['recall'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              session_id: '={{$value || undefined}}',
+            },
+          },
+        },
+      },
+      // Memory — Remember fields
+      {
+        displayName: 'Dataset Name',
+        name: 'rememberDatasetName',
+        type: 'string',
+        default: '',
+        required: true,
+        description: 'Name of the target dataset (created if it does not exist)',
+        placeholder: 'e.g. my-project',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              datasetName: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Text',
+        name: 'rememberText',
+        type: 'string',
+        typeOptions: {
+          rows: 6,
+        },
+        default: '',
+        required: true,
+        // Sent as a plain-text form field (skills_text path of the remember endpoint).
+        // The server writes it to a temporary file and runs the normal add+cognify pipeline.
+        description: 'Text content to ingest. Sent as inline text via the multipart form; file uploads require direct SDK or API usage',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              skills_text: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Session ID',
+        name: 'rememberSessionId',
+        type: 'string',
+        default: '',
+        description: 'Session to attribute this memory to (optional). When set, data is stored in the session cache and bridged into the permanent graph in the background',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              session_id: '={{$value || undefined}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Run in Background',
+        name: 'rememberRunInBackground',
+        type: 'boolean',
+        default: false,
+        description: 'Whether to run ingestion asynchronously. When enabled, the request returns immediately; poll GET /api/v1/datasets/status for completion',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['remember'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              run_in_background: '={{$value}}',
             },
           },
         },
