@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import _proc
+
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _SHARED_PLUGIN_ROOT = Path.home() / ".cognee-plugin"
 _HOOK_LOG = _PLUGIN_DIR / "hook.log"
@@ -913,13 +915,7 @@ def sync_lock(owner: str):
                 pid = 0
             pid_alive = False
             if pid > 0:
-                try:
-                    os.kill(pid, 0)
-                    pid_alive = True
-                except PermissionError:
-                    pid_alive = True
-                except OSError:
-                    pid_alive = False
+                pid_alive = _proc.pid_alive(pid)
             if not pid_alive or now - created_at > SYNC_LOCK_STALE_SECONDS:
                 try:
                     _SYNC_LOCK.unlink()
