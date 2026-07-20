@@ -44,6 +44,7 @@ from _plugin_common import (
     set_session_key,
     touch_activity,
 )
+from _proc import find_host_ancestor_windows
 from _proc import pid_alive as _pid_alive
 from cognee_statusline_render import render_status_for_host
 from config import (
@@ -668,6 +669,8 @@ def _spawn_idle_watcher(
 def _find_codex_parent_pid() -> int:
     """Find the nearest live Codex ancestor, skipping hook shells."""
     fallback = os.getppid()
+    if sys.platform == "win32":
+        return find_host_ancestor_windows(fallback, "codex")
     try:
         raw = subprocess.check_output(
             ["ps", "-axo", "pid=,ppid=,command="],

@@ -46,6 +46,7 @@ from _plugin_common import (
     set_session_key,
     touch_activity,
 )
+from _proc import find_host_ancestor_windows
 from _proc import pid_alive as _pid_alive
 from config import (
     _cloud_http_request,
@@ -668,6 +669,8 @@ def _spawn_idle_watcher(
 def _find_claude_parent_pid() -> int:
     """Find the nearest live Claude ancestor, skipping hook shells."""
     fallback = os.getppid()
+    if sys.platform == "win32":
+        return find_host_ancestor_windows(fallback, "claude")
     try:
         raw = subprocess.check_output(
             ["ps", "-axo", "pid=,ppid=,command="],
