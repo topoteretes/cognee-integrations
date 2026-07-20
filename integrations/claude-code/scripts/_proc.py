@@ -36,7 +36,9 @@ def _pid_alive_posix(pid: int) -> bool:
     except PermissionError:
         # Exists, owned by another user — still alive from our point of view.
         return True
-    except OSError:
+    except Exception:
+        # Any other failure (e.g. an out-of-range PID from a corrupt pidfile)
+        # counts as not-alive — a liveness probe must never raise into a hook.
         return False
     return True
 

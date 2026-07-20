@@ -32,6 +32,12 @@ def test_pid_alive_false_for_reaped_child():
     assert _proc.pid_alive(proc.pid) is False
 
 
+def test_pid_alive_false_for_out_of_range_pid():
+    # A corrupt pidfile can yield an int too large for the OS; the probe must
+    # report not-alive, never raise into a hook.
+    assert _proc.pid_alive(2**63) is False
+
+
 def test_matches_host_exe():
     assert _proc._matches_host_exe("claude.exe", "claude") is True
     assert _proc._matches_host_exe("Claude.EXE", "claude") is True
