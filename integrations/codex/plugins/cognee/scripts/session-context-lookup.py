@@ -404,10 +404,10 @@ async def _run(prompt: str) -> dict | None:
     # terminal (mirrors the claude-code integration); hosts that render
     # additionalContext directly will still show the full block.
     output = {
+        "systemMessage": header,
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": full_context,
-            "systemMessage": header,
         }
     }
     return output
@@ -443,9 +443,13 @@ def main():
             output = asyncio.run(_run(prompt))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
-    if output:
-        print(json.dumps(output))
+    return output
 
 
 if __name__ == "__main__":
-    main()
+    print(json.dumps(main() or {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "",
+        }
+    }))
