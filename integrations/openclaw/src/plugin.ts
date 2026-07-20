@@ -49,6 +49,72 @@ type MemoryFlushPlanRegistrant = OpenClawPluginApi & {
 // same workspace. The in-closure autoSyncStarted flag inside register() can't
 // catch this because each register() call gets its own closure.
 const autoSyncedWorkspaces = new Set<string>();
+// Cold-start retry predicate (#3546). 504 is detected by matching fetchAPI's
+// thrown error message `Cognee request failed (504)`. The match is anchored
+// to that exact prefix so it can only fire on the status token fetchAPI
+// emits. Relocated from client.ts so all recall resilience lives in plugin.
+export function isColdStartRetryable(err: unknown): boolean {
+  if (err instanceof Error && err.name === "AbortError") return true;
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof Error && /Cognee request failed \(504\)/.test(err.message)) return true;
+  return false;
+}
+
+/**
+ * Cold-start first-recall retry (#3546). Wraps a recall callable (which
+ * should be recallWithBreaker or a lambda built on it). Only engages when
+ * isFirst is true (the caller captured recallCount === 0 BEFORE any
+ * increment). Uses the same cfg.recallTimeoutMs per attempt as every
+ * other recall — no separate 60s timeout.
+ *
+ * IMPORTANT: isFirst is passed as an explicit parameter, NOT read from
+ * the mutable recallCount variable. In the single-scope path,
+ * recallCount is incremented BEFORE this wrapper is called (for throw-
+ * resilience), so reading recallCount internally would always see 1 and
+ * silently never engage the retry.
+ *
+ * Breaker bookkeeping is handled by recallWithBreaker inside `fn`:
+ *   - initial failure → recordFailure (automatic)
+ *   - retry success   → recordSuccess (automatic, resets breaker)
+ *   - retry failure   → recordFailure (automatic, +1 toward threshold)
+ * This wrapper does NOT call recordSuccess/recordFailure itself.
+ */
+export async function withColdStartRetry<T>(
+  isFirst: boolean,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!isFirst) return fn();
+
+  try {
+    return await fn();
+  } catch (err) {
+    if (!isColdStartRetryable(err)) throw err;
+
+    // Env-driven tunables (same as original #3546 design).
+    const parsedRetries = Number(process.env.COGNEE_RECALL_RETRIES);
+    const maxRetries = Number.isFinite(parsedRetries) && parsedRetries >= 0
+      ? Math.floor(parsedRetries) : 1;
+    if (maxRetries === 0) throw err;
+
+    const parsedBackoff = Number(process.env.COGNEE_RECALL_BACKOFF_MS);
+    const backoffMs = Number.isFinite(parsedBackoff) && parsedBackoff >= 0
+      ? parsedBackoff : 500;
+
+    let lastError: unknown = err;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const delay = backoffMs * (attempt + 1) + Math.floor(Math.random() * backoffMs);
+      await new Promise((r) => setTimeout(r, delay));
+      try {
+        return await fn();
+      } catch (retryErr) {
+        if (!isColdStartRetryable(retryErr)) throw retryErr;
+        lastError = retryErr;
+      }
+    }
+    throw lastError;
+  }
+}
+
 
 const memoryCogneePlugin = {
   id: "cognee-openclaw",
@@ -198,6 +264,7 @@ const memoryCogneePlugin = {
       }
     }
 
+
     let resolvedWorkspaceDir: string | undefined;
     let gatewayAnchorName: string | undefined;
     let resolvedApiKey: string | undefined;
@@ -221,6 +288,11 @@ const memoryCogneePlugin = {
 
     // Hoisted so CLI processes can suppress the gateway's auto-sync timer.
     let autoSyncStarted = false;
+    // First-recall tracking (#3546): 0 until the first recall attempt of the
+    // session has been counted; captured into isFirst/isFirstBatch locals and
+    // passed as an explicit parameter to withColdStartRetry() at both recall
+    // call sites (multi-scope and single-scope). Reset to 0 on session_end.
+    let recallCount = 0;
 
     const stateReady = Promise.all([
       loadDatasetState()
@@ -1082,6 +1154,8 @@ const memoryCogneePlugin = {
             // Fix #10: Use Promise.allSettled for resilience
             const state = await loadDatasetState();
 
+            const isFirstBatch = recallCount === 0;
+
             const searchPromises = cfg.recallScopes.map(async (scope): Promise<{ scope: MemoryScope; results: CogneeSearchResult[] } | null> => {
               const dsName = datasetNameForScope(scope, cfg, ctx.agentId);
               const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, ctx.agentId);
@@ -1098,7 +1172,7 @@ const memoryCogneePlugin = {
 
               let results: CogneeSearchResult[];
               try {
-                results = await recallScope([dsId]);
+                results = await withColdStartRetry(isFirstBatch, () => recallScope([dsId]));
               } catch (e) {
                 if (!isStaleDatasetError(e)) throw e;
                 const fresh = await healDatasetId(dsName);
@@ -1115,6 +1189,10 @@ const memoryCogneePlugin = {
 
             // Fix #10: allSettled — inject whatever succeeds, log failures
             const settled = await Promise.allSettled(searchPromises);
+            // Count the first-recall attempt once, post-batch (#3546). allSettled
+            // never throws, so this always runs regardless of per-scope failures,
+            // before the early returns below — subsequent prompts are non-first.
+            recallCount++;
             const scopeResults: Record<string, CogneeSearchResult[]> = {};
 
             for (let i = 0; i < settled.length; i++) {
@@ -1158,9 +1236,17 @@ const memoryCogneePlugin = {
               sessionId,
             });
 
+            // Count this attempt BEFORE the await (#3546): if the first recall
+            // THROWS (cold tenant exhausts retries), incrementing after would be
+            // skipped, leaving recallCount at 0 so every later prompt is "first"
+            // -> retry storm. isFirst is captured before the increment and passed
+            // explicitly to withColdStartRetry (not read from the mutable counter).
+            const isFirst = recallCount === 0;
+            recallCount++;
+
             let results: CogneeSearchResult[];
             try {
-              results = await recallSingle(recallDatasetIds);
+              results = await withColdStartRetry(isFirst, () => recallSingle(recallDatasetIds));
             } catch (e) {
               if (!isStaleDatasetError(e)) throw e;
               const fresh = await healDatasetId(cfg.datasetName);
@@ -1355,6 +1441,7 @@ const memoryCogneePlugin = {
       const endSessionId = cogneeSessionId(rawSessionId);
       const agentSessionName = agentSessionNames.get(regKey);
       sessionId = undefined;
+      recallCount = 0;
 
       api.logger.info?.(`cognee-openclaw: session_end received for session=${rawSessionId} agent=${normalizeAgentId(endAgentId, cfg)}${agentSessionName ? "" : " (not registered by this instance)"}`);
 

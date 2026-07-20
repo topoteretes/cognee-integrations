@@ -206,6 +206,43 @@ export class CogneeHttpClient {
     }
   }
 
+  // -- Cold-start warmup (#3546) --------------------------------------------
+
+  /**
+   * Cold-start warmup for #3546: fire a non-blocking GET /health so a
+   * scale-to-zero cloud tenant starts warming up before the first real recall.
+   * Fire-and-forget, gated by COGNEE_WARMUP, all errors swallowed.
+   *
+   * Returns void (never a Promise): the async ping is void-discarded and every
+   * async error is caught internally, so it can never throw into or block the
+   * caller and never produces an unhandled rejection. The only synchronous work
+   * (env read, localhost check, URL build) is trivially throw-free.
+   */
+  fireWarmupPing(): void {
+    const enabled = (process.env.COGNEE_WARMUP ?? "").trim().toLowerCase();
+    if (!["1", "true", "yes", "on"].includes(enabled)) return;
+
+    // Cold start is a cloud problem — skip local backends.
+    if (this.baseUrl.includes("localhost") || this.baseUrl.includes("127.0.0.1")) return;
+
+    // Bad/missing value falls back to the default; never throws.
+    const parsed = Number(process.env.COGNEE_WARMUP_TIMEOUT_MS);
+    const warmupTimeoutMs = Number.isFinite(parsed) && parsed > 0 ? parsed : 5_000;
+
+    // Fire-and-forget — intentionally not awaited.
+    void (async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), warmupTimeoutMs);
+      try {
+        await fetch(`${this.baseUrl}/health`, { method: "GET", signal: controller.signal });
+      } catch {
+        // swallow — a failed/aborted warmup must never affect anything
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+  }
+
   // -- Data operations ------------------------------------------------------
 
   async add(params: {
@@ -683,6 +720,8 @@ export class CogneeHttpClient {
 // ---------------------------------------------------------------------------
 // Helpers (module-private)
 // ---------------------------------------------------------------------------
+
+
 
 function sanitizeFilePath(filePath: string): string {
   var mutatedPath = filePath.replace(/\//g, '_');

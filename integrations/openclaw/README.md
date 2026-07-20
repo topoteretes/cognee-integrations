@@ -401,6 +401,19 @@ Recall runs on the prompt hot path, so it is bounded: each recall call gets a sh
 
 Note: Files are stored in Cognee using sanitized relative paths as filenames (e.g., `MEMORY.md.txt` for `MEMORY.md`, `memory.tools.md.txt` for `memory/tools.md`) for easy identification and to avoid path separator issues.
 
+### Cold-start warmup & first-recall retry (#3546)
+
+Adapts the Python plugins' cold-start handling (readiness-gate-then-skip) to the TS client — an env-gated warmup ping plus a single retry on the first recall — so a scale-to-zero cloud tenant survives the first request. This is an adaptation of that intent, not a literal port. All knobs are process environment variables:
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `COGNEE_WARMUP` | off (unset) | Master switch for the startup warmup ping. Accepts `1`/`true`/`yes`/`on`. Fires only when `autoIndex` is off (with `autoIndex` on, its own startup `/health` check already warms the tenant); skipped for `localhost`/`127.0.0.1`. |
+| `COGNEE_WARMUP_TIMEOUT_MS` | `5000` | `AbortController` timeout (ms) for the warmup `GET /health`. |
+| `COGNEE_RECALL_RETRIES` | `1` | Max cold-start retries for the **first recall of a session only**, on a `504` or timeout (`AbortError`). Non-first recalls keep the default request path. |
+| `COGNEE_RECALL_BACKOFF_MS` | `500` | Base backoff (ms) before a retry (`delay = base × attempt + jitter`). |
+
+Only the first recall of a session is retried (on `504`/`AbortError`); non-first recalls are unchanged.
+
 ## CLI Commands
 
 ```bash
