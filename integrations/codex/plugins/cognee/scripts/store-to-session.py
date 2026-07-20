@@ -113,14 +113,16 @@ def _infer_status(payload: dict) -> tuple[str, str]:
     return "success", ""
 
 
-def _load_session() -> tuple[str, str, str]:
-    """Load session_id, dataset, user_id from resolved cache with fallbacks."""
+def _load_session(config: dict, *, use_http: bool) -> tuple[str, str, str]:
+    """Load session metadata without network I/O in latency-sensitive HTTP hooks."""
+    if use_http:
+        return get_session_id(config), get_dataset(config), ""
+
     resolved = load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
     if not session_id or not dataset:
-        config = load_config()
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
     return session_id, dataset, user_id
@@ -155,14 +157,14 @@ async def _store_tool_call(payload: dict) -> None:
 
     return_value = _truncate_str(tool_output, _MAX_RETURN_BYTES)
 
-    session_id, dataset, user_id = _load_session()
+    config = load_config()
+    runtime = resolve_runtime_mode()
+    use_http = runtime["mode"] == "http"
+    session_id, dataset, user_id = _load_session(config, use_http=use_http)
     if not session_id:
         hook_log("no_session_id", {"tool": tool_name})
         return
 
-    config = load_config()
-    runtime = resolve_runtime_mode()
-    use_http = runtime["mode"] == "http"
     entry = {
         "type": "trace",
         "origin_function": tool_name,
@@ -259,14 +261,14 @@ async def _store_assistant_stop(payload: dict) -> None:
 
     msg = _truncate_str(msg, _MAX_ASSISTANT_BYTES)
 
-    session_id, dataset, user_id = _load_session()
+    config = load_config()
+    runtime = resolve_runtime_mode()
+    use_http = runtime["mode"] == "http"
+    session_id, dataset, user_id = _load_session(config, use_http=use_http)
     if not session_id:
         hook_log("no_session_id", {"event": "stop"})
         return
 
-    config = load_config()
-    runtime = resolve_runtime_mode()
-    use_http = runtime["mode"] == "http"
     pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
 
     # Codex intentionally differs from Claude here: store one paired
