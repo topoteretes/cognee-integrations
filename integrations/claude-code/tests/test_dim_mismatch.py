@@ -2,12 +2,10 @@
 
 When the embedding model changes between writing and reading, stored vectors and
 fresh query vectors differ in size, so recall silently matches nothing.
-``embedding_dimension_report`` classifies a zero-result recall as:
-  - "mismatch"   -> a one-line actionable diagnostic naming both dims + model
-  - "unverified" -> data present but dim unreadable -> a hedged, low-noise hint
-  - "match"      -> dims agree (a genuine miss) -> no message
-  - "no_data"    -> nothing to compare / fresh-empty session -> no message
-Tests inject a fake vector engine so cognee is not required.
+``embedding_dimension_mismatch_hint`` returns a one-line actionable diagnostic
+naming both dims and the active model on a confirmed mismatch, and None in every
+other case (matching dims, no data, or any error) so recall keeps its normal
+empty-result behavior. Tests inject a fake vector engine so cognee is not required.
 
 Run: `pytest integrations/claude-code/tests/test_dim_mismatch.py`
 (or `python integrations/claude-code/tests/test_dim_mismatch.py` standalone).
@@ -56,8 +54,6 @@ class _FakeCollection:
 
 
 class _FakeLanceEngine:
-    """Class name is not 'PGVectorAdapter', so the LanceDB row-sample path runs."""
-
     def __init__(self, query_size, stored_vector, present=("Entity_name",)):
         self.embedding_engine = _FakeEmbed(query_size)
         self._stored_vector = stored_vector
@@ -72,7 +68,7 @@ class _FakeLanceEngine:
 
 
 class _FakeErrorEngine:
-    """A collection exists, but reading it raises -> 'unverified'."""
+    """A collection exists, but reading it raises -> fail-safe None (no false alarm)."""
 
     def __init__(self, query_size):
         self.embedding_engine = _FakeEmbed(query_size)
@@ -84,97 +80,44 @@ class _FakeErrorEngine:
         raise RuntimeError("store locked")
 
 
-class _FakeVecType:
-    def __init__(self, dim):
-        self.dim = dim
-
-
-class _FakeVectorCol:
-    def __init__(self, dim):
-        self.type = _FakeVecType(dim)
-
-
-class _FakeColumns:
-    def __init__(self, dim):
-        self.vector = _FakeVectorCol(dim)
-
-
-class _FakeTable:
-    def __init__(self, dim):
-        self.c = _FakeColumns(dim)
-
-
-class PGVectorAdapter:
-    """Name matches the real adapter so the pgvector column-dim path runs."""
-
-    def __init__(self, query_size, stored_dim):
-        self.embedding_engine = _FakeEmbed(query_size)
-        self._stored_dim = stored_dim
-
-    async def has_collection(self, name):
-        return name == "Entity_name"
-
-    async def get_table(self, _name):
-        return _FakeTable(self._stored_dim)
-
-
-def _report(engine):
-    return asyncio.run(pc.embedding_dimension_report(engine))
-
-
 def _hint(engine):
     return asyncio.run(pc.embedding_dimension_mismatch_hint(engine))
 
 
-def test_lancedb_mismatch_names_both_dims_and_model():
-    status, msg = _report(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536))
-    assert status == "mismatch"
+def test_mismatch_names_both_dims_and_model():
+    msg = _hint(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536))
+    assert msg is not None
     assert "1536" in msg and "3072" in msg
     assert "text-embedding-3-large" in msg and "openai" in msg
 
 
-def test_pgvector_mismatch_names_both_dims():
-    status, msg = _report(PGVectorAdapter(query_size=768, stored_dim=1536))
-    assert status == "mismatch"
-    assert "1536" in msg and "768" in msg
+def test_matching_dims_returns_none():
+    assert _hint(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)) is None
 
 
-def test_matching_dims_is_match_no_message():
-    assert _report(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)) == ("match", None)
-
-
-def test_no_collections_is_no_data():
+def test_no_collections_returns_none():
     engine = _FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536, present=())
-    assert _report(engine) == ("no_data", None)
+    assert _hint(engine) is None
 
 
-def test_empty_collection_is_no_data():
+def test_empty_collection_returns_none():
     # Collection present but holds no rows -> normal fresh/empty state, no hint.
-    assert _report(_FakeLanceEngine(query_size=3072, stored_vector=None)) == ("no_data", None)
+    assert _hint(_FakeLanceEngine(query_size=3072, stored_vector=None)) is None
 
 
-def test_unreadable_store_is_unverified_with_hedged_hint():
-    status, msg = _report(_FakeErrorEngine(query_size=3072))
-    assert status == "unverified"
-    assert msg and "could not verify" in msg
-    # The hedged hint must NOT read like the hard mismatch diagnostic.
-    assert "changed" not in msg
+def test_unreadable_store_returns_none():
+    # A read error must NOT surface a hint: a transient lock on an otherwise-healthy
+    # store would otherwise nag on a genuine empty recall (a false alarm).
+    assert _hint(_FakeErrorEngine(query_size=3072)) is None
 
 
-def test_broken_engine_is_no_data():
+def test_broken_engine_returns_none():
     class _Broken:
         @property
         def embedding_engine(self):
             raise RuntimeError("boom")
 
-    assert _report(_Broken()) == ("no_data", None)
-
-
-def test_backcompat_hint_returns_message_only_on_mismatch():
-    assert _hint(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536)) is not None
-    # unverified / match / no_data all yield None through the back-compat wrapper.
-    assert _hint(_FakeErrorEngine(query_size=3072)) is None
-    assert _hint(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)) is None
+    assert _hint(_Broken()) is None
 
 
 if __name__ == "__main__":

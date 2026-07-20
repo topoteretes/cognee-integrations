@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     drain_warmup_entries,
-    embedding_dimension_report,
+    embedding_dimension_mismatch_hint,
     get_session_key,
     hook_log,
     load_resolved,
@@ -410,19 +410,17 @@ async def _run(prompt: str) -> dict | None:
         # match). Only the local store is introspectable here; surface a one-line
         # actionable error when a mismatch is positively confirmed, else fall back
         # to the normal "no matches" line.
-        dim_status, dim_message = "no_data", None
+        dim_message = None
         if service_url_is_local(service_url):
             try:
-                dim_status, dim_message = await asyncio.wait_for(
-                    embedding_dimension_report(), timeout=2.0
+                dim_message = await asyncio.wait_for(
+                    embedding_dimension_mismatch_hint(), timeout=2.0
                 )
             except Exception as exc:
                 hook_log("dim_check_error", {"error": str(exc)[:200]})
-        if dim_message and dim_status in ("mismatch", "unverified"):
+        if dim_message:
             full_context = f"{header}\n\n{dim_message}"
-            hook_log(
-                "context_lookup_dim_mismatch", {"status": dim_status, "message": dim_message}
-            )
+            hook_log("context_lookup_dim_mismatch", {"message": dim_message})
             notify(dim_message)
         else:
             full_context = f"{header}\n\n(no memory matches for this prompt)"
