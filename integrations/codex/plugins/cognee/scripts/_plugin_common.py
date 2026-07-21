@@ -356,6 +356,372 @@ def _resolve_agent_name() -> str:
     return _normalize("codex-agent")
 
 
+# --- Mid-session target switch --------------------------------------------------
+# When COGNEE_BASE_URL changes after a session has started, the next interactive
+# hook notices the mismatch (resolved env URL vs the server-ready marker) and
+# re-registers this session's connection on the new target so recall and the
+# background writers follow it (gh #3544). Kept best-effort and off the hot path.
+_REREGISTER_COOLDOWN_SECONDS = 30
+_REREGISTER_LOCK_STALE_SECONDS = 120
+
+
+def _login_default_user_via_http(service_url: str, config: dict) -> str:
+    """Mint (or reuse) the default-user API key on service_url over HTTP.
+
+    Best-effort: returns "" on any failure so the caller can fall back or retry.
+    Sync sibling of session-start's async _login_default_user_for_owner_api_key;
+    it lives here because that one cannot be imported from this lower layer."""
+    base = _normalize_service_url(service_url)
+    email = config.get("user_email") or "default_user@example.com"
+    password = config.get("user_password") or "default_password"
+
+    params = urllib.parse.urlencode({"username": email, "password": password}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/api/v1/auth/login",
+        data=params,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10.0, context=_https_context()) as resp:
+            if resp.status != 200:
+                return ""
+            login_data = json.loads(resp.read().decode("utf-8"))
+            jwt = str(login_data.get("access_token", "") or "")
+    except Exception as exc:
+        hook_log("sync_login_failed", {"error": str(exc)[:200]})
+        return ""
+
+    if not jwt:
+        return ""
+
+    req_keys = urllib.request.Request(
+        f"{base}/api/v1/auth/api-keys",
+        headers={"Cookie": f"auth_token={jwt}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req_keys, timeout=10.0, context=_https_context()) as resp:
+            if resp.status == 200:
+                keys = json.loads(resp.read().decode("utf-8"))
+                if isinstance(keys, list) and keys:
+                    key = str(keys[0].get("key", "") or "")
+                    if key:
+                        return key
+    except Exception:
+        pass
+
+    req_mint = urllib.request.Request(
+        f"{base}/api/v1/auth/api-keys",
+        data=json.dumps({"name": "claude-owner-bootstrap"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Cookie": f"auth_token={jwt}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req_mint, timeout=10.0, context=_https_context()) as resp:
+            if resp.status == 200:
+                payload = json.loads(resp.read().decode("utf-8"))
+                return str(payload.get("key", "") or "")
+    except Exception as exc:
+        hook_log("sync_mint_failed", {"error": str(exc)[:200]})
+    return ""
+
+
+def _find_parent_pid() -> int:
+    """Nearest live claude/codex ancestor pid (the exit-watcher pidfile key)."""
+    import re
+    import subprocess
+
+    fallback = os.getppid()
+    try:
+        raw = subprocess.check_output(
+            ["ps", "-axo", "pid=,ppid=,command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        hook_log("find_parent_pid_failed", {"error": str(exc)[:200]})
+        return fallback
+
+    table: dict[int, tuple[int, str]] = {}
+    for line in raw.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        table[pid] = (ppid, parts[2])
+
+    host_re = re.compile(r"(?:^|/)(?:claude|codex)(?:-[\w.]+)?(?:\s|$)")
+    pid = fallback
+    seen: set[int] = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        if pid not in table:
+            break
+        ppid, command = table[pid]
+        if command and host_re.search(command):
+            return pid
+        pid = ppid
+    return fallback
+
+
+def _spawn_watcher(
+    *,
+    script_name: str,
+    bootstrap: dict,
+    current_url: str,
+    api_key: str,
+    session_key: str,
+    log_name: str,
+) -> None:
+    """Spawn a detached watcher script with its env pointed at the new target.
+
+    COGNEE_IN_WATCHER marks the child so its own load_resolved() never drives a
+    further re-registration (which would fight the interactive hooks)."""
+    import subprocess
+
+    script = Path(__file__).parent / script_name
+    if not script.exists():
+        return
+    try:
+        log_fh = (_PLUGIN_DIR / log_name).open("a", encoding="utf-8")
+    except Exception:
+        log_fh = subprocess.DEVNULL
+    env = os.environ.copy()
+    env["COGNEE_IN_WATCHER"] = "1"
+    env["COGNEE_BASE_URL"] = current_url
+    if session_key:
+        env["COGNEE_SESSION_KEY"] = session_key
+    if api_key:
+        env["COGNEE_API_KEY"] = api_key
+    try:
+        subprocess.Popen(
+            [sys.executable, str(script), json.dumps(bootstrap)],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+            env=env,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception as exc:
+        hook_log("watcher_restart_spawn_failed", {"script": script_name, "error": str(exc)[:200]})
+    finally:
+        if hasattr(log_fh, "close"):
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+
+
+def _restart_watchers(
+    *,
+    session_id: str,
+    dataset: str,
+    conn_uuid: str,
+    api_key: str,
+    current_url: str,
+    session_key: str,
+) -> None:
+    """Stop and respawn the idle + exit watchers so background writes follow the
+    switch (they were spawned at SessionStart with the old URL in their env)."""
+    parent_pid = _find_parent_pid()
+    exit_pidfile = _PLUGIN_DIR / "exit-watchers" / f"{parent_pid}.pid"
+    for pid_file in (_PLUGIN_DIR / "watcher.pid", exit_pidfile):
+        try:
+            if pid_file.exists():
+                os.kill(int(pid_file.read_text(encoding="utf-8").strip()), 15)  # SIGTERM
+        except Exception as exc:
+            hook_log("watcher_kill_failed", {"pid_file": str(pid_file), "error": str(exc)[:200]})
+    # Clear the exit-watcher pidfile (its respawn refuses while it names a live pid)
+    # and the idle-watcher stop sentinel (a leftover would exit the new watcher).
+    for stale in (exit_pidfile, _PLUGIN_DIR / "watcher.stop"):
+        try:
+            stale.unlink()
+        except Exception:
+            pass
+
+    if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() not in ("1", "true", "yes"):
+        _spawn_watcher(
+            script_name="idle-watcher.py",
+            bootstrap={
+                "session_id": session_id,
+                "dataset": dataset,
+                "session_key": session_key,
+                "config": {"base_url": current_url, "dataset": dataset},
+            },
+            current_url=current_url,
+            api_key=api_key,
+            session_key=session_key,
+            log_name="watcher.log",
+        )
+    _spawn_watcher(
+        script_name="exit-watcher.py",
+        bootstrap={
+            "parent_pid": parent_pid,
+            "session_id": session_id,
+            "dataset": dataset,
+            "session_key": session_key,
+            "agent_session_name": conn_uuid,
+            "api_key": api_key,
+            "base_url": current_url,
+            "pidfile": str(exit_pidfile),
+        },
+        current_url=current_url,
+        api_key=api_key,
+        session_key=session_key,
+        log_name="exit-watcher.log",
+    )
+
+
+def _do_re_registration(
+    *, session_key: str, current_url: str, conn_uuid: str, cognee_session_id: str
+) -> bool:
+    """Register this session's connection on current_url. Returns True on success.
+
+    Credentials, dataset, and watchers are all re-pointed at the new target; the
+    old connection is left to the server's own agent-mode teardown."""
+    try:
+        from config import get_dataset, load_config
+
+        config = load_config()
+        dataset = get_dataset(config)
+    except Exception:
+        config, dataset = {}, "agent_sessions"
+
+    # Resolve a key for the NEW target. api_key.json is keyed by base_url, so a key
+    # cached for the OLD target is not returned for current_url. An env key that only
+    # echoes that stale cached key is dropped (it belongs to the old server); a
+    # user-provided env key (e.g. Cognee Cloud) is kept. Else mint from the default
+    # local user.
+    cached_old_key = ""
+    key_data = _load_json_file(_API_KEY_CACHE)
+    if isinstance(key_data, dict):
+        cached_old_key = str(key_data.get("api_key") or "").strip()
+    env_key = os.environ.get("COGNEE_API_KEY", "").strip()
+    if env_key and env_key == cached_old_key:
+        env_key = ""
+    new_api_key = load_cached_api_key(current_url) or env_key
+    if not new_api_key:
+        new_api_key = _login_default_user_via_http(current_url, config)
+        if new_api_key:
+            save_cached_api_key(current_url, new_api_key)
+
+    # Point the shared HTTP helpers at the new target: both ensure_dataset_via_http
+    # and register_agent_via_http resolve URL + key from the environment.
+    os.environ["COGNEE_BASE_URL"] = current_url
+    if new_api_key:
+        os.environ["COGNEE_API_KEY"] = new_api_key
+
+    ensure_dataset_via_http(dataset)
+    reg_ok, _ = register_agent_via_http(
+        agent_session_name=conn_uuid, session_id=cognee_session_id, dataset_names=[dataset]
+    )
+    if not reg_ok:
+        hook_log("reregister_failed", {"base_url": current_url})
+        return False
+
+    hook_log(
+        "re-registered_on_new_target",
+        {"base_url": current_url, "agent_session_name": conn_uuid, "session_id": cognee_session_id},
+    )
+    # Marker last: only advertise the new target once the connection is on it.
+    mark_server_ready(current_url)
+    _restart_watchers(
+        session_id=cognee_session_id,
+        dataset=dataset,
+        conn_uuid=conn_uuid,
+        api_key=new_api_key,
+        current_url=current_url,
+        session_key=session_key,
+    )
+    return True
+
+
+def _resolve_url_mismatch(
+    *, session_key: str, current_url: str, conn_uuid: str, cognee_session_id: str
+) -> None:
+    """Re-register on current_url after a mid-session switch. Best-effort and
+    non-blocking on the hot path:
+
+      - never runs inside the watcher daemons (they carry stale env);
+      - skips (with a short cooldown) when the new target is unreachable or a
+        recent attempt failed, so a down target can't stall every hook;
+      - takes the lock with a single non-blocking attempt — if another hook holds
+        it, return at once rather than spin.
+    """
+    if os.environ.get("COGNEE_IN_WATCHER") == "1":
+        return
+
+    now = datetime.now(timezone.utc).timestamp()
+    cooldown_file = _PLUGIN_DIR / "reregister-cooldown.json"
+    data = _load_json_file(cooldown_file)
+    if isinstance(data, dict) and now < float(data.get("until", 0) or 0):
+        return
+
+    if not server_health_ok(current_url, timeout=1.5):
+        _write_json_file(cooldown_file, {"until": now + _REREGISTER_COOLDOWN_SECONDS})
+        return
+
+    lock_file = _PLUGIN_DIR / "reregister.lock"
+    # Reclaim a lock left by a dead or long-stuck holder (mirrors the bootstrap
+    # single-flight reclaim).
+    if lock_file.exists():
+        try:
+            held = json.loads(lock_file.read_text(encoding="utf-8"))
+            pid = int(held.get("pid", 0) or 0)
+            created_at = float(held.get("created_at", 0) or 0)
+            alive = pid > 0
+            if pid > 0:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    alive = False
+                except Exception:
+                    alive = True
+            if not alive or now - created_at > _REREGISTER_LOCK_STALE_SECONDS:
+                lock_file.unlink()
+        except Exception:
+            pass
+
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return  # another hook is already handling the switch
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"pid": os.getpid(), "created_at": now}, fh)
+        # A peer may have completed the switch between our check and the lock.
+        marker = _load_json_file(_SERVER_READY_MARKER)
+        marked = ""
+        if isinstance(marker, dict):
+            marked = _normalize_service_url(marker.get("base_url", ""))
+        if marked == current_url:
+            return
+        ok = _do_re_registration(
+            session_key=session_key,
+            current_url=current_url,
+            conn_uuid=conn_uuid,
+            cognee_session_id=cognee_session_id,
+        )
+        if ok:
+            try:
+                cooldown_file.unlink()
+            except Exception:
+                pass
+        else:
+            _write_json_file(cooldown_file, {"until": now + _REREGISTER_COOLDOWN_SECONDS})
+    finally:
+        try:
+            lock_file.unlink()
+        except Exception:
+            pass
+
+
 def load_resolved(session_key: str = "") -> dict:
     """Load runtime state from Cognee HTTP endpoints (no file cache)."""
     resolved: dict = {}
@@ -375,6 +741,26 @@ def load_resolved(session_key: str = "") -> dict:
     service_url = _local_api_url().strip()
     if service_url:
         resolved["base_url"] = service_url
+
+    last_registered_url = ""
+    if _SERVER_READY_MARKER.exists():
+        try:
+            ready_data = json.loads(_SERVER_READY_MARKER.read_text(encoding="utf-8"))
+            last_registered_url = _normalize_service_url(ready_data.get("base_url", ""))
+        except Exception:
+            pass
+
+    current_url = _normalize_service_url(service_url)
+    if last_registered_url and current_url and last_registered_url != current_url:
+        try:
+            _resolve_url_mismatch(
+                session_key=active_session_key,
+                current_url=current_url,
+                conn_uuid=conn_uuid,
+                cognee_session_id=cognee_session_id,
+            )
+        except Exception as exc:
+            hook_log("resolve_url_mismatch_failed", {"error": str(exc)[:200]})
 
     api_key = _api_key().strip()
     if api_key:
