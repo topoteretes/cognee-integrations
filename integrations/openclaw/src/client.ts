@@ -169,15 +169,15 @@ export class CogneeHttpClient {
           const errorText = await response.text();
           throw new Error(`Cognee request failed (${response.status}): ${errorText}`);
         }
-        // Honor responseParser on the success path too — parity with the
-        // 401-retry path above, which already returns responseParser(...).
-        // The `await` is load-bearing: it keeps a parser/body-read rejection
-        // (a mid-read AbortError, or a parse error) inside this try, so the
-        // catch still clears the timer and retries on abort. Clearing the timer
-        // on the resolve path is #264/SDK-215's scope, not this change's.
-        // visualise() passes a text parser to read the graph HTML the server
-        // returns; forcing response.json() here threw on every 200. (gh #195)
-        return await responseParser(response);
+        // Honor responseParser on the success path (gh #195, SDK-242) — the
+        // `await` is load-bearing: it keeps a parser/body-read rejection (a
+        // mid-read AbortError, or a parse error) inside this try so the catch
+        // still clears the timer and retries on abort. Then clear the abort
+        // timer on the resolve path too, so a leaked, still-armed timer doesn't
+        // hold the Node event loop open until timeoutMs (SDK-215).
+        const data = await responseParser(response);
+        clearTimeout(timer);
+        return data;
       } catch (error) {
         clearTimeout(timer);
         const isTimeout =
