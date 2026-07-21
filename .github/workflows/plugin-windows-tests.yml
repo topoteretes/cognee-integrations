@@ -1,0 +1,38 @@
+name: Plugin Windows Tests
+
+# The claude-code and codex plugins ship platform-specific process helpers
+# (_proc.py: Windows liveness via OpenProcess/WaitForSingleObject, process
+# ancestry via CreateToolhelp32Snapshot). Those paths never run on the
+# ubuntu-only integration matrix, so exercise them on a real Windows runner.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'integrations/claude-code/**'
+      - 'integrations/codex/**'
+      - '.github/workflows/plugin-windows-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'integrations/claude-code/**'
+      - 'integrations/codex/**'
+      - '.github/workflows/plugin-windows-tests.yml'
+
+jobs:
+  test-plugins-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: claude-code process-helper tests
+        run: python integrations/claude-code/tests/test_proc.py
+
+      - name: codex process-helper tests
+        run: python integrations/codex/tests/test_proc.py

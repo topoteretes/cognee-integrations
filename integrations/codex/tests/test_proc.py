@@ -71,6 +71,22 @@ def test_walk_ancestors_survives_cycle():
     assert _proc._walk_ancestors({5: (5, "a.exe")}, 5, "codex") == 5
 
 
+def test_process_table_and_ancestry_on_windows():
+    # _process_table_windows() uses Win32 (Toolhelp); on POSIX the pure
+    # _walk_ancestors / _matches_host_exe tests above cover the walk logic.
+    if sys.platform != "win32":
+        return
+    table = _proc._process_table_windows()
+    assert isinstance(table, dict) and table  # Toolhelp snapshot succeeded
+    me = os.getpid()
+    assert me in table  # this process is present, with (ppid, exe basename)
+    _ppid, exe = table[me]
+    stem = os.path.splitext(exe)[0]
+    assert stem
+    # the ancestry walk resolves this process by its own executable base name
+    assert _proc.find_host_ancestor_windows(me, stem) == me
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
