@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -29,6 +30,28 @@ _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
+# Self-healing: session-start.py only runs at the real SessionStart hook point,
+# but COGNEE_AGENT_MODE's watchdog (cognee.modules.agents.agent_mode) can tear
+# the server down mid-session -- 60s after the last registered agent connection
+# unregisters -- well before a genuine SessionEnd, across a long, multi-resume
+# conversation. See spawn_server_healer() below.
+_SESSION_START_SCRIPT = Path(__file__).resolve().parent / "session-start.py"
+_HEALER_SPAWN_MARKER = _SHARED_PLUGIN_ROOT / "healer-spawned.json"
+_HEALER_LOG = _SHARED_PLUGIN_ROOT / "healer.log"
+_HEALER_SPAWN_COOLDOWN_SECONDS = 30.0
+# 2026-07-17/18 incident fix: a spawned bootstrap worker can legitimately block for up
+# to _HEALER_BOOT_DEADLINE_SECONDS waiting for the server to become healthy (mirrors
+# session-start.py's own COGNEE_SERVER_BOOT_DEADLINE / _SERVER_BOOT_DEADLINE_SECONDS --
+# duplicated here rather than imported, since this module is invoked as a detached
+# subprocess and deliberately never imports session-start.py; sourcing both from the
+# same env var keeps them from silently drifting apart). The old cooldown alone (30s)
+# was far shorter than that 600s wait, so when the server could genuinely never become
+# healthy (e.g. a permanently-locked graph DB), new healer spawns kept stacking on top
+# of still-waiting old ones every ~30s-2min for hours -- confirmed live, ~27 zombie
+# processes over 9 hours. _healer_worker_inflight() below closes this by tracking the
+# spawned worker's PID, not just elapsed time.
+_HEALER_BOOT_DEADLINE_SECONDS = float(os.environ.get("COGNEE_SERVER_BOOT_DEADLINE", "") or 600.0)
+_HEALER_INFLIGHT_STALE_SECONDS = _HEALER_BOOT_DEADLINE_SECONDS + 60.0
 _SYNC_LOCK = _PLUGIN_DIR / "sync.lock"
 # Per-agent-session buffer dirs. Each agent session (one Claude/Codex terminal)
 # owns its own file under these dirs, so two concurrent agents never
@@ -86,12 +109,41 @@ def apply_cognee_env() -> None:
     inherits a stable, upgrade-safe data location. CACHING and AUTO_FEEDBACK are
     already cognee's defaults but are set explicitly so a future default change
     can't silently disable session-context distillation.
+
+    LLM_INSTRUCTOR_MODE (found live-diagnosed, 2026-07-17): cognee's structured-
+    output calls (cognify summarization, graph extraction, AND the AUTO_FEEDBACK
+    distillation path) all go through instructor's default `json_mode`, which
+    pastes the target JSON schema into the prompt as text and asks a local model
+    to follow it. Small local models are unreliable at this -- empirically
+    reproduced against this exact installed stack: repeated schema-validation
+    failures (missing fields, the model echoing the schema back instead of an
+    answer, unbounded runaway generation) driving thousands of
+    InstructorRetryException retries and, combined with cognee's own retry floor
+    (>=240s before giving up) exceeding this plugin's submit timeout below,
+    guaranteed "timed out" on every single improve() call -- confirmed via
+    hook.log (25 ok vs 189 failed improves since 2026-07-10) and a growing,
+    never-draining backlog counter. `json_schema_mode` uses Ollama's native
+    grammar-constrained decoding instead (the model is physically constrained to
+    valid JSON token-by-token, not just asked nicely) -- reproduced 3/3 valid,
+    sub-second responses against the SAME model/hardware with this mode, vs 0/3
+    valid (or indefinite hangs) in the default mode. Fixes all three failing
+    paths at once; no model swap needed.
+
+    COGNEE_IMPROVE_SUBMIT_TIMEOUT (companion fix, same diagnosis): raised from
+    the prior 180s default (see improve_session_via_http()'s own fallback
+    below) to comfortably clear cognee's own >=240s LLM-retry floor -- with the
+    mode fix above this is now a safety margin rather than the primary fix
+    (json_schema_mode succeeds in under a second in practice), but a genuinely
+    slow moment should no longer be guaranteed to trip the client-side timeout
+    before cognee's own retry logic has even finished one full cycle.
     """
     os.environ.setdefault("SYSTEM_ROOT_DIRECTORY", str(_COGNEE_SYSTEM_DIR))
     os.environ.setdefault("DATA_ROOT_DIRECTORY", str(_COGNEE_DATA_DIR))
     os.environ.setdefault("CACHE_ROOT_DIRECTORY", str(_COGNEE_CACHE_DIR))
     os.environ.setdefault("CACHING", "true")
     os.environ.setdefault("AUTO_FEEDBACK", "true")
+    os.environ.setdefault("LLM_INSTRUCTOR_MODE", "json_schema_mode")
+    os.environ.setdefault("COGNEE_IMPROVE_SUBMIT_TIMEOUT", "420")
 
 
 apply_cognee_env()
@@ -197,7 +249,7 @@ def _create_map_record_if_absent(host_key: str, record: dict) -> dict:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(record, fh, indent=2, sort_keys=True)
         return record
-    except FileExistsError:
+    except (FileExistsError, PermissionError):
         return _read_map_record(host_key) or record
     except Exception as exc:
         hook_log("map_create_failed", {"error": str(exc)[:200]})
@@ -356,6 +408,54 @@ def _resolve_agent_name() -> str:
     return _normalize("claude-code-agent")
 
 
+def _connections_me_lookup_with_retry(conn_uuid: str):
+    """GET /api/v1/agents/connections/me, retrying once with the bare
+    session-key value if the conn_uuid-keyed lookup 404s or returns a
+    non-dict body.
+
+    Thessary change 7 (OPTIONAL defense-in-depth; sequenced strictly AFTER
+    change 6's spawn_server_healer() fix, which registers connections under
+    resolve_conn_uuid(get_session_key()) going forward). This retry exists
+    only to bridge an in-flight window -- e.g. a connection registered under
+    the bare session-key value by a process that started before change 6's
+    fix rolled out -- it is NOT a substitute for change 6. Deliberately
+    retries with the bare get_session_key() value, NOT
+    resolve_cognee_session_id()'s output (a different, differently-prefixed
+    string that would not match how older registrations were keyed).
+    """
+
+    def _attempt(agent_session_name: str):
+        query = ""
+        if agent_session_name:
+            query = f"?agent_session_name={urllib.parse.quote(agent_session_name, safe='')}"
+        return _json_http_request(
+            f"/api/v1/agents/connections/me{query}",
+            method="GET",
+            timeout=10.0,
+        )
+
+    first_result = None
+    try:
+        first_result = _attempt(conn_uuid)
+        if isinstance(first_result, dict):
+            return first_result
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+    # First attempt either 404'd or returned a non-dict body: retry once with
+    # the bare session key, if it differs from what we already tried.
+    bare_key = get_session_key()
+    if not bare_key or bare_key == conn_uuid:
+        return first_result
+    retried = _attempt(bare_key)
+    hook_log(
+        "connections_me_retry",
+        {"first_result_type": type(first_result).__name__, "retried_with": "bare_session_key"},
+    )
+    return retried
+
+
 def load_resolved(session_key: str = "") -> dict:
     """Load runtime state from Cognee HTTP endpoints (no file cache)."""
     resolved: dict = {}
@@ -380,22 +480,17 @@ def load_resolved(session_key: str = "") -> dict:
     if api_key:
         resolved["api_key"] = api_key
 
-    # Resolve active connection details FIRST — it doubles as the primary
-    # identity source. The connection is registered under the per-launch
-    # conn_uuid handle, so query by that — not the session id (which can change
-    # on a switch) and not the host correlation key. Its agent.user_id is
-    # served by both OSS servers and cloud tenants, whereas /users/me is absent
-    # on some tenants (404 on every hook), so the users/me probe below runs
-    # only when identity is still unresolved.
+    # Resolve active connection details — the sole identity source. The
+    # connection is registered under the per-launch conn_uuid handle, so query
+    # by that — not the session id (which can change on a switch) and not the
+    # host correlation key. Its agent.user_id is served by both OSS servers
+    # and cloud tenants. (Thessary change 5: the old /api/v1/users/me fallback
+    # probe below this block was deleted — it was dead code that never ran in
+    # practice, since /users/me is absent/404s on some tenants and carries no
+    # "id" field on others; do NOT resurrect it or swap to /api/v1/auth/me,
+    # which returns only {"email": ...}, no "id" field either.)
     try:
-        query = ""
-        if conn_uuid:
-            query = f"?agent_session_name={urllib.parse.quote(conn_uuid, safe='')}"
-        conn = _json_http_request(
-            f"/api/v1/agents/connections/me{query}",
-            method="GET",
-            timeout=10.0,
-        )
+        conn = _connections_me_lookup_with_retry(conn_uuid)
         if isinstance(conn, dict):
             agent = conn.get("agent") if isinstance(conn.get("agent"), dict) else {}
             if isinstance(agent, dict):
@@ -411,18 +506,6 @@ def load_resolved(session_key: str = "") -> dict:
                 resolved["registered"] = status == "active"
     except Exception as exc:
         hook_log("runtime_state_connection_lookup_failed", {"error": str(exc)[:200]})
-
-    # Fallback identity probe — only when the connection lookup yielded none
-    # (e.g. before registration on a fresh launch).
-    if not resolved.get("user_id"):
-        try:
-            me = _json_http_request("/api/v1/users/me", method="GET", timeout=10.0)
-            if isinstance(me, dict):
-                user_id = str(me.get("id") or "").strip()
-                if user_id:
-                    resolved["user_id"] = user_id
-        except Exception as exc:
-            hook_log("runtime_state_users_me_failed", {"error": str(exc)[:200]})
 
     return resolved
 
@@ -451,6 +534,36 @@ def _write_json_file(path: Path, data: dict) -> None:
         os.replace(tmp, path)
     except Exception as exc:
         hook_log("json_write_failed", {"path": str(path), "error": str(exc)[:200]})
+
+
+def _strip_surrogates(text: str) -> str:
+    """Remove lone UTF-16 surrogate codepoints (U+D800-U+DFFF).
+
+    A legitimate supplementary-plane character (emoji, etc.) is always ONE code
+    point in Python's str, never a surrogate. Any char in this range in a real
+    str is therefore always broken/unpaired (a bad UTF-16<->UTF-8 boundary
+    upstream -- Windows console/clipboard, mis-decoded tool output), never a
+    valid character. It round-trips silently through json.dumps/loads
+    (ensure_ascii escapes it, loads() reconstitutes it) -- only a raw UTF-8
+    encode downstream (embedding tokenizer, LLM adapter, cognify) catches it,
+    by which point the entry is already persisted. Strip (don't replace) to keep
+    surrounding text readable with no placeholder glyph.
+    """
+    if not text or not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join(ch for ch in text if not (0xD800 <= ord(ch) <= 0xDFFF))
+
+
+def _sanitize_value(value):
+    """Recursively strip surrogates from every string leaf in a JSON-shaped value.
+    Only string VALUES are touched -- dict keys, ints, bools, None pass through."""
+    if isinstance(value, str):
+        return _strip_surrogates(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_value(v) for v in value]
+    return value
 
 
 def _bridge_cache_key(dataset: str, session_id: str) -> str:
@@ -517,7 +630,7 @@ def _buffer_lock():
             os.close(fd)
             acquired = True
             break
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
             if time.monotonic() >= deadline:
                 hook_log("buffer_lock_timeout", {})
                 break
@@ -555,6 +668,7 @@ def append_http_bridge_entry(
         return
     if not (question or answer or trace):
         return
+    question, answer, trace = _strip_surrogates(question), _strip_surrogates(answer), _strip_surrogates(trace)
 
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
@@ -585,6 +699,41 @@ async def resolve_user(user_id: str):
     return await get_default_user()
 
 
+_LOG_MAX_BYTES = int(os.environ.get("COGNEE_PLUGIN_LOG_MAX_BYTES", "") or 20 * 1024 * 1024)  # 20MB
+
+
+def _rotate_log_if_large(path: Path, max_bytes: Optional[int] = None) -> None:
+    """Truncate-and-restart once a log exceeds max_bytes.
+
+    2026-07-18 finding: hook.log, healer.log, bootstrap.log, watcher.log, and
+    exit-watcher.log are all plain-append, never-rotated logs -- confirmed live at
+    healer.log=1.75GB and bootstrap.log=272MB, having grown unbounded since this
+    machine's earliest use of the plugin. Truncate-and-restart (not a numbered
+    archive) matches thessary/scripts/pipeline_sweep.py's own _log_event, whose
+    docstring already names these exact two files as "a direct lesson" -- these are
+    diagnostic tails, not an audit trail, so losing old content on rotation is
+    acceptable and simpler than managing archive files. Checked BEFORE opening for
+    append at every write site (cheap: one stat() call per write) rather than via a
+    separate periodic sweep, so growth is capped from the write site itself and
+    never depends on a scheduled task's cadence. Best-effort: a failed rotation
+    check must never block the write that's about to happen.
+
+    ``max_bytes`` defaults to ``None`` (re-read ``_LOG_MAX_BYTES`` fresh on every
+    call) rather than binding ``_LOG_MAX_BYTES`` as the parameter's default value --
+    a default argument value is evaluated ONCE at function-definition time, so
+    binding it directly would freeze in the module-load-time value forever,
+    silently ignoring any later reconfiguration (tests overriding
+    ``pc._LOG_MAX_BYTES``, or in principle a live env var change).
+    """
+    if max_bytes is None:
+        max_bytes = _LOG_MAX_BYTES
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            path.write_text("", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def hook_log(event: str, detail: Optional[dict] = None) -> None:
     """Append one structured line to ~/.cognee-plugin/hook.log.
 
@@ -593,6 +742,7 @@ def hook_log(event: str, detail: Optional[dict] = None) -> None:
     """
     try:
         _HOOK_LOG.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_large(_HOOK_LOG)
         line = {
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "pid": os.getpid(),
@@ -706,6 +856,7 @@ def notify(msg: str) -> None:
     if _verbose_enabled():
         try:
             _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+            _rotate_log_if_large(_ACTIVITY_LOG)
             ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
             with _ACTIVITY_LOG.open("a", encoding="utf-8") as fh:
                 fh.write(f"{ts} {line}\n")
@@ -814,6 +965,8 @@ def remember_pending_prompt(
     """Store the current prompt until Codex Stop provides the assistant answer."""
     if not session_id or not prompt.strip():
         return
+    prompt = _strip_surrogates(prompt)
+    context = _strip_surrogates(context)
     data = _load_json_file(_pending_file(session_id))
     turn_key, session_key = _pending_keys(session_id, turn_id)
     entry = {
@@ -931,7 +1084,7 @@ def sync_lock(owner: str):
                 json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
             acquired = True
             yield True
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
             hook_log("sync_lock_busy", {"owner": owner})
             yield False
     finally:
@@ -1106,6 +1259,332 @@ def server_ready_hint(service_url: str = "") -> bool:
         if marked and marked != _normalize_service_url(service_url):
             return False
     return True
+
+
+def _parse_host_port(url: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+    return (parsed.hostname or "localhost"), (parsed.port or 8011)
+
+
+def is_local_url(url: str) -> bool:
+    """True if the URL points at this machine (so we may boot a server on it).
+
+    Shared with session-start.py (which imports this rather than defining its
+    own copy) specifically so a hot-path hook's "is this worth trying to heal"
+    check can never drift from session-start's own "may I boot a server here"
+    check -- having exactly one definition avoids the two ever silently
+    drifting apart into disagreement.
+    """
+    host, _ = _parse_host_port(url)
+    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def _pid_alive(pid: int) -> bool:
+    """Duplicated from session-start.py's own _pid_alive (not imported -- this module
+    is invoked as a detached subprocess and deliberately never imports session-start.py,
+    same reasoning as the deadline constants above).
+
+    2026-07-18 adversarial-test finding (CRITICAL): on Windows, ``os.kill(pid, 0)`` does
+    NOT behave as a liveness probe the way it does on POSIX. Signal 0 maps to
+    ``CTRL_C_EVENT`` on Windows, so the call goes through ``GenerateConsoleCtrlEvent``
+    rather than validating the PID refers to a live process -- confirmed via 15/15
+    controlled trials (spawn a real child, ``Popen.wait()`` to confirm it exited,
+    immediately check) that a definitively-dead PID is STILL reported alive; only a
+    syntactically-invalid PID raises. This silently made every PID-liveness check built
+    for tonight's retry-cascade fix nearly always report "still alive" for the full
+    ``_HEALER_INFLIGHT_STALE_SECONDS`` window regardless of the real worker's state --
+    the opposite of the intended fix. Use a real OS-level check on Windows instead:
+    ``OpenProcess`` + ``GetExitCodeProcess``, testing for ``STILL_ACTIVE`` (259) -- the
+    same category of fix already applied correctly in Layer 1's watchdog
+    (``cognee_db_workers/harness.py``), just applied here to a liveness POLL rather than
+    a blocking WAIT.
+    """
+    if pid <= 1:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        except Exception:
+            return False
+        if not handle:
+            return False  # no such process (or access denied -- treat as not-ours/not-alive)
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        except Exception:
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def _healer_worker_inflight(now: float) -> bool:
+    """True iff a previously-spawned bootstrap worker is still plausibly inside its own
+    wait-for-health window -- the fix for the 2026-07-17/18 cascade. Checking PID
+    liveness, not just elapsed time, means a worker that crashes/exits early does NOT
+    block new attempts for the rest of the deadline window: _pid_alive returns False
+    immediately once it's gone, so the very next caller is allowed through."""
+    try:
+        raw = json.loads(_HEALER_SPAWN_MARKER.read_text(encoding="utf-8"))
+        pid = int(raw.get("pid", 0) or 0)
+        ts = float(raw.get("ts", 0) or 0)
+    except Exception:
+        # 2026-07-18 adversarial-test finding: this used to wrap ONLY the json.loads call,
+        # so a syntactically-valid-but-wrong-shape marker (e.g. literal `null`, from a write
+        # that only got as far as flushing a placeholder) raised an UNCAUGHT AttributeError
+        # out of raw.get(...) below -- crashing whatever caller invoked this (a SessionStart
+        # hook, or a mid-session healer trigger), not just failing to detect an inflight
+        # worker. Wrapping the extraction in the same try/except that already covers the
+        # parse means any corrupt/malformed marker fails safe (not-inflight) instead of
+        # propagating an exception into the caller.
+        return False
+    if pid <= 0:
+        return False  # marker predates this fix, or was never stamped -- not in-flight
+    if now - ts > _HEALER_INFLIGHT_STALE_SECONDS:
+        return False  # older than any legitimate wait-for-health window -- abandoned
+    return _pid_alive(pid)
+
+
+_HEALER_CLAIM_LOCK = _SHARED_PLUGIN_ROOT / "healer-claim.lock"
+
+
+@contextmanager
+def _healer_claim_mutex(timeout: float = 2.0):
+    """Short-lived spinlock guarding _claim_healer_cooldown's read-decide-write critical
+    section. 2026-07-18 adversarial-test finding: the "marker exists, cooldown expired"
+    branch used to read the marker, decide to claim, and only later write its replacement
+    with NO lock between the two -- reproduced live with a threading.Barrier forcing two
+    concurrent callers to both observe "cooldown expired" and both write a winning claim,
+    exactly the duplicate-spawn stacking this whole fix exists to prevent. This lock is only
+    ever held for a handful of fast file operations (never real work), so a short spin-retry
+    with a short stale-takeover window is sufficient -- no need for the fuller staleness/pid-
+    tracking machinery session-start.py's own _bootstrap_lock uses for its own, much
+    longer-held lock (that one guards an actual uvicorn boot, up to 600s)."""
+    deadline = time.time() + timeout
+    acquired = False
+    try:
+        while True:
+            try:
+                fd = os.open(str(_HEALER_CLAIM_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                acquired = True
+                break
+            except (FileExistsError, PermissionError):
+                try:
+                    if time.time() - _HEALER_CLAIM_LOCK.stat().st_mtime > 5.0:
+                        _HEALER_CLAIM_LOCK.unlink()  # abandoned by a crashed holder -- reclaim
+                        continue
+                except Exception:
+                    pass
+                if time.time() > deadline:
+                    break
+                time.sleep(0.01)
+            except Exception:
+                break
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                _HEALER_CLAIM_LOCK.unlink()
+            except Exception:
+                pass
+
+
+def _claim_healer_cooldown(now: float) -> bool:
+    """Atomically claim the cooldown window: True iff this call may proceed to
+    spawn a healer. The whole read-decide-write critical section runs inside
+    _healer_claim_mutex (2026-07-18 fix) -- NOT a read-then-later-write check outside
+    any lock, which is a TOCTOU race: two callers (e.g. Claude + Codex sharing one
+    server, or two terminals, or spawn_server_healer racing session-start.py's own
+    _spawn_bootstrap) that both read the marker before either writes it back can both
+    fall through and both spawn a healer.
+
+    Also checked here (2026-07-17/18 fix): _healer_worker_inflight -- a previous
+    spawn's worker still genuinely alive and inside its own boot-deadline window
+    blocks a new spawn regardless of the (much shorter) cooldown elapsing, since the
+    cooldown alone let new attempts stack on top of still-waiting old ones for hours
+    when the server could never become healthy. This check runs BEFORE the cooldown
+    check so it can refuse even once the plain elapsed-time cooldown has expired.
+    """
+    try:
+        _HEALER_SPAWN_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if _healer_worker_inflight(now):
+        return False
+    with _healer_claim_mutex() as acquired:
+        if not acquired:
+            # Another caller has held the mutex for the full timeout -- treat this the
+            # same as "cooldown not yet expired" rather than risk a stale takeover mid-write.
+            return False
+        return _claim_healer_cooldown_locked(now)
+
+
+def _claim_healer_cooldown_locked(now: float) -> bool:
+    """The actual read-decide-write logic, always called with _healer_claim_mutex held --
+    see _claim_healer_cooldown's docstring."""
+    try:
+        raw = json.loads(_HEALER_SPAWN_MARKER.read_text(encoding="utf-8"))
+        last = float(raw.get("ts", 0) or 0)
+        if now - last < _HEALER_SPAWN_COOLDOWN_SECONDS:
+            return False
+        # Cooldown has expired: replace the stale marker atomically (a plain
+        # os.replace, not exclusive-create, since we've established we're the
+        # rightful next claimant AND we hold the claim mutex, so no other caller
+        # can be mid-decision concurrently).
+        # pid=0 is a placeholder -- spawn_server_healer() stamps the real PID
+        # once Popen returns, since it isn't known at claim time.
+        tmp = _HEALER_SPAWN_MARKER.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"ts": now, "pid": 0}), encoding="utf-8")
+        os.replace(tmp, _HEALER_SPAWN_MARKER)
+        return True
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+        # Marker EXISTS but is corrupt/unparseable (e.g. a torn write from a process killed
+        # mid-write during the exclusive-create branch below, before json.dump finished) --
+        # 2026-07-18 adversarial-test finding: treating this the same as the generic
+        # `except Exception: return False` below permanently deadlocked every future claim,
+        # since the exclusive-create fallback further down also can't repair it (O_CREAT|
+        # O_EXCL fails outright because the corrupt file already exists). Repair it the same
+        # way the "cooldown expired" branch above does -- os.replace works regardless of the
+        # target's current content, unlike O_CREAT|O_EXCL. _healer_worker_inflight already
+        # ran (and returned False on this same corrupt marker) before this function reached
+        # here, so there is no live-PID signal being discarded by treating this as claimable.
+        try:
+            tmp = _HEALER_SPAWN_MARKER.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"ts": now, "pid": 0}), encoding="utf-8")
+            os.replace(tmp, _HEALER_SPAWN_MARKER)
+            return True
+        except Exception:
+            return False
+    except Exception:
+        return False
+    # No marker exists yet: exclusive-create is the atomic "first one here wins"
+    # primitive -- a second concurrent caller's O_CREAT|O_EXCL fails outright
+    # rather than both callers reading "no marker" and both proceeding.
+    try:
+        fd = os.open(str(_HEALER_SPAWN_MARKER), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"ts": now, "pid": 0}, fh)
+        return True
+    except (FileExistsError, PermissionError):
+        return False
+    except Exception:
+        return False
+
+
+def _stamp_healer_spawn_pid(pid: int) -> None:
+    """Stamp a just-spawned worker's real PID into _HEALER_SPAWN_MARKER, atomically
+    (temp file + os.replace). Shared by every entry point that spawns this worker class
+    (spawn_server_healer here, and session-start.py's own _spawn_bootstrap) so
+    _healer_worker_inflight() sees ONE consistent in-flight record regardless of which
+    entry point actually fired -- a healer-triggered spawn and a fresh-SessionStart
+    spawn compete for the same underlying resource (booting the local server) and must
+    not be able to stack independently of each other. Best-effort: if this write fails,
+    the next caller under-protects for one cooldown window (falls back to the old
+    elapsed-time-only behavior), never over-protects.
+    """
+    try:
+        tmp = _HEALER_SPAWN_MARKER.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"ts": time.time(), "pid": pid}), encoding="utf-8")
+        os.replace(tmp, _HEALER_SPAWN_MARKER)
+    except Exception:
+        pass
+
+
+def spawn_server_healer(cwd: str = "") -> bool:
+    """Fire-and-forget: re-invoke session-start.py's own bootstrap worker body
+    (the SAME `--bootstrap` detached path session-start.py's own
+    `_spawn_bootstrap` uses, NOT the full SessionStart pipeline) when a
+    hot-path hook (e.g. session-context-lookup.py) finds the local server down
+    mid-session.
+
+    Why this exists: COGNEE_AGENT_MODE's watchdog (in the cognee package
+    itself) can tear the server down 60s after the last registered agent
+    connection unregisters -- well before a genuine SessionEnd, in practice
+    confirmed across a long, multi-resume conversation. session-start.py's
+    bootstrap only runs at the real SessionStart hook point, so nothing
+    previously re-triggered it mid-session; recall then gracefully skips (by
+    design -- never block the user's prompt on a slow/down backend) turn
+    after turn with no automatic recovery, until the next real SessionStart.
+
+    Deliberately targets `--bootstrap` (session-start.py's `_run_bootstrap`:
+    boot-if-needed + register, nothing else) rather than re-running the full
+    SessionStart pipeline (`_start()`), which unconditionally kills and
+    respawns the idle-watcher on every call -- that would silently reset the
+    idle-watcher's own LLM-thrash-prevention cooldown (`IMPROVE_COOLDOWN`,
+    in-memory, restarts at 0 on a fresh watcher process) every time the server
+    happens to flap, which is exactly the repeated scenario this fix targets.
+
+    The payload is passed as a plain CLI argument -- exactly like
+    session-start.py's own `_spawn_bootstrap` already does -- NOT via a temp
+    file or a shell pipe: `subprocess.Popen` given a list never invokes a
+    shell, on Windows or POSIX, so there is no shell-escaping hazard here to
+    route around in the first place, and a CLI argument leaves nothing to
+    clean up (a temp-file approach would leak one small file per healer
+    trigger, unbounded, for the exact repeated-flapping case this exists for).
+
+    Deliberately does NOT block or wait for the result -- start_new_session +
+    close_fds so it survives this hook's process exiting -- so this call
+    returns immediately regardless of how long the actual boot takes.
+    Rate-limited via an atomically-claimed cooldown marker (see
+    _claim_healer_cooldown) so concurrent callers can't both spawn within the
+    same window; session-start.py's own boot lock further single-flights the
+    actual work if a spawn does land while one is already in flight.
+    """
+    if not _SESSION_START_SCRIPT.exists():
+        return False
+    if not _claim_healer_cooldown(time.time()):
+        return False
+
+    payload = {"session_id": get_session_key(), "session_key": get_session_key(),
+               "cwd": cwd or os.getcwd(),
+               "agent_session_name": resolve_conn_uuid(get_session_key())}
+    try:
+        try:
+            _rotate_log_if_large(_HEALER_LOG)
+            log_fh = _HEALER_LOG.open("a", encoding="utf-8")
+        except Exception:
+            log_fh = subprocess.DEVNULL
+        proc = subprocess.Popen(
+            [sys.executable, str(_SESSION_START_SCRIPT), "--bootstrap", json.dumps(payload)],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+            start_new_session=True,
+            close_fds=True,
+        )
+        # Stamp the real PID into the cooldown marker now that we have it (the claim
+        # above wrote a pid=0 placeholder, since the PID isn't known until Popen
+        # returns) -- this is what lets _healer_worker_inflight() track this specific
+        # worker's liveness on the NEXT call, not just elapsed time.
+        _stamp_healer_spawn_pid(proc.pid)
+        hook_log("server_healer_spawned", {"cwd": payload["cwd"], "pid": proc.pid})
+        return True
+    except Exception as exc:
+        hook_log("server_healer_spawn_failed", {"error": str(exc)[:200]})
+        return False
 
 
 # --- Plugin update check (Phase 2) -------------------------------------------
@@ -1440,6 +1919,7 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    entry = _sanitize_value(entry)
     return _json_http_request(
         "/api/v1/remember/entry",
         {
@@ -1828,6 +2308,7 @@ def append_warmup_entry(dataset: str, session_id: str, entry: dict) -> None:
     """
     if not dataset or not session_id or not isinstance(entry, dict):
         return
+    entry = _sanitize_value(entry)
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
         key = _bridge_cache_key(dataset, session_id)
@@ -1857,7 +2338,7 @@ def _try_acquire_drain_lock() -> bool:
         fd = os.open(str(_DRAIN_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
         return True
-    except FileExistsError:
+    except (FileExistsError, PermissionError):
         return False
     except Exception as exc:
         # Fail open: a rare double replay (deduped server-side per entry write)

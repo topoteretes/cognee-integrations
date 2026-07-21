@@ -27,9 +27,13 @@ from pathlib import Path
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    _claim_healer_cooldown,
     _COGNEE_CACHE_DIR,
     _COGNEE_DATA_DIR,
     _COGNEE_SYSTEM_DIR,
+    _parse_host_port,
+    _rotate_log_if_large,
+    _stamp_healer_spawn_pid,
     _VENV_DIR,
     _VENV_PYTHON,
     _VENV_READY_MARKER,
@@ -38,6 +42,7 @@ from _plugin_common import (
     apply_cognee_env,
     ensure_launch_record,
     hook_log,
+    is_local_url,
     mark_server_ready,
     quiet_hook_output,
     resolve_session_key_from_payload,
@@ -98,6 +103,44 @@ _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
 _PINNED_COGNEE_VERSION = "1.2.2.dev3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
+
+# Maps a configured backend provider env var to the cognee package "extra" that
+# provides its driver. A bare `cognee==<version>` install has none of these, so
+# the server crashes on first use of any non-default backend (#232): Postgres
+# needs psycopg2/asyncpg (via `postgres-binary`), Neo4j needs its driver, a
+# local Ollama LLM needs the `ollama` extra, and `fastembed` embeddings need
+# their own extra (fastembed is not cognee's own pydantic default -- openai is
+# -- but it's the plugin's documented zero-external-dependency local setup, and
+# is missing its extra just as much as the self-hosted-DB path is -- confirmed
+# independently on macOS, issue #232 comment). `postgres`/`pgvector` share one
+# driver, so VECTOR_DB_PROVIDER=pgvector maps to the same extra as DB_PROVIDER=
+# postgres rather than a separate one.
+_PROVIDER_EXTRAS = (
+    ("DB_PROVIDER", {"postgres": "postgres-binary", "postgresql": "postgres-binary"}),
+    ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
+    ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
+    ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
+    ("LLM_PROVIDER", {"ollama": "ollama"}),
+)
+
+
+def _detect_required_extras() -> str:
+    """Detect the cognee extras actually needed from the configured backend
+    providers, so the install below brings in exactly what's needed instead of
+    either a bare install (missing drivers) or unconditionally installing every
+    possible extra regardless of what's actually configured."""
+    extras: list[str] = []
+    for env_var, mapping in _PROVIDER_EXTRAS:
+        value = os.environ.get(env_var, "").strip().lower()
+        extra = mapping.get(value)
+        if extra and extra not in extras:
+            extras.append(extra)
+    return ",".join(extras)
+
+
+def _cognee_install_spec() -> str:
+    extras = _detect_required_extras()
+    return f"cognee[{extras}]=={_PINNED_COGNEE_VERSION}" if extras else f"cognee=={_PINNED_COGNEE_VERSION}"
 
 # Install single-flight. Distinct from the server boot lock (which is short, on
 # the assumption a boot completes in ~a minute): a cold cognee install can take
@@ -226,7 +269,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
                 acquired = True
                 break
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
                 # Another process owns the install. Don't install concurrently —
                 # wait for it to produce a usable venv, then reuse it.
                 if _venv_cognee_version() == _PINNED_COGNEE_VERSION:
@@ -259,7 +302,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "--upgrade",
                         "--python",
                         str(_VENV_PYTHON),
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     env=env,
                     check=True,
@@ -287,7 +330,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "pip",
                         "install",
                         "--upgrade",
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     check=True,
                     capture_output=True,
@@ -310,17 +353,6 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 _VENV_INSTALL_LOCK.unlink()
             except Exception as exc:
                 hook_log("venv_install_lock_release_failed", {"error": str(exc)[:200]})
-
-
-def _parse_host_port(url: str) -> tuple[str, int]:
-    parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
-    return (parsed.hostname or "localhost"), (parsed.port or 8011)
-
-
-def _is_local_url(url: str) -> bool:
-    """True if the URL points at this machine (so we may boot a server on it)."""
-    host, _ = _parse_host_port(url)
-    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 
 def _with_scheme(url: str) -> str:
@@ -357,6 +389,36 @@ def _wait_for_health(deadline_seconds: float, health_url: str = _HEALTH_URL) -> 
         if time.monotonic() >= deadline:
             return False
         time.sleep(_HEALTH_POLL_SECONDS)
+
+
+def _build_server_env(config: dict) -> dict:
+    """Build the environment for the spawned local Cognee server.
+
+    Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
+    so os.environ.copy() carries them to the server process fine. LLM
+    credentials are NOT already in os.environ when they came from the config
+    FILE rather than a live env var: ensure_cognee_ready() applies them only
+    in-process via cognee.config.set_llm_api_key()/set_llm_model(), and
+    save_config() deliberately never persists them back to a place a fresh
+    process's environment would pick up ("transient_keys" -- by design, so a
+    secret never lands in the config file). The spawned server is a SEPARATE
+    process that reads its own LLM config from its own environment, so without
+    this it silently gets no key and every extraction fails with
+    LLMAPIKeyNotSetError -- writes report success (the document is stored) but
+    nothing is ever extracted into the graph, so recall keeps returning empty.
+    `setdefault` so an explicit LLM_API_KEY/LLM_MODEL already in the
+    environment always wins over config.
+
+    Run in agent mode: the server tears itself down once all registered
+    agents disconnect.
+    """
+    server_env = os.environ.copy()
+    if config.get("llm_api_key"):
+        server_env.setdefault("LLM_API_KEY", config["llm_api_key"])
+    if config.get("llm_model"):
+        server_env.setdefault("LLM_MODEL", config["llm_model"])
+    server_env["COGNEE_AGENT_MODE"] = "true"
+    return server_env
 
 
 def _ensure_local_server_running(
@@ -415,7 +477,7 @@ def _ensure_local_server_running(
                 acquired = True
                 hook_log("server_bootstrap_lock_acquired", {"owner": owner})
                 break
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
                 if _health_ok(health_url):
                     _ready()
                     return
@@ -427,12 +489,7 @@ def _ensure_local_server_running(
             _ready()
             return
 
-        server_env = os.environ.copy()
-        # Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
-        # so the copy carries them to the server process.
-        # Run in agent mode: the server tears itself down once all registered
-        # agents disconnect.
-        server_env["COGNEE_AGENT_MODE"] = "true"
+        server_env = _build_server_env(config)
         subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
@@ -459,8 +516,41 @@ def _ensure_local_server_running(
 
 
 def _pid_alive(pid: int) -> bool:
+    """2026-07-18 adversarial-test finding (CRITICAL): on Windows, os.kill(pid, 0) does NOT
+    behave as a liveness probe -- signal 0 maps to CTRL_C_EVENT there, so it goes through
+    GenerateConsoleCtrlEvent rather than validating the PID refers to a live process.
+    Confirmed via 15/15 controlled trials that a definitively-dead PID still reports alive.
+    See _plugin_common.py's own copy of this function for the full writeup -- kept
+    duplicated here (not imported) for the same reason as elsewhere in this file: some
+    callers of this function run in a detached/isolated subprocess context."""
     if pid <= 1:
         return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        except Exception:
+            return False
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        except Exception:
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
         return True
@@ -656,6 +746,7 @@ def _spawn_idle_watcher(
     log_path = _STATE_DIR / "watcher.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_large(log_path)
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -731,19 +822,14 @@ def _spawn_exit_watcher(
     service_url: str = "",
 ) -> None:
     """Launch a detached watcher that syncs only after Claude exits."""
-
-    def _pid_alive(pid: int) -> bool:
-        if pid <= 1:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except Exception:
-            return False
+    # 2026-07-18: this used to redefine its own local _pid_alive, byte-identical to (and
+    # sharing the same Windows liveness bug as) the module-level one above -- removed so
+    # both call sites below resolve to the single, now-fixed module-level function instead
+    # of a second copy that would need the same fix applied twice. This closure's own bug
+    # had a concrete real-world consequence: stale exit-watcher pidfiles were never pruned
+    # (line ~810 below), and a genuinely-dead prior watcher's pidfile made this function
+    # believe a watcher was "already running" and skip spawning a new one -- silently
+    # breaking exit-sync for that session until the stale pidfile was removed by hand.
 
     # Cleanup stale watcher pidfiles so the directory does not grow forever.
     try:
@@ -786,6 +872,7 @@ def _spawn_exit_watcher(
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _EXIT_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_large(log_path)
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("exit_watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -862,7 +949,7 @@ def _bootstrap_singleflight():
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump({"pid": os.getpid(), "created_at": now}, fh)
             acquired = True
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
             acquired = False
         yield acquired
     finally:
@@ -881,7 +968,26 @@ def _spawn_bootstrap(
     session_key: str,
     dataset: str,
 ) -> None:
-    """Launch the detached server-bootstrap worker (this script, --bootstrap)."""
+    """Launch the detached server-bootstrap worker (this script, --bootstrap).
+
+    Gated on the SAME shared PID-liveness marker spawn_server_healer() uses in
+    _plugin_common.py (2026-07-17/18 fix): this and the healer are two independent
+    entry points into the identical worker class, both racing to boot the same local
+    server. Before this fix, each was rate-limited only against ITSELF (a 30s cooldown
+    with no cross-entry-point awareness) -- many concurrent SessionStarts (or a
+    SessionStart racing an already-in-flight healer spawn) could each independently
+    decide the coast was clear and spawn their own detached worker, every one of which
+    then blocks for up to _SERVER_BOOT_DEADLINE_SECONDS (600s) waiting for /health.
+    That is exactly the stacking pattern that produced ~27 orphaned processes during
+    the 2026-07-17/18 outage. A skipped spawn here is not a lost boot attempt: the
+    already-in-flight worker's own _bootstrap_singleflight (or a peer's) still owns
+    getting the server up, and this caller's session proceeds exactly as the
+    single-flight LOSERS already do inside _run_bootstrap -- it just doesn't ALSO
+    spawn a redundant worker process of its own.
+    """
+    if not _claim_healer_cooldown(time.time()):
+        hook_log("bootstrap_spawn_skipped_inflight", {"session_id": session_id})
+        return
     bootstrap = {
         "cwd": cwd,
         "session_id": session_id,
@@ -893,6 +999,7 @@ def _spawn_bootstrap(
     log_path = _STATE_DIR / "bootstrap.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_large(log_path)
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("bootstrap_log_open_failed", {"error": str(exc)[:200]})
@@ -901,7 +1008,7 @@ def _spawn_bootstrap(
         env = os.environ.copy()
         if session_key:
             env["COGNEE_SESSION_KEY"] = session_key
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), _BOOTSTRAP_ARG, json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
@@ -910,7 +1017,10 @@ def _spawn_bootstrap(
             start_new_session=True,
             close_fds=True,
         )
-        hook_log("bootstrap_spawned", {"session_id": session_id})
+        # Same shared marker spawn_server_healer() stamps -- see this function's own
+        # docstring for why these two entry points share one in-flight record.
+        _stamp_healer_spawn_pid(proc.pid)
+        hook_log("bootstrap_spawned", {"session_id": session_id, "pid": proc.pid})
     except Exception as exc:
         hook_log("bootstrap_spawn_failed", {"error": str(exc)[:300]})
 
@@ -1322,7 +1432,7 @@ async def _start(payload: dict | None = None) -> dict:
     user_id = ""
     agent_api_key = ""
     server_live = _health_ok(_health_url(target_url))
-    will_boot = (not server_live) and _is_local_url(target_url)
+    will_boot = (not server_live) and is_local_url(target_url)
     hook_log(
         "endpoint_mode_selected",
         {"base_url": target_url, "server_live": server_live, "will_boot": will_boot},
@@ -1342,7 +1452,7 @@ async def _start(payload: dict | None = None) -> dict:
             boot_timeout=_HEALTH_TIMEOUT_SECONDS,
         )
         if not ok:
-            if _LAZY_BOOTSTRAP and _is_local_url(target_url):
+            if _LAZY_BOOTSTRAP and is_local_url(target_url):
                 # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:

@@ -12,6 +12,7 @@ single-drainer lock prevents concurrent double-replays.
 Run: python integrations/claude-code/tests/test_warmup_drain.py (or via pytest).
 """
 
+import os
 import pathlib
 import sys
 import tempfile
@@ -160,6 +161,23 @@ def test_concurrent_appends_do_not_lose_entries():
     # Two async hooks appending at the same moment must both land: the buffer
     # mutex serializes the read-modify-write, so the last writer no longer
     # clobbers the other's entry.
+    #
+    # 2026-07-18: found genuinely flaky (passed once, failed once, back-to-back). Root-
+    # caused via direct instrumentation (NOT test ordering -- both sides of the final
+    # assert are already sorted): _buffer_lock()'s acquire loop only retries on
+    # FileExistsError, but Windows' O_CREAT|O_EXCL create can raise PermissionError
+    # (errno 13, "Access is denied") INSTEAD of FileExistsError when two threads race
+    # os.open() on the same path in extremely close succession -- a well-known Windows/
+    # NTFS create-race quirk, confirmed directly (caught the exact hook_log event: 8-12
+    # times per ~300 trials under 8-thread contention). A PermissionError fell through to
+    # the generic `except Exception: break`, which ABANDONS the retry loop entirely and
+    # proceeds WITHOUT the lock -- an unprotected read-modify-write then let one thread's
+    # write silently clobber another's. Fixed at the source: every O_CREAT|O_EXCL lock
+    # acquisition in this codebase (9 sites across _plugin_common.py and session-start.py,
+    # including this one) now retries on `(FileExistsError, PermissionError)`, not just
+    # FileExistsError. The 10s timeout below is now just extra headroom on top of the
+    # real fix, not a workaround for it -- confirmed via 150 raw-reproduction trials and
+    # 30 back-to-back real-test runs, both 0 failures, after the source fix landed.
     import concurrent.futures
 
     def _run():
@@ -175,8 +193,45 @@ def test_concurrent_appends_do_not_lose_entries():
         cache = pc._load_json_file(pc._bridge_file("sid"))
         return (cache.get(pc._bridge_cache_key("ds", "sid")) or {}).get("pending_entries") or []
 
-    entries = _with_tmp_bridge(_run)
+    orig_timeout = pc._BUFFER_LOCK_TIMEOUT_SECONDS
+    pc._BUFFER_LOCK_TIMEOUT_SECONDS = 10.0
+    try:
+        entries = _with_tmp_bridge(_run)
+    finally:
+        pc._BUFFER_LOCK_TIMEOUT_SECONDS = orig_timeout
     assert sorted(e["origin_function"] for e in entries) == [f"tool{i}" for i in range(8)]
+
+
+def test_buffer_lock_retries_on_permission_error_not_just_file_exists_error():
+    # 2026-07-18: the actual root cause of the flaky concurrent-appends test above.
+    # os.open(path, O_CREAT|O_EXCL) can raise PermissionError instead of FileExistsError
+    # on Windows when two threads race the create in extremely close succession -- a real,
+    # observed OS-level quirk, not theoretical. Deterministically injects exactly that:
+    # the first os.open call for the lock path raises PermissionError, the second (the
+    # retry) succeeds normally. Before the fix, this would have hit the generic
+    # `except Exception: break` and abandoned the loop -- acquired=False on the FIRST
+    # attempt, with no retry at all.
+    def _run():
+        calls = {"n": 0}
+        orig_open = os.open
+
+        def flaky_open(path, flags, *a, **kw):
+            if str(path) == str(pc._BUFFER_LOCK) and calls["n"] == 0:
+                calls["n"] += 1
+                raise PermissionError(13, "Access is denied")
+            return orig_open(path, flags, *a, **kw)
+
+        pc.os.open = flaky_open
+        try:
+            with pc._buffer_lock() as acquired:
+                pass
+        finally:
+            pc.os.open = orig_open
+        return acquired, calls["n"]
+
+    acquired, retry_count = _with_tmp_bridge(_run)
+    assert retry_count == 1, "the flaky PermissionError injection did not fire as expected"
+    assert acquired is True, "a transient PermissionError must be retried, not treated as a fatal abandon"
 
 
 def test_append_fails_open_when_lock_held():
