@@ -3,10 +3,13 @@
 
 Invoked by Claude Code's ``statusLine`` (via ``cognee-statusline.sh``), which
 pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
-only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
+only env vars, ``~/.cognee-plugin`` markers, and the plugin manifest under
+``CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json`` — no network calls, no
 ``_plugin_common`` import.
 
-Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+Output: ``cognee: <dataset-name> · local · v0.3.0`` or
+``cognee: <dataset-name> · cloud · v0.3.0`` (version omitted when the
+manifest is missing or unreadable).
 """
 
 import json
@@ -76,6 +79,32 @@ def _health_prefix() -> str:
     if _SERVER_READY_PATH.exists():
         return "● "
     return ""
+
+
+def _plugin_version() -> str:
+    """Installed plugin version from the local manifest, or empty string.
+
+    Pure-local and fail-silent (same contract as :func:`_health_prefix`):
+    reads ``CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json`` and returns the
+    ``version`` field when present. A missing env var, missing file,
+    unreadable/malformed JSON, or empty ``version`` all yield an empty
+    string with no raise.
+    """
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if not root:
+        return ""
+    try:
+        data = _read_json(Path(root) / ".claude-plugin" / "plugin.json")
+        version = str(data.get("version") or "").strip()
+        return version
+    except Exception:
+        return ""
+
+
+def _version_suffix() -> str:
+    """Compact `` · v<installed>`` segment, or empty when unavailable."""
+    version = _plugin_version()
+    return f" · v{version}" if version else ""
 
 
 def _update_segment() -> str:
@@ -179,7 +208,8 @@ def main() -> None:
         return
 
     sys.stdout.write(
-        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
+        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}"
+        f"{_version_suffix()}{_update_segment()}"
     )
 
 
