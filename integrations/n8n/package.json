@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-cognee",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "n8n node to call Cognee Cloud API and its memory services",
   "keywords": [
     "n8n-community-node-package"
