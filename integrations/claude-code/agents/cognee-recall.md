@@ -47,6 +47,7 @@ curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
 - **An empty result is only valid if it came from the server.** `cognee-cli` is a thin client over the same server and can print empty stdout even when content exists. **Never conclude "not found" from an empty/clean CLI run** — confirm with the `curl` above first.
 - **Do not re-run the same search to "retry."** One server answer is authoritative — report it and stop. (Re-running the CLI and chasing async warnings is how a confident-but-wrong "nothing found" verdict gets produced.)
 - **If the output is an `{"error": ...}` object instead of a list**, the server was reachable but rejected/failed the request (e.g. auth) — report that error and check `COGNEE_API_KEY`. It is **not** "no results", and the wrapper deliberately does **not** fall back to the local CLI in that case.
+- **If the output is an object with `captured_pending`**, the server found nothing yet but content captured this session is still waiting on cognify — suggest retrying shortly (the background sync picks it up) or `/cognee-memory:cognee-sync` instead of reporting "not found" or grepping the transcript.
 
 ## Output
 
