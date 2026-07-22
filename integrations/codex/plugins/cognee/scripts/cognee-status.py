@@ -12,16 +12,15 @@ makes no network call.
 Run: python3 integrations/codex/plugins/cognee/scripts/cognee-status.py
 """
 
-import pathlib
+import os
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-
-import _plugin_common as pc  # noqa: E402
+sys.path.insert(0, os.path.dirname(__file__))
+from _plugin_common import runtime_status_line
 
 
 def main() -> int:
-    sys.stdout.write(pc.runtime_status_line() + "\n")
+    sys.stdout.write(runtime_status_line() + "\n")
     return 0
 
 
