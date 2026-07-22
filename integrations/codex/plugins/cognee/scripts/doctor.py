@@ -88,9 +88,7 @@ def _resolve_server_url() -> tuple:
     In local mode the display value is "-".
     """
     raw_url = (
-        os.environ.get("COGNEE_LOCAL_API_URL")
-        or os.environ.get("COGNEE_BASE_URL")
-        or ""
+        os.environ.get("COGNEE_LOCAL_API_URL") or os.environ.get("COGNEE_BASE_URL") or ""
     ).strip() or _DEFAULT_LOCAL_SERVICE_URL
 
     mode = _resolve_mode()
@@ -151,7 +149,6 @@ def _check_health(server_url: str, timeout: float = 5.0) -> dict:
         return {"reachable": False, "latency_ms": None, "raw_body": None}
     except (urllib.error.URLError, TimeoutError, OSError):
         return {"reachable": False, "latency_ms": None, "raw_body": None}
-
 
 
 def _resolve_server_version(health_body: dict | None) -> str:
@@ -253,7 +250,6 @@ def format_human(report: dict) -> str:
 def format_json(report: dict) -> str:
     """Render the report as pretty-printed JSON."""
     return json.dumps(report, indent=2)
-
 
 
 def main(argv: list[str] | None = None) -> None:

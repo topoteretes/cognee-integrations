@@ -26,6 +26,7 @@ _SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
+
 def _resolve_local_cognee_version() -> str:
     """Cognee version installed in the plugin's managed venv.
 
@@ -143,7 +144,6 @@ def _resolve_server_version(health_body: dict | None) -> str:
     return "Unknown"
 
 
-
 def _resolve_circuit_breaker() -> str:
     """Return a human description of the circuit breaker state."""
     from _cognee_client import breaker_open
@@ -191,6 +191,7 @@ def collect_report() -> dict:
         "circuit_breaker": circuit_breaker,
     }
 
+
 _DISPLAY_ORDER = [
     ("Mode", "mode"),
     ("Server URL", "server_url"),
@@ -203,6 +204,7 @@ _DISPLAY_ORDER = [
     ("Embedding Dims", "embedding_dimensions"),
     ("Circuit Breaker", "circuit_breaker"),
 ]
+
 
 def _format_value(key: str, value) -> str:
     """Format a single report value for human display."""
