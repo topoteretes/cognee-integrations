@@ -224,13 +224,16 @@ async def _run(prompt: str) -> dict | None:
         user = await resolve_user(_load_user_id())
 
     # Per-scope instrumentation (WS7 observability): capture {hits, elapsed_ms}
-    # for every scope — including scopes that error or are skipped by the budget
-    # — keyed by a stable, human-readable label derived from scope_specs. Purely
-    # additive: it must not touch recall results, ordering, or control flow, and
-    # must never raise into the keystroke->answer path. Captured before the
-    # breaker-open branch below can blank scope_specs, so all 5 labels survive.
-    scope_labels = [spec[0][0] for spec in scope_specs]
-    per_scope: dict[str, dict] = {}
+    # for every scope, keyed by its stable label. Pre-seed all 5 scopes as
+    # skipped, in canonical order and before the breaker-open branch below can
+    # blank scope_specs, so the event always carries the full set; the loop
+    # overwrites each scope that actually runs. Purely additive: it must not
+    # touch recall results, ordering, or control flow, and must never raise into
+    # the keystroke->answer path.
+    per_scope: dict[str, dict] = {
+        scope_list[0]: {"hits": 0, "elapsed_ms": 0, "skipped": True}
+        for scope_list, _qtype, _profile in scope_specs
+    }
 
     # Hard time-box: this hook is on the keystroke->answer path, so recall must
     # never be the long pole. Each scope gets a short per-call timeout, and the
@@ -251,7 +254,6 @@ async def _run(prompt: str) -> dict | None:
             hook_log("recall_breaker_open", {"retry_in": _bretry})
             scope_specs = []
     for scope_list, qtype, context_profile in scope_specs:
-        label = scope_list[0]
         if time.monotonic() >= budget_deadline:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
@@ -291,16 +293,10 @@ async def _run(prompt: str) -> dict | None:
         finally:
             # hits = raw count from this scope's call (pre-bucketing/filtering);
             # elapsed_ms measured around the call, recorded even when it errored.
-            per_scope[label] = {
+            per_scope[scope_list[0]] = {
                 "hits": len(part or []),
                 "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
             }
-
-    # Backfill scopes that never ran — skipped by the budget break above or by
-    # the breaker-open reset (scope_specs = []) — so the event always carries all
-    # 5 scopes in their canonical order with a 0-hit/0-ms skipped marker.
-    for label in scope_labels:
-        per_scope.setdefault(label, {"hits": 0, "elapsed_ms": 0, "skipped": True})
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
