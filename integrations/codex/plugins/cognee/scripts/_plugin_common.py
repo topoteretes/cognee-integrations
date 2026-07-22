@@ -5,11 +5,13 @@ single log-to-disk helper. Hook scripts shouldn't grow heavy because
 they run on every user prompt / tool call.
 """
 
+import asyncio
 import hashlib
 import json
 import os
 import ssl
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -594,12 +596,6 @@ async def resolve_user(user_id: str):
 # behavior. Only valid against a *local* store this process can introspect
 # (gate callers with ``service_url_is_local``); a remote/cloud store is owned
 # by the server and isn't reflected by the in-process engine here.
-_DIM_PROBE_COLLECTIONS = (
-    "Entity_name",
-    "TextSummary_text",
-    "EntityType_name",
-    "DocumentChunk_text",
-)
 
 
 def service_url_is_local(url: str = "") -> bool:
@@ -609,16 +605,23 @@ def service_url_is_local(url: str = "") -> bool:
 
 
 async def _sample_stored_vector_dim(engine) -> Optional[int]:
-    """Sample the dimension of a stored vector from a known collection, or None.
+    """Sample the dimension of a stored vector from any populated collection, or None.
 
-    Never raises: each collection is probed independently and any unreadable one
-    is skipped. Covers cognee's default local backend (LanceDB); other backends
-    simply return None and fall back to the normal empty-recall path.
+    Enumerates the store's actual collections via the vector interface's
+    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
+    uses) rather than assuming fixed collection names, so it also covers custom
+    pipelines. Never raises: each collection is probed independently and any
+    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
+    backends whose connection can't enumerate return None and fall back to the normal
+    empty-recall path.
     """
-    for name in _DIM_PROBE_COLLECTIONS:
+    try:
+        connection = await engine.get_connection()
+        names = await connection.table_names()
+    except Exception:
+        return None
+    for name in names:
         try:
-            if not await engine.has_collection(name):
-                continue
             collection = await engine.get_collection(name)
             rows = await collection.query().limit(1).to_list()
             if rows:
@@ -660,6 +663,90 @@ async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
         )
     except Exception:
         return None
+
+
+_DIM_MEMO_FILE = _PLUGIN_DIR / "dim_check.json"
+_DIM_MEMO_TTL = 300.0  # seconds; re-probe at most this often per embedder signature
+
+
+def _embedder_signature() -> str:
+    """Cheap identity of the active embedder, read from env WITHOUT importing cognee
+    — the only query-side input to the mismatch check. A change here (model, dimension,
+    or provider) invalidates any cached probe result."""
+    return "|".join(
+        os.getenv(k, "") for k in ("EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "EMBEDDING_PROVIDER")
+    )
+
+
+def _read_dim_memo(sig: str) -> Optional[dict]:
+    """Return the cached probe result for ``sig`` if present and fresh, else None.
+    Never raises."""
+    try:
+        data = json.loads(_DIM_MEMO_FILE.read_text(encoding="utf-8"))
+        if data.get("sig") == sig and (time.time() - float(data.get("ts", 0))) < _DIM_MEMO_TTL:
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _write_dim_memo(sig: str, message: Optional[str]) -> None:
+    """Persist a completed probe result keyed by embedder signature. Never raises."""
+    try:
+        _DIM_MEMO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DIM_MEMO_FILE.write_text(
+            json.dumps({"sig": sig, "message": message, "ts": time.time()}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+async def bounded_dim_mismatch_hint(timeout: float = 2.0) -> Optional[str]:
+    """``embedding_dimension_mismatch_hint`` made safe for the per-prompt hook path.
+
+    The probe's first step is a synchronous ``import cognee`` + ``get_vector_engine()``.
+    In the plugin's default http/local-server mode cognee is not otherwise imported, so
+    that is a cold ~1s import running *before the first await* — which a plain
+    ``asyncio.wait_for`` cannot bound (it blocks the event loop). So we run the whole
+    probe in a daemon thread and bound the *wait*: on timeout we return None and abandon
+    the daemon, so a slow import can never stall the hook or delay its process exit. The
+    completed result is memoized on disk per embedder signature (TTL-bounded) so repeated
+    empty recalls in a session don't each pay the import.
+
+    Fail-safe: any error, timeout, or indeterminate result returns None, so the caller
+    keeps the normal empty-recall behavior.
+    """
+    sig = _embedder_signature()
+    cached = _read_dim_memo(sig)
+    if cached is not None:
+        return cached.get("message")
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    def _settle(value: Optional[str]) -> None:
+        if not future.done():
+            future.set_result(value)
+
+    def _worker() -> None:
+        message: Optional[str] = None
+        try:
+            message = asyncio.run(embedding_dimension_mismatch_hint())
+        except Exception:
+            message = None
+        try:
+            loop.call_soon_threadsafe(_settle, message)
+        except Exception:
+            pass  # loop already closed (we timed out); the daemon's result is discarded
+
+    threading.Thread(target=_worker, name="cognee-dim-probe", daemon=True).start()
+    try:
+        message = await asyncio.wait_for(future, timeout=timeout)
+    except Exception:
+        return None
+    _write_dim_memo(sig, message)
+    return message
 
 
 def hook_log(event: str, detail: Optional[dict] = None) -> None:

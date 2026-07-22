@@ -49,14 +49,22 @@ class _FakeCollection:
         return _FakeQuery(self._rows)
 
 
+class _FakeConnection:
+    def __init__(self, names):
+        self._names = list(names)
+
+    async def table_names(self):
+        return self._names
+
+
 class _FakeLanceEngine:
     def __init__(self, query_size, stored_vector, present=("Entity_name",)):
         self.embedding_engine = _FakeEmbed(query_size)
         self._stored_vector = stored_vector
-        self._present = set(present)
+        self._present = tuple(present)
 
-    async def has_collection(self, name):
-        return name in self._present
+    async def get_connection(self):
+        return _FakeConnection(self._present)
 
     async def get_collection(self, _name):
         rows = [{"vector": self._stored_vector}] if self._stored_vector is not None else []
@@ -67,8 +75,8 @@ class _FakeErrorEngine:
     def __init__(self, query_size):
         self.embedding_engine = _FakeEmbed(query_size)
 
-    async def has_collection(self, name):
-        return name == "Entity_name"
+    async def get_connection(self):
+        return _FakeConnection(("Entity_name",))
 
     async def get_collection(self, _name):
         raise RuntimeError("store locked")
@@ -88,6 +96,14 @@ class TestDimensionMismatchHint(unittest.TestCase):
 
     def test_matching_dims_returns_none(self):
         self.assertIsNone(_hint(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)))
+
+    def test_enumerates_nonstandard_collection(self):
+        # Enumeration (not a fixed name list) means a custom-pipeline collection is
+        # still sampled, so the diagnostic fires for non-standard stores too.
+        engine = _FakeLanceEngine(
+            query_size=3072, stored_vector=[0.0] * 1536, present=("CustomThing_body",)
+        )
+        self.assertIsNotNone(_hint(engine))
 
     def test_no_collections_returns_none(self):
         engine = _FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536, present=())

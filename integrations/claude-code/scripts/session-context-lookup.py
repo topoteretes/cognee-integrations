@@ -20,8 +20,8 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    bounded_dim_mismatch_hint,
     drain_warmup_entries,
-    embedding_dimension_mismatch_hint,
     get_session_key,
     hook_log,
     load_resolved,
@@ -413,9 +413,7 @@ async def _run(prompt: str) -> dict | None:
         dim_message = None
         if service_url_is_local(service_url):
             try:
-                dim_message = await asyncio.wait_for(
-                    embedding_dimension_mismatch_hint(), timeout=2.0
-                )
+                dim_message = await bounded_dim_mismatch_hint(timeout=2.0)
             except Exception as exc:
                 hook_log("dim_check_error", {"error": str(exc)[:200]})
         if dim_message:

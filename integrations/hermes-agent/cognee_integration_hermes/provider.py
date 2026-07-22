@@ -846,25 +846,26 @@ class CogneeMemoryProvider(MemoryProvider):
 # returns None). Only valid in embedded mode, where this process owns the vector
 # store; in server/remote mode the server owns it and the in-process engine here
 # would not reflect it.
-_DIM_PROBE_COLLECTIONS = (
-    "Entity_name",
-    "TextSummary_text",
-    "EntityType_name",
-    "DocumentChunk_text",
-)
 
 
 async def _sample_stored_vector_dim(engine) -> Optional[int]:
-    """Sample the dimension of a stored vector from a known collection, or None.
+    """Sample the dimension of a stored vector from any populated collection, or None.
 
-    Never raises: each collection is probed independently and any unreadable one
-    is skipped. Covers cognee's default local backend (LanceDB); other backends
-    simply return None and fall back to the normal empty-recall path.
+    Enumerates the store's actual collections via the vector interface's
+    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
+    uses) rather than assuming fixed collection names, so it also covers custom
+    pipelines. Never raises: each collection is probed independently and any
+    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
+    backends whose connection can't enumerate return None and fall back to the normal
+    empty-recall path.
     """
-    for name in _DIM_PROBE_COLLECTIONS:
+    try:
+        connection = await engine.get_connection()
+        names = await connection.table_names()
+    except Exception:
+        return None
+    for name in names:
         try:
-            if not await engine.has_collection(name):
-                continue
             collection = await engine.get_collection(name)
             rows = await collection.query().limit(1).to_list()
             if rows:

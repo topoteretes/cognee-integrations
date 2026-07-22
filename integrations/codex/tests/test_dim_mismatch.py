@@ -6,9 +6,10 @@ fresh query vectors differ in size, so recall silently matches nothing.
 naming both dims and the active model on a confirmed mismatch, and None in every
 other case (matching dims, no data, or any error) so recall keeps its normal
 empty-result behavior. Tests inject a fake vector engine so cognee is not required.
+Mirror of the claude-code copy (the probe block is byte-identical across twins).
 
-Run: `pytest integrations/claude-code/tests/test_dim_mismatch.py`
-(or `python integrations/claude-code/tests/test_dim_mismatch.py` standalone).
+Run: `pytest integrations/codex/tests/test_dim_mismatch.py`
+(or `python integrations/codex/tests/test_dim_mismatch.py` standalone).
 """
 
 import asyncio
@@ -21,7 +22,9 @@ import tempfile
 # into the plugin venv (its module-level _reexec_into_venv()).
 os.environ.setdefault("COGNEE_PLUGIN_IN_VENV", "1")
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(
+    0, str(pathlib.Path(__file__).resolve().parents[1] / "plugins" / "cognee" / "scripts")
+)
 import _plugin_common as pc  # noqa: E402
 
 
