@@ -73,6 +73,19 @@ def _background_flag():
     return "false" if val in {"0", "false", "no", "off"} else "true"
 
 
+def _remember_timeout():
+    """Client timeout (seconds) for the remember submit POST.
+
+    Tunable independently of recall/register via ``COGNEE_REMEMBER_TIMEOUT``;
+    defaults to 60s to preserve the previous hardcoded behaviour.
+    """
+    try:
+        raw = os.environ.get("COGNEE_REMEMBER_TIMEOUT", "").strip()
+        return float(raw) if raw else 60.0
+    except (TypeError, ValueError):
+        return 60.0
+
+
 def _timeout_result(timeout):
     """A write timeout is NOT 'unreachable': the request likely reached the server and
     the write may have landed. Returning UNREACHABLE would make the caller re-write via
@@ -159,7 +172,7 @@ def do_remember(
 def main(argv):
     # argv: service_url, api_key, content, dataset, node_set
     a = list(argv) + [""] * 5
-    result = do_remember(a[0], a[1], a[2], a[3], a[4])
+    result = do_remember(a[0], a[1], a[2], a[3], a[4], timeout=_remember_timeout())
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
 
 
