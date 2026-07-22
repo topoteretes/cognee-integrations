@@ -21,6 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     drain_warmup_entries,
+    elapsed_ms,
     get_session_key,
     hook_log,
     load_resolved,
@@ -227,7 +228,8 @@ async def _run(prompt: str) -> dict | None:
     # never be the long pole. Each scope gets a short per-call timeout, and the
     # whole loop stops once the overall budget is spent. Partial results are fine.
     recall_timeout = _float_env("COGNEE_RECALL_TIMEOUT", 2.5)
-    budget_deadline = time.monotonic() + _float_env("COGNEE_RECALL_BUDGET", 4.0)
+    recall_start = time.monotonic()
+    budget_deadline = recall_start + _float_env("COGNEE_RECALL_BUDGET", 4.0)
     # Respect the shared circuit breaker: when the server has been failing (tripped
     # by the explicit recall path), skip this per-prompt recall rather than hammering
     # a down backend on every keystroke. HTTP/cloud mode only.
@@ -375,11 +377,21 @@ async def _run(prompt: str) -> dict | None:
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_hit",
+            {
+                "counts": counts,
+                "saves_last_turn": saves_last_turn,
+                "elapsed_ms": elapsed_ms(recall_start),
+            },
+        )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
         full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_empty",
+            {"saves_last_turn": saves_last_turn, "elapsed_ms": elapsed_ms(recall_start)},
+        )
         notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
