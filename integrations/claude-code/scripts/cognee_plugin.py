@@ -1,13 +1,14 @@
-"""cognee-plugin — CLI utility for the cognee Claude-Code / Codex plugin.
+"""cognee-plugin - offline usage-metrics CLI for the cognee Claude Code plugin.
 
 Usage:
-    cognee-plugin metrics [--json] [--plugin <claude-code|codex>]
+    cognee-plugin metrics [--json]
 
-Computes usage rollup purely from local files — no network required:
-    ~/.cognee-plugin/<plugin>/hook.log
-    ~/.cognee-plugin/<plugin>/save_counter.json
-    ~/.cognee-plugin/<plugin>/last_recall.json
-    ~/.cognee-plugin/<plugin>/recall-audit.log
+Computes a usage rollup purely from this plugin's local state files - no
+network, no import of the cognee package:
+    ~/.cognee-plugin/claude-code/hook.log
+    ~/.cognee-plugin/claude-code/save_counter.json
+    ~/.cognee-plugin/claude-code/last_recall.json
+    ~/.cognee-plugin/claude-code/recall-audit.log
 """
 
 from __future__ import annotations
@@ -17,10 +18,15 @@ import json
 import sys
 from pathlib import Path
 
+# State this plugin's hooks write (mirrors _plugin_common._PLUGIN_DIR). The
+# codex copy of this file points at ".../codex"; each copy reads its own dir.
+_PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_jsonl(path: Path) -> list:
     """Read a JSON-Lines file; skip malformed lines silently."""
@@ -59,31 +65,32 @@ def _read_json_file(path: Path) -> dict:
 # Metric computation
 # ---------------------------------------------------------------------------
 
+
 def _compute_metrics(plugin_dir: Path) -> dict:
-    hook_log_path     = plugin_dir / "hook.log"
+    hook_log_path = plugin_dir / "hook.log"
     save_counter_path = plugin_dir / "save_counter.json"
-    last_recall_path  = plugin_dir / "last_recall.json"
+    last_recall_path = plugin_dir / "last_recall.json"
     recall_audit_path = plugin_dir / "recall-audit.log"
 
     # -----------------------------------------------------------------------
-    # 1. hook.log — sessions, mode split, breaker trips, save events
+    # 1. hook.log - sessions, mode split, breaker events, save events
     # -----------------------------------------------------------------------
     hook_lines = _parse_jsonl(hook_log_path)
 
     unique_sessions: set = set()
     local_decisions = 0
     cloud_decisions = 0
-    breaker_trips = 0
+    breaker_open_events = 0
     saves_from_log = {"prompt": 0, "trace": 0, "answer": 0}
 
     for line in hook_lines:
         ev = line.get("event", "")
         detail = line.get("detail") or {}
 
-        # Collect session ids from any log line
+        # Some diagnostic events carry a session id in their detail payload.
         for key in ("session_id", "session"):
-            sid = detail.get(key) or line.get(key)
-            if sid and isinstance(sid, str):
+            sid = detail.get(key)
+            if isinstance(sid, str) and sid:
                 unique_sessions.add(sid)
 
         # Mode decisions. resolve_runtime_mode() emits "http" (cloud) or
@@ -96,9 +103,11 @@ def _compute_metrics(plugin_dir: Path) -> dict:
             elif mode:
                 local_decisions += 1
 
-        # Breaker trips recorded via hook_log
+        # recall_breaker_open is logged once per per-prompt recall skipped while
+        # the breaker is open; the 4 local files expose no open/close transition,
+        # so this counts recalls skipped by an open breaker, not distinct trips.
         if ev == "recall_breaker_open":
-            breaker_trips += 1
+            breaker_open_events += 1
 
         # Save events recorded in hook.log. Warmup-buffered trace/answer saves
         # log "store_buffered_warming" (tagged with the originating hook) rather
@@ -116,7 +125,7 @@ def _compute_metrics(plugin_dir: Path) -> dict:
                 saves_from_log["answer"] += 1
 
     # -----------------------------------------------------------------------
-    # 2. save_counter.json — session ids only
+    # 2. save_counter.json - session ids only
     # -----------------------------------------------------------------------
     # A per-turn buffer that read_and_reset_save_counter drains on every recall;
     # each save it records is also written to hook.log, so adding it to the
@@ -129,16 +138,14 @@ def _compute_metrics(plugin_dir: Path) -> dict:
     total_saves = dict(saves_from_log)
 
     # -----------------------------------------------------------------------
-    # 3. last_recall.json — most-recent recall hit counts
+    # 3. last_recall.json - session id only
     # -----------------------------------------------------------------------
-    last_recall = _read_json_file(last_recall_path)
-    last_hits = last_recall.get("hits") or {}
-    last_recall_ts = last_recall.get("ts", "")
-    if last_recall.get("session_id"):
-        unique_sessions.add(last_recall.get("session_id"))
+    lr_session = _read_json_file(last_recall_path).get("session_id")
+    if isinstance(lr_session, str) and lr_session:
+        unique_sessions.add(lr_session)
 
     # -----------------------------------------------------------------------
-    # 4. recall-audit.log — total recalls + hit rate
+    # 4. recall-audit.log - total recalls + hit rate
     # -----------------------------------------------------------------------
     audit_lines = _parse_jsonl(recall_audit_path)
     total_recalls = len(audit_lines)
@@ -148,10 +155,8 @@ def _compute_metrics(plugin_dir: Path) -> dict:
         total_hit_count = sum(int(v) for v in hits.values() if isinstance(v, (int, float)))
         if total_hit_count > 0:
             recall_hits += 1
-        
-        # Extract session ID from audit logs as well
         sid = entry.get("session_id")
-        if sid and isinstance(sid, str):
+        if isinstance(sid, str) and sid:
             unique_sessions.add(sid)
 
     hit_rate_pct = round(100.0 * recall_hits / total_recalls, 1) if total_recalls > 0 else 0.0
@@ -175,13 +180,7 @@ def _compute_metrics(plugin_dir: Path) -> dict:
             "local_count": local_decisions,
             "cloud_count": cloud_decisions,
         },
-        "circuit_breaker": {
-            "trips": breaker_trips,
-        },
-        "last_recall": {
-            "ts": last_recall_ts,
-            "hits": last_hits,
-        },
+        "breaker_open_events": breaker_open_events,
     }
 
 
@@ -189,44 +188,36 @@ def _compute_metrics(plugin_dir: Path) -> dict:
 # Output formatters
 # ---------------------------------------------------------------------------
 
-def _print_rollup(metrics: dict, plugin: str) -> None:
-    m = metrics
-    r = m["recalls"]
-    s = m["saves"]
-    ms = m["mode_split"]
-    cb = m["circuit_breaker"]
-    lr = m["last_recall"]
 
-    print("cognee-plugin metrics  [{}]".format(plugin))
+def _print_rollup(metrics: dict, plugin: str) -> None:
+    r = metrics["recalls"]
+    s = metrics["saves"]
+    ms = metrics["mode_split"]
+
+    print(f"cognee-plugin metrics  [{plugin}]")
     print("=" * 46)
-    print("  Sessions            : {}".format(m["sessions"]))
+    print(f"  Sessions            : {metrics['sessions']}")
     print()
-    print("  Recalls             : {}".format(r["total"]))
-    print("  Recall hits         : {}".format(r["hits"]))
-    print("  Hit rate            : {}%".format(r["hit_rate_pct"]))
-    if lr.get("ts"):
-        hits_str = "  ".join(
-            "{}={}".format(k, v) for k, v in (lr.get("hits") or {}).items()
-        )
-        print("  Last recall ts      : {}".format(lr["ts"]))
-        if hits_str:
-            print("  Last recall hits    : {}".format(hits_str))
+    print(f"  Recalls             : {r['total']}")
+    print(f"  Recall hits         : {r['hits']}")
+    print(f"  Hit rate            : {r['hit_rate_pct']}%")
     print()
-    print("  Saves (prompt)      : {}".format(s["prompt"]))
-    print("  Saves (trace)       : {}".format(s["trace"]))
-    print("  Saves (answer)      : {}".format(s["answer"]))
-    print("  Saves (total)       : {}".format(sum(s.values())))
+    print(f"  Saves (prompt)      : {s['prompt']}")
+    print(f"  Saves (trace)       : {s['trace']}")
+    print(f"  Saves (answer)      : {s['answer']}")
+    print(f"  Saves (total)       : {sum(s.values())}")
     print()
-    print("  Mode — local        : {}%  ({} decisions)".format(ms["local_pct"], ms["local_count"]))
-    print("  Mode — cloud        : {}%  ({} decisions)".format(ms["cloud_pct"], ms["cloud_count"]))
+    print(f"  Mode - local        : {ms['local_pct']}%  ({ms['local_count']} decisions)")
+    print(f"  Mode - cloud        : {ms['cloud_pct']}%  ({ms['cloud_count']} decisions)")
     print()
-    print("  Breaker trips       : {}".format(cb["trips"]))
+    print(f"  Breaker open events : {metrics['breaker_open_events']}")
     print("=" * 46)
 
 
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -245,12 +236,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Output metrics as a JSON object instead of a human-readable rollup.",
     )
-    metrics_p.add_argument(
-        "--plugin",
-        default="claude-code",
-        choices=["claude-code", "codex"],
-        help="Which plugin state directory to read (default: claude-code).",
-    )
     return parser
 
 
@@ -263,23 +248,16 @@ def main(argv=None):
         return 1
 
     if args.command == "metrics":
-        plugin_name = args.plugin
-        if plugin_name == "codex":
-            plugin_dir = Path.home() / ".cognee-plugin" / "codex"
-        else:
-            plugin_dir = Path.home() / ".cognee-plugin" / "claude-code"
-
-        metrics = _compute_metrics(plugin_dir)
-
+        metrics = _compute_metrics(_PLUGIN_DIR)
         if args.as_json:
             print(json.dumps(metrics, indent=2))
         else:
-            _print_rollup(metrics, plugin_name)
-
+            _print_rollup(metrics, _PLUGIN_DIR.name)
         return 0
 
     parser.print_help(sys.stderr)
     return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())
