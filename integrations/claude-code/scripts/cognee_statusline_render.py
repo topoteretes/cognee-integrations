@@ -22,6 +22,8 @@ _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
 _DEFAULT_DATASET = "agent_sessions"
+# Cap for the untrusted project picker file (see config.py _read_project_picker).
+_PICKER_MAX_BYTES = 64 * 1024
 
 # Self-eviction: when the plugin is uninstalled/disabled but its files still
 # linger in the version cache (Claude Code does not remove the statusLine key we
@@ -48,11 +50,15 @@ def _active_dataset(cwd: str = "") -> str:
     # here — like load_config, it does not drive the dataset (visibility-only).
     try:
         root = cwd or os.environ.get("CLAUDE_CWD") or os.getcwd()
-        picker = json.loads((Path(root) / ".cognee" / "session-config.json").read_text("utf-8"))
-        if isinstance(picker, dict):
-            v = str(picker.get("dataset") or "").strip()
-            if v:
-                return v
+        p = Path(root) / ".cognee" / "session-config.json"
+        # Untrusted committed file: skip symlinks and cap the size, mirroring
+        # config.py's _read_project_picker.
+        if not p.is_symlink() and p.is_file() and p.stat().st_size <= _PICKER_MAX_BYTES:
+            picker = json.loads(p.read_text("utf-8"))
+            if isinstance(picker, dict):
+                v = str(picker.get("dataset") or "").strip()
+                if v:
+                    return v
     except Exception:
         pass
     # 3. default

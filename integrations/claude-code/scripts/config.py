@@ -105,10 +105,16 @@ _ENV_MAP = {
 # and backend routing (api_key, llm_api_key, base_url, backend, user_*) so that
 # merely opening a repo with a `.cognee/session-config.json` can never redirect
 # your Cognee backend or inject credentials — the picker's job is dataset/session
-# selection only (issue #3686: "the dataset configuration key").
+# selection only (issue #3686: "the dataset configuration key"). dataset is the
+# key in use today; the others are accepted for forward-compat with the config
+# system (they map to existing _DEFAULTS / _ENV_MAP entries).
 _PICKER_ALLOWED_KEYS = frozenset(
     {"dataset", "session_strategy", "session_prefix", "agent_name", "top_k"}
 )
+# A picker file is committed to a repo, so it is untrusted input: cap the size
+# we are willing to read (a dataset picker is a few bytes; anything larger is a
+# mistake or a self-DoS via a symlink to a huge/endless file).
+_PICKER_MAX_BYTES = 64 * 1024
 
 
 def _read_project_picker(cwd: Optional[str] = None) -> dict:
@@ -119,18 +125,23 @@ def _read_project_picker(cwd: Optional[str] = None) -> dict:
     os.getcwd() (last resort — NOT reliable inside a global-plugin hook
     process, kept only as a final fallback).
 
-    Only the non-sensitive keys in ``_PICKER_ALLOWED_KEYS`` are honored; any
-    other key in the file is ignored so an untrusted repo file cannot influence
-    auth or backend routing.
+    The file is untrusted (it ships in whatever repo you open), so this fails
+    safe: symlinks and oversized/unreadable/malformed files all fall through to
+    the lower config layers instead of raising into the hook. Only the
+    non-sensitive keys in ``_PICKER_ALLOWED_KEYS`` are honored, so a repo file
+    cannot influence auth or backend routing.
     """
     project_dir = Path(cwd or os.environ.get("CLAUDE_CWD") or os.getcwd())
     picker_path = project_dir / ".cognee" / "session-config.json"
 
-    if not picker_path.exists():
-        return {}
     try:
+        if picker_path.is_symlink() or not picker_path.is_file():
+            return {}
+        if picker_path.stat().st_size > _PICKER_MAX_BYTES:
+            _config_log("session_picker_too_large", {"path": str(picker_path)})
+            return {}
         data = json.loads(picker_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+    except Exception as exc:
         _config_log(
             "session_picker_load_failed", {"path": str(picker_path), "error": str(exc)[:200]}
         )
@@ -138,16 +149,14 @@ def _read_project_picker(cwd: Optional[str] = None) -> dict:
     if not isinstance(data, dict):
         return {}
     # Only allowlisted, non-null AND non-empty-string values fall through — the
-    # empty/null check matches the config-file layer's semantics (line 112:
-    # `v is not None and v != ""`) so an explicit `{"dataset": null}` or
-    # `{"dataset": ""}` cleanly no-ops instead of resolving to an empty name.
+    # empty/null check matches the config-file layer's semantics (`v is not None
+    # and v != ""`) so an explicit `{"dataset": null}` or `{"dataset": ""}`
+    # cleanly no-ops instead of resolving to an empty name.
     ignored = [k for k in data if k not in _PICKER_ALLOWED_KEYS]
     if ignored:
         _config_log("session_picker_ignored_keys", {"keys": sorted(ignored)[:20]})
     return {
-        k: v
-        for k, v in data.items()
-        if k in _PICKER_ALLOWED_KEYS and v is not None and v != ""
+        k: v for k, v in data.items() if k in _PICKER_ALLOWED_KEYS and v is not None and v != ""
     }
 
 
