@@ -1,10 +1,14 @@
-"""Unit tests for observability timing (#3676): elapsed_ms on recall / bridge / improve.
+"""Unit tests for observability timing (#3676): elapsed_ms on the recall and bridge events.
 
 Covers:
   * elapsed_ms(): monotonic-based, integer milliseconds, non-negative.
+  * session-context-lookup._run: context_lookup_hit / context_lookup_empty carry elapsed_ms.
   * persist_session_cache_to_graph_via_http: http_bridge_poll carries elapsed_ms.
   * the failure path (http_bridge_post_failed) also carries elapsed_ms, so a
     slow-failing submit is still visible in latency logs.
+
+The improve path (store-to-session._fire_improve_background) uses the identical
+elapsed_ms(start) call as the sites above and is left to inspection.
 
 Run: python integrations/claude-code/tests/test_hook_timing.py (or via pytest).
 """
@@ -99,6 +103,75 @@ def test_failed_post_still_carries_elapsed_ms():
         "http_bridge_post_failed",
     )
     assert detail is not None, "expected an http_bridge_post_failed event"
+    assert isinstance(detail.get("elapsed_ms"), int)
+    assert detail["elapsed_ms"] >= 0
+
+
+def _run_recall(recall_results):
+    """Drive session-context-lookup._run in cloud (HTTP) mode with the recall
+    seams mocked, capturing every hook_log(event, detail) call — the recall-side
+    mirror of _run_bridge. The hyphenated filename blocks a plain import, so the
+    module is loaded via importlib; HOME is redirected to a temp dir so the
+    best-effort last_recall / audit writes (and the file-backed breaker) stay
+    sandboxed and deterministically closed."""
+    import asyncio
+    import importlib.util
+    import os
+    import tempfile
+
+    spec = importlib.util.spec_from_file_location(
+        "session_context_lookup",
+        str(pathlib.Path(__file__).resolve().parents[1] / "scripts" / "session-context-lookup.py"),
+    )
+    scl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scl)
+
+    events = []
+    seams = {
+        "load_config": lambda: {},
+        "resolve_runtime_mode": lambda: {"mode": "http", "base_url": "http://x"},
+        "server_ready_hint": lambda url: True,
+        "_load_session_id": lambda: "sid",
+        "read_and_reset_save_counter": lambda sid: {"prompt": 0, "trace": 0, "answer": 0},
+        "recall_via_http": lambda *a, **k: recall_results,
+        "_has_entry_content": lambda entry: True,
+        "_format_entry": lambda entry: "entry",
+        "notify": lambda *a, **k: None,
+        "hook_log": lambda event, detail=None: events.append((event, detail or {})),
+    }
+    saved = {k: getattr(scl, k) for k in seams}
+    for k, v in seams.items():
+        setattr(scl, k, v)
+    prev_home = os.environ.get("HOME")
+    tmp = tempfile.TemporaryDirectory()
+    os.environ["HOME"] = tmp.name
+    try:
+        asyncio.run(scl._run("what did we decide last turn"))
+    finally:
+        for k, v in saved.items():
+            setattr(scl, k, v)
+        if prev_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = prev_home
+        tmp.cleanup()
+    return events
+
+
+def test_context_lookup_hit_carries_elapsed_ms():
+    # A non-empty recall drives the hit branch (the first-named acceptance event).
+    detail = _detail_for(_run_recall([{"source": "session"}]), "context_lookup_hit")
+    assert detail is not None, "expected a context_lookup_hit event"
+    assert isinstance(detail.get("elapsed_ms"), int)
+    assert detail["elapsed_ms"] >= 0
+    # No behavior change: the existing fields are still present.
+    assert "counts" in detail
+    assert "saves_last_turn" in detail
+
+
+def test_context_lookup_empty_carries_elapsed_ms():
+    detail = _detail_for(_run_recall([]), "context_lookup_empty")
+    assert detail is not None, "expected a context_lookup_empty event"
     assert isinstance(detail.get("elapsed_ms"), int)
     assert detail["elapsed_ms"] >= 0
 
