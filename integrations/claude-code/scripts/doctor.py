@@ -114,9 +114,13 @@ def _check_health(server_url: str, timeout: float = 5.0) -> dict:
     base = server_url.rstrip("/") if server_url else ""
     if not base:
         return {"reachable": False, "latency_ms": None, "raw_body": None}
+    from _plugin_common import _https_context
+
     try:
         t0 = time.monotonic()
-        with urllib.request.urlopen(f"{base}/health", timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            f"{base}/health", timeout=timeout, context=_https_context()
+        ) as resp:
             latency = (time.monotonic() - t0) * 1000  # ms
             body_text = resp.read().decode("utf-8", errors="replace")
             try:
