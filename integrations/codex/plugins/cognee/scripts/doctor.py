@@ -183,6 +183,18 @@ def _resolve_circuit_breaker() -> str:
     return "Closed"
 
 
+def _resolve_embedding() -> tuple[str, str]:
+    """Embedding model + dimensions from the environment cognee reads.
+
+    cognee resolves embeddings from EMBEDDING_MODEL / EMBEDDING_DIMENSIONS; no
+    HTTP endpoint exposes them, so we surface what the local environment sets
+    (the values that govern local mode). "Default" means unset — cognee falls
+    back to its built-in default.
+    """
+    model = (os.environ.get("EMBEDDING_MODEL") or "").strip() or "Default"
+    dims = (os.environ.get("EMBEDDING_DIMENSIONS") or "").strip() or "Default"
+    return model, dims
+
 
 def collect_report() -> dict:
     """Gather all diagnostic fields into an ordered dict."""
@@ -193,6 +205,7 @@ def collect_report() -> dict:
     server_version = _resolve_server_version(health["raw_body"])
     plugin_version = _resolve_plugin_version()
     circuit_breaker = _resolve_circuit_breaker()
+    embedding_model, embedding_dimensions = _resolve_embedding()
 
     return {
         "mode": mode,
@@ -202,8 +215,8 @@ def collect_report() -> dict:
         "latency_ms": health["latency_ms"],
         "plugin_version": plugin_version,
         "server_version": server_version,
-        "embedding_model": "Unknown",
-        "embedding_dimensions": "Unknown",
+        "embedding_model": embedding_model,
+        "embedding_dimensions": embedding_dimensions,
         "circuit_breaker": circuit_breaker,
     }
 
