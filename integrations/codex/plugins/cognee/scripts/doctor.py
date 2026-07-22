@@ -15,6 +15,7 @@ resources, writes files, or mutates state.
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 import urllib.error
@@ -26,42 +27,27 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 
-_INVENTORY_SLUG = "codex"
+def _resolve_local_cognee_version() -> str:
+    """Cognee version installed in the plugin's managed venv.
 
-def _resolve_plugin_version() -> str:
-    """Read the plugin version from inventory.yml.
-
-    Walks up from the scripts directory looking for inventory.yml,
-    then extracts the current_version for the codex slug.
-    Falls back to "Unknown" if the file is missing or unparseable.
+    The plugin installs cognee into ~/.cognee-plugin/venv at session start;
+    probe that interpreter directly. Returns "Not installed" when the venv is
+    absent and "Unknown" if the probe fails.
     """
-    search = pathlib.Path(__file__).resolve().parent
-    for _ in range(10):
-        candidate = search / "inventory.yml"
-        if candidate.exists():
-            return _parse_inventory_version(candidate, _INVENTORY_SLUG)
-        if search.parent == search:
-            break
-        search = search.parent
-    return "Unknown"
+    from _plugin_common import _VENV_PYTHON
 
-
-def _parse_inventory_version(path: pathlib.Path, slug: str) -> str:
-    """Extract current_version for *slug* from a YAML inventory file.
-
-    Uses a simple line-scanner instead of importing PyYAML (which may
-    not be installed in the host interpreter).
-    """
+    if not _VENV_PYTHON.exists():
+        return "Not installed"
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-        found_slug = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("- slug:"):
-                found_slug = stripped.split(":", 1)[1].strip().strip('"').strip("'") == slug
-            elif found_slug and stripped.startswith("current_version:"):
-                raw = stripped.split(":", 1)[1].strip().strip('"').strip("'")
-                return raw or "Unknown"
+        probe = "import importlib.metadata as m; print(m.version('cognee'))"
+        out = subprocess.run(
+            [str(_VENV_PYTHON), "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
     except Exception:
         pass
     return "Unknown"
@@ -202,8 +188,8 @@ def collect_report() -> dict:
     display_url, raw_url = _resolve_server_url()
     api_key_source = _resolve_api_key_source()
     health = _check_health(raw_url)
-    server_version = _resolve_server_version(health["raw_body"])
-    plugin_version = _resolve_plugin_version()
+    cognee_server = _resolve_server_version(health["raw_body"])
+    cognee_local = _resolve_local_cognee_version()
     circuit_breaker = _resolve_circuit_breaker()
     embedding_model, embedding_dimensions = _resolve_embedding()
 
@@ -213,8 +199,8 @@ def collect_report() -> dict:
         "api_key_source": api_key_source,
         "reachable": health["reachable"],
         "latency_ms": health["latency_ms"],
-        "plugin_version": plugin_version,
-        "server_version": server_version,
+        "cognee_local": cognee_local,
+        "cognee_server": cognee_server,
         "embedding_model": embedding_model,
         "embedding_dimensions": embedding_dimensions,
         "circuit_breaker": circuit_breaker,
@@ -227,8 +213,8 @@ _DISPLAY_ORDER = [
     ("API Key Source", "api_key_source"),
     ("Reachable", "reachable"),
     ("Latency", "latency_ms"),
-    ("Plugin Version", "plugin_version"),
-    ("Server Version", "server_version"),
+    ("Cognee (local)", "cognee_local"),
+    ("Cognee (server)", "cognee_server"),
     ("Embedding Model", "embedding_model"),
     ("Embedding Dims", "embedding_dimensions"),
     ("Circuit Breaker", "circuit_breaker"),
