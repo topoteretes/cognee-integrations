@@ -29,13 +29,13 @@ def test_elapsed_ms_is_non_negative_int():
 
 
 def test_elapsed_ms_measures_delta():
-    # Drive time.monotonic() deterministically: start at 100.0, read at 100.25 -> 250 ms.
-    seq = iter([100.0, 100.25])
+    # Pin the clock to a constant and pass the start explicitly: 100.25 - 100.0 -> 250 ms.
+    # A constant (vs. a fixed-length iterator) can't raise StopIteration no matter how
+    # many times elapsed_ms reads monotonic.
     orig = pc.time.monotonic
-    pc.time.monotonic = lambda: next(seq)
+    pc.time.monotonic = lambda: 100.25
     try:
-        start = pc.time.monotonic()
-        assert pc.elapsed_ms(start) == 250
+        assert pc.elapsed_ms(100.0) == 250
     finally:
         pc.time.monotonic = orig
 

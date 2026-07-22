@@ -1365,7 +1365,7 @@ def elapsed_ms(start: float) -> int:
     Monotonic-based so it is immune to wall-clock jumps / NTP drift, and rounded to
     an int so the ``elapsed_ms`` fields in hook.log stay compact and easy to query.
     """
-    return int(round((time.monotonic() - start) * 1000))
+    return round((time.monotonic() - start) * 1000)
 
 
 def wait_for_cognify(
