@@ -188,21 +188,22 @@ risk a duplicate). Only a genuine connection failure falls back.
 
 ## Status line
 
-The status line displays `cognee: <dataset> · <mode>`, for example:
+The status line displays `cognee: <dataset> · <mode> · v<version>`, for example:
 
 ```
-cognee: agent_sessions · local
-cognee: my-project · cloud
+cognee: agent_sessions · local · v1.0.0
+cognee: my-project · cloud · v1.0.0
 ```
 
-`<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host.
+`<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host. `<version>` is the installed plugin version from `CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json` (omitted if the manifest is missing or unreadable).
 
 It is configured automatically on first launch when no custom status line is already configured. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward. Existing non-Cognee `statusLine` settings are preserved; set `COGNEE_STATUSLINE=false` before launching Claude Code to opt out entirely.
 
 The status line reads only local state — no network calls on every refresh:
 1. Dataset: `COGNEE_PLUGIN_DATASET` env var, otherwise `agent_sessions`
 2. Mode: `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/claude-code/config.json` (`base_url`)
-3. Default mode: `local`
+3. Version: `CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json` (`version`)
+4. Default mode: `local`
 
 ## Auto-clear demo hook
 
