@@ -17,16 +17,15 @@ import _plugin_common as pc  # noqa: E402
 
 
 @contextlib.contextmanager
-def _patched(runtime, plugin_version="0.2.0", server_version=""):
+def _patched(runtime, plugin_version="0.2.0"):
     """Swap the resolvers so the line is deterministic regardless of host env."""
-    saved = (pc.resolve_runtime_mode, pc._plugin_version, pc._server_version)
+    saved = (pc.resolve_runtime_mode, pc._plugin_version)
     pc.resolve_runtime_mode = lambda: dict(runtime)
     pc._plugin_version = lambda: plugin_version
-    pc._server_version = lambda: server_version
     try:
         yield
     finally:
-        pc.resolve_runtime_mode, pc._plugin_version, pc._server_version = saved
+        pc.resolve_runtime_mode, pc._plugin_version = saved
 
 
 def _fields(line):
@@ -50,14 +49,6 @@ def test_reports_missing_key():
     runtime = {"mode": "local_sdk", "base_url": "", "api_key_present": False}
     with _patched(runtime):
         assert _fields(pc.runtime_status_line())["key"] == "missing"
-
-
-def test_appends_server_version_when_known():
-    runtime = {"mode": "http", "base_url": "http://localhost:8011", "api_key_present": False}
-    with _patched(runtime, server_version="1.2.2"):
-        fields = _fields(pc.runtime_status_line())
-    assert fields["version"] == "0.2.0"
-    assert fields["server"] == "1.2.2"
 
 
 def test_never_prints_raw_key():

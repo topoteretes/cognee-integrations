@@ -1331,19 +1331,6 @@ def _plugin_version() -> str:
         return "unknown"
 
 
-def _server_version() -> str:
-    """Cognee server version from the shared readiness marker, else ``""``.
-
-    ``mark_server_ready`` records this when the local server is up; empty means
-    no server has reported in yet.
-    """
-    try:
-        raw = json.loads(_SERVER_READY_MARKER.read_text(encoding="utf-8"))
-        return str(raw.get("version") or "").strip()
-    except Exception:
-        return ""
-
-
 def runtime_status_line() -> str:
     """One-line view of the resolved runtime state, e.g.::
 
@@ -1351,19 +1338,14 @@ def runtime_status_line() -> str:
 
     Reuses the same resolvers the hooks run with (``resolve_runtime_mode``) so
     the reported state matches real runtime behaviour. The API key value is
-    never printed — only ``key=set`` or ``key=missing``. When the local server
-    has reported its version, a trailing ``server=<version>`` field is appended.
-    Pure-local: reads env vars and ``~/.cognee-plugin`` files, no network call.
+    never printed — only ``key=set`` or ``key=missing``. Pure-local: reads env
+    vars and ``~/.cognee-plugin`` files, no network call.
     """
     runtime = resolve_runtime_mode()
     mode = str(runtime.get("mode") or "unknown")
     url = str(runtime.get("base_url") or _local_api_url())
     key = "set" if runtime.get("api_key_present") else "missing"
-    line = f"mode={mode} url={url} key={key} version={_plugin_version()}"
-    server_version = _server_version()
-    if server_version:
-        line += f" server={server_version}"
-    return line
+    return f"mode={mode} url={url} key={key} version={_plugin_version()}"
 
 
 def set_agent_registration(registered: bool, session_key: str = "") -> None:
