@@ -1495,12 +1495,19 @@ def pending_capture_counts(session_id: str) -> dict:
     Scans every file in ``_BRIDGE_DIR`` rather than only ``_bridge_file(session_id)``:
     bridge filenames are scoped by COGNEE_SESSION_KEY, which hook processes set but
     the ``cognee-search.sh`` shell environment may not, so matching by the
-    ``:{session_id}`` key suffix works from both paths (session ids are sanitized
-    to ``[alnum-_.]``, so the suffix match cannot split a session id).
+    ``:{session_id}`` key suffix works from both paths. The id is sanitized first so
+    it matches the write-side key regardless of caller, and the colon anchor means
+    the suffix match cannot split a session id.
 
     Best-effort, never raises: any read/parse failure counts as zero pending.
     """
     pending = {"qa": 0, "trace": 0}
+    # Normalize to the write-side convention: append_http_bridge_entry always keys the
+    # bridge on the *sanitized* id, but a caller may pass a raw one (e.g. the explicit
+    # search path's ${COGNEE_SESSION_ID} fallback). Sanitizing here keeps both the
+    # ":{session_id}" suffix and the digest (which embeds the id) aligned with what the
+    # drain wrote — otherwise the match silently finds nothing and the hint dies.
+    session_id = _sanitize_session_key(session_id)
     if not session_id:
         return pending
     try:

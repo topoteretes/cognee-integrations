@@ -238,6 +238,35 @@ def test_real_drain_clears_pending(tmp):
     assert pc.pending_capture_counts(SESSION) == {"qa": 0, "trace": 0}
 
 
+@_with_fresh_bridge_dir
+def test_unsanitized_session_id_matches_sanitized_key(tmp):
+    # The write path always keys the bridge on the SANITIZED id ("my project" ->
+    # "my_project"); the explicit-search path may hand the reader the raw value
+    # (cognee-search.sh's ${COGNEE_SESSION_ID} fallback). The reader must normalize
+    # so the ":{session_id}" suffix still matches the sanitized bridge key.
+    raw = "my project"
+    sanitized = pc._sanitize_session_key(raw)  # "my_project"
+    assert sanitized != raw
+    _write_bridge(
+        tmp,
+        {f"{DATASET}:{sanitized}": {"qa": [{"question": "q1", "answer": "a1"}], "trace": []}},
+    )
+    assert pc.pending_capture_counts(raw) == {"qa": 1, "trace": 0}
+    assert pc.pending_capture_counts(sanitized) == {"qa": 1, "trace": 0}
+
+
+@_with_fresh_bridge_dir
+def test_suffix_match_is_colon_anchored(tmp):
+    # The docstring promises the ":{session_id}" match "cannot split a session id".
+    # A key whose id is a non-colon-anchored tail of the session id must NOT match:
+    # session "claude_abc123" must not be counted for key "...:xclaude_abc123".
+    _write_bridge(
+        tmp,
+        {f"{DATASET}:xclaude_abc123": {"qa": [{"question": "q", "answer": "a"}], "trace": []}},
+    )
+    assert pc.pending_capture_counts(SESSION) == {"qa": 0, "trace": 0}
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
