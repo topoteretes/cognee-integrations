@@ -31,9 +31,6 @@ _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
-# Plugin manifest shipped beside this scripts/ dir. Read by the status one-liner
-# to report the installed plugin version (never fatal if absent).
-_PLUGIN_MANIFEST = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
 _SYNC_LOCK = _PLUGIN_DIR / "sync.lock"
 # Per-agent-session buffer dirs. Each agent session (one Claude/Codex terminal)
 # owns its own file under these dirs, so two concurrent agents never
@@ -1318,26 +1315,14 @@ def resolve_runtime_mode() -> dict:
     }
 
 
-def _plugin_version() -> str:
-    """Installed plugin version from the sibling ``plugin.json`` manifest.
-
-    Returns ``"unknown"`` when the manifest is missing or unreadable so the
-    status one-liner never fails on a partial install.
-    """
-    try:
-        raw = json.loads(_PLUGIN_MANIFEST.read_text(encoding="utf-8"))
-        return str(raw.get("version") or "").strip() or "unknown"
-    except Exception:
-        return "unknown"
-
-
 def runtime_status_line() -> str:
     """One-line view of the resolved runtime state, e.g.::
 
-        mode=http url=http://localhost:8011 key=missing version=0.2.0
+        mode=http url=http://localhost:8011 key=missing version=1.0.0
 
-    Reuses the same resolvers the hooks run with (``resolve_runtime_mode``) so
-    the reported state matches real runtime behaviour. The API key value is
+    Reuses the resolvers the hooks run with — ``resolve_runtime_mode`` for
+    mode/url/key and the shared ``_installed_plugin_version`` for the version —
+    so the reported state matches real runtime behaviour. The API key value is
     never printed — only ``key=set`` or ``key=missing``. Pure-local: reads env
     vars and ``~/.cognee-plugin`` files, no network call.
     """
@@ -1345,7 +1330,8 @@ def runtime_status_line() -> str:
     mode = str(runtime.get("mode") or "unknown")
     url = str(runtime.get("base_url") or _local_api_url())
     key = "set" if runtime.get("api_key_present") else "missing"
-    return f"mode={mode} url={url} key={key} version={_plugin_version()}"
+    version = _installed_plugin_version() or "unknown"
+    return f"mode={mode} url={url} key={key} version={version}"
 
 
 def set_agent_registration(registered: bool, session_key: str = "") -> None:

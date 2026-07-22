@@ -17,15 +17,15 @@ import _plugin_common as pc  # noqa: E402
 
 
 @contextlib.contextmanager
-def _patched(runtime, plugin_version="1.0.3-local"):
+def _patched(runtime, plugin_version="1.1.0"):
     """Swap the resolvers so the line is deterministic regardless of host env."""
-    saved = (pc.resolve_runtime_mode, pc._plugin_version)
+    saved = (pc.resolve_runtime_mode, pc._installed_plugin_version)
     pc.resolve_runtime_mode = lambda: dict(runtime)
-    pc._plugin_version = lambda: plugin_version
+    pc._installed_plugin_version = lambda: plugin_version
     try:
         yield
     finally:
-        pc.resolve_runtime_mode, pc._plugin_version = saved
+        pc.resolve_runtime_mode, pc._installed_plugin_version = saved
 
 
 def _fields(line):
@@ -41,7 +41,7 @@ def test_shape_and_masks_key_when_present():
         "mode": "http",
         "url": "http://localhost:8011",
         "key": "set",
-        "version": "1.0.3-local",
+        "version": "1.1.0",
     }
 
 
