@@ -1769,8 +1769,13 @@ def persist_session_cache_to_graph_via_http(
                 continue
             remaining = poll_deadline - (time.monotonic() - overall_start)
             if remaining <= 0:
-                # The POST consumed the remaining budget — don't start a poll.
-                hook_log("http_bridge_deadline_exceeded", {"dataset": dataset, "kind": kind})
+                # The POST consumed the remaining budget — don't start a poll. Time it
+                # like the sibling post-POST logs so a submit slow enough to blow the
+                # whole bridge budget stays visible, not just silently deadline-broken.
+                hook_log(
+                    "http_bridge_deadline_exceeded",
+                    {"dataset": dataset, "kind": kind, "elapsed_ms": elapsed_ms(doc_start)},
+                )
                 break
             outcome = wait_for_cognify(
                 dataset_id,
