@@ -6,7 +6,7 @@ lines are {ts, pid, event, detail}; mode_decision.detail.mode is "local_sdk" or
 "http"; warmup-buffered saves log "store_buffered_warming"; recall-audit.log /
 save_counter.json / last_recall.json match their writers.
 
-Run: python integrations/claude-code/tests/test_metrics.py  (or via pytest)
+Run: python integrations/codex/tests/test_metrics.py  (or via pytest)
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ import pathlib
 import sys
 import tempfile
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(
+    0, str(pathlib.Path(__file__).resolve().parents[1] / "plugins" / "cognee" / "scripts")
+)
 
 import cognee_plugin  # noqa: E402
 
@@ -96,7 +98,7 @@ def test_saves_counted_once_from_hook_log():
         _hook("stop_stored", chars=42),
     )
     (d / "save_counter.json").write_text(
-        json.dumps({"claude_s1": {"prompt": 1, "trace": 1, "answer": 1}}), encoding="utf-8"
+        json.dumps({"codex_s1": {"prompt": 1, "trace": 1, "answer": 1}}), encoding="utf-8"
     )
     assert cognee_plugin._compute_metrics(d)["saves"] == {"prompt": 2, "trace": 1, "answer": 1}
 
