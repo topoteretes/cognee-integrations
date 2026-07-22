@@ -197,6 +197,57 @@ def test_picker_unknown_key_ignored():
         assert "totally_unknown" not in cfg
 
 
+# --- the picked dataset reaches the write path + status line -----------------
+
+
+def test_picker_dataset_reaches_get_dataset():
+    # get_dataset(load_config(cwd)) is the exact resolver the write/recall hooks
+    # use, so this pins the headline acceptance: writes land on the picked dataset.
+    with _isolated() as (_home, project):
+        _write_picker(project, {"dataset": "picker-dataset"})
+        assert config.get_dataset(config.load_config(cwd=str(project))) == "picker-dataset"
+
+
+def test_statusline_shows_picker_dataset():
+    import cognee_statusline_render as statusline
+
+    with _isolated() as (_home, project):
+        _write_picker(project, {"dataset": "picker-dataset"})
+        assert statusline._active_dataset(str(project)) == "picker-dataset"
+        nopicker = project / "sub"
+        nopicker.mkdir()
+        assert statusline._active_dataset(str(nopicker)) == "agent_sessions"
+
+
+# --- untrusted-file hardening ------------------------------------------------
+
+
+def test_invalid_utf8_picker_falls_through():
+    with _isolated() as (_home, project):
+        (project / ".cognee").mkdir(parents=True)
+        (project / ".cognee" / "session-config.json").write_bytes(b'\xff\xfe{"dataset": "x"}')
+        assert config.load_config(cwd=str(project)).get("dataset") == "agent_sessions"
+
+
+def test_oversized_picker_ignored():
+    with _isolated() as (_home, project):
+        _write_picker(project, {"dataset": "picker-dataset", "pad": "A" * (64 * 1024 + 1)})
+        assert config.load_config(cwd=str(project)).get("dataset") == "agent_sessions"
+
+
+def test_symlinked_picker_ignored():
+    with _isolated() as (_home, project):
+        (project / ".cognee").mkdir(parents=True)
+        target = project / "real-config.json"
+        target.write_text(json.dumps({"dataset": "picker-dataset"}), encoding="utf-8")
+        link = project / ".cognee" / "session-config.json"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            return  # symlinks unsupported (e.g. unprivileged Windows) — skip
+        assert config.load_config(cwd=str(project)).get("dataset") == "agent_sessions"
+
+
 if __name__ == "__main__":
     failures = 0
     for _name, _fn in sorted(globals().items()):
