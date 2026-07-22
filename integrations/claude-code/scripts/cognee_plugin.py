@@ -86,45 +86,47 @@ def _compute_metrics(plugin_dir: Path) -> dict:
             if sid and isinstance(sid, str):
                 unique_sessions.add(sid)
 
-        # Mode decisions
+        # Mode decisions. resolve_runtime_mode() emits "http" (cloud) or
+        # "local_sdk" (local); count any non-http mode as local so the split
+        # stays correct if another local mode name is ever added.
         if ev == "mode_decision":
             mode = detail.get("mode", "")
             if mode == "http":
                 cloud_decisions += 1
-            elif mode in ("local", "loopback"):
+            elif mode:
                 local_decisions += 1
 
         # Breaker trips recorded via hook_log
         if ev == "recall_breaker_open":
             breaker_trips += 1
 
-        # Save events that appear in hook.log
+        # Save events recorded in hook.log. Warmup-buffered trace/answer saves
+        # log "store_buffered_warming" (tagged with the originating hook) rather
+        # than trace_stored/stop_stored, so count those too for a full total.
         if ev == "prompt_pending":
             saves_from_log["prompt"] += 1
-        if ev == "trace_stored":
+        elif ev == "trace_stored":
             saves_from_log["trace"] += 1
-        if ev == "stop_stored":
+        elif ev == "stop_stored":
             saves_from_log["answer"] += 1
+        elif ev == "store_buffered_warming":
+            if detail.get("hook") == "tool":
+                saves_from_log["trace"] += 1
+            elif detail.get("hook") == "stop":
+                saves_from_log["answer"] += 1
 
     # -----------------------------------------------------------------------
-    # 2. save_counter.json — live per-session save counts
+    # 2. save_counter.json — session ids only
     # -----------------------------------------------------------------------
+    # A per-turn buffer that read_and_reset_save_counter drains on every recall;
+    # each save it records is also written to hook.log, so adding it to the
+    # totals would double-count. Read it only to recover session ids.
     save_data = _read_json_file(save_counter_path)
-    saves_counter = {"prompt": 0, "trace": 0, "answer": 0}
-    for _sid, counts in save_data.items():
-        if isinstance(counts, dict):
-            for kind in ("prompt", "trace", "answer"):
-                saves_counter[kind] += int(counts.get(kind, 0))
-        
-        # In case a session exists in save_counter but wasn't in hook.log
+    for _sid in save_data:
         if isinstance(_sid, str):
             unique_sessions.add(_sid)
 
-    # Prefer log-derived totals (historical) and supplement with live counter
-    total_saves = {
-        kind: saves_from_log[kind] + saves_counter[kind]
-        for kind in ("prompt", "trace", "answer")
-    }
+    total_saves = dict(saves_from_log)
 
     # -----------------------------------------------------------------------
     # 3. last_recall.json — most-recent recall hit counts
