@@ -93,6 +93,20 @@ def render_status_for_host(host_id: str) -> str:
 
 
 def main() -> None:
+    # Windows defaults stdio to the locale code page (e.g. cp1252), which cannot
+    # encode the status glyphs (●, ✕, ⬆); writing one raises UnicodeEncodeError
+    # and exits non-zero. Force UTF-8 on both streams so this renderer stays
+    # crash-free when invoked directly via cognee-statusline.sh. Kept inside
+    # main() (not at module scope) because session-start.py and
+    # session-context-lookup.py import render_status_for_host — a module-level
+    # reconfigure would hijack the importer's stdout. Best-effort: a stream that
+    # can't be reconfigured (e.g. a captured stdout under test) is left as-is.
+    for _stream in (sys.stdin, sys.stdout):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     try:
         json.load(sys.stdin)  # consume stdin as required by the host
     except Exception:

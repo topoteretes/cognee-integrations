@@ -2,8 +2,10 @@ name: Plugin Windows Tests
 
 # The claude-code and codex plugins ship platform-specific process helpers
 # (_proc.py: Windows liveness via OpenProcess/WaitForSingleObject, process
-# ancestry via CreateToolhelp32Snapshot). Those paths never run on the
-# ubuntu-only integration matrix, so exercise them on a real Windows runner.
+# ancestry via CreateToolhelp32Snapshot) and a status-line renderer whose stdio
+# encoding is Windows-sensitive (cp1252 cannot encode the health glyphs). Those
+# paths never run on the ubuntu-only integration matrix, so exercise them on a
+# real Windows runner.
 
 on:
   pull_request:
@@ -46,3 +48,9 @@ jobs:
 
       - name: codex process-helper tests
         run: python integrations/codex/tests/test_proc.py
+
+      - name: claude-code status-line renderer tests
+        run: python integrations/claude-code/tests/test_statusline_render.py
+
+      - name: codex status-line renderer tests
+        run: python integrations/codex/tests/test_statusline_render.py

@@ -158,6 +158,20 @@ def _evict_own_statusline() -> None:
 
 
 def main() -> None:
+    # Windows defaults stdio to the locale code page (e.g. cp1252), which cannot
+    # encode the status glyphs (●, ✕, ⬆) — the write raises UnicodeEncodeError,
+    # the renderer exits non-zero, and Claude Code drops the whole status line
+    # (cp1252 also fails to decode a non-ASCII cwd from the JSON context). Force
+    # UTF-8 on both streams: the context is UTF-8 and our output is UTF-8. Runtime
+    # reconfigure overrides the inherited encoding; best-effort, since a stream
+    # that can't be reconfigured (e.g. a captured stdout under test) is left as-is,
+    # matching this renderer's never-raise design.
+    for _stream in (sys.stdin, sys.stdout):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     ctx = {}
     try:
         ctx = json.load(sys.stdin)  # consume stdin as required by Claude Code
