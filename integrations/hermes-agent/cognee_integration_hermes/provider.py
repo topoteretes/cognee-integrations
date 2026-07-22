@@ -82,9 +82,14 @@ def _has_cognee() -> bool:
 def _safe_session_component(value: str) -> str:
     # Sanitization kept consistent with the other integrations' session-id helpers
     # (claude-code/codex `_sanitize_session_key`, openclaw `sanitizeSessionKey`):
-    # keep alphanumerics plus `-` `_` `.`, replace others with `_`, trim `._` ends,
-    # cap length at 120.
-    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value)
+    # keep the ASCII set [A-Za-z0-9-_.], replace others with `_`, trim `._` ends,
+    # cap length at 120. `isascii()` guards against unicode letters/digits that
+    # `isalnum()` would otherwise keep. The trailing `or "session"` fallback is
+    # intentional and hermes-specific, so empty-output cases are excluded from the
+    # shared conformance table.
+    safe = "".join(
+        ch if (ch.isascii() and ch.isalnum()) or ch in ("-", "_", ".") else "_" for ch in value
+    )
     return safe.strip("._")[:120] or "session"
 
 

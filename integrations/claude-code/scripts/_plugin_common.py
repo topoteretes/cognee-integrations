@@ -100,9 +100,12 @@ apply_cognee_env()
 
 
 def _sanitize_session_key(value: str) -> str:
+    # ASCII-only allowed set [A-Za-z0-9-_.], to stay identical across integrations
+    # (including the TypeScript openclaw one). `isascii()` guards against unicode
+    # letters/digits that `isalnum()` would otherwise keep.
     safe = []
     for ch in str(value or ""):
-        if ch.isalnum() or ch in ("-", "_", "."):
+        if (ch.isascii() and ch.isalnum()) or ch in ("-", "_", "."):
             safe.append(ch)
         else:
             safe.append("_")

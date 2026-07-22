@@ -127,6 +127,39 @@ jobs:
         working-directory: integrations/${{ matrix.integration }}
         run: npx tsc --noEmit --skipLibCheck
 
+  test-conformance:
+    # Session-id sanitization conformance across integrations (see
+    # integrations/conformance/). The four sanitizers live in different trees and
+    # languages, so this cross-cutting job checks each against the shared case
+    # table. It covers what the per-manifest matrix above misses: the claude-code
+    # and codex plugin trees (no pyproject.toml -> no test-python job) and openclaw
+    # (test-typescript only type-checks). hermes-agent's copy already runs in test-python.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Check claude-code and codex sanitizers
+        run: |
+          python3 integrations/claude-code/tests/test_session_id_conformance.py
+          python3 integrations/codex/tests/test_session_id_conformance.py
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check openclaw sanitizer
+        working-directory: integrations/openclaw
+        run: |
+          npm install
+          npm test -- __tests__/test_session_id_conformance.ts
+
   # ── Advisory Claude Code review — pulls the private skill from cognee-ci at runtime ──
   # Rubric + Slack map live in the private cognee-ci repo; this job carries no review logic.
   # Runs after the integration tests settle (skips tolerated; never on a test failure),
