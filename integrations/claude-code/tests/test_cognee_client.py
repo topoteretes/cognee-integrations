@@ -138,7 +138,7 @@ def test_annotate_empty_recall_with_pending_returns_envelope():
     assert out["recall"] == []
     assert out["captured_pending"] == {"qa": 2, "trace": 1}
     # It is NOT an error envelope: the empty recall itself was authoritative.
-    assert out["authoritative"] is True and "error" not in out
+    assert "error" not in out
     assert "not yet cognified" in out["hint"]
 
 

@@ -133,7 +133,6 @@ def annotate_empty_recall(result, session_id):
     return {
         "recall": [],
         "captured_pending": pending,
-        "authoritative": True,
         "hint": (
             "content captured this session is not yet cognified; "
             "retry shortly (the background sync picks it up) or run /cognee-memory:cognee-sync; "
