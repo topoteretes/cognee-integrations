@@ -239,6 +239,19 @@ Shared state (used by both Claude Code and Codex plugins):
 ~/.cognee-plugin/venv/            # shared Cognee virtualenv
 ```
 
+## Usage metrics
+
+For an offline usage rollup compiled purely from the local files above — no
+network, no `cognee` import — run:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-plugin" metrics          # readable rollup
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-plugin" metrics --json   # JSON
+```
+
+It reports sessions, recalls and hit-rate, saves (prompt/trace/answer), the
+local-vs-cloud mode split, and how often an open recall breaker skipped recall.
+
 ## Updating
 
 The plugin is versioned with [semver](https://semver.org/) — see

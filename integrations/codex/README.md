@@ -181,6 +181,19 @@ tail -f ~/.cognee-plugin/codex/exit-watcher.log
 tail -f ~/.cognee-plugin/codex/watcher.log
 ```
 
+## Usage metrics
+
+For an offline usage rollup compiled purely from the local files above — no
+network, no `cognee` import — run:
+
+```bash
+python3 "${PLUGIN_ROOT}/scripts/cognee-plugin" metrics          # readable rollup
+python3 "${PLUGIN_ROOT}/scripts/cognee-plugin" metrics --json   # JSON
+```
+
+It reports sessions, recalls and hit-rate, saves (prompt/trace/answer), the
+local-vs-cloud mode split, and how often an open recall breaker skipped recall.
+
 ## Updating
 
 The `cognee` marketplace tracks the repository's `main` branch (`git-subdir`,
