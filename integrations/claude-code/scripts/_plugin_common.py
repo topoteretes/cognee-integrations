@@ -1315,6 +1315,25 @@ def resolve_runtime_mode() -> dict:
     }
 
 
+def runtime_status_line() -> str:
+    """One-line view of the resolved runtime state, e.g.::
+
+        mode=http url=http://localhost:8011 key=missing version=1.0.0
+
+    Reuses the resolvers the hooks run with — ``resolve_runtime_mode`` for
+    mode/url/key and the shared ``_installed_plugin_version`` for the version —
+    so the reported state matches real runtime behaviour. The API key value is
+    never printed — only ``key=set`` or ``key=missing``. Pure-local: reads env
+    vars and ``~/.cognee-plugin`` files, no network call.
+    """
+    runtime = resolve_runtime_mode()
+    mode = str(runtime.get("mode") or "unknown")
+    url = str(runtime.get("base_url") or _local_api_url())
+    key = "set" if runtime.get("api_key_present") else "missing"
+    version = _installed_plugin_version() or "unknown"
+    return f"mode={mode} url={url} key={key} version={version}"
+
+
 def set_agent_registration(registered: bool, session_key: str = "") -> None:
     # No local resolved cache to patch.
     _ = (registered, session_key)
