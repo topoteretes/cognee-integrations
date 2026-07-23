@@ -47,13 +47,6 @@ _API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"
 # as an identity. A genuinely new launch gets a new host id -> new Cognee session;
 # a `resume` reuses the host id -> continues the same Cognee session.
 _SESSIONS_MAP_DIR = _PLUGIN_DIR / "sessions"
-# Per-session dataset-switch lifecycle: which dataset is active for a session,
-# plus, for each dataset that session has used, the high-water baseline
-# (how many QA/trace entries already belong to an earlier dataset) and a sealed
-# marker. Consumed by dataset-switch.py and the local-SDK bridge to keep the
-# post-switch dataset receiving only post-switch content (no duplicate graph
-# writes) while old state is flushed rather than orphaned.
-_SWITCH_STATE_FILE = _PLUGIN_DIR / "switch_state.json"
 
 # Save-kinds tracked per turn. Keep this tuple in sync with bump_save_counter callers.
 SAVE_KINDS = ("prompt", "trace", "answer")
@@ -607,160 +600,38 @@ def append_http_bridge_entry(
         _write_json_file(_bridge_file(session_id), cache)
 
 
-# --- Mid-session dataset switch: state, sealing, baselines --------------------
+# --- Mid-session dataset switch: seal the old bridge -------------------------
 # A dataset switch keeps the SAME session_id/conn_uuid (so conversation context
 # survives — the session cache is keyed by session_id, not dataset) and only
-# repoints where new graph writes land. The state below records the active
-# dataset per session and, for each dataset, the entry high-water baseline used
-# by the local-SDK bridge to avoid re-emitting pre-switch turns into the new
-# dataset's graph. In HTTP mode the per-dataset bridge buckets already partition
-# writes, so the baseline is a no-op there and only the seal-flush matters.
-
-
-def read_switch_state() -> dict:
-    """Return the whole per-session dataset-switch ledger ({} if absent)."""
-    data = _load_json_file(_SWITCH_STATE_FILE)
-    return data if isinstance(data, dict) else {}
-
-
-def get_switch_record(session_id: str) -> dict:
-    """Return the switch record for one session: {active, datasets:{...}}."""
-    if not session_id:
-        return {}
-    rec = read_switch_state().get(session_id)
-    return rec if isinstance(rec, dict) else {}
-
-
-def _mutate_switch_record(session_id: str, mutate) -> dict:
-    """Read-modify-write one session's switch record; returns the new record."""
-    if not session_id:
-        return {}
-    state = read_switch_state()
-    rec = state.get(session_id)
-    if not isinstance(rec, dict):
-        rec = {}
-    rec.setdefault("datasets", {})
-    mutate(rec)
-    state[session_id] = rec
-    _write_json_file(_SWITCH_STATE_FILE, state)
-    return rec
-
-
-def active_dataset_for_session(session_id: str) -> str:
-    """Return the dataset last recorded active for this session, or ''."""
-    return str(get_switch_record(session_id).get("active") or "")
-
-
-def set_active_dataset_for_session(session_id: str, dataset: str) -> None:
-    """Record which dataset is now active for this session (informational)."""
-    if not session_id or not dataset:
-        return
-    _mutate_switch_record(session_id, lambda rec: rec.__setitem__("active", dataset))
-
-
-def dataset_baseline(session_id: str, dataset: str) -> tuple[int, int]:
-    """Return (qa_start, trace_start) — entries before these belong to an earlier
-    dataset and must NOT be re-persisted into ``dataset``. Defaults to (0, 0) so
-    a session that never switched behaves exactly as before."""
-    ds = get_switch_record(session_id).get("datasets", {})
-    entry = ds.get(dataset) if isinstance(ds, dict) else None
-    if not isinstance(entry, dict):
-        return 0, 0
-    try:
-        return int(entry.get("qa_start", 0) or 0), int(entry.get("trace_start", 0) or 0)
-    except (TypeError, ValueError):
-        return 0, 0
-
-
-def set_dataset_baseline(session_id: str, dataset: str, qa_start: int, trace_start: int) -> None:
-    """Seed the high-water baseline for ``dataset`` (called on switch-in)."""
-    if not session_id or not dataset:
-        return
-
-    def _apply(rec: dict) -> None:
-        entry = rec["datasets"].get(dataset)
-        if not isinstance(entry, dict):
-            entry = {}
-        entry["qa_start"] = int(max(0, qa_start))
-        entry["trace_start"] = int(max(0, trace_start))
-        rec["datasets"][dataset] = entry
-
-    _mutate_switch_record(session_id, _apply)
-
-
-def mark_dataset_sealed(session_id: str, dataset: str) -> None:
-    """Flag a dataset's bridge as sealed for this session (switch-out)."""
-    if not session_id or not dataset:
-        return
-
-    def _apply(rec: dict) -> None:
-        entry = rec["datasets"].get(dataset)
-        if not isinstance(entry, dict):
-            entry = {}
-        entry["sealed"] = True
-        entry["sealed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        rec["datasets"][dataset] = entry
-
-    _mutate_switch_record(session_id, _apply)
-
-
-def is_dataset_sealed(session_id: str, dataset: str) -> bool:
-    ds = get_switch_record(session_id).get("datasets", {})
-    entry = ds.get(dataset) if isinstance(ds, dict) else None
-    return bool(entry.get("sealed")) if isinstance(entry, dict) else False
-
-
-def count_http_bridge_entries(dataset: str, session_id: str) -> tuple[int, int]:
-    """Return (qa_count, trace_count) buffered in the HTTP bridge bucket for
-    ``(dataset, session_id)`` — the switch high-water for the NEXT dataset."""
-    if not dataset or not session_id:
-        return 0, 0
-    cache = _load_json_file(_bridge_file(session_id))
-    if not isinstance(cache, dict):
-        return 0, 0
-    bucket = cache.get(_bridge_cache_key(dataset, session_id), {})
-    if not isinstance(bucket, dict):
-        return 0, 0
-    return len(bucket.get("qa", []) or []), len(bucket.get("trace", []) or [])
+# repoints where new graph writes land. Before repointing, the old dataset's
+# buffered writes are flushed to its graph so nothing is orphaned.
 
 
 def seal_bridge_state(old_dataset: str, session_id: str) -> dict:
-    """Seal the HTTP-mode ``(old_dataset, session_id)`` bridge.
+    """Seal the HTTP-mode ``(old_dataset, session_id)`` bridge before a switch.
 
     Flushes the old dataset's buffered QA/trace to its graph BEFORE the switch
-    repoints new writes — otherwise the session-end sync (which resolves only
-    the *current* dataset) would never flush the old bucket, orphaning it. The
-    flush is digest-deduped (``_state``) so re-sealing is a safe no-op. Marks
-    the old dataset sealed and logs ``old bridge sealed`` for the acceptance
-    check. Returns the high-water counts so the caller can seed the new
-    dataset's baseline.
+    repoints new writes — otherwise the session-end sync (which resolves only the
+    *current* dataset) would never flush the old bucket, orphaning it. The flush
+    is digest-deduped (``_state``) so re-sealing is a safe no-op. Logs
+    ``old bridge sealed`` for the acceptance check.
     """
-    qa_count, trace_count = count_http_bridge_entries(old_dataset, session_id)
     flushed = False
     if old_dataset and session_id:
         try:
             flushed = persist_session_cache_to_graph_via_http(old_dataset, session_id)
         except Exception as exc:
             hook_log("dataset_switch_seal_flush_failed", {"error": str(exc)[:200]})
-        mark_dataset_sealed(session_id, old_dataset)
     hook_log(
         "dataset_switch_bridge_sealed",
         {
             "message": "old bridge sealed",
             "old_dataset": old_dataset,
             "session": session_id,
-            "qa": qa_count,
-            "trace": trace_count,
             "flushed": flushed,
         },
     )
-    return {
-        "sealed": True,
-        "old_dataset": old_dataset,
-        "qa_count": qa_count,
-        "trace_count": trace_count,
-        "flushed": flushed,
-    }
+    return {"sealed": True, "old_dataset": old_dataset, "flushed": flushed}
 
 
 async def resolve_user(user_id: str):
