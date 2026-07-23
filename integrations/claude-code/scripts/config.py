@@ -189,7 +189,24 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
 
 
 def get_dataset(config: dict) -> str:
-    """Get the dataset name from config."""
+    """Resolve the active dataset: mid-session switch > config (env > default).
+
+    A mid-session switch (recorded in this launch's map record) is the latest
+    explicit user action, so it wins — including over a launch-time
+    ``COGNEE_PLUGIN_DATASET``, which on ``main`` is the only working way to pick a
+    non-default dataset and would otherwise make the switch a silent no-op. The
+    override is launch-scoped (keyed by host_key), so other launches are
+    unaffected. A launch that never switched has no record entry and resolves
+    ``config`` (env layer / default) exactly as before.
+    """
+    try:
+        from _plugin_common import active_dataset_for_launch
+
+        switched = active_dataset_for_launch()
+        if switched:
+            return switched
+    except Exception:
+        pass
     return config.get("dataset", "agent_sessions")
 
 

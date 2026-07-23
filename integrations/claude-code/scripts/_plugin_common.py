@@ -303,6 +303,37 @@ def resolve_conn_uuid(host_key: str = "") -> str:
     return cu
 
 
+def active_dataset_for_launch(host_key: str = "") -> str:
+    """Return the dataset a mid-session switch repointed this launch to, or ''.
+
+    Stored in the same host-keyed launch record every hook already reads to
+    resolve its session id, so a switch is visible to every later hook process
+    of the launch. Empty when the launch never switched — callers then fall back
+    to the configured default (unchanged behavior).
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    if not host_key:
+        return ""
+    return str(_read_map_record(host_key).get("dataset") or "")
+
+
+def set_active_dataset_for_launch(host_key: str, dataset: str) -> None:
+    """Repoint this launch to ``dataset`` by recording it in the launch record.
+
+    Read back by ``config.get_dataset`` so every subsequent hook writes/recalls
+    against the new dataset without a restart. Keyed by host_key, so it never
+    affects other launches (unlike the machine-global config file).
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    dataset = str(dataset or "").strip()
+    if not host_key or not dataset:
+        return
+    rec = _read_map_record(host_key)
+    rec["dataset"] = dataset
+    rec.setdefault("host_key", host_key)
+    _write_map_record(host_key, rec)
+
+
 def resolve_session_key_from_payload(payload: dict) -> tuple[str, str]:
     """Resolve session key from a hook payload using known Claude variants."""
     if not isinstance(payload, dict):

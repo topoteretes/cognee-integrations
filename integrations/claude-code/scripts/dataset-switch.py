@@ -44,8 +44,7 @@ from _plugin_common import (
     resolve_user,
     resolved_http_endpoint_auth,
     seal_bridge_state,
-    set_active_dataset_for_session,
-    set_dataset_baseline,
+    set_active_dataset_for_launch,
     set_session_key,
 )
 from config import (
@@ -54,7 +53,6 @@ from config import (
     get_dataset,
     load_config,
     seal_session_bridge_local,
-    set_active_dataset,
 )
 
 
@@ -120,16 +118,10 @@ async def switch_dataset(new_dataset: str, cwd: str = "") -> dict:
             hook_log("dataset_switch_local_dataset_ready_failed", {"error": str(exc)[:200]})
         seal = await seal_session_bridge_local(old_dataset, session_id, user)
 
-    # Phase 2: switch the active dataset + seed the new dataset's baseline so it
-    # only ever receives post-switch content (no duplicate graph writes).
-    stores = set_active_dataset(new_dataset, cwd)
-    set_dataset_baseline(
-        session_id,
-        new_dataset,
-        int(seal.get("qa_count", 0) or 0),
-        int(seal.get("trace_count", 0) or 0),
-    )
-    set_active_dataset_for_session(session_id, new_dataset)
+    # Phase 2: repoint the launch to the new dataset. Recorded in the launch map
+    # record every later hook reads, so subsequent writes/recalls target the new
+    # dataset without a restart (config.get_dataset consults it).
+    set_active_dataset_for_launch(session_key, new_dataset)
 
     # Phase 3: re-register the agent in place (same conn_uuid + session_id).
     reregistered = False
@@ -168,7 +160,6 @@ async def switch_dataset(new_dataset: str, cwd: str = "") -> dict:
             "sealed": seal.get("sealed", False),
             "flushed": seal.get("flushed", False),
             "reregistered": reregistered,
-            "stores": stores,
         },
     )
     return {
