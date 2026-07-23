@@ -1010,8 +1010,8 @@ async def _run_bootstrap(bootstrap: dict) -> None:
          booted, because registration is per-session (the connection handle is
          the Cognee session id) under the single principal.
     """
-    config = load_config()
-    cwd = str(bootstrap.get("cwd") or os.getcwd())
+    cwd = str(bootstrap.get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
+    config = load_config(cwd)
     session_id = str(bootstrap.get("session_id", "") or "")
     session_key = str(bootstrap.get("session_key", "") or "")
     dataset = str(bootstrap.get("dataset", "") or get_dataset(config))
@@ -1238,9 +1238,9 @@ def _apply_update_nudge(output: dict) -> dict:
 
 async def _start(payload: dict | None = None) -> dict:
     _ensure_statusline_configured()
-    config = load_config()
     payload = payload or {}
     cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
+    config = load_config(cwd)
     # The service URL is the sole router (api_key is optional auth, with a
     # default-user fallback in registration). COGNEE_AGENT_MODE is NOT decided
     # here: it's set only when we actually boot a server (in

@@ -101,8 +101,67 @@ _ENV_MAP = {
 }
 
 
-def load_config() -> dict:
-    """Load merged config: defaults → file → env vars."""
+# Keys a project-committed picker file may set. Deliberately excludes secrets
+# and backend routing (api_key, llm_api_key, base_url, backend, user_*) so that
+# merely opening a repo with a `.cognee/session-config.json` can never redirect
+# your Cognee backend or inject credentials — the picker's job is dataset/session
+# selection only (issue #3686: "the dataset configuration key"). dataset is the
+# key in use today; the others are accepted for forward-compat with the config
+# system (they map to existing _DEFAULTS / _ENV_MAP entries).
+_PICKER_ALLOWED_KEYS = frozenset(
+    {"dataset", "session_strategy", "session_prefix", "agent_name", "top_k"}
+)
+# A picker file is committed to a repo, so it is untrusted input: cap the size
+# we are willing to read (a dataset picker is a few bytes; anything larger is a
+# mistake or a self-DoS via a symlink to a huge/endless file).
+_PICKER_MAX_BYTES = 64 * 1024
+
+
+def _read_project_picker(cwd: Optional[str] = None) -> dict:
+    """Read .cognee/session-config.json from the project directory.
+
+    Resolution order for the project root: explicit cwd arg (from a hook's
+    payload) > CLAUDE_CWD env (background workers with no payload) >
+    os.getcwd() (last resort — NOT reliable inside a global-plugin hook
+    process, kept only as a final fallback).
+
+    The file is untrusted (it ships in whatever repo you open), so this fails
+    safe: symlinks and oversized/unreadable/malformed files all fall through to
+    the lower config layers instead of raising into the hook. Only the
+    non-sensitive keys in ``_PICKER_ALLOWED_KEYS`` are honored, so a repo file
+    cannot influence auth or backend routing.
+    """
+    project_dir = Path(cwd or os.environ.get("CLAUDE_CWD") or os.getcwd())
+    picker_path = project_dir / ".cognee" / "session-config.json"
+
+    try:
+        if picker_path.is_symlink() or not picker_path.is_file():
+            return {}
+        if picker_path.stat().st_size > _PICKER_MAX_BYTES:
+            _config_log("session_picker_too_large", {"path": str(picker_path)})
+            return {}
+        data = json.loads(picker_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _config_log(
+            "session_picker_load_failed", {"path": str(picker_path), "error": str(exc)[:200]}
+        )
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # Only allowlisted, non-null AND non-empty-string values fall through — the
+    # empty/null check matches the config-file layer's semantics (`v is not None
+    # and v != ""`) so an explicit `{"dataset": null}` or `{"dataset": ""}`
+    # cleanly no-ops instead of resolving to an empty name.
+    ignored = [k for k in data if k not in _PICKER_ALLOWED_KEYS]
+    if ignored:
+        _config_log("session_picker_ignored_keys", {"keys": sorted(ignored)[:20]})
+    return {
+        k: v for k, v in data.items() if k in _PICKER_ALLOWED_KEYS and v is not None and v != ""
+    }
+
+
+def load_config(cwd: Optional[str] = None) -> dict:
+    """Load merged config: defaults → file → project picker → env vars."""
     config = dict(_DEFAULTS)
 
     # Layer 2: config file
@@ -126,7 +185,10 @@ def load_config() -> dict:
                 "config_file_load_failed", {"path": str(_CONFIG_FILE), "error": str(exc)[:200]}
             )
 
-    # Layer 3: env vars (highest priority)
+    # Layer 3: project-level picker (.cognee/session-config.json)
+    config.update(_read_project_picker(cwd))
+
+    # Layer 4: env vars (highest priority)
     for env_key, config_key in _ENV_MAP.items():
         val = os.environ.get(env_key, "")
         if val:

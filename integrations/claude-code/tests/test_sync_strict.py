@@ -36,8 +36,9 @@ def _stub(wrote, *, unregister_calls=None):
         )
     }
     # (session_id, dataset, user_id, agent_session_name, was_registered, has_api_key, session_key)
-    m._load_resolved = lambda: ("sess1", "ds", "u1", "agent1", True, True, "key1")
-    m.load_config = lambda: {}
+    # cwd kwarg: _sync now threads the picker cwd into _load_resolved/load_config.
+    m._load_resolved = lambda cwd="": ("sess1", "ds", "u1", "agent1", True, True, "key1")
+    m.load_config = lambda cwd="": {}
     m.http_api_ready = lambda: True
     m.run_session_improve = lambda d, s: wrote
     m.unregister_agent_via_http = lambda **k: (
