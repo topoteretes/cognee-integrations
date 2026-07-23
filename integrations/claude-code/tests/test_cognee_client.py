@@ -20,6 +20,7 @@ _TMP = tempfile.mkdtemp(prefix="cognee-breaker-test-")
 os.environ["COGNEE_PLUGIN_STATE_DIR"] = _TMP
 
 import _cognee_client as cc  # noqa: E402
+import _plugin_common as pc  # noqa: E402
 from _recall_http import UNREACHABLE  # noqa: E402
 
 
@@ -111,6 +112,27 @@ def test_dataset_forwarded_to_transport():
     cc.do_recall = _capture
     cc.recall("http://x", "", "q", "", '["graph"]', "5", "my_dataset")
     assert captured.get("dataset") == "my_dataset"
+
+
+def test_register_timeout_default_is_15():
+    os.environ.pop("COGNEE_REGISTER_TIMEOUT", None)
+    assert pc._register_timeout() == 15.0
+
+
+def test_register_timeout_reads_env():
+    try:
+        os.environ["COGNEE_REGISTER_TIMEOUT"] = "42"
+        assert pc._register_timeout() == 42.0
+    finally:
+        os.environ.pop("COGNEE_REGISTER_TIMEOUT", None)
+
+
+def test_register_timeout_bad_value_falls_back_to_default():
+    try:
+        os.environ["COGNEE_REGISTER_TIMEOUT"] = "nope"
+        assert pc._register_timeout() == 15.0
+    finally:
+        os.environ.pop("COGNEE_REGISTER_TIMEOUT", None)
 
 
 if __name__ == "__main__":

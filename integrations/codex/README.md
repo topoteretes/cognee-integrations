@@ -260,6 +260,16 @@ Config precedence:
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (0 disables) |
 | improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `180` | Read timeout for the improve POST |
 
+### Per-operation timeouts
+
+Each operation has its own client timeout, tunable independently (all in seconds):
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_RECALL_TIMEOUT` | `20` | Client timeout for a recall request |
+| `COGNEE_REMEMBER_TIMEOUT` | `60` | Client timeout for the remember submit POST |
+| `COGNEE_REGISTER_TIMEOUT` | `15` | Client timeout for the session register call |
+
 ## Troubleshooting
 
 **Recall returns empty but data was ingested**

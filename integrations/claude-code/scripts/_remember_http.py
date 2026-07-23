@@ -104,6 +104,15 @@ def _explicit_wait_seconds():
     return _float_env("COGNEE_REMEMBER_WAIT_SECONDS", 8.0)
 
 
+def _remember_timeout():
+    """Client timeout (seconds) for the remember submit POST.
+
+    Tunable independently of recall/register via ``COGNEE_REMEMBER_TIMEOUT``;
+    defaults to 60s to preserve the previous hardcoded behaviour.
+    """
+    return _float_env("COGNEE_REMEMBER_TIMEOUT", 60.0)
+
+
 def _poll_status(
     service_url,
     api_key,
@@ -266,7 +275,7 @@ def do_remember(
 def main(argv):
     # argv: service_url, api_key, content, dataset, node_set
     a = list(argv) + [""] * 5
-    result = do_remember(a[0], a[1], a[2], a[3], a[4])
+    result = do_remember(a[0], a[1], a[2], a[3], a[4], timeout=_remember_timeout())
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
 
 

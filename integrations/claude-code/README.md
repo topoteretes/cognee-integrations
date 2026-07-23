@@ -186,6 +186,16 @@ A write that *times out* is reported as "submitted; timed out waiting for confir
 and does **not** fall back to `cognee-cli` (the write likely landed — a fallback would
 risk a duplicate). Only a genuine connection failure falls back.
 
+### Per-operation timeouts
+
+Each operation has its own client timeout, tunable independently (all in seconds):
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_RECALL_TIMEOUT` | `20` | Client timeout for a recall request |
+| `COGNEE_REMEMBER_TIMEOUT` | `60` | Client timeout for the remember submit POST |
+| `COGNEE_REGISTER_TIMEOUT` | `15` | Client timeout for the session register call |
+
 ## Status line
 
 The status line displays `cognee: <dataset> · <mode>`, for example:
