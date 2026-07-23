@@ -213,6 +213,18 @@ async def _run(prompt: str) -> dict | None:
 
         user = await resolve_user(_load_user_id())
 
+    # Per-scope instrumentation (WS7 observability): capture {hits, elapsed_ms}
+    # for every scope, keyed by its stable label. Pre-seed all 5 scopes as
+    # skipped, in canonical order and before the breaker-open branch below can
+    # blank scope_specs, so the event always carries the full set; the loop
+    # overwrites each scope that actually runs. Purely additive: it must not
+    # touch recall results, ordering, or control flow, and must never raise into
+    # the keystroke->answer path.
+    per_scope: dict[str, dict] = {
+        scope_list[0]: {"hits": 0, "elapsed_ms": 0, "skipped": True}
+        for scope_list, _qtype, _profile in scope_specs
+    }
+
     # Hard time-box: this hook is on the keystroke->answer path, so recall must
     # never be the long pole. Each scope gets a short per-call timeout, and the
     # whole loop stops once the overall budget is spent. Partial results are fine.
@@ -235,6 +247,8 @@ async def _run(prompt: str) -> dict | None:
         if time.monotonic() >= budget_deadline:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
+        part = None
+        t0 = time.monotonic()
         try:
             if cloud_mode:
                 part = recall_via_http(
@@ -266,6 +280,13 @@ async def _run(prompt: str) -> dict | None:
                 results.extend(part)
         except Exception as exc:
             hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
+        finally:
+            # hits = raw count from this scope's call (pre-bucketing/filtering);
+            # elapsed_ms measured around the call, recorded even when it errored.
+            per_scope[scope_list[0]] = {
+                "hits": len(part or []),
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
@@ -319,6 +340,7 @@ async def _run(prompt: str) -> dict | None:
                     .datetime.now(__import__("datetime").timezone.utc)
                     .isoformat(timespec="seconds"),
                     "hits": counts,
+                    "per_scope": per_scope,
                     "saves_last_turn": saves_last_turn,
                 }
             ),
@@ -367,11 +389,17 @@ async def _run(prompt: str) -> dict | None:
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_hit",
+            {"counts": counts, "per_scope": per_scope, "saves_last_turn": saves_last_turn},
+        )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
         full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_empty",
+            {"per_scope": per_scope, "saves_last_turn": saves_last_turn},
+        )
         notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn for debugging.
@@ -390,6 +418,7 @@ async def _run(prompt: str) -> dict | None:
                         "session_id": session_id,
                         "prompt": prompt,
                         "hits": counts,
+                        "per_scope": per_scope,
                         "context": full_context,
                     }
                 )
