@@ -19,9 +19,11 @@ Python package with the `hermes_agent.plugins` entry point.
 
 ## Install For Local Hermes Development
 
-From this repository:
+From a fresh checkout of this repository:
 
 ```bash
+git clone https://github.com/topoteretes/cognee-integrations.git
+cd cognee-integrations
 mkdir -p ~/.hermes/plugins/cognee
 cp -R integrations/hermes-agent/. ~/.hermes/plugins/cognee/
 hermes memory setup
@@ -29,14 +31,12 @@ hermes memory setup
 
 Select `cognee` in the memory provider picker.
 
-## Install From Pip
+## PyPI Availability
 
-```bash
-pip install cognee-integration-hermes-agent
-hermes memory setup
-```
+`cognee-integration-hermes-agent` is not currently published on PyPI. Use the
+local installation steps above until a release is available.
 
-The package exposes:
+The project is prepared for future package distribution and exposes:
 
 ```toml
 [project.entry-points."hermes_agent.plugins"]
@@ -146,4 +146,3 @@ uv sync --dev
 uv run pytest -q
 uv run ruff check .
 ```
-
