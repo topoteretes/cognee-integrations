@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -31,6 +32,15 @@ _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
+# Self-healing: session-start.py only runs at the real SessionStart hook point,
+# but COGNEE_AGENT_MODE's watchdog (cognee.modules.agents.agent_mode) can tear
+# the server down mid-session -- 60s after the last registered agent connection
+# unregisters -- well before a genuine SessionEnd, across a long, multi-resume
+# conversation. See spawn_server_healer() below.
+_SESSION_START_SCRIPT = Path(__file__).resolve().parent / "session-start.py"
+_HEALER_SPAWN_MARKER = _SHARED_PLUGIN_ROOT / "healer-spawned.json"
+_HEALER_LOG = _SHARED_PLUGIN_ROOT / "healer.log"
+_HEALER_SPAWN_COOLDOWN_SECONDS = 30.0
 _SYNC_LOCK = _PLUGIN_DIR / "sync.lock"
 # Per-agent-session buffer dirs. Each agent session (one Claude/Codex terminal)
 # owns its own file under these dirs, so two concurrent agents never
@@ -1292,6 +1302,135 @@ def mark_update_notified(version: str) -> None:
         _write_json_file(_UPDATE_CHECK_FILE, marker)
     except Exception as exc:
         hook_log("update_notified_write_failed", {"error": str(exc)[:200]})
+
+
+def _parse_host_port(url: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+    return (parsed.hostname or "localhost"), (parsed.port or 8011)
+
+
+def is_local_url(url: str) -> bool:
+    """True if the URL points at this machine (so we may boot a server on it).
+
+    Shared with session-start.py (which imports this rather than defining its
+    own copy) specifically so a hot-path hook's "is this worth trying to heal"
+    check can never drift from session-start's own "may I boot a server here"
+    check -- having exactly one definition avoids the two ever silently
+    drifting apart into disagreement.
+    """
+    host, _ = _parse_host_port(url)
+    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def _claim_healer_cooldown(now: float) -> bool:
+    """Atomically claim the cooldown window: True iff this call may proceed to
+    spawn a healer. Uses exclusive file creation (O_CREAT|O_EXCL), the same
+    primitive session-start.py's own _SERVER_BOOT_LOCK/_VENV_INSTALL_LOCK use
+    elsewhere in this codebase for single-flighting -- NOT a read-then-later-
+    write check, which is a TOCTOU race: two callers (e.g. Claude + Codex
+    sharing one server, or two terminals) that both read the marker before
+    either writes it back can both fall through and both spawn a healer.
+    """
+    try:
+        _HEALER_SPAWN_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        raw = json.loads(_HEALER_SPAWN_MARKER.read_text(encoding="utf-8"))
+        last = float(raw.get("ts", 0) or 0)
+        if now - last < _HEALER_SPAWN_COOLDOWN_SECONDS:
+            return False
+        # Cooldown has expired: replace the stale marker atomically (a plain
+        # os.replace, not exclusive-create, since we've established we're the
+        # rightful next claimant -- a competing claimant racing THIS exact
+        # instant would at worst cause one extra spawn, not corruption).
+        tmp = _HEALER_SPAWN_MARKER.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"ts": now}), encoding="utf-8")
+        os.replace(tmp, _HEALER_SPAWN_MARKER)
+        return True
+    except FileNotFoundError:
+        pass
+    except Exception:
+        return False
+    # No marker exists yet: exclusive-create is the atomic "first one here wins"
+    # primitive -- a second concurrent caller's O_CREAT|O_EXCL fails outright
+    # rather than both callers reading "no marker" and both proceeding.
+    try:
+        fd = os.open(str(_HEALER_SPAWN_MARKER), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"ts": now}, fh)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return False
+
+
+def spawn_server_healer(cwd: str = "") -> bool:
+    """Fire-and-forget: re-invoke session-start.py's own bootstrap worker body
+    (the SAME `--bootstrap` detached path session-start.py's own
+    `_spawn_bootstrap` uses, NOT the full SessionStart pipeline) when a
+    hot-path hook (e.g. session-context-lookup.py) finds the local server down
+    mid-session.
+
+    Why this exists: COGNEE_AGENT_MODE's watchdog (in the cognee package
+    itself) can tear the server down 60s after the last registered agent
+    connection unregisters -- well before a genuine SessionEnd, in practice
+    confirmed across a long, multi-resume conversation. session-start.py's
+    bootstrap only runs at the real SessionStart hook point, so nothing
+    previously re-triggered it mid-session; recall then gracefully skips (by
+    design -- never block the user's prompt on a slow/down backend) turn
+    after turn with no automatic recovery, until the next real SessionStart.
+
+    Deliberately targets `--bootstrap` (session-start.py's `_run_bootstrap`:
+    boot-if-needed + register, nothing else) rather than re-running the full
+    SessionStart pipeline (`_start()`), which unconditionally kills and
+    respawns the idle-watcher on every call -- that would silently reset the
+    idle-watcher's own LLM-thrash-prevention cooldown (`IMPROVE_COOLDOWN`,
+    in-memory, restarts at 0 on a fresh watcher process) every time the server
+    happens to flap, which is exactly the repeated scenario this fix targets.
+
+    The payload is passed as a plain CLI argument -- exactly like
+    session-start.py's own `_spawn_bootstrap` already does -- NOT via a temp
+    file or a shell pipe: `subprocess.Popen` given a list never invokes a
+    shell, on Windows or POSIX, so there is no shell-escaping hazard here to
+    route around in the first place, and a CLI argument leaves nothing to
+    clean up (a temp-file approach would leak one small file per healer
+    trigger, unbounded, for the exact repeated-flapping case this exists for).
+
+    Deliberately does NOT block or wait for the result -- start_new_session +
+    close_fds so it survives this hook's process exiting -- so this call
+    returns immediately regardless of how long the actual boot takes.
+    Rate-limited via an atomically-claimed cooldown marker (see
+    _claim_healer_cooldown) so concurrent callers can't both spawn within the
+    same window; session-start.py's own boot lock further single-flights the
+    actual work if a spawn does land while one is already in flight.
+    """
+    if not _SESSION_START_SCRIPT.exists():
+        return False
+    if not _claim_healer_cooldown(time.time()):
+        return False
+
+    payload = {"session_id": get_session_key(), "session_key": get_session_key(),
+               "cwd": cwd or os.getcwd()}
+    try:
+        try:
+            log_fh = _HEALER_LOG.open("a", encoding="utf-8")
+        except Exception:
+            log_fh = subprocess.DEVNULL
+        subprocess.Popen(
+            [sys.executable, str(_SESSION_START_SCRIPT), "--bootstrap", json.dumps(payload)],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+            start_new_session=True,
+            close_fds=True,
+        )
+        hook_log("server_healer_spawned", {"cwd": payload["cwd"]})
+        return True
+    except Exception as exc:
+        hook_log("server_healer_spawn_failed", {"error": str(exc)[:200]})
+        return False
 
 
 def resolve_runtime_mode() -> dict:

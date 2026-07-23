@@ -23,6 +23,7 @@ from _plugin_common import (
     drain_warmup_entries,
     get_session_key,
     hook_log,
+    is_local_url,
     load_resolved,
     mark_server_ready,
     notify,
@@ -35,6 +36,7 @@ from _plugin_common import (
     server_health_ok,
     server_ready_hint,
     set_session_key,
+    spawn_server_healer,
 )
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
@@ -184,6 +186,18 @@ async def _run(prompt: str) -> dict | None:
             just_became_ready = True
         else:
             hook_log("recall_skipped_warming", {"base_url": service_url})
+            # Self-healing: a genuinely down LOCAL server (not a remote cloud
+            # endpoint, which this hook has no ability to fix) most often means
+            # COGNEE_AGENT_MODE's watchdog tore it down mid-session -- fire off a
+            # detached re-bootstrap so a LATER turn has a real chance of finding
+            # it back up, without adding any latency to this turn's response.
+            # NOTE: runtime["mode"] is "http" for BOTH a local server (the
+            # plugin's own default, since _local_api_url_with_source() always
+            # falls back to http://localhost:8011) and a real remote cloud
+            # endpoint -- it cannot distinguish the two, so checking the actual
+            # URL's host via is_local_url() is required here, not the mode string.
+            if is_local_url(service_url):
+                spawn_server_healer()
             return None
 
     if not cloud_mode:
