@@ -448,7 +448,7 @@ The check is cached and rate-limited so it never blocks a command or the gateway
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `COGNEE_UPDATE_CHECK` | `true` | Set to `false`/`0`/`no`/`off` to disable the update check entirely |
-| `COGNEE_UPDATE_CHECK_INTERVAL_HOURS` | `24` | Minimum hours between background npm checks |
+| `COGNEE_UPDATE_CHECK_INTERVAL` | `86400` | Minimum seconds between background npm checks (matches the claude-code/codex integrations) |
 
 ## Development
 

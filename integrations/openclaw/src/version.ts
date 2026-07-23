@@ -10,9 +10,9 @@
 // locally and never blocks on the network. A failed check keeps the last known
 // result rather than clearing it.
 //
-// Environment variables:
-//   COGNEE_UPDATE_CHECK=false            turn the check off
-//   COGNEE_UPDATE_CHECK_INTERVAL_HOURS   hours between checks (default 24)
+// Environment variables (names match the claude-code/codex integrations):
+//   COGNEE_UPDATE_CHECK=false        turn the check off
+//   COGNEE_UPDATE_CHECK_INTERVAL     seconds between checks (default 86400)
 
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
@@ -25,7 +25,7 @@ import { UPDATE_CHECK_PATH } from "./persistence.js";
 export const PLUGIN_VERSION = "2026.7.9";
 
 const NPM_LATEST_URL = "https://registry.npmjs.org/@cognee/cognee-openclaw/latest";
-const DEFAULT_TTL_HOURS = 24;
+const DEFAULT_INTERVAL_SECONDS = 86_400; // 24h
 const DEFAULT_TIMEOUT_MS = 2500;
 
 export interface UpdateCheckRecord {
@@ -71,10 +71,10 @@ function updateCheckEnabled(env: NodeJS.ProcessEnv): boolean {
   return !["0", "false", "no", "off"].includes(value);
 }
 
-function ttlHours(env: NodeJS.ProcessEnv): number {
-  const raw = (env.COGNEE_UPDATE_CHECK_INTERVAL_HOURS ?? "").trim();
+function intervalSeconds(env: NodeJS.ProcessEnv): number {
+  const raw = (env.COGNEE_UPDATE_CHECK_INTERVAL ?? "").trim();
   const parsed = raw ? Number(raw) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TTL_HOURS;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_INTERVAL_SECONDS;
 }
 
 function isUpdateCheckRecord(value: unknown): value is UpdateCheckRecord {
@@ -157,7 +157,7 @@ export async function runUpdateCheck(
   const prev = await readUpdateCache(statePath);
 
   // Within the interval, reuse the cached latest without a network call.
-  if (!force && prev && now() - prev.checkedAt < ttlHours(env) * 3_600_000) {
+  if (!force && prev && now() - prev.checkedAt < intervalSeconds(env) * 1000) {
     return prev;
   }
 
