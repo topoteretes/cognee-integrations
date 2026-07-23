@@ -844,6 +844,11 @@ const memoryCogneePlugin = {
       const activeDataset = multiScope ? `${cfg.agentDatasetPrefix}/<agent> (per-agent)` : cfg.datasetName;
       logger.info?.(`cognee-openclaw: dataset="${activeDataset}" url="${cfg.baseUrl}" mode=${cfg.mode}`);
 
+      // Refresh the cached npm update check once per gateway start. Independent
+      // of Cognee server health and of autoIndex: fail-silent, rate-limited, and
+      // the `cognee status`/`version` surface only ever reads the cache.
+      runUpdateCheck().catch(() => {});
+
       let serverHealthy = false;
       try { await client.health(); serverHealthy = true; } catch { /* not up yet */ }
 
@@ -905,11 +910,6 @@ const memoryCogneePlugin = {
           logger.info?.(`cognee-openclaw: auto-sync complete: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted, ${result.skipped} unchanged`);
           if (perAgentMemory) await seedAllAgents(wsDir, logger);
         };
-
-        // Refresh the cached update check in the background. It is rate-limited
-        // and best effort, so a failure here is ignored; the status command
-        // reads the cached result without hitting the network itself.
-        runUpdateCheck().catch(() => {});
 
         doSync().catch((e) => logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(e)}`));
       }
