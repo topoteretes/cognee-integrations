@@ -19,12 +19,13 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/dataset-switch.py <new_dataset>
 ## What this does
 
 1. **Seals the old bridge** — flushes the current dataset's buffered Q&A/trace
-   into its permanent graph *before* switching, so nothing is orphaned. The old
-   `(dataset, session_id)` bridge is marked sealed. `hook.log` records
-   `old bridge sealed`.
-2. **Switches the active dataset** — persists the new dataset so every
-   subsequent hook writes there (updates the global plugin config, and the
-   project `.cognee/session-config.json` picker if present).
+   into its permanent graph *before* switching, so nothing is orphaned.
+   `hook.log` records `old bridge sealed`.
+2. **Switches the active dataset** — records the new dataset in this launch's
+   session map record (the store every subsequent hook already reads), so new
+   writes and recalls target it without a restart. The switch takes precedence
+   over a launch-time `COGNEE_PLUGIN_DATASET` and is scoped to this launch, so
+   other terminals are unaffected.
 3. **Re-registers the agent** — calls `/api/v1/agents/register` with the *same*
    `agent_session_name` (connection handle) and `session_id`, bound to the new
    dataset. `hook.log` records `agent re-registered`.
