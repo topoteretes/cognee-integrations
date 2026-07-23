@@ -46,11 +46,20 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-TOP_K = 5
-TRUNCATE_ANSWER = 500
-TRUNCATE_RETURN = 400
-TRUNCATE_GRAPH_CTX = 1500
-RECENT_TRACE_FALLBACK_TOP_K = 5
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# Recall/injection budget — env-configurable (parity with the OpenClaw plugin's
+# maxResults/maxTokens config schema); defaults preserve prior hardcoded behavior.
+TOP_K = _int_env("COGNEE_RECALL_TOP_K", 5)
+TRUNCATE_ANSWER = _int_env("COGNEE_RECALL_TRUNCATE_ANSWER", 500)
+TRUNCATE_RETURN = _int_env("COGNEE_RECALL_TRUNCATE_RETURN", 400)
+TRUNCATE_GRAPH_CTX = _int_env("COGNEE_RECALL_TRUNCATE_GRAPH_CTX", 1500)
+RECENT_TRACE_FALLBACK_TOP_K = _int_env("COGNEE_RECALL_TRACE_FALLBACK_TOP_K", 5)
 
 
 def _load_session_id() -> str:
