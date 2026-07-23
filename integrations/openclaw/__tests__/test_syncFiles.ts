@@ -1,6 +1,12 @@
 import { CogneeHttpClient } from "../src/client";
 import { syncFiles, syncFilesScoped } from "../src/sync";
-import { matchGlob, routeFileToScope, datasetNameForScope, isMultiScopeEnabled } from "../src/scope";
+import {
+  matchGlob,
+  routeFileToScope,
+  datasetNameForScope,
+  isMultiScopeEnabled,
+  cogneeSessionId,
+} from "../src/scope";
 import type { MemoryFile, SyncIndex, CogneePluginConfig, ScopedSyncIndexes, MemoryScope, ScopeRoute } from "../src/types";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -172,6 +178,57 @@ describe("routeFileToScope", () => {
 
   it("uses default scope for unmatched paths", () => {
     expect(routeFileToScope("other/file.md", routes, "user")).toBe("user");
+  });
+
+  it("uses the first matching route for overlapping globs", () => {
+    const overlappingRoutes: ScopeRoute[] = [
+      { pattern: "memory/company/private/**", scope: "user" },
+      { pattern: "memory/company/**", scope: "company" },
+      { pattern: "memory/**", scope: "agent" },
+    ];
+
+    expect(routeFileToScope("memory/company/private/plan.md", overlappingRoutes, "agent")).toBe(
+      "user",
+    );
+    expect(routeFileToScope("memory/company/public/plan.md", overlappingRoutes, "agent")).toBe(
+      "company",
+    );
+  });
+
+  it("routes Windows-style paths after normalizing separators", () => {
+    expect(routeFileToScope("memory\\company\\policy.md", routes, "agent")).toBe(
+      "company",
+    );
+    expect(routeFileToScope("memory\\user\\prefs.md", routes, "agent")).toBe("user");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cogneeSessionId tests
+// ---------------------------------------------------------------------------
+
+describe("cogneeSessionId", () => {
+  it("prefixes native OpenClaw session ids", () => {
+    expect(cogneeSessionId("session-123")).toBe("open_claw_session-123");
+  });
+
+  it("keeps allowed session id characters", () => {
+    expect(cogneeSessionId("run_42.alpha-7")).toBe("open_claw_run_42.alpha-7");
+  });
+
+  it("sanitizes unsupported characters and trims unsafe edges", () => {
+    expect(cogneeSessionId("  ../team session:42?!  ")).toBe("open_claw_team_session_42");
+  });
+
+  it("returns an empty string for absent or fully sanitized session ids", () => {
+    expect(cogneeSessionId(undefined)).toBe("");
+    expect(cogneeSessionId("   ")).toBe("");
+    expect(cogneeSessionId("!!!")).toBe("");
+  });
+
+  it("caps sanitized session ids at 120 characters before prefixing", () => {
+    const native = "x".repeat(140);
+    expect(cogneeSessionId(native)).toBe(`open_claw_${"x".repeat(120)}`);
   });
 });
 
