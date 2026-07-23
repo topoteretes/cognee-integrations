@@ -1,7 +1,7 @@
 import type { CogneeHttpClient } from "./client.js";
 import type { CogneePluginConfig, MemoryFile, MemoryScope, ScopedSyncIndexes, SyncIndex, SyncResult } from "./types.js";
 import { loadDatasetState, saveDatasetState, saveScopedSyncIndexes, saveSyncIndex } from "./persistence.js";
-import { datasetNameForScope, routeFileToScope } from "./scope.js";
+import { datasetNameForScope, routeFileToScope, sanitizeDatasetName } from "./scope.js";
 
 // ---------------------------------------------------------------------------
 // Single-scope sync
@@ -30,7 +30,7 @@ export async function syncFiles(
   persistIndex = true,
 ): Promise<SyncResult & { datasetId?: string }> {
   const result: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
-  const dsName = overrideDatasetName || cfg.datasetName;
+  const dsName = sanitizeDatasetName(overrideDatasetName || cfg.datasetName);
   let datasetId = syncIndex.datasetId;
   if (datasetId && syncIndex.datasetName && syncIndex.datasetName !== dsName) {
     logger.info?.(

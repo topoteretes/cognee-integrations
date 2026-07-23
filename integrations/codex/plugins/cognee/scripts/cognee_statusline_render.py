@@ -24,11 +24,19 @@ _UPDATE_CHECK_PATH = _SHARED_ROOT / "codex" / "update-check.json"
 _DEFAULT_DATASET = "agent_sessions"
 
 
+def _sanitize_dataset_name(value: object) -> str:
+    safe = "".join(
+        ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
+        for ch in str(value or "").strip()
+    )
+    return safe.strip("._")[:120] or _DEFAULT_DATASET
+
+
 def _active_dataset() -> str:
     # 1. env var (inherited from the shell that launched Codex)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
-        return v
+        return _sanitize_dataset_name(v)
     # 2. default
     return _DEFAULT_DATASET
 
