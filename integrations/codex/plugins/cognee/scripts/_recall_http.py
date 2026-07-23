@@ -128,7 +128,11 @@ def do_recall(
     # When dataset is empty (standalone invocation without shell), fall back to
     # the original search-all behaviour to avoid breaking direct callers.
     if dataset:
-        body["datasets"] = [dataset]
+        companion_enabled = str(os.environ.get("COGNEE_SESSION_COMPANION_DATASET", "")).lower() in ("true", "1", "yes")
+        if companion_enabled and dataset != "agent_sessions":
+            body["datasets"] = [dataset, f"{dataset}-agent_sessions"]
+        else:
+            body["datasets"] = [dataset]
     if context_profile:
         body["context_profile"] = context_profile
     headers = {"Content-Type": "application/json"}

@@ -76,6 +76,8 @@ _ENV_MAP = {
     "COGNEE_USER_PASSWORD": "user_password",
     "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
+    # Session Companion
+    "COGNEE_SESSION_COMPANION_DATASET": "session_companion_dataset",
     # Legacy compat
     "COGNEE_SESSION_ID": "_static_session_id",
 }
@@ -493,7 +495,23 @@ async def persist_session_cache_to_graph(dataset: str, session_id: str, user) ->
     import cognee
     from cognee.infrastructure.session.get_session_manager import get_session_manager
 
-    await ensure_dataset_ready(dataset, user)
+    # 1. Safely coerce the env var string to a boolean
+    config = load_config()
+    companion_enabled = str(config.get("session_companion_dataset", "")).lower() in ("true", "1", "yes")
+
+    # 2. Derive the target dataset, protecting against the default "agent_sessions" edge case
+    write_dataset = dataset
+    if companion_enabled and dataset and dataset != "agent_sessions":
+        write_dataset = f"{dataset}-agent_sessions"
+
+        # 3. Lazily ensure the companion dataset exists and the user has permissions
+        try:
+            await ensure_dataset_ready(write_dataset, user)
+        except Exception as e:
+            _config_log("companion_provisioning_failed", {"error": str(e)[:200]})
+            write_dataset = dataset  # Graceful fallback to primary if creation fails
+    else:
+        await ensure_dataset_ready(dataset, user)
 
     user_id = str(user.id)
     session_manager = get_session_manager()
@@ -533,7 +551,7 @@ async def persist_session_cache_to_graph(dataset: str, session_id: str, user) ->
     if qa_text:
         await cognee.remember(
             qa_document,
-            dataset_name=dataset,
+            dataset_name=write_dataset,
             node_set=["user_sessions_from_cache"],
             self_improvement=False,
             run_in_background=False,
@@ -559,7 +577,7 @@ async def persist_session_cache_to_graph(dataset: str, session_id: str, user) ->
     if trace_text:
         await cognee.remember(
             trace_document,
-            dataset_name=dataset,
+            dataset_name=write_dataset,
             node_set=["agent_trace_feedbacks"],
             self_improvement=False,
             run_in_background=False,
