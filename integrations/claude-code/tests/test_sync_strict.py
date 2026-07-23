@@ -96,6 +96,19 @@ def test_unregister_still_runs_when_strict_raises():
         restore()
 
 
+def test_missing_unregister_name_does_not_swallow_strict_error():
+    restore = _stub(wrote=False)
+    m._load_resolved = lambda: ("sess1", "ds", "u1", "", True, True, "")
+    try:
+        try:
+            asyncio.run(m._sync(stop_watcher=False, unregister_on_finish=True, strict=True))
+            raise AssertionError("expected RuntimeError for incomplete strict sync")
+        except RuntimeError:
+            pass
+    finally:
+        restore()
+
+
 if __name__ == "__main__":
     failures = 0
     for _name, _fn in sorted(globals().items()):
