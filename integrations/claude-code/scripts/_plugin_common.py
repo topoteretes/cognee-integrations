@@ -457,6 +457,36 @@ def _write_json_file(path: Path, data: dict) -> None:
         hook_log("json_write_failed", {"path": str(path), "error": str(exc)[:200]})
 
 
+def _strip_surrogates(text: str) -> str:
+    """Remove lone UTF-16 surrogate codepoints (U+D800-U+DFFF).
+
+    A legitimate supplementary-plane character (emoji, etc.) is always ONE code
+    point in Python's str, never a surrogate. Any char in this range in a real
+    str is therefore always broken/unpaired (a bad UTF-16<->UTF-8 boundary
+    upstream -- Windows console/clipboard, mis-decoded tool output), never a
+    valid character. It round-trips silently through json.dumps/loads
+    (ensure_ascii escapes it, loads() reconstitutes it) -- only a raw UTF-8
+    encode downstream (embedding tokenizer, LLM adapter, cognify) catches it,
+    by which point the entry is already persisted. Strip (don't replace) to keep
+    surrounding text readable with no placeholder glyph.
+    """
+    if not text or not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join(ch for ch in text if not (0xD800 <= ord(ch) <= 0xDFFF))
+
+
+def _sanitize_value(value):
+    """Recursively strip surrogates from every string leaf in a JSON-shaped value.
+    Only string VALUES are touched -- dict keys, ints, bools, None pass through."""
+    if isinstance(value, str):
+        return _strip_surrogates(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_value(v) for v in value]
+    return value
+
+
 def _bridge_cache_key(dataset: str, session_id: str) -> str:
     # Keyed by (dataset, session_id) only — deliberately independent of user_id.
     # During lazy-bootstrap warmup the agent isn't registered yet, so user_id is
@@ -559,6 +589,7 @@ def append_http_bridge_entry(
         return
     if not (question or answer or trace):
         return
+    question, answer, trace = _strip_surrogates(question), _strip_surrogates(answer), _strip_surrogates(trace)
 
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
@@ -980,6 +1011,8 @@ def remember_pending_prompt(
     """Store the current prompt until Codex Stop provides the assistant answer."""
     if not session_id or not prompt.strip():
         return
+    prompt = _strip_surrogates(prompt)
+    context = _strip_surrogates(context)
     data = _load_json_file(_pending_file(session_id))
     turn_key, session_key = _pending_keys(session_id, turn_id)
     entry = {
@@ -1600,6 +1633,7 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    entry = _sanitize_value(entry)
     return _json_http_request(
         "/api/v1/remember/entry",
         {
@@ -1988,6 +2022,7 @@ def append_warmup_entry(dataset: str, session_id: str, entry: dict) -> None:
     """
     if not dataset or not session_id or not isinstance(entry, dict):
         return
+    entry = _sanitize_value(entry)
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
         key = _bridge_cache_key(dataset, session_id)
