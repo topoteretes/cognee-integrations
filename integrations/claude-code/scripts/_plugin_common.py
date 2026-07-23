@@ -11,7 +11,6 @@ import json
 import os
 import ssl
 import sys
-import threading
 import time
 import urllib.error
 import urllib.parse
@@ -606,42 +605,50 @@ def service_url_is_local(url: str = "") -> bool:
     return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
-async def _sample_stored_vector_dim(engine) -> Optional[int]:
-    """Sample the dimension of a stored vector from any populated collection, or None.
+async def _sample_stored_vector_dim(engine, connect=None) -> Optional[int]:
+    """The stored-vector dimension read from the store's own schema, or None.
 
-    Enumerates the store's actual collections via the vector interface's
-    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
-    uses) rather than assuming fixed collection names, so it also covers custom
-    pipelines. Never raises: each collection is probed independently and any
-    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
-    backends whose connection can't enumerate return None and fall back to the normal
-    empty-recall path.
+    Reads the fixed size of each table's ``vector`` column over a DIRECT
+    read-only lancedb connection to the engine's local store path — deliberately
+    NOT through ``engine.get_connection()``: in cognee's default LanceDB
+    subprocess-proxy mode the proxied query builder has no ``limit()``, so row
+    sampling through the engine breaks, while the schema read needs no rows and
+    works identically in both modes. Never raises: a cloud LanceDB store
+    (``api_key`` set), a backend whose ``url`` a direct lancedb connect rejects
+    (e.g. pgvector), or any unreadable table falls back to the normal
+    empty-recall path. ``connect`` is injectable for testing.
     """
     try:
-        connection = await engine.get_connection()
+        url = getattr(engine, "url", "") or ""
+        if not url or getattr(engine, "api_key", None):
+            return None
+        if connect is None:
+            import lancedb
+
+            connect = lancedb.connect_async
+        connection = await connect(url)
         names = await connection.table_names()
     except Exception:
         return None
     for name in names:
         try:
-            collection = await engine.get_collection(name)
-            rows = await collection.query().limit(1).to_list()
-            if rows:
-                vector = rows[0].get("vector")
-                if vector is not None:
-                    return len(vector)
+            table = await connection.open_table(name)
+            field_type = (await table.schema()).field("vector").type
+            size = getattr(field_type, "list_size", None)
+            if size:
+                return int(size)
         except Exception:
             continue
     return None
 
 
-async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
+async def embedding_dimension_mismatch_hint(engine=None, connect=None) -> Optional[str]:
     """One-line diagnostic when the stored vectors differ in size from the active
     embedder's query vectors (so recall can never match), else None.
 
     Best-effort and fail-safe: any error, or an indeterminate/matching dimension,
     returns None so the caller keeps the normal empty-recall behavior. ``engine``
-    is injectable for testing.
+    and ``connect`` are injectable for testing.
     """
     try:
         if engine is None:
@@ -652,7 +659,7 @@ async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
         if embed is None:
             return None
         query_dim = int(embed.get_vector_size())
-        stored_dim = await _sample_stored_vector_dim(engine)
+        stored_dim = await _sample_stored_vector_dim(engine, connect=connect)
         if not stored_dim or not query_dim or stored_dim == query_dim:
             return None
         model = getattr(embed, "model", None) or "unknown-model"
@@ -669,6 +676,8 @@ async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
 
 _DIM_MEMO_FILE = _PLUGIN_DIR / "dim_check.json"
 _DIM_MEMO_TTL = 300.0  # seconds; re-probe at most this often per embedder signature
+_DIM_PROBE_MARKER = _PLUGIN_DIR / "dim_probe.started.json"
+_DIM_PROBE_DEBOUNCE = 60.0  # seconds; at most one detached prober per this window
 
 
 def _embedder_signature() -> str:
@@ -694,61 +703,91 @@ def _read_dim_memo(sig: str) -> Optional[dict]:
 
 def _write_dim_memo(sig: str, message: Optional[str]) -> None:
     """Persist a completed probe result keyed by embedder signature. Never raises."""
+    _write_json_file(_DIM_MEMO_FILE, {"sig": sig, "message": message, "ts": time.time()})
+
+
+def _spawn_dim_probe(sig: str) -> None:
+    """Start a detached prober process for ``sig`` unless one started recently.
+
+    The prober pays the probe's cold ``import cognee`` outside the hook process
+    and writes its result to the memo, surviving this hook's exit. Debounced via
+    a marker file so repeated empty recalls don't stack probers. Never raises.
+    """
     try:
-        _DIM_MEMO_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _DIM_MEMO_FILE.write_text(
-            json.dumps({"sig": sig, "message": message, "ts": time.time()}),
-            encoding="utf-8",
-        )
+        data = json.loads(_DIM_PROBE_MARKER.read_text(encoding="utf-8"))
+        fresh = (time.time() - float(data.get("ts", 0))) < _DIM_PROBE_DEBOUNCE
+        if data.get("sig") == sig and fresh:
+            return
     except Exception:
         pass
+    try:
+        import subprocess
+
+        _write_json_file(_DIM_PROBE_MARKER, {"sig": sig, "ts": time.time()})
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import _plugin_common; _plugin_common._detached_dim_probe()",
+                os.path.dirname(os.path.abspath(__file__)),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception as exc:
+        hook_log("dim_probe_spawn_failed", {"error": str(exc)[:200]})
+
+
+def _detached_dim_probe() -> None:
+    """Entry point for the detached prober (see ``bounded_dim_mismatch_hint``).
+
+    Runs the full probe — cold ``import cognee`` included — with no deadline,
+    then memoizes the outcome (a diagnostic, or a confirmed None) so subsequent
+    hook invocations answer from the memo instantly.
+    """
+    sig = _embedder_signature()
+    if _read_dim_memo(sig) is not None:
+        return
+    try:
+        message = asyncio.run(embedding_dimension_mismatch_hint())
+    except Exception:
+        message = None
+    _write_dim_memo(sig, message)
 
 
 async def bounded_dim_mismatch_hint(timeout: float = 2.0) -> Optional[str]:
     """``embedding_dimension_mismatch_hint`` made safe for the per-prompt hook path.
 
-    The probe's first step is a synchronous ``import cognee`` + ``get_vector_engine()``.
-    In the plugin's default http/local-server mode cognee is not otherwise imported, so
-    that is a cold ~1s import running *before the first await* — which a plain
-    ``asyncio.wait_for`` cannot bound (it blocks the event loop). So we run the whole
-    probe in a daemon thread and bound the *wait*: on timeout we return None and abandon
-    the daemon, so a slow import can never stall the hook or delay its process exit. The
-    completed result is memoized on disk per embedder signature (TTL-bounded) so repeated
-    empty recalls in a session don't each pay the import.
+    Each hook invocation is a fresh subprocess, and in the plugin's default
+    http/local-server mode cognee is not otherwise imported — so probing inline
+    would pay a multi-second cold import on the keystroke->answer path, and a
+    plain ``asyncio.wait_for`` cannot bound the synchronous import. Instead the
+    probe runs in a short-lived detached process that writes a TTL-bounded memo
+    keyed by the embedder signature; this coroutine answers from the memo when it
+    can, otherwise kicks the prober and polls the memo briefly. A fast probe
+    still lands within ``timeout`` (diagnostic on the first empty recall); a
+    slow one lands in the memo for the next — either way the hook never blocks
+    past ``timeout`` and never re-pays the probe within the TTL.
 
-    Fail-safe: any error, timeout, or indeterminate result returns None, so the caller
-    keeps the normal empty-recall behavior.
+    Fail-safe: any error, timeout, or indeterminate result returns None, so the
+    caller keeps the normal empty-recall behavior.
     """
     sig = _embedder_signature()
     cached = _read_dim_memo(sig)
     if cached is not None:
         return cached.get("message")
-
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future = loop.create_future()
-
-    def _settle(value: Optional[str]) -> None:
-        if not future.done():
-            future.set_result(value)
-
-    def _worker() -> None:
-        message: Optional[str] = None
-        try:
-            message = asyncio.run(embedding_dimension_mismatch_hint())
-        except Exception:
-            message = None
-        try:
-            loop.call_soon_threadsafe(_settle, message)
-        except Exception:
-            pass  # loop already closed (we timed out); the daemon's result is discarded
-
-    threading.Thread(target=_worker, name="cognee-dim-probe", daemon=True).start()
-    try:
-        message = await asyncio.wait_for(future, timeout=timeout)
-    except Exception:
-        return None
-    _write_dim_memo(sig, message)
-    return message
+    _spawn_dim_probe(sig)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+        cached = _read_dim_memo(sig)
+        if cached is not None:
+            return cached.get("message")
+    return None
 
 
 def hook_log(event: str, detail: Optional[dict] = None) -> None:

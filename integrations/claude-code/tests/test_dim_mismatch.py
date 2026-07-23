@@ -5,7 +5,13 @@ fresh query vectors differ in size, so recall silently matches nothing.
 ``embedding_dimension_mismatch_hint`` returns a one-line actionable diagnostic
 naming both dims and the active model on a confirmed mismatch, and None in every
 other case (matching dims, no data, or any error) so recall keeps its normal
-empty-result behavior. Tests inject a fake vector engine so cognee is not required.
+empty-result behavior.
+
+The stored dim is read from the store's SCHEMA over a direct lancedb connection
+(injectable ``connect``), never through the engine's connection: cognee's default
+subprocess-proxy mode exposes no ``query().limit()``, so row sampling through the
+engine breaks there — the fakes below deliberately mirror the schema surface so
+that regression cannot be masked again.
 
 Run: `pytest integrations/claude-code/tests/test_dim_mismatch.py`
 (or `python integrations/claude-code/tests/test_dim_mismatch.py` standalone).
@@ -16,6 +22,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 
 # Pin the loop-guard so importing _plugin_common never re-execs the test process
 # into the plugin venv (its module-level _reexec_into_venv()).
@@ -35,99 +42,126 @@ class _FakeEmbed:
         return self._size
 
 
-class _FakeQuery:
-    def __init__(self, rows):
-        self._rows = rows
+class _FixedSizeListType:
+    """Duck-type of pyarrow's FixedSizeListType: carries only ``list_size``."""
 
-    def limit(self, _n):
-        return self
-
-    async def to_list(self):
-        return self._rows
+    def __init__(self, list_size):
+        self.list_size = list_size
 
 
-class _FakeCollection:
-    def __init__(self, rows):
-        self._rows = rows
+class _FakeField:
+    def __init__(self, type_):
+        self.type = type_
 
-    def query(self):
-        return _FakeQuery(self._rows)
+
+class _FakeSchema:
+    def __init__(self, fields):
+        self._fields = fields  # name -> arrow-ish type object
+
+    def field(self, name):
+        if name not in self._fields:
+            raise KeyError(name)
+        return _FakeField(self._fields[name])
+
+
+class _FakeTable:
+    def __init__(self, schema):
+        self._schema = schema
+
+    async def schema(self):
+        if isinstance(self._schema, Exception):
+            raise self._schema
+        return self._schema
 
 
 class _FakeConnection:
-    def __init__(self, names):
-        self._names = list(names)
+    def __init__(self, tables):
+        self._tables = tables  # name -> _FakeTable
 
     async def table_names(self):
-        return self._names
+        return list(self._tables)
+
+    async def open_table(self, name):
+        return self._tables[name]
 
 
-class _FakeLanceEngine:
-    def __init__(self, query_size, stored_vector, present=("Entity_name",)):
+def _connect_for(tables):
+    async def _connect(_url):
+        return _FakeConnection(tables)
+
+    return _connect
+
+
+def _vector_table(dim):
+    return _FakeTable(_FakeSchema({"vector": _FixedSizeListType(dim), "id": object()}))
+
+
+class _FakeEngine:
+    def __init__(self, query_size, url="/tmp/fake-store.lancedb", api_key=None):
         self.embedding_engine = _FakeEmbed(query_size)
-        self._stored_vector = stored_vector
-        self._present = tuple(present)
-
-    async def get_connection(self):
-        return _FakeConnection(self._present)
-
-    async def get_collection(self, _name):
-        rows = [{"vector": self._stored_vector}] if self._stored_vector is not None else []
-        return _FakeCollection(rows)
+        self.url = url
+        self.api_key = api_key
 
 
-class _FakeErrorEngine:
-    """A collection exists, but reading it raises -> fail-safe None (no false alarm)."""
-
-    def __init__(self, query_size):
-        self.embedding_engine = _FakeEmbed(query_size)
-
-    async def get_connection(self):
-        return _FakeConnection(("Entity_name",))
-
-    async def get_collection(self, _name):
-        raise RuntimeError("store locked")
-
-
-def _hint(engine):
-    return asyncio.run(pc.embedding_dimension_mismatch_hint(engine))
+def _hint(engine, tables):
+    return asyncio.run(pc.embedding_dimension_mismatch_hint(engine, connect=_connect_for(tables)))
 
 
 def test_mismatch_names_both_dims_and_model():
-    msg = _hint(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536))
+    msg = _hint(_FakeEngine(query_size=3072), {"Entity_name": _vector_table(1536)})
     assert msg is not None
     assert "1536" in msg and "3072" in msg
     assert "text-embedding-3-large" in msg and "openai" in msg
 
 
 def test_matching_dims_returns_none():
-    assert _hint(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)) is None
+    assert _hint(_FakeEngine(query_size=1536), {"Entity_name": _vector_table(1536)}) is None
+
+
+def test_no_tables_returns_none():
+    assert _hint(_FakeEngine(query_size=3072), {}) is None
 
 
 def test_enumerates_nonstandard_collection():
-    # Enumeration (not a fixed name list) means a custom-pipeline collection is still
-    # sampled, so the diagnostic fires for non-standard stores too.
-    engine = _FakeLanceEngine(
-        query_size=3072, stored_vector=[0.0] * 1536, present=("CustomThing_body",)
-    )
-    msg = _hint(engine)
+    # Schema enumeration (not a fixed name list) means a custom-pipeline
+    # collection is still sampled, so the diagnostic fires for those stores too.
+    msg = _hint(_FakeEngine(query_size=3072), {"CustomThing_body": _vector_table(1536)})
     assert msg is not None and "1536" in msg and "3072" in msg
 
 
-def test_no_collections_returns_none():
-    engine = _FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536, present=())
-    assert _hint(engine) is None
+def test_table_without_vector_column_is_skipped():
+    tables = {"weird": _FakeTable(_FakeSchema({"id": object()}))}
+    assert _hint(_FakeEngine(query_size=3072), tables) is None
 
 
-def test_empty_collection_returns_none():
-    # Collection present but holds no rows -> normal fresh/empty state, no hint.
-    assert _hint(_FakeLanceEngine(query_size=3072, stored_vector=None)) is None
+def test_non_fixed_size_vector_type_is_skipped():
+    # A variable-size list type has no ``list_size`` -> indeterminate -> no hint.
+    tables = {"Entity_name": _FakeTable(_FakeSchema({"vector": object()}))}
+    assert _hint(_FakeEngine(query_size=3072), tables) is None
 
 
-def test_unreadable_store_returns_none():
-    # A read error must NOT surface a hint: a transient lock on an otherwise-healthy
-    # store would otherwise nag on a genuine empty recall (a false alarm).
-    assert _hint(_FakeErrorEngine(query_size=3072)) is None
+def test_unreadable_table_returns_none():
+    # A read error must NOT surface a hint: a transient failure on an otherwise
+    # healthy store would otherwise nag on a genuine empty recall (a false alarm).
+    tables = {"Entity_name": _FakeTable(RuntimeError("store locked"))}
+    assert _hint(_FakeEngine(query_size=3072), tables) is None
+
+
+def test_cloud_store_is_never_probed():
+    # api_key set = LanceDB Cloud; the store is not ours to introspect. The
+    # direct connect must not even be attempted.
+    async def _explode(_url):
+        raise AssertionError("cloud store must not be probed")
+
+    engine = _FakeEngine(query_size=3072, api_key="secret")
+    msg = asyncio.run(pc.embedding_dimension_mismatch_hint(engine, connect=_explode))
+    assert msg is None
+
+
+def test_engine_without_url_returns_none():
+    # A non-LanceDB backend (no ``url``) fails safe to the normal empty result.
+    engine = _FakeEngine(query_size=3072, url="")
+    assert _hint(engine, {"Entity_name": _vector_table(1536)}) is None
 
 
 def test_broken_engine_returns_none():
@@ -136,26 +170,116 @@ def test_broken_engine_returns_none():
         def embedding_engine(self):
             raise RuntimeError("boom")
 
-    assert _hint(_Broken()) is None
+    assert _hint(_Broken(), {"Entity_name": _vector_table(1536)}) is None
+
+
+class _tmp_state:
+    """Point the memo + prober marker at a temp dir for one test."""
+
+    def __enter__(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._saved = (pc._DIM_MEMO_FILE, pc._DIM_PROBE_MARKER)
+        base = pathlib.Path(self._dir.name)
+        pc._DIM_MEMO_FILE = base / "dim_check.json"
+        pc._DIM_PROBE_MARKER = base / "dim_probe.started.json"
+        return self
+
+    def __exit__(self, *exc):
+        pc._DIM_MEMO_FILE, pc._DIM_PROBE_MARKER = self._saved
+        self._dir.cleanup()
 
 
 def test_dim_memo_roundtrip():
-    # The per-prompt wrapper caches a completed probe result keyed by the embedder
-    # signature: a matching signature reuses it (message, incl. a cached None = "no
+    # A completed probe result is cached keyed by the embedder signature: a
+    # matching signature reuses it (message, incl. a cached None = "no
     # mismatch"); a different signature is a miss so the probe re-runs.
-    with tempfile.TemporaryDirectory() as tmp:
-        saved = pc._DIM_MEMO_FILE
-        pc._DIM_MEMO_FILE = pathlib.Path(tmp) / "dim_check.json"
+    with _tmp_state():
+        assert pc._read_dim_memo("sigA") is None  # cold: nothing cached
+        pc._write_dim_memo("sigA", "MSG")
+        assert pc._read_dim_memo("sigA")["message"] == "MSG"  # hit
+        assert pc._read_dim_memo("sigB") is None  # signature changed -> re-probe
+        pc._write_dim_memo("sigA", None)  # "checked, dims match"
+        hit = pc._read_dim_memo("sigA")
+        assert hit is not None and hit["message"] is None  # cached None is a hit
+
+
+def test_bounded_hint_memo_hit_skips_prober():
+    with _tmp_state():
+        pc._write_dim_memo(pc._embedder_signature(), "CACHED-DIAG")
+        saved = pc._spawn_dim_probe
+        pc._spawn_dim_probe = lambda _sig: (_ for _ in ()).throw(AssertionError("spawned"))
         try:
-            assert pc._read_dim_memo("sigA") is None  # cold: nothing cached
-            pc._write_dim_memo("sigA", "MSG")
-            assert pc._read_dim_memo("sigA")["message"] == "MSG"  # hit
-            assert pc._read_dim_memo("sigB") is None  # signature changed -> re-probe
-            pc._write_dim_memo("sigA", None)  # "checked, dims match"
-            hit = pc._read_dim_memo("sigA")
-            assert hit is not None and hit["message"] is None  # cached None is a hit
+            assert asyncio.run(pc.bounded_dim_mismatch_hint(timeout=0.2)) == "CACHED-DIAG"
         finally:
-            pc._DIM_MEMO_FILE = saved
+            pc._spawn_dim_probe = saved
+
+
+def test_bounded_hint_miss_spawns_prober_and_picks_up_memo():
+    # A memo miss kicks the detached prober; the poll loop then returns the
+    # message the prober writes. Simulated with a prober that writes instantly.
+    with _tmp_state():
+        calls = []
+        saved = pc._spawn_dim_probe
+
+        def _fake_spawn(sig):
+            calls.append(sig)
+            pc._write_dim_memo(sig, "FRESH-DIAG")
+
+        pc._spawn_dim_probe = _fake_spawn
+        try:
+            assert asyncio.run(pc.bounded_dim_mismatch_hint(timeout=1.0)) == "FRESH-DIAG"
+            assert calls == [pc._embedder_signature()]
+        finally:
+            pc._spawn_dim_probe = saved
+
+
+def test_bounded_hint_slow_prober_times_out_to_none():
+    # A prober that hasn't finished by the deadline must not stall the hook: the
+    # hint returns None on time and the result lands in the memo for next turn.
+    with _tmp_state():
+        saved = pc._spawn_dim_probe
+        pc._spawn_dim_probe = lambda _sig: None  # prober never completes
+        try:
+            t0 = time.monotonic()
+            assert asyncio.run(pc.bounded_dim_mismatch_hint(timeout=0.15)) is None
+            assert time.monotonic() - t0 < 1.0
+        finally:
+            pc._spawn_dim_probe = saved
+
+
+def test_detached_probe_writes_memo():
+    # The prober entry point runs the full probe and memoizes the outcome —
+    # including a diagnostic — under the current embedder signature.
+    with _tmp_state():
+        saved = pc.embedding_dimension_mismatch_hint
+
+        async def _fake_hint(*_a, **_k):
+            return "PROBED-DIAG"
+
+        pc.embedding_dimension_mismatch_hint = _fake_hint
+        try:
+            pc._detached_dim_probe()
+            memo = pc._read_dim_memo(pc._embedder_signature())
+            assert memo is not None and memo["message"] == "PROBED-DIAG"
+        finally:
+            pc.embedding_dimension_mismatch_hint = saved
+
+
+def test_spawn_probe_is_debounced():
+    # Back-to-back misses must not stack prober processes: the second call
+    # within the debounce window sees the fresh marker and returns early.
+    with _tmp_state():
+        import subprocess
+
+        launches = []
+        saved = subprocess.Popen
+        subprocess.Popen = lambda *a, **k: launches.append(a) or None
+        try:
+            pc._spawn_dim_probe("sigX")
+            pc._spawn_dim_probe("sigX")
+            assert len(launches) == 1
+        finally:
+            subprocess.Popen = saved
 
 
 if __name__ == "__main__":

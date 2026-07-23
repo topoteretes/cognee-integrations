@@ -418,7 +418,14 @@ async def _run(prompt: str) -> dict | None:
                 hook_log("dim_check_error", {"error": str(exc)[:200]})
         if dim_message:
             full_context = f"{header}\n\n{dim_message}"
-            hook_log("context_lookup_dim_mismatch", {"message": dim_message})
+            hook_log(
+                "context_lookup_dim_mismatch",
+                {
+                    "message": dim_message,
+                    "per_scope": per_scope,
+                    "saves_last_turn": saves_last_turn,
+                },
+            )
             notify(dim_message)
         else:
             full_context = f"{header}\n\n(no memory matches for this prompt)"

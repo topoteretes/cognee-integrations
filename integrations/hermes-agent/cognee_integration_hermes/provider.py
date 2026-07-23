@@ -848,42 +848,50 @@ class CogneeMemoryProvider(MemoryProvider):
 # would not reflect it.
 
 
-async def _sample_stored_vector_dim(engine) -> Optional[int]:
-    """Sample the dimension of a stored vector from any populated collection, or None.
+async def _sample_stored_vector_dim(engine, connect=None) -> Optional[int]:
+    """The stored-vector dimension read from the store's own schema, or None.
 
-    Enumerates the store's actual collections via the vector interface's
-    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
-    uses) rather than assuming fixed collection names, so it also covers custom
-    pipelines. Never raises: each collection is probed independently and any
-    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
-    backends whose connection can't enumerate return None and fall back to the normal
-    empty-recall path.
+    Reads the fixed size of each table's ``vector`` column over a DIRECT
+    read-only lancedb connection to the engine's local store path — deliberately
+    NOT through ``engine.get_connection()``: in cognee's default LanceDB
+    subprocess-proxy mode the proxied query builder has no ``limit()``, so row
+    sampling through the engine breaks, while the schema read needs no rows and
+    works identically in both modes. Never raises: a cloud LanceDB store
+    (``api_key`` set), a backend whose ``url`` a direct lancedb connect rejects
+    (e.g. pgvector), or any unreadable table falls back to the normal
+    empty-recall path. ``connect`` is injectable for testing.
     """
     try:
-        connection = await engine.get_connection()
+        url = getattr(engine, "url", "") or ""
+        if not url or getattr(engine, "api_key", None):
+            return None
+        if connect is None:
+            import lancedb
+
+            connect = lancedb.connect_async
+        connection = await connect(url)
         names = await connection.table_names()
     except Exception:
         return None
     for name in names:
         try:
-            collection = await engine.get_collection(name)
-            rows = await collection.query().limit(1).to_list()
-            if rows:
-                vector = rows[0].get("vector")
-                if vector is not None:
-                    return len(vector)
+            table = await connection.open_table(name)
+            field_type = (await table.schema()).field("vector").type
+            size = getattr(field_type, "list_size", None)
+            if size:
+                return int(size)
         except Exception:
             continue
     return None
 
 
-async def _dimension_mismatch_hint(engine=None) -> Optional[str]:
+async def _dimension_mismatch_hint(engine=None, connect=None) -> Optional[str]:
     """One-line diagnostic when the stored vectors differ in size from the active
     embedder's query vectors (so recall can never match), else None.
 
-    ``engine`` is injectable for testing. Best-effort and fail-safe: any error, or
-    an indeterminate/matching dimension, returns None so the caller keeps the
-    normal empty-recall behavior.
+    ``engine`` and ``connect`` are injectable for testing. Best-effort and
+    fail-safe: any error, or an indeterminate/matching dimension, returns None so
+    the caller keeps the normal empty-recall behavior.
     """
     try:
         if engine is None:
@@ -894,7 +902,7 @@ async def _dimension_mismatch_hint(engine=None) -> Optional[str]:
         if embed is None:
             return None
         query_dim = int(embed.get_vector_size())
-        stored_dim = await _sample_stored_vector_dim(engine)
+        stored_dim = await _sample_stored_vector_dim(engine, connect=connect)
         if not stored_dim or not query_dim or stored_dim == query_dim:
             return None
         model = getattr(embed, "model", None) or "unknown-model"

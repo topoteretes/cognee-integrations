@@ -3,7 +3,13 @@
 ``_dimension_mismatch_hint`` returns a one-line actionable diagnostic naming both
 dims and the active model on a confirmed mismatch, and None in every other case
 (matching dims, no data, or any error) so recall keeps its normal empty-result
-behavior. A fake vector engine is injected so cognee is not required.
+behavior.
+
+The stored dim is read from the store's SCHEMA over a direct lancedb connection
+(injectable ``connect``), never through the engine's connection: cognee's default
+subprocess-proxy mode exposes no ``query().limit()``, so row sampling through the
+engine breaks there — the fakes below deliberately mirror the schema surface so
+that regression cannot be masked again.
 
 Runs under pytest or standalone (``python3 tests/test_dim_mismatch.py``).
 """
@@ -30,88 +36,113 @@ class _FakeEmbed:
         return self._size
 
 
-class _FakeQuery:
-    def __init__(self, rows):
-        self._rows = rows
+class _FixedSizeListType:
+    """Duck-type of pyarrow's FixedSizeListType: carries only ``list_size``."""
 
-    def limit(self, _n):
-        return self
-
-    async def to_list(self):
-        return self._rows
+    def __init__(self, list_size):
+        self.list_size = list_size
 
 
-class _FakeCollection:
-    def __init__(self, rows):
-        self._rows = rows
+class _FakeField:
+    def __init__(self, type_):
+        self.type = type_
 
-    def query(self):
-        return _FakeQuery(self._rows)
+
+class _FakeSchema:
+    def __init__(self, fields):
+        self._fields = fields  # name -> arrow-ish type object
+
+    def field(self, name):
+        if name not in self._fields:
+            raise KeyError(name)
+        return _FakeField(self._fields[name])
+
+
+class _FakeTable:
+    def __init__(self, schema):
+        self._schema = schema
+
+    async def schema(self):
+        if isinstance(self._schema, Exception):
+            raise self._schema
+        return self._schema
 
 
 class _FakeConnection:
-    def __init__(self, names):
-        self._names = list(names)
+    def __init__(self, tables):
+        self._tables = tables  # name -> _FakeTable
 
     async def table_names(self):
-        return self._names
+        return list(self._tables)
+
+    async def open_table(self, name):
+        return self._tables[name]
 
 
-class _FakeLanceEngine:
-    def __init__(self, query_size, stored_vector, present=("Entity_name",)):
+def _connect_for(tables):
+    async def _connect(_url):
+        return _FakeConnection(tables)
+
+    return _connect
+
+
+def _vector_table(dim):
+    return _FakeTable(_FakeSchema({"vector": _FixedSizeListType(dim), "id": object()}))
+
+
+class _FakeEngine:
+    def __init__(self, query_size, url="/tmp/fake-store.lancedb", api_key=None):
         self.embedding_engine = _FakeEmbed(query_size)
-        self._stored_vector = stored_vector
-        self._present = tuple(present)
-
-    async def get_connection(self):
-        return _FakeConnection(self._present)
-
-    async def get_collection(self, _name):
-        rows = [{"vector": self._stored_vector}] if self._stored_vector is not None else []
-        return _FakeCollection(rows)
+        self.url = url
+        self.api_key = api_key
 
 
-class _FakeErrorEngine:
-    def __init__(self, query_size):
-        self.embedding_engine = _FakeEmbed(query_size)
-
-    async def get_connection(self):
-        return _FakeConnection(("Entity_name",))
-
-    async def get_collection(self, _name):
-        raise RuntimeError("store locked")
-
-
-def _hint(engine):
-    return asyncio.run(provider_mod._dimension_mismatch_hint(engine))
+def _hint(engine, tables):
+    return asyncio.run(provider_mod._dimension_mismatch_hint(engine, connect=_connect_for(tables)))
 
 
 class TestDimensionMismatchHint(unittest.TestCase):
     def test_mismatch_names_both_dims_and_model(self):
-        msg = _hint(_FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536))
+        msg = _hint(_FakeEngine(query_size=3072), {"Entity_name": _vector_table(1536)})
         self.assertIsNotNone(msg)
         self.assertIn("1536", msg)
         self.assertIn("3072", msg)
         self.assertIn("text-embedding-3-large", msg)
 
     def test_matching_dims_returns_none(self):
-        self.assertIsNone(_hint(_FakeLanceEngine(query_size=1536, stored_vector=[0.0] * 1536)))
+        self.assertIsNone(_hint(_FakeEngine(query_size=1536), {"Entity_name": _vector_table(1536)}))
 
     def test_enumerates_nonstandard_collection(self):
-        # Enumeration (not a fixed name list) means a custom-pipeline collection is
-        # still sampled, so the diagnostic fires for non-standard stores too.
-        engine = _FakeLanceEngine(
-            query_size=3072, stored_vector=[0.0] * 1536, present=("CustomThing_body",)
-        )
-        self.assertIsNotNone(_hint(engine))
+        # Schema enumeration (not a fixed name list) means a custom-pipeline
+        # collection is still sampled, so the diagnostic fires for those stores too.
+        msg = _hint(_FakeEngine(query_size=3072), {"CustomThing_body": _vector_table(1536)})
+        self.assertIsNotNone(msg)
 
-    def test_no_collections_returns_none(self):
-        engine = _FakeLanceEngine(query_size=3072, stored_vector=[0.0] * 1536, present=())
-        self.assertIsNone(_hint(engine))
+    def test_no_tables_returns_none(self):
+        self.assertIsNone(_hint(_FakeEngine(query_size=3072), {}))
 
-    def test_unreadable_store_returns_none(self):
+    def test_table_without_vector_column_is_skipped(self):
+        tables = {"weird": _FakeTable(_FakeSchema({"id": object()}))}
+        self.assertIsNone(_hint(_FakeEngine(query_size=3072), tables))
+
+    def test_unreadable_table_returns_none(self):
         # A read error must not surface a hint (no false alarm on a healthy store).
-        self.assertIsNone(_hint(_FakeErrorEngine(query_size=3072)))
+        tables = {"Entity_name": _FakeTable(RuntimeError("store locked"))}
+        self.assertIsNone(_hint(_FakeEngine(query_size=3072), tables))
+
+    def test_cloud_store_is_never_probed(self):
+        # api_key set = LanceDB Cloud; the direct connect must not be attempted.
+        async def _explode(_url):
+            raise AssertionError("cloud store must not be probed")
+
+        engine = _FakeEngine(query_size=3072, api_key="secret")
+        msg = asyncio.run(provider_mod._dimension_mismatch_hint(engine, connect=_explode))
+        self.assertIsNone(msg)
+
+    def test_engine_without_url_returns_none(self):
+        # A non-LanceDB backend (no ``url``) fails safe to the normal empty result.
+        engine = _FakeEngine(query_size=3072, url="")
+        self.assertIsNone(_hint(engine, {"Entity_name": _vector_table(1536)}))
 
     def test_broken_engine_returns_none(self):
         class _Broken:
@@ -119,7 +150,7 @@ class TestDimensionMismatchHint(unittest.TestCase):
             def embedding_engine(self):
                 raise RuntimeError("boom")
 
-        self.assertIsNone(_hint(_Broken()))
+        self.assertIsNone(_hint(_Broken(), {"Entity_name": _vector_table(1536)}))
 
 
 class TestProviderGate(unittest.TestCase):
