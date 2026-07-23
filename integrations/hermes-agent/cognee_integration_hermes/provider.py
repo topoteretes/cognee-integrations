@@ -731,6 +731,13 @@ class CogneeMemoryProvider(MemoryProvider):
             self._record_success()
             items = [self._normalize_recall_item(item) for item in results]
             if not items:
+                # Distinguish a genuine miss from an embedding-model change that
+                # makes recall structurally unable to match (stored vs query
+                # vectors differ in size). Embedded mode only; a confirmed
+                # mismatch is a hard error.
+                dim_message = self._embedding_dimension_mismatch_hint()
+                if dim_message:
+                    return json.dumps({"error": dim_message, "count": 0})
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
             return json.dumps({"results": items, "count": len(items)})
         except Exception as exc:
@@ -795,6 +802,20 @@ class CogneeMemoryProvider(MemoryProvider):
             lines.append(f"- [{source}] {text[:500]}")
         return lines
 
+    def _embedding_dimension_mismatch_hint(self) -> Optional[str]:
+        """Confirmed embedding-dimension mismatch diagnostic (embedded mode only), or None.
+
+        In server/remote mode the server owns the vector store, so introspecting
+        the local in-process engine would be meaningless — skip. Best-effort;
+        never raises.
+        """
+        if self._remote_mode:
+            return None
+        try:
+            return self._bridge.run(_dimension_mismatch_hint(), timeout=5.0)
+        except Exception:
+            return None
+
     def _is_breaker_open(self) -> bool:
         if self._consecutive_failures < _BREAKER_THRESHOLD:
             return False
@@ -815,6 +836,77 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._consecutive_failures,
                 _BREAKER_COOLDOWN_SECS,
             )
+
+
+# --- Embedding-dimension mismatch detection ---------------------------------
+# When the embedding model changes between writing and reading, stored vectors
+# and query vectors differ in size, so recall silently matches nothing. These
+# helpers turn that silent miss into a one-line actionable error naming both
+# dimensions and the active embedder. Best-effort and fail-safe (any uncertainty
+# returns None). Only valid in embedded mode, where this process owns the vector
+# store; in server/remote mode the server owns it and the in-process engine here
+# would not reflect it.
+
+
+async def _sample_stored_vector_dim(engine) -> Optional[int]:
+    """Sample the dimension of a stored vector from any populated collection, or None.
+
+    Enumerates the store's actual collections via the vector interface's
+    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
+    uses) rather than assuming fixed collection names, so it also covers custom
+    pipelines. Never raises: each collection is probed independently and any
+    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
+    backends whose connection can't enumerate return None and fall back to the normal
+    empty-recall path.
+    """
+    try:
+        connection = await engine.get_connection()
+        names = await connection.table_names()
+    except Exception:
+        return None
+    for name in names:
+        try:
+            collection = await engine.get_collection(name)
+            rows = await collection.query().limit(1).to_list()
+            if rows:
+                vector = rows[0].get("vector")
+                if vector is not None:
+                    return len(vector)
+        except Exception:
+            continue
+    return None
+
+
+async def _dimension_mismatch_hint(engine=None) -> Optional[str]:
+    """One-line diagnostic when the stored vectors differ in size from the active
+    embedder's query vectors (so recall can never match), else None.
+
+    ``engine`` is injectable for testing. Best-effort and fail-safe: any error, or
+    an indeterminate/matching dimension, returns None so the caller keeps the
+    normal empty-recall behavior.
+    """
+    try:
+        if engine is None:
+            from cognee.infrastructure.databases.vector import get_vector_engine
+
+            engine = get_vector_engine()
+        embed = getattr(engine, "embedding_engine", None)
+        if embed is None:
+            return None
+        query_dim = int(embed.get_vector_size())
+        stored_dim = await _sample_stored_vector_dim(engine)
+        if not stored_dim or not query_dim or stored_dim == query_dim:
+            return None
+        model = getattr(embed, "model", None) or "unknown-model"
+        provider = getattr(embed, "provider", None) or "unknown-provider"
+        return (
+            "Cognee recall found nothing because the embedder changed: stored vectors are "
+            f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
+            f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
+            f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
+        )
+    except Exception:
+        return None
 
 
 def _resolve_search_type(search_type: str):
