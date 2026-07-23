@@ -102,37 +102,6 @@ def _update_segment() -> str:
     return f"   \033[1;33m⬆ Cognee update available {installed}→{latest}\033[0m"
 
 
-def _plugin_version() -> str:
-    current_version = ""
-    try:
-        plugin_file = Path.home() / ".claude-plugin" / "plugin.json"
-        if plugin_file.exists():
-            data = json.loads(plugin_file.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                v = str(data.get("version", "")).strip()
-                if v:
-                    current_version = v
-    except Exception:
-        pass
-
-    if not current_version:
-        return ""
-
-    badge = ""
-    try:
-        update_file = Path.home() / ".claude-plugin" / "update-check.json"
-        if update_file.exists():
-            data = json.loads(update_file.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                latest = str(data.get("latest_version", "")).strip()
-                if latest and latest != current_version:
-                    badge = f" ↑ v{latest}"
-    except Exception:
-        pass
-
-    return f" v{current_version}{badge}"
-
-
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -224,8 +193,7 @@ def main() -> None:
         return
 
     sys.stdout.write(
-        f"{_health_prefix()}cognee: {_active_dataset()} · "
-        f"{_active_mode()}{_update_segment()}{_plugin_version()}"
+        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
     )
 
 

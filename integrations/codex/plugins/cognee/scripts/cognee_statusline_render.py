@@ -87,43 +87,9 @@ def _update_segment() -> str:
     return f"  ⬆ Cognee update available {installed}→{latest}"
 
 
-def _plugin_version() -> str:
-    current_version = ""
-    try:
-        plugin_file = Path.home() / ".codex-plugin" / "plugin.json"
-        if plugin_file.exists():
-            data = json.loads(plugin_file.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                v = str(data.get("version", "")).strip()
-                if v:
-                    current_version = v
-    except Exception:
-        pass
-
-    if not current_version:
-        return ""
-
-    badge = ""
-    try:
-        update_file = Path.home() / ".codex-plugin" / "update-check.json"
-        if update_file.exists():
-            data = json.loads(update_file.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                latest = str(data.get("latest_version", "")).strip()
-                if latest and latest != current_version:
-                    badge = f" ↑ v{latest}"
-    except Exception:
-        pass
-
-    return f" v{current_version}{badge}"
-
-
 def render_status_for_host(host_id: str) -> str:
     """Return the status string (host_id is unused; kept for call-site compat)."""
-    return (
-        f"{_health_prefix()}cognee: {_active_dataset()} · "
-        f"{_active_mode()}{_update_segment()}{_plugin_version()}"
-    )
+    return f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
 
 
 def main() -> None:
@@ -146,8 +112,7 @@ def main() -> None:
     except Exception:
         pass
     sys.stdout.write(
-        f"{_health_prefix()}cognee: {_active_dataset()} · "
-        f"{_active_mode()}{_update_segment()}{_plugin_version()}"
+        f"{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
     )
 
 
