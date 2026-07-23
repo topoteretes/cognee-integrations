@@ -233,17 +233,33 @@ async def _run(prompt: str) -> dict | None:
     # Respect the shared circuit breaker: when the server has been failing (tripped
     # by the explicit recall path), skip this per-prompt recall rather than hammering
     # a down backend on every keystroke. HTTP/cloud mode only.
+    # Cold-start: only the first recall of a session retries a warming backend.
+    coldstart_first = False
+    cs_retries, cs_backoff = 0, 0.0
     if cloud_mode:
         try:
-            from _cognee_client import breaker_open
-
-            _bopen, _bretry = breaker_open()
+            from _cognee_client import (
+                breaker_open,
+                coldstart_config,
+                coldstart_recall_attempt,
+                is_first_recall,
+                mark_recall_seen,
+                retry_cold_start,
+            )
         except Exception:
-            _bopen, _bretry = False, 0
-        if _bopen:
-            hook_log("recall_breaker_open", {"retry_in": _bretry})
-            scope_specs = []
-    for scope_list, qtype, context_profile in scope_specs:
+            breaker_open = None
+        if breaker_open is not None:
+            try:
+                _bopen, _bretry = breaker_open()
+            except Exception:
+                _bopen, _bretry = False, 0
+            if _bopen:
+                hook_log("recall_breaker_open", {"retry_in": _bretry})
+                scope_specs = []
+            elif session_id and is_first_recall(session_id):
+                coldstart_first = True
+                cs_retries, cs_backoff = coldstart_config()
+    for idx, (scope_list, qtype, context_profile) in enumerate(scope_specs):
         if time.monotonic() >= budget_deadline:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
@@ -251,16 +267,39 @@ async def _run(prompt: str) -> dict | None:
         t0 = time.monotonic()
         try:
             if cloud_mode:
-                part = recall_via_http(
-                    prompt,
-                    session_id=session_id,
-                    top_k=TOP_K,
-                    scope=scope_list,
-                    only_context=True,
-                    search_type=qtype,
-                    context_profile=context_profile,
-                    timeout=recall_timeout,
-                )
+
+                def _do_recall_call(_scope=scope_list, _qtype=qtype, _profile=context_profile):
+                    return recall_via_http(
+                        prompt,
+                        session_id=session_id,
+                        top_k=TOP_K,
+                        scope=_scope,
+                        only_context=True,
+                        search_type=_qtype,
+                        context_profile=_profile,
+                        timeout=recall_timeout,
+                    )
+
+                if coldstart_first and idx == 0 and cs_retries > 0:
+                    _attempt = coldstart_recall_attempt(
+                        _do_recall_call,
+                        on_retry=lambda exc: hook_log(
+                            "recall_coldstart_retry", {"error": str(exc)[:160]}
+                        ),
+                    )
+                    _ok, part = retry_cold_start(
+                        _attempt,
+                        retries=cs_retries,
+                        backoff=cs_backoff,
+                        deadline=budget_deadline,
+                    )
+                    if not _ok:
+                        # The retry burst proved the backend unreachable; don't
+                        # re-probe it with the remaining scopes this turn.
+                        hook_log("recall_coldstart_exhausted", {"scope": scope_list})
+                        break
+                else:
+                    part = _do_recall_call()
             else:
                 query_type = getattr(SearchType, qtype, None) if qtype else None
                 part = await asyncio.wait_for(
@@ -287,6 +326,9 @@ async def _run(prompt: str) -> dict | None:
                 "hits": len(part or []),
                 "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
             }
+
+    if coldstart_first and session_id:
+        mark_recall_seen(session_id)
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud

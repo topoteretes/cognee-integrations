@@ -347,3 +347,5 @@ Config precedence:
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (0 disables) |
 | improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `180` | Read timeout for the improve POST |
 | improve poll deadline | `COGNEE_IMPROVE_POLL_DEADLINE` | `600` | Best-effort wait for pipeline completion after submit |
+| cold-start retries | `COGNEE_RECALL_COLDSTART_RETRIES` | `2` | Extra retries for the **first** recall of a session when it times out on a warming server (`0` disables). Later recalls never retry. |
+| cold-start backoff | `COGNEE_RECALL_COLDSTART_BACKOFF` | `0.5` | Base seconds for the first-recall retry backoff (jittered, exponential, capped by the recall budget) |
