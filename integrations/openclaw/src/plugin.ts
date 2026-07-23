@@ -531,7 +531,7 @@ const memoryCogneePlugin = {
       async function printVersionLine(checkNow?: boolean): Promise<void> {
         console.log(`Plugin: cognee-openclaw v${pluginVersion}`);
         const record = checkNow
-          ? await runUpdateCheck({ installed: pluginVersion, force: true })
+          ? await runUpdateCheck({ force: true })
           : await readUpdateCache();
         // Decide from the cached latest against the running version, not the
         // stored updateAvailable, which can be stale after a plugin upgrade.
@@ -909,7 +909,7 @@ const memoryCogneePlugin = {
         // Refresh the cached update check in the background. It is rate-limited
         // and best effort, so a failure here is ignored; the status command
         // reads the cached result without hitting the network itself.
-        runUpdateCheck({ installed: pluginVersion }).catch(() => {});
+        runUpdateCheck().catch(() => {});
 
         doSync().catch((e) => logger.warn?.(`cognee-openclaw: auto-sync failed: ${String(e)}`));
       }

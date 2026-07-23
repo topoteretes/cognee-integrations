@@ -108,41 +108,23 @@ describe("formatUpdateHint", () => {
 describe("runUpdateCheck", () => {
   const enabledEnv = {} as NodeJS.ProcessEnv;
 
-  it("writes an available update from the registry", async () => {
+  it("fetches and caches the latest version from the registry", async () => {
     const statePath = tmpStatePath();
-    const fetchImpl = okFetch("2099.1.1");
     const record = await runUpdateCheck({
-      installed: "2026.6.11",
       statePath,
       force: true,
       env: enabledEnv,
-      fetchImpl,
+      fetchImpl: okFetch("2099.1.1"),
     });
 
-    expect(record).toMatchObject({
-      installed: "2026.6.11",
-      latest: "2099.1.1",
-      updateAvailable: true,
-    });
+    expect(record?.latest).toBe("2099.1.1");
     const onDisk = JSON.parse(readFileSync(statePath, "utf8")) as UpdateCheckRecord;
-    expect(onDisk.updateAvailable).toBe(true);
-  });
-
-  it("reports no update when versions are equal", async () => {
-    const record = await runUpdateCheck({
-      installed: "2026.6.11",
-      statePath: tmpStatePath(),
-      force: true,
-      env: enabledEnv,
-      fetchImpl: okFetch("2026.6.11"),
-    });
-    expect(record?.updateAvailable).toBe(false);
+    expect(onDisk.latest).toBe("2099.1.1");
   });
 
   it("returns null (and does nothing) when disabled", async () => {
     const fetchImpl = jest.fn() as unknown as typeof fetch;
     const record = await runUpdateCheck({
-      installed: "2026.6.11",
       statePath: tmpStatePath(),
       force: true,
       env: { COGNEE_UPDATE_CHECK: "false" } as NodeJS.ProcessEnv,
@@ -152,21 +134,17 @@ describe("runUpdateCheck", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("skips the network within the TTL", async () => {
+  it("skips the network within the interval", async () => {
     const statePath = tmpStatePath();
-    writeFileSync(
-      statePath,
-      JSON.stringify({ checkedAt: 1_000_000, installed: "2026.6.11", latest: "9.9.9", updateAvailable: true }),
-    );
+    writeFileSync(statePath, JSON.stringify({ checkedAt: 1_000_000, latest: "9.9.9" }));
     const fetchImpl = jest.fn(() => {
-      throw new Error("should not hit the network within the TTL");
+      throw new Error("should not hit the network within the interval");
     }) as unknown as typeof fetch;
 
     const record = await runUpdateCheck({
-      installed: "2026.6.11",
       statePath,
       env: enabledEnv,
-      now: () => 1_000_000 + 60_000, // one minute later, well within 24h
+      now: () => 1_000_000 + 60_000, // one minute later, well within the default interval
       fetchImpl,
     });
 
@@ -176,14 +154,10 @@ describe("runUpdateCheck", () => {
 
   it("preserves the previous latest on a network failure", async () => {
     const statePath = tmpStatePath();
-    writeFileSync(
-      statePath,
-      JSON.stringify({ checkedAt: 0, installed: "2026.6.11", latest: "2026.9.9", updateAvailable: true }),
-    );
+    writeFileSync(statePath, JSON.stringify({ checkedAt: 0, latest: "2026.9.9" }));
     const fetchImpl = jest.fn().mockRejectedValue(new Error("offline")) as unknown as typeof fetch;
 
     const record = await runUpdateCheck({
-      installed: "2026.6.11",
       statePath,
       force: true,
       env: enabledEnv,
@@ -191,36 +165,6 @@ describe("runUpdateCheck", () => {
     });
 
     expect(record?.latest).toBe("2026.9.9");
-    expect(record?.updateAvailable).toBe(true);
-  });
-
-  it("recomputes updateAvailable within the TTL when the installed version changed", async () => {
-    const statePath = tmpStatePath();
-    // Cache written while on 2026.6.11, when 2026.7.0 was a real update.
-    writeFileSync(
-      statePath,
-      JSON.stringify({ checkedAt: 1_000_000, installed: "2026.6.11", latest: "2026.7.0", updateAvailable: true }),
-    );
-    const fetchImpl = jest.fn(() => {
-      throw new Error("should not hit the network within the TTL");
-    }) as unknown as typeof fetch;
-
-    // The plugin was upgraded to 2026.7.0 since the cache was written.
-    const record = await runUpdateCheck({
-      installed: "2026.7.0",
-      statePath,
-      env: enabledEnv,
-      now: () => 1_000_000 + 60_000,
-      fetchImpl,
-    });
-
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(record?.installed).toBe("2026.7.0");
-    expect(record?.updateAvailable).toBe(false);
-    // The corrected record is persisted so the stale hint does not linger.
-    const onDisk = JSON.parse(readFileSync(statePath, "utf8")) as UpdateCheckRecord;
-    expect(onDisk.installed).toBe("2026.7.0");
-    expect(onDisk.updateAvailable).toBe(false);
   });
 });
 

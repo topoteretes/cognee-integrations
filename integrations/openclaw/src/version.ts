@@ -30,26 +30,16 @@ const DEFAULT_TIMEOUT_MS = 2500;
 
 export interface UpdateCheckRecord {
   checkedAt: number;
-  installed: string;
   latest: string;
-  updateAvailable: boolean;
 }
 
 /**
  * Split a version into integer parts for comparison. A leading "v" and any
- * pre-release suffix are ignored, so "v1.2.3-rc1" becomes [1, 2, 3].
+ * pre-release suffix are ignored, so "v1.2.3-rc1" becomes [1, 2, 3] —
+ * `parseInt` stops at the first non-digit, and a non-numeric chunk becomes 0.
  */
 export function parseVersion(version: string): number[] {
-  const parts: number[] = [];
-  for (const chunk of String(version).trim().replace(/^[vV]/, "").split(".")) {
-    let digits = "";
-    for (const ch of chunk) {
-      if (ch >= "0" && ch <= "9") digits += ch;
-      else break;
-    }
-    parts.push(digits ? parseInt(digits, 10) : 0);
-  }
-  return parts;
+  return version.trim().replace(/^[vV]/, "").split(".").map((chunk) => parseInt(chunk, 10) || 0);
 }
 
 /** Compare two versions numerically, so that 4.2 sorts below 4.12. */
@@ -90,13 +80,7 @@ function ttlHours(env: NodeJS.ProcessEnv): number {
 function isUpdateCheckRecord(value: unknown): value is UpdateCheckRecord {
   if (!value || typeof value !== "object") return false;
   const r = value as Record<string, unknown>;
-  return (
-    typeof r.checkedAt === "number" &&
-    Number.isFinite(r.checkedAt) &&
-    typeof r.installed === "string" &&
-    typeof r.latest === "string" &&
-    typeof r.updateAvailable === "boolean"
-  );
+  return typeof r.checkedAt === "number" && Number.isFinite(r.checkedAt) && typeof r.latest === "string";
 }
 
 /** Read the cached check result. Returns null when the file is missing or malformed. */
@@ -133,8 +117,6 @@ async function fetchLatestVersion(
 }
 
 export interface RunUpdateCheckOptions {
-  /** Installed version to compare against (api.version ?? PLUGIN_VERSION). */
-  installed: string;
   statePath?: string;
   timeoutMs?: number;
   /** Skip the interval gate and check now. */
@@ -148,17 +130,19 @@ export interface RunUpdateCheckOptions {
 }
 
 /**
- * Run the update check and refresh the cache.
+ * Refresh the cached "latest published version" from npm.
  *
- * Returns null when the check is disabled. Within the interval it returns the
- * cached record without any network call. If the fetch fails it keeps the last
- * known latest version so a temporary outage does not clear a real notice.
+ * The cache stores only `{ checkedAt, latest }`; whether an update is available
+ * is computed at display time against the running version, so nothing here has
+ * to know the installed version. Returns null when the check is disabled.
+ * Within the interval it returns the cached record without any network call. If
+ * the fetch fails it keeps the last known latest so a temporary outage does not
+ * clear a real notice.
  */
 export async function runUpdateCheck(
-  opts: RunUpdateCheckOptions,
+  opts: RunUpdateCheckOptions = {},
 ): Promise<UpdateCheckRecord | null> {
   const {
-    installed,
     statePath = UPDATE_CHECK_PATH,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     force = false,
@@ -172,18 +156,9 @@ export async function runUpdateCheck(
 
   const prev = await readUpdateCache(statePath);
 
-  // Within the interval, reuse the cached latest without a network call. The
-  // installed version can change (a plugin upgrade) while that latest is still
-  // valid, so recompute updateAvailable against the current installed version
-  // rather than trusting the stored value, which would be stale.
+  // Within the interval, reuse the cached latest without a network call.
   if (!force && prev && now() - prev.checkedAt < ttlHours(env) * 3_600_000) {
-    const updateAvailable = isNewer(prev.latest, installed);
-    if (prev.installed === installed && prev.updateAvailable === updateAvailable) {
-      return prev;
-    }
-    const refreshed: UpdateCheckRecord = { ...prev, installed, updateAvailable };
-    await persistRecord(statePath, refreshed);
-    return refreshed;
+    return prev;
   }
 
   let latest: string;
@@ -195,12 +170,7 @@ export async function runUpdateCheck(
     latest = prev?.latest ?? "";
   }
 
-  const record: UpdateCheckRecord = {
-    checkedAt: now(),
-    installed,
-    latest,
-    updateAvailable: isNewer(latest, installed),
-  };
+  const record: UpdateCheckRecord = { checkedAt: now(), latest };
   await persistRecord(statePath, record);
   return record;
 }
