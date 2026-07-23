@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -342,6 +343,21 @@ def _health_ok(url: str = _HEALTH_URL, timeout: float = 2.0) -> bool:
             return response.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
+
+
+def _maybe_warmup_cloud(target_url: str) -> None:
+    """Warm a scale-to-zero cloud tenant so the first recall doesn't pay the cold start.
+
+    When COGNEE_WARMUP is truthy and the endpoint is remote, fire one GET /health in a
+    daemon thread. Non-blocking and fail-silent (daemon, no join, _health_ok swallows
+    errors): a slow or unreachable tenant never delays or breaks SessionStart. Local
+    mode has no cold start, so this is a no-op there.
+    """
+    if _is_local_url(target_url):
+        return
+    if os.environ.get("COGNEE_WARMUP", "").strip().lower() not in ("1", "true", "yes"):
+        return
+    threading.Thread(target=_health_ok, args=(_health_url(target_url),), daemon=True).start()
 
 
 def _wait_for_health(deadline_seconds: float, health_url: str = _HEALTH_URL) -> bool:
@@ -1074,6 +1090,7 @@ async def _start(payload: dict | None = None) -> dict:
     target_url = configured_url or _LOCAL_SERVICE_URL
     config["base_url"] = target_url
     os.environ["COGNEE_BASE_URL"] = target_url
+    _maybe_warmup_cloud(target_url)
     if api_key:
         os.environ["COGNEE_API_KEY"] = api_key
 
