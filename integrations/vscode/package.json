@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "cognee",
   "license": "Apache-2.0",
+  "icon": "media/icon.png",
   "author": {
     "name": "Anjali Garhwal"
   },
