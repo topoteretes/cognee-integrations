@@ -344,19 +344,19 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
                         "agent_unregister_skipped_no_session_name",
                         {"session": session_id, "dataset": dataset},
                     )
-                    return
-                ok, active = unregister_agent_via_http(agent_session_name=unregister_name)
-                hook_log(
-                    "agent_unregister_result",
-                    {
-                        "session": session_id,
-                        "dataset": dataset,
-                        "agent_session_name": unregister_name,
-                        "ok": ok,
-                        "active_agents": active,
-                        "cached_registered": was_registered,
-                    },
-                )
+                else:
+                    ok, active = unregister_agent_via_http(agent_session_name=unregister_name)
+                    hook_log(
+                        "agent_unregister_result",
+                        {
+                            "session": session_id,
+                            "dataset": dataset,
+                            "agent_session_name": unregister_name,
+                            "ok": ok,
+                            "active_agents": active,
+                            "cached_registered": was_registered,
+                        },
+                    )
 
 
 def main():
