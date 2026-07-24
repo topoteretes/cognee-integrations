@@ -298,6 +298,37 @@ def resolve_conn_uuid(host_key: str = "") -> str:
     return cu
 
 
+def active_dataset_for_launch(host_key: str = "") -> str:
+    """Return the dataset a mid-session switch repointed this launch to, or ''.
+
+    Stored in the same host-keyed launch record every hook already reads to
+    resolve its session id, so a switch is visible to every later hook process
+    of the launch. Empty when the launch never switched — callers then fall back
+    to the configured default (unchanged behavior).
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    if not host_key:
+        return ""
+    return str(_read_map_record(host_key).get("dataset") or "")
+
+
+def set_active_dataset_for_launch(host_key: str, dataset: str) -> None:
+    """Repoint this launch to ``dataset`` by recording it in the launch record.
+
+    Read back by ``config.get_dataset`` so every subsequent hook writes/recalls
+    against the new dataset without a restart. Keyed by host_key, so it never
+    affects other launches (unlike the machine-global config file).
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    dataset = str(dataset or "").strip()
+    if not host_key or not dataset:
+        return
+    rec = _read_map_record(host_key)
+    rec["dataset"] = dataset
+    rec.setdefault("host_key", host_key)
+    _write_map_record(host_key, rec)
+
+
 def resolve_session_key_from_payload(payload: dict) -> tuple[str, str]:
     """Resolve session key from a hook payload using known Claude variants."""
     if not isinstance(payload, dict):
@@ -600,6 +631,40 @@ def append_http_bridge_entry(
         if trace:
             session_cache.setdefault("trace", []).append(trace)
         _write_json_file(_bridge_file(session_id), cache)
+
+
+# --- Mid-session dataset switch: seal the old bridge -------------------------
+# A dataset switch keeps the SAME session_id/conn_uuid (so conversation context
+# survives — the session cache is keyed by session_id, not dataset) and only
+# repoints where new graph writes land. Before repointing, the old dataset's
+# buffered writes are flushed to its graph so nothing is orphaned.
+
+
+def seal_bridge_state(old_dataset: str, session_id: str) -> dict:
+    """Seal the HTTP-mode ``(old_dataset, session_id)`` bridge before a switch.
+
+    Flushes the old dataset's buffered QA/trace to its graph BEFORE the switch
+    repoints new writes — otherwise the session-end sync (which resolves only the
+    *current* dataset) would never flush the old bucket, orphaning it. The flush
+    is digest-deduped (``_state``) so re-sealing is a safe no-op. Logs
+    ``old bridge sealed`` for the acceptance check.
+    """
+    flushed = False
+    if old_dataset and session_id:
+        try:
+            flushed = persist_session_cache_to_graph_via_http(old_dataset, session_id)
+        except Exception as exc:
+            hook_log("dataset_switch_seal_flush_failed", {"error": str(exc)[:200]})
+    hook_log(
+        "dataset_switch_bridge_sealed",
+        {
+            "message": "old bridge sealed",
+            "old_dataset": old_dataset,
+            "session": session_id,
+            "flushed": flushed,
+        },
+    )
+    return {"sealed": True, "old_dataset": old_dataset, "flushed": flushed}
 
 
 async def resolve_user(user_id: str):

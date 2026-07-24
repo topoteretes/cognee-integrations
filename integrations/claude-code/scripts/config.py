@@ -189,7 +189,24 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
 
 
 def get_dataset(config: dict) -> str:
-    """Get the dataset name from config."""
+    """Resolve the active dataset: mid-session switch > config (env > default).
+
+    A mid-session switch (recorded in this launch's map record) is the latest
+    explicit user action, so it wins — including over a launch-time
+    ``COGNEE_PLUGIN_DATASET``, which on ``main`` is the only working way to pick a
+    non-default dataset and would otherwise make the switch a silent no-op. The
+    override is launch-scoped (keyed by host_key), so other launches are
+    unaffected. A launch that never switched has no record entry and resolves
+    ``config`` (env layer / default) exactly as before.
+    """
+    try:
+        from _plugin_common import active_dataset_for_launch
+
+        switched = active_dataset_for_launch()
+        if switched:
+            return switched
+    except Exception:
+        pass
     return config.get("dataset", "agent_sessions")
 
 
@@ -591,6 +608,36 @@ async def persist_session_cache_to_graph(dataset: str, session_id: str, user) ->
         _save_bridge_state(bridge_state)
 
     return wrote
+
+
+async def seal_session_bridge_local(old_dataset: str, session_id: str, user) -> dict:
+    """Local-SDK seal: flush the old dataset to its graph before a switch.
+
+    Flushed before the switch repoints writes so the old dataset's session data
+    is not orphaned (the session-end sync resolves only the current dataset). The
+    flush is digest-deduped so re-sealing is a safe no-op. Logs ``old bridge
+    sealed`` for the acceptance check.
+    """
+    from _plugin_common import hook_log
+
+    flushed = False
+    if session_id and user:
+        try:
+            flushed = await persist_session_cache_to_graph(old_dataset, session_id, user)
+        except Exception as exc:
+            _config_log("seal_local_flush_failed", {"error": str(exc)[:200]})
+
+    hook_log(
+        "dataset_switch_bridge_sealed",
+        {
+            "message": "old bridge sealed",
+            "old_dataset": old_dataset,
+            "session": session_id,
+            "flushed": flushed,
+            "mode": "local",
+        },
+    )
+    return {"sealed": True, "old_dataset": old_dataset, "flushed": flushed}
 
 
 def _get_git_branch(cwd: str) -> str:
