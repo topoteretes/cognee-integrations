@@ -32,32 +32,32 @@ from cognee_integration_crewai import add_tool, search_tool
 
 load_dotenv()
 
+
 async def main():
     # Initialize Cognee (optional - for data management)
     await cognee.prune.prune_data()
     await cognee.prune.prune_system(metadata=True)
-    
+
     # Create an agent with memory capabilities
     agent = Agent(
         role="Research Analyst",
         goal="Find and analyze information using the knowledge base",
         backstory="You are an expert analyst with access to a comprehensive knowledge base.",
         tools=[add_tool, search_tool],
-        verbose=True
+        verbose=True,
     )
-    
+
     # Use the agent to store information
     response = agent.kickoff(
         "Remember that our company signed a contract with HealthBridge Systems "
         "in the healthcare industry, starting Feb 2023, ending Jan 2026, worth £2.4M"
     )
     print(response.raw)
-    
+
     # Query the stored information
-    response = agent.kickoff(
-        "What contracts do we have in the healthcare industry?"
-    )
+    response = agent.kickoff("What contracts do we have in the healthcare industry?")
     print(response.raw)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -97,29 +97,31 @@ import asyncio
 from crewai import Agent
 from cognee_integration_crewai import get_sessionized_cognee_tools
 
+
 async def main():
     # Each user gets their own isolated session
     user1_add, user1_search = get_sessionized_cognee_tools("user-123")
     user2_add, user2_search = get_sessionized_cognee_tools("user-456")
-    
+
     # Create separate agents for each user
     agent1 = Agent(
         role="Assistant",
         goal="Help user 1",
         backstory="You are a helpful assistant.",
-        tools=[user1_add, user1_search]
+        tools=[user1_add, user1_search],
     )
-    
+
     agent2 = Agent(
         role="Assistant",
         goal="Help user 2",
         backstory="You are a helpful assistant.",
-        tools=[user2_add, user2_search]
+        tools=[user2_add, user2_search],
     )
-    
+
     # Each agent works with isolated data
     response1 = agent1.kickoff("Remember: I like pizza")
     response2 = agent2.kickoff("Remember: I like sushi")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -143,12 +145,10 @@ agent = Agent(
     role="Data Manager",
     goal="Store important information",
     backstory="You manage our knowledge base.",
-    tools=[add_tool]
+    tools=[add_tool],
 )
 
-response = agent.kickoff(
-    "Store this: Our Q4 revenue was $2.5M with 15% growth"
-)
+response = agent.kickoff("Store this: Our Q4 revenue was $2.5M with 15% growth")
 ```
 
 ### `search_tool(query_text: str)`
@@ -166,12 +166,10 @@ agent = Agent(
     role="Research Assistant",
     goal="Find information from our knowledge base",
     backstory="You help users find information quickly.",
-    tools=[search_tool]
+    tools=[search_tool],
 )
 
-response = agent.kickoff(
-    "What was our Q4 revenue?"
-)
+response = agent.kickoff("What was our Q4 revenue?")
 ```
 
 ### `get_sessionized_cognee_tools(session_id: Optional[str] = None)`
@@ -217,13 +215,9 @@ You can customize Cognee's data and system directories:
 from cognee.api.v1.config import config
 import os
 
-config.data_root_directory(
-    os.path.join(os.path.dirname(__file__), ".cognee/data_storage")
-)
+config.data_root_directory(os.path.join(os.path.dirname(__file__), ".cognee/data_storage"))
 
-config.system_root_directory(
-    os.path.join(os.path.dirname(__file__), ".cognee/system")
-)
+config.system_root_directory(os.path.join(os.path.dirname(__file__), ".cognee/system"))
 ```
 
 ## Examples
@@ -245,22 +239,24 @@ import cognee
 from cognee_integration_crewai import search_tool
 from crewai import Agent
 
+
 async def main():
     # Pre-load data
     await cognee.add("Important company information here...")
     await cognee.add("More data to remember...")
     await cognee.cognify()  # Process and index the data
-    
+
     # Now create an agent that can search this data
     agent = Agent(
         role="Analyst",
         goal="Answer questions using pre-loaded data",
         backstory="You have access to our company knowledge base.",
-        tools=[search_tool]
+        tools=[search_tool],
     )
-    
+
     response = agent.kickoff("What information do we have?")
     print(response.raw)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -272,10 +268,12 @@ if __name__ == "__main__":
 import asyncio
 import cognee
 
+
 async def reset_knowledge_base():
     """Clear all data and reset the knowledge base"""
     await cognee.prune.prune_data()
     await cognee.prune.prune_system(metadata=True)
+
 
 async def visualize_knowledge_graph():
     """Generate a visualization of the knowledge graph"""
