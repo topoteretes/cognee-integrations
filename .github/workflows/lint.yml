@@ -30,7 +30,7 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install ruff
-        run: uv tool install ruff
+        run: uv tool install ruff==0.16.0
 
       - name: Check formatting
         run: ruff format --check integrations/
