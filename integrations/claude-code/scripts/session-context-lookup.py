@@ -255,6 +255,7 @@ async def _run(prompt: str) -> dict | None:
         if _bopen:
             hook_log("recall_breaker_open", {"retry_in": _bretry})
             scope_specs = []
+    start_time = time.monotonic()
     for scope_list, qtype, context_profile in scope_specs:
         if time.monotonic() >= budget_deadline:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
@@ -399,9 +400,15 @@ async def _run(prompt: str) -> dict | None:
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
+        elapsed_ms = round((time.monotonic() - start_time) * 1000, 1)
         hook_log(
             "context_lookup_hit",
-            {"counts": counts, "per_scope": per_scope, "saves_last_turn": saves_last_turn},
+            {
+                "counts": counts,
+                "per_scope": per_scope,
+                "saves_last_turn": saves_last_turn,
+                "elapsed_ms": elapsed_ms,
+            },
         )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
