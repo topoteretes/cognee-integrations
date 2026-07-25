@@ -79,7 +79,7 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
             "COGNEE_HERMES_USER_PASSWORD",
             DEFAULT_IDENTITY_PASSWORD,
         ),
-        "recall_timeout": str_to_int(os.environ.get("COGNEE_RECALL_TIMEOUT"), 60),
+        "recall_timeout": str_to_int(os.environ.get("COGNEE_RECALL_TIMEOUT"), 120),
         "write_timeout": str_to_int(os.environ.get("COGNEE_WRITE_TIMEOUT"), 120),
         "improve_timeout": str_to_int(os.environ.get("COGNEE_IMPROVE_TIMEOUT"), 300),
     }
@@ -96,7 +96,7 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
             pass
 
     config["top_k"] = max(1, str_to_int(config.get("top_k"), 5))
-    config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 60))
+    config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 120))
     config["write_timeout"] = max(1, str_to_int(config.get("write_timeout"), 120))
     config["improve_timeout"] = max(1, str_to_int(config.get("improve_timeout"), 300))
     config["local_port"] = min(65535, max(1, str_to_int(config.get("local_port"), 8000)))

@@ -171,7 +171,7 @@ def do_remember(
     node_set,
     *,
     opener=urllib.request.urlopen,
-    timeout=60.0,
+    timeout=120.0,
 ):
     """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE."""
     url = service_url.rstrip("/") + "/api/v1/remember"

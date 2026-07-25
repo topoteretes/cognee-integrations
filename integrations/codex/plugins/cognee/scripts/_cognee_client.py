@@ -26,7 +26,7 @@ from _recall_http import UNREACHABLE, _error, do_recall
 # Tunables (mirror Hermes's provider defaults).
 _THRESHOLD = int(os.environ.get("COGNEE_BREAKER_THRESHOLD", "5"))
 _COOLDOWN = float(os.environ.get("COGNEE_BREAKER_COOLDOWN", "120"))
-_RECALL_TIMEOUT = float(os.environ.get("COGNEE_RECALL_TIMEOUT", "20"))
+_RECALL_TIMEOUT = float(os.environ.get("COGNEE_RECALL_TIMEOUT", "120"))
 
 
 def _state_path():

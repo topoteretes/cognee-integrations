@@ -107,7 +107,7 @@ def do_recall(
     context_profile="",
     *,
     opener=None,
-    timeout=20.0,
+    timeout=120.0,
 ):
     """Query the server. Return results (list), an error envelope (dict), or ``UNREACHABLE``."""
     url = service_url.rstrip("/") + "/api/v1/recall"
