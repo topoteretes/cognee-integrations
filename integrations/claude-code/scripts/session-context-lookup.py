@@ -20,6 +20,8 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    bounded_dim_mismatch_hint,
+    drain_warmup_entries,
     get_session_key,
     hook_log,
     load_resolved,
@@ -33,9 +35,10 @@ from _plugin_common import (
     resolve_user,
     server_health_ok,
     server_ready_hint,
+    service_url_is_local,
     set_session_key,
 )
-from config import ensure_cognee_ready, get_session_id, load_config
+from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 
 def _float_env(name: str, default: float) -> float:
@@ -176,9 +179,11 @@ async def _run(prompt: str) -> dict | None:
     # short /health probe and record the result. If still not ready, skip recall
     # entirely so the prompt is answered at full speed (memory turns on later).
     service_url = runtime.get("base_url", "")
+    just_became_ready = False
     if not server_ready_hint(service_url):
         if server_health_ok(service_url, timeout=_float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)):
             mark_server_ready(service_url)
+            just_became_ready = True
         else:
             hook_log("recall_skipped_warming", {"base_url": service_url})
             return None
@@ -190,6 +195,15 @@ async def _run(prompt: str) -> dict | None:
     if not session_id:
         hook_log("no_session_id", {"event": "context_lookup"})
         return None
+
+    if just_became_ready:
+        # First prompt after the server came up: replay any entries buffered
+        # while it was warming so the server session cache (which improve
+        # bridges from) holds the full session.
+        try:
+            drain_warmup_entries(get_dataset(config), session_id)
+        except Exception as exc:
+            hook_log("warmup_drain_failed", {"error": str(exc)[:200]})
 
     saves_last_turn = read_and_reset_save_counter(session_id)
 
@@ -210,6 +224,18 @@ async def _run(prompt: str) -> dict | None:
         from cognee.modules.search.types import SearchType
 
         user = await resolve_user(_load_user_id())
+
+    # Per-scope instrumentation (WS7 observability): capture {hits, elapsed_ms}
+    # for every scope, keyed by its stable label. Pre-seed all 5 scopes as
+    # skipped, in canonical order and before the breaker-open branch below can
+    # blank scope_specs, so the event always carries the full set; the loop
+    # overwrites each scope that actually runs. Purely additive: it must not
+    # touch recall results, ordering, or control flow, and must never raise into
+    # the keystroke->answer path.
+    per_scope: dict[str, dict] = {
+        scope_list[0]: {"hits": 0, "elapsed_ms": 0, "skipped": True}
+        for scope_list, _qtype, _profile in scope_specs
+    }
 
     # Hard time-box: this hook is on the keystroke->answer path, so recall must
     # never be the long pole. Each scope gets a short per-call timeout, and the
@@ -234,6 +260,8 @@ async def _run(prompt: str) -> dict | None:
         if time.monotonic() >= budget_deadline:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
+        part = None
+        t0 = time.monotonic()
         try:
             if cloud_mode:
                 part = recall_via_http(
@@ -265,6 +293,13 @@ async def _run(prompt: str) -> dict | None:
                 results.extend(part)
         except Exception as exc:
             hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
+        finally:
+            # hits = raw count from this scope's call (pre-bucketing/filtering);
+            # elapsed_ms measured around the call, recorded even when it errored.
+            per_scope[scope_list[0]] = {
+                "hits": len(part or []),
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
@@ -318,6 +353,7 @@ async def _run(prompt: str) -> dict | None:
                     .datetime.now(__import__("datetime").timezone.utc)
                     .isoformat(timespec="seconds"),
                     "hits": counts,
+                    "per_scope": per_scope,
                     "saves_last_turn": saves_last_turn,
                 }
             ),
@@ -358,19 +394,50 @@ async def _run(prompt: str) -> dict | None:
         for e in by_source["session"]:
             section_lines.append(_format_entry(e))
             section_lines.append("")
-    
+
     elapsed_ms = round((time.monotonic() - start) * 1000, 2)
     if total > 0:
         full_context = (
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn,"elapsed_ms" : elapsed_ms})
+        hook_log(
+            "context_lookup_hit",
+            {
+                "counts": counts,
+                "per_scope": per_scope,
+                "saves_last_turn": saves_last_turn,
+                "elapsed_ms": elapsed_ms,
+            },
+        )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn, "elapsed_ms" : elapsed_ms})
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
+        # Zero results can mean a genuine miss OR that the embedding model changed
+        # since indexing (stored vs query vectors differ in size, so nothing can
+        # match). Only the local store is introspectable here; surface a one-line
+        # actionable error when a mismatch is positively confirmed, else fall back
+        # to the normal "no matches" line.
+        dim_message = None
+        if service_url_is_local(service_url):
+            try:
+                dim_message = await bounded_dim_mismatch_hint(timeout=2.0)
+            except Exception as exc:
+                hook_log("dim_check_error", {"error": str(exc)[:200]})
+        if dim_message:
+            full_context = f"{header}\n\n{dim_message}"
+            hook_log("context_lookup_dim_mismatch", {"message": dim_message})
+            notify(dim_message)
+        else:
+            full_context = f"{header}\n\n(no memory matches for this prompt)"
+            hook_log(
+                "context_lookup_empty",
+                {
+                    "per_scope": per_scope,
+                    "saves_last_turn": saves_last_turn,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+            notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.
@@ -389,6 +456,7 @@ async def _run(prompt: str) -> dict | None:
                         "session_id": session_id,
                         "prompt": prompt,
                         "hits": counts,
+                        "per_scope": per_scope,
                         "context": full_context,
                     }
                 )

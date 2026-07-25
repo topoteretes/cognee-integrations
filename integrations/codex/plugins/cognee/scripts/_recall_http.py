@@ -69,12 +69,6 @@ def _build_https_opener():
 _HTTPS_OPENER = _build_https_opener()
 
 
-def _is_local(url):
-    """True for a localhost/loopback target (where a cloud API key is meaningless)."""
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
-
-
 def coerce_top_k(value, default=5):
     """Best-effort positive int; never raises (a bad value must not look like a server failure)."""
     try:
@@ -126,7 +120,7 @@ def do_recall(
     if session_id:
         body["session_id"] = session_id
     # Scope the search to the caller's plugin dataset (resolved by the shell from
-    # connections/me → COGNEE_PLUGIN_DATASET → default). All plugin writes target
+    # COGNEE_PLUGIN_DATASET → default). All plugin writes target
     # that single dataset, so searching elsewhere only adds noise from unrelated
     # sessions or SDK calls (e.g. client.py defaulting to 'default_dataset').
     # Server-side RBAC is still enforced: the named dataset must be owned by the
@@ -138,10 +132,10 @@ def do_recall(
     if context_profile:
         body["context_profile"] = context_profile
     headers = {"Content-Type": "application/json"}
-    # COGNEE_API_KEY is a *cloud* credential; the local single-user server needs no
-    # auth and ignores it. Only attach it for a remote/cloud target, so we don't send
-    # a meaningless (and confusing) cloud key to localhost.
-    if api_key and not _is_local(service_url):
+    # Always attach the key when present: cognee >=1.2.2 enforces auth on its
+    # API routes even on localhost (the local key is auto-minted at bootstrap),
+    # and a server running with auth disabled simply ignores the header.
+    if api_key:
         headers["X-Api-Key"] = api_key
 
     req = urllib.request.Request(

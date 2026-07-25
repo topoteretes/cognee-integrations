@@ -14,6 +14,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(__file__))
+from _proc import pid_alive as _pid_alive
+
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "codex"
 _EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"
 _PIDFILE = _PLUGIN_DIR / "exit-watcher.pid"
@@ -34,21 +37,6 @@ def _log(event: str, **detail) -> None:
             fh.write(json.dumps(line, default=str) + "\n")
     except Exception:
         pass
-
-
-def _pid_alive(pid: int) -> bool:
-    if pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except Exception as exc:
-        _log("pid_alive_check_failed", parent_pid=pid, error=str(exc)[:200])
-        return False
 
 
 def _owns_pidfile(pidfile: Path) -> bool:

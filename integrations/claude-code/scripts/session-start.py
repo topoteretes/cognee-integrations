@@ -33,6 +33,7 @@ from _plugin_common import (
     _VENV_DIR,
     _VENV_PYTHON,
     _VENV_READY_MARKER,
+    _https_context,
     _reexec_into_venv,
     apply_cognee_env,
     ensure_launch_record,
@@ -45,7 +46,10 @@ from _plugin_common import (
     set_session_key,
     touch_activity,
 )
+from _proc import find_host_ancestor_windows
+from _proc import pid_alive as _pid_alive
 from config import (
+    _cloud_http_request,
     _user_id_via_api,
     ensure_cognee_ready,
     ensure_dataset_ready,
@@ -94,7 +98,7 @@ _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.2.2.dev0"
+_PINNED_COGNEE_VERSION = "1.2.2.dev3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Install single-flight. Distinct from the server boot lock (which is short, on
@@ -335,7 +339,7 @@ def _health_url(service_url: str) -> str:
 
 def _health_ok(url: str = _HEALTH_URL, timeout: float = 2.0) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with urllib.request.urlopen(url, timeout=timeout, context=_https_context()) as response:
             return response.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
@@ -456,76 +460,59 @@ def _ensure_local_server_running(
                 hook_log("server_bootstrap_lock_release_failed", {"error": str(exc)[:200]})
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except Exception:
-        return False
-
-
 def _normalize_service_url(service_url: str) -> str:
     return str(service_url or "").strip().rstrip("/")
 
 
 async def _login_default_user_for_owner_api_key(service_url: str, config: dict) -> str:
-    import aiohttp
-
     base = _normalize_service_url(service_url)
     email = config.get("user_email", "")
     password = config.get("user_password", "")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"{base}/api/v1/auth/login",
-            data={"username": email, "password": password},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(
-                    "default-user login failed "
-                    f"({resp.status}: {body[:200]}). "
-                    "Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly."
-                )
-            login_data = await resp.json()
-            jwt = str(login_data.get("access_token", "") or "")
+    status, body = _cloud_http_request(
+        f"{base}/api/v1/auth/login",
+        method="POST",
+        form_body={"username": email, "password": password},
+        timeout=30.0,
+    )
+    if status != 200:
+        raise RuntimeError(
+            "default-user login failed "
+            f"({status}: {body[:200]}). "
+            "Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly."
+        )
+    login_data = json.loads(body) if body else {}
+    jwt = str(login_data.get("access_token", "") or "")
+    if not jwt:
+        raise RuntimeError("default-user login returned no access token")
 
-        if not jwt:
-            raise RuntimeError("default-user login returned no access token")
+    status, body = _cloud_http_request(
+        f"{base}/api/v1/auth/api-keys",
+        method="GET",
+        cookies={"auth_token": jwt},
+        timeout=30.0,
+    )
+    if status == 200:
+        keys = json.loads(body) if body else []
+        if isinstance(keys, list) and keys:
+            key = str(keys[0].get("key", "") or "")
+            if key:
+                return key
 
-        async with session.get(
-            f"{base}/api/v1/auth/api-keys",
-            cookies={"auth_token": jwt},
-        ) as resp:
-            if resp.status == 200:
-                keys = await resp.json()
-                if isinstance(keys, list) and keys:
-                    key = str(keys[0].get("key", "") or "")
-                    if key:
-                        return key
-
-        async with session.post(
-            f"{base}/api/v1/auth/api-keys",
-            json={"name": "claude-owner-bootstrap"},
-            cookies={"auth_token": jwt},
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(
-                    f"default-user API key creation failed ({resp.status}: {body[:200]})"
-                )
-            payload = await resp.json()
-            key = str(payload.get("key", "") or "")
-            if not key:
-                raise RuntimeError("default-user API key creation returned empty key")
-            return key
+    status, body = _cloud_http_request(
+        f"{base}/api/v1/auth/api-keys",
+        method="POST",
+        json_body={"name": "claude-owner-bootstrap"},
+        cookies={"auth_token": jwt},
+        timeout=30.0,
+    )
+    if status != 200:
+        raise RuntimeError(f"default-user API key creation failed ({status}: {body[:200]})")
+    payload = json.loads(body) if body else {}
+    key = str(payload.get("key", "") or "")
+    if not key:
+        raise RuntimeError("default-user API key creation returned empty key")
+    return key
 
 
 def _resolve_agent_name(config: dict, cwd: str) -> str:
@@ -610,10 +597,9 @@ def _watcher_alive() -> bool:
         return False
     try:
         pid = int(_WATCHER_PID.read_text(encoding="utf-8").strip())
-        os.kill(pid, 0)
-        return True
     except Exception:
         return False
+    return _pid_alive(pid)
 
 
 def _spawn_idle_watcher(
@@ -683,6 +669,8 @@ def _spawn_idle_watcher(
 def _find_claude_parent_pid() -> int:
     """Find the nearest live Claude ancestor, skipping hook shells."""
     fallback = os.getppid()
+    if sys.platform == "win32":
+        return find_host_ancestor_windows(fallback, "claude")
     try:
         raw = subprocess.check_output(
             ["ps", "-axo", "pid=,ppid=,command="],
@@ -732,19 +720,6 @@ def _spawn_exit_watcher(
     service_url: str = "",
 ) -> None:
     """Launch a detached watcher that syncs only after Claude exits."""
-
-    def _pid_alive(pid: int) -> bool:
-        if pid <= 1:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except Exception:
-            return False
 
     # Cleanup stale watcher pidfiles so the directory does not grow forever.
     try:
@@ -991,7 +966,11 @@ async def _run_heavy(
             print(f"cognee-plugin: identity warning ({e})", file=sys.stderr)
 
     try:
-        if user_id and is_cloud_mode(config):
+        # Cloud: the API key IS the identity (the server derives the principal
+        # from X-Api-Key), so dataset creation must NOT be gated on user_id —
+        # servers without /users/me (e.g. cloud tenants) leave user_id empty
+        # while auth works fine. Only the SDK branch below needs a User object.
+        if is_cloud_mode(config):
             await ensure_dataset_ready_via_api(
                 config.get("base_url", ""),
                 agent_api_key or config.get("api_key", ""),
@@ -1111,11 +1090,15 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
 
 
 def _ensure_statusline_configured() -> None:
-    """Write the statusLine entry to ~/.claude/settings.json if not already set.
+    """Write the statusLine entry to ~/.claude/settings.json when safe.
 
     Claude Code hot-reloads settings.json, so the status line becomes active on
     the next status refresh without requiring a restart.
     """
+    if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
+        hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
+        return
+
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     if plugin_root:
         statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
@@ -1129,7 +1112,14 @@ def _ensure_statusline_configured() -> None:
         return
 
     settings_path = Path.home() / ".claude" / "settings.json"
-    desired = {"type": "command", "command": str(statusline_sh)}
+    # Guard on the script's existence at run time. Claude Code does not remove
+    # this statusLine entry when the plugin is uninstalled, and the command runs
+    # through a shell — so if the plugin's files are later purged from the cache,
+    # a bare path would fail on every refresh. The `[ -x ] && exec … || true`
+    # guard degrades to a clean, empty status line instead. (When the files
+    # linger but the plugin is disabled, the renderer self-evicts this entry.)
+    guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
+    desired = {"type": "command", "command": guarded_command}
 
     try:
         settings: dict = {}
@@ -1138,7 +1128,16 @@ def _ensure_statusline_configured() -> None:
             if text:
                 settings = json.loads(text)
 
-        if settings.get("statusLine") == desired:
+        existing = settings.get("statusLine")
+        if existing == desired:
+            return
+
+        existing_command = existing.get("command") if isinstance(existing, dict) else None
+        is_cognee_owned = (
+            isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command
+        )
+        if existing and not is_cognee_owned:
+            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
             return
 
         settings["statusLine"] = desired
@@ -1195,6 +1194,45 @@ def _apply_memory_preference(output: dict) -> dict:
         f"{existing}\n\n{_MEMORY_PREFERENCE_STEER}" if existing else _MEMORY_PREFERENCE_STEER
     )
     result["hookSpecificOutput"] = hso
+    return result
+
+
+def _apply_update_nudge(output: dict) -> dict:
+    """Append a one-time 'update available' systemMessage (once per new version).
+
+    The version comparison + marker are produced by the background check in the
+    idle watcher; here we only READ the marker (no network). The status line
+    surfaces the same info ambiently on every refresh — this message is the
+    actionable, one-shot nudge. Shown once per newly-detected version (tracked
+    via ``notified_version``) so it never nags, and auto-stops once updated.
+    """
+    try:
+        from _plugin_common import mark_update_notified, read_update_status
+
+        status = read_update_status()
+    except Exception:
+        return output
+    if not status:
+        return output
+    installed = str(status.get("installed_version") or "")
+    latest = str(status.get("latest_version") or "")
+    if not (installed and latest) or status.get("notified_version") == latest:
+        return output
+
+    message = (
+        f"Cognee update available {installed} → {latest} — run "
+        "`/plugin update cognee-memory@cognee` (or enable marketplace auto-update)."
+    )
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    try:
+        mark_update_notified(latest)
+    except Exception:
+        pass
     return result
 
 
@@ -1358,6 +1396,7 @@ def main():
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     output = _apply_memory_preference(output)
+    output = _apply_update_nudge(output)
     print(json.dumps(output or {}))
 
 
