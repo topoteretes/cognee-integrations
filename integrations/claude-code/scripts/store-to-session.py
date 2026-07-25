@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -24,6 +25,7 @@ from _plugin_common import (
     append_warmup_entry,
     bump_save_counter,
     bump_turn_counter,
+    elapsed_ms,
     get_session_key,
     hook_log,
     http_api_ready,
@@ -61,12 +63,19 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
     The server bridges the session itself from its session cache (improve),
     instead of the old client-side full-document re-post — see run_session_improve.
     """
+    improve_start = time.monotonic()
     try:
         if http_api_ready():
             wrote = run_session_improve(dataset, session_id)
             hook_log(
                 "auto_improve_fired",
-                {"reason": reason, "session": session_id, "via": "http_improve", "wrote": wrote},
+                {
+                    "reason": reason,
+                    "session": session_id,
+                    "via": "http_improve",
+                    "wrote": wrote,
+                    "elapsed_ms": elapsed_ms(improve_start),
+                },
             )
             if wrote:
                 notify(f"session improve submitted ({reason})")
@@ -81,11 +90,16 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
                 "session": session_id,
                 "via": "local_improve",
                 "ok": bool(result.get("ok")),
+                "elapsed_ms": elapsed_ms(improve_start),
             },
         )
         notify(f"session improve completed ({reason})")
     except Exception as exc:
-        hook_log("auto_improve_error", {"reason": reason, "error": str(exc)[:200]})
+        # Emit elapsed_ms on the failure path too, so time-to-failure stays visible.
+        hook_log(
+            "auto_improve_error",
+            {"reason": reason, "error": str(exc)[:200], "elapsed_ms": elapsed_ms(improve_start)},
+        )
 
 
 def _truncate_str(value, cap: int) -> str:
