@@ -618,7 +618,9 @@ def append_http_bridge_entry(
         return
     if not (question or answer or trace):
         return
-    question, answer, trace = _strip_surrogates(question), _strip_surrogates(answer), _strip_surrogates(trace)
+    question = _strip_surrogates(question)
+    answer = _strip_surrogates(answer)
+    trace = _strip_surrogates(trace)
 
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))

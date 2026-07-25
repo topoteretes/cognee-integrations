@@ -455,7 +455,7 @@ async def _run(prompt: str) -> dict | None:
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": full_context,
-        }
+        },
     }
     return output
 
@@ -494,9 +494,14 @@ def main():
 
 
 if __name__ == "__main__":
-    print(json.dumps(main() or {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": "",
-        }
-    }))
+    print(
+        json.dumps(
+            main()
+            or {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "",
+                }
+            }
+        )
+    )
