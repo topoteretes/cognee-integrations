@@ -41,8 +41,13 @@ try:
 except Exception:  # pragma: no cover - hook deps not importable in this environment
     ss = None
 
-_PROVIDER_ENV_VARS = ("DB_PROVIDER", "VECTOR_DB_PROVIDER", "GRAPH_DATABASE_PROVIDER",
-                      "EMBEDDING_PROVIDER", "LLM_PROVIDER")
+_PROVIDER_ENV_VARS = (
+    "DB_PROVIDER",
+    "VECTOR_DB_PROVIDER",
+    "GRAPH_DATABASE_PROVIDER",
+    "EMBEDDING_PROVIDER",
+    "LLM_PROVIDER",
+)
 
 
 class _ProviderEnvSandbox:

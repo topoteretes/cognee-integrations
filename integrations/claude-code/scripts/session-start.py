@@ -30,7 +30,6 @@ from _plugin_common import (
     _COGNEE_CACHE_DIR,
     _COGNEE_DATA_DIR,
     _COGNEE_SYSTEM_DIR,
-    _parse_host_port,
     _VENV_DIR,
     _VENV_PYTHON,
     _VENV_READY_MARKER,
@@ -39,7 +38,6 @@ from _plugin_common import (
     apply_cognee_env,
     ensure_launch_record,
     hook_log,
-    is_local_url,
     mark_server_ready,
     quiet_hook_output,
     resolve_session_key_from_payload,
@@ -139,7 +137,12 @@ def _detect_required_extras() -> str:
 
 def _cognee_install_spec() -> str:
     extras = _detect_required_extras()
-    return f"cognee[{extras}]=={_PINNED_COGNEE_VERSION}" if extras else f"cognee=={_PINNED_COGNEE_VERSION}"
+    return (
+        f"cognee[{extras}]=={_PINNED_COGNEE_VERSION}"
+        if extras
+        else f"cognee=={_PINNED_COGNEE_VERSION}"
+    )
+
 
 # Install single-flight. Distinct from the server boot lock (which is short, on
 # the assumption a boot completes in ~a minute): a cold cognee install can take
@@ -352,6 +355,17 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 _VENV_INSTALL_LOCK.unlink()
             except Exception as exc:
                 hook_log("venv_install_lock_release_failed", {"error": str(exc)[:200]})
+
+
+def _parse_host_port(url: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+    return (parsed.hostname or "localhost"), (parsed.port or 8011)
+
+
+def _is_local_url(url: str) -> bool:
+    """True if the URL points at this machine (so we may boot a server on it)."""
+    host, _ = _parse_host_port(url)
+    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 
 def _with_scheme(url: str) -> str:
@@ -1352,7 +1366,7 @@ async def _start(payload: dict | None = None) -> dict:
     user_id = ""
     agent_api_key = ""
     server_live = _health_ok(_health_url(target_url))
-    will_boot = (not server_live) and is_local_url(target_url)
+    will_boot = (not server_live) and _is_local_url(target_url)
     hook_log(
         "endpoint_mode_selected",
         {"base_url": target_url, "server_live": server_live, "will_boot": will_boot},
@@ -1372,7 +1386,7 @@ async def _start(payload: dict | None = None) -> dict:
             boot_timeout=_HEALTH_TIMEOUT_SECONDS,
         )
         if not ok:
-            if _LAZY_BOOTSTRAP and is_local_url(target_url):
+            if _LAZY_BOOTSTRAP and _is_local_url(target_url):
                 # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:
