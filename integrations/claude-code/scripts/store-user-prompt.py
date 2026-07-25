@@ -158,9 +158,13 @@ async def _store(prompt: str, payload: dict):
         except Exception as exc:
             hook_log("prompt_prepare_warning", {"error": str(exc)[:200]})
 
+    # Round-trip through utf-8 with errors="replace": prompts pasted from
+    # transcripts can carry lone surrogates, and one stored surrogate 500s
+    # the session-detail endpoint and wedges the improve pipeline server-side.
+    safe_prompt = prompt[:MAX_TEXT].encode("utf-8", errors="replace").decode("utf-8")
     remember_pending_prompt(
         session_id,
-        prompt[:MAX_TEXT],
+        safe_prompt,
         turn_id=str(payload.get("turn_id") or ""),
         context=_prompt_context(payload),
     )

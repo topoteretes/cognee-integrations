@@ -190,3 +190,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "",
+                }
+            }
+        )
+    )

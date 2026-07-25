@@ -103,13 +103,19 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
 
 
 def _truncate_str(value, cap: int) -> str:
-    """Coerce to string and cap at ``cap`` bytes (utf-8), appending ``...`` if truncated."""
+    """Coerce to string and cap at ``cap`` bytes (utf-8), appending ``...`` if truncated.
+
+    Always round-trips through utf-8 with errors="replace": hook payloads can
+    carry lone surrogates (binary tool output rendered into the transcript),
+    and one stored surrogate 500s the session-detail endpoint and wedges the
+    improve pipeline server-side.
+    """
     if value is None:
         return ""
     text = value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
     encoded = text.encode("utf-8", errors="replace")
     if len(encoded) <= cap:
-        return text
+        return encoded.decode("utf-8")
     return encoded[: cap - 3].decode("utf-8", errors="ignore") + "..."
 
 

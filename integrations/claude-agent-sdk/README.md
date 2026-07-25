@@ -60,45 +60,43 @@ from cognee_integration_claude import cognee_tools
 
 load_dotenv()
 
+
 async def main():
     # Clean up memory to start fresh (Optional)
     await cognee.forget(everything=True)
-    
+
     # Create an MCP server with Cognee tools
-    server = create_sdk_mcp_server(
-        name="cognee-tools",
-        version="1.0.0",
-        tools=cognee_tools()
-    )
-    
+    server = create_sdk_mcp_server(name="cognee-tools", version="1.0.0", tools=cognee_tools())
+
     # Configure the agent
     options = ClaudeAgentOptions(
         mcp_servers={"tools": server},
         allowed_tools=["mcp__tools__remember", "mcp__tools__recall"],
     )
-    
+
     # Use the agent to store information
     async with ClaudeSDKClient(options=options) as client:
         await client.query(
             "Remember that our company signed a contract with HealthBridge Systems "
             "in the healthcare industry, starting Feb 2023, ending Jan 2026, worth £2.4M"
         )
-        
+
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         print(f"Claude: {block.text}")
-    
+
     # Query the stored information (new agent instance)
     async with ClaudeSDKClient(options=options) as client:
         await client.query("What contracts do we have in the healthcare industry?")
-        
+
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         print(f"Claude: {block.text}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -180,7 +178,7 @@ from cognee_integration_claude import cognee_tools
 server = create_sdk_mcp_server(
     name="memory-tools",
     version="1.0.0",
-    tools=cognee_tools(),                  # or cognee_tools(session_id="user-123")
+    tools=cognee_tools(),  # or cognee_tools(session_id="user-123")
 )
 
 options = ClaudeAgentOptions(
@@ -206,7 +204,7 @@ defaults. Returns cognee's `RememberResult`.
 ```python
 from cognee_integration_claude import remember
 
-await remember("Einstein was born in Ulm.")                       # cognee defaults
+await remember("Einstein was born in Ulm.")  # cognee defaults
 ```
 
 ### `recall(query_text, **kwargs)`
@@ -221,7 +219,9 @@ use `render_results(...)` to flatten it to plain strings.
 import cognee
 from cognee_integration_claude import recall, render_results
 
-results = await recall("healthcare contracts", query_type=cognee.SearchType.GRAPH_COMPLETION, top_k=20)
+results = await recall(
+    "healthcare contracts", query_type=cognee.SearchType.GRAPH_COMPLETION, top_k=20
+)
 texts = render_results(results)
 ```
 
@@ -265,13 +265,9 @@ You can customize Cognee's data and system directories:
 from cognee.api.v1.config import config
 import os
 
-config.data_root_directory(
-    os.path.join(os.path.dirname(__file__), ".cognee/data_storage")
-)
+config.data_root_directory(os.path.join(os.path.dirname(__file__), ".cognee/data_storage"))
 
-config.system_root_directory(
-    os.path.join(os.path.dirname(__file__), ".cognee/system")
-)
+config.system_root_directory(os.path.join(os.path.dirname(__file__), ".cognee/system"))
 ```
 
 ## Examples
@@ -302,33 +298,31 @@ from claude_agent_sdk import (
 )
 from cognee_integration_claude import cognee_tools
 
+
 async def main():
     # Pre-load data directly into Cognee. cognee.remember extracts entities and
     # relationships and persists them — no separate cognify() step needed.
     await cognee.remember("Important company information here...")
     await cognee.remember("More data to remember...")
-    
+
     # Now create an agent that can search this data
-    server = create_sdk_mcp_server(
-        name="cognee-tools",
-        version="1.0.0",
-        tools=cognee_tools()
-    )
-    
+    server = create_sdk_mcp_server(name="cognee-tools", version="1.0.0", tools=cognee_tools())
+
     # Allow only recall if you want a read-only agent
     options = ClaudeAgentOptions(
         mcp_servers={"tools": server},
         allowed_tools=["mcp__tools__recall"],
     )
-    
+
     async with ClaudeSDKClient(options=options) as client:
         await client.query("What information do we have?")
-        
+
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         print(block.text)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -340,9 +334,11 @@ if __name__ == "__main__":
 import asyncio
 import cognee
 
+
 async def reset_knowledge_base():
     """Clear all data and reset the knowledge base"""
     await cognee.forget(everything=True)
+
 
 async def visualize_knowledge_graph():
     """Render the knowledge graph.
@@ -367,9 +363,21 @@ options = ClaudeAgentOptions(
     mcp_servers={"tools": server},
     allowed_tools=["mcp__tools__remember", "mcp__tools__recall"],
     disallowed_tools=[
-        "Task", "Bash", "Glob", "Grep", "ExitPlanMode",
-        "Read", "Edit", "Write", "NotebookEdit", "WebFetch",
-        "TodoWrite", "WebSearch", "BashOutput", "KillShell", "SlashCommand",
+        "Task",
+        "Bash",
+        "Glob",
+        "Grep",
+        "ExitPlanMode",
+        "Read",
+        "Edit",
+        "Write",
+        "NotebookEdit",
+        "WebFetch",
+        "TodoWrite",
+        "WebSearch",
+        "BashOutput",
+        "KillShell",
+        "SlashCommand",
     ],
 )
 ```

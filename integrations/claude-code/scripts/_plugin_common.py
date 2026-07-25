@@ -5,11 +5,13 @@ single log-to-disk helper. Hook scripts shouldn't grow heavy because
 they run on every user prompt / tool call.
 """
 
+import asyncio
 import hashlib
 import json
 import os
 import ssl
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -88,12 +90,41 @@ def apply_cognee_env() -> None:
     inherits a stable, upgrade-safe data location. CACHING and AUTO_FEEDBACK are
     already cognee's defaults but are set explicitly so a future default change
     can't silently disable session-context distillation.
+
+    LLM_INSTRUCTOR_MODE (found live-diagnosed, 2026-07-17): cognee's structured-
+    output calls (cognify summarization, graph extraction, AND the AUTO_FEEDBACK
+    distillation path) all go through instructor's default `json_mode`, which
+    pastes the target JSON schema into the prompt as text and asks a local model
+    to follow it. Small local models are unreliable at this -- empirically
+    reproduced against this exact installed stack: repeated schema-validation
+    failures (missing fields, the model echoing the schema back instead of an
+    answer, unbounded runaway generation) driving thousands of
+    InstructorRetryException retries and, combined with cognee's own retry floor
+    (>=240s before giving up) exceeding this plugin's submit timeout below,
+    guaranteed "timed out" on every single improve() call -- confirmed via
+    hook.log (25 ok vs 189 failed improves since 2026-07-10) and a growing,
+    never-draining backlog counter. `json_schema_mode` uses Ollama's native
+    grammar-constrained decoding instead (the model is physically constrained to
+    valid JSON token-by-token, not just asked nicely) -- reproduced 3/3 valid,
+    sub-second responses against the SAME model/hardware with this mode, vs 0/3
+    valid (or indefinite hangs) in the default mode. Fixes all three failing
+    paths at once; no model swap needed.
+
+    COGNEE_IMPROVE_SUBMIT_TIMEOUT (companion fix, same diagnosis): raised from
+    the prior 180s default (see improve_session_via_http()'s own fallback
+    below) to comfortably clear cognee's own >=240s LLM-retry floor -- with the
+    mode fix above this is now a safety margin rather than the primary fix
+    (json_schema_mode succeeds in under a second in practice), but a genuinely
+    slow moment should no longer be guaranteed to trip the client-side timeout
+    before cognee's own retry logic has even finished one full cycle.
     """
     os.environ.setdefault("SYSTEM_ROOT_DIRECTORY", str(_COGNEE_SYSTEM_DIR))
     os.environ.setdefault("DATA_ROOT_DIRECTORY", str(_COGNEE_DATA_DIR))
     os.environ.setdefault("CACHE_ROOT_DIRECTORY", str(_COGNEE_CACHE_DIR))
     os.environ.setdefault("CACHING", "true")
     os.environ.setdefault("AUTO_FEEDBACK", "true")
+    os.environ.setdefault("LLM_INSTRUCTOR_MODE", "json_schema_mode")
+    os.environ.setdefault("COGNEE_IMPROVE_SUBMIT_TIMEOUT", "420")
 
 
 apply_cognee_env()
@@ -455,6 +486,36 @@ def _write_json_file(path: Path, data: dict) -> None:
         hook_log("json_write_failed", {"path": str(path), "error": str(exc)[:200]})
 
 
+def _strip_surrogates(text: str) -> str:
+    """Remove lone UTF-16 surrogate codepoints (U+D800-U+DFFF).
+
+    A legitimate supplementary-plane character (emoji, etc.) is always ONE code
+    point in Python's str, never a surrogate. Any char in this range in a real
+    str is therefore always broken/unpaired (a bad UTF-16<->UTF-8 boundary
+    upstream -- Windows console/clipboard, mis-decoded tool output), never a
+    valid character. It round-trips silently through json.dumps/loads
+    (ensure_ascii escapes it, loads() reconstitutes it) -- only a raw UTF-8
+    encode downstream (embedding tokenizer, LLM adapter, cognify) catches it,
+    by which point the entry is already persisted. Strip (don't replace) to keep
+    surrounding text readable with no placeholder glyph.
+    """
+    if not text or not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join(ch for ch in text if not (0xD800 <= ord(ch) <= 0xDFFF))
+
+
+def _sanitize_value(value):
+    """Recursively strip surrogates from every string leaf in a JSON-shaped value.
+    Only string VALUES are touched -- dict keys, ints, bools, None pass through."""
+    if isinstance(value, str):
+        return _strip_surrogates(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_value(v) for v in value]
+    return value
+
+
 def _bridge_cache_key(dataset: str, session_id: str) -> str:
     # Keyed by (dataset, session_id) only — deliberately independent of user_id.
     # During lazy-bootstrap warmup the agent isn't registered yet, so user_id is
@@ -557,6 +618,9 @@ def append_http_bridge_entry(
         return
     if not (question or answer or trace):
         return
+    question = _strip_surrogates(question)
+    answer = _strip_surrogates(answer)
+    trace = _strip_surrogates(trace)
 
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
@@ -585,6 +649,168 @@ async def resolve_user(user_id: str):
     from cognee.modules.users.methods import get_default_user
 
     return await get_default_user()
+
+
+# --- Embedding-dimension mismatch detection ---------------------------------
+# When the embedding model changes between writing and reading, stored vectors
+# and fresh query vectors have different dimensions, so recall silently matches
+# nothing. These helpers turn that silent miss into a one-line actionable error
+# naming both dimensions and the active embedder. Strictly best-effort and
+# fail-safe: any uncertainty returns None, preserving the normal "no matches"
+# behavior. Only valid against a *local* store this process can introspect
+# (gate callers with ``service_url_is_local``); a remote/cloud store is owned
+# by the server and isn't reflected by the in-process engine here.
+
+
+def service_url_is_local(url: str = "") -> bool:
+    """True when the resolved service URL points at this machine (loopback)."""
+    host = (urllib.parse.urlparse(url or _local_api_url()).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+async def _sample_stored_vector_dim(engine) -> Optional[int]:
+    """Sample the dimension of a stored vector from any populated collection, or None.
+
+    Enumerates the store's actual collections via the vector interface's
+    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
+    uses) rather than assuming fixed collection names, so it also covers custom
+    pipelines. Never raises: each collection is probed independently and any
+    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
+    backends whose connection can't enumerate return None and fall back to the normal
+    empty-recall path.
+    """
+    try:
+        connection = await engine.get_connection()
+        names = await connection.table_names()
+    except Exception:
+        return None
+    for name in names:
+        try:
+            collection = await engine.get_collection(name)
+            rows = await collection.query().limit(1).to_list()
+            if rows:
+                vector = rows[0].get("vector")
+                if vector is not None:
+                    return len(vector)
+        except Exception:
+            continue
+    return None
+
+
+async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
+    """One-line diagnostic when the stored vectors differ in size from the active
+    embedder's query vectors (so recall can never match), else None.
+
+    Best-effort and fail-safe: any error, or an indeterminate/matching dimension,
+    returns None so the caller keeps the normal empty-recall behavior. ``engine``
+    is injectable for testing.
+    """
+    try:
+        if engine is None:
+            from cognee.infrastructure.databases.vector import get_vector_engine
+
+            engine = get_vector_engine()
+        embed = getattr(engine, "embedding_engine", None)
+        if embed is None:
+            return None
+        query_dim = int(embed.get_vector_size())
+        stored_dim = await _sample_stored_vector_dim(engine)
+        if not stored_dim or not query_dim or stored_dim == query_dim:
+            return None
+        model = getattr(embed, "model", None) or "unknown-model"
+        provider = getattr(embed, "provider", None) or "unknown-provider"
+        return (
+            "Cognee recall found nothing because the embedder changed: stored vectors are "
+            f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
+            f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
+            f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
+        )
+    except Exception:
+        return None
+
+
+_DIM_MEMO_FILE = _PLUGIN_DIR / "dim_check.json"
+_DIM_MEMO_TTL = 300.0  # seconds; re-probe at most this often per embedder signature
+
+
+def _embedder_signature() -> str:
+    """Cheap identity of the active embedder, read from env WITHOUT importing cognee
+    — the only query-side input to the mismatch check. A change here (model, dimension,
+    or provider) invalidates any cached probe result."""
+    return "|".join(
+        os.getenv(k, "") for k in ("EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "EMBEDDING_PROVIDER")
+    )
+
+
+def _read_dim_memo(sig: str) -> Optional[dict]:
+    """Return the cached probe result for ``sig`` if present and fresh, else None.
+    Never raises."""
+    try:
+        data = json.loads(_DIM_MEMO_FILE.read_text(encoding="utf-8"))
+        if data.get("sig") == sig and (time.time() - float(data.get("ts", 0))) < _DIM_MEMO_TTL:
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _write_dim_memo(sig: str, message: Optional[str]) -> None:
+    """Persist a completed probe result keyed by embedder signature. Never raises."""
+    try:
+        _DIM_MEMO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DIM_MEMO_FILE.write_text(
+            json.dumps({"sig": sig, "message": message, "ts": time.time()}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+async def bounded_dim_mismatch_hint(timeout: float = 2.0) -> Optional[str]:
+    """``embedding_dimension_mismatch_hint`` made safe for the per-prompt hook path.
+
+    The probe's first step is a synchronous ``import cognee`` + ``get_vector_engine()``.
+    In the plugin's default http/local-server mode cognee is not otherwise imported, so
+    that is a cold ~1s import running *before the first await* — which a plain
+    ``asyncio.wait_for`` cannot bound (it blocks the event loop). So we run the whole
+    probe in a daemon thread and bound the *wait*: on timeout we return None and abandon
+    the daemon, so a slow import can never stall the hook or delay its process exit. The
+    completed result is memoized on disk per embedder signature (TTL-bounded) so repeated
+    empty recalls in a session don't each pay the import.
+
+    Fail-safe: any error, timeout, or indeterminate result returns None, so the caller
+    keeps the normal empty-recall behavior.
+    """
+    sig = _embedder_signature()
+    cached = _read_dim_memo(sig)
+    if cached is not None:
+        return cached.get("message")
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    def _settle(value: Optional[str]) -> None:
+        if not future.done():
+            future.set_result(value)
+
+    def _worker() -> None:
+        message: Optional[str] = None
+        try:
+            message = asyncio.run(embedding_dimension_mismatch_hint())
+        except Exception:
+            message = None
+        try:
+            loop.call_soon_threadsafe(_settle, message)
+        except Exception:
+            pass  # loop already closed (we timed out); the daemon's result is discarded
+
+    threading.Thread(target=_worker, name="cognee-dim-probe", daemon=True).start()
+    try:
+        message = await asyncio.wait_for(future, timeout=timeout)
+    except Exception:
+        return None
+    _write_dim_memo(sig, message)
+    return message
 
 
 def hook_log(event: str, detail: Optional[dict] = None) -> None:
@@ -816,6 +1042,8 @@ def remember_pending_prompt(
     """Store the current prompt until Codex Stop provides the assistant answer."""
     if not session_id or not prompt.strip():
         return
+    prompt = _strip_surrogates(prompt)
+    context = _strip_surrogates(context)
     data = _load_json_file(_pending_file(session_id))
     turn_key, session_key = _pending_keys(session_id, turn_id)
     entry = {
@@ -1445,6 +1673,7 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    entry = _sanitize_value(entry)
     return _json_http_request(
         "/api/v1/remember/entry",
         {
@@ -1860,6 +2089,7 @@ def append_warmup_entry(dataset: str, session_id: str, entry: dict) -> None:
     """
     if not dataset or not session_id or not isinstance(entry, dict):
         return
+    entry = _sanitize_value(entry)
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
         key = _bridge_cache_key(dataset, session_id)

@@ -385,7 +385,7 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `requestTimeoutMs` | number | `60000` | HTTP timeout for Cognee requests |
+| `requestTimeoutMs` | number | `120000` | HTTP timeout for Cognee requests |
 | `ingestionTimeoutMs` | number | `300000` | HTTP timeout for add/update requests |
 
 ### Recall budget & circuit breaker

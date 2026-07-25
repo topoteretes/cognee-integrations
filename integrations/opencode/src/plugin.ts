@@ -21,7 +21,7 @@ function resolveConfig(customConfig?: Partial<CogneePluginConfig>): Required<Cog
     maxTokens: customConfig?.maxTokens || 1000,
     autoRecall: customConfig?.autoRecall !== false,
     improveOnSessionEnd: customConfig?.improveOnSessionEnd !== false,
-    requestTimeoutMs: customConfig?.requestTimeoutMs || 60000,
+    requestTimeoutMs: customConfig?.requestTimeoutMs || 120000,
     ingestionTimeoutMs: customConfig?.ingestionTimeoutMs || 300000,
   };
 }

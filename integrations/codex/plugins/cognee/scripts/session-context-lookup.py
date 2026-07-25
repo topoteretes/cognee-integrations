@@ -20,6 +20,7 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    bounded_dim_mismatch_hint,
     drain_warmup_entries,
     get_session_key,
     hook_log,
@@ -34,6 +35,7 @@ from _plugin_common import (
     resolve_user,
     server_health_ok,
     server_ready_hint,
+    service_url_is_local,
     set_session_key,
 )
 from cognee_statusline_render import render_status_for_host
@@ -213,6 +215,18 @@ async def _run(prompt: str) -> dict | None:
 
         user = await resolve_user(_load_user_id())
 
+    # Per-scope instrumentation (WS7 observability): capture {hits, elapsed_ms}
+    # for every scope, keyed by its stable label. Pre-seed all 5 scopes as
+    # skipped, in canonical order and before the breaker-open branch below can
+    # blank scope_specs, so the event always carries the full set; the loop
+    # overwrites each scope that actually runs. Purely additive: it must not
+    # touch recall results, ordering, or control flow, and must never raise into
+    # the keystroke->answer path.
+    per_scope: dict[str, dict] = {
+        scope_list[0]: {"hits": 0, "elapsed_ms": 0, "skipped": True}
+        for scope_list, _qtype, _profile in scope_specs
+    }
+
     # Hard time-box: this hook is on the keystroke->answer path, so recall must
     # never be the long pole. Each scope gets a short per-call timeout, and the
     # whole loop stops once the overall budget is spent. Partial results are fine.
@@ -235,6 +249,8 @@ async def _run(prompt: str) -> dict | None:
         if time.monotonic() >= budget_deadline:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
+        part = None
+        t0 = time.monotonic()
         try:
             if cloud_mode:
                 part = recall_via_http(
@@ -266,6 +282,13 @@ async def _run(prompt: str) -> dict | None:
                 results.extend(part)
         except Exception as exc:
             hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
+        finally:
+            # hits = raw count from this scope's call (pre-bucketing/filtering);
+            # elapsed_ms measured around the call, recorded even when it errored.
+            per_scope[scope_list[0]] = {
+                "hits": len(part or []),
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
@@ -319,6 +342,7 @@ async def _run(prompt: str) -> dict | None:
                     .datetime.now(__import__("datetime").timezone.utc)
                     .isoformat(timespec="seconds"),
                     "hits": counts,
+                    "per_scope": per_scope,
                     "saves_last_turn": saves_last_turn,
                 }
             ),
@@ -367,12 +391,34 @@ async def _run(prompt: str) -> dict | None:
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_hit",
+            {"counts": counts, "per_scope": per_scope, "saves_last_turn": saves_last_turn},
+        )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
+        # Zero results can mean a genuine miss OR that the embedding model changed
+        # since indexing (stored vs query vectors differ in size, so nothing can
+        # match). Only the local store is introspectable here; surface a one-line
+        # actionable error when a mismatch is positively confirmed, else fall back
+        # to the normal "no matches" line.
+        dim_message = None
+        if service_url_is_local(service_url):
+            try:
+                dim_message = await bounded_dim_mismatch_hint(timeout=2.0)
+            except Exception as exc:
+                hook_log("dim_check_error", {"error": str(exc)[:200]})
+        if dim_message:
+            full_context = f"{header}\n\n{dim_message}"
+            hook_log("context_lookup_dim_mismatch", {"message": dim_message})
+            notify(dim_message)
+        else:
+            full_context = f"{header}\n\n(no memory matches for this prompt)"
+            hook_log(
+                "context_lookup_empty",
+                {"per_scope": per_scope, "saves_last_turn": saves_last_turn},
+            )
+            notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn for debugging.
     try:
@@ -390,6 +436,7 @@ async def _run(prompt: str) -> dict | None:
                         "session_id": session_id,
                         "prompt": prompt,
                         "hits": counts,
+                        "per_scope": per_scope,
                         "context": full_context,
                     }
                 )
@@ -404,11 +451,11 @@ async def _run(prompt: str) -> dict | None:
     # terminal (mirrors the claude-code integration); hosts that render
     # additionalContext directly will still show the full block.
     output = {
+        "systemMessage": header,
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": full_context,
-            "systemMessage": header,
-        }
+        },
     }
     return output
 
@@ -443,9 +490,18 @@ def main():
             output = asyncio.run(_run(prompt))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
-    if output:
-        print(json.dumps(output))
+    return output
 
 
 if __name__ == "__main__":
-    main()
+    print(
+        json.dumps(
+            main()
+            or {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "",
+                }
+            }
+        )
+    )

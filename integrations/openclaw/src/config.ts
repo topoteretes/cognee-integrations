@@ -17,7 +17,7 @@ export const DEFAULT_AUTO_INDEX = true;
 export const DEFAULT_AUTO_COGNIFY = true;
 export const DEFAULT_AUTO_MEMIFY = false;
 export const DEFAULT_IMPROVE_ON_SESSION_END = true;
-export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 
 // Recall hot path — same defaults as the claude-code/codex integrations

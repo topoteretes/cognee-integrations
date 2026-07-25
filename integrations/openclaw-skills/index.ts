@@ -97,7 +97,7 @@ const DEFAULT_AUTO_OBSERVE = true;
 const DEFAULT_AUTO_AMENDIFY = false;
 const DEFAULT_AMENDIFY_MIN_RUNS = 3;
 const DEFAULT_AMENDIFY_SCORE_THRESHOLD = 0.5;
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 
 const STATE_PATH = join(homedir(), ".openclaw", "skills", "cognee", "state.json");

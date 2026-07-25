@@ -15,7 +15,7 @@ import type {
 
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 3_000;
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 
 // ---------------------------------------------------------------------------
