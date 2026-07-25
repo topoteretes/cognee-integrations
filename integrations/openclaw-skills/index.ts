@@ -215,7 +215,7 @@ class CogneeSkillsClient {
   }
 
   async ingest(skillsFolder: string, datasetName: string): Promise<void> {
-    await this.http.fetchJson("/api/v1/skills/ingest", {
+    await this.http.fetchAPI("/api/v1/skills/ingest", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ skills_folder: skillsFolder, dataset_name: datasetName }),
@@ -223,7 +223,7 @@ class CogneeSkillsClient {
   }
 
   async upsert(skillsFolder: string, datasetName: string): Promise<unknown> {
-    return this.http.fetchJson("/api/v1/skills/upsert", {
+    return this.http.fetchAPI("/api/v1/skills/upsert", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ skills_folder: skillsFolder, dataset_name: datasetName }),
@@ -231,12 +231,12 @@ class CogneeSkillsClient {
   }
 
   async list(): Promise<SkillSummary[]> {
-    return this.http.fetchJson<SkillSummary[]>("/api/v1/skills", { method: "GET" });
+    return this.http.fetchAPI<SkillSummary[]>("/api/v1/skills", { method: "GET" });
   }
 
   async load(skillId: string): Promise<SkillDetail | null> {
     try {
-      return await this.http.fetchJson<SkillDetail>(`/api/v1/skills/${encodeURIComponent(skillId)}`, { method: "GET" });
+      return await this.http.fetchAPI<SkillDetail>(`/api/v1/skills/${encodeURIComponent(skillId)}`, { method: "GET" });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("404")) return null;
@@ -255,7 +255,7 @@ class CogneeSkillsClient {
     amendifyScoreThreshold?: number;
     sessionId?: string;
   }): Promise<ExecuteResult> {
-    return this.http.fetchJson<ExecuteResult>("/api/v1/skills/execute", {
+    return this.http.fetchAPI<ExecuteResult>("/api/v1/skills/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -282,7 +282,7 @@ class CogneeSkillsClient {
     errorMessage?: string;
     latencyMs?: number;
   }): Promise<unknown> {
-    return this.http.fetchJson("/api/v1/skills/observe", {
+    return this.http.fetchAPI("/api/v1/skills/observe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -299,7 +299,7 @@ class CogneeSkillsClient {
   }
 
   async inspect(skillId: string, minRuns = 1, scoreThreshold = 0.5): Promise<InspectionResult | null> {
-    const result = await this.http.fetchJson<InspectionResult | { result: null; message: string }>("/api/v1/skills/inspect", {
+    const result = await this.http.fetchAPI<InspectionResult | { result: null; message: string }>("/api/v1/skills/inspect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ skill_id: skillId, min_runs: minRuns, score_threshold: scoreThreshold }),
@@ -309,7 +309,7 @@ class CogneeSkillsClient {
   }
 
   async previewAmendify(skillId: string, inspectionId?: string, minRuns = 1, scoreThreshold = 0.5): Promise<AmendmentPreview | null> {
-    const result = await this.http.fetchJson<AmendmentPreview | { result: null; message: string }>("/api/v1/skills/preview-amendify", {
+    const result = await this.http.fetchAPI<AmendmentPreview | { result: null; message: string }>("/api/v1/skills/preview-amendify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ skill_id: skillId, inspection_id: inspectionId || null, min_runs: minRuns, score_threshold: scoreThreshold }),
@@ -319,7 +319,7 @@ class CogneeSkillsClient {
   }
 
   async amendify(amendmentId: string): Promise<unknown> {
-    return this.http.fetchJson("/api/v1/skills/amendify", {
+    return this.http.fetchAPI("/api/v1/skills/amendify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ amendment_id: amendmentId }),
@@ -327,7 +327,7 @@ class CogneeSkillsClient {
   }
 
   async rollback(amendmentId: string): Promise<{ success: boolean }> {
-    return this.http.fetchJson<{ success: boolean }>("/api/v1/skills/rollback-amendify", {
+    return this.http.fetchAPI<{ success: boolean }>("/api/v1/skills/rollback-amendify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ amendment_id: amendmentId }),
@@ -335,7 +335,7 @@ class CogneeSkillsClient {
   }
 
   async evaluateAmendify(amendmentId: string): Promise<{ pre_avg: number; post_avg: number; improvement: number; recommendation: string }> {
-    return this.http.fetchJson("/api/v1/skills/evaluate-amendify", {
+    return this.http.fetchAPI("/api/v1/skills/evaluate-amendify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ amendment_id: amendmentId }),
@@ -343,7 +343,7 @@ class CogneeSkillsClient {
   }
 
   async autoAmendify(skillId: string, minRuns = 3, scoreThreshold = 0.5): Promise<unknown | null> {
-    const result = await this.http.fetchJson<unknown>("/api/v1/skills/auto-amendify", {
+    const result = await this.http.fetchAPI<unknown>("/api/v1/skills/auto-amendify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ skill_id: skillId, min_runs: minRuns, score_threshold: scoreThreshold }),

@@ -5,10 +5,14 @@ single log-to-disk helper. Hook scripts shouldn't grow heavy because
 they run on every user prompt / tool call.
 """
 
+import asyncio
 import hashlib
 import json
 import os
+import ssl
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +21,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import _proc
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "codex"
 _SHARED_PLUGIN_ROOT = Path.home() / ".cognee-plugin"
@@ -51,7 +57,7 @@ SAVE_KINDS = ("prompt", "trace", "answer")
 _LOG_LINE_CAP = 600
 
 # Default auto-improve threshold (tool calls + stops). Env override.
-AUTO_IMPROVE_EVERY_DEFAULT = 30
+AUTO_IMPROVE_EVERY_DEFAULT = 150
 SYNC_LOCK_STALE_SECONDS = 15 * 60
 _DEFAULT_LOCAL_SERVICE_URL = "http://localhost:8011"
 
@@ -376,19 +382,13 @@ def load_resolved(session_key: str = "") -> dict:
     if api_key:
         resolved["api_key"] = api_key
 
-    # Resolve caller identity.
-    try:
-        me = _json_http_request("/api/v1/users/me", method="GET", timeout=10.0)
-        if isinstance(me, dict):
-            user_id = str(me.get("id") or "").strip()
-            if user_id:
-                resolved["user_id"] = user_id
-    except Exception as exc:
-        hook_log("runtime_state_users_me_failed", {"error": str(exc)[:200]})
-
-    # Resolve active connection details. The connection is registered under the
-    # per-launch conn_uuid handle, so query by that — not the session id (which
-    # can change on a switch) and not the host correlation key.
+    # Resolve active connection details FIRST — it doubles as the primary
+    # identity source. The connection is registered under the per-launch
+    # conn_uuid handle, so query by that — not the session id (which can change
+    # on a switch) and not the host correlation key. Its agent.user_id is
+    # served by both OSS servers and cloud tenants, whereas /users/me is absent
+    # on some tenants (404 on every hook), so the users/me probe below runs
+    # only when identity is still unresolved.
     try:
         query = ""
         if conn_uuid:
@@ -407,12 +407,24 @@ def load_resolved(session_key: str = "") -> dict:
                 if agent_session_name:
                     resolved["agent_session_name"] = agent_session_name
                 agent_user_id = str(agent.get("user_id") or "").strip()
-                if agent_user_id and not resolved.get("user_id"):
+                if agent_user_id:
                     resolved["user_id"] = agent_user_id
                 status = str(agent.get("status") or "").strip().lower()
                 resolved["registered"] = status == "active"
     except Exception as exc:
         hook_log("runtime_state_connection_lookup_failed", {"error": str(exc)[:200]})
+
+    # Fallback identity probe — only when the connection lookup yielded none
+    # (e.g. before registration on a fresh launch).
+    if not resolved.get("user_id"):
+        try:
+            me = _json_http_request("/api/v1/users/me", method="GET", timeout=10.0)
+            if isinstance(me, dict):
+                user_id = str(me.get("id") or "").strip()
+                if user_id:
+                    resolved["user_id"] = user_id
+        except Exception as exc:
+            hook_log("runtime_state_users_me_failed", {"error": str(exc)[:200]})
 
     return resolved
 
@@ -474,6 +486,59 @@ def _bridge_file(session_id: str = "") -> Path:
     return _BRIDGE_DIR / f"{_agent_session_scope(session_id)}.json"
 
 
+# Short mutex for read-modify-write of the per-session buffer file. Appends
+# from concurrent async hooks (and the drain's trim write-back) would otherwise
+# clobber each other: os.replace keeps the file valid but last-writer-wins,
+# silently dropping the other writer's entry. Critical sections are
+# milliseconds, so waiting is cheap.
+_BUFFER_LOCK = _PLUGIN_DIR / "buffer.lock"
+_BUFFER_LOCK_STALE_SECONDS = 15.0
+_BUFFER_LOCK_TIMEOUT_SECONDS = 1.0
+_BUFFER_LOCK_POLL_SECONDS = 0.02
+
+
+@contextmanager
+def _buffer_lock():
+    """Acquire the buffer-file mutex, waiting briefly; fail open on timeout.
+
+    Yields True when the lock was acquired. On timeout/error the caller
+    proceeds WITHOUT the lock — a rare lost update beats a hook that hangs.
+    """
+    deadline = time.monotonic() + _BUFFER_LOCK_TIMEOUT_SECONDS
+    acquired = False
+    while True:
+        try:
+            _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+            if _BUFFER_LOCK.exists():
+                try:
+                    if time.time() - _BUFFER_LOCK.stat().st_mtime > _BUFFER_LOCK_STALE_SECONDS:
+                        _BUFFER_LOCK.unlink()
+                except FileNotFoundError:
+                    pass
+            fd = os.open(str(_BUFFER_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            acquired = True
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                hook_log("buffer_lock_timeout", {})
+                break
+            time.sleep(_BUFFER_LOCK_POLL_SECONDS)
+        except Exception as exc:
+            hook_log("buffer_lock_error", {"error": str(exc)[:200]})
+            break
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                _BUFFER_LOCK.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                hook_log("buffer_lock_release_failed", {"error": str(exc)[:200]})
+
+
 def append_http_bridge_entry(
     dataset: str,
     session_id: str,
@@ -493,14 +558,15 @@ def append_http_bridge_entry(
     if not (question or answer or trace):
         return
 
-    cache = _load_json_file(_bridge_file(session_id))
-    key = _bridge_cache_key(dataset, session_id)
-    session_cache = cache.setdefault(key, {"qa": [], "trace": []})
-    if question or answer:
-        session_cache.setdefault("qa", []).append({"question": question, "answer": answer})
-    if trace:
-        session_cache.setdefault("trace", []).append(trace)
-    _write_json_file(_bridge_file(session_id), cache)
+    with _buffer_lock():
+        cache = _load_json_file(_bridge_file(session_id))
+        key = _bridge_cache_key(dataset, session_id)
+        session_cache = cache.setdefault(key, {"qa": [], "trace": []})
+        if question or answer:
+            session_cache.setdefault("qa", []).append({"question": question, "answer": answer})
+        if trace:
+            session_cache.setdefault("trace", []).append(trace)
+        _write_json_file(_bridge_file(session_id), cache)
 
 
 async def resolve_user(user_id: str):
@@ -519,6 +585,168 @@ async def resolve_user(user_id: str):
     from cognee.modules.users.methods import get_default_user
 
     return await get_default_user()
+
+
+# --- Embedding-dimension mismatch detection ---------------------------------
+# When the embedding model changes between writing and reading, stored vectors
+# and fresh query vectors have different dimensions, so recall silently matches
+# nothing. These helpers turn that silent miss into a one-line actionable error
+# naming both dimensions and the active embedder. Strictly best-effort and
+# fail-safe: any uncertainty returns None, preserving the normal "no matches"
+# behavior. Only valid against a *local* store this process can introspect
+# (gate callers with ``service_url_is_local``); a remote/cloud store is owned
+# by the server and isn't reflected by the in-process engine here.
+
+
+def service_url_is_local(url: str = "") -> bool:
+    """True when the resolved service URL points at this machine (loopback)."""
+    host = (urllib.parse.urlparse(url or _local_api_url()).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+async def _sample_stored_vector_dim(engine) -> Optional[int]:
+    """Sample the dimension of a stored vector from any populated collection, or None.
+
+    Enumerates the store's actual collections via the vector interface's
+    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
+    uses) rather than assuming fixed collection names, so it also covers custom
+    pipelines. Never raises: each collection is probed independently and any
+    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
+    backends whose connection can't enumerate return None and fall back to the normal
+    empty-recall path.
+    """
+    try:
+        connection = await engine.get_connection()
+        names = await connection.table_names()
+    except Exception:
+        return None
+    for name in names:
+        try:
+            collection = await engine.get_collection(name)
+            rows = await collection.query().limit(1).to_list()
+            if rows:
+                vector = rows[0].get("vector")
+                if vector is not None:
+                    return len(vector)
+        except Exception:
+            continue
+    return None
+
+
+async def embedding_dimension_mismatch_hint(engine=None) -> Optional[str]:
+    """One-line diagnostic when the stored vectors differ in size from the active
+    embedder's query vectors (so recall can never match), else None.
+
+    Best-effort and fail-safe: any error, or an indeterminate/matching dimension,
+    returns None so the caller keeps the normal empty-recall behavior. ``engine``
+    is injectable for testing.
+    """
+    try:
+        if engine is None:
+            from cognee.infrastructure.databases.vector import get_vector_engine
+
+            engine = get_vector_engine()
+        embed = getattr(engine, "embedding_engine", None)
+        if embed is None:
+            return None
+        query_dim = int(embed.get_vector_size())
+        stored_dim = await _sample_stored_vector_dim(engine)
+        if not stored_dim or not query_dim or stored_dim == query_dim:
+            return None
+        model = getattr(embed, "model", None) or "unknown-model"
+        provider = getattr(embed, "provider", None) or "unknown-provider"
+        return (
+            "Cognee recall found nothing because the embedder changed: stored vectors are "
+            f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
+            f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
+            f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
+        )
+    except Exception:
+        return None
+
+
+_DIM_MEMO_FILE = _PLUGIN_DIR / "dim_check.json"
+_DIM_MEMO_TTL = 300.0  # seconds; re-probe at most this often per embedder signature
+
+
+def _embedder_signature() -> str:
+    """Cheap identity of the active embedder, read from env WITHOUT importing cognee
+    — the only query-side input to the mismatch check. A change here (model, dimension,
+    or provider) invalidates any cached probe result."""
+    return "|".join(
+        os.getenv(k, "") for k in ("EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "EMBEDDING_PROVIDER")
+    )
+
+
+def _read_dim_memo(sig: str) -> Optional[dict]:
+    """Return the cached probe result for ``sig`` if present and fresh, else None.
+    Never raises."""
+    try:
+        data = json.loads(_DIM_MEMO_FILE.read_text(encoding="utf-8"))
+        if data.get("sig") == sig and (time.time() - float(data.get("ts", 0))) < _DIM_MEMO_TTL:
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _write_dim_memo(sig: str, message: Optional[str]) -> None:
+    """Persist a completed probe result keyed by embedder signature. Never raises."""
+    try:
+        _DIM_MEMO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DIM_MEMO_FILE.write_text(
+            json.dumps({"sig": sig, "message": message, "ts": time.time()}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+async def bounded_dim_mismatch_hint(timeout: float = 2.0) -> Optional[str]:
+    """``embedding_dimension_mismatch_hint`` made safe for the per-prompt hook path.
+
+    The probe's first step is a synchronous ``import cognee`` + ``get_vector_engine()``.
+    In the plugin's default http/local-server mode cognee is not otherwise imported, so
+    that is a cold ~1s import running *before the first await* — which a plain
+    ``asyncio.wait_for`` cannot bound (it blocks the event loop). So we run the whole
+    probe in a daemon thread and bound the *wait*: on timeout we return None and abandon
+    the daemon, so a slow import can never stall the hook or delay its process exit. The
+    completed result is memoized on disk per embedder signature (TTL-bounded) so repeated
+    empty recalls in a session don't each pay the import.
+
+    Fail-safe: any error, timeout, or indeterminate result returns None, so the caller
+    keeps the normal empty-recall behavior.
+    """
+    sig = _embedder_signature()
+    cached = _read_dim_memo(sig)
+    if cached is not None:
+        return cached.get("message")
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    def _settle(value: Optional[str]) -> None:
+        if not future.done():
+            future.set_result(value)
+
+    def _worker() -> None:
+        message: Optional[str] = None
+        try:
+            message = asyncio.run(embedding_dimension_mismatch_hint())
+        except Exception:
+            message = None
+        try:
+            loop.call_soon_threadsafe(_settle, message)
+        except Exception:
+            pass  # loop already closed (we timed out); the daemon's result is discarded
+
+    threading.Thread(target=_worker, name="cognee-dim-probe", daemon=True).start()
+    try:
+        message = await asyncio.wait_for(future, timeout=timeout)
+    except Exception:
+        return None
+    _write_dim_memo(sig, message)
+    return message
 
 
 def hook_log(event: str, detail: Optional[dict] = None) -> None:
@@ -543,6 +771,51 @@ def hook_log(event: str, detail: Optional[dict] = None) -> None:
             fh.write(serialized + "\n")
     except Exception:
         pass
+
+
+_SSL_CONTEXT: "ssl.SSLContext | None" = None
+
+
+def _https_context() -> ssl.SSLContext:
+    """Shared TLS context for every urllib HTTPS call (cloud/remote mode).
+
+    macOS Python builds often ship without root CA certs in the default
+    context, so HTTPS verification against Cognee Cloud fails with
+    CERTIFICATE_VERIFY_FAILED. Mirror the recall path's resolution once, here,
+    so all HTTPS traffic shares it: prefer certifi, else walk SSL_CERT_FILE and
+    known system cert bundles. Built once and cached. Passing this to urlopen
+    for an http:// (localhost) URL is harmless — urllib ignores the context for
+    non-HTTPS requests.
+    """
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is not None:
+        return _SSL_CONTEXT
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
+        loaded = False
+        for path in filter(
+            None,
+            [
+                os.environ.get("SSL_CERT_FILE"),
+                "/etc/ssl/cert.pem",
+                "/etc/ssl/certs/ca-certificates.crt",
+            ],
+        ):
+            if os.path.exists(path):
+                try:
+                    ctx.load_verify_locations(path)
+                    loaded = True
+                    break
+                except Exception:
+                    pass
+        if not loaded:
+            hook_log("https_context_no_ca_bundle", {})
+    _SSL_CONTEXT = ctx
+    return ctx
 
 
 def _reexec_into_venv() -> None:
@@ -804,13 +1077,7 @@ def sync_lock(owner: str):
                 pid = 0
             pid_alive = False
             if pid > 0:
-                try:
-                    os.kill(pid, 0)
-                    pid_alive = True
-                except PermissionError:
-                    pid_alive = True
-                except OSError:
-                    pid_alive = False
+                pid_alive = _proc.pid_alive(pid)
             if not pid_alive or now - created_at > SYNC_LOCK_STALE_SECONDS:
                 try:
                     _SYNC_LOCK.unlink()
@@ -928,7 +1195,9 @@ def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
     if not base:
         return False
     try:
-        with urllib.request.urlopen(f"{base}/health", timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            f"{base}/health", timeout=timeout, context=_https_context()
+        ) as resp:
             return resp.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
@@ -988,6 +1257,178 @@ def server_ready_hint(service_url: str = "") -> bool:
     return True
 
 
+# --- Plugin update check (Phase 2) -------------------------------------------
+# Background, once-a-day check comparing the installed plugin version against the
+# version published on the tracked git ref. The network call runs only here (in
+# the background idle watcher); the hot path (in-context status via
+# render_status_for_host, SessionStart nudge) merely READS the marker this
+# writes. Codex tracks the marketplace's git ref (main) rather than a version
+# pin, so the nudge is driven by comparing the published .codex-plugin/plugin.json
+# version to the installed one. Talks only to raw.githubusercontent over the
+# shared certifi TLS context. Opt out with COGNEE_UPDATE_CHECK=off.
+_UPDATE_CHECK_FILE = _PLUGIN_DIR / "update-check.json"
+_UPDATE_CHECK_INTERVAL_DEFAULT = 86400.0
+_UPDATE_DEFAULT_REPO = "topoteretes/cognee-integrations"
+_UPDATE_DEFAULT_REF = "main"
+_UPDATE_MANIFEST_PATH = "integrations/codex/plugins/cognee/.codex-plugin/plugin.json"
+
+
+def _update_check_enabled() -> bool:
+    return os.environ.get("COGNEE_UPDATE_CHECK", "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _parse_semver(value: str):
+    """Parse the numeric X.Y.Z core (ignoring any -pre/+build suffix); None if not X.Y.Z."""
+    core = str(value or "").strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
+        return None
+
+
+def _semver_gt(a: str, b: str) -> bool:
+    pa, pb = _parse_semver(a), _parse_semver(b)
+    return bool(pa and pb and pa > pb)
+
+
+def _installed_plugin_version() -> str:
+    candidates = []
+    root = os.environ.get("PLUGIN_ROOT", "").strip()
+    if root:
+        candidates.append(Path(root) / ".codex-plugin" / "plugin.json")
+    candidates.append(Path(__file__).resolve().parent.parent / ".codex-plugin" / "plugin.json")
+    for path in candidates:
+        try:
+            version = str(json.loads(path.read_text(encoding="utf-8")).get("version") or "").strip()
+            if version:
+                return version
+        except Exception:
+            continue
+    return ""
+
+
+def _update_source() -> Optional[tuple]:
+    """(repo, ref) to read the published version from.
+
+    Codex stores marketplace config in ~/.codex/config.toml (not a JSON we parse
+    here) and tracks the ref rather than a version pin, so we read the published
+    version from the default repo/ref. The nudge is purely a version comparison,
+    so a local checkout only nags when it is behind the published version.
+    """
+    return _UPDATE_DEFAULT_REPO, _UPDATE_DEFAULT_REF
+
+
+def _fetch_published_version(repo: str, ref: str, etag: str) -> tuple:
+    """GET the raw .codex-plugin/plugin.json and read its version.
+
+    Returns (version, new_etag, error). version is '' on 304/missing/error so the
+    caller keeps the previously-known latest.
+    """
+    url = f"https://raw.githubusercontent.com/{repo}/{ref}/{_UPDATE_MANIFEST_PATH}"
+    req = urllib.request.Request(url, method="GET")
+    if etag:
+        req.add_header("If-None-Match", etag)
+    try:
+        with urllib.request.urlopen(req, timeout=5.0, context=_https_context()) as resp:
+            body = resp.read().decode("utf-8")
+            new_etag = resp.headers.get("ETag", "") or etag
+            data = json.loads(body)
+            version = str(data.get("version") or "") if isinstance(data, dict) else ""
+            return version, new_etag, ("" if version else "version_missing")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            return "", etag, ""  # unchanged since last check
+        return "", etag, f"http_{exc.code}"
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return "", etag, str(exc)[:120]
+
+
+def maybe_check_for_update() -> None:
+    """Background, ≤once-a-day update check. Writes the marker. Never raises.
+
+    Call from a background process (the idle watcher) — never a synchronous hook,
+    since it may make a network call (bounded to 5s, ≤ once per interval).
+    """
+    try:
+        if not _update_check_enabled():
+            return
+        marker = _load_json_file(_UPDATE_CHECK_FILE)
+        interval = _improve_float_env(
+            "COGNEE_UPDATE_CHECK_INTERVAL", _UPDATE_CHECK_INTERVAL_DEFAULT
+        )
+        now = datetime.now(timezone.utc).timestamp()
+        if now - float(marker.get("last_checked_at", 0) or 0) < interval:
+            return  # checked recently
+        source = _update_source()
+        if source is None:
+            return
+        repo, ref = source
+        installed = _installed_plugin_version()
+        latest, etag, error = _fetch_published_version(repo, ref, str(marker.get("etag") or ""))
+        if not latest:
+            latest = str(marker.get("latest_version") or "")  # 304/error: keep prior
+        update_available = bool(installed and latest and _semver_gt(latest, installed))
+        _write_json_file(
+            _UPDATE_CHECK_FILE,
+            {
+                "last_checked_at": now,
+                "installed_version": installed,
+                "latest_version": latest,
+                "update_available": update_available,
+                "etag": etag,
+                "source": f"{repo}@{ref}",
+                "error": error,
+                "notified_version": str(marker.get("notified_version") or ""),
+            },
+        )
+        hook_log(
+            "update_check",
+            {
+                "installed": installed,
+                "latest": latest,
+                "available": update_available,
+                "error": error,
+            },
+        )
+    except Exception as exc:
+        hook_log("update_check_failed", {"error": str(exc)[:200]})
+
+
+def read_update_status() -> dict:
+    """Zero-network read of the update marker; {} when disabled/absent/current."""
+    if not _update_check_enabled():
+        return {}
+    marker = _load_json_file(_UPDATE_CHECK_FILE)
+    if (
+        isinstance(marker, dict)
+        and marker.get("update_available")
+        and marker.get("installed_version")
+        and marker.get("latest_version")
+    ):
+        return marker
+    return {}
+
+
+def mark_update_notified(version: str) -> None:
+    """Record that the one-time SessionStart nudge for `version` has been shown."""
+    try:
+        marker = _load_json_file(_UPDATE_CHECK_FILE)
+        if not marker:
+            return
+        marker["notified_version"] = str(version or "")
+        _write_json_file(_UPDATE_CHECK_FILE, marker)
+    except Exception as exc:
+        hook_log("update_notified_write_failed", {"error": str(exc)[:200]})
+
+
 def resolve_runtime_mode() -> dict:
     """Resolve hook runtime mode from effective endpoint auth."""
     service_url, api_key = resolved_http_endpoint_auth()
@@ -1029,7 +1470,7 @@ def _json_http_request(
         headers=headers,
         method=method,
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
         body = resp.read().decode("utf-8")
         if not body:
             return None
@@ -1138,7 +1579,9 @@ def recall_via_http(
 
 def _backend_reachable(base_url: str, timeout: float = 1.5) -> bool:
     try:
-        with urllib.request.urlopen(f"{base_url.rstrip('/')}/docs", timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            f"{base_url.rstrip('/')}/docs", timeout=timeout, context=_https_context()
+        ) as resp:
             return 200 <= resp.status < 500
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
@@ -1221,7 +1664,7 @@ def _post_remember_document(
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
         return 200 <= resp.status < 300
 
 
@@ -1283,3 +1726,329 @@ def persist_session_cache_to_graph_via_http(
             {"error": str(exc)[:200], "dataset": dataset, "session": session_id},
         )
         return False
+
+
+# --- Session improve (server-side session->graph bridge) ----------------------
+# The hooks write every turn into the SERVER session cache via /remember/entry,
+# so the server can bridge a session itself: POST /api/v1/improve runs feedback
+# weights, QA persist, trace-feedback persist, distillation, and enrichment over
+# that cache. This replaces the legacy full-document bridge above, which re-sent
+# the whole accumulated session text (raw tool outputs included) for a full
+# re-cognify on every sync. The legacy path is kept only as a fallback for
+# servers without session-aware improve.
+_IMPROVE_UNSUPPORTED_MARKER = _SHARED_PLUGIN_ROOT / "improve-unsupported.json"
+_IMPROVE_UNSUPPORTED_TTL_SECONDS = 24 * 3600
+
+
+def _improve_float_env(name: str, default: float) -> float:
+    try:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _improve_submit_timeout() -> float:
+    return _improve_float_env("COGNEE_IMPROVE_SUBMIT_TIMEOUT", 180.0)
+
+
+def mark_improve_unsupported(base_url: str) -> None:
+    """Record that this server lacks the session-aware improve endpoint."""
+    _write_json_file(
+        _IMPROVE_UNSUPPORTED_MARKER,
+        {
+            "base_url": _normalize_service_url(base_url),
+            "marked_at": datetime.now(timezone.utc).timestamp(),
+        },
+    )
+
+
+def improve_unsupported(base_url: str) -> bool:
+    """True if this server recently rejected the improve endpoint (TTL-bounded)."""
+    data = _load_json_file(_IMPROVE_UNSUPPORTED_MARKER)
+    if not data:
+        return False
+    marked_url = _normalize_service_url(str(data.get("base_url") or ""))
+    if marked_url and marked_url != _normalize_service_url(base_url):
+        return False
+    marked_at = float(data.get("marked_at", 0) or 0)
+    return datetime.now(timezone.utc).timestamp() - marked_at < _IMPROVE_UNSUPPORTED_TTL_SECONDS
+
+
+def append_warmup_entry(dataset: str, session_id: str, entry: dict) -> None:
+    """Buffer a typed QA/trace entry while the server is still warming.
+
+    Per-turn stores go to the server session cache via /remember/entry; before
+    the server serves, those writes would be lost — and improve() bridges only
+    what the server cache holds. Buffered entries are replayed in order by
+    ``drain_warmup_entries`` once the server is ready.
+    """
+    if not dataset or not session_id or not isinstance(entry, dict):
+        return
+    with _buffer_lock():
+        cache = _load_json_file(_bridge_file(session_id))
+        key = _bridge_cache_key(dataset, session_id)
+        session_cache = cache.setdefault(key, {"qa": [], "trace": []})
+        session_cache.setdefault("pending_entries", []).append(entry)
+        _write_json_file(_bridge_file(session_id), cache)
+
+
+_DRAIN_LOCK = _PLUGIN_DIR / "drain.lock"
+_DRAIN_LOCK_STALE_SECONDS = 60.0
+# Pause before the one in-place drain retry in run_session_improve: long enough
+# for a momentary server blip to pass, short enough not to hold up a sync.
+_DRAIN_RETRY_PAUSE_SECONDS = 2.0
+
+
+def _try_acquire_drain_lock() -> bool:
+    """Single-drainer guard: concurrent drains would double-replay entries into
+    the server cache and clobber each other's buffer write-backs."""
+    try:
+        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+        if _DRAIN_LOCK.exists():
+            try:
+                if time.time() - _DRAIN_LOCK.stat().st_mtime > _DRAIN_LOCK_STALE_SECONDS:
+                    _DRAIN_LOCK.unlink()
+            except FileNotFoundError:
+                pass
+        fd = os.open(str(_DRAIN_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception as exc:
+        # Fail open: a rare double replay (deduped server-side per entry write)
+        # is better than a buffer that can never drain.
+        hook_log("drain_lock_error", {"error": str(exc)[:200]})
+        return True
+
+
+def _release_drain_lock() -> None:
+    try:
+        _DRAIN_LOCK.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        hook_log("drain_lock_release_failed", {"error": str(exc)[:200]})
+
+
+def drain_warmup_entries(dataset: str, session_id: str) -> tuple:
+    """Replay warmup-buffered entries into the server session cache, in order.
+
+    Returns ``(drained, remaining)``. Stops at the first replay failure so the
+    unreplayed tail stays buffered (order preserved). Guarded by a single-drainer
+    lock, and the buffer trim is computed against a FRESH re-read of the file so
+    entries appended while the replay was in flight are never lost — the replay
+    is N sequential HTTP calls, a wide window for concurrent async hooks.
+    """
+    if not dataset or not session_id:
+        return 0, 0
+    path = _bridge_file(session_id)
+    key = _bridge_cache_key(dataset, session_id)
+    snapshot = list((_load_json_file(path).get(key) or {}).get("pending_entries") or [])
+    if not snapshot:
+        return 0, 0
+    if not _try_acquire_drain_lock():
+        hook_log("warmup_drain_skipped_locked", {"session": session_id, "pending": len(snapshot)})
+        return 0, len(snapshot)
+    try:
+        drained = 0
+        for entry in snapshot:
+            try:
+                remember_entry_via_http(dataset, session_id, entry)
+                drained += 1
+            except Exception as exc:
+                hook_log("warmup_drain_error", {"error": str(exc)[:200], "drained": drained})
+                break
+        remaining = len(snapshot) - drained
+        if drained:
+            # Re-read before trimming, under the buffer mutex: hooks may append
+            # new pending entries (or qa/trace mirror text) during the replay,
+            # and writing back a stale snapshot would silently delete them.
+            with _buffer_lock():
+                cache = _load_json_file(path)
+                session_cache = cache.get(key) or {}
+                fresh = list(session_cache.get("pending_entries") or [])
+                if fresh[:drained] == snapshot[:drained]:
+                    fresh = fresh[drained:]
+                else:
+                    # Unexpected interleaving — remove the replayed entries by value.
+                    for entry in snapshot[:drained]:
+                        try:
+                            fresh.remove(entry)
+                        except ValueError:
+                            pass
+                session_cache["pending_entries"] = fresh
+                cache[key] = session_cache
+                _write_json_file(path, cache)
+            remaining = len(fresh)
+            hook_log(
+                "warmup_drained",
+                {"session": session_id, "count": drained, "left": remaining},
+            )
+        return drained, remaining
+    finally:
+        _release_drain_lock()
+
+
+def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = None) -> dict:
+    """Bridge one session into the graph via POST /api/v1/improve.
+
+    The server reads its own session cache (feedback weights, QA persist,
+    trace-feedback persist, distillation, enrichment), so no session text is
+    sent. ``run_in_background=true`` backgrounds the cognify-heavy pipelines,
+    but the agent-context and distillation stages still run inside the request,
+    so the submit timeout must stay generous — this must only ever be called
+    from detached workers/async hooks, never a synchronous hook window.
+
+    A 2xx submit counts as success: improve is idempotent (unchanged session
+    content dedups server-side by content hash, and a per-session improve lock
+    makes a concurrent run a no-op).
+    """
+    if not dataset or not session_id:
+        return {"ok": False, "error": "missing dataset/session"}
+    submit_timeout = timeout if timeout is not None else _improve_submit_timeout()
+    try:
+        result = _json_http_request(
+            "/api/v1/improve",
+            {
+                "dataset_name": dataset,
+                "session_ids": [session_id],
+                "run_in_background": True,
+            },
+            timeout=submit_timeout,
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 405, 422):
+            # Older server without session-aware improve: remember it (TTL'd)
+            # so callers fall back to the legacy document bridge.
+            mark_improve_unsupported(_local_api_url())
+            return {"ok": False, "unsupported": True, "status": exc.code}
+        return {"ok": False, "status": exc.code, "error": f"HTTP {exc.code}: {exc.reason}"}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {"ok": False, "status": 0, "error": str(exc)[:200]}
+
+    if isinstance(result, dict) and not result:
+        # The server's per-session improve lock skipped this run ({} response):
+        # another improve is in flight. That run may have extracted the session
+        # cache BEFORE the latest turns landed, so a skip is NOT success — the
+        # caller must retry once the lock frees.
+        return {"ok": False, "busy": True}
+
+    return {"ok": True, "result": result if isinstance(result, dict) else {}}
+
+
+def ensure_dataset_via_http(dataset: str) -> None:
+    """Best-effort create/authorize the dataset before an improve.
+
+    improve() resolves *existing* authorized datasets and fails NON-FATALLY
+    (returning 2xx) when there are none — unlike the legacy /remember bridge,
+    whose add() implicitly created the dataset. Creating here (idempotent
+    POST) means one skipped SessionStart ensure can never silently strand a
+    whole session's sync. Failures are logged and never block the improve —
+    if the dataset truly cannot be created, the improve outcome reports it.
+    """
+    if not dataset:
+        return
+    try:
+        _json_http_request("/api/v1/datasets", {"name": dataset}, timeout=15.0)
+        hook_log("dataset_ensured", {"dataset": dataset})
+        return
+    except urllib.error.HTTPError as exc:
+        # Some deployments route the collection at /datasets/ and answer the
+        # non-slash path with a 307/308, which urllib refuses to follow for a
+        # POST body. Re-issue the POST at the (same-origin) redirect target.
+        if exc.code in (301, 302, 307, 308):
+            base_url = _local_api_url().rstrip("/")
+            target = urllib.parse.urljoin(
+                f"{base_url}/api/v1/datasets", str(exc.headers.get("Location") or "")
+            )
+            if urllib.parse.urlparse(target).netloc == urllib.parse.urlparse(base_url).netloc:
+                headers = {"Content-Type": "application/json"}
+                api_key = _api_key()
+                if api_key:
+                    headers["X-Api-Key"] = api_key
+                req = urllib.request.Request(
+                    target,
+                    data=json.dumps({"name": dataset}).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(
+                        req, timeout=15.0, context=_https_context()
+                    ) as resp:
+                        resp.read()
+                    hook_log("dataset_ensured", {"dataset": dataset, "via": "redirect"})
+                    return
+                except Exception as exc2:
+                    hook_log(
+                        "dataset_ensure_redirect_failed",
+                        {"dataset": dataset, "target": target[:120], "error": str(exc2)[:200]},
+                    )
+                    return
+        # An already-existing dataset may come back 4xx on some servers; log
+        # and proceed rather than blocking the sync on a pre-flight.
+        hook_log("dataset_ensure_http_status", {"dataset": dataset, "status": exc.code})
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        hook_log("dataset_ensure_failed", {"dataset": dataset, "error": str(exc)[:200]})
+
+
+def run_session_improve(dataset: str, session_id: str) -> bool:
+    """API-mode session->graph sync: drain warmup entries, then improve.
+
+    Falls back to the legacy full-document bridge when the server does not
+    support session-aware improve. Returns True when a sync ran successfully.
+    """
+    base_url = _local_api_url()
+    if not _backend_reachable(base_url):
+        return False
+    _, remaining = drain_warmup_entries(dataset, session_id)
+    if remaining:
+        # One bounded retry after a short pause: the tail usually failed on a
+        # momentary blip, and improve reads only what reached the server cache.
+        time.sleep(_DRAIN_RETRY_PAUSE_SECONDS)
+        _, remaining = drain_warmup_entries(dataset, session_id)
+    if improve_unsupported(base_url):
+        return persist_session_cache_to_graph_via_http(dataset, session_id)
+    ensure_dataset_via_http(dataset)
+    outcome = improve_session_via_http(dataset, session_id)
+    if outcome.get("unsupported"):
+        hook_log("improve_unsupported_fallback", {"dataset": dataset, "session": session_id})
+        return persist_session_cache_to_graph_via_http(dataset, session_id)
+    # Busy = another improve holds the session lock (e.g. an idle-watcher run
+    # racing the SessionEnd sync). That run's snapshot may predate the latest
+    # turns, so wait for the lock to free and re-submit; the retried improve
+    # dedups unchanged content server-side, so this never double-processes.
+    busy_deadline = time.monotonic() + _improve_float_env("COGNEE_IMPROVE_BUSY_DEADLINE", 600.0)
+    busy_interval = max(0.1, _improve_float_env("COGNEE_IMPROVE_BUSY_RETRY_INTERVAL", 15.0))
+    while outcome.get("busy") and time.monotonic() < busy_deadline:
+        hook_log("improve_busy_retry", {"dataset": dataset, "session": session_id})
+        time.sleep(busy_interval)
+        outcome = improve_session_via_http(dataset, session_id)
+    hook_log(
+        "improve_fired",
+        {
+            "dataset": dataset,
+            "session": session_id,
+            "ok": bool(outcome.get("ok")),
+            "busy": bool(outcome.get("busy")),
+            "error": str(outcome.get("error") or "")[:120],
+        },
+    )
+    if remaining:
+        # Buffered entries never reached the server cache, so the improve above
+        # persisted an incomplete session. Partial persist beats none (hence the
+        # improve still ran), but report not-synced so the caller's retry loop
+        # re-drives the whole drain+improve — dedup makes the re-run cheap.
+        hook_log(
+            "improve_incomplete_drain",
+            {
+                "dataset": dataset,
+                "session": session_id,
+                "remaining": remaining,
+                "improve_ok": bool(outcome.get("ok")),
+            },
+        )
+        return False
+    return bool(outcome.get("ok"))

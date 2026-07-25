@@ -33,6 +33,7 @@ from _plugin_common import (
     set_session_key,
     touch_activity,
 )
+from _proc import pid_alive
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
@@ -59,11 +60,10 @@ def _watcher_alive() -> bool:
         return False
     try:
         pid = int(_WATCHER_PID.read_text(encoding="utf-8").strip())
-        os.kill(pid, 0)
-        return True
     except Exception as exc:
         hook_log("prompt_watcher_alive_check_failed", {"error": str(exc)[:200]})
         return False
+    return pid_alive(pid)
 
 
 def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: dict) -> None:
@@ -158,9 +158,13 @@ async def _store(prompt: str, payload: dict):
         except Exception as exc:
             hook_log("prompt_prepare_warning", {"error": str(exc)[:200]})
 
+    # Round-trip through utf-8 with errors="replace": prompts pasted from
+    # transcripts can carry lone surrogates, and one stored surrogate 500s
+    # the session-detail endpoint and wedges the improve pipeline server-side.
+    safe_prompt = prompt[:MAX_TEXT].encode("utf-8", errors="replace").decode("utf-8")
     remember_pending_prompt(
         session_id,
-        prompt[:MAX_TEXT],
+        safe_prompt,
         turn_id=str(payload.get("turn_id") or ""),
         context=_prompt_context(payload),
     )

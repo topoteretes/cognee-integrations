@@ -106,10 +106,21 @@ def load_config() -> dict:
     config = dict(_DEFAULTS)
 
     # Layer 2: config file
+    # dataset is intentionally excluded here: it is always driven by the default
+    # or by COGNEE_PLUGIN_DATASET (env var, layer 3). Reading it from the file
+    # would create confusing precedence when users open a terminal without the
+    # env var set. The value is still written to the file for human visibility.
+    _file_excluded = {"dataset"}
     if _CONFIG_FILE.exists():
         try:
             file_cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-            config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
+            config.update(
+                {
+                    k: v
+                    for k, v in file_cfg.items()
+                    if v is not None and v != "" and k not in _file_excluded
+                }
+            )
         except Exception as exc:
             _config_log(
                 "config_file_load_failed", {"path": str(_CONFIG_FILE), "error": str(exc)[:200]}
@@ -141,12 +152,18 @@ def load_config() -> dict:
 def save_config(config: dict) -> None:
     """Write config to disk. Creates directory if needed."""
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    # Only save non-secret, non-default values
+    # Only save non-secret, non-default values.
+    # dataset is always written even when it equals the default so that users
+    # who open the file can see which dataset the plugin is using.
     transient_keys = {"api_key", "llm_api_key", "base_url", "backend"}
+    _always_include = {"dataset"}
     to_save = {
         k: v
         for k, v in config.items()
-        if k not in transient_keys and not k.startswith("_") and v and v != _DEFAULTS.get(k)
+        if k not in transient_keys
+        and not k.startswith("_")
+        and v
+        and (k in _always_include or v != _DEFAULTS.get(k))
     }
     _CONFIG_FILE.write_text(json.dumps(to_save, indent=2), encoding="utf-8")
 
@@ -212,23 +229,70 @@ async def ensure_identity(config: dict):
         return user_id, ""
 
 
+def _cloud_http_request(
+    url: str,
+    *,
+    method: str = "GET",
+    api_key: str = "",
+    json_body: dict | None = None,
+    form_body: dict | None = None,
+    cookies: dict | None = None,
+    timeout: float = 10.0,
+) -> tuple[int, str]:
+    """Blocking stdlib-urllib HTTP for the cloud/remote setup path.
+
+    Cloud mode is a thin REST client that must run without the plugin venv
+    (which is only ever built in local mode), so these setup calls use urllib —
+    like the runtime hot path in ``_plugin_common`` — instead of aiohttp, which
+    would otherwise force the venv onto the cloud path just to be importable.
+
+    Returns ``(status_code, body_text)``. An HTTP error status is captured as
+    ``(code, body)`` rather than raised, so callers branch on the status exactly
+    as they did with aiohttp; network-level errors (URLError/timeout) still
+    raise, matching the aiohttp behavior the callers already guard against.
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    from _plugin_common import _https_context
+
+    headers: dict[str, str] = {}
+    data: bytes | None = None
+    if json_body is not None:
+        data = json.dumps(json_body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    elif form_body is not None:
+        data = urllib.parse.urlencode(form_body).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    if api_key:
+        headers["X-Api-Key"] = str(api_key).strip()
+    if cookies:
+        headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8")
+        except Exception:
+            body = ""
+        return exc.code, body
+
+
 async def _user_id_via_api(service_url: str, api_key: str) -> str:
     """Best-effort resolve the principal's user id from an API key."""
     if not service_url or not str(api_key or "").strip():
         return ""
 
-    import aiohttp
-
     base = service_url.rstrip("/")
     try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(
-            timeout=timeout, headers={"X-Api-Key": str(api_key).strip()}
-        ) as session:
-            async with session.get(f"{base}/api/v1/users/me") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return str(data.get("id", "") or "")
+        status, body = _cloud_http_request(f"{base}/api/v1/users/me", api_key=api_key, timeout=10.0)
+        if status == 200:
+            data = json.loads(body) if body else {}
+            return str(data.get("id", "") or "")
     except Exception as exc:
         _config_log("users_me_lookup_failed", {"error": str(exc)[:200]})
     return ""
@@ -244,15 +308,17 @@ async def ensure_dataset_ready_via_api(service_url: str, api_key: str, dataset: 
     if not service_url or not api_key or not dataset:
         return
 
-    import aiohttp
-
     base = service_url.rstrip("/")
-    async with aiohttp.ClientSession(headers={"X-Api-Key": api_key}) as session:
-        async with session.post(f"{base}/api/v1/datasets", json={"name": dataset}) as resp:
-            if resp.status in (200, 201):
-                return
-            text = await resp.text()
-            raise RuntimeError(f"remote dataset ensure failed ({resp.status}: {text[:200]})")
+    status, text = _cloud_http_request(
+        f"{base}/api/v1/datasets",
+        method="POST",
+        api_key=api_key,
+        json_body={"name": dataset},
+        timeout=30.0,
+    )
+    if status in (200, 201):
+        return
+    raise RuntimeError(f"remote dataset ensure failed ({status}: {text[:200]})")
 
 
 async def _ensure_identity_via_sdk() -> str:
@@ -296,13 +362,9 @@ async def ensure_cognee_ready(config: dict) -> None:
     """
     if is_cloud_mode(config):
         url = config["base_url"]
-        import aiohttp
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{url.rstrip('/')}/health") as resp:
-                if resp.status >= 400:
-                    text = await resp.text()
-                    raise RuntimeError(f"backend health check failed ({resp.status}: {text[:200]})")
+        status, text = _cloud_http_request(f"{url.rstrip('/')}/health", timeout=10.0)
+        if status >= 400:
+            raise RuntimeError(f"backend health check failed ({status}: {text[:200]})")
         print(f"cognee-plugin: connected to {url}", file=sys.stderr)
         return
 
@@ -369,6 +431,37 @@ async def sync_graph_context_to_session(dataset: str, session_id: str, user) -> 
         dataset_id=authorized_datasets[0].id,
         dataset_name=dataset,
     )
+
+
+async def improve_session_local(dataset: str, session_id: str, user) -> dict:
+    """Bridge one session into the graph via the SDK's session-aware improve.
+
+    ``cognee.improve(session_ids=[...])`` reads the session cache itself and
+    runs feedback weights, QA persist, trace-feedback persist (the compact
+    per-step feedback lines — not raw tool output), distillation, enrichment,
+    and (in foreground mode) the graph→session sync — so the explicit
+    persist+sync pair below is only kept as a fallback for older cognee
+    versions without session-aware improve.
+    """
+    if not session_id or not user:
+        return {"ok": False, "error": "missing session/user"}
+
+    import cognee
+
+    try:
+        result = await cognee.improve(
+            dataset,
+            session_ids=[session_id],
+            user=user,
+            run_in_background=False,
+        )
+        return {"ok": True, "result": result}
+    except TypeError as exc:
+        # Older cognee without session-aware improve: legacy persist + sync.
+        _config_log("improve_local_unsupported", {"error": str(exc)[:200]})
+        wrote = await persist_session_cache_to_graph(dataset, session_id, user)
+        graph_result = await sync_graph_context_to_session(dataset, session_id, user)
+        return {"ok": wrote, "legacy": True, "graph_synced": graph_result.get("synced", 0)}
 
 
 def _read_field(entry, field: str) -> str:

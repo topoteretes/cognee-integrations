@@ -115,21 +115,25 @@ def test_malformed_json_is_error_not_unreachable():
     assert out != rh.UNREACHABLE
 
 
-def test_no_cloud_key_sent_to_localhost():
+def test_api_key_sent_to_any_target():
     captured = {}
 
     def _capture(req, timeout=None):
         captured["xapikey"] = req.get_header("X-api-key")  # urllib title-cases header names
         return _Resp("[]")
 
-    # localhost target → cloud key must NOT be attached
-    rh.do_recall("http://localhost:8011", "cloud-key", "q", "", '["graph"]', "5", opener=_capture)
-    assert captured["xapikey"] is None
+    # localhost target → key IS attached (cognee >=1.2.2 enforces auth even on
+    # loopback; a server with auth disabled ignores the header)
+    rh.do_recall("http://localhost:8011", "local-key", "q", "", '["graph"]', "5", opener=_capture)
+    assert captured["xapikey"] == "local-key"
     # remote target → key IS attached
     rh.do_recall(
         "https://tenant.cognee.ai", "cloud-key", "q", "", '["graph"]', "5", opener=_capture
     )
     assert captured["xapikey"] == "cloud-key"
+    # no key configured → header omitted entirely
+    rh.do_recall("http://localhost:8011", "", "q", "", '["graph"]', "5", opener=_capture)
+    assert captured["xapikey"] is None
 
 
 def test_dataset_scoped_in_body():

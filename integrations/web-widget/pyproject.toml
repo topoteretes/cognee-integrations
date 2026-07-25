@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-web-widget"
+version = "0.1.0"
+description = "Embeddable web chat widget powered by cognee memory — cited answers over your docs, scoped per visitor conversation."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Cognee team" }]
+dependencies = [
+    "fastapi>=0.110,<1",
+    "uvicorn>=0.27,<1",
+    "httpx>=0.27,<1",
+]
+
+[project.scripts]
+cognee-web-widget = "cognee_integration_web_widget.server:main"
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/web-widget"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_web_widget*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+cognee_integration_web_widget = ["static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.14.6",
+]
