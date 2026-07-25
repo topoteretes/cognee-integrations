@@ -43,7 +43,7 @@ def test_post_remember_document_background_and_parses_ids():
     captured = {}
     orig = urllib.request.urlopen
 
-    def _fake(req, timeout=None):
+    def _fake(req, timeout=None, context=None):
         captured["req"] = req
         return _Resp(b'{"status":"running","dataset_id":"d1","pipeline_run_id":"p1"}')
 
@@ -166,7 +166,7 @@ def test_post_remember_document_http_error_returns_not_ok():
     # {"ok": False} (graceful) rather than letting it crash the bridge.
     orig = urllib.request.urlopen
 
-    def _raise(req, timeout=None):
+    def _raise(req, timeout=None, context=None):
         raise urllib.error.HTTPError("http://x", 503, "Service Unavailable", {}, None)
 
     urllib.request.urlopen = _raise
@@ -183,7 +183,7 @@ def test_post_remember_document_parse_error_flag():
     # 2xx with an unparseable body (e.g. a proxy error page) flags parse_error.
     orig = urllib.request.urlopen
 
-    def _bad_json(req, timeout=None):
+    def _bad_json(req, timeout=None, context=None):
         return _Resp(b"<html>502 Bad Gateway</html>")
 
     urllib.request.urlopen = _bad_json
@@ -203,7 +203,7 @@ def test_post_remember_document_network_error_returns_not_ok():
     # abort the whole bridge via the caller's outer handler.
     orig = urllib.request.urlopen
 
-    def _raise(req, timeout=None):
+    def _raise(req, timeout=None, context=None):
         raise urllib.error.URLError("connection timed out")
 
     urllib.request.urlopen = _raise
