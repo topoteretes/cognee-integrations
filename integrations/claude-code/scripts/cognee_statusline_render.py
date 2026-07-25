@@ -115,7 +115,7 @@ def _update_segment() -> str:
 
 
 def _pipeline_health_glyph() -> str:
-    """"⚠ N " when the pipeline sweep (scripts/pipeline_sweep.py) has a fresh,
+    """ "⚠ N " when the pipeline sweep (scripts/pipeline_sweep.py) has a fresh,
     non-stale finding of one or more stuck runs or a down server; "" otherwise
     (no file yet, stale, or everything's clean). See
     docs/KB/pipeline-monitor-notify-policy.md for the full monitoring design this
@@ -138,11 +138,12 @@ def _pipeline_health_glyph() -> str:
     if server.get("up") is False:
         return "⚠ server-down "
     summary = raw.get("summary") or {}
-    total_open = int(summary.get("total_open") or 0)
     worst = str(summary.get("worst_classification") or "ok")
-    flagged = sum((summary.get("by_classification") or {}).values()) if isinstance(
-        summary.get("by_classification"), dict
-    ) else 0
+    flagged = (
+        sum((summary.get("by_classification") or {}).values())
+        if isinstance(summary.get("by_classification"), dict)
+        else 0
+    )
     if worst in ("alert", "critical") and flagged > 0:
         return f"⚠ {flagged} pipeline(s) stuck "
     return ""
@@ -239,7 +240,8 @@ def main() -> None:
         return
 
     sys.stdout.write(
-        f"{_pipeline_health_glyph()}{_health_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
+        f"{_pipeline_health_glyph()}{_health_prefix()}"
+        f"cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
     )
 
 
