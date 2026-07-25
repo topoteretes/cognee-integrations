@@ -101,7 +101,7 @@ export async function doRecall(
   topK: number,
   dataset = "",
   contextProfile = "",
-  timeoutMs = 20_000,
+  timeoutMs = 120_000,
 ): Promise<RecallResult> {
   const url = `${baseUrl.replace(/\/+$/, "")}/api/v1/recall`;
   const body: Record<string, unknown> = {
@@ -226,7 +226,7 @@ export async function doRemember(
   content: string,
   dataset: string,
   nodeSet: string,
-  timeoutMs = 30_000,
+  timeoutMs = 120_000,
 ): Promise<Record<string, unknown> | typeof UNREACHABLE> {
   const url = `${baseUrl.replace(/\/+$/, "")}/api/v1/remember`;
   const boundary = `----cognee-plugin${Date.now()}`;

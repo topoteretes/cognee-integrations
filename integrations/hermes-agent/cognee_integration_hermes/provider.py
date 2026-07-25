@@ -384,7 +384,7 @@ class CogneeMemoryProvider(MemoryProvider):
             try:
                 results = self._bridge.run(
                     self._do_recall(query, None, min(self._top_k, 5), "auto", cognee_session_id),
-                    timeout=float(self._config.get("recall_timeout", 60)),
+                    timeout=float(self._config.get("recall_timeout", 120)),
                 )
                 lines = self._format_recall_lines(results, limit=5)
                 if lines:
@@ -726,7 +726,7 @@ class CogneeMemoryProvider(MemoryProvider):
         try:
             results = self._bridge.run(
                 self._do_recall(query, search_type, top_k, scope, self._session_cognee_id),
-                timeout=float(self._config.get("recall_timeout", 60)),
+                timeout=float(self._config.get("recall_timeout", 120)),
             )
             self._record_success()
             items = [self._normalize_recall_item(item) for item in results]
