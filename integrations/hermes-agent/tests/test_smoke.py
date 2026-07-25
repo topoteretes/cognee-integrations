@@ -61,6 +61,32 @@ def test_save_and_load_config(tmp_path, monkeypatch):
     assert config["auto_route"] is False
 
 
+def test_dataset_name_sanitization():
+    from cognee_integration_hermes.config import sanitize_dataset_name
+
+    assert sanitize_dataset_name("valid-Name_1.2") == "valid-Name_1.2"
+    assert sanitize_dataset_name(" project/name!* ") == "project_name"
+    assert sanitize_dataset_name("..__project__..") == "project"
+    assert sanitize_dataset_name("a" * 130) == "a" * 120
+    assert sanitize_dataset_name(" !!! ") == "hermes"
+
+
+def test_load_config_normalizes_dataset(tmp_path, monkeypatch):
+    from cognee_integration_hermes.config import load_config, save_config
+
+    monkeypatch.delenv("COGNEE_SERVICE_URL", raising=False)
+    monkeypatch.delenv("COGNEE_BASE_URL", raising=False)
+    monkeypatch.delenv("COGNEE_DATASET", raising=False)
+    save_config({"dataset": " file/dataset! "}, tmp_path)
+    assert load_config(tmp_path)["dataset"] == "file_dataset"
+
+    env_only_home = tmp_path / "env_only"
+    env_only_home.mkdir()
+    monkeypatch.setenv("COGNEE_DATASET", " env/dataset! ")
+    assert load_config(env_only_home)["dataset"] == "env_dataset"
+    assert load_config(tmp_path)["dataset"] == "file_dataset"
+
+
 def test_empty_service_url_clears_remote_mode(tmp_path, monkeypatch):
     from cognee_integration_hermes.config import load_config, save_config
 

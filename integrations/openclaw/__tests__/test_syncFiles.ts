@@ -1,6 +1,7 @@
 import { CogneeHttpClient } from "../src/client";
+import { resolveConfig } from "../src/config";
 import { syncFiles, syncFilesScoped } from "../src/sync";
-import { matchGlob, routeFileToScope, datasetNameForScope, isMultiScopeEnabled } from "../src/scope";
+import { matchGlob, routeFileToScope, datasetNameForScope, isMultiScopeEnabled, sanitizeDatasetName } from "../src/scope";
 import type { MemoryFile, SyncIndex, CogneePluginConfig, ScopedSyncIndexes, MemoryScope, ScopeRoute } from "../src/types";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -180,6 +181,29 @@ describe("routeFileToScope", () => {
 // ---------------------------------------------------------------------------
 
 describe("datasetNameForScope", () => {
+  it("sanitizes dataset names with the shared session-id rule", () => {
+    expect(sanitizeDatasetName("valid-Name_1.2")).toBe("valid-Name_1.2");
+    expect(sanitizeDatasetName(" project/name!* ")).toBe("project_name");
+    expect(sanitizeDatasetName("..__project__..")).toBe("project");
+    expect(sanitizeDatasetName("a".repeat(130))).toBe("a".repeat(120));
+    expect(sanitizeDatasetName(" !!! ")).toBe("agent_sessions");
+  });
+
+  it("normalizes configured datasetName at config resolution", () => {
+    const previous = process.env.COGNEE_PLUGIN_DATASET;
+    try {
+      delete process.env.COGNEE_PLUGIN_DATASET;
+      expect(resolveConfig({ datasetName: " ../bad dataset!* " }).datasetName).toBe("bad_dataset");
+      expect(resolveConfig({ datasetName: " !!! " }).datasetName).toBe("agent_sessions");
+
+      process.env.COGNEE_PLUGIN_DATASET = " env/dataset! ";
+      expect(resolveConfig({ datasetName: "config-dataset" }).datasetName).toBe("env_dataset");
+    } finally {
+      if (previous === undefined) delete process.env.COGNEE_PLUGIN_DATASET;
+      else process.env.COGNEE_PLUGIN_DATASET = previous;
+    }
+  });
+
   it("uses companyDataset when configured", () => {
     expect(datasetNameForScope("company", baseCfg({ companyDataset: "acme-shared" }))).toBe("acme-shared");
   });
@@ -230,6 +254,12 @@ describe("datasetNameForScope", () => {
     const cfg = baseCfg({ agentDatasetTemplate: "ds-{agentId}", agentId: "static" });
     expect(datasetNameForScope("agent", cfg)).toBe("ds-static");
     expect(datasetNameForScope("agent", cfg, "")).toBe("ds-static");
+  });
+
+  it("sanitizes final scoped dataset names after suffixes and templates are composed", () => {
+    expect(datasetNameForScope("company", baseCfg({ companyDataset: " ../Company! " }))).toBe("Company");
+    expect(datasetNameForScope("user", baseCfg({ userDatasetPrefix: "user space", userId: "alice/bob" }))).toBe("user_space-alice_bob");
+    expect(datasetNameForScope("agent", baseCfg({ agentDatasetTemplate: "memory/{agentId}!*" }), "Coder One")).toBe("memory_Coder_One");
   });
 });
 
