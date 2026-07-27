@@ -197,6 +197,17 @@ cognee: my-project · cloud
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host.
 
+A connection glyph precedes the line:
+
+```
+● cognee: agent_sessions · cloud          # connected (server up and authenticated)
+✕ (auth_failed) cognee: … · cloud         # server reachable but the API key was rejected
+✕ (unreachable) cognee: … · cloud         # server down / not reachable
+✕ (server_error) cognee: … · cloud        # server returned a 5xx
+```
+
+`●` shows once the server is confirmed up **and** authenticated. On a failure the glyph flips to `✕ (<reason>)` — `auth_failed` (wrong/expired `COGNEE_API_KEY`), `unreachable` (server down, including a server that dies mid-session), or `server_error` (5xx). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so the line stays green until a failure is actually observed, and clears back to `●` on the next success. The glyph is read from local state only — no network on refresh.
+
 It is configured automatically on first launch when no custom status line is already configured. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward. Existing non-Cognee `statusLine` settings are preserved; set `COGNEE_STATUSLINE=false` before launching Claude Code to opt out entirely.
 
 The status line reads only local state — no network calls on every refresh:

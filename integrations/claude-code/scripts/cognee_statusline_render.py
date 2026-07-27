@@ -77,16 +77,69 @@ def _active_mode() -> str:
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
 
 
+_FAIL_STATES = ("auth_failed", "unreachable", "server_error")
+
+
+def _active_base_url() -> str:
+    """Normalized base_url for this session (env, then config); '' in local mode."""
+    url = os.environ.get("COGNEE_BASE_URL", "").strip()
+    if not url:
+        try:
+            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                url = str(data.get("base_url") or "").strip()
+        except Exception:
+            pass
+    return url.rstrip("/")
+
+
 def _health_prefix() -> str:
+    """Server-connection glyph, read purely from local markers (no network).
+
+    Precedence — we keep it green until we actually know it is red:
+      1. a recorded failure state in the marker → ``✕ (<reason>)``
+      2. an open recall breaker (repeated recall failure) → ``✕ (unreachable)``
+      3. a "ready" marker → ``● ``
+      4. otherwise (no marker / warming / different target) → no glyph
+    The marker (``server-ready.json``) carries {state, base_url, ...}; a state is
+    trusted only when its base_url matches this session's, so a local-ready marker
+    never greens a cloud session (or vice versa).
+    """
+    marker = {}
+    try:
+        loaded = json.loads(_SERVER_READY_PATH.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            marker = loaded
+    except Exception:
+        marker = {}
+
+    marked_url = str(marker.get("base_url") or "").rstrip("/")
+    active_url = _active_base_url()
+    url_mismatch = bool(active_url and marked_url and active_url != marked_url)
+
+    if marker and not url_mismatch:
+        # Legacy marker (no 'state', has ready_at) reads as ready.
+        state = str(marker.get("state") or ("ready" if marker.get("ready_at") else ""))
+        if state in _FAIL_STATES:
+            return f"✕ ({state}) "
+        if state == "ready":
+            # Breaker override: recall is failing repeatedly even if the last
+            # readiness write still says ready — that means we now know it's red.
+            try:
+                raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
+                    return "✕ (unreachable) "
+            except Exception:
+                pass
+            return "● "
+
+    # No usable marker: fall back to the breaker as the only failure signal.
     try:
         raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            if float(raw.get("cooldown_until", 0) or 0) > time.time():
-                return "✕ "
+        if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
+            return "✕ (unreachable) "
     except Exception:
         pass
-    if _SERVER_READY_PATH.exists():
-        return "● "
     return ""
 
 

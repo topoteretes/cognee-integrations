@@ -1278,25 +1278,67 @@ def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
         return False
 
 
-def mark_server_ready(service_url: str, version: str = "") -> None:
-    """Record that the local Cognee server is healthy and serving.
+# Connection states recorded in the (shared) server-ready marker. "ready" means
+# the server is up AND authenticated; the failure states carry the reason shown
+# in the status line as "✕ (<state>)". Any non-"ready" state makes
+# server_ready_hint return False so recall does not attempt against a bad backend.
+CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error")
+
+
+def write_connection_state(
+    state: str, service_url: str = "", *, detail: str = "", version: str = ""
+) -> None:
+    """Record the last connection outcome in the shared server-ready marker.
 
     Global (not namespaced) because Claude and Codex share one server on the
-    same port. Read by hot-path hooks via ``server_ready_hint`` to decide
-    whether to attempt recall without paying a network probe.
+    same port. Read by hot-path hooks via ``server_ready_hint`` (recall gate) and
+    by the status-line renderer (which reads the file directly). ``state`` is one
+    of ``CONNECTION_STATES``; unknown values are coerced to "unreachable".
     """
+    if state not in CONNECTION_STATES:
+        state = "unreachable"
     try:
         _SERVER_READY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).timestamp()
         payload = {
+            "state": state,
             "base_url": _normalize_service_url(service_url),
-            "ready_at": datetime.now(timezone.utc).timestamp(),
+            "checked_at": now,
+            # ready_at kept for backward-compat with any un-upgraded reader; only
+            # advanced on a successful (ready) check.
+            "ready_at": now if state == "ready" else 0,
             "version": str(version or ""),
+            "detail": str(detail or "")[:200],
         }
         tmp = _SERVER_READY_MARKER.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, _SERVER_READY_MARKER)
     except Exception as exc:
-        hook_log("server_ready_mark_failed", {"error": str(exc)[:200]})
+        hook_log("connection_state_write_failed", {"state": state, "error": str(exc)[:200]})
+
+
+def mark_server_ready(service_url: str, version: str = "") -> None:
+    """Back-compat shim: record a healthy, authenticated connection ("ready")."""
+    write_connection_state("ready", service_url, version=version)
+
+
+def read_connection_state() -> dict:
+    """Return the connection marker dict (with 'state'), or {} — for hook use.
+
+    The status-line renderer does NOT use this (it stays import-free of
+    ``_plugin_common`` and reads the file directly); this is for network hooks
+    that need to know the prior state (e.g. warming-vs-died).
+    """
+    try:
+        raw = json.loads(_SERVER_READY_MARKER.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    # Legacy marker (no 'state', has ready_at): treat as ready.
+    if "state" not in raw and raw.get("ready_at"):
+        raw["state"] = "ready"
+    return raw
 
 
 def clear_server_ready() -> None:
@@ -1322,8 +1364,14 @@ def server_ready_hint(service_url: str = "") -> bool:
         return False
     except Exception:
         return False
-    ready_at = float(raw.get("ready_at", 0) or 0)
-    if datetime.now(timezone.utc).timestamp() - ready_at > _SERVER_READY_TTL_SECONDS:
+    # Only a "ready" state counts as ready. A recorded failure (auth_failed /
+    # unreachable / server_error) makes the gate skip so recall never hammers a
+    # bad backend. Legacy markers (no 'state', have ready_at) are treated ready.
+    state = str(raw.get("state") or ("ready" if raw.get("ready_at") else ""))
+    if state != "ready":
+        return False
+    checked_at = float(raw.get("checked_at", 0) or raw.get("ready_at", 0) or 0)
+    if datetime.now(timezone.utc).timestamp() - checked_at > _SERVER_READY_TTL_SECONDS:
         return False
     if service_url:
         marked = _normalize_service_url(raw.get("base_url", ""))

@@ -30,6 +30,7 @@ from _plugin_common import (
     notify,
     quiet_hook_output,
     read_and_reset_save_counter,
+    read_connection_state,
     recall_via_http,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
@@ -38,6 +39,7 @@ from _plugin_common import (
     server_ready_hint,
     service_url_is_local,
     set_session_key,
+    write_connection_state,
 )
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
@@ -186,6 +188,17 @@ async def _run(prompt: str) -> dict | None:
             mark_server_ready(service_url)
             just_became_ready = True
         else:
+            # Distinguish "died mid-session" from "still warming at startup": only
+            # flip the status line to ✕ when the server had previously been ready
+            # for this URL. A cold start (no prior ready marker) stays silent so we
+            # never show a false red during boot/migration.
+            prior = read_connection_state()
+            prior_url = str(prior.get("base_url") or "")
+            same_target = (
+                (not service_url) or (not prior_url) or prior_url == service_url.rstrip("/")
+            )
+            if str(prior.get("state")) == "ready" and same_target:
+                write_connection_state("unreachable", service_url, detail="health probe failed")
             hook_log("recall_skipped_warming", {"base_url": service_url})
             return None
 
