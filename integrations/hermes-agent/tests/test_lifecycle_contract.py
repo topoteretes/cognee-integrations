@@ -13,6 +13,7 @@ Run standalone with ``python3 tests/test_lifecycle_contract.py``.
 """
 
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -26,6 +27,27 @@ from _char_helpers import _SyncBridge, fake_cognee, make_provider  # noqa: E402
 from cognee_integration_hermes import provider as provider_mod  # noqa: E402
 
 _NO_URL = {"COGNEE_BASE_URL": "", "COGNEE_SERVICE_URL": ""}
+
+# How long to wait for a call that should never arrive. The write paths spawn
+# daemon workers that reach the (inline) fake in microseconds, so this is ~1000x
+# margin while keeping the suite fast.
+_NO_CALL_GRACE = 0.2
+
+
+def assert_no_call(case, fake, name):
+    """Assert *name* is never called, having waited long enough to mean it.
+
+    Asserting immediately after a suppressed write would pass even if the guard
+    were missing — the worker simply would not have got there yet. Worse, that
+    worker would outlive the ``fake_cognee`` context and import the *real*
+    cognee, racing the next test's fake. Waiting for the call not to arrive
+    fixes both, so this must be called *inside* the ``fake_cognee`` block.
+    """
+    case.assertFalse(
+        fake.wait(name, timeout=_NO_CALL_GRACE),
+        f"expected no {name!r} call, but one was made",
+    )
+    case.assertEqual(fake.kwargs_for(name), [])
 
 
 def _settle_prefetch(provider, timeout=2.0):
@@ -82,7 +104,7 @@ class TestAgentContextWriteGating(unittest.TestCase):
         with fake_cognee() as fake:
             provider = make_provider(writes_enabled=False)
             provider.sync_turn("u", "a")
-        self.assertEqual(fake.kwargs_for("remember"), [])
+            assert_no_call(self, fake, "remember")
 
     def test_disabled_writes_suppress_session_end_improve(self):
         with fake_cognee() as fake:
@@ -90,13 +112,18 @@ class TestAgentContextWriteGating(unittest.TestCase):
             provider.on_session_end([])
         self.assertEqual(fake.kwargs_for("improve"), [])
 
-    def test_memory_write_mirror_is_not_gated_on_writes_enabled(self):
-        # Deliberate pin of current behaviour: on_memory_write checks only the
-        # breaker, not _writes_enabled — so a subagent's built-in memory write
-        # still mirrors to the graph, unlike sync_turn. Preserve or change on
-        # purpose; do not let the refactor decide it silently.
+    def test_disabled_writes_suppress_the_memory_write_mirror(self):
+        # Regression: on_memory_write used to check only the breaker, so a
+        # subagent's built-in memory write reached the graph even though its
+        # conversation turns were suppressed. Write gating is now uniform.
         with fake_cognee() as fake:
             provider = make_provider(writes_enabled=False)
+            provider.on_memory_write("add", "project", "note")
+            assert_no_call(self, fake, "remember")
+
+    def test_enabled_writes_still_mirror(self):
+        with fake_cognee() as fake:
+            provider = make_provider(writes_enabled=True)
             provider.on_memory_write("add", "project", "note")
             self.assertTrue(fake.wait("remember"))
         self.assertEqual(len(fake.kwargs_for("remember")), 1)
@@ -125,7 +152,7 @@ class TestSyncTurn(unittest.TestCase):
             provider = make_provider()
             provider._is_breaker_open = lambda: True
             provider.sync_turn("u", "a")
-        self.assertEqual(fake.kwargs_for("remember"), [])
+            assert_no_call(self, fake, "remember")
 
     def test_per_call_session_id_overrides_the_initialized_session(self):
         with fake_cognee() as fake:
@@ -180,14 +207,14 @@ class TestPrefetchProtocol(unittest.TestCase):
         with fake_cognee() as fake:
             provider = make_provider()
             provider.queue_prefetch("")
-        self.assertEqual(fake.kwargs_for("recall"), [])
+            assert_no_call(self, fake, "recall")
 
     def test_open_breaker_is_not_queued(self):
         with fake_cognee() as fake:
             provider = make_provider()
             provider._is_breaker_open = lambda: True
             provider.queue_prefetch("q")
-        self.assertEqual(fake.kwargs_for("recall"), [])
+            assert_no_call(self, fake, "recall")
 
     def test_prefetch_uses_a_smaller_budget_than_explicit_recall(self):
         with fake_cognee() as fake:
@@ -302,20 +329,20 @@ class TestMemoryWriteMirror(unittest.TestCase):
             provider = make_provider()
             for action in ("delete", "remove", "read", ""):
                 provider.on_memory_write(action, "project", "note")
-        self.assertEqual(fake.kwargs_for("remember"), [])
+            assert_no_call(self, fake, "remember")
 
     def test_empty_content_is_not_mirrored(self):
         with fake_cognee() as fake:
             provider = make_provider()
             provider.on_memory_write("add", "project", "")
-        self.assertEqual(fake.kwargs_for("remember"), [])
+            assert_no_call(self, fake, "remember")
 
     def test_open_breaker_suppresses_the_mirror(self):
         with fake_cognee() as fake:
             provider = make_provider()
             provider._is_breaker_open = lambda: True
             provider.on_memory_write("add", "project", "note")
-        self.assertEqual(fake.kwargs_for("remember"), [])
+            assert_no_call(self, fake, "remember")
 
 
 class TestDelegation(unittest.TestCase):
@@ -336,7 +363,7 @@ class TestDelegation(unittest.TestCase):
         with fake_cognee() as fake:
             provider = make_provider()
             provider.on_delegation("", "")
-        self.assertEqual(fake.kwargs_for("remember"), [])
+            assert_no_call(self, fake, "remember")
 
 
 class TestSessionSwitch(unittest.TestCase):
@@ -365,23 +392,46 @@ class TestSessionSwitch(unittest.TestCase):
             provider.on_session_switch("s-2", parent_session_id="s-1", reset=False)
             self.assertIn("carried over", provider.prefetch("q"))
 
-    @unittest.expectedFailure
-    def test_reset_should_not_be_defeated_by_a_late_prefetch_write(self):
-        """KNOWN BUG — pinned so the refactor neither hides nor inherits it.
+    def test_reset_discards_a_prefetch_that_was_in_flight(self):
+        """Regression: no cross-conversation context leak on ``/reset``.
 
-        ``on_session_switch`` joins ``_sync_thread`` but *not*
-        ``_prefetch_thread``, so a prefetch still in flight during ``/reset``
-        writes its result after the clear. Memory recalled for the previous
-        conversation then gets injected into the fresh one — a cross-conversation
-        context leak. Reproduced deterministically here by performing the same
-        late write the prefetch thread does. Flip this to a normal test once
-        ``on_session_switch`` joins or invalidates the in-flight prefetch.
+        A recall issued for the previous conversation must not land in the fresh
+        one, even when it returns *after* the reset cleared the slot. Held inside
+        the backend call with a gate so the in-flight window is deterministic
+        rather than timing-dependent.
         """
-        with fake_cognee():
+        with fake_cognee() as fake:
+            fake.results["recall"] = [{"text": "belongs to the old conversation"}]
+            gate = threading.Event()
+            fake.gates["recall"] = gate
+
             provider = make_provider()
+            provider.queue_prefetch("q")
+            self.assertTrue(fake.wait("recall"))  # worker is now inside the recall
+
             provider.on_session_switch("s-2", reset=True)
-            provider._prefetch_result = "leaked from the previous conversation"
+            gate.set()  # let the recall return, after the reset
+            _settle_prefetch(provider)
+
             self.assertEqual(provider.prefetch("q"), "")
+
+    def test_non_reset_switch_keeps_a_prefetch_that_was_in_flight(self):
+        """The mirror case: /resume, /branch and compression continue the same
+        logical conversation, so an in-flight prefetch stays valid."""
+        with fake_cognee() as fake:
+            fake.results["recall"] = [{"text": "still relevant"}]
+            gate = threading.Event()
+            fake.gates["recall"] = gate
+
+            provider = make_provider()
+            provider.queue_prefetch("q")
+            self.assertTrue(fake.wait("recall"))
+
+            provider.on_session_switch("s-2", parent_session_id="s-1", reset=False)
+            gate.set()
+            _settle_prefetch(provider)
+
+            self.assertIn("still relevant", provider.prefetch("q"))
 
 
 # --------------------------------------------------------------------------

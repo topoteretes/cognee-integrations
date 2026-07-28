@@ -101,6 +101,10 @@ class FakeCognee:
             "disconnect": None,
         }
         self.errors = {}
+        # ``gates[name] = threading.Event()`` holds that operation inside the call
+        # until the test sets the event — the only way to deterministically
+        # observe a provider worker that is mid-flight.
+        self.gates = {}
         self.config = _FakeCogneeConfig(self)
         self._lock = threading.Lock()
         self._events = {}
@@ -112,6 +116,9 @@ class FakeCognee:
             self.calls.append((name, kwargs))
             event = self._events.setdefault(name, threading.Event())
         event.set()
+        gate = self.gates.get(name)
+        if gate is not None:
+            gate.wait(timeout=5.0)
         error = self.errors.get(name)
         if error is not None:
             raise error

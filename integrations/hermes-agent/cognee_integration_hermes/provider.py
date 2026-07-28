@@ -141,6 +141,9 @@ class CogneeMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
+        # Bumped on a reset session switch to invalidate prefetches still in
+        # flight — see queue_prefetch / on_session_switch.
+        self._prefetch_generation = 0
         self._sync_thread: Optional[threading.Thread] = None
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
@@ -379,6 +382,12 @@ class CogneeMemoryProvider(MemoryProvider):
             return
 
         cognee_session_id = self._session_cognee_id_for(session_id)
+        # Snapshot the generation this prefetch belongs to. A reset session
+        # switch bumps it, so a recall that was already in flight for the
+        # previous conversation discards its result instead of landing in the
+        # fresh one. Joining the worker on switch is not enough: a recall slower
+        # than any bounded join would still write after the clear.
+        generation = self._prefetch_generation
 
         def _run() -> None:
             try:
@@ -389,7 +398,10 @@ class CogneeMemoryProvider(MemoryProvider):
                 lines = self._format_recall_lines(results, limit=5)
                 if lines:
                     with self._prefetch_lock:
-                        self._prefetch_result = "\n".join(lines)
+                        # Drop the result if a reset invalidated it mid-recall.
+                        if generation == self._prefetch_generation:
+                            self._prefetch_result = "\n".join(lines)
+                # The backend answered, so this is a success either way.
                 self._record_success()
             except Exception as exc:
                 self._record_failure()
@@ -487,6 +499,10 @@ class CogneeMemoryProvider(MemoryProvider):
         if reset:
             with self._prefetch_lock:
                 self._prefetch_result = ""
+                # Invalidate any recall still in flight for the old conversation.
+                # Only on reset: /resume, /branch and compression continue the same
+                # logical conversation, so a prefetch issued for it stays valid.
+                self._prefetch_generation += 1
 
     def on_memory_write(
         self,
@@ -495,7 +511,16 @@ class CogneeMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
-        if action not in {"add", "replace"} or not content or self._is_breaker_open():
+        # ``_writes_enabled`` is checked here for the same reason sync_turn checks
+        # it: a non-primary agent_context (a subagent) must not write to memory.
+        # Without it a subagent's built-in memory write still reached the graph
+        # while its conversation turns were correctly suppressed.
+        if (
+            not self._writes_enabled
+            or action not in {"add", "replace"}
+            or not content
+            or self._is_breaker_open()
+        ):
             return
         metadata = dict(metadata or {})
         source = metadata.get("write_origin") or "hermes_memory_tool"
