@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
 import json
 import logging
 import threading
@@ -11,8 +9,11 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from .backend import MemoryBackend, default_backend, has_cognee
 from .config import (
     DEFAULT_DATASET,
+    DEFAULT_IDENTITY_EMAIL,
+    DEFAULT_IDENTITY_PASSWORD,
     load_config,
     str_to_bool,
     write_env_vars,
@@ -37,46 +38,6 @@ logger = logging.getLogger(__name__)
 
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
-
-
-class _AsyncBridge:
-    """Run Cognee async SDK calls from Hermes' sync MemoryProvider interface."""
-
-    def __init__(self) -> None:
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._lock = threading.Lock()
-
-    def _ensure_loop(self) -> None:
-        with self._lock:
-            if self._loop is not None and self._loop.is_running():
-                return
-            self._loop = asyncio.new_event_loop()
-            self._thread = threading.Thread(
-                target=self._loop.run_forever,
-                daemon=True,
-                name="cognee-hermes-event-loop",
-            )
-            self._thread.start()
-
-    def run(self, coro, timeout: float):
-        self._ensure_loop()
-        assert self._loop is not None
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
-
-    def shutdown(self) -> None:
-        with self._lock:
-            if self._loop and self._loop.is_running():
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=5.0)
-            self._loop = None
-            self._thread = None
-
-
-def _has_cognee() -> bool:
-    return importlib.util.find_spec("cognee") is not None
 
 
 def _safe_session_component(value: str) -> str:
@@ -124,12 +85,12 @@ def _result_text(value: Any) -> str:
 class CogneeMemoryProvider(MemoryProvider):
     """Cognee V2/V1.1 knowledge graph memory for Hermes Agent."""
 
-    def __init__(self) -> None:
+    def __init__(self, backend: Optional[MemoryBackend] = None) -> None:
         self._config: dict[str, Any] = {}
-        self._bridge = _AsyncBridge()
+        # How we reach cognee. Injectable for tests; see backend.default_backend.
+        self._backend: MemoryBackend = backend or default_backend()
         self._initialized = False
         self._remote_mode = False
-        self._user = None
         self._session_id = ""
         self._session_cognee_id = ""
         self._dataset = DEFAULT_DATASET
@@ -153,7 +114,9 @@ class CogneeMemoryProvider(MemoryProvider):
         return "cognee"
 
     def is_available(self) -> bool:
-        if not _has_cognee():
+        # Must stay network-free: Hermes calls this for every provider during
+        # discovery, before anything is started.
+        if not has_cognee():
             return False
         cfg = load_config()
         return bool(cfg.get("service_url") or cfg.get("llm_api_key"))
@@ -292,7 +255,10 @@ class CogneeMemoryProvider(MemoryProvider):
         self._writes_enabled = kwargs.get("agent_context", "primary") in {"", "primary", None}
         self._session_cognee_id = self._build_cognee_session_id(session_id, **kwargs)
 
-        self._configure_cognee_models()
+        self._backend.configure_models(
+            llm_api_key=str(self._config.get("llm_api_key") or ""),
+            llm_model=str(self._config.get("llm_model") or ""),
+        )
 
         # Connection mode (see README "Modes"):
         #   remote        — service_url set: thin client to a managed/cloud cognee.
@@ -313,7 +279,7 @@ class CogneeMemoryProvider(MemoryProvider):
         if service_url:
             try:
                 api_key = str(self._config.get("api_key") or "")
-                self._bridge.run(self._do_serve(service_url, api_key), timeout=30)
+                self._backend.connect(url=service_url, api_key=api_key, timeout=30)
                 self._remote_mode = True
             except Exception as exc:
                 raise RuntimeError(
@@ -321,7 +287,7 @@ class CogneeMemoryProvider(MemoryProvider):
                     "Fix the URL/network/credentials, or unset it to use local mode."
                 ) from exc
         elif embedded:
-            self._configure_cognee_local_roots()
+            self._configure_local_roots()
             self._remote_mode = False
         else:
             try:
@@ -331,7 +297,7 @@ class CogneeMemoryProvider(MemoryProvider):
                     system_root=str(self._config.get("system_root") or ""),
                     boot_timeout=float(self._config.get("server_boot_timeout", 30)),
                 )
-                self._bridge.run(self._do_serve(local_url, ""), timeout=30)
+                self._backend.connect(url=local_url, api_key="", timeout=30)
                 self._remote_mode = True
             except Exception as exc:
                 raise RuntimeError(
@@ -345,15 +311,20 @@ class CogneeMemoryProvider(MemoryProvider):
         # Identity only matters in embedded mode (a local relational DB exists to
         # hold the user). In server/remote mode the server owns identity via the
         # api-key principal, and touching the local DB here would be meaningless.
-        if self._remote_mode:
-            self._user = None
-        else:
+        # The backend owns whatever principal it resolves; the provider never
+        # handles it.
+        if not self._remote_mode:
             try:
-                self._user = self._bridge.run(self._ensure_identity(), timeout=30)
+                self._backend.resolve_identity(
+                    email=str(self._config.get("identity_email") or DEFAULT_IDENTITY_EMAIL),
+                    password=str(
+                        self._config.get("identity_password") or DEFAULT_IDENTITY_PASSWORD
+                    ),
+                    timeout=30,
+                )
             except Exception as exc:
-                self._user = None
                 logger.warning(
-                    "Cognee identity initialization failed; using SDK default user: %s", exc
+                    "Cognee identity initialization failed; using backend default user: %s", exc
                 )
 
         self._initialized = True
@@ -391,9 +362,12 @@ class CogneeMemoryProvider(MemoryProvider):
 
         def _run() -> None:
             try:
-                results = self._bridge.run(
-                    self._do_recall(query, None, min(self._top_k, 5), "auto", cognee_session_id),
-                    timeout=float(self._config.get("recall_timeout", 120)),
+                results = self._recall(
+                    query,
+                    scope="auto",
+                    search_type=None,
+                    top_k=min(self._top_k, 5),
+                    session_id=cognee_session_id,
                 )
                 lines = self._format_recall_lines(results, limit=5)
                 if lines:
@@ -423,9 +397,11 @@ class CogneeMemoryProvider(MemoryProvider):
 
         def _sync() -> None:
             try:
-                self._bridge.run(
-                    self._do_remember_session(content, cognee_session_id),
-                    timeout=float(self._config.get("write_timeout", 120)),
+                self._backend.remember_session(
+                    text=content,
+                    session_id=cognee_session_id,
+                    dataset=self._dataset,
+                    timeout=self._timeout("write_timeout", 120),
                 )
                 self._record_success()
             except Exception as exc:
@@ -475,9 +451,11 @@ class CogneeMemoryProvider(MemoryProvider):
         raw_bg = str(self._config.get("improve_background") or "").strip()
         background = str_to_bool(raw_bg, self._remote_mode) if raw_bg else self._remote_mode
         try:
-            self._bridge.run(
-                self._do_improve(run_in_background=background),
-                timeout=float(self._config.get("improve_timeout", 300)),
+            self._backend.improve(
+                dataset=self._dataset,
+                session_ids=[self._session_cognee_id],
+                background=background,
+                timeout=self._timeout("improve_timeout", 300),
             )
             self._record_success()
         except Exception as exc:
@@ -528,10 +506,7 @@ class CogneeMemoryProvider(MemoryProvider):
 
         def _sync() -> None:
             try:
-                self._bridge.run(
-                    self._do_remember_permanent(payload, self._dataset),
-                    timeout=float(self._config.get("write_timeout", 120)),
-                )
+                self._remember_permanent(payload, self._dataset)
                 self._record_success()
             except Exception as exc:
                 self._record_failure()
@@ -556,12 +531,7 @@ class CogneeMemoryProvider(MemoryProvider):
         for thread in (self._prefetch_thread, self._sync_thread):
             if thread and thread.is_alive():
                 thread.join(timeout=5.0)
-        if self._remote_mode:
-            try:
-                self._bridge.run(self._do_disconnect(), timeout=5)
-            except Exception:
-                pass
-        self._bridge.shutdown()
+        self._backend.close(timeout=5)
 
     def _build_cognee_session_id(self, session_id: str, **kwargs) -> str:
         # Convention across integrations: "{agent}_{native_session_id}" —
@@ -575,170 +545,68 @@ class CogneeMemoryProvider(MemoryProvider):
             return self._session_cognee_id
         return self._build_cognee_session_id(session_id)
 
-    def _configure_cognee_local_roots(self) -> None:
+    def _configure_local_roots(self) -> None:
+        """Point the backend at profile-scoped storage (embedded mode only)."""
         if not self._hermes_home:
             return
-        try:
-            import cognee
+        data_root = self._config.get("data_root") or str(
+            Path(self._hermes_home) / "cognee" / "data"
+        )
+        system_root = self._config.get("system_root") or str(
+            Path(self._hermes_home) / "cognee" / "system"
+        )
+        self._backend.configure_local_roots(data_root=str(data_root), system_root=str(system_root))
 
-            data_root = self._config.get("data_root") or str(
-                Path(self._hermes_home) / "cognee" / "data"
-            )
-            system_root = self._config.get("system_root") or str(
-                Path(self._hermes_home) / "cognee" / "system"
-            )
-            cognee.config.data_root_directory(str(data_root))
-            cognee.config.system_root_directory(str(system_root))
-        except Exception as exc:
-            logger.debug("Cognee root configuration failed: %s", exc)
+    def _timeout(self, key: str, default: float) -> float:
+        """A named, bounded timeout read from config at call time."""
+        return float(self._config.get(key, default))
 
-    def _configure_cognee_models(self) -> None:
-        try:
-            import cognee
+    def _recall_scope_params(
+        self, scope: str, search_type: Any, session_id: str
+    ) -> tuple[Optional[str], Optional[list[str]], Optional[str]]:
+        """Map the tool's ``scope`` onto the backend's explicit targets.
 
-            if self._config.get("llm_api_key"):
-                cognee.config.set_llm_api_key(str(self._config["llm_api_key"]))
-            if self._config.get("llm_model"):
-                cognee.config.set_llm_model(str(self._config["llm_model"]))
-        except Exception as exc:
-            logger.debug("Cognee model configuration failed: %s", exc)
-
-    async def _ensure_identity(self):
-        email = str(self._config.get("identity_email") or "hermes-agent@cognee.local")
-        password = str(self._config.get("identity_password") or "hermes-agent-plugin")
-        try:
-            from cognee.modules.users.methods import (
-                create_user,
-                get_default_user,
-                get_user_by_email,
-            )
-        except Exception:
-            return None
-
-        user = await get_user_by_email(email)
-        if user:
-            return user
-        try:
-            return await create_user(
-                email=email,
-                password=password,
-                is_verified=True,
-                is_active=True,
-            )
-        except Exception:
-            user = await get_user_by_email(email)
-            if user:
-                return user
-            return await get_default_user()
-
-    async def _do_serve(self, url: str, api_key: str):
-        import cognee
-
-        kwargs = {"url": url}
-        if api_key:
-            kwargs["api_key"] = api_key
-        return await cognee.serve(**kwargs)
-
-    async def _do_disconnect(self):
-        import cognee
-
-        return await cognee.disconnect()
-
-    def _add_user_kwarg(self, kwargs: dict[str, Any]) -> None:
-        """Inject the local user only in embedded mode.
-
-        In server/remote mode the server owns identity (api-key principal) and
-        ``self._user`` is None. Passing ``user=None`` is not the same as omitting
-        the key — the SDK may treat an explicit None differently (overriding a
-        default, affecting tenant scoping) — so we omit it entirely instead.
+        ``session`` searches only this conversation's cache, ``graph`` only the
+        permanent dataset, ``auto`` both. A ``search_type`` override is
+        meaningless for a pure session lookup, so it is dropped there.
         """
-        if not self._remote_mode and self._user is not None:
-            kwargs["user"] = self._user
+        normalized = (scope or "auto").lower()
+        if normalized == "session":
+            return session_id, None, None
+        query_type = search_type or None
+        if normalized == "graph":
+            return None, [self._dataset], query_type
+        return session_id, [self._dataset], query_type
 
-    async def _do_recall(
+    def _recall(
         self,
         query: str,
-        search_type: Optional[str],
-        top_k: int,
+        *,
         scope: str,
+        search_type: Any,
+        top_k: int,
         session_id: str,
     ) -> list[Any]:
-        import cognee
+        target_session, datasets, query_type = self._recall_scope_params(
+            scope, search_type, session_id
+        )
+        return self._backend.recall(
+            query=query,
+            session_id=target_session,
+            datasets=datasets,
+            top_k=top_k,
+            auto_route=self._auto_route,
+            query_type=query_type,
+            timeout=self._timeout("recall_timeout", 120),
+        )
 
-        kwargs: dict[str, Any] = {
-            "top_k": top_k,
-            "auto_route": self._auto_route,
-        }
-        self._add_user_kwarg(kwargs)
-
-        normalized_scope = (scope or "auto").lower()
-        if normalized_scope == "session":
-            kwargs["session_id"] = session_id
-        elif normalized_scope == "graph":
-            kwargs["datasets"] = [self._dataset]
-        else:
-            kwargs["session_id"] = session_id
-            kwargs["datasets"] = [self._dataset]
-
-        if search_type and normalized_scope != "session":
-            kwargs["query_type"] = _resolve_search_type(search_type)
-
-        return await cognee.recall(query_text=query, **kwargs)
-
-    async def _do_remember_session(self, content: str, session_id: str):
-        import cognee
-
-        kwargs: dict[str, Any] = {
-            "data": content,
-            "dataset_name": self._dataset,
-            "session_id": session_id,
-            "self_improvement": False,
-        }
-        self._add_user_kwarg(kwargs)
-        return await cognee.remember(**kwargs)
-
-    async def _do_remember_permanent(self, content: str, dataset: str):
-        import cognee
-
-        kwargs: dict[str, Any] = {
-            "data": content,
-            "dataset_name": dataset,
-            "self_improvement": True,
-            "session_ids": [self._session_cognee_id],
-        }
-        self._add_user_kwarg(kwargs)
-        return await cognee.remember(**kwargs)
-
-    async def _do_forget(
-        self,
-        dataset: Optional[str],
-        *,
-        everything: bool = False,
-        memory_only: bool = False,
-    ) -> dict[str, Any]:
-        import cognee
-
-        kwargs: dict[str, Any] = {
-            "everything": everything,
-            "memory_only": memory_only,
-        }
-        if dataset and not everything:
-            kwargs["dataset"] = dataset
-        self._add_user_kwarg(kwargs)
-        return await cognee.forget(**kwargs)
-
-    async def _do_improve(self, run_in_background: bool = False):
-        # Default stays False (synchronous) so the method contract is unchanged for
-        # any caller that relies on completion. on_session_end() chooses the flag.
-        import cognee
-
-        kwargs: dict[str, Any] = {
-            "dataset": self._dataset,
-            "session_ids": [self._session_cognee_id],
-            "run_in_background": run_in_background,
-        }
-        self._add_user_kwarg(kwargs)
-        return await cognee.improve(**kwargs)
+    def _remember_permanent(self, content: str, dataset: str) -> Any:
+        return self._backend.remember_permanent(
+            text=content,
+            dataset=dataset,
+            session_ids=[self._session_cognee_id],
+            timeout=self._timeout("write_timeout", 120),
+        )
 
     def _handle_recall(self, args: dict[str, Any]) -> str:
         query = str(args.get("query") or "").strip()
@@ -749,18 +617,21 @@ class CogneeMemoryProvider(MemoryProvider):
         search_type = args.get("search_type")
 
         try:
-            results = self._bridge.run(
-                self._do_recall(query, search_type, top_k, scope, self._session_cognee_id),
-                timeout=float(self._config.get("recall_timeout", 120)),
+            results = self._recall(
+                query,
+                scope=scope,
+                search_type=search_type,
+                top_k=top_k,
+                session_id=self._session_cognee_id,
             )
             self._record_success()
             items = [self._normalize_recall_item(item) for item in results]
             if not items:
-                # Distinguish a genuine miss from an embedding-model change that
-                # makes recall structurally unable to match (stored vs query
-                # vectors differ in size). Embedded mode only; a confirmed
-                # mismatch is a hard error.
-                dim_message = self._embedding_dimension_mismatch_hint()
+                # Distinguish a genuine miss from a backend condition that makes
+                # recall structurally unable to match (e.g. an embedder change
+                # leaving stored and query vectors different sizes). A confirmed
+                # cause is a hard error rather than a silent empty result.
+                dim_message = self._backend.empty_recall_hint()
                 if dim_message:
                     return json.dumps({"error": dim_message, "count": 0})
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
@@ -776,10 +647,7 @@ class CogneeMemoryProvider(MemoryProvider):
         dataset = str(args.get("dataset") or self._dataset)
 
         try:
-            result = self._bridge.run(
-                self._do_remember_permanent(content, dataset),
-                timeout=float(self._config.get("write_timeout", 120)),
-            )
+            result = self._remember_permanent(content, dataset)
             self._record_success()
             status = getattr(result, "status", "completed")
             return json.dumps({"result": "Content stored in Cognee.", "status": str(status)})
@@ -795,9 +663,11 @@ class CogneeMemoryProvider(MemoryProvider):
             return json.dumps({"error": "Specify dataset or set everything=true."})
 
         try:
-            result = self._bridge.run(
-                self._do_forget(dataset, everything=everything, memory_only=memory_only),
-                timeout=float(self._config.get("write_timeout", 120)),
+            result = self._backend.forget(
+                dataset=dataset,
+                everything=everything,
+                memory_only=memory_only,
+                timeout=self._timeout("write_timeout", 120),
             )
             self._record_success()
             return json.dumps({"result": "Cognee memory deleted.", "details": result})
@@ -827,20 +697,6 @@ class CogneeMemoryProvider(MemoryProvider):
             lines.append(f"- [{source}] {text[:500]}")
         return lines
 
-    def _embedding_dimension_mismatch_hint(self) -> Optional[str]:
-        """Confirmed embedding-dimension mismatch diagnostic (embedded mode only), or None.
-
-        In server/remote mode the server owns the vector store, so introspecting
-        the local in-process engine would be meaningless — skip. Best-effort;
-        never raises.
-        """
-        if self._remote_mode:
-            return None
-        try:
-            return self._bridge.run(_dimension_mismatch_hint(), timeout=5.0)
-        except Exception:
-            return None
-
     def _is_breaker_open(self) -> bool:
         if self._consecutive_failures < _BREAKER_THRESHOLD:
             return False
@@ -861,89 +717,6 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._consecutive_failures,
                 _BREAKER_COOLDOWN_SECS,
             )
-
-
-# --- Embedding-dimension mismatch detection ---------------------------------
-# When the embedding model changes between writing and reading, stored vectors
-# and query vectors differ in size, so recall silently matches nothing. These
-# helpers turn that silent miss into a one-line actionable error naming both
-# dimensions and the active embedder. Best-effort and fail-safe (any uncertainty
-# returns None). Only valid in embedded mode, where this process owns the vector
-# store; in server/remote mode the server owns it and the in-process engine here
-# would not reflect it.
-
-
-async def _sample_stored_vector_dim(engine) -> Optional[int]:
-    """Sample the dimension of a stored vector from any populated collection, or None.
-
-    Enumerates the store's actual collections via the vector interface's
-    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
-    uses) rather than assuming fixed collection names, so it also covers custom
-    pipelines. Never raises: each collection is probed independently and any
-    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
-    backends whose connection can't enumerate return None and fall back to the normal
-    empty-recall path.
-    """
-    try:
-        connection = await engine.get_connection()
-        names = await connection.table_names()
-    except Exception:
-        return None
-    for name in names:
-        try:
-            collection = await engine.get_collection(name)
-            rows = await collection.query().limit(1).to_list()
-            if rows:
-                vector = rows[0].get("vector")
-                if vector is not None:
-                    return len(vector)
-        except Exception:
-            continue
-    return None
-
-
-async def _dimension_mismatch_hint(engine=None) -> Optional[str]:
-    """One-line diagnostic when the stored vectors differ in size from the active
-    embedder's query vectors (so recall can never match), else None.
-
-    ``engine`` is injectable for testing. Best-effort and fail-safe: any error, or
-    an indeterminate/matching dimension, returns None so the caller keeps the
-    normal empty-recall behavior.
-    """
-    try:
-        if engine is None:
-            from cognee.infrastructure.databases.vector import get_vector_engine
-
-            engine = get_vector_engine()
-        embed = getattr(engine, "embedding_engine", None)
-        if embed is None:
-            return None
-        query_dim = int(embed.get_vector_size())
-        stored_dim = await _sample_stored_vector_dim(engine)
-        if not stored_dim or not query_dim or stored_dim == query_dim:
-            return None
-        model = getattr(embed, "model", None) or "unknown-model"
-        provider = getattr(embed, "provider", None) or "unknown-provider"
-        return (
-            "Cognee recall found nothing because the embedder changed: stored vectors are "
-            f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
-            f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
-            f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
-        )
-    except Exception:
-        return None
-
-
-def _resolve_search_type(search_type: str):
-    try:
-        from cognee.modules.search.types import SearchType
-
-        key = str(search_type).upper().strip()
-        return getattr(SearchType, key)
-    except Exception:
-        from cognee.modules.search.types import SearchType
-
-        return SearchType.GRAPH_COMPLETION
 
 
 def _prompt(label: str, default: str | None = None) -> str:
