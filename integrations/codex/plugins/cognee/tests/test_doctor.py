@@ -27,7 +27,12 @@ _TMP = tempfile.mkdtemp(prefix="cognee-doctor-codex-test-")
 os.environ["COGNEE_PLUGIN_STATE_DIR"] = _TMP
 
 import _plugin_common  # noqa: E402
+import config  # noqa: E402
 import doctor  # noqa: E402
+
+_CONFIG_FILE = pathlib.Path(_TMP) / "config.json"
+config._CONFIG_FILE = _CONFIG_FILE
+config._HOOK_LOG = pathlib.Path(_TMP) / "config-hook.log"
 
 
 def _reset_env(*keys):
@@ -40,6 +45,15 @@ def _reset_breaker():
     p = pathlib.Path(_TMP) / "recall-breaker.json"
     if p.exists():
         p.unlink()
+
+
+def _write_config(data):
+    _CONFIG_FILE.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _reset_config():
+    if _CONFIG_FILE.exists():
+        _CONFIG_FILE.unlink()
 
 
 class _FakeResponse:
@@ -141,6 +155,67 @@ def test_server_url_shown_in_server_mode():
         _reset_env("COGNEE_BASE_URL")
 
 
+def test_server_url_falls_back_to_config_file():
+    _reset_env(
+        "COGNEE_BASE_URL",
+        "COGNEE_LOCAL_API_URL",
+        "COGNEE_CODEX_BACKEND",
+        "COGNEE_API_KEY",
+    )
+    configured_url = "http://managed-cognee.internal:8012"
+    _write_config({"base_url": configured_url})
+    try:
+        url, source = _plugin_common._local_api_url_with_source()
+        display, raw = doctor._resolve_server_url()
+        assert (url, source) == (configured_url, "config_base_url")
+        assert (display, raw) == (configured_url, configured_url)
+    finally:
+        _reset_config()
+
+
+def test_endpoint_env_vars_keep_precedence_over_config():
+    _reset_env("COGNEE_BASE_URL", "COGNEE_LOCAL_API_URL", "COGNEE_CODEX_BACKEND")
+    _write_config({"backend": "http", "base_url": "http://from-config:8012"})
+    os.environ["COGNEE_BASE_URL"] = "http://from-base-env:8013"
+    try:
+        assert _plugin_common._local_api_url_with_source() == (
+            "http://from-base-env:8013",
+            "env_service_url",
+        )
+        os.environ["COGNEE_LOCAL_API_URL"] = "http://from-local-env:8014"
+        assert _plugin_common._local_api_url_with_source() == (
+            "http://from-local-env:8014",
+            "env_local_api_url",
+        )
+    finally:
+        _reset_env("COGNEE_BASE_URL", "COGNEE_LOCAL_API_URL")
+        _reset_config()
+
+
+def test_local_backend_ignores_stale_config_endpoint():
+    _reset_env("COGNEE_BASE_URL", "COGNEE_LOCAL_API_URL", "COGNEE_CODEX_BACKEND")
+    _write_config({"backend": "local", "base_url": "http://stale-managed:8012"})
+    try:
+        assert _plugin_common._local_api_url_with_source() == (
+            "http://localhost:8011",
+            "default_local",
+        )
+    finally:
+        _reset_config()
+
+
+def test_malformed_config_falls_back_to_localhost():
+    _reset_env("COGNEE_BASE_URL", "COGNEE_LOCAL_API_URL", "COGNEE_CODEX_BACKEND")
+    _CONFIG_FILE.write_text("{not-json", encoding="utf-8")
+    try:
+        assert _plugin_common._local_api_url_with_source() == (
+            "http://localhost:8011",
+            "default_local",
+        )
+    finally:
+        _reset_config()
+
+
 # API key source
 
 
@@ -164,6 +239,40 @@ def test_api_key_source_config():
     finally:
         doctor._API_KEY_CACHE = original
         _reset_env("COGNEE_API_KEY")
+
+
+def test_cached_api_key_remains_scoped_to_config_endpoint():
+    _reset_env(
+        "COGNEE_BASE_URL",
+        "COGNEE_LOCAL_API_URL",
+        "COGNEE_CODEX_BACKEND",
+        "COGNEE_API_KEY",
+    )
+    configured_url = "http://managed-cognee.internal:8012"
+    _write_config({"base_url": configured_url})
+    original = _plugin_common._API_KEY_CACHE
+    cache_file = pathlib.Path(_TMP) / "runtime-api-key.json"
+    _plugin_common._API_KEY_CACHE = cache_file
+    try:
+        cache_file.write_text(
+            json.dumps({"api_key": "matching-key", "base_url": configured_url}),
+            encoding="utf-8",
+        )
+        assert _plugin_common.resolved_http_endpoint_auth() == (
+            configured_url,
+            "matching-key",
+        )
+
+        _reset_env("COGNEE_BASE_URL", "COGNEE_API_KEY")
+        cache_file.write_text(
+            json.dumps({"api_key": "wrong-key", "base_url": "http://other:8012"}),
+            encoding="utf-8",
+        )
+        assert _plugin_common.resolved_http_endpoint_auth() == (configured_url, "")
+    finally:
+        _plugin_common._API_KEY_CACHE = original
+        _reset_env("COGNEE_BASE_URL", "COGNEE_API_KEY")
+        _reset_config()
 
 
 # Health check
