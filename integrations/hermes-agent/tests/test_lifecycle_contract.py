@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from _char_helpers import _SyncBridge, fake_cognee, make_provider  # noqa: E402
+from _char_helpers import FakeBackend, fake_backend, make_provider  # noqa: E402
 from cognee_integration_hermes import provider as provider_mod  # noqa: E402
 
 _NO_URL = {"COGNEE_BASE_URL": "", "COGNEE_SERVICE_URL": ""}
@@ -39,9 +39,9 @@ def assert_no_call(case, fake, name):
 
     Asserting immediately after a suppressed write would pass even if the guard
     were missing — the worker simply would not have got there yet. Worse, that
-    worker would outlive the ``fake_cognee`` context and import the *real*
+    worker would outlive the ``fake_backend`` context and import the *real*
     cognee, racing the next test's fake. Waiting for the call not to arrive
-    fixes both, so this must be called *inside* the ``fake_cognee`` block.
+    fixes both, so this must be called *inside* the ``fake_backend`` block.
     """
     case.assertFalse(
         fake.wait(name, timeout=_NO_CALL_GRACE),
@@ -62,16 +62,14 @@ def _settle_prefetch(provider, timeout=2.0):
         thread.join(timeout=timeout)
 
 
-def _initialize(**init_kwargs):
-    """Run the real ``initialize()`` in embedded mode against the fake cognee.
+def _initialize(backend=None, **init_kwargs):
+    """Run the real ``initialize()`` in embedded mode against a fake transport.
 
     Embedded mode is the only path that needs neither a server nor the network:
-    identity resolution fails closed to None (the fake has no
-    ``cognee.modules.users.methods``) and the local-root configuration is a
-    no-op without ``hermes_home``.
+    it configures local roots and resolves an identity, both of which the fake
+    backend records without touching anything.
     """
-    provider = provider_mod.CogneeMemoryProvider()
-    provider._bridge = _SyncBridge()
+    provider = provider_mod.CogneeMemoryProvider(backend=backend or FakeBackend())
     env = {**_NO_URL, "COGNEE_EMBEDDED": "true"}
     with mock.patch.dict("os.environ", env, clear=False):
         provider.initialize("sess-1", **init_kwargs)
@@ -85,11 +83,11 @@ def _initialize(**init_kwargs):
 
 class TestAgentContextWriteGating(unittest.TestCase):
     def test_absent_agent_context_enables_writes(self):
-        with fake_cognee():
+        with fake_backend():
             self.assertTrue(_initialize()._writes_enabled)
 
     def test_primary_empty_and_none_enable_writes(self):
-        with fake_cognee():
+        with fake_backend():
             for value in ("primary", "", None):
                 self.assertTrue(
                     _initialize(agent_context=value)._writes_enabled,
@@ -97,17 +95,17 @@ class TestAgentContextWriteGating(unittest.TestCase):
                 )
 
     def test_subagent_context_disables_writes(self):
-        with fake_cognee():
+        with fake_backend():
             self.assertFalse(_initialize(agent_context="subagent")._writes_enabled)
 
     def test_disabled_writes_suppress_sync_turn(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(writes_enabled=False)
             provider.sync_turn("u", "a")
-            assert_no_call(self, fake, "remember")
+            assert_no_call(self, fake, "remember_permanent")
 
     def test_disabled_writes_suppress_session_end_improve(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(writes_enabled=False)
             provider.on_session_end([])
         self.assertEqual(fake.kwargs_for("improve"), [])
@@ -116,17 +114,17 @@ class TestAgentContextWriteGating(unittest.TestCase):
         # Regression: on_memory_write used to check only the breaker, so a
         # subagent's built-in memory write reached the graph even though its
         # conversation turns were suppressed. Write gating is now uniform.
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(writes_enabled=False)
             provider.on_memory_write("add", "project", "note")
-            assert_no_call(self, fake, "remember")
+            assert_no_call(self, fake, "remember_permanent")
 
     def test_enabled_writes_still_mirror(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(writes_enabled=True)
             provider.on_memory_write("add", "project", "note")
-            self.assertTrue(fake.wait("remember"))
-        self.assertEqual(len(fake.kwargs_for("remember")), 1)
+            self.assertTrue(fake.wait("remember_permanent"))
+        self.assertEqual(len(fake.kwargs_for("remember_permanent")), 1)
 
 
 # --------------------------------------------------------------------------
@@ -136,37 +134,38 @@ class TestAgentContextWriteGating(unittest.TestCase):
 
 class TestSyncTurn(unittest.TestCase):
     def test_turn_framing_and_session_cache_routing(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(session_cognee_id="hermes_s1")
             provider.sync_turn("what is up", "not much")
-            self.assertTrue(fake.wait("remember"))
-            kwargs = fake.only_call("remember")
-        self.assertEqual(kwargs["data"], "User: what is up\nAssistant: not much")
+            self.assertTrue(fake.wait("remember_session"))
+            kwargs = fake.only_call("remember_session")
+        self.assertEqual(kwargs["text"], "User: what is up\nAssistant: not much")
         self.assertEqual(kwargs["session_id"], "hermes_s1")
-        self.assertEqual(kwargs["dataset_name"], "hermes")
-        self.assertIs(kwargs["self_improvement"], False)
-        self.assertNotIn("session_ids", kwargs)
+        self.assertEqual(kwargs["dataset"], "hermes")
+        # Routing to the session cache is expressed by the method chosen, so the
+        # permanent-graph path must not also have fired.
+        self.assertEqual(fake.kwargs_for("remember_permanent"), [])
 
     def test_open_breaker_suppresses_the_write(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider()
             provider._is_breaker_open = lambda: True
             provider.sync_turn("u", "a")
-            assert_no_call(self, fake, "remember")
+            assert_no_call(self, fake, "remember_session")
 
     def test_per_call_session_id_overrides_the_initialized_session(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(session_id="s-1", session_cognee_id="hermes_s-1")
             provider.sync_turn("u", "a", session_id="s-2")
-            self.assertTrue(fake.wait("remember"))
-            self.assertEqual(fake.only_call("remember")["session_id"], "hermes_s-2")
+            self.assertTrue(fake.wait("remember_session"))
+            self.assertEqual(fake.only_call("remember_session")["session_id"], "hermes_s-2")
 
     def test_matching_session_id_uses_the_cached_derived_id(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(session_id="s-1", session_cognee_id="custom_id")
             provider.sync_turn("u", "a", session_id="s-1")
-            self.assertTrue(fake.wait("remember"))
-            self.assertEqual(fake.only_call("remember")["session_id"], "custom_id")
+            self.assertTrue(fake.wait("remember_session"))
+            self.assertEqual(fake.only_call("remember_session")["session_id"], "custom_id")
 
 
 # --------------------------------------------------------------------------
@@ -176,7 +175,7 @@ class TestSyncTurn(unittest.TestCase):
 
 class TestPrefetchProtocol(unittest.TestCase):
     def test_queued_result_is_returned_with_the_cognee_memory_header(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": "remembered thing", "source": "graph"}]
             provider = make_provider()
             provider.queue_prefetch("q")
@@ -184,12 +183,12 @@ class TestPrefetchProtocol(unittest.TestCase):
         self.assertEqual(out, "## Cognee Memory\n- [graph] remembered thing")
 
     def test_prefetch_without_a_queued_result_is_empty(self):
-        with fake_cognee():
+        with fake_backend():
             provider = make_provider()
             self.assertEqual(provider.prefetch("q"), "")
 
     def test_prefetch_consumes_the_cached_result(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": "once"}]
             provider = make_provider()
             provider.queue_prefetch("q")
@@ -197,45 +196,45 @@ class TestPrefetchProtocol(unittest.TestCase):
             self.assertEqual(provider.prefetch("q"), "")
 
     def test_empty_recall_leaves_nothing_cached(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = []
             provider = make_provider()
             provider.queue_prefetch("q")
             self.assertEqual(provider.prefetch("q"), "")
 
     def test_blank_query_is_not_queued(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider()
             provider.queue_prefetch("")
             assert_no_call(self, fake, "recall")
 
     def test_open_breaker_is_not_queued(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider()
             provider._is_breaker_open = lambda: True
             provider.queue_prefetch("q")
             assert_no_call(self, fake, "recall")
 
     def test_prefetch_uses_a_smaller_budget_than_explicit_recall(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(top_k=12)
             provider.queue_prefetch("q")
             self.assertTrue(fake.wait("recall"))
             kwargs = fake.only_call("recall")
         self.assertEqual(kwargs["top_k"], 5)
-        self.assertIn("session_id", kwargs)
-        self.assertIn("datasets", kwargs)
-        self.assertNotIn("query_type", kwargs)
+        self.assertIsNotNone(kwargs["session_id"])
+        self.assertIsNotNone(kwargs["datasets"])
+        self.assertIsNone(kwargs["query_type"])
 
     def test_prefetch_budget_respects_a_lower_configured_top_k(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(top_k=2)
             provider.queue_prefetch("q")
             self.assertTrue(fake.wait("recall"))
             self.assertEqual(fake.only_call("recall")["top_k"], 2)
 
     def test_at_most_five_lines_are_injected(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": f"item {i}"} for i in range(8)]
             provider = make_provider()
             provider.queue_prefetch("q")
@@ -243,7 +242,7 @@ class TestPrefetchProtocol(unittest.TestCase):
         self.assertEqual(len(out.splitlines()), 6)  # header + 5 items
 
     def test_long_text_is_truncated_to_500_chars(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": "x" * 900}]
             provider = make_provider()
             provider.queue_prefetch("q")
@@ -251,7 +250,7 @@ class TestPrefetchProtocol(unittest.TestCase):
         self.assertEqual(out.count("x"), 500)
 
     def test_blank_text_results_are_skipped(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": "   "}, {"text": "kept"}]
             provider = make_provider()
             provider.queue_prefetch("q")
@@ -259,7 +258,7 @@ class TestPrefetchProtocol(unittest.TestCase):
         self.assertEqual(out, "## Cognee Memory\n- [cognee] kept")
 
     def test_recall_failure_leaves_prefetch_empty_and_does_not_raise(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.errors["recall"] = RuntimeError("down")
             provider = make_provider()
             provider.queue_prefetch("q")
@@ -273,22 +272,22 @@ class TestPrefetchProtocol(unittest.TestCase):
 
 class TestSessionEnd(unittest.TestCase):
     def test_improve_targets_the_dataset_and_the_session(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(session_cognee_id="hermes_sX")
             provider.on_session_end([])
             kwargs = fake.only_call("improve")
         self.assertEqual(kwargs["dataset"], "hermes")
         self.assertEqual(kwargs["session_ids"], ["hermes_sX"])
-        self.assertIn("run_in_background", kwargs)
+        self.assertIn("background", kwargs)
 
     def test_improve_on_end_disabled_skips_it(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(improve_on_end=False)
             provider.on_session_end([])
         self.assertEqual(fake.kwargs_for("improve"), [])
 
     def test_open_breaker_skips_it(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider()
             provider._is_breaker_open = lambda: True
             provider.on_session_end([])
@@ -297,85 +296,83 @@ class TestSessionEnd(unittest.TestCase):
 
 class TestMemoryWriteMirror(unittest.TestCase):
     def _mirror(self, *args, **kwargs):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(session_cognee_id="hermes_sM")
             provider.on_memory_write(*args, **kwargs)
-            if not fake.wait("remember", timeout=2.0):
+            if not fake.wait("remember_permanent", timeout=2.0):
                 return fake, None
-            return fake, fake.only_call("remember")
+            return fake, fake.only_call("remember_permanent")
 
     def test_payload_format_with_the_default_origin(self):
         _, kwargs = self._mirror("add", "project", "prefers tabs")
         self.assertEqual(
-            kwargs["data"],
+            kwargs["text"],
             "Hermes project memory (add, hermes_memory_tool): prefers tabs",
         )
 
     def test_write_origin_metadata_replaces_the_default_origin(self):
         _, kwargs = self._mirror("replace", "user", "likes dark mode", {"write_origin": "user_md"})
         self.assertEqual(
-            kwargs["data"],
+            kwargs["text"],
             "Hermes user memory (replace, user_md): likes dark mode",
         )
 
     def test_mirror_targets_the_permanent_graph(self):
         _, kwargs = self._mirror("add", "project", "note")
-        self.assertIs(kwargs["self_improvement"], True)
         self.assertEqual(kwargs["session_ids"], ["hermes_sM"])
-        self.assertEqual(kwargs["dataset_name"], "hermes")
+        self.assertEqual(kwargs["dataset"], "hermes")
 
     def test_only_add_and_replace_are_mirrored(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider()
             for action in ("delete", "remove", "read", ""):
                 provider.on_memory_write(action, "project", "note")
-            assert_no_call(self, fake, "remember")
+            assert_no_call(self, fake, "remember_permanent")
 
     def test_empty_content_is_not_mirrored(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider()
             provider.on_memory_write("add", "project", "")
-            assert_no_call(self, fake, "remember")
+            assert_no_call(self, fake, "remember_permanent")
 
     def test_open_breaker_suppresses_the_mirror(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider()
             provider._is_breaker_open = lambda: True
             provider.on_memory_write("add", "project", "note")
-            assert_no_call(self, fake, "remember")
+            assert_no_call(self, fake, "remember_permanent")
 
 
 class TestDelegation(unittest.TestCase):
     def test_parent_records_task_and_result_as_a_turn(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider(session_cognee_id="hermes_parent")
             provider.on_delegation("do the thing", "did the thing", child_session_id="child-1")
-            self.assertTrue(fake.wait("remember"))
-            kwargs = fake.only_call("remember")
+            self.assertTrue(fake.wait("remember_session"))
+            kwargs = fake.only_call("remember_session")
         self.assertEqual(
-            kwargs["data"],
+            kwargs["text"],
             "User: Delegated task: do the thing\nResult: did the thing\nAssistant: ",
         )
         self.assertEqual(kwargs["session_id"], "hermes_parent")
-        self.assertIs(kwargs["self_improvement"], False)
 
     def test_empty_task_and_result_records_nothing(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             provider = make_provider()
             provider.on_delegation("", "")
-            assert_no_call(self, fake, "remember")
+            assert_no_call(self, fake, "remember_session")
 
 
 class TestSessionSwitch(unittest.TestCase):
     def test_switch_rederives_the_session_id(self):
-        with fake_cognee():
+        with fake_backend():
             provider = make_provider(session_id="s-1")
             provider.on_session_switch("s-2")
         self.assertEqual(provider._session_id, "s-2")
         self.assertEqual(provider._session_cognee_id, "hermes_s-2")
 
     def test_reset_clears_a_settled_prefetch(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": "stale"}]
             provider = make_provider()
             provider.queue_prefetch("q")
@@ -384,7 +381,7 @@ class TestSessionSwitch(unittest.TestCase):
             self.assertEqual(provider.prefetch("q"), "")
 
     def test_non_reset_switch_keeps_a_settled_prefetch(self):
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": "carried over"}]
             provider = make_provider()
             provider.queue_prefetch("q")
@@ -400,7 +397,7 @@ class TestSessionSwitch(unittest.TestCase):
         the backend call with a gate so the in-flight window is deterministic
         rather than timing-dependent.
         """
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": "belongs to the old conversation"}]
             gate = threading.Event()
             fake.gates["recall"] = gate
@@ -418,7 +415,7 @@ class TestSessionSwitch(unittest.TestCase):
     def test_non_reset_switch_keeps_a_prefetch_that_was_in_flight(self):
         """The mirror case: /resume, /branch and compression continue the same
         logical conversation, so an in-flight prefetch stays valid."""
-        with fake_cognee() as fake:
+        with fake_backend() as fake:
             fake.results["recall"] = [{"text": "still relevant"}]
             gate = threading.Event()
             fake.gates["recall"] = gate

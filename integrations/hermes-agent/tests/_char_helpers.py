@@ -6,21 +6,19 @@ builds, the session-id derivation, and the lifecycle-hook semantics that exist
 only in Hermes (``agent_context`` write gating, the prefetch two-phase protocol,
 ``on_memory_write``, ``on_delegation``).
 
-**One seam.** Every cognee-touching call the provider makes goes through a
-call-time ``import cognee``, so this module fakes the ``cognee`` module itself
-rather than patching provider internals. That has two useful properties:
+**Two fakes, one per layer.**
 
-1. The recorded kwargs are exactly what the provider asks cognee to do — which
-   is the contract the HTTP payloads must reproduce field for field.
-2. When the backend protocol lands, **this file is the only one that should need
-   to change.** The assertions live in the test modules and are written against
-   provider inputs and outputs, never against cognee.
+* :func:`fake_backend` records the provider's calls to the transport protocol.
+  Provider-level tests use this and never mention cognee — which is what lets the
+  transport change underneath them.
+* :func:`fake_cognee` installs a fake ``cognee`` package in ``sys.modules``. Only
+  the transport's own tests (``test_sdk_backend.py``) use it, to assert wire
+  format.
 
 None of these tests need the real cognee installed, and none of them touch the
-network or the filesystem outside ``tmp_path``.
+network or the filesystem outside a temporary directory.
 """
 
-import asyncio
 import contextlib
 import sys
 import threading
@@ -32,6 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from cognee_integration_hermes import provider as provider_mod  # noqa: E402
+from cognee_integration_hermes.backend import MemoryBackend  # noqa: E402
 
 # Module paths the fake has to occupy for ``from cognee.x.y import z`` to
 # resolve. Keep in sync with the call-time imports in provider.py.
@@ -168,19 +167,14 @@ class FakeCognee:
         return self.record("disconnect", kwargs)
 
 
-class _SyncBridge:
-    """Runs the provider's coroutines inline — no event-loop thread in tests."""
-
-    def run(self, coro, timeout=None):
-        return asyncio.run(coro)
-
-    def shutdown(self):
-        pass
-
-
 @contextlib.contextmanager
 def fake_cognee():
-    """Install a :class:`FakeCognee` as the ``cognee`` package for the duration."""
+    """Install a :class:`FakeCognee` as the ``cognee`` package for the duration.
+
+    Used by ``test_sdk_backend.py`` to assert the SDK transport's wire format.
+    Provider-level tests use :func:`fake_backend` instead — they should not know
+    that cognee exists.
+    """
     recorder = FakeCognee()
 
     modules = {}
@@ -214,8 +208,124 @@ def fake_cognee():
                 sys.modules[path] = original
 
 
+class FakeBackend(MemoryBackend):
+    """Records the protocol calls the provider makes, and what it hands back.
+
+    This is the seam the contract tests assert against: provider behaviour on one
+    side, transport on the other. Each transport then has its own small test that
+    it faithfully turns these protocol args into wire format
+    (``test_sdk_backend.py``, and later an HTTP equivalent).
+
+    Shares ``FakeCognee``'s recorder API — ``results``, ``errors``, ``gates``,
+    ``wait``, ``kwargs_for``, ``only_call`` — so retargeting a test is a one-line
+    change of which recorder it reads.
+    """
+
+    def __init__(self):
+        self._recorder = FakeCognee()
+        self._recorder.results = {
+            "recall": [],
+            "remember_session": None,
+            "remember_permanent": RememberResultStub(),
+            "forget": {"deleted": True},
+            "improve": {},
+            "connect": None,
+            "resolve_identity": "USER",
+        }
+        self.empty_recall_hint_value = None
+
+    # Recorder passthrough ------------------------------------------------
+
+    @property
+    def results(self):
+        return self._recorder.results
+
+    @property
+    def errors(self):
+        return self._recorder.errors
+
+    @property
+    def gates(self):
+        return self._recorder.gates
+
+    @property
+    def calls(self):
+        return self._recorder.calls
+
+    def wait(self, name, timeout=2.0):
+        return self._recorder.wait(name, timeout=timeout)
+
+    def names(self):
+        return self._recorder.names()
+
+    def kwargs_for(self, name):
+        return self._recorder.kwargs_for(name)
+
+    def only_call(self, name):
+        return self._recorder.only_call(name)
+
+    # MemoryBackend -------------------------------------------------------
+
+    def configure_models(self, **kwargs):
+        self._recorder.record("configure_models", kwargs)
+
+    def configure_local_roots(self, **kwargs):
+        self._recorder.record("configure_local_roots", kwargs)
+
+    def connect(self, **kwargs):
+        return self._recorder.record("connect", kwargs)
+
+    def resolve_identity(self, **kwargs):
+        return self._recorder.record("resolve_identity", kwargs)
+
+    def close(self, **kwargs):
+        self._recorder.record("close", kwargs)
+
+    def recall(self, **kwargs):
+        return self._recorder.record("recall", kwargs)
+
+    def remember_session(self, **kwargs):
+        return self._recorder.record("remember_session", kwargs)
+
+    def remember_permanent(self, **kwargs):
+        return self._recorder.record("remember_permanent", kwargs)
+
+    def forget(self, **kwargs):
+        return self._recorder.record("forget", kwargs)
+
+    def improve(self, **kwargs):
+        return self._recorder.record("improve", kwargs)
+
+    def empty_recall_hint(self, **kwargs):
+        self._recorder.record("empty_recall_hint", kwargs)
+        return self.empty_recall_hint_value
+
+
+_CURRENT_FAKE_BACKEND = None
+
+
+@contextlib.contextmanager
+def fake_backend():
+    """Yield a :class:`FakeBackend` and make it the default for ``make_provider``.
+
+    Ambient on purpose, mirroring how ``fake_cognee`` installs itself into
+    ``sys.modules``: a test says ``with fake_backend() as fake`` and every
+    provider built inside the block records to it, with no plumbing at the call
+    sites.
+    """
+    global _CURRENT_FAKE_BACKEND
+    previous = _CURRENT_FAKE_BACKEND
+    backend = FakeBackend()
+    _CURRENT_FAKE_BACKEND = backend
+    try:
+        yield backend
+    finally:
+        _CURRENT_FAKE_BACKEND = previous
+
+
 def make_provider(
     *,
+    backend=None,
     dataset="hermes",
     top_k=5,
     session_id="s-1",
@@ -226,14 +336,14 @@ def make_provider(
     improve_on_end=True,
     config=None,
 ):
-    """A provider wired for inline execution, with post-``initialize()`` state set.
+    """A provider with post-``initialize()`` state set and a fake transport.
 
-    ``remote_mode`` defaults to True so the embedded-only dimension-mismatch
-    probe short-circuits — ``test_dim_mismatch.py`` already covers that gate, and
-    it disappears with the SDK.
+    Uses the ambient backend from an enclosing ``fake_backend()`` block, or a
+    throwaway one when there is none.
     """
-    provider = provider_mod.CogneeMemoryProvider()
-    provider._bridge = _SyncBridge()
+    provider = provider_mod.CogneeMemoryProvider(
+        backend=backend or _CURRENT_FAKE_BACKEND or FakeBackend()
+    )
     provider._initialized = True
     provider._remote_mode = remote_mode
     provider._writes_enabled = writes_enabled

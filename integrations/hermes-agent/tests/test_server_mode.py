@@ -1,11 +1,16 @@
 """Tests for local-server mode: bootstrap helper, init mode routing, config.
 
-Runs under pytest or standalone (``python3 tests/test_server_mode.py``). None of
-these need cognee installed — the provider imports it lazily and we stub the
-serve/identity coroutines, so the tests exercise pure routing logic.
+Mode selection is a Hermes concern and stays in the provider: which transport
+gets built, and whether a local server is spawned first. The transport itself is
+faked, so these exercise pure routing logic and need neither cognee nor a network.
+How a transport turns protocol calls into wire format lives in
+``test_sdk_backend.py``.
+
+Runs under pytest or standalone (``python3 tests/test_server_mode.py``).
 """
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -14,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from _char_helpers import FakeBackend  # noqa: E402
 from cognee_integration_hermes import config as config_mod  # noqa: E402
 from cognee_integration_hermes import provider as provider_mod  # noqa: E402
 from cognee_integration_hermes import server_bootstrap as sb  # noqa: E402
@@ -75,23 +81,35 @@ class TestEnsureLocalServer(unittest.TestCase):
                 sb.ensure_local_server(8000, boot_timeout=0.01)
 
 
+class _Recorder(dict):
+    """Reads the mode-routing decisions off a fake backend.
+
+    Mode selection stays in the provider — which transport gets built, and
+    whether a local server is spawned first, is a Hermes concern. What the
+    provider then *asks* the transport to do is recorded here.
+    """
+
+    def __init__(self, backend):
+        super().__init__(served=None, identity_called=False, roots_called=False)
+        self._backend = backend
+
+    def _refresh(self):
+        connects = self._backend.kwargs_for("connect")
+        if connects:
+            self["served"] = (connects[0]["url"], connects[0]["api_key"])
+        self["identity_called"] = bool(self._backend.kwargs_for("resolve_identity"))
+        self["roots_called"] = bool(self._backend.kwargs_for("configure_local_roots"))
+
+    def __getitem__(self, key):
+        self._refresh()
+        return super().__getitem__(key)
+
+
 def _make_provider():
-    """A provider with cognee-touching coroutines stubbed; records what ran."""
-    p = provider_mod.CogneeMemoryProvider()
-    rec = {"served": None, "identity_called": False, "roots_called": False}
-
-    async def fake_serve(url, key):
-        rec["served"] = (url, key)
-
-    async def fake_identity():
-        rec["identity_called"] = True
-        return "USER"
-
-    p._do_serve = fake_serve
-    p._ensure_identity = fake_identity
-    p._configure_cognee_models = lambda: None
-    p._configure_cognee_local_roots = lambda: rec.__setitem__("roots_called", True)
-    return p, rec
+    """A provider on a fake transport, plus a recorder of what it was asked to do."""
+    backend = FakeBackend()
+    p = provider_mod.CogneeMemoryProvider(backend=backend)
+    return p, _Recorder(backend)
 
 
 _NO_URL = {"COGNEE_BASE_URL": "", "COGNEE_SERVICE_URL": ""}
@@ -105,20 +123,31 @@ class TestInitializeModes(unittest.TestCase):
             p.initialize("sid")
         self.assertTrue(p._remote_mode)
         self.assertEqual(rec["served"], ("https://cloud.example/api", "k"))
-        self.assertIsNone(p._user)
         self.assertFalse(rec["identity_called"])
         self.assertFalse(rec["roots_called"])
 
     def test_embedded_mode_configures_roots_and_resolves_identity(self):
+        # hermes_home is always injected by MemoryManager.initialize_all, and the
+        # roots are derived from it — without one there is nothing to configure.
+        env = {**_NO_URL, "COGNEE_EMBEDDED": "true"}
+        p, rec = _make_provider()
+        with tempfile.TemporaryDirectory() as home:
+            with mock.patch.dict("os.environ", env, clear=False):
+                p.initialize("sid", hermes_home=home)
+            self.assertFalse(p._remote_mode)
+            self.assertIsNone(rec["served"])
+            self.assertTrue(rec["roots_called"])
+            self.assertTrue(rec["identity_called"])
+            roots = p._backend.only_call("configure_local_roots")
+        self.assertTrue(roots["data_root"].startswith(home))
+        self.assertTrue(roots["system_root"].startswith(home))
+
+    def test_embedded_mode_without_hermes_home_configures_no_roots(self):
         env = {**_NO_URL, "COGNEE_EMBEDDED": "true"}
         p, rec = _make_provider()
         with mock.patch.dict("os.environ", env, clear=False):
             p.initialize("sid")
-        self.assertFalse(p._remote_mode)
-        self.assertIsNone(rec["served"])
-        self.assertTrue(rec["roots_called"])
-        self.assertTrue(rec["identity_called"])
-        self.assertEqual(p._user, "USER")
+        self.assertFalse(rec["roots_called"])
 
     def test_default_mode_ensures_local_server_and_serves_localhost(self):
         env = {**_NO_URL, "COGNEE_EMBEDDED": ""}
@@ -133,7 +162,6 @@ class TestInitializeModes(unittest.TestCase):
         ensure.assert_called_once()
         self.assertTrue(p._remote_mode)
         self.assertEqual(rec["served"], ("http://127.0.0.1:8000", ""))
-        self.assertIsNone(p._user)
         self.assertFalse(rec["identity_called"])
 
     def test_local_server_failure_raises_not_silently_embedded(self):
@@ -156,41 +184,11 @@ class TestInitializeModes(unittest.TestCase):
         # local graph (data divergence / masked config error).
         env = {**_NO_URL, "COGNEE_BASE_URL": "https://cloud.example/api"}
         p, rec = _make_provider()
-
-        async def boom(url, key):
-            raise RuntimeError("unreachable")
-
-        p._do_serve = boom
+        p._backend.errors["connect"] = RuntimeError("unreachable")
         with mock.patch.dict("os.environ", env, clear=False):
             with self.assertRaises(RuntimeError):
                 p.initialize("sid")
         self.assertFalse(rec["roots_called"])
-
-
-class TestUserKwarg(unittest.TestCase):
-    def test_omitted_in_remote_mode_even_with_user_set(self):
-        p, _ = _make_provider()
-        p._remote_mode = True
-        p._user = "USER"
-        kwargs = {}
-        p._add_user_kwarg(kwargs)
-        self.assertNotIn("user", kwargs)  # omitted, not user=None
-
-    def test_included_in_embedded_mode(self):
-        p, _ = _make_provider()
-        p._remote_mode = False
-        p._user = "USER"
-        kwargs = {}
-        p._add_user_kwarg(kwargs)
-        self.assertEqual(kwargs["user"], "USER")
-
-    def test_omitted_when_user_is_none(self):
-        p, _ = _make_provider()
-        p._remote_mode = False
-        p._user = None
-        kwargs = {}
-        p._add_user_kwarg(kwargs)
-        self.assertNotIn("user", kwargs)
 
 
 class TestImproveBackgroundDecision(unittest.TestCase):
@@ -203,15 +201,9 @@ class TestImproveBackgroundDecision(unittest.TestCase):
         p._improve_on_end = True
         p._remote_mode = remote_mode
         p._config = {"improve_timeout": 300, "improve_background": env_override or ""}
-        captured = {}
-
-        async def fake_improve(run_in_background=False):
-            captured["bg"] = run_in_background
-
-        p._do_improve = fake_improve
         p._is_breaker_open = lambda: False
         p.on_session_end([])
-        return captured.get("bg")
+        return p._backend.only_call("improve")["background"]
 
     def test_server_mode_backgrounds(self):
         self.assertTrue(self._run_session_end(remote_mode=True))
