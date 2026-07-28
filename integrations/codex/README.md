@@ -52,9 +52,17 @@ You can also set config in `~/.cognee-plugin/config.json`:
 ```json
 {
   "base_url": "https://your-instance.cognee.ai",
-  "dataset": "agent_sessions"
+  "dataset": "agent_sessions",
+  "top_k": 10,
+  "recall_timeout": 4.5,
+  "recall_budget": 5.0
 }
 ```
+
+`top_k` controls results requested per recall scope (bounded to 1–50).
+`recall_timeout` and `recall_budget` bound per-scope and total prompt-hook
+latency. The equivalent environment variables are `COGNEE_RECALL_TOP_K`,
+`COGNEE_RECALL_TIMEOUT`, and `COGNEE_RECALL_BUDGET`.
 
 On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to confirm the plugin is active.
 
@@ -263,6 +271,9 @@ Config precedence:
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `codex` | Prefix for auto-generated session IDs |
+| `top_k` | `COGNEE_RECALL_TOP_K` | `10` | Results requested per recall scope; bounded to 1–50 |
+| `recall_timeout` | `COGNEE_RECALL_TIMEOUT` | `4.5` | Per-scope recall timeout in seconds |
+| `recall_budget` | `COGNEE_RECALL_BUDGET` | `5.0` | Total prompt-hook recall budget in seconds |
 | `base_url` | `COGNEE_BASE_URL` | unset | Set to enable managed endpoint mode |
 | `api_key` | `COGNEE_API_KEY` | unset | API key; auto-minted if absent in local mode |
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |

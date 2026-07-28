@@ -39,7 +39,7 @@ from _plugin_common import (
     set_session_key,
 )
 from cognee_statusline_render import render_status_for_host
-from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
+from config import ensure_cognee_ready, get_dataset, get_recall_top_k, get_session_id, load_config
 
 
 def _float_env(name: str, default: float) -> float:
@@ -49,10 +49,16 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-TOP_K = 5
+def _positive_float(value, default: float) -> float:
+    try:
+        return max(0.1, float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 TRUNCATE_ANSWER = 500
 TRUNCATE_RETURN = 400
-TRUNCATE_GRAPH_CTX = 1500
+TRUNCATE_GRAPH_CTX = 6000
 RECENT_TRACE_FALLBACK_TOP_K = 5
 
 
@@ -162,6 +168,7 @@ async def _recent_trace_fallback(session_id: str, user_id: str, top_k: int) -> l
 
 async def _run(prompt: str) -> dict | None:
     config = load_config()
+    top_k = get_recall_top_k(config)
     runtime = resolve_runtime_mode()
     cloud_mode = runtime["mode"] == "http"
     # Readiness gate: never block the user's prompt on a warming/migrating
@@ -205,8 +212,8 @@ async def _run(prompt: str) -> dict | None:
     scope_specs = [
         (["session"], None, None),
         (["trace"], None, None),
-        (["graph_context"], None, None),
         (["graph"], "HYBRID_COMPLETION", None),
+        (["graph_context"], None, None),
         (["session_context"], None, "agent"),
     ]
     if not cloud_mode:
@@ -230,8 +237,8 @@ async def _run(prompt: str) -> dict | None:
     # Hard time-box: this hook is on the keystroke->answer path, so recall must
     # never be the long pole. Each scope gets a short per-call timeout, and the
     # whole loop stops once the overall budget is spent. Partial results are fine.
-    recall_timeout = _float_env("COGNEE_RECALL_TIMEOUT", 2.5)
-    budget_deadline = time.monotonic() + _float_env("COGNEE_RECALL_BUDGET", 4.0)
+    recall_timeout = _positive_float(config.get("recall_timeout"), 4.5)
+    budget_deadline = time.monotonic() + _positive_float(config.get("recall_budget"), 5.0)
     # Respect the shared circuit breaker: when the server has been failing (tripped
     # by the explicit recall path), skip this per-prompt recall rather than hammering
     # a down backend on every keystroke. HTTP/cloud mode only.
@@ -245,7 +252,10 @@ async def _run(prompt: str) -> dict | None:
         if _bopen:
             hook_log("recall_breaker_open", {"retry_in": _bretry})
             scope_specs = []
+    graph_hit = False
     for scope_list, qtype, context_profile in scope_specs:
+        if scope_list == ["graph_context"] and graph_hit:
+            continue
         if time.monotonic() >= budget_deadline:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
@@ -256,7 +266,7 @@ async def _run(prompt: str) -> dict | None:
                 part = recall_via_http(
                     prompt,
                     session_id=session_id,
-                    top_k=TOP_K,
+                    top_k=top_k,
                     scope=scope_list,
                     only_context=True,
                     search_type=qtype,
@@ -269,7 +279,7 @@ async def _run(prompt: str) -> dict | None:
                     cognee.recall(
                         prompt,
                         session_id=session_id,
-                        top_k=TOP_K,
+                        top_k=top_k,
                         scope=scope_list,
                         only_context=True,
                         query_type=query_type,
@@ -280,6 +290,8 @@ async def _run(prompt: str) -> dict | None:
                 )
             if part:
                 results.extend(part)
+                if scope_list == ["graph"]:
+                    graph_hit = True
         except Exception as exc:
             hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
         finally:

@@ -32,7 +32,9 @@ _DEFAULTS = {
     "agent_name": "codex-agent",
     "session_strategy": "per-directory",  # per-directory | git-branch | static
     "session_prefix": "codex",
-    "top_k": 3,
+    "top_k": 10,
+    "recall_timeout": 4.5,
+    "recall_budget": 5.0,
     "backend": "auto",
     "user_email": "default_user@example.com",
     "user_password": "default_password",
@@ -70,6 +72,9 @@ _ENV_MAP = {
     "COGNEE_PLUGIN_DATASET": "dataset",
     "COGNEE_SESSION_STRATEGY": "session_strategy",
     "COGNEE_SESSION_PREFIX": "session_prefix",
+    "COGNEE_RECALL_TOP_K": "top_k",
+    "COGNEE_RECALL_TIMEOUT": "recall_timeout",
+    "COGNEE_RECALL_BUDGET": "recall_budget",
     "COGNEE_BASE_URL": "base_url",
     "COGNEE_API_KEY": "api_key",
     "COGNEE_USER_EMAIL": "user_email",
@@ -171,6 +176,14 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
 def get_dataset(config: dict) -> str:
     """Get the dataset name from config."""
     return config.get("dataset", "agent_sessions")
+
+
+def get_recall_top_k(config: dict) -> int:
+    """Get the bounded number of results requested per recall scope."""
+    try:
+        return max(1, min(50, int(config.get("top_k", 10))))
+    except (TypeError, ValueError):
+        return 10
 
 
 def is_cloud_mode(config: dict) -> bool:
