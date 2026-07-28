@@ -335,7 +335,33 @@ class CogneeMemoryProvider(MemoryProvider):
 
         self._initialized = True
 
+    def _is_usable(self) -> bool:
+        """False when initialization never completed, so nothing may touch cognee.
+
+        ``MemoryManager.initialize_all`` catches and logs whatever ``initialize()``
+        raises, then carries on — Hermes starts either way and the tool schemas
+        stay registered. Without this gate the provider would keep serving calls
+        against an unconnected transport: for the SDK that means falling back to
+        in-process cognee, which is exactly the single-writer DB risk local-server
+        mode exists to avoid. Fail closed and say so instead.
+        """
+        return self._initialized
+
+    def _unavailable_envelope(self) -> str:
+        return json.dumps(
+            {
+                "error": (
+                    "Cognee memory is unavailable: initialization did not complete. "
+                    "Check the Hermes logs for the cause and `hermes cognee status` "
+                    "for the current configuration."
+                )
+            }
+        )
+
     def system_prompt_block(self) -> str:
+        # Never advertise memory the model cannot actually use.
+        if not self._is_usable():
+            return ""
         mode = "remote" if self._remote_mode else "local"
         return (
             "# Cognee Memory\n"
@@ -345,6 +371,8 @@ class CogneeMemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        if not self._is_usable():
+            return ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
@@ -355,7 +383,7 @@ class CogneeMemoryProvider(MemoryProvider):
         return f"## Cognee Memory\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if not query or self._is_breaker_open():
+        if not self._is_usable() or not query or self._is_breaker_open():
             return
 
         cognee_session_id = self._session_cognee_id_for(session_id)
@@ -395,7 +423,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        if not self._writes_enabled or self._is_breaker_open():
+        if not self._is_usable() or not self._writes_enabled or self._is_breaker_open():
             return
 
         cognee_session_id = self._session_cognee_id_for(session_id)
@@ -428,6 +456,8 @@ class CogneeMemoryProvider(MemoryProvider):
         return [RECALL_SCHEMA, REMEMBER_SCHEMA, FORGET_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        if not self._is_usable():
+            return self._unavailable_envelope()
         if self._is_breaker_open():
             return json.dumps(
                 {
@@ -448,7 +478,12 @@ class CogneeMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
-        if not self._writes_enabled or not self._improve_on_end or self._is_breaker_open():
+        if (
+            not self._is_usable()
+            or not self._writes_enabled
+            or not self._improve_on_end
+            or self._is_breaker_open()
+        ):
             return
         # When to background the graph-build: only when a server will outlive this
         # process and finish the job. In embedded mode the work runs in-process, so
@@ -500,7 +535,8 @@ class CogneeMemoryProvider(MemoryProvider):
         # Without it a subagent's built-in memory write still reached the graph
         # while its conversation turns were correctly suppressed.
         if (
-            not self._writes_enabled
+            not self._is_usable()
+            or not self._writes_enabled
             or action not in {"add", "replace"}
             or not content
             or self._is_breaker_open()

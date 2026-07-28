@@ -24,6 +24,8 @@ import logging
 import threading
 from typing import Any, Optional
 
+from .config import str_to_bool
+
 logger = logging.getLogger(__name__)
 
 
@@ -477,22 +479,35 @@ def resolve_search_type(search_type: str):
 def build_backend(config: Optional[dict[str, Any]] = None, *, hermes_home: str = ""):
     """Pick a transport from config.
 
-    ``COGNEE_TRANSPORT=http`` selects the direct-HTTP transport, which is the one
-    the other cognee plugins use and the only one that sends ``session_ids`` on
-    ``improve()``. The SDK transport remains the default until it has been
-    verified against a live server; it is also the only one that can run cognee
-    in-process (``COGNEE_EMBEDDED=true``).
+    Direct HTTP is the default: it is what the other cognee plugins use, and the
+    only transport that sends ``session_ids`` on ``improve()`` — the SDK's
+    ``CloudClient`` drops them, so the session-to-graph bridge silently becomes a
+    dataset-wide improve.
+
+    The SDK transport is selected by ``COGNEE_EMBEDDED=true``, which it is the only
+    one able to serve (it runs cognee in this process, with no server involved), or
+    explicitly by ``COGNEE_TRANSPORT=sdk`` for a like-for-like comparison.
     """
     config = config or {}
     transport = str(config.get("transport") or "").strip().lower()
-    if transport in {"http", "direct"}:
-        from .http_backend import HttpBackend
+    if transport in {"sdk", "cognee"}:
+        return SdkBackend()
+    # Embedded means "no server" — only the in-process SDK can do that, so it wins
+    # over the default regardless of transport.
+    if str_to_bool(config.get("embedded"), False):
+        return SdkBackend()
 
-        # cache_dir keeps a minted API key profile-scoped.
-        return HttpBackend(cache_dir=hermes_home or None)
-    return SdkBackend()
+    from .http_backend import HttpBackend
+
+    # cache_dir keeps a minted API key profile-scoped.
+    return HttpBackend(cache_dir=hermes_home or None)
 
 
 def default_backend() -> MemoryBackend:
-    """The transport used when the provider is constructed without one."""
+    """The transport used before config is loaded, or when none is injected.
+
+    Deliberately the SDK: it needs no URL, no key and no reachable server, so
+    constructing a provider is side-effect free. ``initialize()`` replaces it with
+    the configured transport once it knows what to build.
+    """
     return SdkBackend()

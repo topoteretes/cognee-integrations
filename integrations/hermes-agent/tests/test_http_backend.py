@@ -184,13 +184,24 @@ class TestRecallWireFormat(unittest.TestCase):
         )
         self.assertEqual(results, [{"text": "one"}])
 
-    def test_auto_route_false_warns_but_does_not_fail(self):
-        # /api/v1/recall has no auto_route field, so the setting cannot be honoured.
-        with self.assertLogs("cognee_integration_hermes.http_backend", level="WARNING") as logs:
-            opener, results = self._recall(auto_route=False)
-        self.assertIn("auto_route", "\n".join(logs.output))
-        self.assertNotIn("auto_route", opener.json_body("/api/v1/recall"))
+    def test_auto_route_false_becomes_an_explicit_graph_completion(self):
+        # There is no auto_route field, but the setting is expressible: server-side
+        # auto_route=False with no type means "skip the classifier, use
+        # GRAPH_COMPLETION", and naming that type bypasses the classifier too.
+        opener, results = self._recall(auto_route=False)
+        body = opener.json_body("/api/v1/recall")
+        self.assertEqual(body["search_type"], "GRAPH_COMPLETION")
+        self.assertNotIn("auto_route", body)
         self.assertEqual(results, [{"text": "hit"}])
+
+    def test_auto_route_false_does_not_override_an_explicit_search_type(self):
+        body = self._recall(auto_route=False, query_type="CHUNKS")[0].json_body("/api/v1/recall")
+        self.assertEqual(body["search_type"], "CHUNKS")
+
+    def test_auto_route_true_leaves_the_classifier_to_the_server(self):
+        self.assertNotIn(
+            "search_type", self._recall(auto_route=True)[0].json_body("/api/v1/recall")
+        )
 
 
 class TestRememberWireFormat(unittest.TestCase):

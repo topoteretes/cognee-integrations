@@ -24,6 +24,7 @@ from cognee_integration_hermes import config as config_mod  # noqa: E402
 from cognee_integration_hermes import provider as provider_mod  # noqa: E402
 from cognee_integration_hermes import server_bootstrap as sb  # noqa: E402
 from cognee_integration_hermes.backend import SdkBackend  # noqa: E402
+from cognee_integration_hermes.http_backend import HttpBackend  # noqa: E402
 
 
 class _FakeResp:
@@ -217,32 +218,48 @@ class TestImproveBackgroundDecision(unittest.TestCase):
 
 
 class TestTransportSelection(unittest.TestCase):
-    """``COGNEE_TRANSPORT`` chooses the transport; the SDK stays the default."""
+    """Direct HTTP is the default; the SDK serves embedded mode and opt-out."""
 
     def _transport_for(self, env):
-        # The real transport classes are used so the type assertions mean
-        # something, but SdkBackend's two cognee-importing hooks are stubbed —
-        # otherwise selecting the default would pay a multi-second import.
-        merged = {**_NO_URL, "COGNEE_EMBEDDED": "true", **env}
+        # Real transport classes, so the type assertions mean something — but every
+        # I/O-touching hook is stubbed: SdkBackend's cognee imports would cost
+        # seconds, and connect() would reach for a socket.
+        merged = {**_NO_URL, **env}
         provider = provider_mod.CogneeMemoryProvider()
         with (
             mock.patch.dict("os.environ", merged, clear=False),
+            mock.patch.object(
+                provider_mod, "ensure_local_server", return_value="http://127.0.0.1:8000"
+            ),
             mock.patch.object(SdkBackend, "configure_models"),
             mock.patch.object(SdkBackend, "configure_local_roots"),
             mock.patch.object(SdkBackend, "resolve_identity"),
+            mock.patch.object(SdkBackend, "connect"),
+            mock.patch.object(HttpBackend, "connect"),
         ):
             provider.initialize("sid")
         return type(provider._backend).__name__
 
-    def test_default_is_the_sdk_transport(self):
-        self.assertEqual(self._transport_for({}), "SdkBackend")
+    def test_default_is_the_http_transport(self):
+        self.assertEqual(self._transport_for({}), "HttpBackend")
 
-    def test_http_is_opt_in(self):
-        # Embedded mode never connects, so this exercises selection only.
-        self.assertEqual(self._transport_for({"COGNEE_TRANSPORT": "http"}), "HttpBackend")
+    def test_cloud_mode_also_uses_http(self):
+        self.assertEqual(
+            self._transport_for({"COGNEE_BASE_URL": "https://cloud.example"}), "HttpBackend"
+        )
 
-    def test_explicit_sdk_is_honoured(self):
+    def test_the_sdk_can_be_selected_explicitly(self):
         self.assertEqual(self._transport_for({"COGNEE_TRANSPORT": "sdk"}), "SdkBackend")
+
+    def test_embedded_mode_uses_the_sdk(self):
+        # Embedded means "no server at all", which only the in-process SDK can do.
+        self.assertEqual(self._transport_for({"COGNEE_EMBEDDED": "true"}), "SdkBackend")
+
+    def test_embedded_mode_wins_over_the_http_default(self):
+        self.assertEqual(
+            self._transport_for({"COGNEE_EMBEDDED": "true", "COGNEE_TRANSPORT": "http"}),
+            "SdkBackend",
+        )
 
     def test_an_injected_transport_always_wins(self):
         backend = FakeBackend()
@@ -252,12 +269,17 @@ class TestTransportSelection(unittest.TestCase):
             provider.initialize("sid")
         self.assertIs(provider._backend, backend)
 
-    def test_http_transport_caches_its_key_under_hermes_home(self):
-        # Profile isolation: a minted key must not be shared across profiles.
-        env = {**_NO_URL, "COGNEE_EMBEDDED": "true", "COGNEE_TRANSPORT": "http"}
+    def test_the_http_transport_caches_its_key_under_hermes_home(self):
+        # Profile isolation: a minted key must not leak across Hermes profiles.
         provider = provider_mod.CogneeMemoryProvider()
         with tempfile.TemporaryDirectory() as home:
-            with mock.patch.dict("os.environ", env, clear=False):
+            with (
+                mock.patch.dict("os.environ", _NO_URL, clear=False),
+                mock.patch.object(
+                    provider_mod, "ensure_local_server", return_value="http://127.0.0.1:8000"
+                ),
+                mock.patch.object(HttpBackend, "connect"),
+            ):
                 provider.initialize("sid", hermes_home=home)
             self.assertEqual(str(provider._backend._cache_dir), home)
 

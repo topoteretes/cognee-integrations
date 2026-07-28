@@ -12,6 +12,7 @@ nothing to copy it from — it can only be preserved deliberately. Covered here:
 Run standalone with ``python3 tests/test_lifecycle_contract.py``.
 """
 
+import json
 import sys
 import threading
 import time
@@ -125,6 +126,77 @@ class TestAgentContextWriteGating(unittest.TestCase):
             provider.on_memory_write("add", "project", "note")
             self.assertTrue(fake.wait("remember_permanent"))
         self.assertEqual(len(fake.kwargs_for("remember_permanent")), 1)
+
+
+# --------------------------------------------------------------------------
+# Fail closed — a provider that never initialized must not touch cognee
+# --------------------------------------------------------------------------
+
+
+class TestFailsClosedWhenUninitialized(unittest.TestCase):
+    """Hermes swallows whatever ``initialize()`` raises and starts anyway.
+
+    ``MemoryManager.initialize_all`` logs the exception and continues, leaving the
+    provider registered with its tool schemas live. Every entry point therefore has
+    to check for itself, or calls would run against an unconnected transport — for
+    the SDK that means silently doing in-process cognee, the exact single-writer DB
+    risk local-server mode exists to prevent.
+    """
+
+    def _uninitialized(self, fake):
+        provider = make_provider(backend=fake)
+        provider._initialized = False  # what a failed initialize() leaves behind
+        return provider
+
+    def test_a_failed_initialize_leaves_the_provider_unusable(self):
+        with fake_backend() as fake:
+            fake.errors["connect"] = RuntimeError("unreachable")
+            provider = provider_mod.CogneeMemoryProvider(backend=fake)
+            env = {**_NO_URL, "COGNEE_BASE_URL": "https://cloud.example"}
+            with mock.patch.dict("os.environ", env, clear=False):
+                with self.assertRaises(RuntimeError):
+                    provider.initialize("sid")
+            self.assertFalse(provider._initialized)
+
+    def test_tool_calls_report_unavailable_instead_of_running(self):
+        with fake_backend() as fake:
+            provider = self._uninitialized(fake)
+            for tool, args in (
+                ("cognee_recall", {"query": "q"}),
+                ("cognee_remember", {"content": "c"}),
+                ("cognee_forget", {"everything": True}),
+            ):
+                out = json.loads(provider.handle_tool_call(tool, args))
+                self.assertIn("unavailable", out["error"])
+            self.assertEqual(fake.calls, [])
+
+    def test_writes_are_suppressed(self):
+        with fake_backend() as fake:
+            provider = self._uninitialized(fake)
+            provider.sync_turn("u", "a")
+            provider.on_memory_write("add", "project", "note")
+            provider.on_delegation("task", "result")
+            provider.on_session_end([])
+            assert_no_call(self, fake, "remember_session")
+            assert_no_call(self, fake, "remember_permanent")
+            self.assertEqual(fake.kwargs_for("improve"), [])
+
+    def test_recall_is_not_queued_or_returned(self):
+        with fake_backend() as fake:
+            provider = self._uninitialized(fake)
+            provider.queue_prefetch("q")
+            assert_no_call(self, fake, "recall")
+            self.assertEqual(provider.prefetch("q"), "")
+
+    def test_memory_is_not_advertised_to_the_model(self):
+        with fake_backend() as fake:
+            self.assertEqual(self._uninitialized(fake).system_prompt_block(), "")
+
+    def test_an_initialized_provider_still_advertises_memory(self):
+        with fake_backend():
+            block = make_provider().system_prompt_block()
+        self.assertIn("Cognee Memory", block)
+        self.assertIn("cognee_recall", block)
 
 
 # --------------------------------------------------------------------------

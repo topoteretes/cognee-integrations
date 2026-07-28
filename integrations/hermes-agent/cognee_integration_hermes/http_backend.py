@@ -25,13 +25,16 @@ memory into the permanent graph.
 Note the field-name differences from the SDK: the endpoint calls them ``query``
 and ``search_type`` where the SDK says ``query_text`` and ``query_type``.
 
-**Two things the HTTP API cannot express**, both logged once rather than dropped
-silently (see :meth:`recall` and :meth:`remember_permanent`):
+**Fields the HTTP API does not have:**
 
-* ``auto_route`` — no such field on ``/api/v1/recall``; the server always uses
-  cognee's default (on).
-* ``session_ids`` on a *permanent* write — no such field on ``/api/v1/remember``.
-  ``improve`` does accept it, so the session-to-graph bridge is unaffected.
+* ``auto_route`` — no such field on ``/api/v1/recall``, but the setting is still
+  honoured: ``auto_route=False`` is translated into an explicit
+  ``search_type=GRAPH_COMPLETION``, which is what it means server-side. See
+  :meth:`recall`.
+* ``session_ids`` on a *permanent* write — no such field on ``/api/v1/remember``
+  and no equivalent, so a graph write cannot be linked to its session. Logged
+  once rather than dropped silently. ``improve`` does accept ``session_ids``, so
+  the session-to-graph bridge itself is unaffected.
 """
 
 from __future__ import annotations
@@ -352,12 +355,15 @@ class HttpBackend(MemoryBackend):
         query_type,
         timeout,
     ) -> list[Any]:
-        if not auto_route:
-            self._warn_once(
-                "auto_route",
-                "COGNEE_AUTO_ROUTE=false is not supported over HTTP: /api/v1/recall has "
-                "no auto_route field, so the server's default routing is used.",
-            )
+        if not auto_route and not query_type:
+            # /api/v1/recall has no auto_route field, but the setting is still
+            # expressible: server-side, ``auto_route=False`` with no explicit type
+            # means "skip the query classifier and use GRAPH_COMPLETION"
+            # (recall.py:519). Naming that type directly bypasses the classifier
+            # too, so this is the same retrieval path — only cognee's
+            # router-override counter differs, which is pure telemetry.
+            query_type = "GRAPH_COMPLETION"
+
         body: dict[str, Any] = {"query": query, "top_k": top_k}
         if session_id:
             body["session_id"] = session_id
