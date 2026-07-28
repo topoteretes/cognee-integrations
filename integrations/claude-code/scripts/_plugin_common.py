@@ -1297,6 +1297,18 @@ _LLM_STATE_DIR = _PLUGIN_DIR / "llm-state"
 _CONN_STATE_DIR = _PLUGIN_DIR / "conn-state"
 
 
+def _session_key_path_safe(key: str) -> bool:
+    """True when `key` is safe to use as a single filename component.
+
+    Excludes every path separator (`/`, `\\`) and drive/stream punctuation (`:`), so a
+    key can only ever name a file INSIDE the target directory — `..` becomes the
+    literal filename `...json`, not a parent-directory hop. The status-line renderer
+    keeps its own copy of this predicate (`_path_safe`) on purpose: it is standalone
+    by design and must not import this module.
+    """
+    return bool(key) and all(c.isalnum() or c in "._-" for c in key)
+
+
 def _write_session_marker(directory: Path, payload: dict) -> None:
     """Mirror a status payload into ``<directory>/<session_key>.json``.
 
@@ -1305,7 +1317,7 @@ def _write_session_marker(directory: Path, payload: dict) -> None:
     record as "could be mine" so nothing is lost. Best-effort, never raises.
     """
     key = get_session_key()
-    if not key or not all(c.isalnum() or c in "._-" for c in key):
+    if not _session_key_path_safe(key):
         return
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -1356,6 +1368,28 @@ def write_connection_state(
 def mark_server_ready(service_url: str, version: str = "") -> None:
     """Back-compat shim: record a healthy, authenticated connection ("ready")."""
     write_connection_state("ready", service_url, version=version)
+
+
+def same_connection_target(service_url: str, prior_url: str) -> bool:
+    """True unless the two URLs are *provably* different servers.
+
+    Deliberately permissive: when either side is unknown we treat a prior record as
+    being about this target. That direction is chosen on purpose — the caller uses
+    this to decide whether a failed probe means "the server we were talking to just
+    died" (report it) or "a server we know nothing about is still warming up" (stay
+    quiet). Flipping it to require both URLs would swallow a genuine death whenever a
+    URL is missing, which is the case this branch exists to catch.
+
+    The status-line renderer holds the mirror image of this predicate
+    (``_url_mismatch``), and the two MUST stay equivalent:
+    ``same_connection_target(a, b) == (not _url_mismatch(a, b))``. A hook that records
+    a state the renderer then ignores — or vice versa — leaves the user looking at a
+    stale glyph. The renderer cannot import this module (it is standalone by design),
+    so ``tests/test_connection_target_match.py`` pins the equivalence instead.
+    """
+    active = _normalize_service_url(service_url)
+    marked = _normalize_service_url(prior_url)
+    return not (active and marked and active != marked)
 
 
 def read_connection_state() -> dict:
@@ -1472,7 +1506,7 @@ def read_llm_state() -> dict:
     reason about THIS terminal's verdict rather than whichever session wrote last.
     """
     key = get_session_key()
-    if key and all(c.isalnum() or c in "._-" for c in key):
+    if _session_key_path_safe(key):
         try:
             raw = json.loads((_LLM_STATE_DIR / f"{key}.json").read_text(encoding="utf-8"))
             if isinstance(raw, dict):

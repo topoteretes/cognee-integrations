@@ -102,7 +102,7 @@ def test_no_escapes_even_with_every_signal_firing():
             _write(sl._LLM_STATE_DIR / "s1.json", {"llm_state": "not_set", "checked_at": 9e9})
             out = sl.render_status_for_host("s1")
         assert "\033" not in out, repr(out)
-        assert "llm_no_key" in out and "update available" in out, repr(out)
+        assert sl._LLM_KEY_REASON in out and "update available" in out, repr(out)
     finally:
         sl._UPDATE_CHECK_PATH = orig_update[0]
         if orig_update[1] is None:

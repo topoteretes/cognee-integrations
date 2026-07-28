@@ -20,16 +20,18 @@ since Codex renders its status inline as plain text rather than in a terminal ba
 
 ### Added
 - **Server-connection glyph.** `●` once the server is confirmed up **and**
-  authenticated; on failure `✕ (auth_failed)` for a wrong/expired `COGNEE_API_KEY`,
-  `✕ (unreachable)` for a server that is down or dies mid-session, or
-  `✕ (server_error)` for a 5xx. Recorded by the hooks that already talk to the
-  server, so it stays green until a failure is actually observed and clears on the
-  next success. A cold start still migrating stays silent rather than reporting a
-  false failure. Read from local markers only — no network on refresh.
-- **Local-mode `LLM_API_KEY` health, in that same slot.** `✕ (llm_no_key)` when no
-  key is configured anywhere the server would look, `✕ (llm_auth_failed)` when the
-  provider rejects it. An LLM-key failure *replaces* the `●` rather than sitting
-  beside it, and a server-connection failure outranks it — if the server can't be
+  authenticated; on failure `✕ (incorrect_cognee_api_key)` for a missing, wrong, or
+  expired `COGNEE_API_KEY`, `✕ (unreachable)` for a server that is down or dies
+  mid-session, or `✕ (server_error)` for a 5xx. Recorded by the hooks that already
+  talk to the server, so it stays green until a failure is actually observed, and
+  clears on the next success. A cold start still migrating stays silent rather than
+  reporting a false failure. Read from local markers only — no network on refresh.
+- **Local-mode `LLM_API_KEY` health, in that same slot.** `✕ (incorrect_llm_api_key)`
+  when no key is configured anywhere the server would look, or when the provider
+  rejects the one that is — one reason for both, because the fix is the same either
+  way (`llm-state.json` still records which it was). An LLM-key failure *replaces* the
+  `●` rather than sitting beside it, and a server-connection failure outranks it — if
+  the server can't be
   reached, its LLM key is not the actionable problem. The key is resolved exactly as
   the server resolves it (Cognee's own config, so an env var, a `.env`, or Cognee's
   config file all count) and validated in the background idle watcher — never on the
@@ -47,8 +49,10 @@ since Codex renders its status inline as plain text rather than in a terminal ba
   is shared with the Claude Code plugin, since both talk to one server on one port)
   plus a per-session copy — `conn-state/<session>.json`, `llm-state/<session>.json` —
   as the **display** state the status reads. Your own record wins, except that a
-  *fresher failure* in the shared connection marker takes precedence, because the
-  server really is shared and a just-observed outage applies to everyone; a fresher
+  fresher **server-wide** failure in the shared marker takes precedence
+  (`unreachable` / `server_error`), because the server really is shared and a
+  just-observed outage applies to everyone. `incorrect_cognee_api_key` is not
+  propagated — it describes the other session's credential, not the server; a fresher
   shared `ready` does **not** clear your own failure, since another session's working
   key says nothing about yours.
 
@@ -59,10 +63,17 @@ since Codex renders its status inline as plain text rather than in a terminal ba
 
 ### Changed
 - **The per-prompt readiness gate now prefers an authenticated probe**, so a bad or
-  expired key is classified as `auth_failed` instead of being masked as healthy by an
-  unauthenticated `/health` 200 — and recall skips the turn rather than attempting
+  expired key is classified as `incorrect_cognee_api_key` instead of being masked as
+  healthy by an unauthenticated `/health` 200 — and recall skips the turn rather than
+  attempting
   against a backend that will reject it. Falls back to `/health` when the authed
   probe can't classify (no key, or an older server without the endpoint).
+- **The status now resolves its own server URL** instead of leaving it empty when
+  nothing is configured, mirroring the hooks' resolution exactly
+  (`COGNEE_LOCAL_API_URL` → `COGNEE_BASE_URL` → config file → `http://localhost:8011`).
+  A marker is only trusted when its `base_url` matches this session's; with no URL of
+  our own that check could never fire, so a record written for a different server was
+  accepted by a local session.
 - The status string stays deliberately **plain text** (no ANSI). Claude Code styles
   its bar; here the same string goes into the model's context, where escape sequences
   are only noise to read past. A regression test now guards this.

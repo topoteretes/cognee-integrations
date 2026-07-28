@@ -33,6 +33,9 @@ _CONN_STATE_DIR = _SHARED_ROOT / "codex" / "conn-state"
 # gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
 _LLM_STATE_STALE_SECONDS = 30 * 60
 _DEFAULT_DATASET = "agent_sessions"
+# Must match _plugin_common._DEFAULT_LOCAL_SERVICE_URL: the hooks stamp this URL into
+# the markers this renderer compares against.
+_DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 
 
 def _active_dataset() -> str:
@@ -64,19 +67,39 @@ def _active_mode() -> str:
 
 
 _FAIL_STATES = ("auth_failed", "unreachable", "server_error")
+# Of those, the ones that are a property of the SERVER rather than of the credential
+# the observing session happened to use. Only these may cross session boundaries: if
+# one terminal can't reach the server, neither can the others — but one terminal's
+# rejected API key says nothing about anyone else's. Letting auth_failed cross put a
+# red ✕ (incorrect_cognee_api_key) on a healthy local terminal for a few seconds
+# whenever a keyless cloud terminal started up.
+_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error")
 
 
 def _active_base_url() -> str:
-    """Normalized base_url for this session (env, then config); '' in local mode."""
-    url = os.environ.get("COGNEE_BASE_URL", "").strip()
-    if not url:
-        try:
-            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                url = str(data.get("base_url") or "").strip()
-        except Exception:
-            pass
-    return url.rstrip("/")
+    """The server URL this session is actually talking to — never empty.
+
+    Mirrors the hooks' resolution (``_plugin_common._local_api_url_with_source``)
+    exactly, including the ``COGNEE_LOCAL_API_URL`` precedence and the localhost
+    default, because the value is compared against the ``base_url`` those hooks stamp
+    into the markers. It used to return "" when nothing was configured — the common
+    local setup — which made the mismatch guard below toothless: with no URL of our
+    own to compare, a marker written for someone else's *cloud* tenant was accepted by
+    a *local* session. Defaulting here is what gives that guard teeth.
+    """
+    for var in ("COGNEE_LOCAL_API_URL", "COGNEE_BASE_URL"):
+        url = os.environ.get(var, "").strip()
+        if url:
+            return url.rstrip("/")
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            url = str(data.get("base_url") or "").strip()
+            if url:
+                return url.rstrip("/")
+    except Exception:
+        pass
+    return _DEFAULT_LOCAL_BASE_URL
 
 
 def _read_json(path: Path) -> dict:
@@ -106,9 +129,11 @@ def _connection_marker(session_id: str) -> dict:
     Sessions can genuinely disagree (different COGNEE_API_KEY against the same
     base_url), so a record another session wrote says nothing about this one.
     Resolution:
-      1. our own per-session record, EXCEPT when the shared marker carries a
-         FRESHER failure — the server is shared, so a just-observed outage applies
-         to everyone and beats our older "ready";
+      1. our own per-session record, EXCEPT when the shared marker carries a fresher
+         SERVER-WIDE failure (`unreachable` / `server_error`) — the server is shared,
+         so a just-observed outage applies to everyone and beats our older "ready".
+         `auth_failed` is deliberately excluded: it describes the credential the other
+         session used, not the server, so it must not turn our bar red;
       2. no record of our own → the shared marker, but only when it is
          unattributed (pre-upgrade writer, or a write before the session key was
          known); an attributed record belonging to someone else is ignored;
@@ -121,9 +146,31 @@ def _connection_marker(session_id: str) -> dict:
         if session_id and marked and marked != session_id:
             return {}
         return shared
-    if str(shared.get("state") or "") in _FAIL_STATES and _checked_at(shared) > _checked_at(mine):
+    if str(shared.get("state") or "") in _SERVER_WIDE_FAIL_STATES and _checked_at(
+        shared
+    ) > _checked_at(mine):
         return shared
     return mine
+
+
+# What the user sees in place of the internal state name — the marker keeps its own
+# vocabulary (`auth_failed`, `not_set`) for logs; the status names the thing to go fix.
+# Both LLM verdicts collapse to one label: the fix is the same either way, and
+# `llm-state.json` still records which of the two it was.
+_COGNEE_KEY_REASON = "incorrect_cognee_api_key"
+_LLM_KEY_REASON = "incorrect_llm_api_key"
+_REASON_LABELS = {"auth_failed": _COGNEE_KEY_REASON}
+
+
+def _url_mismatch(active_url: str, marked_url: str) -> bool:
+    """True only when the marker is PROVABLY about a different server.
+
+    Mirror image of ``_plugin_common.same_connection_target`` (which the hooks use to
+    decide whether to record a failure). The two must stay equivalent, or a hook and
+    this renderer would disagree about whether a marker applies. Kept as its own copy
+    because this module is deliberately standalone — no ``_plugin_common`` import.
+    """
+    return bool(active_url and marked_url and active_url != marked_url)
 
 
 def _health_prefix(session_id: str = "") -> str:
@@ -142,12 +189,12 @@ def _health_prefix(session_id: str = "") -> str:
 
     marked_url = str(marker.get("base_url") or "").rstrip("/")
     active_url = _active_base_url()
-    url_mismatch = bool(active_url and marked_url and active_url != marked_url)
+    url_mismatch = _url_mismatch(active_url, marked_url)
 
     if marker and not url_mismatch:
         state = str(marker.get("state") or ("ready" if marker.get("ready_at") else ""))
         if state in _FAIL_STATES:
-            return f"✕ ({state}) "
+            return f"✕ ({_REASON_LABELS.get(state, state)}) "
         if state == "ready":
             try:
                 raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
@@ -230,10 +277,8 @@ def _llm_prefix(session_id: str = "") -> str:
     except (TypeError, ValueError):
         return ""
     state = str(marker.get("llm_state") or "")
-    if state == "not_set":
-        return "✕ (llm_no_key) "
-    if state == "auth_failed":
-        return "✕ (llm_auth_failed) "
+    if state in ("not_set", "auth_failed"):
+        return f"✕ ({_LLM_KEY_REASON}) "
     return ""
 
 

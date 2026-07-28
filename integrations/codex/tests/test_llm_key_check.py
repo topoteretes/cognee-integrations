@@ -1,5 +1,7 @@
 """Tests for `_check_llm_key` (idle-watcher.py, Codex) — the LLM_API_KEY verdict that
-feeds the status line's `✕ (llm_no_key)` / `✕ (llm_auth_failed)` glyph.
+feeds the status line's `✕ (incorrect_llm_api_key)` glyph. The marker states
+(`not_set`, `auth_failed`) are internal and unchanged; only the displayed label
+collapses the two.
 
 Regression this locks down: the probe used to demand a *successful* completion
 before writing "ok", and `max_tokens=1` legitimately fails with a 400 on

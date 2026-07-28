@@ -175,6 +175,12 @@ def _check_llm_key(config: dict) -> None:
     any provider's endpoint/auth. (recall can't be used — the plugin passes
     only_context=True, which skips the LLM entirely.)
 
+    ``max_tokens=1`` is a floor on cost, not a guarantee: providers differ on whether
+    it caps reasoning tokens or only content, so a reasoning model may bill more than
+    one token (or reject the request outright — see the classifier below). That is
+    acceptable here because the call is infrequent, off the hot path, bounded by a
+    15s timeout, and its response is discarded unread.
+
     Writes the shared llm-state marker: ``ok`` / ``auth_failed`` / ``not_set``.
     Local mode only (LLM_API_KEY is unused against a remote server). Throttled via
     the marker's ``checked_at``. Honors COGNEE_LLM_KEY_CHECK=off.
@@ -214,7 +220,7 @@ def _check_llm_key(config: dict) -> None:
         cfg = get_llm_config()
         key = str(getattr(cfg, "llm_api_key", "") or "").strip()
         if not key:
-            # Logged, not silent: this write is what puts ✕ (llm_no_key) on the bar,
+            # Logged, not silent: this write is what puts ✕ (incorrect_llm_api_key) on the bar,
             # and tracking down an unexplained one cost real time.
             write_llm_state("not_set")
             _log("llm_key_not_set")

@@ -39,8 +39,9 @@ import cognee_statusline_render as sl  # noqa: E402
 
 _LOCAL_URL = "http://127.0.0.1:8000"
 _CLOUD_URL = "https://api.example-cognee.ai"
-_NO_KEY = "✕ (llm_no_key) "
-_AUTH_FAILED = "✕ (llm_auth_failed) "
+# Both marker states render as one label — the user's fix is the same either way.
+_NO_KEY = f"✕ ({sl._LLM_KEY_REASON}) "
+_AUTH_FAILED = _NO_KEY
 
 
 class _Renderer:
@@ -222,7 +223,7 @@ def test_server_failure_wins_over_llm_failure():
         llm_state={"llm_state": "not_set"},
         server_marker={"state": "auth_failed", "base_url": _LOCAL_URL},
     ):
-        assert sl._status_prefix() == "✕ (auth_failed) "
+        assert sl._status_prefix() == f"✕ ({sl._COGNEE_KEY_REASON}) "
 
 
 def test_llm_failure_replaces_the_ready_dot():

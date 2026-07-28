@@ -36,9 +36,12 @@ import cognee_statusline_render as sl  # noqa: E402
 
 _LOCAL_URL = "http://127.0.0.1:8000"
 _CLOUD_URL = "https://api.example-cognee.ai"
-_NO_KEY = "\033[1;33m✕ (llm_no_key)\033[0m "
+# Both marker states — no key at all, and a key the provider rejected — render as one
+# red label, because the user's fix is the same either way. The names are kept apart so
+# each test still says which state it wrote.
+_NO_KEY = sl._fail_glyph(sl._LLM_KEY_REASON)
+_AUTH_FAILED = _NO_KEY
 _LOCAL = f"{sl._MODE_STYLES['local']}local\033[0m"  # the mode is styled in the bar
-_AUTH_FAILED = "\033[1;33m✕ (llm_auth_failed)\033[0m "
 
 
 class _Renderer:
@@ -220,7 +223,7 @@ def test_server_failure_wins_over_llm_failure():
         llm_state={"llm_state": "not_set"},
         server_marker={"state": "auth_failed", "base_url": _LOCAL_URL},
     ):
-        assert sl._status_prefix() == "✕ (auth_failed) "
+        assert sl._status_prefix() == sl._fail_glyph(sl._COGNEE_KEY_REASON)
 
 
 def test_llm_failure_replaces_the_ready_dot():
@@ -238,7 +241,7 @@ def test_ready_dot_survives_when_the_llm_key_is_fine():
         llm_state={"llm_state": "ok"},
         server_marker={"state": "ready", "base_url": _LOCAL_URL},
     ):
-        assert sl._status_prefix() == "● "
+        assert sl._status_prefix() == sl._ok_glyph()
 
 
 def test_llm_failure_shows_when_the_server_state_is_unknown():

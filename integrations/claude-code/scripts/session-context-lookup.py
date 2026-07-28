@@ -36,6 +36,7 @@ from _plugin_common import (
     resolve_runtime_mode,
     resolve_session_key_from_payload,
     resolve_user,
+    same_connection_target,
     server_health_ok,
     server_ready_hint,
     service_url_is_local,
@@ -206,10 +207,11 @@ async def _run(prompt: str) -> dict | None:
             # with no prior ready marker for this URL is likely the server still
             # migrating, so stay silent rather than flash a false red.
             prior = read_connection_state()
-            prior_url = str(prior.get("base_url") or "")
-            same_target = (
-                (not service_url) or (not prior_url) or prior_url == service_url.rstrip("/")
-            )
+            # Permissive on purpose: "same target" unless the two URLs provably differ,
+            # so a server that really did die is still reported when a URL is unknown.
+            # Mirrors the renderer's _url_mismatch (equivalence pinned by
+            # tests/test_connection_target_match.py).
+            same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
             warming = state == "unreachable" and not (
                 str(prior.get("state")) == "ready" and same_target
             )

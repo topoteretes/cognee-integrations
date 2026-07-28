@@ -20,22 +20,29 @@ sessions on one machine can legitimately disagree.
 ● cognee: agent_sessions · local · recall 4s/5t/0g/1a · saved 2p/41t/2a
 │                          │       └ what memory did this turn
 │                          └ bold cyan = local, bold magenta = cloud
-└ connection + LLM-key health share one slot
+└ green ● healthy · red ✕ (reason) when not — connection and LLM key share this slot
 ```
 
 ### Added
-- **Server-connection glyph.** `●` once the server is confirmed up **and**
-  authenticated; on failure `✕ (auth_failed)` for a wrong/expired `COGNEE_API_KEY`,
-  `✕ (unreachable)` for a server that is down or dies mid-session, or
-  `✕ (server_error)` for a 5xx. Recorded by the hooks that already talk to the
-  server, so the line stays green until a failure is actually observed and clears on
-  the next success. A cold start still migrating stays silent rather than flashing a
-  false red. Read from local markers only — no network on refresh.
-- **Local-mode `LLM_API_KEY` health, in that same slot.** `✕ (llm_no_key)` when no
-  key is configured anywhere the server would look, `✕ (llm_auth_failed)` when the
-  provider rejects it. An LLM-key failure *replaces* the `●` rather than sitting
-  beside it, and a server-connection failure outranks it — if the server can't be
-  reached, its LLM key is not the actionable problem. The key is resolved exactly as
+- **Server-connection glyph, colour-coded.** A bold green `●` once the server is
+  confirmed up **and** authenticated; on failure a bold red `✕ (<reason>)` with the
+  reason inside the colour, so the verdict reads as one unit —
+  `incorrect_cognee_api_key` for a missing, wrong, or expired `COGNEE_API_KEY`,
+  `unreachable` for a server that is down or dies mid-session, or `server_error` for a
+  5xx. Recorded by the hooks that already talk to the server, so the line stays green
+  until a failure is actually observed and clears on the next success. A cold start
+  still migrating stays silent rather than flashing a false red. Read from local
+  markers only — no network on refresh.
+- **Local-mode `LLM_API_KEY` health, in that same slot.** A bold red
+  `✕ (incorrect_llm_api_key)` when no key is configured anywhere the server would
+  look, or when the provider rejects the one that is — one reason for both, because
+  the fix is the same either way (`llm-state.json` still records which it was). The
+  two failure classes are told apart by the reason rather than by colour:
+  `incorrect_cognee_api_key` is the key this plugin uses to reach the server,
+  `incorrect_llm_api_key` is the key the local server uses to reach the LLM. An
+  LLM-key failure *replaces* the `●` rather than sitting beside it, and a
+  server-connection failure outranks it — if the server can't be reached, its LLM key
+  is not the actionable problem. The key is resolved exactly as
   the server resolves it (Cognee's own config, so an env var, a `.env`, or Cognee's
   config file all count) and validated in the background idle watcher — never on the
   prompt path — with one `max_tokens=1` call through the same LLM stack Cognee uses.
@@ -52,10 +59,13 @@ sessions on one machine can legitimately disagree.
   is shared with the Codex plugin, since both talk to one server on one port) plus a
   per-session copy — `conn-state/<session>.json`, `llm-state/<session>.json`,
   `recall/<session>.json` — as the **display** state the bar reads. Your own record
-  wins, except that a *fresher failure* in the shared connection marker takes
-  precedence, because the server really is shared and a just-observed outage applies
-  to everyone; a fresher shared `ready` does **not** clear your own failure, since
-  another terminal's working key says nothing about yours.
+  wins, except that a fresher **server-wide** failure in the shared marker takes
+  precedence (`unreachable` / `server_error`), because the server really is shared
+  and a just-observed outage applies to everyone. `incorrect_cognee_api_key` is *not*
+  propagated — it describes the other session's credential rather than the server, so
+  a keyless cloud terminal starting up cannot turn a healthy local one red. Nor does a
+  fresher shared `ready` clear your own failure: another terminal's working key says
+  nothing about yours.
 - **Recall counts at the end of the line.** `· recall 4s/5t/0g/1a · saved 2p/41t/2a`
   — `recall` is what this turn's lookup found (`s`ession turns, `t`races, `g`raph
   context, `a`gent guidance), `saved` is what the previous turn persisted
@@ -64,7 +74,7 @@ sessions on one machine can legitimately disagree.
   prompt hook already wrote, so the renderer stays network-free.
 - **The mode stands out** — `local` in bold cyan, `cloud` in bold magenta. It is the
   one field worth a double-take, since it says which memory you are about to write
-  to; red/green/amber are left to the health glyph and warnings.
+  to; red and green are left to the health glyph, amber to the update nudge.
 - **Idle refresh.** The `statusLine` entry now sets `refreshInterval: 2`, so the bar
   keeps updating while a session sits idle. Without it Claude Code refreshes only on
   events, and a failure detected right after launch wouldn't surface until the next
@@ -78,12 +88,18 @@ sessions on one machine can legitimately disagree.
 | `COGNEE_STATUSLINE_REFRESH_INTERVAL` | `2` | Status-line idle refresh in seconds; below `1` reverts to event-only |
 
 ### Changed
-- **The per-prompt readiness gate now prefers an authenticated probe**, so a
-  bad or expired key is classified as `auth_failed` instead of being masked as
-  healthy by an unauthenticated `/health` 200 — and recall skips the turn rather
-  than attempting against a backend that will reject it. Falls back to `/health`
-  when the authed probe can't classify (no key, or an older server without the
-  endpoint).
+- **The per-prompt readiness gate now prefers an authenticated probe**, so a bad or
+  expired key is classified as `incorrect_cognee_api_key` instead of being masked as
+  healthy by an unauthenticated `/health` 200 — and recall skips the turn rather than
+  attempting against a backend that will reject it. Falls back to `/health` when the
+  authed probe can't classify (no key, or an older server without the endpoint).
+- **The status line now resolves its own server URL** instead of leaving it empty when
+  nothing is configured, mirroring the hooks' resolution exactly
+  (`COGNEE_LOCAL_API_URL` → `COGNEE_BASE_URL` → config file → `http://localhost:8011`).
+  A marker is only trusted when its `base_url` matches this session's; with no URL of
+  our own that check could never fire, so a record written for a different server —
+  another terminal's cloud tenant, say — was accepted by a local session. This is what
+  gives that guard teeth in the default local setup, where nothing is exported.
 - **Documented two long-standing environment variables** that previously existed only
   in the source: `COGNEE_READY_PROBE_TIMEOUT` (the per-prompt readiness probe's
   timeout, default `1.0s`), plus a note naming the `COGNEE_*` variables that are the

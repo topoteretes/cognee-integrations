@@ -230,7 +230,7 @@ def test_full_render_places_counts_after_the_mode():
         )
         out = proc.stdout.decode("utf-8")
         assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
-        assert out == f"● cognee: agent_sessions · {_LOCAL}{_FULL}", repr(out)
+        assert out == f"{sl._ok_glyph()}cognee: agent_sessions · {_LOCAL}{_FULL}", repr(out)
 
 
 if __name__ == "__main__":
