@@ -474,10 +474,25 @@ def resolve_search_type(search_type: str):
     return getattr(SearchType, key, SearchType.GRAPH_COMPLETION)
 
 
-def default_backend() -> MemoryBackend:
-    """The transport used when none is injected.
+def build_backend(config: Optional[dict[str, Any]] = None, *, hermes_home: str = ""):
+    """Pick a transport from config.
 
-    Step 3 turns this into a config-driven choice between the SDK and a direct
-    HTTP backend; today there is only one.
+    ``COGNEE_TRANSPORT=http`` selects the direct-HTTP transport, which is the one
+    the other cognee plugins use and the only one that sends ``session_ids`` on
+    ``improve()``. The SDK transport remains the default until it has been
+    verified against a live server; it is also the only one that can run cognee
+    in-process (``COGNEE_EMBEDDED=true``).
     """
+    config = config or {}
+    transport = str(config.get("transport") or "").strip().lower()
+    if transport in {"http", "direct"}:
+        from .http_backend import HttpBackend
+
+        # cache_dir keeps a minted API key profile-scoped.
+        return HttpBackend(cache_dir=hermes_home or None)
+    return SdkBackend()
+
+
+def default_backend() -> MemoryBackend:
+    """The transport used when the provider is constructed without one."""
     return SdkBackend()

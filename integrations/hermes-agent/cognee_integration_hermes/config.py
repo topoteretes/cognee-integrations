@@ -62,6 +62,9 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         # embedded=true runs cognee in-process (single-process/offline only);
         # otherwise local mode ensures a local server on local_port (DB-safe).
         "embedded": str_to_bool(os.environ.get("COGNEE_EMBEDDED"), False),
+        # Which transport reaches cognee: "" / "sdk" (default) or "http" for the
+        # direct REST client the other cognee plugins use. See backend.build_backend.
+        "transport": os.environ.get("COGNEE_TRANSPORT", ""),
         "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), 8000),
         "server_boot_timeout": str_to_int(os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), 30),
         "dataset": os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),

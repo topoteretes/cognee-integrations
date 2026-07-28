@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .backend import MemoryBackend, default_backend, has_cognee
+from .backend import MemoryBackend, build_backend, default_backend, has_cognee
 from .config import (
     DEFAULT_DATASET,
     DEFAULT_IDENTITY_EMAIL,
@@ -87,7 +87,9 @@ class CogneeMemoryProvider(MemoryProvider):
 
     def __init__(self, backend: Optional[MemoryBackend] = None) -> None:
         self._config: dict[str, Any] = {}
-        # How we reach cognee. Injectable for tests; see backend.default_backend.
+        # How we reach cognee. An explicitly injected transport always wins;
+        # otherwise initialize() picks one from config (see backend.build_backend).
+        self._injected_backend = backend
         self._backend: MemoryBackend = backend or default_backend()
         self._initialized = False
         self._remote_mode = False
@@ -254,6 +256,10 @@ class CogneeMemoryProvider(MemoryProvider):
         self._improve_on_end = str_to_bool(self._config.get("improve_on_end"), True)
         self._writes_enabled = kwargs.get("agent_context", "primary") in {"", "primary", None}
         self._session_cognee_id = self._build_cognee_session_id(session_id, **kwargs)
+
+        # Now that config is loaded, choose the transport (unless one was injected).
+        if self._injected_backend is None:
+            self._backend = build_backend(self._config, hermes_home=self._hermes_home or "")
 
         self._backend.configure_models(
             llm_api_key=str(self._config.get("llm_api_key") or ""),
