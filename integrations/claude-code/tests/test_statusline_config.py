@@ -181,9 +181,13 @@ def test_current_statusline_is_not_rewritten():
         path = _settings_path(home)
         path.parent.mkdir(parents=True)
         script = _SCRIPTS / "cognee-statusline.sh"
+        # Must match what _ensure_statusline_configured() considers current —
+        # refreshInterval included, or the entry reads as outdated and the "no
+        # rewrite" path under test is never taken.
         desired = {
             "type": "command",
             "command": f'[ -x "{script}" ] && exec "{script}" || true',
+            "refreshInterval": 2,
         }
         original = json.dumps({"statusLine": desired})
         path.write_text(original, encoding="utf-8")

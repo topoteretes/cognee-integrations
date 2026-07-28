@@ -23,7 +23,20 @@ _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
 _PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
+_LLM_STATE_PATH = _SHARED_ROOT / "claude-code" / "llm-state.json"
+_RECALL_PATH = _SHARED_ROOT / "claude-code" / "last_recall.json"
+_RECALL_DIR = _SHARED_ROOT / "claude-code" / "recall"
+# Per-session copies (see _plugin_common._write_session_marker): the shared files
+# above are coordination state, these are what THIS terminal observed.
+_LLM_STATE_DIR = _SHARED_ROOT / "claude-code" / "llm-state"
+_CONN_STATE_DIR = _SHARED_ROOT / "claude-code" / "conn-state"
 _DEFAULT_DATASET = "agent_sessions"
+
+# TTL for an LLM-key verdict. The marker is machine-wide and refreshed only when an
+# idle watcher LAUNCHES (session start, or a prompt that finds no live watcher) —
+# there is no periodic re-check — so a verdict this old came from a session that is
+# gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
+_LLM_STATE_STALE_SECONDS = 30 * 60
 
 # Passive, app-closed-safe mitigation for the pipeline-health sweep (Layer 1, a
 # Windows Scheduled Task) -- PushNotification (Layer 2) only fires while the app
@@ -77,6 +90,22 @@ def _active_mode() -> str:
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
 
 
+# Where your memory actually lives is the one thing in this line worth a
+# double-take — mistaking a local session for a cloud one (or the reverse) means
+# writing to the wrong place — so the mode gets its own bold colour. Cyan/magenta
+# deliberately: red/green/yellow are already spoken for by the health glyph and the
+# amber warnings, and the two read distinctly on both light and dark terminals.
+# Bold+colour together so a terminal that drops one still shows the other.
+_MODE_STYLES = {"local": "\033[1;36m", "cloud": "\033[1;35m"}
+
+
+def _mode_label() -> str:
+    """The mode, styled. `_active_mode()` stays plain — it is also a control value."""
+    mode = _active_mode()
+    style = _MODE_STYLES.get(mode)
+    return f"{style}{mode}\033[0m" if style else mode
+
+
 _FAIL_STATES = ("auth_failed", "unreachable", "server_error")
 
 
@@ -93,8 +122,46 @@ def _active_base_url() -> str:
     return url.rstrip("/")
 
 
-def _health_prefix() -> str:
-    """Server-connection glyph, read purely from local markers (no network).
+def _path_safe(session_id: str) -> bool:
+    """The id comes from the host over stdin — never build a path from it unchecked."""
+    return bool(session_id) and all(c.isalnum() or c in "._-" for c in session_id)
+
+
+def _checked_at(marker: dict) -> float:
+    try:
+        return float(marker.get("checked_at") or marker.get("ready_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _connection_marker(session_id: str) -> dict:
+    """This terminal's own connection record, or the best available substitute.
+
+    Sessions can genuinely disagree (different COGNEE_API_KEY against the same
+    base_url), so a record another session wrote says nothing about this one.
+    Resolution:
+      1. our own per-session record, EXCEPT when the shared marker carries a
+         FRESHER failure — the server is shared, so a just-observed outage applies
+         to everyone and beats our older "ready";
+      2. no record of our own → the shared marker, but only when it is
+         unattributed (pre-upgrade writer, or a write before the session key was
+         known); an attributed record belonging to someone else is ignored;
+      3. nothing usable → {} (renders no glyph, same as a warming server).
+    """
+    shared = _read_json(_SERVER_READY_PATH)
+    mine = _read_json(_CONN_STATE_DIR / f"{session_id}.json") if _path_safe(session_id) else {}
+    if not mine:
+        marked = str(shared.get("session_key") or "")
+        if session_id and marked and marked != session_id:
+            return {}
+        return shared
+    if str(shared.get("state") or "") in _FAIL_STATES and _checked_at(shared) > _checked_at(mine):
+        return shared
+    return mine
+
+
+def _health_prefix(session_id: str = "") -> str:
+    """Server-connection glyph for THIS session, from local markers (no network).
 
     Precedence — we keep it green until we actually know it is red:
       1. a recorded failure state in the marker → ``✕ (<reason>)``
@@ -105,13 +172,7 @@ def _health_prefix() -> str:
     trusted only when its base_url matches this session's, so a local-ready marker
     never greens a cloud session (or vice versa).
     """
-    marker = {}
-    try:
-        loaded = json.loads(_SERVER_READY_PATH.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            marker = loaded
-    except Exception:
-        marker = {}
+    marker = _connection_marker(session_id)
 
     marked_url = str(marker.get("base_url") or "").rstrip("/")
     active_url = _active_base_url()
@@ -257,6 +318,125 @@ def _evict_own_statusline() -> None:
         pass
 
 
+def _llm_prefix(session_id: str = "") -> str:
+    """Amber 'LLM key' failure glyph, or '' — local mode only, read from marker.
+
+    LLM_API_KEY is only used by the local server, so this is suppressed in cloud
+    mode. Both verdicts come from the background idle watcher, which resolves the
+    key exactly as the server does: `not_set` = no key configured anywhere,
+    `auth_failed` = key rejected by the provider. Distinct reasons from the
+    server-connection ones so the two keys aren't confused. Amber (`\\033[1;33m`)
+    so a broken LLM key reads differently at a glance from an uncolored
+    server-connection failure; the reset lands before the trailing space so no
+    color bleeds into the rest of the bar.
+
+    Per terminal, because the answer genuinely differs per terminal: the key is
+    resolved from the checking session's own environment, so one launch can have it
+    exported and another not. We read THIS session's record
+    (``llm-state/<session_key>.json``) first; the shared marker is consulted only
+    when we have none of our own, and then only if it is unattributed — another
+    terminal's "not_set" must not red a bar whose key is fine, and its "ok" must not
+    green a bar whose key is missing.
+
+    Verdicts expire (`_LLM_STATE_STALE_SECONDS`): the marker is shared by every
+    session, so without a TTL one stale write could keep accusing a key that has
+    since been fixed. The watcher refreshes it when it launches (session start, or
+    a prompt that finds no live watcher), throttled to at most once per
+    COGNEE_LLM_CHECK_INTERVAL — so an active session stays well inside the window,
+    while a session quiet for longer simply drops the glyph until the next check.
+    """
+    if _active_mode() != "local":
+        return ""
+    marker = _read_json(_LLM_STATE_DIR / f"{session_id}.json") if _path_safe(session_id) else {}
+    if not marker:
+        # No verdict of our own yet: the shared marker only speaks for us when it is
+        # unattributed. Another terminal's "ok" must not green a bar whose key is
+        # missing, just as its "not_set" must not red one whose key is fine.
+        marker = _read_json(_LLM_STATE_PATH)
+        marked_key = str(marker.get("session_key") or "")
+        if session_id and marked_key and session_id != marked_key:
+            return ""
+    try:
+        if time.time() - float(marker.get("checked_at") or 0) > _LLM_STATE_STALE_SECONDS:
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    state = str(marker.get("llm_state") or "")
+    if state == "not_set":
+        return "\033[1;33m✕ (llm_no_key)\033[0m "
+    if state == "auth_failed":
+        return "\033[1;33m✕ (llm_auth_failed)\033[0m "
+    return ""
+
+
+def _recall_segment(session_id: str) -> str:
+    """Dim 'what memory did on the last turn' counts, or '' — read from the marker.
+
+    ``session-context-lookup`` already writes ``last_recall.json`` on every prompt
+    (hits per scope + what the previous turn persisted) precisely so the status line
+    can show them; this is the Claude Code counterpart of the ``Cognee memory:
+    recall …`` header Codex injects into model context.
+
+    Per session: ``recall/<session_key>.json`` is this session's own copy, so with
+    several terminals open each bar shows its own numbers. The machine-wide
+    ``last_recall.json`` (written for ``cognee_plugin.py``) is the fallback for hooks
+    that predate the per-session copy, and is only trusted when it is unattributed or
+    stamped with our session — a neighbour's counts must never appear here.
+
+    Faint (`\\033[2m`) so it sits below the health glyph and dataset in the visual
+    hierarchy; the reset prevents color bleed.
+    """
+    if os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return ""
+    marker = _read_json(_RECALL_DIR / f"{session_id}.json") if _path_safe(session_id) else {}
+    if not isinstance(marker.get("hits"), dict):
+        marker = _read_json(_RECALL_PATH)
+        marked_key = str(marker.get("session_key") or "")
+        if session_id and marked_key and session_id != marked_key:
+            return ""
+    hits = marker.get("hits")
+    if not isinstance(hits, dict):
+        return ""
+
+    def _n(mapping, key) -> int:
+        try:
+            return int(mapping.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    recall = (
+        f"{_n(hits, 'session')}s/{_n(hits, 'trace')}t/"
+        f"{_n(hits, 'graph_context')}g/{_n(hits, 'session_context')}a"
+    )
+    saves = marker.get("saves_last_turn")
+    if isinstance(saves, dict):
+        saved = f"{_n(saves, 'prompt')}p/{_n(saves, 'trace')}t/{_n(saves, 'answer')}a"
+        return f" \033[2m· recall {recall} · saved {saved}\033[0m"
+    return f" \033[2m· recall {recall}\033[0m"
+
+
+def _status_prefix(session_id: str = "") -> str:
+    """The single left glyph slot shared by the server- and LLM-key signals.
+
+    One slot, by precedence — showing a green ● next to an ✕ would read as
+    contradictory:
+      1. a server-connection failure wins: if we can't reach or authenticate
+         against the server, its LLM key is not the actionable problem
+      2. otherwise an LLM-key failure, which *replaces* the green ● (the
+         ``llm_*`` reason already says the server side itself is fine)
+      3. otherwise whatever the server signal is (``● `` or nothing).
+    """
+    server = _health_prefix(session_id)
+    if server.startswith("✕"):
+        return server
+    return _llm_prefix(session_id) or server
+
+
 def main() -> None:
     # Windows defaults stdio to the locale code page (e.g. cp1252), which cannot
     # encode the status glyphs (●, ✕, ⬆) — the write raises UnicodeEncodeError,
@@ -292,9 +472,16 @@ def main() -> None:
         _evict_own_statusline()
         return
 
+    # Host session id: markers are per-integration, not per-session, so both the
+    # LLM-key verdict and the recall counts are attributed before being shown.
+    _session_id = str(ctx.get("session_id") or "")
+    # The recall counts belong to the cognee core info, so they sit right after the
+    # mode; the update nudge stays last because it is a transient banner, not part
+    # of the steady-state line.
     sys.stdout.write(
-        f"{_pipeline_health_glyph()}{_health_prefix()}"
-        f"cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
+        f"{_pipeline_health_glyph()}{_status_prefix(_session_id)}"
+        f"cognee: {_active_dataset()} · {_mode_label()}"
+        f"{_recall_segment(_session_id)}{_update_segment()}"
     )
 
 

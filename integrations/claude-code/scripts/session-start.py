@@ -1184,6 +1184,18 @@ def _ensure_statusline_configured() -> None:
     # linger but the plugin is disabled, the renderer self-evicts this entry.)
     guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
     desired = {"type": "command", "command": guarded_command}
+    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
+    # to Claude's event-driven updates, so the connection glyph reflects a change
+    # (e.g. a bad key detected at SessionStart, or the server dying) while the
+    # session is idle — event triggers go quiet when idle, and settings changes
+    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
+    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
+    try:
+        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
+    except ValueError:
+        _interval = 2
+    if _interval >= 1:
+        desired["refreshInterval"] = _interval
 
     try:
         settings: dict = {}
@@ -1317,6 +1329,16 @@ async def _start(payload: dict | None = None) -> dict:
     os.environ["COGNEE_BASE_URL"] = target_url
     if api_key:
         os.environ["COGNEE_API_KEY"] = api_key
+
+    # NOTE: the local server's LLM_API_KEY health is deliberately NOT judged here.
+    # A hook-env read (config's llm_api_key / OPENAI_API_KEY) is blind to a key that
+    # lives in cognee's own config or a .env the server loads, so a session launched
+    # from a shell without the export wrote "not_set" into a marker that EVERY
+    # session's status line reads — a false ✕ (llm_no_key) for sessions whose key is
+    # fine. The idle watcher is the sole authority instead: it resolves the key the
+    # same way the server does (cognee's get_llm_config) and validates it against
+    # the provider, so the verdict matches reality. It runs at session start, so the
+    # signal still appears within seconds of launch.
 
     # The host (Claude) session id is a local correlation key only: it keeps every
     # hook process of this launch resolving the SAME Cognee session id (via the

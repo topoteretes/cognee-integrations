@@ -35,9 +35,13 @@ def _run_under_encoding(io_encoding: str):
     with tempfile.TemporaryDirectory() as home:
         home_path = pathlib.Path(home)
         # server-ready.json makes the renderer emit the ● health prefix — the
-        # exact character that cannot be encoded under cp1252.
+        # exact character that cannot be encoded under cp1252. The marker needs an
+        # explicit "ready" state: an empty dict reads as "unknown" and renders no
+        # glyph at all, which would silently make this test vacuous.
         (home_path / ".cognee-plugin").mkdir(parents=True)
-        (home_path / ".cognee-plugin" / "server-ready.json").write_text("{}", encoding="utf-8")
+        (home_path / ".cognee-plugin" / "server-ready.json").write_text(
+            '{"state": "ready"}', encoding="utf-8"
+        )
 
         env = os.environ.copy()
         env["HOME"] = home  # POSIX

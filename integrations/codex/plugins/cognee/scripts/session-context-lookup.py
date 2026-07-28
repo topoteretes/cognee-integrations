@@ -20,6 +20,7 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    authed_liveness,
     bounded_dim_mismatch_hint,
     drain_warmup_entries,
     get_session_key,
@@ -172,23 +173,38 @@ async def _run(prompt: str) -> dict | None:
     # entirely so the prompt is answered at full speed (memory turns on later).
     service_url = runtime.get("base_url", "")
     just_became_ready = False
+    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)
     if not server_ready_hint(service_url):
-        if server_health_ok(service_url, timeout=_float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)):
+        # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
+        # auth_failed instead of being masked as "ready" by an unauthenticated
+        # /health 200. Fall back to /health only when the authed probe can't
+        # classify (no key, or the endpoint is absent on an older server).
+        state = authed_liveness(service_url, timeout=probe_timeout)
+        if state == "unknown":
+            state = (
+                "ready" if server_health_ok(service_url, timeout=probe_timeout) else "unreachable"
+            )
+
+        if state == "ready":
             mark_server_ready(service_url)
             just_became_ready = True
         else:
-            # Distinguish "died mid-session" from "still warming at startup": only
-            # flip the status line to ✕ when the server had previously been ready
-            # for this URL. A cold start (no prior ready marker) stays silent so we
-            # never show a false red during boot/migration.
+            # A recorded failure (auth_failed / unreachable / server_error) makes
+            # the status line show ✕ (<reason>) and recall skip this turn. Suppress
+            # the write only during a genuine cold-start warm-up: an "unreachable"
+            # with no prior ready marker for this URL is likely the server still
+            # migrating, so stay silent rather than flash a false red.
             prior = read_connection_state()
             prior_url = str(prior.get("base_url") or "")
             same_target = (
                 (not service_url) or (not prior_url) or prior_url == service_url.rstrip("/")
             )
-            if str(prior.get("state")) == "ready" and same_target:
-                write_connection_state("unreachable", service_url, detail="health probe failed")
-            hook_log("recall_skipped_warming", {"base_url": service_url})
+            warming = state == "unreachable" and not (
+                str(prior.get("state")) == "ready" and same_target
+            )
+            if not warming:
+                write_connection_state(state, service_url, detail="authed liveness probe")
+            hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             return None
 
     if not cloud_mode:
