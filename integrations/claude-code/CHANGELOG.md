@@ -10,6 +10,88 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0]
+
+Status-line release. The line now says whether memory is actually working, which
+server it is talking to, and what it just did — answered **per terminal**, since two
+sessions on one machine can legitimately disagree.
+
+```
+● cognee: agent_sessions · local · recall 4s/5t/0g/1a · saved 2p/41t/2a
+│                          │       └ what memory did this turn
+│                          └ bold cyan = local, bold magenta = cloud
+└ connection + LLM-key health share one slot
+```
+
+### Added
+- **Server-connection glyph.** `●` once the server is confirmed up **and**
+  authenticated; on failure `✕ (auth_failed)` for a wrong/expired `COGNEE_API_KEY`,
+  `✕ (unreachable)` for a server that is down or dies mid-session, or
+  `✕ (server_error)` for a 5xx. Recorded by the hooks that already talk to the
+  server, so the line stays green until a failure is actually observed and clears on
+  the next success. A cold start still migrating stays silent rather than flashing a
+  false red. Read from local markers only — no network on refresh.
+- **Local-mode `LLM_API_KEY` health, in that same slot.** `✕ (llm_no_key)` when no
+  key is configured anywhere the server would look, `✕ (llm_auth_failed)` when the
+  provider rejects it. An LLM-key failure *replaces* the `●` rather than sitting
+  beside it, and a server-connection failure outranks it — if the server can't be
+  reached, its LLM key is not the actionable problem. The key is resolved exactly as
+  the server resolves it (Cognee's own config, so an env var, a `.env`, or Cognee's
+  config file all count) and validated in the background idle watcher — never on the
+  prompt path — with one `max_tokens=1` call through the same LLM stack Cognee uses.
+  That makes it **provider-agnostic**: only `401`/`403` counts as an auth failure,
+  any other response proves the key was accepted (including the `400` reasoning
+  models return when one token is too few to finish a message), and a transport
+  error with no HTTP status is inconclusive and leaves the previous verdict alone.
+  Local mode only; verdicts expire after 30 minutes so a dead session's verdict never
+  lingers.
+- **Per-terminal status.** Every signal answers for *this* terminal — one shell may
+  have exported `LLM_API_KEY` while another didn't, or two may hold different
+  `COGNEE_API_KEY`s against one server, and both now show the truth at once. Each
+  writer keeps the machine-wide marker as **coordination** state (it gates recall and
+  is shared with the Codex plugin, since both talk to one server on one port) plus a
+  per-session copy — `conn-state/<session>.json`, `llm-state/<session>.json`,
+  `recall/<session>.json` — as the **display** state the bar reads. Your own record
+  wins, except that a *fresher failure* in the shared connection marker takes
+  precedence, because the server really is shared and a just-observed outage applies
+  to everyone; a fresher shared `ready` does **not** clear your own failure, since
+  another terminal's working key says nothing about yours.
+- **Recall counts at the end of the line.** `· recall 4s/5t/0g/1a · saved 2p/41t/2a`
+  — `recall` is what this turn's lookup found (`s`ession turns, `t`races, `g`raph
+  context, `a`gent guidance), `saved` is what the previous turn persisted
+  (`p`rompts, `t`races, `a`nswers). The same numbers the Codex plugin injects into
+  model context, rendered faint here so they stay secondary. Read from a marker the
+  prompt hook already wrote, so the renderer stays network-free.
+- **The mode stands out** — `local` in bold cyan, `cloud` in bold magenta. It is the
+  one field worth a double-take, since it says which memory you are about to write
+  to; red/green/amber are left to the health glyph and warnings.
+- **Idle refresh.** The `statusLine` entry now sets `refreshInterval: 2`, so the bar
+  keeps updating while a session sits idle. Without it Claude Code refreshes only on
+  events, and a failure detected right after launch wouldn't surface until the next
+  prompt.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_LLM_KEY_CHECK` | `true` | Background, provider-agnostic `LLM_API_KEY` validation (local mode) |
+| `COGNEE_LLM_CHECK_INTERVAL` | `300` | Minimum seconds between LLM-key checks |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Show the trailing `recall …/saved …` counts |
+| `COGNEE_STATUSLINE_REFRESH_INTERVAL` | `2` | Status-line idle refresh in seconds; below `1` reverts to event-only |
+
+### Changed
+- **The per-prompt readiness gate now prefers an authenticated probe**, so a
+  bad or expired key is classified as `auth_failed` instead of being masked as
+  healthy by an unauthenticated `/health` 200 — and recall skips the turn rather
+  than attempting against a backend that will reject it. Falls back to `/health`
+  when the authed probe can't classify (no key, or an older server without the
+  endpoint).
+- **Documented two long-standing environment variables** that previously existed only
+  in the source: `COGNEE_READY_PROBE_TIMEOUT` (the per-prompt readiness probe's
+  timeout, default `1.0s`), plus a note naming the `COGNEE_*` variables that are the
+  plugin's own inter-process plumbing — `COGNEE_USER_ID`, `COGNEE_SESSION_KEY`,
+  `COGNEE_AGENT_SESSION_NAME`, `COGNEE_PLUGIN_IN_VENV`, `COGNEE_SYNC_*` — which are
+  overwritten during startup and should not be set by hand. Neither is new in this
+  release; both were simply undocumented.
+
 ## [1.0.0]
 
 First release under formal semantic versioning — marks the official start of

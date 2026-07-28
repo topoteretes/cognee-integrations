@@ -208,6 +208,10 @@ A connection glyph precedes the line:
 
 `●` shows once the server is confirmed up **and** authenticated. On a failure the glyph flips to `✕ (<reason>)` — `auth_failed` (wrong/expired `COGNEE_API_KEY`), `unreachable` (server down, including a server that dies mid-session), or `server_error` (5xx). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so the line stays green until a failure is actually observed, and clears back to `●` on the next success. The glyph is read from local state only — no network on refresh.
 
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_READY_PROBE_TIMEOUT` | `1.0` | Seconds the per-prompt readiness probe waits before giving up and skipping recall for that turn. It sits on the keystroke→answer path, so the default is deliberately tight; raise it on a slow or loaded server that is otherwise healthy. |
+
 **Local-mode LLM key.** In local mode the plugin also surfaces problems with `LLM_API_KEY` (the key the local server uses to call the LLM) **in that same leading glyph slot**, with its own reasons:
 
 ```
@@ -246,6 +250,16 @@ terminal B (no key)        →  ✕ (llm_no_key) cognee: agent_sessions · local
 Each writer keeps two records: the machine-wide marker (`server-ready.json`, `llm-state.json`) which stays **coordination** state — it gates recall and is shared with the Codex plugin, since both talk to one server — and a per-session copy under `conn-state/<session_key>.json`, `llm-state/<session_key>.json`, and `recall/<session_key>.json`, which is the **display** state the bar reads. Without the split, a single file meant the last writer decided what every other bar showed: a keyless launch's `not_set` reddening a healthy session, or a healthy one's `ok` hiding a genuinely missing key.
 
 Resolution, in order: this session's own record wins; **except** that a *fresher failure* in the shared connection marker takes precedence, because the server really is shared and a just-observed outage applies to everyone (a fresher shared `ready` does **not** clear your own failure — their working key says nothing about yours). With no record of your own, the shared marker is used only when it is unattributed (an older writer, or a write made before the session key was known); a record belonging to another session is ignored and no glyph is drawn, exactly as during warm-up.
+
+**Internal variables — do not set these.** A few `COGNEE_*` names in the environment
+are the plugin's own inter-process plumbing, written by one hook and read back by the
+detached workers it spawns: `COGNEE_USER_ID` (the resolved Cognee user for this
+launch), `COGNEE_SESSION_KEY` (the host session key every hook of a launch resolves
+through), `COGNEE_AGENT_SESSION_NAME`, `COGNEE_PLUGIN_IN_VENV` (the re-exec guard),
+and `COGNEE_SYNC_DATASET` / `COGNEE_SYNC_SESSION_ID` (arguments to the final-sync
+worker). Setting them yourself does not configure anything — the plugin overwrites
+them during startup — and a stale value can misroute identity or session resolution.
+Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to pin a dataset.
 
 It is configured automatically on first launch when no custom status line is already configured. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward. Existing non-Cognee `statusLine` settings are preserved; set `COGNEE_STATUSLINE=false` before launching Claude Code to opt out entirely.
 
