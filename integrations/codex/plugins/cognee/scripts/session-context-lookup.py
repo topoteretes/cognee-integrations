@@ -20,6 +20,7 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    authed_liveness,
     bounded_dim_mismatch_hint,
     drain_warmup_entries,
     get_session_key,
@@ -29,14 +30,17 @@ from _plugin_common import (
     notify,
     quiet_hook_output,
     read_and_reset_save_counter,
+    read_connection_state,
     recall_via_http,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
     resolve_user,
+    same_connection_target,
     server_health_ok,
     server_ready_hint,
     service_url_is_local,
     set_session_key,
+    write_connection_state,
 )
 from cognee_statusline_render import render_status_for_host
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
@@ -170,12 +174,39 @@ async def _run(prompt: str) -> dict | None:
     # entirely so the prompt is answered at full speed (memory turns on later).
     service_url = runtime.get("base_url", "")
     just_became_ready = False
+    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)
     if not server_ready_hint(service_url):
-        if server_health_ok(service_url, timeout=_float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)):
+        # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
+        # auth_failed instead of being masked as "ready" by an unauthenticated
+        # /health 200. Fall back to /health only when the authed probe can't
+        # classify (no key, or the endpoint is absent on an older server).
+        state = authed_liveness(service_url, timeout=probe_timeout)
+        if state == "unknown":
+            state = (
+                "ready" if server_health_ok(service_url, timeout=probe_timeout) else "unreachable"
+            )
+
+        if state == "ready":
             mark_server_ready(service_url)
             just_became_ready = True
         else:
-            hook_log("recall_skipped_warming", {"base_url": service_url})
+            # A recorded failure (auth_failed / unreachable / server_error) makes
+            # the status line show ✕ (<reason>) and recall skip this turn. Suppress
+            # the write only during a genuine cold-start warm-up: an "unreachable"
+            # with no prior ready marker for this URL is likely the server still
+            # migrating, so stay silent rather than flash a false red.
+            prior = read_connection_state()
+            # Permissive on purpose: "same target" unless the two URLs provably differ,
+            # so a server that really did die is still reported when a URL is unknown.
+            # Mirrors the renderer's _url_mismatch (equivalence pinned by
+            # tests/test_connection_target_match.py).
+            same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
+            warming = state == "unreachable" and not (
+                str(prior.get("state")) == "ready" and same_target
+            )
+            if not warming:
+                write_connection_state(state, service_url, detail="authed liveness probe")
+            hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             return None
 
     if not cloud_mode:

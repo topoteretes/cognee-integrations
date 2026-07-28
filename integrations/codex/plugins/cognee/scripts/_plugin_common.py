@@ -1203,25 +1203,255 @@ def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
         return False
 
 
-def mark_server_ready(service_url: str, version: str = "") -> None:
-    """Record that the local Cognee server is healthy and serving.
+# Connection states recorded in the (shared) server-ready marker. "ready" means
+# the server is up AND authenticated; the failure states carry the reason shown
+# in the status line as "✕ (<state>)". Any non-"ready" state makes
+# server_ready_hint return False so recall does not attempt against a bad backend.
+CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error")
+
+
+# Per-session copies of the status markers. The shared files above are
+# COORDINATION state (is the server up, should recall run) and are deliberately
+# machine-wide; these are DISPLAY state, answering "what did THIS terminal
+# experience". They have to be separate: two terminals can legitimately disagree
+# — one exported LLM_API_KEY and the other didn't, or they hold different
+# COGNEE_API_KEYs — and with a single file the last writer decided what every
+# other bar showed (a keyless launch's "not_set" greying out a healthy session,
+# or a healthy one's "ok" hiding a genuinely missing key).
+_LLM_STATE_DIR = _PLUGIN_DIR / "llm-state"
+_CONN_STATE_DIR = _PLUGIN_DIR / "conn-state"
+
+
+def _session_key_path_safe(key: str) -> bool:
+    """True when `key` is safe to use as a single filename component.
+
+    Excludes every path separator (`/`, `\\`) and drive/stream punctuation (`:`), so a
+    key can only ever name a file INSIDE the target directory — `..` becomes the
+    literal filename `...json`, not a parent-directory hop. The status-line renderer
+    keeps its own copy of this predicate (`_path_safe`) on purpose: it is standalone
+    by design and must not import this module.
+    """
+    return bool(key) and all(c.isalnum() or c in "._-" for c in key)
+
+
+def _write_session_marker(directory: Path, payload: dict) -> None:
+    """Mirror a status payload into ``<directory>/<session_key>.json``.
+
+    No-op when this process has no session key (e.g. an early bootstrap write):
+    the shared marker still gets written, and readers treat an unattributed
+    record as "could be mine" so nothing is lost. Best-effort, never raises.
+    """
+    key = get_session_key()
+    if not _session_key_path_safe(key):
+        return
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        tmp = directory / f".{os.getpid()}.json.tmp"
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, directory / f"{key}.json")
+    except Exception as exc:
+        hook_log("session_marker_write_failed", {"dir": directory.name, "error": str(exc)[:200]})
+
+
+def write_connection_state(
+    state: str, service_url: str = "", *, detail: str = "", version: str = ""
+) -> None:
+    """Record the last connection outcome in the shared server-ready marker.
 
     Global (not namespaced) because Claude and Codex share one server on the
-    same port. Read by hot-path hooks via ``server_ready_hint`` to decide
-    whether to attempt recall without paying a network probe.
+    same port. Read by hot-path hooks via ``server_ready_hint`` (recall gate) and
+    by the status-line renderer (which reads the file directly). ``state`` is one
+    of ``CONNECTION_STATES``; unknown values are coerced to "unreachable".
     """
+    if state not in CONNECTION_STATES:
+        state = "unreachable"
     try:
         _SERVER_READY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).timestamp()
         payload = {
+            "state": state,
             "base_url": _normalize_service_url(service_url),
-            "ready_at": datetime.now(timezone.utc).timestamp(),
+            "checked_at": now,
+            # ready_at kept for backward-compat with any un-upgraded reader; only
+            # advanced on a successful (ready) check.
+            "ready_at": now if state == "ready" else 0,
             "version": str(version or ""),
+            "detail": str(detail or "")[:200],
+            # Which terminal observed this. Two sessions can hold different
+            # COGNEE_API_KEYs against the same base_url, so "auth_failed" is not
+            # necessarily everyone's truth.
+            "session_key": get_session_key(),
         }
         tmp = _SERVER_READY_MARKER.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, _SERVER_READY_MARKER)
+        _write_session_marker(_CONN_STATE_DIR, payload)
     except Exception as exc:
-        hook_log("server_ready_mark_failed", {"error": str(exc)[:200]})
+        hook_log("connection_state_write_failed", {"state": state, "error": str(exc)[:200]})
+
+
+def mark_server_ready(service_url: str, version: str = "") -> None:
+    """Back-compat shim: record a healthy, authenticated connection ("ready")."""
+    write_connection_state("ready", service_url, version=version)
+
+
+def same_connection_target(service_url: str, prior_url: str) -> bool:
+    """True unless the two URLs are *provably* different servers.
+
+    Deliberately permissive: when either side is unknown we treat a prior record as
+    being about this target. That direction is chosen on purpose — the caller uses
+    this to decide whether a failed probe means "the server we were talking to just
+    died" (report it) or "a server we know nothing about is still warming up" (stay
+    quiet). Flipping it to require both URLs would swallow a genuine death whenever a
+    URL is missing, which is the case this branch exists to catch.
+
+    The status-line renderer holds the mirror image of this predicate
+    (``_url_mismatch``), and the two MUST stay equivalent:
+    ``same_connection_target(a, b) == (not _url_mismatch(a, b))``. A hook that records
+    a state the renderer then ignores — or vice versa — leaves the user looking at a
+    stale glyph. The renderer cannot import this module (it is standalone by design),
+    so ``tests/test_connection_target_match.py`` pins the equivalence instead.
+    """
+    active = _normalize_service_url(service_url)
+    marked = _normalize_service_url(prior_url)
+    return not (active and marked and active != marked)
+
+
+def read_connection_state() -> dict:
+    """Return the connection marker dict (with 'state'), or {} — for hook use.
+
+    The status-line renderer does NOT use this (it stays import-free of
+    ``_plugin_common`` and reads the file directly); this is for network hooks
+    that need to know the prior state (e.g. warming-vs-died).
+    """
+    try:
+        raw = json.loads(_SERVER_READY_MARKER.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    if "state" not in raw and raw.get("ready_at"):
+        raw["state"] = "ready"
+    return raw
+
+
+def authed_liveness(service_url: str = "", api_key: str = "", timeout: float = 1.5) -> str:
+    """Classify the connection via an AUTHENTICATED probe (GET /api/v1/datasets).
+
+    Unlike ``server_health_ok`` (which hits the unauthenticated ``/health`` and so
+    can't tell a bad key from a good one), this sends ``X-Api-Key`` to an endpoint
+    that requires auth, so it distinguishes:
+      "ready"        — 2xx (server up and the key is accepted)
+      "auth_failed"  — 401/403 (server up, key rejected)
+      "server_error" — 5xx
+      "unreachable"  — connection refused / timeout / DNS
+      "unknown"      — endpoint absent (404/405) or no key to send; caller should
+                       fall back to ``server_health_ok`` rather than trust this
+    Returns a string in ``CONNECTION_STATES`` or "unknown". Never raises.
+    """
+    base = _normalize_service_url(service_url or _local_api_url())
+    if not base:
+        return "unknown"
+    key = str(api_key or _api_key() or "").strip()
+    if not key:
+        # No key to authenticate with — can't classify auth; let the caller
+        # fall back to an unauthenticated reachability check.
+        return "unknown"
+    req = urllib.request.Request(f"{base}/api/v1/datasets", method="GET")
+    req.add_header("X-Api-Key", key)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
+            status = resp.status
+            if 200 <= status < 300:
+                return "ready"
+            if status >= 500:
+                return "server_error"
+            return "unknown"
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return "auth_failed"
+        if exc.code >= 500:
+            return "server_error"
+        return "unknown"
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return "unreachable"
+
+
+# LLM-key health surfaced in the status line — LOCAL mode only, since LLM_API_KEY
+# is unused when talking to a remote server. Kept in its OWN marker (not
+# server-ready.json) so a plain overwrite suffices — no read-modify-write merge, no
+# race with the server marker. SINGLE WRITER: the idle watcher's _check_llm_key,
+# which resolves the key exactly as the server does (cognee's get_llm_config) and
+# validates it against the provider. Hooks deliberately do NOT write a verdict from
+# their own env: a session launched without the export would flag "not_set" into
+# this machine-wide marker and put a false ✕ on every other session's status line.
+# States:
+#   "not_set"     — no LLM key configured anywhere the server would look
+#   "auth_failed" — key present but rejected by the provider (401/403)
+#   "ok"          — key accepted (renders nothing)
+# Readers apply a TTL (see the renderer's _LLM_STATE_STALE_SECONDS), so a verdict
+# left behind by a dead session stops accusing a key the user has since fixed.
+_LLM_STATE_MARKER = _PLUGIN_DIR / "llm-state.json"
+LLM_STATES = ("ok", "not_set", "auth_failed")
+
+
+def write_llm_state(state: str, detail: str = "") -> None:
+    """Record LLM-key health (local mode). Plain atomic overwrite; never raises.
+
+    Stamped with the writing session's host key: the key is resolved from the
+    writer's OWN environment, so a session launched from a shell without the
+    export legitimately sees no key — without this stamp its "not_set" would
+    land in the machine-wide marker and put a false ✕ on every other session's
+    status line (observed: one keyless launch clobbering a validated "ok").
+    Readers show a verdict only when it is theirs, or unattributable.
+    """
+    if state not in LLM_STATES:
+        state = "ok"
+    try:
+        _LLM_STATE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "llm_state": state,
+            "checked_at": datetime.now(timezone.utc).timestamp(),
+            "session_key": get_session_key(),
+            "detail": str(detail or "")[:200],
+        }
+        tmp = _LLM_STATE_MARKER.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, _LLM_STATE_MARKER)
+        _write_session_marker(_LLM_STATE_DIR, payload)
+    except Exception as exc:
+        hook_log("llm_state_write_failed", {"state": state, "error": str(exc)[:200]})
+
+
+def read_llm_state() -> dict:
+    """Return this session's LLM-state record, else the shared one, else {}.
+
+    Prefers the per-session copy so the watcher's throttle and the status line both
+    reason about THIS terminal's verdict rather than whichever session wrote last.
+    """
+    key = get_session_key()
+    if _session_key_path_safe(key):
+        try:
+            raw = json.loads((_LLM_STATE_DIR / f"{key}.json").read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return raw
+        except Exception:
+            pass
+    try:
+        raw = json.loads(_LLM_STATE_MARKER.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def clear_llm_state() -> None:
+    """Remove the LLM-state marker (e.g. a key is present and will be validated)."""
+    try:
+        _LLM_STATE_MARKER.unlink()
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        hook_log("llm_state_clear_failed", {"error": str(exc)[:200]})
 
 
 def clear_server_ready() -> None:
@@ -1247,8 +1477,14 @@ def server_ready_hint(service_url: str = "") -> bool:
         return False
     except Exception:
         return False
-    ready_at = float(raw.get("ready_at", 0) or 0)
-    if datetime.now(timezone.utc).timestamp() - ready_at > _SERVER_READY_TTL_SECONDS:
+    # Only a "ready" state counts as ready. A recorded failure (auth_failed /
+    # unreachable / server_error) makes the gate skip so recall never hammers a
+    # bad backend. Legacy markers (no 'state', have ready_at) are treated ready.
+    state = str(raw.get("state") or ("ready" if raw.get("ready_at") else ""))
+    if state != "ready":
+        return False
+    checked_at = float(raw.get("checked_at", 0) or raw.get("ready_at", 0) or 0)
+    if datetime.now(timezone.utc).timestamp() - checked_at > _SERVER_READY_TTL_SECONDS:
         return False
     if service_url:
         marked = _normalize_service_url(raw.get("base_url", ""))

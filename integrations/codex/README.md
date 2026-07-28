@@ -158,6 +158,28 @@ cognee: my-project · cloud
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host.
 
+A connection glyph precedes the line: `●` once the server is confirmed up **and** authenticated, or `✕ (<reason>)` on failure — `incorrect_cognee_api_key` (a missing, wrong, or expired `COGNEE_API_KEY`), `unreachable` (server down, including a server that dies mid-session), or `server_error` (5xx). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so it stays green until a failure is actually observed and clears back to `●` on the next success. Read from local state only — no network on refresh.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_READY_PROBE_TIMEOUT` | `1.0` | Seconds the per-prompt readiness probe waits before giving up and skipping recall for that turn. It sits on the keystroke→answer path, so the default is deliberately tight; raise it on a slow or loaded server that is otherwise healthy. |
+
+In local mode the plugin also surfaces `LLM_API_KEY` problems (the key the local server uses to call the LLM) **in that same leading glyph slot**: `✕ (incorrect_llm_api_key) cognee: … · local` when the key is missing or the provider rejects it — one reason for both, since the fix is the same either way (`llm-state.json` still records which it was). The slot holds one sign, by precedence: a server-connection failure wins (if the server can't be reached or authenticated, its LLM key isn't the actionable problem), otherwise an LLM-key failure is shown **in place of** the `●` — the `llm_*` reason already tells you the server side itself is fine, so `●` and `✕` never appear together.
+
+Both verdicts come from a single authority: the background idle watcher (off the prompt path). It resolves the key exactly as the server does — Cognee's own config, so a key in `LLM_API_KEY`, a `.env`, or Cognee's config file all count — and validates it with one tiny `max_tokens=1` call through the same LLM stack Cognee uses, making it **provider-agnostic**. Only `401`/`403` counts as a key failure: providers authenticate before validating anything else, so any other response (including the `400` reasoning models return when one token is too few to finish a message) proves the key works, while a transport failure with no HTTP status is inconclusive and leaves the previous verdict alone. It runs once per idle-watcher launch — at session start, and again on any prompt that finds no live watcher — never more often than once per `COGNEE_LLM_CHECK_INTERVAL` seconds (default 300); there is no periodic timer. The verdict clears once the key checks out and expires after 30 minutes, so one left behind by an ended session never lingers.
+
+**Per-terminal status.** Every signal answers *for this session*, not for the machine — terminals legitimately disagree (one shell exported `LLM_API_KEY`, another didn't; two hold different `COGNEE_API_KEY`s). Each writer keeps a machine-wide marker (`server-ready.json`, `llm-state.json`) as **coordination** state — it gates recall and is shared with the Claude Code plugin, since both talk to one server — plus a per-session copy under `conn-state/<session_key>.json` and `llm-state/<session_key>.json` as the **display** state the status reads. Your own record wins, except that a fresher **server-wide** failure in the shared marker takes precedence — `unreachable` or `server_error`, since the server is shared. `incorrect_cognee_api_key` is not propagated: it describes the other session's credential, not the server. A fresher shared `ready` does not clear your own failure either. With no record of your own, the shared marker counts only when unattributed; another session's record is ignored and no glyph is shown. Local mode only; disable with `COGNEE_LLM_KEY_CHECK=false`.
+
+**Internal variables — do not set these.** A few `COGNEE_*` names in the environment
+are the plugin's own inter-process plumbing, written by one hook and read back by the
+detached workers it spawns: `COGNEE_USER_ID` (the resolved Cognee user for this
+launch), `COGNEE_SESSION_KEY` (the host session key every hook of a launch resolves
+through), `COGNEE_AGENT_SESSION_NAME`, `COGNEE_PLUGIN_IN_VENV` (the re-exec guard),
+and `COGNEE_SYNC_DATASET` / `COGNEE_SYNC_SESSION_ID` (arguments to the final-sync
+worker). Setting them yourself does not configure anything — the plugin overwrites
+them during startup — and a stale value can misroute identity or session resolution.
+Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to pin a dataset.
+
 The renderer reads only local state — no network calls on every refresh:
 1. Dataset: `COGNEE_PLUGIN_DATASET` env var, otherwise `agent_sessions`
 2. Mode: `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/config.json` (`base_url`)

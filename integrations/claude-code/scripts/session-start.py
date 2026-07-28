@@ -38,13 +38,13 @@ from _plugin_common import (
     apply_cognee_env,
     ensure_launch_record,
     hook_log,
-    mark_server_ready,
     quiet_hook_output,
     resolve_session_key_from_payload,
     server_health_ok,
     server_ready_hint,
     set_session_key,
     touch_activity,
+    write_connection_state,
 )
 from _proc import find_host_ancestor_windows
 from _proc import pid_alive as _pid_alive
@@ -891,6 +891,28 @@ def _spawn_bootstrap(
         hook_log("bootstrap_spawn_failed", {"error": str(exc)[:300]})
 
 
+def _status_from_error(message: str) -> int:
+    """Extract an HTTP status embedded as ``(<status>: ...)`` in an error string.
+
+    ``ensure_cognee_ready`` and ``ensure_dataset_ready_via_api`` both format their
+    RuntimeError as ``... (<status>: <body>)``; return 0 when none is present
+    (e.g. a connection error carries no HTTP status).
+    """
+    import re
+
+    m = re.search(r"\((\d{3})[:\s)]", str(message or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _classify_conn_status(status: int) -> str:
+    """Map an HTTP status to a connection-failure state."""
+    if status in (401, 403):
+        return "auth_failed"
+    if status >= 500:
+        return "server_error"
+    return "unreachable"
+
+
 async def _run_heavy(
     config: dict,
     cwd: str,
@@ -923,11 +945,21 @@ async def _run_heavy(
     # we are already inside it (warm start).
     _reexec_into_venv()
 
+    # Track the cloud connection outcome so the status line can show a precise
+    # "✕ (<reason>)". Stays None in local mode (handled by the health probe at
+    # the tail).
+    _conn_state = None
+    _conn_detail = ""
+
     # Configure cognee (cloud or local)
     try:
         await ensure_cognee_ready(config)
     except Exception as e:
         print(f"cognee-plugin: init warning ({e})", file=sys.stderr)
+        if is_cloud_mode(config):
+            status = _status_from_error(e)
+            _conn_state = _classify_conn_status(status) if status else "unreachable"
+            _conn_detail = str(e)[:200]
 
     # Register agent identity.
     user_id = ""
@@ -954,6 +986,21 @@ async def _run_heavy(
             message = str(exc)[:300]
             hook_log("agent_lifecycle_error", {"error": message})
             print(f"cognee-plugin: agent lifecycle failed ({message})", file=sys.stderr)
+            # Classify for the status line. Preserve an earlier health-derived
+            # state; otherwise a reachable server rejecting registration is almost
+            # always auth, while an unreachable one is a connection failure.
+            if _conn_state is None:
+                try:
+                    healthy = server_health_ok(
+                        _normalize_service_url(str(config.get("base_url", "") or "")), timeout=1.5
+                    )
+                except Exception:
+                    healthy = False
+                _conn_state = "auth_failed" if healthy else "unreachable"
+                _conn_detail = message
+            write_connection_state(
+                _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
+            )
             return "", "", False
     else:
         # Local SDK fallback path.
@@ -985,16 +1032,33 @@ async def _run_heavy(
             await ensure_dataset_ready(dataset, user)
     except Exception as e:
         print(f"cognee-plugin: dataset warning ({e})", file=sys.stderr)
+        if is_cloud_mode(config):
+            status = _status_from_error(e)
+            # An authed 401/403 here is a definitive auth failure — let it win.
+            if status in (401, 403):
+                _conn_state, _conn_detail = "auth_failed", str(e)[:200]
+            elif status >= 500 and _conn_state is None:
+                _conn_state, _conn_detail = "server_error", str(e)[:200]
     if user_id:
         os.environ["COGNEE_USER_ID"] = user_id
 
-    # Mark the server ready so hot-path recall can engage — only once it is
-    # actually serving (or managed) so we never advertise a half-migrated DB.
+    # Record the connection outcome so the status line shows "● " (ready) or
+    # "✕ (<reason>)". Cloud: use the classified state gathered above, else confirm
+    # ready. Local/managed: a health probe decides ready-vs-unreachable.
     service_url = _normalize_service_url(str(config.get("base_url", "") or ""))
     if not service_url and not managed_endpoint:
         service_url = _LOCAL_SERVICE_URL
-    if service_url and server_health_ok(service_url, timeout=1.5):
-        mark_server_ready(service_url)
+    if is_cloud_mode(config):
+        if _conn_state and _conn_state != "ready":
+            write_connection_state(
+                _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
+            )
+        elif service_url and server_health_ok(service_url, timeout=1.5):
+            write_connection_state("ready", service_url)
+        else:
+            write_connection_state("unreachable", str(config.get("base_url", "") or ""))
+    elif service_url and server_health_ok(service_url, timeout=1.5):
+        write_connection_state("ready", service_url)
 
     return user_id, agent_api_key, True
 
@@ -1120,6 +1184,18 @@ def _ensure_statusline_configured() -> None:
     # linger but the plugin is disabled, the renderer self-evicts this entry.)
     guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
     desired = {"type": "command", "command": guarded_command}
+    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
+    # to Claude's event-driven updates, so the connection glyph reflects a change
+    # (e.g. a bad key detected at SessionStart, or the server dying) while the
+    # session is idle — event triggers go quiet when idle, and settings changes
+    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
+    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
+    try:
+        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
+    except ValueError:
+        _interval = 2
+    if _interval >= 1:
+        desired["refreshInterval"] = _interval
 
     try:
         settings: dict = {}
@@ -1253,6 +1329,16 @@ async def _start(payload: dict | None = None) -> dict:
     os.environ["COGNEE_BASE_URL"] = target_url
     if api_key:
         os.environ["COGNEE_API_KEY"] = api_key
+
+    # NOTE: the local server's LLM_API_KEY health is deliberately NOT judged here.
+    # A hook-env read (config's llm_api_key / OPENAI_API_KEY) is blind to a key that
+    # lives in cognee's own config or a .env the server loads, so a session launched
+    # from a shell without the export wrote "not_set" into a marker that EVERY
+    # session's status line reads — a false ✕ (incorrect_llm_api_key) for sessions whose key is
+    # fine. The idle watcher is the sole authority instead: it resolves the key the
+    # same way the server does (cognee's get_llm_config) and validates it against
+    # the provider, so the verdict matches reality. It runs at session start, so the
+    # signal still appears within seconds of launch.
 
     # The host (Claude) session id is a local correlation key only: it keeps every
     # hook process of this launch resolving the SAME Cognee session id (via the
