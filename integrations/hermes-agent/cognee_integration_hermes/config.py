@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_DATASET = "hermes"
+# Port for the local cognee server this plugin spawns and owns. 8011 matches the
+# other cognee agent plugins (claude-code, codex, openclaw) and deliberately avoids
+# cognee's own default of 8000, so we never attach to — or contend with — a server
+# the user is running themselves.
+DEFAULT_LOCAL_PORT = 8011
 DEFAULT_IDENTITY_EMAIL = "hermes-agent@cognee.local"
 DEFAULT_IDENTITY_PASSWORD = "hermes-agent-plugin"
 
@@ -65,7 +70,7 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         # Which transport reaches cognee: "" / "sdk" (default) or "http" for the
         # direct REST client the other cognee plugins use. See backend.build_backend.
         "transport": os.environ.get("COGNEE_TRANSPORT", ""),
-        "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), 8000),
+        "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), DEFAULT_LOCAL_PORT),
         "server_boot_timeout": str_to_int(os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), 30),
         "dataset": os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
         "top_k": str_to_int(os.environ.get("COGNEE_TOP_K"), 5),
@@ -102,7 +107,9 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 120))
     config["write_timeout"] = max(1, str_to_int(config.get("write_timeout"), 120))
     config["improve_timeout"] = max(1, str_to_int(config.get("improve_timeout"), 300))
-    config["local_port"] = min(65535, max(1, str_to_int(config.get("local_port"), 8000)))
+    config["local_port"] = min(
+        65535, max(1, str_to_int(config.get("local_port"), DEFAULT_LOCAL_PORT))
+    )
     config["server_boot_timeout"] = max(1, str_to_int(config.get("server_boot_timeout"), 30))
     config["auto_route"] = str_to_bool(config.get("auto_route"), True)
     config["improve_on_end"] = str_to_bool(config.get("improve_on_end"), True)

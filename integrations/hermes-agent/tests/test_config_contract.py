@@ -130,7 +130,7 @@ class TestDefaults(unittest.TestCase):
         cfg = _load()
         self.assertEqual(cfg["dataset"], "hermes")
         self.assertEqual(cfg["top_k"], 5)
-        self.assertEqual(cfg["local_port"], 8000)
+        self.assertEqual(cfg["local_port"], 8011)
         self.assertEqual(cfg["server_boot_timeout"], 30)
         self.assertEqual(cfg["session_prefix"], "hermes")
         self.assertEqual(cfg["recall_timeout"], 120)
@@ -196,7 +196,7 @@ class TestEmptyEnvVarQuirks(unittest.TestCase):
     def test_blank_numeric_vars_fall_back_to_defaults(self):
         cfg = _load(env={"COGNEE_TOP_K": "", "COGNEE_LOCAL_PORT": ""})
         self.assertEqual(cfg["top_k"], 5)
-        self.assertEqual(cfg["local_port"], 8000)
+        self.assertEqual(cfg["local_port"], 8011)
 
     def test_blank_boolean_vars_fall_back_to_defaults(self):
         cfg = _load(env={"COGNEE_AUTO_ROUTE": "", "COGNEE_EMBEDDED": ""})

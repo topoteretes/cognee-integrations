@@ -14,6 +14,7 @@ from .config import (
     DEFAULT_DATASET,
     DEFAULT_IDENTITY_EMAIL,
     DEFAULT_IDENTITY_PASSWORD,
+    DEFAULT_LOCAL_PORT,
     load_config,
     str_to_bool,
     write_env_vars,
@@ -298,7 +299,7 @@ class CogneeMemoryProvider(MemoryProvider):
         else:
             try:
                 local_url = ensure_local_server(
-                    int(self._config.get("local_port") or 8000),
+                    int(self._config.get("local_port") or DEFAULT_LOCAL_PORT),
                     data_root=str(self._config.get("data_root") or ""),
                     system_root=str(self._config.get("system_root") or ""),
                     boot_timeout=float(self._config.get("server_boot_timeout", 30)),
@@ -309,7 +310,8 @@ class CogneeMemoryProvider(MemoryProvider):
                 raise RuntimeError(
                     "cognee local server failed to start, which is required for safe "
                     "concurrent DB access. Check for a port conflict on "
-                    f"{self._config.get('local_port') or 8000}, missing dependencies "
+                    f"{self._config.get('local_port') or DEFAULT_LOCAL_PORT}, "
+                    "missing dependencies "
                     "(uvicorn/cognee), or permissions. To run single-process in-process "
                     "instead (no concurrency safety), set COGNEE_EMBEDDED=true."
                 ) from exc

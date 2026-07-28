@@ -74,13 +74,23 @@ fallback would either mask a config error (remote → local data divergence) or
 reintroduce the very DB-lock risk this design removes (local-server → embedded).
 To accept the single-process trade-off, set `COGNEE_EMBEDDED=true` explicitly.
 
+> **Upgrading from 0.1.x — the local port changed from 8000 to 8011.** This
+> matches the other cognee agent plugins (Claude Code, Codex, OpenClaw), which all
+> run their own server on 8011 and leave cognee's own default of 8000 to servers you
+> start yourself. Your memory is unaffected — where it lives is decided by the
+> server's data directory, never by the port. But if an old plugin-started server is
+> still
+> listening on 8000, **stop it** — two servers sharing one data directory is exactly
+> the single-writer contention this mode exists to avoid. Set
+> `COGNEE_LOCAL_PORT=8000` to keep the old behaviour.
+
 local-server mode (default — just set your LLM creds):
 
 ```bash
 LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
 COGNEE_DATASET=hermes
-# COGNEE_LOCAL_PORT=8000   # optional; point at a shared server for a unified brain
+# COGNEE_LOCAL_PORT=8011   # optional; point at a shared server for a unified brain
 ```
 
 Remote / cloud mode:
@@ -111,7 +121,7 @@ COGNEE_DATASET=hermes
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `hermes` |
 | `service_url` | `COGNEE_BASE_URL` (canonical) | empty |
 | `embedded` | `COGNEE_EMBEDDED` | `false` |
-| `local_port` | `COGNEE_LOCAL_PORT` | `8000` |
+| `local_port` | `COGNEE_LOCAL_PORT` | `8011` |
 | `server_boot_timeout` | `COGNEE_SERVER_BOOT_TIMEOUT` | `30` |
 | `data_root` | `COGNEE_DATA_ROOT` | `$HERMES_HOME/cognee/data` |
 | `system_root` | `COGNEE_SYSTEM_ROOT` | `$HERMES_HOME/cognee/system` |

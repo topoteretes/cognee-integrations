@@ -162,6 +162,10 @@ class TestInitializeModes(unittest.TestCase):
         ):
             p.initialize("sid")
         ensure.assert_called_once()
+        # The port actually handed to the bootstrap, not just the mocked return:
+        # 8011 keeps us off cognee's own default of 8000, so we never attach to a
+        # server the user is running themselves.
+        self.assertEqual(ensure.call_args.args[0], 8011)
         self.assertTrue(p._remote_mode)
         self.assertEqual(rec["served"], ("http://127.0.0.1:8000", ""))
         self.assertFalse(rec["identity_called"])
@@ -302,7 +306,7 @@ class TestConfigModes(unittest.TestCase):
         with mock.patch.dict("os.environ", env, clear=False):
             cfg = config_mod.load_config()
         self.assertFalse(cfg["embedded"])
-        self.assertEqual(cfg["local_port"], 8000)
+        self.assertEqual(cfg["local_port"], 8011)
 
     def test_local_port_clamped(self):
         env = {**_NO_URL, "COGNEE_LOCAL_PORT": "999999"}
