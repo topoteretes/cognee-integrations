@@ -17,6 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from _env_file import load_env_file
+
+# ~/.cognee/.env is pure-local too, so loading it here keeps the renderer's
+# no-network/no-_plugin_common contract while honoring one-time config.
+load_env_file()
+
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
 _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"

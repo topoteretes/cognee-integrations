@@ -30,13 +30,17 @@ codex plugin marketplace add topoteretes/cognee-integrations --ref main
 codex plugin add cognee@cognee
 ```
 
-Then set environment variables for your runtime mode.
+Then configure your runtime mode — **once** — in `~/.cognee/.env`. The file is created with a commented template on the first session start; values in it act exactly like shell exports (a real `export` in your shell still overrides the file, per terminal). It is shared with the Claude Code plugin, so both read the same configuration. Lines may optionally start with `export `, so existing export lines can be pasted verbatim.
 
-**Cognee Cloud or a remote server** — set both:
+**Cognee Cloud or a remote server** — set both (one paste, no editor needed):
 
 ```bash
-export COGNEE_BASE_URL="https://your-instance.cognee.ai"
-export COGNEE_API_KEY="ck_..."
+mkdir -p ~/.cognee
+cat >> ~/.cognee/.env <<'EOF'
+COGNEE_BASE_URL="https://your-instance.cognee.ai"
+COGNEE_API_KEY="ck_..."
+EOF
+chmod 600 ~/.cognee/.env
 ```
 
 > Cloud mode is a pure thin client: it talks to your remote server over HTTP only and does **not** install a local Cognee runtime. The bundled virtualenv (`~/.cognee-plugin/venv`) is built only in local mode, where an in-process server actually runs.
@@ -44,8 +48,24 @@ export COGNEE_API_KEY="ck_..."
 **Local mode** (default when `COGNEE_BASE_URL` is not set) — the plugin bootstraps a local Cognee API at `http://localhost:8011`. Only `LLM_API_KEY` is required; `COGNEE_API_KEY` is auto-minted if absent:
 
 ```bash
-export LLM_API_KEY="sk-..."
+mkdir -p ~/.cognee
+cat >> ~/.cognee/.env <<'EOF'
+LLM_API_KEY="sk-..."
+EOF
+chmod 600 ~/.cognee/.env
 ```
+
+**Windows (PowerShell)** — same idea, same file:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.cognee" | Out-Null
+@'
+COGNEE_BASE_URL="https://your-instance.cognee.ai"
+COGNEE_API_KEY="ck_..."
+'@ | Add-Content "$env:USERPROFILE\.cognee\.env"
+```
+
+Re-running any of these blocks is safe: when a key appears more than once, the **last value wins**, so pasting again with a new value updates the configuration. Editing the file directly (`nano ~/.cognee/.env`) works too — e.g. to remove a variable such as `COGNEE_BASE_URL` when switching from cloud back to local mode. Changes apply on the next session launch. Plain shell `export`s in the launching terminal still take precedence over `~/.cognee/.env` — useful to override the shared config for one terminal.
 
 You can also set config in `~/.cognee-plugin/config.json`:
 
@@ -275,9 +295,12 @@ codex plugin marketplace remove cognee
 ## Configuration reference
 
 Config precedence:
-1. env vars
-2. `~/.cognee-plugin/config.json`
-3. defaults
+1. env vars (shell exports)
+2. `~/.cognee/.env` (one-time setup file, shared with the Claude Code plugin; loaded into the environment at process start, so every env var below can live here)
+3. `~/.cognee-plugin/config.json`
+4. defaults
+
+`~/.cognee/.env` is created with a commented template on first session start (permissions `0600`; the path can be overridden with `COGNEE_ENV_FILE`). Run `doctor.py` to see which keys the file defines and which are overridden by shell exports.
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|

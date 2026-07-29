@@ -21,7 +21,11 @@ import pathlib
 import sys
 import time
 
+from _env_file import load_env_file
 from _recall_http import UNREACHABLE, _error, do_recall
+
+# ~/.cognee/.env must land in os.environ before the module-level reads below.
+load_env_file()
 
 # Tunables (mirror Hermes's provider defaults).
 _THRESHOLD = int(os.environ.get("COGNEE_BREAKER_THRESHOLD", "5"))

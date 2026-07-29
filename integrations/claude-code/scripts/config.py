@@ -2,8 +2,10 @@
 
 Loads settings from (in priority order):
   1. Environment variables (runtime overrides)
-  2. Config file (~/.cognee-plugin/config.json)
-  3. Defaults
+  2. Env file (~/.cognee/.env — one-time setup, injected into os.environ
+     with setdefault, so it sits just below real shell exports)
+  3. Config file (~/.cognee-plugin/config.json)
+  4. Defaults
 
 Config file is created on first SessionStart if it doesn't exist.
 
@@ -20,6 +22,12 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+
+from _env_file import load_env_file
+
+# Must run before the _ENV_MAP scan in load_config() and before any importer's
+# module-level os.environ reads.
+load_env_file()
 
 _CONFIG_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _STATE_DIR = _CONFIG_DIR

@@ -93,14 +93,22 @@ Run these slash commands directly in the Claude Code chat:
 
 In local mode (the default), the plugin bootstraps a local Cognee API on
 `http://localhost:8011`. Cognee extracts knowledge with an LLM, so set `LLM_API_KEY`
-in the shell that launches Claude Code:
+**once** in `~/.cognee/.env` (shared by the Claude Code and Codex plugins) — one
+paste, no editor needed:
 
 ```bash
-export LLM_API_KEY="sk-..."
+mkdir -p ~/.cognee
+cat >> ~/.cognee/.env <<'EOF'
+LLM_API_KEY="sk-..."
+EOF
+chmod 600 ~/.cognee/.env
 ```
 
+A plain `export` in the launching shell also works and overrides the file. Re-pasting
+the block with a new value is safe — the last value wins.
+
 To target Cognee Cloud or a remote server instead, set `COGNEE_BASE_URL` and
-`COGNEE_API_KEY`. On startup you should see a **"Cognee Memory Connected"** message.
+`COGNEE_API_KEY` there. On startup you should see a **"Cognee Memory Connected"** message.
 
 **3. Use Claude Code as usual**
 
