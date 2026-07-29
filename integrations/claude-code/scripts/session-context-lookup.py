@@ -304,6 +304,7 @@ async def _run(prompt: str) -> dict | None:
                     only_context=True,
                     search_type=qtype,
                     context_profile=context_profile,
+                    dataset=get_dataset(config),
                     timeout=recall_timeout,
                 )
             else:

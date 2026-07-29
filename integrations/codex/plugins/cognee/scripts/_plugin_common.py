@@ -34,6 +34,10 @@ _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 _SYNC_LOCK = _PLUGIN_DIR / "sync.lock"
+# One lock file per session (see improve_session_lock): the idle watcher, the
+# store hook and the SessionEnd sync all bridge sessions, and only one of them
+# may have an improve in flight for a given session at a time.
+_IMPROVE_LOCK_DIR = _PLUGIN_DIR / "improve-locks"
 # Per-agent-session buffer dirs. Each agent session (one Claude/Codex terminal)
 # owns its own file under these dirs, so two concurrent agents never
 # read-modify-write the same file — no locks needed, no lost-update races.
@@ -1060,6 +1064,78 @@ def touch_activity() -> None:
 
 
 @contextmanager
+def improve_session_lock(session_id: str, owner: str):
+    """Admit exactly one in-flight improve per session, machine-wide.
+
+    Three paths bridge the same session — the idle watcher, ``store-to-session``,
+    and the SessionEnd sync — and the outer ``sync_lock`` is bypassed in API mode
+    (``nullcontext(True) if api_mode``), so in HTTP/cloud mode nothing stopped two
+    of them submitting the same session concurrently. The server's own per-session
+    lock then answered the loser with ``{}`` (busy), which drove a 15s retry loop
+    for up to ten minutes; concurrent writers also collide on the single-writer
+    graph/vector store ("Could not set lock on file"), leaving pipeline runs stuck
+    and the graph unwritten.
+
+    So claim locally BEFORE submitting: the loser skips entirely rather than
+    waiting, because the winner is already bridging the very same session — the
+    work is not lost, it is in flight. Yields True when claimed, False when
+    another process owns it.
+
+    Mirrors ``sync_lock``'s stale handling (dead pid or older than
+    ``SYNC_LOCK_STALE_SECONDS``) so a crashed worker cannot wedge a session, and
+    fails OPEN on unexpected errors — a lock we cannot manage must never be the
+    reason a session goes unsynced.
+    """
+    if not session_id:
+        yield True
+        return
+
+    digest = hashlib.sha1(str(session_id).encode("utf-8")).hexdigest()
+    lock_path = _IMPROVE_LOCK_DIR / f"{digest}.lock"
+    acquired = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).timestamp()
+        if lock_path.exists():
+            try:
+                current = json.loads(lock_path.read_text(encoding="utf-8"))
+                created_at = float(current.get("created_at", 0))
+                pid = int(current.get("pid", 0))
+            except Exception:
+                created_at, pid = 0.0, 0
+            if not (pid > 0 and _proc.pid_alive(pid)) or now - created_at > SYNC_LOCK_STALE_SECONDS:
+                try:
+                    lock_path.unlink()
+                    hook_log(
+                        "improve_lock_stale_cleared",
+                        {"session": session_id, "owner": owner, "stale_pid": pid},
+                    )
+                except FileNotFoundError:
+                    pass  # another process cleared the same stale lock
+                except Exception as exc:
+                    hook_log("improve_lock_unlink_failed", {"error": str(exc)[:200]})
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
+            acquired = True
+            yield True
+        except FileExistsError:
+            hook_log("improve_skipped_concurrent", {"session": session_id, "owner": owner})
+            yield False
+    except Exception as exc:
+        # Fail open: never let lock bookkeeping cost a session its sync.
+        hook_log("improve_lock_failed_open", {"session": session_id, "error": str(exc)[:200]})
+        yield True
+    finally:
+        if acquired:
+            try:
+                lock_path.unlink()
+            except Exception as exc:
+                hook_log("improve_lock_release_failed", {"error": str(exc)[:200]})
+
+
+@contextmanager
 def sync_lock(owner: str):
     """Best-effort cross-hook lock for graph sync/improve work."""
     acquired = False
@@ -1811,6 +1887,7 @@ def recall_via_http(
     only_context: bool = True,
     search_type: str | None = None,
     context_profile: str | None = None,
+    dataset: str = "",
     timeout: float = 10.0,
 ) -> list:
     payload = {
@@ -1820,6 +1897,14 @@ def recall_via_http(
         "scope": scope,
         "only_context": only_context,
     }
+    # Always scope to the plugin's dataset. Without it the server resolves EVERY
+    # readable dataset and then reconciles against the session's binding, so the
+    # graph scope depends on that binding existing: an unbound session with more
+    # than one readable dataset is rejected as ambiguous rather than searched.
+    # The value must be the dataset the session's entries were written under — a
+    # different one is a binding mismatch server-side, a real error worth surfacing.
+    if dataset:
+        payload["datasets"] = [dataset]
     if search_type:
         payload["search_type"] = search_type
     if context_profile:
@@ -2250,7 +2335,23 @@ def run_session_improve(dataset: str, session_id: str) -> bool:
 
     Falls back to the legacy full-document bridge when the server does not
     support session-aware improve. Returns True when a sync ran successfully.
+
+    Serialized per session by ``improve_session_lock``. The guard lives here
+    rather than at the three call sites (idle watcher, store hook, SessionEnd
+    sync) so every path is covered by construction and a future fourth caller
+    cannot reintroduce the double-submit.
     """
+    with improve_session_lock(session_id, "run_session_improve") as claimed:
+        if not claimed:
+            # Another process is already bridging this exact session. Report
+            # not-synced so the caller's own retry/reporting path is unchanged;
+            # the work itself is in flight, not dropped.
+            return False
+        return _run_session_improve_locked(dataset, session_id)
+
+
+def _run_session_improve_locked(dataset: str, session_id: str) -> bool:
+    """Body of run_session_improve; assumes the per-session claim is held."""
     base_url = _local_api_url()
     if not _backend_reachable(base_url):
         return False
