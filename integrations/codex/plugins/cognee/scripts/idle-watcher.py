@@ -155,7 +155,7 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
 
 
 def _run_update_check() -> None:
-    """Fire the background, daily-guarded plugin update check (best-effort)."""
+    """Fire the background, interval-guarded plugin update check (best-effort)."""
     try:
         sys.path.insert(0, os.path.dirname(__file__))
         from _plugin_common import maybe_check_for_update  # type: ignore

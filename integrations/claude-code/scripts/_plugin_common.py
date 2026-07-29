@@ -1570,14 +1570,14 @@ def server_ready_hint(service_url: str = "") -> bool:
 
 
 # --- Plugin update check (Phase 2) -------------------------------------------
-# A background, once-a-day check comparing the installed plugin version against
+# A background, hourly-guarded check comparing the installed plugin version against
 # the version published on the marketplace's git ref. The network call runs only
 # here (in the background idle watcher); the hot path (SessionStart message,
 # status line) merely READS the marker file this writes — never the network.
 # Talks only to raw.githubusercontent (CDN, no API rate limit) over the shared
 # certifi TLS context. Opt out with COGNEE_UPDATE_CHECK=off.
 _UPDATE_CHECK_FILE = _PLUGIN_DIR / "update-check.json"
-_UPDATE_CHECK_INTERVAL_DEFAULT = 86400.0
+_UPDATE_CHECK_INTERVAL_DEFAULT = 3600.0
 _UPDATE_DEFAULT_REPO = "topoteretes/cognee-integrations"
 _UPDATE_DEFAULT_REF = "main"
 _UPDATE_PLUGIN_ENTRY = "cognee-memory"
@@ -1678,7 +1678,7 @@ def _fetch_published_version(repo: str, ref: str, etag: str) -> tuple:
 
 
 def maybe_check_for_update() -> None:
-    """Background, ≤once-a-day update check. Writes the marker. Never raises.
+    """Background, ≤hourly update check. Writes the marker. Never raises.
 
     Call from a background process (the idle watcher) — never a synchronous hook,
     since it may make a network call (bounded to 5s, ≤ once per interval).
