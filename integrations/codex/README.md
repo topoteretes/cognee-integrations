@@ -94,7 +94,8 @@ At startup (`SessionStart`):
 - otherwise → `integration_local` (local API bootstrap)
 
 At hook runtime:
-- hooks resolve mode through runtime endpoint auth (env + `api_key.json`), not only config intent
+- hooks resolve the endpoint from env, then `config.json`, with localhost as the default
+- hooks resolve auth from env, then the URL-scoped `api_key.json` cache
 - `http` mode skips local SDK initialization
 
 The hooks emit `mode_decision` logs with `mode`, `service_url`, `url_source`, `key_source`, `api_key_present`.

@@ -1181,13 +1181,35 @@ def sync_lock(owner: str):
                 hook_log("sync_lock_release_failed", {"owner": owner, "error": str(exc)[:200]})
 
 
+def _local_api_url_with_source() -> tuple[str, str]:
+    """Resolve the runtime endpoint without assuming hook env propagation."""
+    local_env = str(os.environ.get("COGNEE_LOCAL_API_URL", "") or "").strip()
+    if local_env:
+        return local_env, "env_local_api_url"
+    service_env = str(os.environ.get("COGNEE_BASE_URL", "") or "").strip()
+    if service_env:
+        return service_env, "env_service_url"
+
+    # SessionStart and hot hooks run in separate processes. SessionStart can
+    # resolve config.json and set its own environment, but those mutations do
+    # not propagate back to later hook processes. Read the shared config as the
+    # documented fallback, while leaving API-key resolution in _api_key().
+    try:
+        from config import load_config  # type: ignore
+
+        configured = str(load_config().get("base_url") or "").strip()
+        if configured:
+            return configured, "config_base_url"
+    except Exception:
+        # load_config already logs malformed files; endpoint resolution must
+        # remain fail-safe on the hot path.
+        pass
+
+    return _DEFAULT_LOCAL_SERVICE_URL, "default_local"
+
+
 def _local_api_url() -> str:
-    direct = (
-        os.environ.get("COGNEE_LOCAL_API_URL") or os.environ.get("COGNEE_BASE_URL") or ""
-    ).strip()
-    if direct:
-        return direct
-    return _DEFAULT_LOCAL_SERVICE_URL
+    return _local_api_url_with_source()[0]
 
 
 def _normalize_service_url(value: str) -> str:
@@ -1248,8 +1270,8 @@ def _api_key() -> str:
 def resolved_http_endpoint_auth() -> tuple[str, str]:
     """Return (service_url, api_key) for runtime HTTP calls.
 
-    Service URL always falls back to localhost. API key is the single principal
-    key: env first, then the single cached key.
+    Service URL falls back through plugin config before localhost. API key is
+    the single principal key: env first, then the single cached key.
     """
     service_url = _normalize_service_url(_local_api_url())
     api_key = _api_key().strip()

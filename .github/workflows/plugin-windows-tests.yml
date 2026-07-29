@@ -54,3 +54,6 @@ jobs:
 
       - name: codex status-line renderer tests
         run: python integrations/codex/tests/test_statusline_render.py
+
+      - name: codex endpoint and doctor tests
+        run: python integrations/codex/plugins/cognee/tests/test_doctor.py

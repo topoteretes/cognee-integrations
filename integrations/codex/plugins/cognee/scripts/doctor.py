@@ -77,20 +77,15 @@ def _resolve_mode() -> str:
     return "Cloud"
 
 
-_DEFAULT_LOCAL_SERVICE_URL = "http://localhost:8011"
-
-
 def _resolve_server_url() -> tuple:
     """Return (display_url, raw_url).
 
-    Codex's _plugin_common does not expose _local_api_url_with_source,
-    so we inline the same resolution logic here (env → default).
-    In local mode the display value is "-".
+    In local mode the display value is "-", while the raw URL remains
+    available for the health probe.
     """
-    raw_url = (
-        os.environ.get("COGNEE_LOCAL_API_URL") or os.environ.get("COGNEE_BASE_URL") or ""
-    ).strip() or _DEFAULT_LOCAL_SERVICE_URL
+    from _plugin_common import _local_api_url_with_source
 
+    raw_url, _source = _local_api_url_with_source()
     mode = _resolve_mode()
     display = "-" if mode == "Local" else raw_url
     return display, raw_url
