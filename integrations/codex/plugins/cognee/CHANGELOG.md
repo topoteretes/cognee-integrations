@@ -12,6 +12,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.2.1]
 
+### Fixed
+- **The "update available" nudge now clears as soon as the update is applied.** The
+  marker is a snapshot from the background check, and nothing rewrote it when the
+  plugin actually updated — so the status kept advertising an update that was already
+  installed until the next check. Both surfaces now compare the marker's
+  `installed_version` against the version *running* and suppress the nudge on a
+  mismatch. The comparison is against the running version, not the newest copy on
+  disk, so a background auto-update that a session has not reloaded yet correctly
+  keeps nudging.
+
 ### Changed
 - **Pinned cognee version is now `1.4.0`** (was `1.2.2.dev3`). The plugin installs
   this into its own managed venv on session start, so existing installs pick it up

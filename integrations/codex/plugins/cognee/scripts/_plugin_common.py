@@ -1639,18 +1639,33 @@ def maybe_check_for_update() -> None:
 
 
 def read_update_status() -> dict:
-    """Zero-network read of the update marker; {} when disabled/absent/current."""
+    """Zero-network read of the update marker; {} when disabled/absent/current.
+
+    The marker is a snapshot from the last background check, so it goes stale the
+    moment the plugin is updated — it would keep claiming an update is available
+    until the next check (≤ an hour later). Guard against that here, at read time:
+    the snapshot is only trustworthy while its ``installed_version`` is still the
+    version actually running. A mismatch means the update already landed, so the
+    nudge is suppressed immediately rather than after the next network check.
+    Note this compares against the RUNNING version, not the newest on disk — an
+    auto-update that a session has not reloaded yet correctly keeps nudging.
+    """
     if not _update_check_enabled():
         return {}
     marker = _load_json_file(_UPDATE_CHECK_FILE)
-    if (
+    if not (
         isinstance(marker, dict)
         and marker.get("update_available")
         and marker.get("installed_version")
         and marker.get("latest_version")
     ):
-        return marker
-    return {}
+        return {}
+    # An undeterminable running version falls back to trusting the marker, so a
+    # missing/unreadable plugin.json degrades to the previous behaviour.
+    running = _installed_plugin_version()
+    if running and running != marker.get("installed_version"):
+        return {}
+    return marker
 
 
 def mark_update_notified(version: str) -> None:
