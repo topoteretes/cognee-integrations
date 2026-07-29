@@ -10,6 +10,13 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.1]
+
+### Changed
+- **Pinned cognee version is now `1.4.0`** (was `1.2.2.dev3`). The plugin installs
+  this into its own managed venv on session start, so existing installs pick it up
+  on the next session.
+
 ## [1.1.0]
 
 Status-line release. The line now says whether memory is actually working, which
