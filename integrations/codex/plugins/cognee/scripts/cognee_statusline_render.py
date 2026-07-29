@@ -232,7 +232,35 @@ def _update_segment() -> str:
     latest = str(marker.get("latest_version") or "")
     if not (installed and latest):
         return ""
+    # Marker staleness guard, mirroring _plugin_common.read_update_status: the
+    # marker is a snapshot from the last background check, so after an update it
+    # keeps claiming an update is available until the next one runs. Comparing
+    # against the running version clears the segment on the next render instead.
+    running = _running_plugin_version()
+    if running and running != installed:
+        return ""
     return f"  ⬆ Cognee update available {installed}→{latest}"
+
+
+def _running_plugin_version() -> str:
+    """Version of the plugin copy this renderer belongs to, or '' if unreadable.
+
+    Deliberately does not import ``_plugin_common`` (see module docstring); this
+    file's own location identifies the running copy.
+    """
+    candidates = []
+    root = os.environ.get("PLUGIN_ROOT", "").strip()
+    if root:
+        candidates.append(Path(root) / ".codex-plugin" / "plugin.json")
+    candidates.append(Path(__file__).resolve().parent.parent / ".codex-plugin" / "plugin.json")
+    for path in candidates:
+        try:
+            version = str(json.loads(path.read_text(encoding="utf-8")).get("version") or "").strip()
+            if version:
+                return version
+        except Exception:
+            continue
+    return ""
 
 
 def _llm_prefix(session_id: str = "") -> str:

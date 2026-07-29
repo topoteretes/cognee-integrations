@@ -94,9 +94,15 @@ def test_no_escapes_even_with_every_signal_firing():
     try:
         os.environ.pop("COGNEE_UPDATE_CHECK", None)
         sl._UPDATE_CHECK_PATH = tmp / "update-check.json"
+        # installed_version must be the RUNNING version, else the staleness guard
+        # in _update_segment suppresses the nudge (see _running_plugin_version).
         _write(
             sl._UPDATE_CHECK_PATH,
-            {"update_available": True, "installed_version": "1.0.0", "latest_version": "1.1.0"},
+            {
+                "update_available": True,
+                "installed_version": sl._running_plugin_version(),
+                "latest_version": "99.0.0",
+            },
         )
         with _Mode(_LOCAL_URL):
             _write(sl._LLM_STATE_DIR / "s1.json", {"llm_state": "not_set", "checked_at": 9e9})

@@ -300,7 +300,38 @@ def _update_segment() -> str:
     latest = str(marker.get("latest_version") or "")
     if not (installed and latest):
         return ""
+    # Marker staleness guard, mirroring _plugin_common.read_update_status: the
+    # marker is a snapshot from the last background check, so after an update it
+    # keeps claiming an update is available until the next one runs. Since this
+    # renders every refresh, comparing against the running version clears the
+    # segment within one refresh instead of within an hour.
+    running = _running_plugin_version()
+    if running and running != installed:
+        return ""
     return f"   \033[1;33m⬆ Cognee update available {installed}→{latest}\033[0m"
+
+
+def _running_plugin_version() -> str:
+    """Version of the plugin copy this renderer belongs to, or '' if unreadable.
+
+    Deliberately does not import ``_plugin_common`` (see module docstring). The
+    status line is not a hook, so ``CLAUDE_PLUGIN_ROOT`` is usually unset; the
+    install path is version-pinned (``.../cognee-memory/<version>/scripts/``), so
+    this file's own location identifies the running version.
+    """
+    candidates = []
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if root:
+        candidates.append(Path(root) / ".claude-plugin" / "plugin.json")
+    candidates.append(Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json")
+    for path in candidates:
+        try:
+            version = str(json.loads(path.read_text(encoding="utf-8")).get("version") or "").strip()
+            if version:
+                return version
+        except Exception:
+            continue
+    return ""
 
 
 def _pipeline_health_glyph() -> str:
