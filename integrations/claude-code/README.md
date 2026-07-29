@@ -373,7 +373,7 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_UPDATE_CHECK` | `true` | Background "update available" check + status-line/SessionStart nudges |
-| `COGNEE_UPDATE_CHECK_INTERVAL` | `86400` | Minimum seconds between checks |
+| `COGNEE_UPDATE_CHECK_INTERVAL` | `3600` | Minimum seconds between checks |
 
 ## Remove
 

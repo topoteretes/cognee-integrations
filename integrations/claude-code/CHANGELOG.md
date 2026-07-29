@@ -16,6 +16,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Pinned cognee version is now `1.4.0`** (was `1.2.2.dev3`). The plugin installs
   this into its own managed venv on session start, so existing installs pick it up
   on the next session.
+- **Update check now runs at most hourly instead of daily.**
+  `COGNEE_UPDATE_CHECK_INTERVAL` defaults to `3600` (was `86400`). The check is a
+  conditional `If-None-Match` request, so the steady state is a 304 with an empty
+  body — cheap enough that a published release gets noticed within the hour rather
+  than after up to a day. Still bounded regardless of how often the idle watcher
+  relaunches, and still opt-out via `COGNEE_UPDATE_CHECK=off`.
 
 ## [1.1.0]
 
