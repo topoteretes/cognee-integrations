@@ -108,6 +108,13 @@ def _resolve_api_key_source() -> str:
     """
     env_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
     if env_key:
+        # The env layer is fed by both real exports and ~/.cognee/.env
+        # (setdefault); tell them apart for debuggability.
+        from _env_file import env_file_path, parse_env_file
+
+        file_key = parse_env_file(env_file_path()).get("COGNEE_API_KEY", "")
+        if file_key and file_key == env_key:
+            return "Env file"
         return "ENV"
 
     # Check the single cached key file.
@@ -183,6 +190,26 @@ def _resolve_embedding() -> tuple[str, str]:
     return model, dims
 
 
+def _resolve_env_file() -> str:
+    """One-time config file (~/.cognee/.env): presence, key names, overrides.
+
+    Values are never shown — only which keys the file defines, and which of
+    them are shadowed by a real shell export (exports win over the file).
+    """
+    from _env_file import env_file_status
+
+    status = env_file_status()
+    path = status.get("path", "")
+    if not status.get("exists"):
+        return f"Not found ({path})"
+    keys = status.get("keys") or []
+    desc = f"{path} ({len(keys)} key{'s' if len(keys) != 1 else ''}: {', '.join(keys)})"
+    overridden = status.get("overridden") or []
+    if overridden:
+        desc += f" — overridden by shell env: {', '.join(overridden)}"
+    return desc
+
+
 def collect_report() -> dict:
     """Gather all diagnostic fields into an ordered dict."""
     mode = _resolve_mode()
@@ -196,6 +223,7 @@ def collect_report() -> dict:
 
     return {
         "mode": mode,
+        "env_file": _resolve_env_file(),
         "server_url": display_url if display_url != "-" else None,
         "api_key_source": api_key_source,
         "reachable": health["reachable"],
@@ -210,6 +238,7 @@ def collect_report() -> dict:
 
 _DISPLAY_ORDER = [
     ("Mode", "mode"),
+    ("Env File", "env_file"),
     ("Server URL", "server_url"),
     ("API Key Source", "api_key_source"),
     ("Reachable", "reachable"),

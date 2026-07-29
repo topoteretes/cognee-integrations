@@ -256,6 +256,7 @@ def test_json_output():
     parsed = json.loads(doctor.format_json(report))
     expected = {
         "mode",
+        "env_file",
         "server_url",
         "api_key_source",
         "reachable",

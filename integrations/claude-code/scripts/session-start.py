@@ -1454,6 +1454,14 @@ async def _start(payload: dict | None = None) -> dict:
 
 
 def main():
+    # First run: leave a commented ~/.cognee/.env template so one-time config
+    # has a documented file to land in. Values (if any) were already loaded
+    # into os.environ when _plugin_common was imported.
+    from _env_file import ensure_env_file_template, env_file_path
+
+    if ensure_env_file_template():
+        hook_log("env_file_template_created", {"path": str(env_file_path())})
+
     # Detached bootstrap mode: run the slow server boot + registration out of
     # band so the SessionStart hook itself returns fast.
     if _BOOTSTRAP_ARG in sys.argv:

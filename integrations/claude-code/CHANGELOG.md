@@ -10,6 +10,24 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0]
+
+### Added
+- **One-time configuration via `~/.cognee/.env`.** API keys and URLs
+  (`COGNEE_BASE_URL`, `COGNEE_API_KEY`, `LLM_API_KEY`, and every other env var the
+  plugin reads) no longer need to be exported in each shell: values placed in
+  `~/.cognee/.env` — the durable cognee home shared with the Codex plugin — are
+  injected into the environment at process start with setdefault semantics, so a
+  real shell export still wins per terminal, and spawned processes (local server,
+  watchers) inherit them unchanged. The file accepts pasted `export KEY=value`
+  lines, is created with a commented template (mode `0600`) on first session
+  start, and its location can be overridden with `COGNEE_ENV_FILE`. `doctor.py`
+  gained an **Env File** row showing which keys the file defines (names only,
+  never values) and which are overridden by shell exports. The parser tolerates
+  Windows-written files: a UTF-8 BOM (PowerShell 5.1) is stripped, UTF-16 (a PS5
+  `>` redirect) is decoded, and CRLF line endings are handled — so copy/paste
+  setup blocks work from any shell.
+
 ## [1.1.1]
 
 ### Fixed

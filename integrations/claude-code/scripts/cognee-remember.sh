@@ -16,13 +16,21 @@
 set -euo pipefail
 
 PLUGIN_DIR="${HOME}/.cognee-plugin/claude-code"
-runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" 2>/dev/null || true
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
 import json
 import pathlib
 import sys
 
 plugin_dir = pathlib.Path(sys.argv[1])
 import os
+# One-time config from ~/.cognee/.env (shell exports still win).
+sys.path.insert(0, sys.argv[2])
+try:
+    from _env_file import load_env_file
+    load_env_file()
+except Exception:
+    pass
 service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
@@ -103,7 +111,6 @@ fi
 # Server-first: POST to /api/v1/remember via _remember_http.py.
 # UNREACHABLE → fall back to cognee-cli and warn.
 # Any other result (ok or error) → authoritative; do not fall back.
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 RESULT="$(python3 "${SELF_DIR}/_remember_http.py" "$SERVICE_URL" "$API_KEY" "$CONTENT" "$DATASET" "$NODE_SET" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then

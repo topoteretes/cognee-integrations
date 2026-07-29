@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Optional
 
 import _proc
+from _env_file import load_env_file
+
+# One-time config: ~/.cognee/.env acts like shell exports (setdefault — a real
+# export still wins). Loaded before any env read below or in importers.
+load_env_file()
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "codex"
 _SHARED_PLUGIN_ROOT = Path.home() / ".cognee-plugin"
