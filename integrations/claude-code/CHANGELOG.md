@@ -10,6 +10,33 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.2]
+
+### Fixed
+- **Per-prompt recall now names its dataset.** `/api/v1/recall` was the only
+  data-plane call that omitted one, so the server resolved *every* dataset the user
+  can read and searched all of them on every prompt — on a machine with several
+  datasets that is the graph scope paying for unrelated stores, one of which can be
+  orders of magnitude larger than the plugin's own. It now sends
+  `datasets: [<dataset>]`, matching the explicit-search path
+  (`cognee-search.sh`), which has always scoped this way. The dataset is the usual
+  one — `COGNEE_PLUGIN_DATASET` if set, otherwise `agent_sessions` — and the key is
+  omitted entirely when no dataset is known, so a standalone invocation behaves as
+  before.
+- **One improve per session, instead of up to three at once.** The idle watcher,
+  the store hook and the SessionEnd sync all bridge sessions, and the cross-hook
+  `sync_lock` is bypassed in API mode — so in HTTP/cloud mode nothing stopped two of
+  them submitting the *same* session concurrently. The server's own per-session lock
+  answered the loser with a busy response, which drove a 15-second retry loop for up
+  to ten minutes; in one real log that accounted for two thirds of all sessions and
+  7,144 retry events. Improves are now claimed per session locally before submitting
+  (`improve_session_lock`), so the loser skips immediately instead of waiting on work
+  the winner is already doing. Freshness is unaffected: a skip reports not-synced, so
+  the caller re-drives the whole drain+improve, and the server-side busy retry still
+  covers a later attempt landing on a still-running pipeline. The claim covers both
+  the HTTP and local-SDK paths, is released on exceptions, reclaims a dead holder's
+  lock, and fails open — lock bookkeeping must never be why a session goes unsynced.
+
 ## [1.1.1]
 
 ### Fixed
