@@ -49,7 +49,7 @@ Install these from their public registries — you do **not** need to clone this
 | Google ADK | `cognee-integration-google-adk` | `pip install cognee-integration-google-adk` |
 | Claude Agent SDK | `cognee-integration-claude` | `pip install cognee-integration-claude` |
 | Hermes Agent | `cognee-integration-hermes-agent` | `pip install cognee-integration-hermes-agent` |
-| OpenClaw | `@cognee/cognee-openclaw` | `npm install @cognee/cognee-openclaw` |
+| OpenClaw | `@cognee/cognee-openclaw` | `npm install @cognee/cognee-openclaw` or install from clawhub.ai|
 | n8n | `n8n-nodes-cognee` | install via n8n community nodes |
 | Dify (Cloud) | `cognee` | install from the Dify marketplace |
 | Dify (self-hosted) | `cognee-sdk` | install from the Dify marketplace |
@@ -74,13 +74,13 @@ Memory apps and editor tooling that talk to a running **cognee server**
 | Second brain | `cognee-integration-second-brain` | cross-transport personal memory (Telegram + web), `/link` identity merge |
 | VS Code | `cognee-vscode` | remember/recall + "ask my project memory" with source-file citations |
 
-## Quickstart
+## Claude Code Quickstart
 
 The Claude Code integration is a **plugin** — it gives Claude Code persistent memory
 across sessions with no code to write. It auto-captures your prompts, tool traces, and
 responses, and auto-recalls relevant context on every prompt.
 
-**1. Install the plugin**
+**1. Install the Claude Code plugin**
 
 Run these slash commands directly in the Claude Code chat:
 
