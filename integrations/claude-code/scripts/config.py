@@ -450,26 +450,36 @@ async def improve_session_local(dataset: str, session_id: str, user) -> dict:
     and (in foreground mode) the graph→session sync — so the explicit
     persist+sync pair below is only kept as a fallback for older cognee
     versions without session-aware improve.
+
+    Serialized per session by ``improve_session_lock``, matching the HTTP path in
+    ``run_session_improve``. ``store-to-session``'s background fire takes no outer
+    ``sync_lock``, so without this the local path could double-submit one session
+    and have two writers contend for the single-writer graph store.
     """
     if not session_id or not user:
         return {"ok": False, "error": "missing session/user"}
 
     import cognee
+    from _plugin_common import improve_session_lock
 
-    try:
-        result = await cognee.improve(
-            dataset,
-            session_ids=[session_id],
-            user=user,
-            run_in_background=False,
-        )
-        return {"ok": True, "result": result}
-    except TypeError as exc:
-        # Older cognee without session-aware improve: legacy persist + sync.
-        _config_log("improve_local_unsupported", {"error": str(exc)[:200]})
-        wrote = await persist_session_cache_to_graph(dataset, session_id, user)
-        graph_result = await sync_graph_context_to_session(dataset, session_id, user)
-        return {"ok": wrote, "legacy": True, "graph_synced": graph_result.get("synced", 0)}
+    with improve_session_lock(session_id, "improve_session_local") as claimed:
+        if not claimed:
+            # Winner is already bridging this session; not dropped, just in flight.
+            return {"ok": False, "skipped": "concurrent"}
+        try:
+            result = await cognee.improve(
+                dataset,
+                session_ids=[session_id],
+                user=user,
+                run_in_background=False,
+            )
+            return {"ok": True, "result": result}
+        except TypeError as exc:
+            # Older cognee without session-aware improve: legacy persist + sync.
+            _config_log("improve_local_unsupported", {"error": str(exc)[:200]})
+            wrote = await persist_session_cache_to_graph(dataset, session_id, user)
+            graph_result = await sync_graph_context_to_session(dataset, session_id, user)
+            return {"ok": wrote, "legacy": True, "graph_synced": graph_result.get("synced", 0)}
 
 
 def _read_field(entry, field: str) -> str:
