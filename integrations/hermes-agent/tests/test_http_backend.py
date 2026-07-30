@@ -19,6 +19,7 @@ import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -33,6 +34,7 @@ from cognee_integration_hermes.http_backend import (  # noqa: E402
 
 _TIMEOUT = 5.0
 _URL = "http://127.0.0.1:8000"
+_REMOTE_URL = "https://cloud.example"
 
 
 class _Response(io.BytesIO):
@@ -475,13 +477,39 @@ class TestApiKeyResolution(unittest.TestCase):
         self.assertIn("/api/v1/auth/login", other.paths())
 
     def test_failed_minting_proceeds_without_a_key(self):
-        # A server with authentication disabled needs no key at all.
+        # A LOCAL server with authentication disabled needs no key at all.
         opener = self._mint_opener()
         opener.responses["/api/v1/auth/login"] = urllib.error.HTTPError(
             _URL, 404, "no auth", {}, None
         )
         backend = self._connect(opener)
         self.assertEqual(backend.api_key, "")
+
+    def test_a_remote_target_without_a_key_fails_at_connect(self):
+        # Cognee Cloud exposes no login route to mint from; continuing without a
+        # key would smear one clear startup error into a 401 on every call.
+        opener = self._mint_opener()
+        with mock.patch.dict("os.environ", {"COGNEE_API_KEY": ""}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "COGNEE_API_KEY"):
+                self._connect(opener, url=_REMOTE_URL)
+        # And it never tried the default-user login against a remote host.
+        self.assertNotIn("/api/v1/auth/login", opener.paths())
+
+    def test_a_remote_target_with_an_env_key_connects(self):
+        opener = self._mint_opener()
+        with mock.patch.dict("os.environ", {"COGNEE_API_KEY": "cloud-key"}, clear=False):
+            backend = self._connect(opener, url=_REMOTE_URL)
+        self.assertEqual(backend.api_key, "cloud-key")
+        self.assertNotIn("/api/v1/auth/login", opener.paths())
+
+    def test_a_remote_target_with_a_cached_key_connects(self):
+        (Path(self.cache_dir) / "api_key.json").write_text(
+            json.dumps({"base_url": _REMOTE_URL, "api_key": "cached-cloud"}),
+            encoding="utf-8",
+        )
+        with mock.patch.dict("os.environ", {"COGNEE_API_KEY": ""}, clear=False):
+            backend = self._connect(self._mint_opener(), url=_REMOTE_URL)
+        self.assertEqual(backend.api_key, "cached-cloud")
 
 
 class TestErrorMapping(unittest.TestCase):

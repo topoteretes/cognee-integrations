@@ -78,6 +78,13 @@ class CogneeUnreachable(RuntimeError):
     """The server could not be reached at all (DNS, connection, timeout)."""
 
 
+def _is_local_url(url: str) -> bool:
+    """True when *url* points at this machine (same hosts the other plugins treat
+    as local in their ``_is_local_url`` / ``isLocalUrl`` helpers)."""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
 class RememberResponse:
     """A remember result that exposes ``.status`` like the SDK's ``RememberResult``.
 
@@ -316,19 +323,35 @@ class HttpBackend(MemoryBackend):
             logger.debug("could not cache the cognee API key: %s", exc)
 
     def _resolve_api_key(self, provided: str, *, timeout: float) -> str:
-        """Configured key, else a cached one, else mint one from the default user."""
+        """Configured key, else a cached one, else — locally only — mint one.
+
+        Minting logs in as the default user, which only a server this plugin (or a
+        sibling plugin) bootstrapped is known to allow. A *remote* server — Cognee
+        Cloud included — exposes no such login, so a missing key there is a hard
+        configuration error: the claude-code and openclaw plugins require
+        ``COGNEE_API_KEY`` for any remote target for the same reason, and
+        proceeding unauthenticated would only smear one clear startup error into
+        a 401 on every later call.
+        """
         key = (provided or os.environ.get("COGNEE_API_KEY", "")).strip()
         if key:
             return key
         key = self._cached_key()
         if key:
             return key
+        if not _is_local_url(self.url):
+            raise RuntimeError(
+                f"COGNEE_API_KEY is required for a remote cognee server ({self.url}): "
+                "remote servers expose no login route to mint a key from, and every "
+                "request authenticates via X-Api-Key. Set COGNEE_API_KEY, or unset "
+                "COGNEE_BASE_URL to use the local server."
+            )
         try:
             key = self._mint_api_key(timeout=timeout)
         except Exception as exc:
-            # A server with authentication disabled needs no key at all, so this
-            # is not fatal — proceed unauthenticated and let the first real call
-            # report a 401 if the server does want one.
+            # A local server with authentication disabled needs no key at all, so
+            # this is not fatal — proceed unauthenticated and let the first real
+            # call report a 401 if the server does want one.
             logger.debug("could not mint a cognee API key (continuing without): %s", exc)
             return ""
         if key:

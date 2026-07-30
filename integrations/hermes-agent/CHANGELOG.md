@@ -58,6 +58,12 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
 - **An unreachable `COGNEE_BASE_URL` now fails at startup.** `cognee.serve()` logged
   a warning and returned a client regardless, so a bad URL only surfaced on the
   first real call.
+- **A remote `COGNEE_BASE_URL` without `COGNEE_API_KEY` also fails at startup.**
+  Key minting is local-only — remote servers (Cognee Cloud included) expose no
+  login route to mint from, and the claude-code/openclaw plugins require a key
+  for remote targets for the same reason. Previously the plugin continued
+  unauthenticated and every call 401'd one at a time; it also no longer sends
+  the default-user login credentials to non-local hosts.
 - **The spawned server no longer leaks.** The plugin registers an agent connection
   on connect and unregisters on shutdown, so cognee's idle watchdog can stop a
   server nobody is using.

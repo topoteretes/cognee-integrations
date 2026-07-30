@@ -137,6 +137,12 @@ COGNEE_BASE_URL=https://your-cognee-service.example   # canonical name
 COGNEE_API_KEY=...
 ```
 
+> **`COGNEE_API_KEY` is mandatory for any remote server.** On a local server the
+> plugin mints a key on first use (a one-time login as the default user); remote
+> servers — Cognee Cloud included — expose no login route, so there is nothing to
+> mint with. A remote `COGNEE_BASE_URL` without a key fails at startup with a
+> clear error rather than a 401 on every call.
+
 Embedded (in-process) mode — single-process / offline only:
 
 ```bash
