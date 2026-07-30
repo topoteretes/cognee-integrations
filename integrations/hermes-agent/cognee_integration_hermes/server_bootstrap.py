@@ -15,13 +15,14 @@ the port, so concurrent spawns simply lose the bind and then observe health.
 
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 
-from .config import SHARED_COGNEE_HOME, SHARED_PLUGIN_STATE_DIR
+from .config import DEFAULT_SERVER_BOOT_TIMEOUT, SHARED_COGNEE_HOME, SHARED_PLUGIN_STATE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,20 @@ def health_ok(url, timeout=2.0):
             status = getattr(resp, "status", None) or resp.getcode()
             return 200 <= int(status) < 300
     except Exception:
+        return False
+
+
+def port_bound(port, timeout=1.0):
+    """True when something accepts TCP connections on the local port.
+
+    Weaker than :func:`health_ok` on purpose: uvicorn binds the port well before
+    the app is ready, so this distinguishes "a server is coming up" from "nothing
+    is there at all".
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+            return True
+    except OSError:
         return False
 
 
@@ -68,7 +83,7 @@ def _spawn(port, data_root, system_root, log_path):
     except Exception:
         log = subprocess.DEVNULL
     try:
-        subprocess.Popen(
+        return subprocess.Popen(
             [
                 sys.executable,
                 "-m",
@@ -97,11 +112,18 @@ def ensure_local_server(
     data_root="",
     system_root="",
     log_path=None,
-    boot_timeout=30.0,
+    boot_timeout=float(DEFAULT_SERVER_BOOT_TIMEOUT),
 ):
     """Return the URL of a healthy local cognee server, starting one if needed.
 
-    Raises RuntimeError if the server does not become healthy within boot_timeout.
+    The deadline is generous (matching the other plugins' 600s) because a *first*
+    boot runs migrations and can take minutes — but it is only ever waited out
+    for a server that is actually coming up. A dead spawn with nothing listening
+    on the port raises immediately: waiting cannot fix a missing dependency or a
+    crash, and a 10-minute hang would stall every Hermes session start.
+
+    Raises RuntimeError when the spawn is dead and the port unowned, or when the
+    server does not become healthy within boot_timeout.
     """
     url = "http://127.0.0.1:%d" % int(port)
     if health_ok(url):
@@ -115,18 +137,36 @@ def ensure_local_server(
         except OSError:
             pass  # _spawn falls back to DEVNULL if the file cannot be opened
         log_path = str(log_dir / "server.log")
+    proc = None
+    spawn_error = None
     try:
-        _spawn(port, data_root, system_root, log_path)
+        proc = _spawn(port, data_root, system_root, log_path)
     except Exception as exc:
         # A spawn failure may just be a port-bind race with another starter, in
         # which case health polling below will still succeed. But it may also be a
         # real problem (missing uvicorn, permission denied) — log it for diagnostics.
+        spawn_error = exc
         logger.warning("cognee server spawn attempt failed (will still poll /health): %s", exc)
     deadline = time.monotonic() + float(boot_timeout)
     while time.monotonic() < deadline:
         if health_ok(url):
             return url
+        # Our spawn being gone is not itself fatal — losing a port-bind race to a
+        # concurrent starter looks exactly like this, and then the port has an
+        # owner worth waiting for. Dead spawn AND a silent port is fatal.
+        spawn_is_gone = spawn_error is not None or (proc is not None and proc.poll() is not None)
+        if spawn_is_gone and not port_bound(port):
+            cause = (
+                "failed to launch (%s)" % spawn_error
+                if spawn_error is not None
+                else "exited with code %s" % proc.returncode
+            )
+            raise RuntimeError(
+                "cognee local server %s and nothing is listening on port %s. "
+                "See %s for the server output." % (cause, port, log_path)
+            )
         time.sleep(1.0)
     raise RuntimeError(
-        "cognee local server did not become healthy at %s within %ss" % (url, boot_timeout)
+        "cognee local server did not become healthy at %s within %ss. "
+        "See %s for the server output." % (url, boot_timeout, log_path)
     )

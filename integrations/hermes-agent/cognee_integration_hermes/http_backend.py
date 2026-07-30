@@ -7,7 +7,8 @@ own REST API and own the request bodies. The alternative, routing through
 most importantly ``session_ids`` on ``improve()``, which is what bridges session
 memory into the permanent graph.
 
-**Wire contract** (verified against cognee 1.2.1's routers):
+**Wire contract** (verified against cognee 1.2.1's routers, live-checked on the
+pinned 1.4.0):
 
 ===================  =========================================================
 ``recall``           ``POST /api/v1/recall``   JSON: ``query``, ``search_type``,

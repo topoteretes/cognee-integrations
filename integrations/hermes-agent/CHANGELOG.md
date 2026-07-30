@@ -89,6 +89,21 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
   matching the Claude Code and OpenClaw plugins. Both are already cognee's defaults,
   so this is insurance against a future default change silently disabling the session
   tier, not a fix in itself.
+- **A cold first boot no longer times out.** `COGNEE_SERVER_BOOT_TIMEOUT` now
+  defaults to 600s (was 30s), matching the other plugins' boot deadline — a first
+  boot runs DB migrations and can take minutes, and giving up early left memory
+  off for the whole session. The long deadline is safe because the bootstrap now
+  **fails fast when the spawned server dies**: a crashed child with nothing
+  listening on the port raises immediately (pointing at the server log) instead
+  of stalling the session start, while a child that merely lost the port-bind
+  race to a concurrent starter still waits for the winner to become healthy.
+- **cognee is now bounded to `>=1.2.1,<=1.4.0`** (was the loose
+  `>=1.0.0,<2.0.0`). The wire contract this plugin depends on —
+  `/api/v1/remember/entry` and `improve(session_ids)` — first shipped in 1.2.1,
+  and a 1.0.x server would accept some of these requests and silently do the
+  wrong thing. The 1.4.0 cap is the newest version verified against the full
+  test suite and a live server boot (health, key minting, agent
+  register/unregister); the lockfile resolves to 1.4.0.
 
 ### Added
 

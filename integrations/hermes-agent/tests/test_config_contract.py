@@ -143,7 +143,7 @@ class TestDefaults(unittest.TestCase):
         self.assertEqual(cfg["dataset"], "agent_sessions")
         self.assertEqual(cfg["top_k"], 5)
         self.assertEqual(cfg["local_port"], 8011)
-        self.assertEqual(cfg["server_boot_timeout"], 30)
+        self.assertEqual(cfg["server_boot_timeout"], 600)
         self.assertEqual(cfg["session_prefix"], "hermes")
         self.assertEqual(cfg["recall_timeout"], 120)
         self.assertEqual(cfg["write_timeout"], 120)

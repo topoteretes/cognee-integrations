@@ -18,6 +18,13 @@ SHARED_COGNEE_HOME = Path.home() / ".cognee"
 # and deliberately avoids cognee's own default of 8000, so we never attach to —
 # or contend with — a server the user is running themselves.
 DEFAULT_LOCAL_PORT = 8011
+# How long a boot may take before giving up, matching the other plugins'
+# COGNEE_SERVER_BOOT_DEADLINE. A *first* boot runs DB migrations and store
+# initialization and can take minutes on a slow machine; giving up early leaves
+# memory off for the whole session even though the server finishes booting
+# moments later. A genuinely broken spawn never waits this out — the bootstrap
+# fails fast once the child is dead and nothing owns the port.
+DEFAULT_SERVER_BOOT_TIMEOUT = 600
 DEFAULT_IDENTITY_EMAIL = "hermes-agent@cognee.local"
 DEFAULT_IDENTITY_PASSWORD = "hermes-agent-plugin"
 
@@ -95,7 +102,9 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         # direct REST client the other cognee plugins use. See backend.build_backend.
         "transport": os.environ.get("COGNEE_TRANSPORT", ""),
         "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), DEFAULT_LOCAL_PORT),
-        "server_boot_timeout": str_to_int(os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), 30),
+        "server_boot_timeout": str_to_int(
+            os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), DEFAULT_SERVER_BOOT_TIMEOUT
+        ),
         # COGNEE_PLUGIN_DATASET is the name the other cognee plugins read;
         # COGNEE_DATASET is this plugin's 0.1.x name, kept as an alias.
         "dataset": os.environ.get("COGNEE_PLUGIN_DATASET")
@@ -137,7 +146,9 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     config["local_port"] = min(
         65535, max(1, str_to_int(config.get("local_port"), DEFAULT_LOCAL_PORT))
     )
-    config["server_boot_timeout"] = max(1, str_to_int(config.get("server_boot_timeout"), 30))
+    config["server_boot_timeout"] = max(
+        1, str_to_int(config.get("server_boot_timeout"), DEFAULT_SERVER_BOOT_TIMEOUT)
+    )
     config["auto_route"] = str_to_bool(config.get("auto_route"), True)
     config["improve_on_end"] = str_to_bool(config.get("improve_on_end"), True)
     config["embedded"] = str_to_bool(config.get("embedded"), False)

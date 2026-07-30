@@ -15,6 +15,7 @@ from .config import (
     DEFAULT_IDENTITY_EMAIL,
     DEFAULT_IDENTITY_PASSWORD,
     DEFAULT_LOCAL_PORT,
+    DEFAULT_SERVER_BOOT_TIMEOUT,
     load_config,
     resolve_hermes_home,
     resolve_local_roots,
@@ -308,7 +309,9 @@ class CogneeMemoryProvider(MemoryProvider):
                     int(self._config.get("local_port") or DEFAULT_LOCAL_PORT),
                     data_root=data_root,
                     system_root=system_root,
-                    boot_timeout=float(self._config.get("server_boot_timeout", 30)),
+                    boot_timeout=float(
+                        self._config.get("server_boot_timeout", DEFAULT_SERVER_BOOT_TIMEOUT)
+                    ),
                 )
                 self._backend.connect(url=local_url, api_key="", timeout=30)
                 self._remote_mode = True

@@ -163,7 +163,7 @@ LLM_API_KEY=sk-...
 | `service_url` | `COGNEE_BASE_URL` (canonical) | empty |
 | `embedded` | `COGNEE_EMBEDDED` | `false` |
 | `local_port` | `COGNEE_LOCAL_PORT` | `8011` |
-| `server_boot_timeout` | `COGNEE_SERVER_BOOT_TIMEOUT` | `30` |
+| `server_boot_timeout` | `COGNEE_SERVER_BOOT_TIMEOUT` | `600` |
 | `data_root` | `COGNEE_DATA_ROOT` | `~/.cognee/data` |
 | `system_root` | `COGNEE_SYSTEM_ROOT` | `~/.cognee/system` |
 

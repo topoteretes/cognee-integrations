@@ -52,6 +52,20 @@ class TestHealthOk(unittest.TestCase):
             self.assertFalse(sb.health_ok("http://127.0.0.1:8000"))
 
 
+def _live_child():
+    """A spawned process that is still running (poll() -> None)."""
+    proc = mock.MagicMock()
+    proc.poll.return_value = None
+    return proc
+
+
+def _dead_child(returncode=3):
+    proc = mock.MagicMock()
+    proc.poll.return_value = returncode
+    proc.returncode = returncode
+    return proc
+
+
 class TestEnsureLocalServer(unittest.TestCase):
     def test_already_healthy_does_not_spawn(self):
         with (
@@ -66,7 +80,7 @@ class TestEnsureLocalServer(unittest.TestCase):
         # First probe down (-> spawn), second probe up (-> return).
         with (
             mock.patch.object(sb, "health_ok", side_effect=[False, True]),
-            mock.patch.object(sb, "_spawn") as spawn,
+            mock.patch.object(sb, "_spawn", return_value=_live_child()) as spawn,
             mock.patch.object(sb.time, "sleep"),
         ):
             url = sb.ensure_local_server(8123)
@@ -76,11 +90,57 @@ class TestEnsureLocalServer(unittest.TestCase):
     def test_raises_when_never_healthy(self):
         with (
             mock.patch.object(sb, "health_ok", return_value=False),
-            mock.patch.object(sb, "_spawn"),
+            mock.patch.object(sb, "_spawn", return_value=_live_child()),
             mock.patch.object(sb.time, "sleep"),
         ):
             with self.assertRaises(RuntimeError):
                 sb.ensure_local_server(8000, boot_timeout=0.01)
+
+    def test_a_dead_spawn_with_a_silent_port_fails_fast(self):
+        # The 600s deadline exists for slow first boots, not broken installs — a
+        # crashed child with no other owner on the port must not stall the
+        # session start for 10 minutes.
+        with (
+            mock.patch.object(sb, "health_ok", return_value=False),
+            mock.patch.object(sb, "_spawn", return_value=_dead_child(3)),
+            mock.patch.object(sb, "port_bound", return_value=False),
+            mock.patch.object(sb.time, "sleep") as slept,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "exited with code 3"):
+                sb.ensure_local_server(8000, boot_timeout=600.0)
+        slept.assert_not_called()
+
+    def test_a_dead_spawn_that_lost_the_bind_race_keeps_waiting(self):
+        # Our child dying because a concurrent starter won the port is a success
+        # path: the winner owns the port and will become healthy.
+        with (
+            mock.patch.object(sb, "health_ok", side_effect=[False, False, True]),
+            mock.patch.object(sb, "_spawn", return_value=_dead_child(1)),
+            mock.patch.object(sb, "port_bound", return_value=True),
+            mock.patch.object(sb.time, "sleep"),
+        ):
+            url = sb.ensure_local_server(8123, boot_timeout=600.0)
+        self.assertEqual(url, "http://127.0.0.1:8123")
+
+    def test_a_failed_spawn_with_a_silent_port_fails_fast(self):
+        with (
+            mock.patch.object(sb, "health_ok", return_value=False),
+            mock.patch.object(sb, "_spawn", side_effect=OSError("permission denied")),
+            mock.patch.object(sb, "port_bound", return_value=False),
+            mock.patch.object(sb.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "failed to launch"):
+                sb.ensure_local_server(8000, boot_timeout=600.0)
+
+    def test_the_error_points_at_the_server_log(self):
+        with (
+            mock.patch.object(sb, "health_ok", return_value=False),
+            mock.patch.object(sb, "_spawn", return_value=_dead_child()),
+            mock.patch.object(sb, "port_bound", return_value=False),
+            mock.patch.object(sb.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "/var/log/cognee.log"):
+                sb.ensure_local_server(8000, boot_timeout=600.0, log_path="/var/log/cognee.log")
 
 
 class TestSpawnEnvironment(unittest.TestCase):
@@ -235,6 +295,9 @@ class TestInitializeModes(unittest.TestCase):
         # 8011 keeps us off cognee's own default of 8000, so we never attach to a
         # server the user is running themselves.
         self.assertEqual(ensure.call_args.args[0], 8011)
+        # The 600s deadline the other plugins use: a cold first boot runs
+        # migrations, and giving up early turns memory off for the whole session.
+        self.assertEqual(ensure.call_args.kwargs["boot_timeout"], 600.0)
         self.assertTrue(p._remote_mode)
         self.assertEqual(rec["served"], ("http://127.0.0.1:8000", ""))
         self.assertFalse(rec["identity_called"])
