@@ -10,6 +10,44 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.2]
+
+### Fixed
+- **Prompts no longer stall 10–30s replaying the warmup buffer** (#298). The
+  ready marker (30s TTL) is only refreshed on the prompt path, so during any
+  long agent turn it expired while the server was healthy; every tool trace
+  then piled into the warmup buffer, and the next prompt's lookup hook —
+  reading TTL expiry as "the server just came up" — synchronously replayed the
+  whole backlog (N sequential `/remember/entry` calls, ~1s each, no deadline)
+  before recall even started. Users paid a 10–30s frozen prompt after every
+  long turn, often ending in a hook timeout that also discarded the recall
+  context. Three moves, per the excellent analysis in #298:
+  - **The buffer stops filling against a healthy server.** The per-tool-call
+    store hook now uses `server_usable()`: on a stale marker it makes one
+    bounded 1s `/health` probe and re-marks ready on success, keeping the
+    marker fresh for the whole turn. It buffers only when the server is
+    actually unreachable, and a failed probe is memoized for 10s so a real
+    outage costs one probe per window, not one per tool call.
+  - **The drain is off the keystroke path.** `session-context-lookup.py` never
+    replays the buffer anymore; `store-user-prompt.py` — the async sibling on
+    the same UserPromptSubmit event — drains instead, after its fast
+    bookkeeping, so nothing user-visible waits on it. Entries buffered at the
+    tail of a turn may land one turn later; that is the accepted trade for
+    never stalling the prompt.
+  - **The drain itself is time-boxed.** An overall budget
+    (`COGNEE_DRAIN_BUDGET`, 20s; the detached SessionEnd/idle sync uses
+    `COGNEE_DRAIN_BUDGET_FINAL`, 120s) stops the replay with the unreplayed
+    tail preserved, and each entry's socket timeout is clamped to the budget
+    remaining so one hung call cannot eat it all.
+- **A poisoned session backlog can no longer be retried forever** (#298). One
+  real incident had a SessionEnd worker grinding against a server that 503'd
+  every write for 6.5 hours. Consecutive HTTP-status drain failures now back
+  the session off exponentially (60s doubling, capped at 1h, logged as
+  `warmup_drain_backoff`), skipped before any network I/O; progress resets the
+  streak. Network errors deliberately don't count — the readiness gates
+  already cover a down server, and backing off on them would delay recovery
+  after a restart.
+
 ## [1.2.1]
 
 ### Fixed

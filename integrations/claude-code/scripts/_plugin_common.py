@@ -1650,6 +1650,50 @@ def server_ready_hint(service_url: str = "") -> bool:
     return True
 
 
+# A failed usability probe is memoized here so a genuinely-down server costs
+# one probe per backoff window across all hooks, not one per tool call.
+_PROBE_FAIL_MEMO = _PLUGIN_DIR / "probe-fail.json"
+_PROBE_FAIL_BACKOFF_SECONDS = 10.0
+
+
+def server_usable(service_url: str = "", probe_timeout: float = 1.0) -> bool:
+    """Ready hint, refreshed by a cheap /health probe when stale.
+
+    ``server_ready_hint`` alone conflates "marker TTL expired" with "server
+    down": the marker is only refreshed on the prompt path, so during a long
+    agent turn it goes stale while the server is healthy — and every write
+    hook then buffers to the warmup spillway for no reason, leaving a backlog
+    that some later hook has to drain (#298). On a stale hint this probes once
+    (bounded by ``probe_timeout``) and re-marks ready on success, so the write
+    hooks keep the marker fresh for the whole turn and the buffer only fills
+    when the server is actually unreachable.
+    """
+    if server_ready_hint(service_url):
+        return True
+    now = datetime.now(timezone.utc).timestamp()
+    try:
+        memo = json.loads(_PROBE_FAIL_MEMO.read_text(encoding="utf-8"))
+        if now - float(memo.get("failed_at", 0) or 0) < _PROBE_FAIL_BACKOFF_SECONDS:
+            return False
+    except Exception:
+        pass
+    if server_health_ok(service_url, timeout=probe_timeout):
+        mark_server_ready(service_url)
+        try:
+            _PROBE_FAIL_MEMO.unlink()
+        except Exception:
+            pass
+        return True
+    try:
+        _PROBE_FAIL_MEMO.parent.mkdir(parents=True, exist_ok=True)
+        _PROBE_FAIL_MEMO.write_text(
+            json.dumps({"failed_at": now, "base_url": service_url}), encoding="utf-8"
+        )
+    except Exception:
+        pass
+    return False
+
+
 # --- Plugin update check (Phase 2) -------------------------------------------
 # A background, hourly-guarded check comparing the installed plugin version against
 # the version published on the marketplace's git ref. The network call runs only
@@ -2480,7 +2524,28 @@ def _release_drain_lock() -> None:
         hook_log("drain_lock_release_failed", {"error": str(exc)[:200]})
 
 
-def drain_warmup_entries(dataset: str, session_id: str) -> tuple:
+# Drain hardening (#298): a session whose replay keeps failing with an HTTP
+# status (a poisoned entry, broken auth, a server-side 503 loop) must not be
+# retried on every trigger forever — one real incident ground a SessionEnd
+# worker against a 503-ing session for 6.5 hours. Consecutive HTTP-status
+# failures back the session's drain off exponentially (doubling from the base,
+# capped). Network errors deliberately do NOT count: the server_usable /
+# ready-marker gates already cover a down server, and backing off on them
+# would delay recovery after a restart.
+_DRAIN_BACKOFF_BASE_SECONDS = 60.0
+_DRAIN_BACKOFF_CAP_SECONDS = 3600.0
+
+
+def _drain_budget_default() -> float:
+    try:
+        return float(os.environ.get("COGNEE_DRAIN_BUDGET", "") or 20.0)
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def drain_warmup_entries(
+    dataset: str, session_id: str, budget_seconds: float | None = None
+) -> tuple:
     """Replay warmup-buffered entries into the server session cache, in order.
 
     Returns ``(drained, remaining)``. Stops at the first replay failure so the
@@ -2488,23 +2553,75 @@ def drain_warmup_entries(dataset: str, session_id: str) -> tuple:
     lock, and the buffer trim is computed against a FRESH re-read of the file so
     entries appended while the replay was in flight are never lost — the replay
     is N sequential HTTP calls, a wide window for concurrent async hooks.
+
+    Time-boxed (#298): the whole replay stops once ``budget_seconds`` is spent
+    (default ``COGNEE_DRAIN_BUDGET``, 20s), and each entry's socket timeout is
+    clamped to the remaining budget so one hung call cannot eat it all. A
+    session whose replay failed with an HTTP status recently is skipped
+    entirely until its backoff window passes (see ``_DRAIN_BACKOFF_*``).
     """
     if not dataset or not session_id:
         return 0, 0
     path = _bridge_file(session_id)
     key = _bridge_cache_key(dataset, session_id)
-    snapshot = list((_load_json_file(path).get(key) or {}).get("pending_entries") or [])
+    state = _load_json_file(path).get(key) or {}
+    snapshot = list(state.get("pending_entries") or [])
     if not snapshot:
         return 0, 0
+    fail_count = int(state.get("drain_fail_count") or 0)
+    if fail_count > 0:
+        wait = min(
+            _DRAIN_BACKOFF_CAP_SECONDS,
+            _DRAIN_BACKOFF_BASE_SECONDS * (2 ** (fail_count - 1)),
+        )
+        elapsed = time.time() - float(state.get("drain_fail_at") or 0)
+        if elapsed < wait:
+            hook_log(
+                "warmup_drain_backoff",
+                {
+                    "session": session_id,
+                    "fail_count": fail_count,
+                    "retry_in": round(wait - elapsed, 1),
+                    "pending": len(snapshot),
+                },
+            )
+            return 0, len(snapshot)
     if not _try_acquire_drain_lock():
         hook_log("warmup_drain_skipped_locked", {"session": session_id, "pending": len(snapshot)})
         return 0, len(snapshot)
     try:
+        if budget_seconds is None:
+            budget_seconds = _drain_budget_default()
+        deadline = time.monotonic() + max(0.0, float(budget_seconds))
         drained = 0
+        http_failure = False
         for entry in snapshot:
+            budget_left = deadline - time.monotonic()
+            if budget_left <= 0:
+                hook_log(
+                    "warmup_drain_budget_exceeded",
+                    {
+                        "session": session_id,
+                        "drained": drained,
+                        "left": len(snapshot) - drained,
+                    },
+                )
+                break
             try:
-                remember_entry_via_http(dataset, session_id, entry)
+                remember_entry_via_http(
+                    dataset,
+                    session_id,
+                    entry,
+                    timeout=min(30.0, max(1.0, budget_left)),
+                )
                 drained += 1
+            except urllib.error.HTTPError as exc:
+                http_failure = True
+                hook_log(
+                    "warmup_drain_error",
+                    {"error": str(exc)[:200], "drained": drained, "status": exc.code},
+                )
+                break
             except Exception as exc:
                 hook_log("warmup_drain_error", {"error": str(exc)[:200], "drained": drained})
                 break
@@ -2534,6 +2651,27 @@ def drain_warmup_entries(dataset: str, session_id: str) -> tuple:
                 "warmup_drained",
                 {"session": session_id, "count": drained, "left": remaining},
             )
+        # Backoff bookkeeping. An HTTP-status failure arms (or re-arms) the
+        # backoff; any progress first resets it — the entry now at the head is
+        # a different one, so its failure streak starts over. Non-HTTP errors
+        # leave the state untouched: they say nothing about this session.
+        if http_failure or (drained and fail_count):
+            try:
+                with _buffer_lock():
+                    cache = _load_json_file(path)
+                    session_cache = cache.get(key) or {}
+                    if http_failure:
+                        session_cache["drain_fail_count"] = (
+                            1 if drained else int(session_cache.get("drain_fail_count") or 0) + 1
+                        )
+                        session_cache["drain_fail_at"] = time.time()
+                    else:
+                        session_cache.pop("drain_fail_count", None)
+                        session_cache.pop("drain_fail_at", None)
+                    cache[key] = session_cache
+                    _write_json_file(path, cache)
+            except Exception as exc:
+                hook_log("drain_backoff_write_failed", {"error": str(exc)[:200]})
         return drained, remaining
     finally:
         _release_drain_lock()
@@ -2681,12 +2819,15 @@ def _run_session_improve_locked(dataset: str, session_id: str) -> bool:
     base_url = _local_api_url()
     if not _backend_reachable(base_url):
         return False
-    _, remaining = drain_warmup_entries(dataset, session_id)
+    # Detached/idle context: nothing user-visible waits on this, so the drain
+    # gets a far larger budget than the per-prompt hook's default.
+    final_budget = _float_env("COGNEE_DRAIN_BUDGET_FINAL", 120.0)
+    _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
     if remaining:
         # One bounded retry after a short pause: the tail usually failed on a
         # momentary blip, and improve reads only what reached the server cache.
         time.sleep(_DRAIN_RETRY_PAUSE_SECONDS)
-        _, remaining = drain_warmup_entries(dataset, session_id)
+        _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
     if improve_unsupported(base_url):
         return persist_session_cache_to_graph_via_http(dataset, session_id)
     ensure_dataset_via_http(dataset)

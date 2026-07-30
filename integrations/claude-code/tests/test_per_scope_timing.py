@@ -191,6 +191,14 @@ def test_scope_timeout_clamped_to_remaining_budget():
         assert per_scope[scope].get("skipped"), f"{scope} should have been skipped"
 
 
+def test_lookup_does_not_drain_warmup_buffer():
+    """#298: the synchronous prompt-path hook must never replay the warmup
+    buffer (10-30s stall); the async sibling (store-user-prompt) owns the
+    drain. Pin: the hook module does not even import drain_warmup_entries."""
+    mod = _load_hook_module()
+    assert not hasattr(mod, "drain_warmup_entries")
+
+
 if __name__ == "__main__":
     failures = 0
     for _name, _fn in sorted(globals().items()):
