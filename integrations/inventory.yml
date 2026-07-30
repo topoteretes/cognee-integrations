@@ -83,6 +83,17 @@ integrations:
     migration_status: done
     notes: "Dify tool plugin – add data, cognify, search, delete via Cognee Cloud API"
 
+  - slug: band
+    name: "Cognee Memory Adapter for Band"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-band"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Band (band.ai) SDK adapter wrapper – auto-recall/QA capture on room messages, session-to-graph improve, cognee_search/cognee_remember tools"
+
   - slug: dify-sdk
     name: "Cognee (Self-Hosted) Plugin for Dify"
     owner: cognee
