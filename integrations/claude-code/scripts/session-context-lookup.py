@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Search session + trace + graph-context for context relevant to the user's prompt.
+"""Search session + trace + agent guidance + graph for context relevant to the user's prompt.
 
-Runs on the Codex UserPromptSubmit hook. Calls ``cognee.recall`` with
-``scope=["session","trace","graph_context"]`` so every layer the
-SessionManager holds (QA entries, agent trace steps, and the distilled
-graph-knowledge snapshot from ``improve()``) flows back into Codex's
-context.
+Runs on the Codex UserPromptSubmit hook. Calls ``cognee.recall`` once per
+scope (``session``, ``trace``, ``session_context``, ``graph``) so every
+layer the SessionManager holds (QA entries, agent trace steps, standing
+agent guidance, and the graph knowledge built by ``improve()``) flows back
+into Codex's context.
 
 Configuration:
     Resolves session state via Cognee HTTP endpoints.
@@ -58,6 +58,9 @@ TRUNCATE_ANSWER = 500
 TRUNCATE_RETURN = 400
 TRUNCATE_GRAPH_CTX = 1500
 RECENT_TRACE_FALLBACK_TOP_K = 5
+# Smallest per-scope timeout worth dispatching; with less budget than this
+# left, remaining scopes are skipped rather than fired with a doomed deadline.
+MIN_SCOPE_TIMEOUT = 0.2
 
 
 def _load_session_id() -> str:
@@ -244,12 +247,19 @@ async def _run(prompt: str) -> dict | None:
     # others. cognee.recall loops over scopes and re-raises on the first failure,
     # so we call it once per scope and collect whatever succeeds.
     results: list = []
+    # Cheap scopes first (tens of ms each), the graph search last: it is the
+    # only call that can consume a full per-call timeout, and running it
+    # earlier starved session_context out of the budget entirely. A single
+    # graph scope on purpose: the server (cognee >= 1.4) aliases the old
+    # graph_context scope to graph, so a graph_context + graph pair ran the
+    # same full graph retrieval twice per prompt. HYBRID_COMPLETION combines
+    # BM25 + vector + graph retrieval (with only_context=True the LLM
+    # completion is skipped server-side either way).
     scope_specs = [
         (["session"], None, None),
         (["trace"], None, None),
-        (["graph_context"], None, None),
-        (["graph"], "HYBRID_COMPLETION", None),
         (["session_context"], None, "agent"),
+        (["graph"], "HYBRID_COMPLETION", None),
     ]
     if not cloud_mode:
         import cognee
@@ -258,7 +268,7 @@ async def _run(prompt: str) -> dict | None:
         user = await resolve_user(_load_user_id())
 
     # Per-scope instrumentation (WS7 observability): capture {hits, elapsed_ms}
-    # for every scope, keyed by its stable label. Pre-seed all 5 scopes as
+    # for every scope, keyed by its stable label. Pre-seed all scopes as
     # skipped, in canonical order and before the breaker-open branch below can
     # blank scope_specs, so the event always carries the full set; the loop
     # overwrites each scope that actually runs. Purely additive: it must not
@@ -289,9 +299,16 @@ async def _run(prompt: str) -> dict | None:
             hook_log("recall_breaker_open", {"retry_in": _bretry})
             scope_specs = []
     for scope_list, qtype, context_profile in scope_specs:
-        if time.monotonic() >= budget_deadline:
+        # Clamp each call to what is left of the budget so a single scope can
+        # never overshoot the deadline (previously a scope dispatched just
+        # before the deadline could run a full recall_timeout past it). Below
+        # the floor a call cannot return anything useful, so skip the
+        # remaining scopes instead of firing a doomed request.
+        remaining = budget_deadline - time.monotonic()
+        if remaining < MIN_SCOPE_TIMEOUT:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
+        scope_timeout = min(recall_timeout, remaining)
         part = None
         t0 = time.monotonic()
         try:
@@ -305,7 +322,7 @@ async def _run(prompt: str) -> dict | None:
                     search_type=qtype,
                     context_profile=context_profile,
                     dataset=get_dataset(config),
-                    timeout=recall_timeout,
+                    timeout=scope_timeout,
                 )
             else:
                 query_type = getattr(SearchType, qtype, None) if qtype else None
@@ -320,7 +337,7 @@ async def _run(prompt: str) -> dict | None:
                         user=user,
                         **({"context_profile": context_profile} if context_profile else {}),
                     ),
-                    timeout=recall_timeout,
+                    timeout=scope_timeout,
                 )
             if part:
                 results.extend(part)
@@ -349,8 +366,9 @@ async def _run(prompt: str) -> dict | None:
         if not isinstance(r, dict):
             continue
         src = r.get("source", "session")
-        # Fold scope=graph (HYBRID_COMPLETION) results into the graph_context
-        # bucket so the displayed `g` counter reflects what was retrieved.
+        # The graph scope tags results source=graph; keep the historical
+        # graph_context bucket name so the status line, last_recall.json
+        # consumers and the `g` counter stay stable.
         if src == "graph":
             r["source"] = "graph_context"
             src = "graph_context"
