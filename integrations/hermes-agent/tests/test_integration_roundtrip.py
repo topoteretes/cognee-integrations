@@ -20,6 +20,7 @@ each other or a developer's real memory.
 """
 
 import importlib.util
+import logging
 import os
 import socket
 import sys
@@ -68,7 +69,6 @@ class TestHttpRoundTrip(unittest.TestCase):
 
         cls.port = _free_port()
         cls.home = tempfile.TemporaryDirectory()
-        cls.dataset = f"hermes_it_{_unique_suffix()}"
         # Own the server's storage too, so the run leaves nothing behind.
         cls.url = ensure_local_server(
             cls.port,
@@ -80,6 +80,12 @@ class TestHttpRoundTrip(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.home.cleanup()
+
+    def setUp(self):
+        # One dataset and one session per test. Sharing them let the forget test
+        # (alphabetically earlier) delete the state the bridge test needs, which
+        # surfaced as a misleading "Recall prerequisites not met" from the server.
+        self.dataset = f"hermes_it_{_unique_suffix()}_{self._testMethodName[5:25]}"
 
     def _provider(self):
         from cognee_integration_hermes.http_backend import HttpBackend
@@ -100,7 +106,7 @@ class TestHttpRoundTrip(unittest.TestCase):
         }
         provider = CogneeMemoryProvider()
         with mock.patch.dict("os.environ", env, clear=False):
-            provider.initialize("roundtrip-1", hermes_home=self.home.name)
+            provider.initialize(f"rt-{self._testMethodName}", hermes_home=self.home.name)
         self.assertIsInstance(
             provider._backend, HttpBackend, "the HTTP transport should be the default"
         )
@@ -146,8 +152,15 @@ class TestHttpRoundTrip(unittest.TestCase):
             if provider._sync_thread is not None:
                 provider._sync_thread.join(timeout=_WRITE_TIMEOUT)
 
-            # Before the bridge runs, the graph should not have it yet.
-            provider.on_session_end([])
+            # on_session_end logs improve failures and carries on, so watch the
+            # log rather than trusting silence.
+            with self.assertLogs("cognee_integration_hermes.provider", level="WARNING") as logs:
+                provider.on_session_end([])
+                logging.getLogger("cognee_integration_hermes.provider").warning(
+                    "sentinel: assertLogs requires at least one record"
+                )
+            improve_failures = [line for line in logs.output if "improve failed" in line]
+            self.assertEqual(improve_failures, [], f"improve() failed: {improve_failures}")
 
             found = json.loads(
                 provider.handle_tool_call(

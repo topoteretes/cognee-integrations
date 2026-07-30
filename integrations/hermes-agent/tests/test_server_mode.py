@@ -83,6 +83,57 @@ class TestEnsureLocalServer(unittest.TestCase):
                 sb.ensure_local_server(8000, boot_timeout=0.01)
 
 
+class TestSpawnEnvironment(unittest.TestCase):
+    """The spawned server's environment — where the session cache lives or dies."""
+
+    def _spawn_env(self, **env_overrides):
+        captured = {}
+
+        def fake_popen(args, env=None, **kwargs):
+            captured.update(env or {})
+            return mock.MagicMock()
+
+        with (
+            mock.patch.dict("os.environ", env_overrides, clear=False),
+            mock.patch.object(sb.subprocess, "Popen", side_effect=fake_popen),
+        ):
+            sb._spawn(9999, "", "", "/dev/null")
+        return captured
+
+    def test_caching_is_enabled_for_the_session_tier(self):
+        # Live-diagnosed: without CACHING, cognee's session manager reports
+        # is_available=False and a session write is dropped while the API still
+        # answers status="session_stored" — so turns silently never reach the graph.
+        self.assertEqual(self._spawn_env()["CACHING"], "true")
+
+    def test_auto_feedback_is_enabled(self):
+        self.assertEqual(self._spawn_env()["AUTO_FEEDBACK"], "true")
+
+    def test_agent_mode_is_enabled_so_the_server_can_retire(self):
+        self.assertEqual(self._spawn_env()["COGNEE_AGENT_MODE"], "true")
+
+    def test_an_explicit_user_value_wins(self):
+        self.assertEqual(self._spawn_env(CACHING="false")["CACHING"], "false")
+
+    def test_data_roots_are_passed_through_when_given(self):
+        captured = {}
+
+        def fake_popen(args, env=None, **kwargs):
+            captured.update(env or {})
+            return mock.MagicMock()
+
+        with mock.patch.object(sb.subprocess, "Popen", side_effect=fake_popen):
+            sb._spawn(9999, "/tmp/data", "/tmp/system", "/dev/null")
+        self.assertEqual(captured["DATA_ROOT_DIRECTORY"], "/tmp/data")
+        self.assertEqual(captured["SYSTEM_ROOT_DIRECTORY"], "/tmp/system")
+
+    def test_roots_are_omitted_when_empty(self):
+        env = self._spawn_env()
+        # Not asserting absence outright: the ambient environment may legitimately
+        # carry them. What matters is we do not invent an empty value.
+        self.assertNotEqual(env.get("DATA_ROOT_DIRECTORY", "unset"), "")
+
+
 class _Recorder(dict):
     """Reads the mode-routing decisions off a fake backend.
 

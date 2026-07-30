@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import os
 import threading
 from typing import Any, Optional
 
@@ -181,6 +182,13 @@ class SdkBackend(MemoryBackend):
             logger.debug("Cognee model configuration failed: %s", exc)
 
     def configure_local_roots(self, *, data_root: str, system_root: str) -> None:
+        # Embedded mode runs cognee's session manager in *this* process, and it is
+        # gated on CACHING: without it a session write is silently dropped while
+        # still reporting success, so turns never reach the graph. The spawned
+        # server gets the same flags in server_bootstrap._spawn. setdefault so an
+        # explicit user value wins.
+        for key, value in (("CACHING", "true"), ("AUTO_FEEDBACK", "true")):
+            os.environ.setdefault(key, value)
         try:
             import cognee
 

@@ -205,16 +205,29 @@ class TestRecallWireFormat(unittest.TestCase):
 
 
 class TestRememberWireFormat(unittest.TestCase):
-    def test_session_write_carries_the_session_id(self):
-        opener = FakeOpener({"/api/v1/remember": {"status": "session_stored"}})
+    def test_a_turn_is_a_typed_qa_entry_not_a_document_upload(self):
+        # Live-diagnosed: /api/v1/remember takes its payload as a multipart file,
+        # which the server coerces to "[UploadFile]" and then *skips* for the
+        # session cache — reporting status "session_stored" while storing nothing.
+        # Turns must go through the typed-entry endpoint.
+        opener = FakeOpener({"/api/v1/remember/entry": {"status": "session_stored"}})
         result = _backend(opener).remember_session(
-            text="a turn", session_id="hermes_s1", dataset="hermes", timeout=_TIMEOUT
+            text="User: hi\nAssistant: hello",
+            session_id="hermes_s1",
+            dataset="hermes",
+            timeout=_TIMEOUT,
         )
-        fields = opener.multipart_fields("/api/v1/remember")
-        self.assertEqual(fields["datasetName"], "hermes")
-        self.assertEqual(fields["session_id"], "hermes_s1")
-        self.assertEqual(fields["data"], "a turn")
+        body = opener.json_body("/api/v1/remember/entry")
+        self.assertEqual(body["dataset_name"], "hermes")
+        self.assertEqual(body["session_id"], "hermes_s1")
+        self.assertEqual(body["entry"]["type"], "qa")
+        self.assertEqual(body["entry"]["answer"], "User: hi\nAssistant: hello")
         self.assertEqual(result.status, "session_stored")
+
+    def test_a_turn_does_not_touch_the_document_endpoint(self):
+        opener = FakeOpener({"/api/v1/remember/entry": {}})
+        _backend(opener).remember_session(text="t", session_id="s", dataset="d", timeout=_TIMEOUT)
+        self.assertEqual(opener.paths(), ["/api/v1/remember/entry"])
 
     def test_permanent_write_omits_the_session_id(self):
         # No session_id makes the server do a direct add + cognify.
@@ -235,9 +248,9 @@ class TestRememberWireFormat(unittest.TestCase):
         self.assertIn("session_ids", "\n".join(logs.output))
         self.assertNotIn("session_ids", opener.multipart_fields("/api/v1/remember"))
 
-    def test_content_type_is_multipart(self):
+    def test_a_permanent_write_is_multipart(self):
         opener = FakeOpener({"/api/v1/remember": {}})
-        _backend(opener).remember_session(text="t", session_id="s", dataset="d", timeout=_TIMEOUT)
+        _backend(opener).remember_permanent(text="t", dataset="d", session_ids=[], timeout=_TIMEOUT)
         content_type = opener.request_for("/api/v1/remember")["headers"]["content-type"]
         self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
 
@@ -547,13 +560,13 @@ class TestProviderOverHttp(unittest.TestCase):
         self.assertEqual(out, {"result": "Content stored in Cognee.", "status": "running"})
 
     def test_a_turn_goes_to_the_session_cache(self):
-        opener = FakeOpener({"/api/v1/remember": {"status": "session_stored"}})
+        opener = FakeOpener({"/api/v1/remember/entry": {"status": "session_stored"}})
         provider = self._provider(opener, session_cognee_id="hermes_sY")
         provider.sync_turn("hello", "hi there")
         provider._sync_thread.join(timeout=2.0)
-        fields = opener.multipart_fields("/api/v1/remember")
-        self.assertEqual(fields["session_id"], "hermes_sY")
-        self.assertEqual(fields["data"], "User: hello\nAssistant: hi there")
+        body = opener.json_body("/api/v1/remember/entry")
+        self.assertEqual(body["session_id"], "hermes_sY")
+        self.assertEqual(body["entry"]["answer"], "User: hello\nAssistant: hi there")
 
     def test_session_end_bridges_the_session_into_the_graph(self):
         """End-to-end proof that finding #2 is fixed."""

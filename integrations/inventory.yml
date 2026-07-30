@@ -66,11 +66,19 @@ integrations:
     language: python
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
-    cognee_dependency: sdk
-    current_version: "0.1.0"
+    cognee_dependency: http-api
+    current_version: "0.2.0"
     migration_status: done
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
-    notes: "Standalone Hermes memory provider plugin; replaces closed in-tree PR path"
+    notes: >-
+      Standalone Hermes memory provider plugin; replaces closed in-tree PR path.
+      Talks to a cognee server over the REST API (as claude-code/codex/openclaw do);
+      still needs the cognee package installed, both to spawn the local server and
+      for the opt-in in-process mode (COGNEE_EMBEDDED=true, COGNEE_TRANSPORT=sdk).
+      NOT published: Hermes discovers memory providers by directory scan only, so a
+      pip install cannot activate it — install under $HERMES_HOME/plugins/cognee.
+      Publishing needs either an upstream entry-point-discovery change or a switch
+      to git/directory distribution.
 
   - slug: dify
     name: "Cognee Tool Plugin for Dify"

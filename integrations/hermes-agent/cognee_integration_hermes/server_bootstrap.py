@@ -38,6 +38,14 @@ def _spawn(port, data_root, system_root, log_path):
     env = dict(os.environ)
     env["COGNEE_AGENT_MODE"] = "true"  # server tears itself down once idle / no clients
     env["HTTP_API_PORT"] = str(port)
+    # The session cache is gated on CACHING. Without it cognee's session manager
+    # reports ``is_available = False``, and a session write is *silently dropped*
+    # while the API still answers ``status: "session_stored"`` — so every turn
+    # vanished and improve() had nothing to promote into the graph. Live-diagnosed;
+    # claude-code and openclaw set the same flag when they spawn their servers.
+    # setdefault semantics: an explicit user value always wins.
+    for key, value in (("CACHING", "true"), ("AUTO_FEEDBACK", "true")):
+        env.setdefault(key, value)
     if data_root:
         env["DATA_ROOT_DIRECTORY"] = data_root
     if system_root:

@@ -392,9 +392,33 @@ class HttpBackend(MemoryBackend):
         return RememberResponse(payload if isinstance(payload, dict) else {})
 
     def remember_session(self, *, text, session_id, dataset, timeout) -> RememberResponse:
-        # A session_id routes the write into the session cache, which is the
-        # cheap tier — no graph extraction up front.
-        return self._remember(text=text, dataset=dataset, session_id=session_id, timeout=timeout)
+        """Store a turn in the session cache as a typed QA entry.
+
+        This has to go through ``/api/v1/remember/entry``, not ``/api/v1/remember``
+        with a ``session_id``. Live-diagnosed: the document endpoint takes its
+        payload as a multipart file, which the server coerces to a placeholder
+        (``[UploadFile]``), and ``_add_to_session`` deliberately skips those
+        because they are useless in a session cache. The write reported
+        ``status: "session_stored"`` and stored nothing, so turns silently vanished
+        and ``improve()`` had nothing to promote. The typed-entry endpoint is what
+        the Claude Code plugin uses for the same purpose.
+
+        The turn arrives pre-framed as ``User: …\\nAssistant: …``, which the QA
+        shape cannot split back apart, so it goes in the ``answer`` field — exactly
+        what cognee's own SDK does for a session write (``add_qa`` with an empty
+        question).
+        """
+        payload = self._request(
+            "POST",
+            "/api/v1/remember/entry",
+            timeout=timeout,
+            json_body={
+                "entry": {"type": "qa", "question": "", "answer": text, "context": ""},
+                "dataset_name": dataset,
+                "session_id": session_id,
+            },
+        )
+        return RememberResponse(payload if isinstance(payload, dict) else {})
 
     def remember_permanent(self, *, text, dataset, session_ids, timeout) -> RememberResponse:
         if session_ids:

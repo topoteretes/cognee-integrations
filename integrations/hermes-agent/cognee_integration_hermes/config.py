@@ -53,6 +53,35 @@ def config_path(hermes_home: str | Path | None = None) -> Path | None:
     return home / "cognee.json" if home else None
 
 
+def resolve_local_roots(
+    config: dict[str, Any], hermes_home: str | Path | None = None
+) -> tuple[str, str]:
+    """Where cognee should keep its data and system directories.
+
+    Explicit ``COGNEE_DATA_ROOT`` / ``COGNEE_SYSTEM_ROOT`` win. Otherwise both are
+    scoped under ``HERMES_HOME``, which Hermes requires of plugin storage: two
+    profiles must not share one store, and ``hermes backup`` only walks
+    ``HERMES_HOME``.
+
+    Returns ``("", "")`` when there is nothing to say — no explicit config and no
+    resolvable home — leaving cognee's own defaults in place.
+
+    Note this is per *profile*, not per process. A cognee server is shared by
+    whoever reaches its port first, so two profiles on the same
+    ``COGNEE_LOCAL_PORT`` still end up on one store; give them separate ports to
+    keep them apart.
+    """
+    home = resolve_hermes_home(hermes_home)
+    data_root = str(config.get("data_root") or "")
+    system_root = str(config.get("system_root") or "")
+    if home is not None:
+        if not data_root:
+            data_root = str(home / "cognee" / "data")
+        if not system_root:
+            system_root = str(home / "cognee" / "system")
+    return data_root, system_root
+
+
 def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     """Load plugin config from environment variables and HERMES_HOME/cognee.json."""
     # COGNEE_BASE_URL is the canonical name; COGNEE_SERVICE_URL is a deprecated alias

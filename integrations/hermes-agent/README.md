@@ -73,6 +73,29 @@ initialization raises rather than quietly switching to a different mode — sile
 fallback would either mask a config error (remote → local data divergence) or
 reintroduce the very DB-lock risk this design removes (local-server → embedded).
 To accept the single-process trade-off, set `COGNEE_EMBEDDED=true` explicitly.
+And if initialization does fail, memory stays *off*: Hermes logs the error and
+starts anyway, so the provider refuses every call rather than operating a
+half-connected backend.
+
+### Transports
+
+Mode decides *where* cognee is; the transport decides *how* the plugin talks to it.
+
+| Transport | Selected by | What it does |
+| --- | --- | --- |
+| **http** (default) | nothing to set | builds requests against cognee's REST API directly, using only the standard library |
+| **sdk** | `COGNEE_TRANSPORT=sdk`, or any `COGNEE_EMBEDDED=true` | drives the `cognee` Python package, via `cognee.serve()` when a server is involved |
+
+Direct HTTP is the default because it is what the Claude Code, Codex and OpenClaw
+plugins do, and because the SDK's `CloudClient` drops fields the server accepts —
+most importantly `session_ids` on `improve()`, which is what promotes a session's
+turns into the permanent graph. Two consequences worth knowing:
+
+- The `cognee` package is still required. It is what the local server runs, and it
+  is the only way to run without a server at all (`COGNEE_EMBEDDED=true`).
+- Over HTTP, a `cognee_remember` write cannot be linked to the session it came
+  from — `/api/v1/remember` has no field for it. Session-to-graph bridging is
+  unaffected. The plugin logs this once rather than dropping it silently.
 
 > **Upgrading from 0.1.x — the local port changed from 8000 to 8011.** This
 > matches the other cognee agent plugins (Claude Code, Codex, OpenClaw), which all
@@ -125,6 +148,14 @@ COGNEE_DATASET=hermes
 | `server_boot_timeout` | `COGNEE_SERVER_BOOT_TIMEOUT` | `30` |
 | `data_root` | `COGNEE_DATA_ROOT` | `$HERMES_HOME/cognee/data` |
 | `system_root` | `COGNEE_SYSTEM_ROOT` | `$HERMES_HOME/cognee/system` |
+
+> **Storage is per profile, but a server is per port.** The roots above are scoped
+> to `HERMES_HOME`, so each Hermes profile gets its own store and `hermes backup`
+> can see it. A cognee server, though, belongs to whoever reaches its port first —
+> so two profiles left on the same `COGNEE_LOCAL_PORT` still share one store. Give
+> them separate ports if you want them apart. Roots pointed outside `HERMES_HOME`
+> with `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` are reported to `hermes backup`
+> via `backup_paths()`, so they survive a backup/import cycle too.
 
 > `COGNEE_SERVICE_URL` is a deprecated alias for `COGNEE_BASE_URL`. It still works
 > (with lower precedence) but new setups should use `COGNEE_BASE_URL`.

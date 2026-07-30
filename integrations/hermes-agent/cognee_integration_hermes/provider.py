@@ -16,6 +16,8 @@ from .config import (
     DEFAULT_IDENTITY_PASSWORD,
     DEFAULT_LOCAL_PORT,
     load_config,
+    resolve_hermes_home,
+    resolve_local_roots,
     str_to_bool,
     write_env_vars,
 )
@@ -298,10 +300,15 @@ class CogneeMemoryProvider(MemoryProvider):
             self._remote_mode = False
         else:
             try:
+                # Profile-scoped storage matters here too, not just embedded: without
+                # it the spawned server falls back to cognee's global default and every
+                # Hermes profile shares one store — which Hermes' plugin contract
+                # forbids, and which puts the data outside `hermes backup`'s reach.
+                data_root, system_root = self._local_roots()
                 local_url = ensure_local_server(
                     int(self._config.get("local_port") or DEFAULT_LOCAL_PORT),
-                    data_root=str(self._config.get("data_root") or ""),
-                    system_root=str(self._config.get("system_root") or ""),
+                    data_root=data_root,
+                    system_root=system_root,
                     boot_timeout=float(self._config.get("server_boot_timeout", 30)),
                 )
                 self._backend.connect(url=local_url, api_key="", timeout=30)
@@ -589,17 +596,39 @@ class CogneeMemoryProvider(MemoryProvider):
             return self._session_cognee_id
         return self._build_cognee_session_id(session_id)
 
+    def _local_roots(self) -> tuple[str, str]:
+        return resolve_local_roots(self._config, self._hermes_home)
+
     def _configure_local_roots(self) -> None:
-        """Point the backend at profile-scoped storage (embedded mode only)."""
-        if not self._hermes_home:
+        """Point the backend at profile-scoped storage (in-process transports only)."""
+        data_root, system_root = self._local_roots()
+        if not data_root and not system_root:
             return
-        data_root = self._config.get("data_root") or str(
-            Path(self._hermes_home) / "cognee" / "data"
-        )
-        system_root = self._config.get("system_root") or str(
-            Path(self._hermes_home) / "cognee" / "system"
-        )
-        self._backend.configure_local_roots(data_root=str(data_root), system_root=str(system_root))
+        self._backend.configure_local_roots(data_root=data_root, system_root=system_root)
+
+    def backup_paths(self) -> list[str]:
+        """Cognee storage that ``hermes backup`` would otherwise miss.
+
+        ``hermes backup`` walks ``HERMES_HOME`` on its own, so profile-scoped roots
+        need no declaring — only roots pointed somewhere else by
+        ``COGNEE_DATA_ROOT`` / ``COGNEE_SYSTEM_ROOT``. Must work without
+        ``initialize()`` and without network, so it reads config directly.
+
+        Roots left to cognee's own defaults (no explicit config, no resolvable
+        home) are not reported: finding them would mean importing cognee, and this
+        is called on a fast, side-effect-free path.
+        """
+        config = load_config()
+        home = resolve_hermes_home()
+        external: list[str] = []
+        for root in resolve_local_roots(config):
+            if not root:
+                continue
+            path = Path(root).expanduser()
+            if home is not None and path.is_relative_to(home):
+                continue
+            external.append(str(path))
+        return external
 
     def _timeout(self, key: str, default: float) -> float:
         """A named, bounded timeout read from config at call time."""

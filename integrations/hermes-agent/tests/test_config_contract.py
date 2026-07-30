@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from _char_helpers import make_provider  # noqa: E402
 from cognee_integration_hermes import config as config_mod  # noqa: E402
+from cognee_integration_hermes import provider as provider_mod  # noqa: E402
 
 # Every env var load_config reads. Removed (not blanked) before each test:
 # some keys distinguish "absent" from "empty" — see TestEmptyEnvVarQuirks.
@@ -325,6 +326,69 @@ class TestSaveConfig(unittest.TestCase):
         with _TmpHome() as home:
             provider.save_config({"api_key": "ck", "llm_api_key": "sk"}, str(home))
             self.assertFalse((home / "cognee.json").exists())
+
+
+class TestResolveLocalRoots(unittest.TestCase):
+    """Where cognee stores things — profile-scoped unless told otherwise."""
+
+    def test_scoped_under_hermes_home_by_default(self):
+        with _TmpHome() as home:
+            data, system = config_mod.resolve_local_roots({}, home)
+        self.assertTrue(data.endswith(str(Path("cognee") / "data")))
+        self.assertTrue(system.endswith(str(Path("cognee") / "system")))
+        self.assertTrue(data.startswith(str(home)))
+
+    def test_explicit_config_wins(self):
+        with _TmpHome() as home:
+            data, system = config_mod.resolve_local_roots(
+                {"data_root": "/mnt/graph", "system_root": "/mnt/sys"}, home
+            )
+        self.assertEqual(data, "/mnt/graph")
+        self.assertEqual(system, "/mnt/sys")
+
+    def test_a_single_override_leaves_the_other_scoped(self):
+        with _TmpHome() as home:
+            data, system = config_mod.resolve_local_roots({"data_root": "/mnt/graph"}, home)
+        self.assertEqual(data, "/mnt/graph")
+        self.assertTrue(system.startswith(str(home)))
+
+    def test_empty_when_there_is_nothing_to_say(self):
+        # No explicit config and no resolvable home: leave cognee's own defaults.
+        with _clean_env():
+            self.assertEqual(config_mod.resolve_local_roots({}, None), ("", ""))
+
+
+class TestBackupPaths(unittest.TestCase):
+    """``hermes backup`` walks HERMES_HOME itself; declare only what is outside it."""
+
+    def test_profile_scoped_roots_need_no_declaring(self):
+        with _TmpHome() as home:
+            with _clean_env():
+                provider = make_provider()
+                with mock.patch.object(config_mod, "resolve_hermes_home", return_value=home):
+                    with mock.patch.object(provider_mod, "resolve_hermes_home", return_value=home):
+                        self.assertEqual(provider.backup_paths(), [])
+
+    def test_externally_configured_roots_are_declared(self):
+        with _TmpHome() as home:
+            with _clean_env({"COGNEE_DATA_ROOT": "/mnt/graph", "COGNEE_SYSTEM_ROOT": "/mnt/sys"}):
+                provider = make_provider()
+                with mock.patch.object(provider_mod, "resolve_hermes_home", return_value=home):
+                    paths = provider.backup_paths()
+        self.assertEqual(sorted(paths), ["/mnt/graph", "/mnt/sys"])
+
+    def test_no_paths_when_roots_fall_back_to_cognee_defaults(self):
+        # Reporting those would mean importing cognee; this must stay cheap.
+        with _clean_env():
+            provider = make_provider()
+            with mock.patch.object(provider_mod, "resolve_hermes_home", return_value=None):
+                self.assertEqual(provider.backup_paths(), [])
+
+    def test_callable_without_initialize(self):
+        # Upstream requires this: backup runs on providers that were never started.
+        with _clean_env():
+            provider = provider_mod.CogneeMemoryProvider()
+            self.assertIsInstance(provider.backup_paths(), list)
 
 
 class TestConfigPath(unittest.TestCase):
