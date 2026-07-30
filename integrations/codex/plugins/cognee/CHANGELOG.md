@@ -10,6 +10,38 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1]
+
+### Fixed
+- **One graph search per prompt, not two.** The per-prompt recall hook queried
+  both `graph_context` and `graph` as separate scopes — a design from when
+  `graph_context` was a cheap lookup of the distilled `improve()` snapshot. On
+  cognee ≥ 1.4 the server aliases `graph_context` to `graph` (with a deprecation
+  warning), so the pair silently ran the *same* full graph retrieval twice per
+  prompt: once auto-routed to GRAPH_COMPLETION, once as the explicit
+  HYBRID_COMPLETION. The two scopes are now folded into a single `graph` scope
+  using HYBRID_COMPLETION, halving the most expensive part of every recall and
+  removing the server-side deprecation warning. Results from the `graph` scope
+  are still bucketed under the historical `graph_context` label, so the status
+  line counters, `last_recall.json`, and the `g` count render unchanged.
+- **Recall scopes run cheap-first, so agent guidance is never starved.** The
+  scope order was session → trace → graph_context → graph → session_context;
+  with both graph searches routinely consuming their full 2.5s timeout, the
+  4-second recall budget was exhausted before `session_context` — standing agent
+  guidance, ~50ms when it runs — ever fired, and it was silently skipped on
+  every degraded prompt. The order is now session → trace → session_context →
+  graph, so the only call that can eat a whole timeout runs last, against
+  whatever budget remains.
+- **Per-scope timeouts are clamped to the remaining recall budget.** The budget
+  deadline was only checked *between* scopes, so a scope dispatched just before
+  it could run a full `COGNEE_RECALL_TIMEOUT` past it — two slow scopes pushed a
+  "4-second" recall to 5–7s of keystroke-to-answer latency, mathematically
+  guaranteeing a `recall_budget_exceeded` event. Each call now gets
+  `min(recall_timeout, budget remaining)`, and a scope with less than 0.2s of
+  budget left is skipped outright instead of being dispatched with a doomed
+  deadline. The budget is a hard ceiling now; `recall_budget_exceeded` only
+  fires when the budget was genuinely spent on useful work.
+
 ## [1.3.0]
 
 ### Added
