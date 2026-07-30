@@ -29,13 +29,26 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
   unaffected — where it lives depends on the server's data directory, never the
   port. Set `COGNEE_LOCAL_PORT=8000` to keep the old behaviour, and stop any old
   plugin-started server on 8000 so two servers do not share one data directory.
-- **Breaking — local storage is now profile-scoped in local-server mode.**
-  `data_root` / `system_root` default to `$HERMES_HOME/cognee/{data,system}`, as the
-  configuration reference always claimed. Previously they were only set in embedded
-  mode, so the spawned server fell back to cognee's global default and every Hermes
-  profile shared one store. Existing repo installs will find their old memory at
-  cognee's default location; point `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` there
-  to keep using it.
+- **Breaking — Hermes joins the shared brain.** The default dataset is now
+  `agent_sessions` and local storage defaults to `~/.cognee/{data,system}` — the
+  exact names and roots the Claude Code, Codex and OpenClaw plugins pin — so
+  memory is shared across all cognee agent plugins on the machine, no matter
+  which of them booted the server. `COGNEE_PLUGIN_DATASET` (the name the other
+  plugins read) is the canonical dataset variable; `COGNEE_DATASET` stays as a
+  lower-precedence alias. To keep a Hermes profile apart, set its own dataset, or
+  its own `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` *plus* `COGNEE_LOCAL_PORT`
+  for full isolation. Old 0.1.x memory (dataset `hermes`, cognee's default
+  roots) is not deleted but is no longer found by default —
+  `COGNEE_DATASET=hermes` restores it. Previously roots were only set in embedded
+  mode, so the spawned server fell back to cognee's global default location.
+- **The minted API key is shared too.** It now lives at
+  `~/.cognee-plugin/api_key.json` in the other plugins' exact format (previously
+  `$HERMES_HOME/cognee-api-key.json`): whichever plugin mints first, the rest
+  reuse. The spawned server's environment also mirrors the other plugins'
+  bootstraps (`CACHE_ROOT_DIRECTORY`, `LLM_INSTRUCTOR_MODE=json_schema_mode`,
+  `COGNEE_IMPROVE_SUBMIT_TIMEOUT=420`), and its log moved to
+  `~/.cognee-plugin/hermes/server.log`, so the server behaves identically no
+  matter which plugin starts it.
 
 ### Fixed
 
@@ -49,7 +62,8 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
   on connect and unregisters on shutdown, so cognee's idle watchdog can stop a
   server nobody is using.
 - **Local servers are authenticated.** An owner API key is minted once and cached
-  under `HERMES_HOME`, instead of relying on the server having auth disabled.
+  at `~/.cognee-plugin/api_key.json`, instead of relying on the server having
+  auth disabled.
 - **A failed initialization now fails closed.** Hermes logs a provider's
   initialization error and starts anyway, so every entry point now refuses to run
   rather than operating an unconnected transport — which previously meant quietly

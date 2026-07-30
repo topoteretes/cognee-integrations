@@ -32,6 +32,7 @@ _MANAGED_KEYS = (
     "COGNEE_SERVICE_URL",
     "COGNEE_API_KEY",
     "COGNEE_EMBEDDED",
+    "COGNEE_PLUGIN_DATASET",
     "COGNEE_DATASET",
     "COGNEE_TOP_K",
     "COGNEE_LOCAL_PORT",
@@ -120,6 +121,15 @@ class TestPrecedence(unittest.TestCase):
         )
         self.assertEqual(cfg["service_url"], "https://canonical")
 
+    def test_plugin_dataset_wins_over_the_hermes_alias(self):
+        # COGNEE_PLUGIN_DATASET is what the other cognee plugins read; the
+        # 0.1.x-era COGNEE_DATASET stays as a lower-precedence alias.
+        cfg = _load(env={"COGNEE_PLUGIN_DATASET": "shared", "COGNEE_DATASET": "legacy"})
+        self.assertEqual(cfg["dataset"], "shared")
+
+    def test_the_hermes_dataset_alias_still_works(self):
+        self.assertEqual(_load(env={"COGNEE_DATASET": "legacy"})["dataset"], "legacy")
+
 
 # --------------------------------------------------------------------------
 # Defaults and coercion
@@ -129,7 +139,8 @@ class TestPrecedence(unittest.TestCase):
 class TestDefaults(unittest.TestCase):
     def test_documented_defaults(self):
         cfg = _load()
-        self.assertEqual(cfg["dataset"], "hermes")
+        # The dataset is shared with the other cognee agent plugins on purpose.
+        self.assertEqual(cfg["dataset"], "agent_sessions")
         self.assertEqual(cfg["top_k"], 5)
         self.assertEqual(cfg["local_port"], 8011)
         self.assertEqual(cfg["server_boot_timeout"], 30)
@@ -208,9 +219,9 @@ class TestEmptyEnvVarQuirks(unittest.TestCase):
         # provider.initialize does `config.get("dataset") or DEFAULT_DATASET`, so a
         # blank dataset never reaches cognee — the recovery lives there, not in
         # load_config. Both halves have to survive together.
-        provider = make_provider()
+        provider = make_provider(dataset=config_mod.DEFAULT_DATASET)
         self.assertEqual(
-            str(_load(env={"COGNEE_DATASET": ""}).get("dataset") or "hermes"),
+            str(_load(env={"COGNEE_DATASET": ""}).get("dataset") or config_mod.DEFAULT_DATASET),
             provider._dataset,
         )
 
@@ -329,45 +340,50 @@ class TestSaveConfig(unittest.TestCase):
 
 
 class TestResolveLocalRoots(unittest.TestCase):
-    """Where cognee stores things — profile-scoped unless told otherwise."""
+    """Where cognee stores things — the shared ~/.cognee unless told otherwise."""
 
-    def test_scoped_under_hermes_home_by_default(self):
-        with _TmpHome() as home:
-            data, system = config_mod.resolve_local_roots({}, home)
-        self.assertTrue(data.endswith(str(Path("cognee") / "data")))
-        self.assertTrue(system.endswith(str(Path("cognee") / "system")))
-        self.assertTrue(data.startswith(str(home)))
+    def test_the_shared_cognee_home_by_default(self):
+        data, system = config_mod.resolve_local_roots({})
+        self.assertEqual(data, str(config_mod.SHARED_COGNEE_HOME / "data"))
+        self.assertEqual(system, str(config_mod.SHARED_COGNEE_HOME / "system"))
+
+    def test_the_shared_home_matches_the_other_plugins(self):
+        # claude-code/codex/openclaw pin ~/.cognee/{data,system}; the point of
+        # the default is that any plugin's server serves the same store.
+        self.assertEqual(config_mod.SHARED_COGNEE_HOME, Path.home() / ".cognee")
+        self.assertEqual(config_mod.SHARED_PLUGIN_STATE_DIR, Path.home() / ".cognee-plugin")
 
     def test_explicit_config_wins(self):
-        with _TmpHome() as home:
-            data, system = config_mod.resolve_local_roots(
-                {"data_root": "/mnt/graph", "system_root": "/mnt/sys"}, home
-            )
+        data, system = config_mod.resolve_local_roots(
+            {"data_root": "/mnt/graph", "system_root": "/mnt/sys"}
+        )
         self.assertEqual(data, "/mnt/graph")
         self.assertEqual(system, "/mnt/sys")
 
-    def test_a_single_override_leaves_the_other_scoped(self):
-        with _TmpHome() as home:
-            data, system = config_mod.resolve_local_roots({"data_root": "/mnt/graph"}, home)
+    def test_a_single_override_leaves_the_other_shared(self):
+        data, system = config_mod.resolve_local_roots({"data_root": "/mnt/graph"})
         self.assertEqual(data, "/mnt/graph")
-        self.assertTrue(system.startswith(str(home)))
-
-    def test_empty_when_there_is_nothing_to_say(self):
-        # No explicit config and no resolvable home: leave cognee's own defaults.
-        with _clean_env():
-            self.assertEqual(config_mod.resolve_local_roots({}, None), ("", ""))
+        self.assertEqual(system, str(config_mod.SHARED_COGNEE_HOME / "system"))
 
 
 class TestBackupPaths(unittest.TestCase):
     """``hermes backup`` walks HERMES_HOME itself; declare only what is outside it."""
 
-    def test_profile_scoped_roots_need_no_declaring(self):
+    def test_the_shared_default_store_is_declared(self):
+        # The default roots live in ~/.cognee, outside any HERMES_HOME — a backup
+        # deliberately includes the machine's shared memory store.
         with _TmpHome() as home:
             with _clean_env():
                 provider = make_provider()
-                with mock.patch.object(config_mod, "resolve_hermes_home", return_value=home):
-                    with mock.patch.object(provider_mod, "resolve_hermes_home", return_value=home):
-                        self.assertEqual(provider.backup_paths(), [])
+                with mock.patch.object(provider_mod, "resolve_hermes_home", return_value=home):
+                    paths = provider.backup_paths()
+        self.assertEqual(
+            paths,
+            [
+                str(config_mod.SHARED_COGNEE_HOME / "data"),
+                str(config_mod.SHARED_COGNEE_HOME / "system"),
+            ],
+        )
 
     def test_externally_configured_roots_are_declared(self):
         with _TmpHome() as home:
@@ -377,12 +393,16 @@ class TestBackupPaths(unittest.TestCase):
                     paths = provider.backup_paths()
         self.assertEqual(sorted(paths), ["/mnt/graph", "/mnt/sys"])
 
-    def test_no_paths_when_roots_fall_back_to_cognee_defaults(self):
-        # Reporting those would mean importing cognee; this must stay cheap.
-        with _clean_env():
-            provider = make_provider()
-            with mock.patch.object(provider_mod, "resolve_hermes_home", return_value=None):
-                self.assertEqual(provider.backup_paths(), [])
+    def test_roots_inside_hermes_home_need_no_declaring(self):
+        with _TmpHome() as home:
+            env = {
+                "COGNEE_DATA_ROOT": str(home / "cognee" / "data"),
+                "COGNEE_SYSTEM_ROOT": str(home / "cognee" / "system"),
+            }
+            with _clean_env(env):
+                provider = make_provider()
+                with mock.patch.object(provider_mod, "resolve_hermes_home", return_value=home):
+                    self.assertEqual(provider.backup_paths(), [])
 
     def test_callable_without_initialize(self):
         # Upstream requires this: backup runs on providers that were never started.

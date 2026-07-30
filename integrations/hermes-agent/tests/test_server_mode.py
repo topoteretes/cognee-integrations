@@ -112,6 +112,14 @@ class TestSpawnEnvironment(unittest.TestCase):
     def test_agent_mode_is_enabled_so_the_server_can_retire(self):
         self.assertEqual(self._spawn_env()["COGNEE_AGENT_MODE"], "true")
 
+    def test_the_env_matches_the_other_plugins_bootstraps(self):
+        # The server must behave identically no matter which cognee plugin booted
+        # it — these mirror claude-code's apply_cognee_env.
+        env = self._spawn_env()
+        self.assertEqual(env["CACHE_ROOT_DIRECTORY"], str(config_mod.SHARED_COGNEE_HOME / "cache"))
+        self.assertEqual(env["LLM_INSTRUCTOR_MODE"], "json_schema_mode")
+        self.assertEqual(env["COGNEE_IMPROVE_SUBMIT_TIMEOUT"], "420")
+
     def test_an_explicit_user_value_wins(self):
         self.assertEqual(self._spawn_env(CACHING="false")["CACHING"], "false")
 
@@ -179,10 +187,13 @@ class TestInitializeModes(unittest.TestCase):
         self.assertFalse(rec["identity_called"])
         self.assertFalse(rec["roots_called"])
 
-    def test_embedded_mode_configures_roots_and_resolves_identity(self):
-        # hermes_home is always injected by MemoryManager.initialize_all, and the
-        # roots are derived from it — without one there is nothing to configure.
-        env = {**_NO_URL, "COGNEE_EMBEDDED": "true"}
+    def test_embedded_mode_configures_shared_roots_and_resolves_identity(self):
+        env = {
+            **_NO_URL,
+            "COGNEE_EMBEDDED": "true",
+            "COGNEE_DATA_ROOT": "",
+            "COGNEE_SYSTEM_ROOT": "",
+        }
         p, rec = _make_provider()
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict("os.environ", env, clear=False):
@@ -192,15 +203,22 @@ class TestInitializeModes(unittest.TestCase):
             self.assertTrue(rec["roots_called"])
             self.assertTrue(rec["identity_called"])
             roots = p._backend.only_call("configure_local_roots")
-        self.assertTrue(roots["data_root"].startswith(home))
-        self.assertTrue(roots["system_root"].startswith(home))
+        # The store is the shared ~/.cognee — the same roots the other cognee
+        # plugins pin — not scoped to the Hermes profile.
+        self.assertEqual(roots["data_root"], str(config_mod.SHARED_COGNEE_HOME / "data"))
+        self.assertEqual(roots["system_root"], str(config_mod.SHARED_COGNEE_HOME / "system"))
 
-    def test_embedded_mode_without_hermes_home_configures_no_roots(self):
-        env = {**_NO_URL, "COGNEE_EMBEDDED": "true"}
+    def test_embedded_mode_without_hermes_home_still_configures_roots(self):
+        env = {
+            **_NO_URL,
+            "COGNEE_EMBEDDED": "true",
+            "COGNEE_DATA_ROOT": "",
+            "COGNEE_SYSTEM_ROOT": "",
+        }
         p, rec = _make_provider()
         with mock.patch.dict("os.environ", env, clear=False):
             p.initialize("sid")
-        self.assertFalse(rec["roots_called"])
+        self.assertTrue(rec["roots_called"])
 
     def test_default_mode_ensures_local_server_and_serves_localhost(self):
         env = {**_NO_URL, "COGNEE_EMBEDDED": ""}
@@ -324,8 +342,9 @@ class TestTransportSelection(unittest.TestCase):
             provider.initialize("sid")
         self.assertIs(provider._backend, backend)
 
-    def test_the_http_transport_caches_its_key_under_hermes_home(self):
-        # Profile isolation: a minted key must not leak across Hermes profiles.
+    def test_the_http_transport_caches_its_key_in_the_shared_state_dir(self):
+        # One principal key per machine, shared with the other cognee plugins —
+        # whichever plugin mints first, the rest (including Hermes) reuse it.
         provider = provider_mod.CogneeMemoryProvider()
         with tempfile.TemporaryDirectory() as home:
             with (
@@ -336,7 +355,7 @@ class TestTransportSelection(unittest.TestCase):
                 mock.patch.object(HttpBackend, "connect"),
             ):
                 provider.initialize("sid", hermes_home=home)
-            self.assertEqual(str(provider._backend._cache_dir), home)
+            self.assertEqual(provider._backend._cache_dir, config_mod.SHARED_PLUGIN_STATE_DIR)
 
 
 class TestConfigModes(unittest.TestCase):

@@ -484,7 +484,7 @@ def resolve_search_type(search_type: str):
     return getattr(SearchType, key, SearchType.GRAPH_COMPLETION)
 
 
-def build_backend(config: Optional[dict[str, Any]] = None, *, hermes_home: str = ""):
+def build_backend(config: Optional[dict[str, Any]] = None):
     """Pick a transport from config.
 
     Direct HTTP is the default: it is what the other cognee plugins use, and the
@@ -507,8 +507,7 @@ def build_backend(config: Optional[dict[str, Any]] = None, *, hermes_home: str =
 
     from .http_backend import HttpBackend
 
-    # cache_dir keeps a minted API key profile-scoped.
-    return HttpBackend(cache_dir=hermes_home or None)
+    return HttpBackend()
 
 
 def default_backend() -> MemoryBackend:

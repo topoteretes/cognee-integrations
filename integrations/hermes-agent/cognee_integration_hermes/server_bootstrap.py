@@ -21,6 +21,8 @@ import time
 import urllib.error
 import urllib.request
 
+from .config import SHARED_COGNEE_HOME, SHARED_PLUGIN_STATE_DIR
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,13 +40,24 @@ def _spawn(port, data_root, system_root, log_path):
     env = dict(os.environ)
     env["COGNEE_AGENT_MODE"] = "true"  # server tears itself down once idle / no clients
     env["HTTP_API_PORT"] = str(port)
-    # The session cache is gated on CACHING. Without it cognee's session manager
-    # reports ``is_available = False``, and a session write is *silently dropped*
-    # while the API still answers ``status: "session_stored"`` — so every turn
-    # vanished and improve() had nothing to promote into the graph. Live-diagnosed;
-    # claude-code and openclaw set the same flag when they spawn their servers.
-    # setdefault semantics: an explicit user value always wins.
-    for key, value in (("CACHING", "true"), ("AUTO_FEEDBACK", "true")):
+    # The server must behave identically no matter which cognee plugin booted it,
+    # so this mirrors the env the claude-code/codex/openclaw bootstraps set
+    # (claude-code's apply_cognee_env). setdefault: an explicit user value wins.
+    #
+    # CACHING gates the session cache: without it cognee's session manager reports
+    # ``is_available = False`` and a session write is *silently dropped* while the
+    # API still answers ``status: "session_stored"`` — so every turn vanished and
+    # improve() had nothing to promote into the graph (live-diagnosed).
+    # LLM_INSTRUCTOR_MODE=json_schema_mode uses grammar-constrained decoding for
+    # structured output — small local models fail schema-in-prompt mode so often
+    # that every improve() timed out (diagnosed in the claude-code plugin).
+    for key, value in (
+        ("CACHING", "true"),
+        ("AUTO_FEEDBACK", "true"),
+        ("CACHE_ROOT_DIRECTORY", str(SHARED_COGNEE_HOME / "cache")),
+        ("LLM_INSTRUCTOR_MODE", "json_schema_mode"),
+        ("COGNEE_IMPROVE_SUBMIT_TIMEOUT", "420"),
+    ):
         env.setdefault(key, value)
     if data_root:
         env["DATA_ROOT_DIRECTORY"] = data_root
@@ -94,7 +107,14 @@ def ensure_local_server(
     if health_ok(url):
         return url
     if log_path is None:
-        log_path = os.path.join(os.path.expanduser("~"), ".cognee-hermes-server.log")
+        # Same state root as the other cognee plugins (they keep per-host logs in
+        # ~/.cognee-plugin/<host>/), so diagnostics live in one predictable place.
+        log_dir = SHARED_PLUGIN_STATE_DIR / "hermes"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # _spawn falls back to DEVNULL if the file cannot be opened
+        log_path = str(log_dir / "server.log")
     try:
         _spawn(port, data_root, system_root, log_path)
     except Exception as exc:

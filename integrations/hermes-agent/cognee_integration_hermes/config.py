@@ -7,11 +7,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DATASET = "hermes"
-# Port for the local cognee server this plugin spawns and owns. 8011 matches the
-# other cognee agent plugins (claude-code, codex, openclaw) and deliberately avoids
-# cognee's own default of 8000, so we never attach to — or contend with — a server
-# the user is running themselves.
+# The other cognee agent plugins (claude-code, codex, openclaw) share one brain:
+# one dataset, one store under ~/.cognee, one server on 8011, one minted API key
+# under ~/.cognee-plugin. Hermes joins that convention — same names, same paths —
+# so memory written in any of them is recalled in all of them.
+DEFAULT_DATASET = "agent_sessions"
+SHARED_PLUGIN_STATE_DIR = Path.home() / ".cognee-plugin"
+SHARED_COGNEE_HOME = Path.home() / ".cognee"
+# Port for the local cognee server. 8011 matches the other cognee agent plugins
+# and deliberately avoids cognee's own default of 8000, so we never attach to —
+# or contend with — a server the user is running themselves.
 DEFAULT_LOCAL_PORT = 8011
 DEFAULT_IDENTITY_EMAIL = "hermes-agent@cognee.local"
 DEFAULT_IDENTITY_PASSWORD = "hermes-agent-plugin"
@@ -53,32 +58,22 @@ def config_path(hermes_home: str | Path | None = None) -> Path | None:
     return home / "cognee.json" if home else None
 
 
-def resolve_local_roots(
-    config: dict[str, Any], hermes_home: str | Path | None = None
-) -> tuple[str, str]:
+def resolve_local_roots(config: dict[str, Any]) -> tuple[str, str]:
     """Where cognee should keep its data and system directories.
 
-    Explicit ``COGNEE_DATA_ROOT`` / ``COGNEE_SYSTEM_ROOT`` win. Otherwise both are
-    scoped under ``HERMES_HOME``, which Hermes requires of plugin storage: two
-    profiles must not share one store, and ``hermes backup`` only walks
-    ``HERMES_HOME``.
+    Explicit ``COGNEE_DATA_ROOT`` / ``COGNEE_SYSTEM_ROOT`` win. Otherwise both
+    default to ``~/.cognee/{data,system}`` — the exact roots the claude-code,
+    codex and openclaw plugins pin — so every plugin's server serves the same
+    store no matter which of them booted it first.
 
-    Returns ``("", "")`` when there is nothing to say — no explicit config and no
-    resolvable home — leaving cognee's own defaults in place.
-
-    Note this is per *profile*, not per process. A cognee server is shared by
-    whoever reaches its port first, so two profiles on the same
-    ``COGNEE_LOCAL_PORT`` still end up on one store; give them separate ports to
-    keep them apart.
+    The trade-off is deliberate: memory is shared across agents *and* across
+    Hermes profiles by default. To isolate a profile, point
+    ``COGNEE_DATA_ROOT`` / ``COGNEE_SYSTEM_ROOT`` somewhere else and give it its
+    own ``COGNEE_LOCAL_PORT`` — a server belongs to whoever reaches its port
+    first, so shared port means shared store regardless of these roots.
     """
-    home = resolve_hermes_home(hermes_home)
-    data_root = str(config.get("data_root") or "")
-    system_root = str(config.get("system_root") or "")
-    if home is not None:
-        if not data_root:
-            data_root = str(home / "cognee" / "data")
-        if not system_root:
-            system_root = str(home / "cognee" / "system")
+    data_root = str(config.get("data_root") or "") or str(SHARED_COGNEE_HOME / "data")
+    system_root = str(config.get("system_root") or "") or str(SHARED_COGNEE_HOME / "system")
     return data_root, system_root
 
 
@@ -101,7 +96,10 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         "transport": os.environ.get("COGNEE_TRANSPORT", ""),
         "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), DEFAULT_LOCAL_PORT),
         "server_boot_timeout": str_to_int(os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), 30),
-        "dataset": os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
+        # COGNEE_PLUGIN_DATASET is the name the other cognee plugins read;
+        # COGNEE_DATASET is this plugin's 0.1.x name, kept as an alias.
+        "dataset": os.environ.get("COGNEE_PLUGIN_DATASET")
+        or os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
         "top_k": str_to_int(os.environ.get("COGNEE_TOP_K"), 5),
         "auto_route": str_to_bool(os.environ.get("COGNEE_AUTO_ROUTE"), True),
         "improve_on_end": str_to_bool(os.environ.get("COGNEE_IMPROVE_ON_END"), True),

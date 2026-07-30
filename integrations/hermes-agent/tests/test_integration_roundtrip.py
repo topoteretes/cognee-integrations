@@ -88,6 +88,7 @@ class TestHttpRoundTrip(unittest.TestCase):
         self.dataset = f"hermes_it_{_unique_suffix()}_{self._testMethodName[5:25]}"
 
     def _provider(self):
+        from cognee_integration_hermes import http_backend as http_backend_mod
         from cognee_integration_hermes.http_backend import HttpBackend
         from cognee_integration_hermes.provider import CogneeMemoryProvider
 
@@ -105,7 +106,12 @@ class TestHttpRoundTrip(unittest.TestCase):
             "COGNEE_RECALL_TIMEOUT": "120",
         }
         provider = CogneeMemoryProvider()
-        with mock.patch.dict("os.environ", env, clear=False):
+        with (
+            mock.patch.dict("os.environ", env, clear=False),
+            # The key cache defaults to the real shared ~/.cognee-plugin; a test
+            # server on a random port must not overwrite the machine's actual key.
+            mock.patch.object(http_backend_mod, "SHARED_PLUGIN_STATE_DIR", Path(self.home.name)),
+        ):
             provider.initialize(f"rt-{self._testMethodName}", hermes_home=self.home.name)
         self.assertIsInstance(
             provider._backend, HttpBackend, "the HTTP transport should be the default"
@@ -229,8 +235,8 @@ class TestHttpConnectAgainstRealServer(unittest.TestCase):
                 # resolved it must have been written through for the next session.
                 if backend.api_key:
                     self.assertTrue(
-                        (Path(home) / "cognee-api-key.json").exists(),
-                        "a resolved key should be cached under HERMES_HOME",
+                        (Path(home) / "api_key.json").exists(),
+                        "a resolved key should be cached in the shared-format file",
                     )
             finally:
                 backend.close(timeout=15.0)

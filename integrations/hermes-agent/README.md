@@ -97,23 +97,37 @@ turns into the permanent graph. Two consequences worth knowing:
   from — `/api/v1/remember` has no field for it. Session-to-graph bridging is
   unaffected. The plugin logs this once rather than dropping it silently.
 
-> **Upgrading from 0.1.x — the local port changed from 8000 to 8011.** This
-> matches the other cognee agent plugins (Claude Code, Codex, OpenClaw), which all
-> run their own server on 8011 and leave cognee's own default of 8000 to servers you
-> start yourself. Your memory is unaffected — where it lives is decided by the
-> server's data directory, never by the port. But if an old plugin-started server is
-> still
-> listening on 8000, **stop it** — two servers sharing one data directory is exactly
-> the single-writer contention this mode exists to avoid. Set
-> `COGNEE_LOCAL_PORT=8000` to keep the old behaviour.
+> **Upgrading from 0.1.x — three defaults moved to match the other cognee
+> plugins.** The local port changed from 8000 to 8011 (leaving cognee's own
+> default of 8000 to servers you start yourself); the default dataset changed
+> from `hermes` to the shared `agent_sessions`; and local storage now defaults to
+> the shared `~/.cognee/{data,system}` instead of cognee's global default. Your
+> old memory is not deleted, but a recall against the new dataset/roots will not
+> see it — set `COGNEE_DATASET=hermes` (or migrate the data) and, if an old
+> plugin-started server is still listening on 8000, **stop it**: two servers
+> sharing one data directory is exactly the single-writer contention this mode
+> exists to avoid. `COGNEE_LOCAL_PORT=8000` restores the old port.
+
+### One brain across agents
+
+By default this plugin joins the same memory the Claude Code, Codex and OpenClaw
+cognee plugins share: the same dataset (`agent_sessions`), the same local storage
+(`~/.cognee/{data,system}`), the same server port (8011) and the same minted API
+key (`~/.cognee-plugin/api_key.json`). Whichever plugin boots the server first,
+the rest attach to it — and a fact remembered in Claude Code is recallable in
+Hermes, and vice versa. To keep Hermes (or one Hermes profile) apart instead, give
+it its own `COGNEE_PLUGIN_DATASET`, or for full isolation its own
+`COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` *and* `COGNEE_LOCAL_PORT` — a server
+belongs to whoever reaches its port first, so a private store needs a private
+port.
 
 local-server mode (default — just set your LLM creds):
 
 ```bash
 LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
-COGNEE_DATASET=hermes
-# COGNEE_LOCAL_PORT=8011   # optional; point at a shared server for a unified brain
+# COGNEE_PLUGIN_DATASET=agent_sessions   # optional; the default is shared with the other plugins
+# COGNEE_LOCAL_PORT=8011                 # optional; the other plugins' server port
 ```
 
 Remote / cloud mode:
@@ -121,7 +135,6 @@ Remote / cloud mode:
 ```bash
 COGNEE_BASE_URL=https://your-cognee-service.example   # canonical name
 COGNEE_API_KEY=...
-COGNEE_DATASET=hermes
 ```
 
 Embedded (in-process) mode — single-process / offline only:
@@ -129,14 +142,19 @@ Embedded (in-process) mode — single-process / offline only:
 ```bash
 COGNEE_EMBEDDED=true
 LLM_API_KEY=sk-...
-COGNEE_DATASET=hermes
 ```
+
+> **Embedded mode and the shared store do not mix.** Embedded drives the local
+> single-writer databases from inside the Hermes process; if another plugin's
+> server (or another process) is using `~/.cognee` at the same time, that is
+> exactly the contention embedded mode is warned about. For embedded use, point
+> `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` at a private location.
 
 ### Optional settings
 
 | Setting | Env var | Default |
 | --- | --- | --- |
-| `dataset` | `COGNEE_DATASET` | `hermes` |
+| `dataset` | `COGNEE_PLUGIN_DATASET` (canonical) | `agent_sessions` |
 | `top_k` | `COGNEE_TOP_K` | `5` |
 | `auto_route` | `COGNEE_AUTO_ROUTE` | `true` |
 | `improve_on_end` | `COGNEE_IMPROVE_ON_END` | `true` |
@@ -146,19 +164,21 @@ COGNEE_DATASET=hermes
 | `embedded` | `COGNEE_EMBEDDED` | `false` |
 | `local_port` | `COGNEE_LOCAL_PORT` | `8011` |
 | `server_boot_timeout` | `COGNEE_SERVER_BOOT_TIMEOUT` | `30` |
-| `data_root` | `COGNEE_DATA_ROOT` | `$HERMES_HOME/cognee/data` |
-| `system_root` | `COGNEE_SYSTEM_ROOT` | `$HERMES_HOME/cognee/system` |
+| `data_root` | `COGNEE_DATA_ROOT` | `~/.cognee/data` |
+| `system_root` | `COGNEE_SYSTEM_ROOT` | `~/.cognee/system` |
 
-> **Storage is per profile, but a server is per port.** The roots above are scoped
-> to `HERMES_HOME`, so each Hermes profile gets its own store and `hermes backup`
-> can see it. A cognee server, though, belongs to whoever reaches its port first —
-> so two profiles left on the same `COGNEE_LOCAL_PORT` still share one store. Give
-> them separate ports if you want them apart. Roots pointed outside `HERMES_HOME`
-> with `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` are reported to `hermes backup`
-> via `backup_paths()`, so they survive a backup/import cycle too.
+> **Storage is shared, and a server is per port.** The roots above are the ones
+> every cognee agent plugin pins, so the store is the same no matter which plugin
+> booted the server on 8011. Because the default roots live outside
+> `HERMES_HOME`, `backup_paths()` reports them to `hermes backup` — a profile
+> backup deliberately includes the machine's shared memory store. Roots you point
+> elsewhere with `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` are reported the same
+> way (unless they sit inside `HERMES_HOME`, which `hermes backup` walks anyway).
 
-> `COGNEE_SERVICE_URL` is a deprecated alias for `COGNEE_BASE_URL`. It still works
-> (with lower precedence) but new setups should use `COGNEE_BASE_URL`.
+> `COGNEE_SERVICE_URL` is a deprecated alias for `COGNEE_BASE_URL`, and
+> `COGNEE_DATASET` (the 0.1.x name) a lower-precedence alias for
+> `COGNEE_PLUGIN_DATASET`. Both still work; new setups should use the canonical
+> names.
 
 > **`improve_background`** controls whether the session-end graph build
 > (`improve()`) runs in the background. Default `auto`: it backgrounds in

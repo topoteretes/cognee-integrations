@@ -47,10 +47,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from .backend import MemoryBackend
+from .config import SHARED_PLUGIN_STATE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +119,10 @@ def _multipart_body(fields: dict[str, str], files: dict[str, tuple[str, bytes]])
 class HttpBackend(MemoryBackend):
     """Talks to a cognee server over its REST API.
 
-    ``cache_dir`` is where a minted API key is remembered. It should be the active
-    ``HERMES_HOME`` so the key stays profile-scoped — the provider passes it when
-    it builds the transport.
+    ``cache_dir`` is where a minted API key is remembered. It defaults to
+    ``~/.cognee-plugin``, the state dir the claude-code/codex/openclaw plugins
+    share — one principal key (``api_key.json``) serves every cognee plugin on
+    the machine, in their exact file format. Override it only in tests.
     """
 
     def __init__(
@@ -132,7 +135,7 @@ class HttpBackend(MemoryBackend):
         self.url = ""
         self.api_key = ""
         self.registered = False
-        self._cache_dir = Path(cache_dir).expanduser() if cache_dir else None
+        self._cache_dir = Path(cache_dir).expanduser() if cache_dir else SHARED_PLUGIN_STATE_DIR
         self._opener = opener
         self._agent_session_name = agent_session_name
         self._ssl_context: Optional[ssl.SSLContext] = None
@@ -263,30 +266,50 @@ class HttpBackend(MemoryBackend):
 
     # -- auth --------------------------------------------------------------
 
-    def _key_cache_path(self) -> Optional[Path]:
-        if self._cache_dir is None:
-            return None
-        return self._cache_dir / "cognee-api-key.json"
+    def _key_cache_path(self) -> Path:
+        # Name and shape are shared with the other cognee plugins (claude-code's
+        # ``_API_KEY_CACHE``): whichever plugin mints first, the rest reuse.
+        return self._cache_dir / "api_key.json"
+
+    @staticmethod
+    def _normalize_url(value: str) -> str:
+        return str(value or "").strip().rstrip("/")
 
     def _cached_key(self) -> str:
         path = self._key_cache_path()
-        if path is None or not path.exists():
+        if not path.exists():
             return ""
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return ""
-        if not isinstance(data, dict) or data.get("url") != self.url:
+        if not isinstance(data, dict):
             return ""
-        return str(data.get("api_key") or "")
+        key = str(data.get("api_key") or "").strip()
+        if not key:
+            return ""
+        # Same match rule as the other plugins: a recorded base_url only
+        # invalidates the key when both sides are non-empty and differ.
+        cached_url = self._normalize_url(str(data.get("base_url") or ""))
+        wanted = self._normalize_url(self.url)
+        if wanted and cached_url and cached_url != wanted:
+            return ""
+        return key
 
     def _cache_key(self, api_key: str) -> None:
         path = self._key_cache_path()
-        if path is None:
-            return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"url": self.url, "api_key": api_key}), encoding="utf-8")
+            path.write_text(
+                json.dumps(
+                    {
+                        "base_url": self._normalize_url(self.url),
+                        "api_key": api_key.strip(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    }
+                ),
+                encoding="utf-8",
+            )
             path.chmod(0o600)
         except OSError as exc:
             logger.debug("could not cache the cognee API key: %s", exc)

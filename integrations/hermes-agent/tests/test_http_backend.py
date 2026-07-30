@@ -15,6 +15,7 @@ Runs standalone with ``python3 tests/test_http_backend.py``; needs no cognee.
 import io
 import json
 import sys
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -391,6 +392,13 @@ class TestConnect(unittest.TestCase):
 
 
 class TestApiKeyResolution(unittest.TestCase):
+    def setUp(self):
+        # An unset cache_dir means the real shared ~/.cognee-plugin — tests must
+        # never read a developer's actual key or overwrite it with a fake one.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cache_dir = tmp.name
+
     def _mint_opener(self):
         return FakeOpener(
             {
@@ -401,17 +409,25 @@ class TestApiKeyResolution(unittest.TestCase):
             }
         )
 
+    def _connect(self, opener, *, api_key="", url=_URL, cache_dir=None):
+        backend = HttpBackend(opener=opener, cache_dir=cache_dir or self.cache_dir)
+        backend.connect(url=url, api_key=api_key, timeout=_TIMEOUT)
+        return backend
+
+    def test_the_default_cache_is_the_shared_plugin_state_dir(self):
+        from cognee_integration_hermes.config import SHARED_PLUGIN_STATE_DIR
+
+        self.assertEqual(HttpBackend()._cache_dir, SHARED_PLUGIN_STATE_DIR)
+
     def test_a_configured_key_is_used_as_is(self):
         opener = self._mint_opener()
-        backend = HttpBackend(opener=opener)
-        backend.connect(url=_URL, api_key="given", timeout=_TIMEOUT)
+        backend = self._connect(opener, api_key="given")
         self.assertEqual(backend.api_key, "given")
         self.assertNotIn("/api/v1/auth/login", opener.paths())
 
     def test_a_key_is_minted_when_none_is_configured(self):
         opener = self._mint_opener()
-        backend = HttpBackend(opener=opener)
-        backend.connect(url=_URL, api_key="", timeout=_TIMEOUT)
+        backend = self._connect(opener)
         self.assertEqual(backend.api_key, "minted-key")
         login = opener.request_for("/api/v1/auth/login")
         self.assertEqual(login["headers"]["content-type"], "application/x-www-form-urlencoded")
@@ -420,37 +436,43 @@ class TestApiKeyResolution(unittest.TestCase):
     def test_minting_reuses_an_existing_key_when_the_server_lists_one(self):
         opener = self._mint_opener()
         opener.responses["/api/v1/auth/api-keys"] = [{"key": "existing-key"}]
-        backend = HttpBackend(opener=opener)
-        backend.connect(url=_URL, api_key="", timeout=_TIMEOUT)
+        backend = self._connect(opener)
         self.assertEqual(backend.api_key, "existing-key")
 
     def test_a_minted_key_is_cached_and_reused(self):
-        import tempfile
+        first = self._mint_opener()
+        self._connect(first)
+        self.assertIn("/api/v1/auth/login", first.paths())
 
-        with tempfile.TemporaryDirectory() as home:
-            first = self._mint_opener()
-            HttpBackend(opener=first, cache_dir=home).connect(
-                url=_URL, api_key="", timeout=_TIMEOUT
-            )
-            self.assertIn("/api/v1/auth/login", first.paths())
+        second = self._mint_opener()
+        backend = self._connect(second)
+        self.assertEqual(backend.api_key, "minted-key")
+        self.assertNotIn("/api/v1/auth/login", second.paths())
 
-            second = self._mint_opener()
-            backend = HttpBackend(opener=second, cache_dir=home)
-            backend.connect(url=_URL, api_key="", timeout=_TIMEOUT)
-            self.assertEqual(backend.api_key, "minted-key")
-            self.assertNotIn("/api/v1/auth/login", second.paths())
+    def test_the_cache_file_is_the_shared_plugin_format(self):
+        # The cache is shared with claude-code/codex/openclaw — same filename,
+        # same fields — so whichever plugin mints first, the rest reuse.
+        self._connect(self._mint_opener())
+        data = json.loads((Path(self.cache_dir) / "api_key.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["api_key"], "minted-key")
+        self.assertEqual(data["base_url"], _URL)
+        self.assertIn("updated_at", data)
+
+    def test_a_key_cached_by_another_plugin_is_reused(self):
+        (Path(self.cache_dir) / "api_key.json").write_text(
+            json.dumps({"base_url": _URL, "api_key": "claude-minted", "updated_at": "x"}),
+            encoding="utf-8",
+        )
+        opener = self._mint_opener()
+        backend = self._connect(opener)
+        self.assertEqual(backend.api_key, "claude-minted")
+        self.assertNotIn("/api/v1/auth/login", opener.paths())
 
     def test_a_cached_key_for_a_different_url_is_ignored(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as home:
-            HttpBackend(opener=self._mint_opener(), cache_dir=home).connect(
-                url=_URL, api_key="", timeout=_TIMEOUT
-            )
-            other = self._mint_opener()
-            backend = HttpBackend(opener=other, cache_dir=home)
-            backend.connect(url="http://127.0.0.1:9999", api_key="", timeout=_TIMEOUT)
-            self.assertIn("/api/v1/auth/login", other.paths())
+        self._connect(self._mint_opener())
+        other = self._mint_opener()
+        self._connect(other, url="http://127.0.0.1:9999")
+        self.assertIn("/api/v1/auth/login", other.paths())
 
     def test_failed_minting_proceeds_without_a_key(self):
         # A server with authentication disabled needs no key at all.
@@ -458,8 +480,7 @@ class TestApiKeyResolution(unittest.TestCase):
         opener.responses["/api/v1/auth/login"] = urllib.error.HTTPError(
             _URL, 404, "no auth", {}, None
         )
-        backend = HttpBackend(opener=opener)
-        backend.connect(url=_URL, api_key="", timeout=_TIMEOUT)
+        backend = self._connect(opener)
         self.assertEqual(backend.api_key, "")
 
 
