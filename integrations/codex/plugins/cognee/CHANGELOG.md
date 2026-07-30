@@ -41,6 +41,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   budget left is skipped outright instead of being dispatched with a doomed
   deadline. The budget is a hard ceiling now; `recall_budget_exceeded` only
   fires when the budget was genuinely spent on useful work.
+- **No more "clamping SessionEnd hook timeout to 3s" warning at session start**
+  (#303). The SessionEnd entry in `hooks.json` still declared `timeout: 120`
+  from the era when the hook ran the final session sync inline; Codex hard-caps
+  SessionEnd hooks at 3s (they block CLI exit) and warned about the clamp on
+  every startup. The hook has long since done its real work in a detached
+  worker not subject to hook timeouts — it only stops the idle watcher and
+  spawns that worker, well inside 3s — so the vestigial declaration is removed
+  and Codex's default applies. Sync behavior is unchanged.
 
 ## [1.3.0]
 

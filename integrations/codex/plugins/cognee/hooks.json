@@ -74,7 +74,6 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end",
-            "timeout": 120,
             "statusMessage": "Syncing session memory..."
           }
         ]
