@@ -62,6 +62,15 @@ class MemoryBackend:
     def close(self, *, timeout: float = 5.0) -> None:
         """Release connections and background resources."""
 
+    def connection_info(self) -> Optional[dict[str, Any]]:
+        """How to reach the server this transport is attached to, if that server
+        outlives this process (``url``, ``api_key``, ``agent_session_name``).
+
+        None for in-process transports — there is nothing to close out after the
+        process dies. The provider uses this to arm the crash-safe exit watcher.
+        """
+        return None
+
     # -- operations --------------------------------------------------------
 
     def recall(

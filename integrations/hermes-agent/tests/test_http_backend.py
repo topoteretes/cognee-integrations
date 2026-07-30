@@ -512,6 +512,18 @@ class TestApiKeyResolution(unittest.TestCase):
         self.assertEqual(backend.api_key, "cached-cloud")
 
 
+class TestConnectionInfo(unittest.TestCase):
+    def test_none_before_connect(self):
+        self.assertIsNone(HttpBackend().connection_info())
+
+    def test_reports_the_server_details_after_connect(self):
+        backend = _backend(FakeOpener(), api_key="k")
+        self.assertEqual(
+            backend.connection_info(),
+            {"url": _URL, "api_key": "k", "agent_session_name": "hermes"},
+        )
+
+
 class TestErrorMapping(unittest.TestCase):
     def test_http_error_carries_the_status(self):
         opener = FakeOpener({"/api/v1/recall": urllib.error.HTTPError(_URL, 401, "nope", {}, None)})

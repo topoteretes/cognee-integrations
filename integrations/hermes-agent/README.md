@@ -16,6 +16,10 @@ Python package with the `hermes_agent.plugins` entry point.
 - Runs `cognee.improve()` at Hermes session end to bridge session memory into the graph.
 - Mirrors explicit Hermes memory writes through `on_memory_write`.
 - Supports local embedded Cognee and remote Cognee service mode.
+- Survives crashes: a detached exit watcher (the same pattern the other cognee
+  plugins use) notices an uncleanly-died Hermes, bridges the session into the
+  graph and unregisters from the server — so no session is lost and no server
+  lingers. It stands down silently on a clean shutdown.
 
 ## Install For Local Hermes Development
 

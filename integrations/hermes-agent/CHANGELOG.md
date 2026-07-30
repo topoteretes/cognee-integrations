@@ -67,6 +67,16 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
 - **The spawned server no longer leaks.** The plugin registers an agent connection
   on connect and unregisters on shutdown, so cognee's idle watchdog can stop a
   server nobody is using.
+- **A crashed Hermes no longer loses its session or strands the server.** In
+  server/remote mode the plugin arms a small detached exit watcher (the pattern
+  the claude-code/codex/openclaw plugins use) that polls the Hermes PID; on an
+  unclean death it runs `improve(session_ids=[...])` synchronously — improve
+  *before* unregister, so the idle watchdog cannot tear the server down
+  mid-promotion — then unregisters the agent connection. A clean shutdown
+  disarms it first, so nothing double-fires; a session end that already bridged
+  stands down only the improve half. State and log live under
+  `~/.cognee-plugin/hermes/`. Embedded mode gets no watcher — there is no server
+  to outlive the process.
 - **Local servers are authenticated.** An owner API key is minted once and cached
   at `~/.cognee-plugin/api_key.json`, instead of relying on the server having
   auth disabled.

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
+from . import exit_watcher
 from .backend import MemoryBackend, build_backend, default_backend, has_cognee
 from .config import (
     DEFAULT_DATASET,
@@ -16,6 +18,7 @@ from .config import (
     DEFAULT_IDENTITY_PASSWORD,
     DEFAULT_LOCAL_PORT,
     DEFAULT_SERVER_BOOT_TIMEOUT,
+    SHARED_PLUGIN_STATE_DIR,
     load_config,
     resolve_hermes_home,
     resolve_local_roots,
@@ -114,6 +117,8 @@ class CogneeMemoryProvider(MemoryProvider):
         self._sync_thread: Optional[threading.Thread] = None
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
+        # Set when a crash-safe exit watcher is armed (server modes only).
+        self._watcher_state_path: Optional[Path] = None
 
     @property
     def name(self) -> str:
@@ -344,7 +349,41 @@ class CogneeMemoryProvider(MemoryProvider):
                     "Cognee identity initialization failed; using backend default user: %s", exc
                 )
 
+        self._arm_exit_watcher()
         self._initialized = True
+
+    def _arm_exit_watcher(self) -> None:
+        """Crash insurance: a detached process that closes the session if we can't.
+
+        Only meaningful when a server outlives this process (the transport says so
+        via ``connection_info``); embedded mode has nothing to unregister from and
+        nobody left to run an improve. Best-effort: a session must not fail to
+        start because its insurance did.
+        """
+        try:
+            info = self._backend.connection_info()
+        except Exception:
+            info = None
+        if not info or not info.get("url"):
+            return
+        state_dir = SHARED_PLUGIN_STATE_DIR / "hermes"
+        state_path = state_dir / "exit-watchers" / f"{os.getpid()}.json"
+        try:
+            exit_watcher.arm(
+                state_path=state_path,
+                log_path=state_dir / "exit-watcher.log",
+                parent_pid=os.getpid(),
+                url=str(info.get("url") or ""),
+                api_key=str(info.get("api_key") or ""),
+                agent_session_name=str(info.get("agent_session_name") or "hermes"),
+                dataset=self._dataset,
+                session_id=self._session_cognee_id,
+                improve=bool(self._writes_enabled and self._improve_on_end),
+                improve_timeout=self._timeout("improve_timeout", 300),
+            )
+            self._watcher_state_path = state_path
+        except Exception as exc:
+            logger.debug("could not arm the cognee exit watcher: %s", exc)
 
     def _is_usable(self) -> bool:
         """False when initialization never completed, so nothing may touch cognee.
@@ -510,6 +549,10 @@ class CogneeMemoryProvider(MemoryProvider):
                 timeout=self._timeout("improve_timeout", 300),
             )
             self._record_success()
+            # The bridge ran; a crash after this point should not improve again.
+            # The watcher stays armed for the unregister half.
+            if self._watcher_state_path is not None:
+                exit_watcher.update(self._watcher_state_path, improve=False)
         except Exception as exc:
             self._record_failure()
             logger.warning("Cognee session-end improve failed: %s", exc)
@@ -526,6 +569,14 @@ class CogneeMemoryProvider(MemoryProvider):
             self._sync_thread.join(timeout=5.0)
         self._session_id = new_session_id
         self._session_cognee_id = self._build_cognee_session_id(new_session_id, **kwargs)
+        if self._watcher_state_path is not None:
+            # Re-point the crash insurance at the new session (and re-enable the
+            # improve half in case a previous session end disabled it).
+            exit_watcher.update(
+                self._watcher_state_path,
+                session_id=self._session_cognee_id,
+                improve=bool(self._writes_enabled and self._improve_on_end),
+            )
         if reset:
             with self._prefetch_lock:
                 self._prefetch_result = ""
@@ -584,6 +635,11 @@ class CogneeMemoryProvider(MemoryProvider):
         for thread in (self._prefetch_thread, self._sync_thread):
             if thread and thread.is_alive():
                 thread.join(timeout=5.0)
+        if self._watcher_state_path is not None:
+            # This is the clean path — stand the insurance down BEFORE closing the
+            # backend, so the watcher can never race the orderly unregister.
+            exit_watcher.disarm(self._watcher_state_path)
+            self._watcher_state_path = None
         self._backend.close(timeout=5)
 
     def _build_cognee_session_id(self, session_id: str, **kwargs) -> str:

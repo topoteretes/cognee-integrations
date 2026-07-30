@@ -257,6 +257,15 @@ class HttpBackend(MemoryBackend):
         except Exception as exc:
             logger.debug("cognee agent registration failed (continuing): %s", exc)
 
+    def connection_info(self) -> Optional[dict[str, Any]]:
+        if not self.url:
+            return None
+        return {
+            "url": self.url,
+            "api_key": self.api_key,
+            "agent_session_name": self._agent_session_name,
+        }
+
     def close(self, *, timeout: float = 5.0) -> None:
         if not self.registered:
             return

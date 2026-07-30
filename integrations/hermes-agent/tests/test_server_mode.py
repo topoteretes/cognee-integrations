@@ -9,6 +9,7 @@ How a transport turns protocol calls into wire format lives in
 Runs under pytest or standalone (``python3 tests/test_server_mode.py``).
 """
 
+import os
 import sys
 import tempfile
 import unittest
@@ -419,6 +420,105 @@ class TestTransportSelection(unittest.TestCase):
             ):
                 provider.initialize("sid", hermes_home=home)
             self.assertEqual(provider._backend._cache_dir, config_mod.SHARED_PLUGIN_STATE_DIR)
+
+
+class TestExitWatcherLifecycle(unittest.TestCase):
+    """Crash insurance is armed only when a server outlives the process."""
+
+    def _server_backend(self):
+        backend = FakeBackend()
+        backend.connection_info = lambda: {
+            "url": "http://127.0.0.1:8011",
+            "api_key": "k",
+            "agent_session_name": "hermes",
+        }
+        return backend
+
+    def _initialize(self, backend, arm=None, **init_kwargs):
+        p = provider_mod.CogneeMemoryProvider(backend=backend)
+        with (
+            mock.patch.dict("os.environ", _NO_URL, clear=False),
+            mock.patch.object(
+                provider_mod, "ensure_local_server", return_value="http://127.0.0.1:8000"
+            ),
+            mock.patch.object(provider_mod.exit_watcher, "arm", arm or mock.MagicMock()) as armed,
+        ):
+            p.initialize("sid", **init_kwargs)
+        return p, armed
+
+    def test_no_watcher_without_a_surviving_server(self):
+        # FakeBackend inherits connection_info() -> None (in-process semantics).
+        p, armed = self._initialize(FakeBackend())
+        armed.assert_not_called()
+        self.assertIsNone(p._watcher_state_path)
+
+    def test_armed_in_server_mode_with_the_connection_details(self):
+        p, armed = self._initialize(self._server_backend())
+        kwargs = armed.call_args.kwargs
+        self.assertEqual(kwargs["url"], "http://127.0.0.1:8011")
+        self.assertEqual(kwargs["api_key"], "k")
+        self.assertEqual(kwargs["parent_pid"], os.getpid())
+        self.assertEqual(kwargs["session_id"], p._session_cognee_id)
+        self.assertEqual(kwargs["dataset"], p._dataset)
+        self.assertTrue(kwargs["improve"])
+        self.assertIsNotNone(p._watcher_state_path)
+
+    def test_a_subagent_context_disables_the_improve_half(self):
+        # A subagent must not write; its watcher may still unregister.
+        p, armed = self._initialize(self._server_backend(), agent_context="subagent")
+        self.assertFalse(armed.call_args.kwargs["improve"])
+
+    def test_arm_failure_is_not_fatal(self):
+        arm = mock.MagicMock(side_effect=OSError("no fork for you"))
+        p, _ = self._initialize(self._server_backend(), arm=arm)
+        self.assertTrue(p._initialized)
+        self.assertIsNone(p._watcher_state_path)
+
+    def _armed_provider(self):
+        p, _ = _make_provider()
+        p._initialized = True
+        p._writes_enabled = True
+        p._improve_on_end = True
+        p._remote_mode = True
+        p._config = {"improve_timeout": 300}
+        p._watcher_state_path = Path("/tmp/watcher.json")
+        return p
+
+    def test_session_switch_repoints_the_watcher(self):
+        p = self._armed_provider()
+        with mock.patch.object(provider_mod.exit_watcher, "update") as update:
+            p.on_session_switch("next-session")
+        kwargs = update.call_args.kwargs
+        self.assertEqual(kwargs["session_id"], p._session_cognee_id)
+        self.assertTrue(kwargs["improve"])
+
+    def test_session_end_stands_down_the_improve_half_only(self):
+        p = self._armed_provider()
+        with mock.patch.object(provider_mod.exit_watcher, "update") as update:
+            p.on_session_end([])
+        self.assertIs(update.call_args.kwargs["improve"], False)
+        # Still armed: the unregister half must survive until shutdown.
+        self.assertIsNotNone(p._watcher_state_path)
+
+    def test_a_failed_session_end_improve_keeps_the_insurance(self):
+        p = self._armed_provider()
+        p._backend.errors["improve"] = RuntimeError("server hiccup")
+        with mock.patch.object(provider_mod.exit_watcher, "update") as update:
+            p.on_session_end([])
+        update.assert_not_called()
+
+    def test_shutdown_disarms_before_closing_the_backend(self):
+        p = self._armed_provider()
+        order = []
+        with (
+            mock.patch.object(
+                provider_mod.exit_watcher, "disarm", side_effect=lambda *a: order.append("disarm")
+            ),
+            mock.patch.object(p._backend, "close", side_effect=lambda **k: order.append("close")),
+        ):
+            p.shutdown()
+        self.assertEqual(order, ["disarm", "close"])
+        self.assertIsNone(p._watcher_state_path)
 
 
 class TestConfigModes(unittest.TestCase):
