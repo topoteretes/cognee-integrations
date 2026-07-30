@@ -512,6 +512,40 @@ class TestApiKeyResolution(unittest.TestCase):
         self.assertEqual(backend.api_key, "cached-cloud")
 
 
+class TestEnsureDatasetWireFormat(unittest.TestCase):
+    def test_posts_the_dataset_name(self):
+        opener = FakeOpener({"/api/v1/datasets": {"id": "d1"}})
+        _backend(opener).ensure_dataset(dataset="agent_sessions", timeout=_TIMEOUT)
+        request = opener.request_for("/api/v1/datasets")
+        self.assertEqual(request["method"], "POST")
+        self.assertEqual(opener.json_body("/api/v1/datasets"), {"name": "agent_sessions"})
+        self.assertEqual(request["headers"]["x-api-key"], "k")
+
+    def test_a_blank_dataset_sends_nothing(self):
+        opener = FakeOpener()
+        _backend(opener).ensure_dataset(dataset="", timeout=_TIMEOUT)
+        self.assertEqual(opener.paths(), [])
+
+    def test_a_redirecting_deployment_is_retried_at_the_slashed_path(self):
+        # Some deployments route the collection at /datasets/ and answer the
+        # non-slash POST with a 307, which urllib will not follow for a body.
+        opener = FakeOpener(
+            {
+                "/api/v1/datasets": urllib.error.HTTPError(_URL, 307, "moved", {}, None),
+                "/api/v1/datasets/": {"id": "d1"},
+            }
+        )
+        _backend(opener).ensure_dataset(dataset="agent_sessions", timeout=_TIMEOUT)
+        self.assertEqual(opener.json_body("/api/v1/datasets/"), {"name": "agent_sessions"})
+
+    def test_a_genuine_error_raises(self):
+        opener = FakeOpener(
+            {"/api/v1/datasets": urllib.error.HTTPError(_URL, 500, "boom", {}, None)}
+        )
+        with self.assertRaises(CogneeHttpError):
+            _backend(opener).ensure_dataset(dataset="agent_sessions", timeout=_TIMEOUT)
+
+
 class TestConnectionInfo(unittest.TestCase):
     def test_none_before_connect(self):
         self.assertIsNone(HttpBackend().connection_info())

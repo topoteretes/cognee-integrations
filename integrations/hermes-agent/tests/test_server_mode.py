@@ -303,6 +303,33 @@ class TestInitializeModes(unittest.TestCase):
         self.assertEqual(rec["served"], ("http://127.0.0.1:8000", ""))
         self.assertFalse(rec["identity_called"])
 
+    def test_initialize_ensures_the_dataset(self):
+        env = {**_NO_URL, "COGNEE_EMBEDDED": ""}
+        p, rec = _make_provider()
+        with (
+            mock.patch.dict("os.environ", env, clear=False),
+            mock.patch.object(
+                provider_mod, "ensure_local_server", return_value="http://127.0.0.1:8000"
+            ),
+        ):
+            p.initialize("sid")
+        self.assertEqual(p._backend.only_call("ensure_dataset")["dataset"], p._dataset)
+
+    def test_a_failed_dataset_ensure_is_not_fatal(self):
+        # A write creates the dataset implicitly anyway; failing here only costs
+        # the recall-first case, never the session.
+        env = {**_NO_URL, "COGNEE_EMBEDDED": ""}
+        p, rec = _make_provider()
+        p._backend.errors["ensure_dataset"] = RuntimeError("datasets route down")
+        with (
+            mock.patch.dict("os.environ", env, clear=False),
+            mock.patch.object(
+                provider_mod, "ensure_local_server", return_value="http://127.0.0.1:8000"
+            ),
+        ):
+            p.initialize("sid")
+        self.assertTrue(p._initialized)
+
     def test_local_server_failure_raises_not_silently_embedded(self):
         # Falling back to embedded would reintroduce the DB-lock risk this PR
         # removes, so a server that won't start is a hard error.

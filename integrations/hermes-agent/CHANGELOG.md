@@ -123,6 +123,10 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
 
 ### Added
 
+- **The dataset is ensured at startup** (idempotent `POST /api/v1/datasets`, the
+  other plugins' bootstrap call), so a session that opens with a recall on a
+  fresh server or cloud tenant no longer hits a missing dataset. Best-effort:
+  writes create the dataset implicitly anyway.
 - `COGNEE_TRANSPORT` — `http` (default) or `sdk`.
 - A test suite grown from 34 to 270, including wire-format tests per transport and
   an opt-in live round trip against a real cognee server

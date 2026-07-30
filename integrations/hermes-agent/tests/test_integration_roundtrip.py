@@ -22,7 +22,9 @@ each other or a developer's real memory.
 import importlib.util
 import logging
 import os
+import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -59,6 +61,23 @@ def _unique_suffix() -> str:
     return f"{os.getpid()}_{int(time.time())}"
 
 
+def _kill_server_on(port: int) -> None:
+    """Stop the test-spawned server. ensure_local_server detaches it on purpose
+    (it must outlive Hermes in production), so tests have to reap it by port or
+    it lingers after the run, contending for whatever store it was pointed at."""
+    try:
+        found = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for pid in found.stdout.split():
+            os.kill(int(pid), signal.SIGKILL)
+    except Exception:
+        pass
+
+
 @unittest.skipUnless(_RUN and _HAS_COGNEE and _HAS_LLM, _REASON)
 class TestHttpRoundTrip(unittest.TestCase):
     """remember -> recall -> session turn -> session end -> recall from the graph."""
@@ -79,6 +98,7 @@ class TestHttpRoundTrip(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        _kill_server_on(cls.port)
         cls.home.cleanup()
 
     def setUp(self):
@@ -218,6 +238,7 @@ class TestHttpConnectAgainstRealServer(unittest.TestCase):
         from cognee_integration_hermes.server_bootstrap import ensure_local_server
 
         port = _free_port()
+        self.addCleanup(_kill_server_on, port)
         with tempfile.TemporaryDirectory() as home:
             url = ensure_local_server(
                 port,

@@ -349,8 +349,22 @@ class CogneeMemoryProvider(MemoryProvider):
                     "Cognee identity initialization failed; using backend default user: %s", exc
                 )
 
+        self._ensure_dataset()
         self._arm_exit_watcher()
         self._initialized = True
+
+    def _ensure_dataset(self) -> None:
+        """Create-or-return the dataset up front, like the other plugins do.
+
+        A fresh server or cloud tenant has no datasets, so a session that opens
+        with a recall would otherwise hit a missing dataset. Best-effort: a write
+        creates the dataset implicitly anyway, so failing here only costs the
+        recall-first case — not the session.
+        """
+        try:
+            self._backend.ensure_dataset(dataset=self._dataset, timeout=30)
+        except Exception as exc:
+            logger.warning("Cognee dataset ensure failed (continuing): %s", exc)
 
     def _arm_exit_watcher(self) -> None:
         """Crash insurance: a detached process that closes the session if we can't.

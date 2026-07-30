@@ -278,6 +278,9 @@ class FakeBackend(MemoryBackend):
     def resolve_identity(self, **kwargs):
         return self._recorder.record("resolve_identity", kwargs)
 
+    def ensure_dataset(self, **kwargs):
+        return self._recorder.record("ensure_dataset", kwargs)
+
     def close(self, **kwargs):
         self._recorder.record("close", kwargs)
 

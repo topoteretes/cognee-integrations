@@ -71,6 +71,14 @@ class MemoryBackend:
         """
         return None
 
+    def ensure_dataset(self, *, dataset: str, timeout: float) -> None:
+        """Make sure *dataset* exists (server transports only).
+
+        In-process transports need nothing: the SDK creates datasets on write,
+        and grants live in the same process. On a server, a recall-first session
+        against a fresh instance would otherwise hit a missing dataset.
+        """
+
     # -- operations --------------------------------------------------------
 
     def recall(

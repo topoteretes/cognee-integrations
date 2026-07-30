@@ -266,6 +266,24 @@ class HttpBackend(MemoryBackend):
             "agent_session_name": self._agent_session_name,
         }
 
+    def ensure_dataset(self, *, dataset: str, timeout: float) -> None:
+        """Create-or-return the dataset, as the other plugins do at bootstrap.
+
+        The endpoint is idempotent — it creates the dataset or returns the
+        existing one, granting the calling principal access either way. Some
+        deployments route the collection at ``/datasets/`` and answer the
+        non-slash POST with a 307/308, which urllib refuses to follow for a
+        request with a body — retried once at the slashed path.
+        """
+        if not dataset:
+            return
+        try:
+            self._request("POST", "/api/v1/datasets", timeout=timeout, json_body={"name": dataset})
+        except CogneeHttpError as exc:
+            if exc.status not in (301, 302, 307, 308):
+                raise
+            self._request("POST", "/api/v1/datasets/", timeout=timeout, json_body={"name": dataset})
+
     def close(self, *, timeout: float = 5.0) -> None:
         if not self.registered:
             return
