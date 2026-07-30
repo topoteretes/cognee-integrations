@@ -65,7 +65,7 @@ COGNEE_API_KEY="ck_..."
 '@ | Add-Content "$env:USERPROFILE\.cognee\.env"
 ```
 
-Re-running any of these blocks is safe: when a key appears more than once, the **last value wins**, so pasting again with a new value updates the configuration. Editing the file directly (`nano ~/.cognee/.env`) works too — e.g. to remove a variable such as `COGNEE_BASE_URL` when switching from cloud back to local mode. Changes apply on the next session launch. Plain shell `export`s in the launching terminal still take precedence over `~/.cognee/.env` — useful to override the shared config for one terminal.
+Re-running any of these blocks is safe: when a key appears more than once, the **last value wins**, so pasting again with a new value updates the configuration. Editing the file directly (`nano ~/.cognee/.env`) works too — e.g. to remove a variable such as `COGNEE_BASE_URL` when switching from cloud back to local mode. Changes apply on the next session launch. Plain shell `export`s in the launching terminal still take precedence over `~/.cognee/.env` — useful to override the shared config for one terminal. See [Managing the env file](#managing-the-env-file) for the file format and how to add, change, or remove variables later.
 
 You can also set config in `~/.cognee-plugin/config.json`:
 
@@ -301,6 +301,48 @@ Config precedence:
 4. defaults
 
 `~/.cognee/.env` is created with a commented template on first session start (permissions `0600`; the path can be overridden with `COGNEE_ENV_FILE`). Run `doctor.py` to see which keys the file defines and which are overridden by shell exports.
+
+### Managing the env file
+
+`~/.cognee/.env` is a plain dotenv text file. Every env var in the table below can live in it, and you can manage it entirely from the command line — or open it in any editor.
+
+**Add or change a variable without an editor** — append it. When a key appears more than once, the **last value wins**, so appending the same key again with a new value is also how you *change* it:
+
+```bash
+echo 'COGNEE_PLUGIN_DATASET="my-project-memory"' >> ~/.cognee/.env
+```
+
+```powershell
+Add-Content "$env:USERPROFILE\.cognee\.env" 'COGNEE_PLUGIN_DATASET="my-project-memory"'
+```
+
+For secrets (`COGNEE_API_KEY`, `LLM_API_KEY`), prefer the editor route below — an `echo` puts the key into your shell history.
+
+**Edit the file manually** — open it in any editor:
+
+```bash
+nano ~/.cognee/.env          # or vim, code, open -e (macOS)
+```
+
+```powershell
+notepad "$env:USERPROFILE\.cognee\.env"
+```
+
+Since the file starts as a commented template, editing usually means uncommenting a line and filling in your value. The format:
+
+```bash
+# Comments start with '#'; blank lines are ignored.
+COGNEE_BASE_URL="https://your-instance.cognee.ai"
+COGNEE_API_KEY=ck_abc123                # quotes are optional
+export LLM_API_KEY="sk-..."             # a leading 'export ' is tolerated, so
+                                        # shell profile lines paste verbatim
+```
+
+Keys are letters, digits, and underscores. Values are taken literally — no `$VAR` interpolation, no multi-line values. Malformed lines are skipped silently, never fatal, and process-critical variables (`PATH` and friends) are ignored by design.
+
+**Remove a variable** — delete (or comment out) its line in the editor. The common case is switching from cloud back to local mode: remove the `COGNEE_BASE_URL` line and make sure `LLM_API_KEY` is set.
+
+**Apply and verify** — the file is read at session start, so changes take effect on the next `codex` launch. If a value seems to be ignored, check whether the same variable is `export`ed in your shell: real exports always win over the file. The doctor's **Env File** row lists which keys the file defines and flags any that a shell export is overriding.
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
