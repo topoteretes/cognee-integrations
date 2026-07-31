@@ -115,6 +115,10 @@ class CogneeMemoryProvider(MemoryProvider):
         # flight — see queue_prefetch / on_session_switch.
         self._prefetch_generation = 0
         self._sync_thread: Optional[threading.Thread] = None
+        # The breaker is touched from the main thread and every worker thread
+        # (prefetch, sync, memory-write); the lock keeps the failure counter's
+        # read-modify-writes from losing updates under that concurrency.
+        self._breaker_lock = threading.Lock()
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
         # Set when a crash-safe exit watcher is armed (server modes only).
@@ -836,23 +840,29 @@ class CogneeMemoryProvider(MemoryProvider):
         return lines
 
     def _is_breaker_open(self) -> bool:
-        if self._consecutive_failures < _BREAKER_THRESHOLD:
-            return False
-        if time.monotonic() >= self._breaker_open_until:
-            self._consecutive_failures = 0
-            return False
-        return True
+        with self._breaker_lock:
+            if self._consecutive_failures < _BREAKER_THRESHOLD:
+                return False
+            if time.monotonic() >= self._breaker_open_until:
+                self._consecutive_failures = 0
+                return False
+            return True
 
     def _record_success(self) -> None:
-        self._consecutive_failures = 0
+        with self._breaker_lock:
+            self._consecutive_failures = 0
 
     def _record_failure(self) -> None:
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= _BREAKER_THRESHOLD:
-            self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+        with self._breaker_lock:
+            self._consecutive_failures += 1
+            tripped = self._consecutive_failures >= _BREAKER_THRESHOLD
+            if tripped:
+                self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+                failures = self._consecutive_failures
+        if tripped:
             logger.warning(
                 "Cognee circuit breaker tripped after %d consecutive failures; pausing for %ds.",
-                self._consecutive_failures,
+                failures,
                 _BREAKER_COOLDOWN_SECS,
             )
 

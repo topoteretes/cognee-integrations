@@ -592,6 +592,24 @@ class TestCircuitBreaker(unittest.TestCase):
         self.assertEqual(provider_mod._BREAKER_THRESHOLD, 5)
         self.assertEqual(provider_mod._BREAKER_COOLDOWN_SECS, 120)
 
+    def test_concurrent_failures_are_not_lost(self):
+        # The breaker is hit from the main thread and every worker thread; an
+        # unlocked `+= 1` can drop increments under that concurrency, delaying
+        # the trip. Hammer it and require an exact count.
+        provider = make_provider()
+        per_thread = 200
+
+        def fail_repeatedly():
+            for _ in range(per_thread):
+                provider._record_failure()
+
+        threads = [threading.Thread(target=fail_repeatedly) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(provider._consecutive_failures, 8 * per_thread)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
