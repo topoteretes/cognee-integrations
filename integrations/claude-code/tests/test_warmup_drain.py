@@ -218,6 +218,120 @@ def test_drain_leaves_legacy_shadow_untouched():
     assert session_cache.get("pending_entries") == []
 
 
+def test_drain_budget_exceeded_preserves_tail():
+    """#298: the replay stops once its time budget is spent — the unreplayed
+    tail stays buffered and a warmup_drain_budget_exceeded event is logged."""
+
+    def _run():
+        import time as _time
+
+        events = []
+        pc.hook_log = lambda ev, detail=None: events.append((ev, detail or {}))
+        for name in ("A", "B", "C"):
+            pc.append_warmup_entry("ds", "sid", {"type": "trace", "origin_function": name})
+
+        def _slow(dataset, session_id, entry, **k):
+            _time.sleep(0.06)
+            return {}
+
+        saved = pc.remember_entry_via_http
+        pc.remember_entry_via_http = _slow
+        try:
+            result = pc.drain_warmup_entries("ds", "sid", budget_seconds=0.1)
+        finally:
+            pc.remember_entry_via_http = saved
+        return result, events
+
+    result, events = _with_tmp_bridge(_run)
+    drained, remaining = result
+    assert drained >= 1 and remaining >= 1, f"expected a partial drain, got {result}"
+    assert drained + remaining == 3
+    assert any(ev == "warmup_drain_budget_exceeded" for ev, _ in events)
+
+
+def test_http_failure_arms_backoff_and_skips_next_drain():
+    """#298: an HTTP-status replay failure arms a backoff window during which
+    further drains are skipped without touching the network — a poisoned
+    session (e.g. server 503-ing every write) cannot be ground against
+    forever."""
+    import urllib.error
+
+    def _run():
+        events = []
+        pc.hook_log = lambda ev, detail=None: events.append((ev, detail or {}))
+        pc.append_warmup_entry("ds", "sid", {"type": "trace", "origin_function": "A"})
+
+        def _boom(dataset, session_id, entry, **k):
+            raise urllib.error.HTTPError("http://x", 503, "busy", None, None)
+
+        saved = pc.remember_entry_via_http
+        pc.remember_entry_via_http = _boom
+        try:
+            first = pc.drain_warmup_entries("ds", "sid")
+        finally:
+            pc.remember_entry_via_http = saved
+
+        cache = pc._load_json_file(pc._bridge_file("sid"))
+        state = cache.get(pc._bridge_cache_key("ds", "sid"), {})
+
+        # Second drain, inside the backoff window: skipped before any network.
+        calls = []
+        pc.remember_entry_via_http = lambda *a, **k: calls.append(a) or {}
+        try:
+            second = pc.drain_warmup_entries("ds", "sid")
+        finally:
+            pc.remember_entry_via_http = saved
+        return first, second, state, calls, events
+
+    first, second, state, calls, events = _with_tmp_bridge(_run)
+    assert first == (0, 1)
+    assert int(state.get("drain_fail_count") or 0) == 1
+    assert float(state.get("drain_fail_at") or 0) > 0
+    assert second == (0, 1)
+    assert calls == [], "backoff must skip the replay entirely"
+    assert any(ev == "warmup_drain_backoff" for ev, _ in events)
+
+
+def test_backoff_expires_and_success_clears_it():
+    """After the backoff window passes, the drain runs again; progress clears
+    the failure bookkeeping so the session is back to normal."""
+    import urllib.error
+
+    def _run():
+        pc.hook_log = lambda *a, **k: None
+        pc.append_warmup_entry("ds", "sid", {"type": "trace", "origin_function": "A"})
+
+        def _boom(dataset, session_id, entry, **k):
+            raise urllib.error.HTTPError("http://x", 503, "busy", None, None)
+
+        saved = pc.remember_entry_via_http
+        pc.remember_entry_via_http = _boom
+        try:
+            pc.drain_warmup_entries("ds", "sid")
+        finally:
+            pc.remember_entry_via_http = saved
+
+        # Age the failure past the first backoff window (60s).
+        path = pc._bridge_file("sid")
+        key = pc._bridge_cache_key("ds", "sid")
+        cache = pc._load_json_file(path)
+        cache[key]["drain_fail_at"] = cache[key]["drain_fail_at"] - 61
+        pc._write_json_file(path, cache)
+
+        pc.remember_entry_via_http = lambda d, s, entry, **k: {}
+        try:
+            result = pc.drain_warmup_entries("ds", "sid")
+        finally:
+            pc.remember_entry_via_http = saved
+        state = pc._load_json_file(path).get(key, {})
+        return result, state
+
+    result, state = _with_tmp_bridge(_run)
+    assert result == (1, 0)
+    assert "drain_fail_count" not in state, f"backoff not cleared: {state}"
+    assert "drain_fail_at" not in state
+
+
 if __name__ == "__main__":
     failures = 0
     for _name, _fn in sorted(globals().items()):

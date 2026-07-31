@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     authed_liveness,
     bounded_dim_mismatch_hint,
-    drain_warmup_entries,
     get_session_key,
     hook_log,
     load_resolved,
@@ -176,7 +175,6 @@ async def _run(prompt: str) -> dict | None:
     # short /health probe and record the result. If still not ready, skip recall
     # entirely so the prompt is answered at full speed (memory turns on later).
     service_url = runtime.get("base_url", "")
-    just_became_ready = False
     probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)
     if not server_ready_hint(service_url):
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
@@ -191,7 +189,6 @@ async def _run(prompt: str) -> dict | None:
 
         if state == "ready":
             mark_server_ready(service_url)
-            just_became_ready = True
         else:
             # A recorded failure (auth_failed / unreachable / server_error) makes
             # the status line show ✕ (<reason>) and recall skip this turn. Suppress
@@ -220,15 +217,11 @@ async def _run(prompt: str) -> dict | None:
         hook_log("no_session_id", {"event": "context_lookup"})
         return None
 
-    if just_became_ready:
-        # First prompt after the server came up: replay any entries buffered
-        # while it was warming so the server session cache (which improve
-        # bridges from) holds the full session.
-        try:
-            drain_warmup_entries(get_dataset(config), session_id)
-        except Exception as exc:
-            hook_log("warmup_drain_failed", {"error": str(exc)[:200]})
-
+    # NOTE: the warmup-buffer drain deliberately does NOT run here. This hook
+    # is synchronous on the keystroke->answer path, and replaying N buffered
+    # entries (~1s of server work each) stalled the prompt for 10-30s after any
+    # long turn (#298). The sibling hook on this same event
+    # (store-user-prompt.py) drains instead; improve/SessionEnd re-drain too.
     saves_last_turn = read_and_reset_save_counter(session_id)
 
     # Run scopes independently: a failure in one (e.g. graph search hitting an

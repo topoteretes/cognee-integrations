@@ -127,7 +127,7 @@ def _run_session_improve(improve_result, *, unsupported_marker=False, drain_resu
     """
     calls = {"drain": 0, "improve": 0, "legacy": 0}
 
-    def _drain(d, s):
+    def _drain(d, s, **kwargs):
         calls["drain"] += 1
         if drain_results:
             return drain_results[min(calls["drain"] - 1, len(drain_results) - 1)]
@@ -217,7 +217,7 @@ def test_run_session_improve_retries_busy_until_lock_frees():
     saved = _with_seams(
         _local_api_url=lambda: "http://x",
         _backend_reachable=lambda url: True,
-        drain_warmup_entries=lambda d, s: (0, 0),
+        drain_warmup_entries=lambda d, s, **k: (0, 0),
         improve_unsupported=lambda url: False,
         improve_session_via_http=_improve,
         hook_log=lambda *a, **k: None,
@@ -272,7 +272,7 @@ def test_run_session_improve_busy_deadline_gives_up():
     saved = _with_seams(
         _local_api_url=lambda: "http://x",
         _backend_reachable=lambda url: True,
-        drain_warmup_entries=lambda d, s: (0, 0),
+        drain_warmup_entries=lambda d, s, **k: (0, 0),
         improve_unsupported=lambda url: False,
         improve_session_via_http=_always_busy,
         hook_log=lambda *a, **k: None,

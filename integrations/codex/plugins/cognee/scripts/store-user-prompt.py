@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     bump_save_counter,
+    drain_warmup_entries,
     get_session_key,
     hook_log,
     load_resolved,
@@ -30,6 +31,7 @@ from _plugin_common import (
     resolve_session_key_from_payload,
     resolve_user,
     server_ready_hint,
+    server_usable,
     set_session_key,
     touch_activity,
 )
@@ -156,6 +158,20 @@ async def _store(prompt: str, payload: dict):
     hook_log("prompt_pending", {"chars": len(prompt), "turn_id": payload.get("turn_id")})
     notify(f"user prompt pending ({len(prompt)} chars)")
     bump_save_counter(session_id, "prompt")
+
+    # Replay any warmup-buffered entries. This hook is the sibling of
+    # session-context-lookup on the same UserPromptSubmit event — identical
+    # trigger point, but the prompt's recall does not wait on it, so the drain
+    # (N sequential /remember/entry calls) can no longer starve recall (#298).
+    # It runs LAST so a mid-drain kill cannot cost the fast bookkeeping above;
+    # the drain itself is a cheap no-op on an empty buffer, preserves the
+    # unreplayed tail on failure, and is single-flighted by its own lock
+    # against the improve/SessionEnd paths that also drain.
+    if server_usable(runtime.get("base_url", "")):
+        try:
+            drain_warmup_entries(dataset, session_id)
+        except Exception as exc:
+            hook_log("warmup_drain_failed", {"error": str(exc)[:200]})
 
 
 def main():

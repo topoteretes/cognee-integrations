@@ -36,7 +36,7 @@ from _plugin_common import (
     resolve_session_key_from_payload,
     resolve_user,
     run_session_improve,
-    server_ready_hint,
+    server_usable,
     set_session_key,
     touch_activity,
 )
@@ -176,11 +176,14 @@ async def _store_tool_call(payload: dict) -> None:
         "generate_feedback_with_llm": False,
     }
 
-    if not server_ready_hint(runtime.get("base_url", "")):
-        # Server still warming: don't block the tool call and don't lose the
-        # trace. Buffer the structured entry for a later /remember/entry replay
-        # (improve bridges only what the server session cache holds), and keep
-        # the legacy text mirror for the document-bridge fallback path.
+    if not server_usable(runtime.get("base_url", "")):
+        # Server unreachable (stale marker AND a failed probe — a stale marker
+        # alone no longer buffers; this hook fires per tool call, so its probe
+        # keeps the ready marker fresh through long turns, #298): don't block
+        # the tool call and don't lose the trace. Buffer the structured entry
+        # for a later /remember/entry replay (improve bridges only what the
+        # server session cache holds), and keep the legacy text mirror for the
+        # document-bridge fallback path.
         append_warmup_entry(dataset, session_id, entry)
         trace_text = (
             f"{tool_name} [{status}]\n"
@@ -279,11 +282,11 @@ async def _store_assistant_stop(payload: dict) -> None:
         "context": pending.get("context", ""),
     }
 
-    if not server_ready_hint(runtime.get("base_url", "")):
-        # Server still warming: buffer the structured entry for a later
-        # /remember/entry replay (improve bridges only what the server session
-        # cache holds), and keep the legacy text mirror for the document-bridge
-        # fallback path.
+    if not server_usable(runtime.get("base_url", "")):
+        # Server unreachable (stale marker AND a failed probe): buffer the
+        # structured entry for a later /remember/entry replay (improve bridges
+        # only what the server session cache holds), and keep the legacy text
+        # mirror for the document-bridge fallback path.
         append_warmup_entry(dataset, session_id, entry)
         append_http_bridge_entry(
             dataset,
