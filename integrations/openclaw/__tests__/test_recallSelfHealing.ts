@@ -71,6 +71,7 @@ function createApi() {
     registerMemoryFlushPlan: jest.fn(),
     registerCli: jest.fn(),
     registerService: jest.fn(),
+    registerTool: jest.fn(),
     on: jest.fn((name: string, fn: HookHandler) => {
       const list = handlers.get(name) ?? [];
       list.push(fn);

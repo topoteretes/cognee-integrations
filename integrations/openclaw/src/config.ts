@@ -1,4 +1,4 @@
-import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, ScopeRoute } from "./types.js";
+import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, ScopeRoute, SessionMemoryPolicy } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -123,13 +123,19 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const enableSessions = typeof raw.enableSessions === "boolean" ? raw.enableSessions : true;
   const persistSessionsAfterEnd = typeof raw.persistSessionsAfterEnd === "boolean" ? raw.persistSessionsAfterEnd : true;
   const captureSession = typeof raw.captureSession === "boolean" ? raw.captureSession : true;
+  const sessionMemoryPolicy: Required<SessionMemoryPolicy> = {
+    capture: raw.sessionMemoryPolicy?.capture
+      ?? (captureSession ? "qa-and-traces" : "off"),
+    promotion: raw.sessionMemoryPolicy?.promotion
+      ?? (enableSessions && persistSessionsAfterEnd && improveOnSessionEnd ? "all" : "off"),
+  };
 
   return {
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
     recallInjectionPosition,
-    enableSessions, persistSessionsAfterEnd, captureSession,
+    enableSessions, persistSessionsAfterEnd, captureSession, sessionMemoryPolicy,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify, improveOnSessionEnd,

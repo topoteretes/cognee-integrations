@@ -14,6 +14,7 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Health check**: Verifies Cognee API connectivity before operations
 - **Auto-index**: Syncs memory markdown files to Cognee via `/remember` (add new, update changed, forget removed, skip unchanged). The `/remember` endpoint runs ingest, graph build, and graph enrichment in one server-side call.
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
+- **OpenClaw memory tools**: Registers `memory_search` and `memory_get`, so Active Memory works with Cognee as the memory-slot owner without a custom `toolsAllow`. Search returns opaque references plus scope/provenance; get resolves an exact bounded excerpt. References are session-scoped and expire on plugin restart or cache eviction.
 - **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider
 - **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
 
@@ -338,6 +339,8 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `enableSessions` | boolean | `true` | Enable session-based conversation tracking |
 | `persistSessionsAfterEnd` | boolean | `true` | Persist session Q&A into the knowledge graph |
 | `captureSession` | boolean | `true` | Store each tool call as a `TraceEntry` and each prompt/answer pair as a `QAEntry` in Cognee's session cache (requires `enableSessions`) |
+| `sessionMemoryPolicy.capture` | string | legacy-compatible | `off`, `qa-only`, or `qa-and-traces`; when omitted, follows `captureSession` |
+| `sessionMemoryPolicy.promotion` | string | legacy-compatible | `off` or `all`; when omitted, promotion requires all three legacy session/promotion switches |
 
 ### Search
 
@@ -376,10 +379,12 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 |--------|------|---------|-------------|
 | `autoRecall` | boolean | `true` | Inject memories before agent runs |
 | `autoIndex` | boolean | `true` | Sync memory files on startup, after agent runs, and on session end |
-| `improveOnSessionEnd` | boolean | `true` | On `session_end`, call `/improve` with the session id to bridge session-cache QAs into the graph |
+| `improveOnSessionEnd` | boolean | `true` | On `session_end`, call `/improve` with the session id to bridge session-cache QAs into the graph. Promotion also requires `enableSessions`, `persistSessionsAfterEnd`, and policy `promotion: "all"`; the same gate applies to crash recovery. |
 | ~~`autoCognify`~~ | boolean | `true` | **Deprecated** — `/remember` runs the cognify step server-side |
 | ~~`autoMemify`~~ | boolean | `false` | **Deprecated** — graph enrichment now runs server-side via `/remember` |
 | ~~`deleteMode`~~ | string | `soft` | **Deprecated** — `/forget` always runs soft delete |
+
+Selective and explicit-only candidate promotion are intentionally not exposed yet. Cognee's current `/improve` API promotes a whole session and cannot safely exclude individual candidates; pretending otherwise would leak rejected traces or mutable status. A future server-side candidate API can add those modes without changing the memory tool contract.
 
 ### Timeouts
 

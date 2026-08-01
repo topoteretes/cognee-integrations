@@ -27,6 +27,7 @@ import { RecallBreaker, isBreakerError } from "./breaker.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
 import { bootServerIfNeeded, waitForServerHealth, isLocalUrl, resolveOrMintApiKey, spawnExitWatcher, exitWatcherPidfilePath } from "./server.js";
+import { registerMemoryTools, type MemoryToolHit } from "./memory-tools.js";
 
 /** Expand a leading `~` in a workspace path to the user's home directory. */
 function expandHome(p: string | undefined): string | undefined {
@@ -311,6 +312,72 @@ const memoryCogneePlugin = {
 
       return { ids, missingScopes };
     }
+
+    registerMemoryTools(api, async (query, options): Promise<MemoryToolHit[]> => {
+      await stateReady;
+      if (options.signal?.aborted) throw new Error("memory search aborted");
+      const state = await loadDatasetState();
+      const targets: Array<{ scope: MemoryScope; datasetName: string; datasetId: string }> = [];
+      if (multiScope) {
+        for (const scope of cfg.recallScopes) {
+          const datasetName = datasetNameForScope(scope, cfg, options.agentId);
+          const datasetId = state[datasetName] ?? scopeFallbackDatasetId(scope, options.agentId)
+            ?? await resolveDatasetIdFromServer(datasetName);
+          if (datasetId) targets.push({ scope, datasetName, datasetId });
+        }
+      } else {
+        const datasetIdForTool = datasetId ?? state[cfg.datasetName] ?? await resolveDatasetIdFromServer(cfg.datasetName);
+        if (datasetIdForTool) targets.push({ scope: "agent", datasetName: cfg.datasetName, datasetId: datasetIdForTool });
+      }
+
+      const settled = await Promise.allSettled(targets.map(async (target) => {
+        const recallTarget = (targetId: string) => recallWithBreaker({
+          queryText: query,
+          searchType: cfg.searchType,
+          datasetIds: [targetId],
+          searchPrompt: cfg.searchPrompt,
+          topK: options.maxResults ?? cfg.maxResults,
+          sessionId: options.sessionId ? cogneeSessionId(options.sessionId) : undefined,
+        });
+        let activeDatasetId = target.datasetId;
+        let results: CogneeSearchResult[];
+        try {
+          results = await recallTarget(activeDatasetId);
+        } catch (error) {
+          if (!isStaleDatasetError(error)) throw error;
+          const healed = await healDatasetId(target.datasetName);
+          if (!healed || healed === activeDatasetId) throw error;
+          activeDatasetId = healed;
+          results = await recallTarget(activeDatasetId);
+        }
+        return results.map((result): MemoryToolHit => ({
+          id: result.id,
+          text: result.text,
+          score: result.score,
+          scope: target.scope,
+          source: typeof result.metadata?.source === "string"
+            ? result.metadata.source
+            : typeof result.metadata?.path === "string" ? result.metadata.path : undefined,
+          time: typeof result.metadata?.time === "string"
+            ? result.metadata.time
+            : typeof result.metadata?.timestamp === "string" ? result.metadata.timestamp
+              : typeof result.metadata?.created_at === "string" ? result.metadata.created_at : undefined,
+          datasetName: target.datasetName,
+          datasetId: activeDatasetId,
+        }));
+      }));
+      if (settled.length > 0 && settled.every((outcome) => outcome.status === "rejected")) {
+        throw (settled[0] as PromiseRejectedResult).reason;
+      }
+      for (const outcome of settled) {
+        if (outcome.status === "rejected") api.logger.warn?.(`cognee-openclaw: memory_search scope failed: ${String(outcome.reason)}`);
+      }
+      const minScore = options.minScore ?? cfg.minScore;
+      return settled.flatMap((outcome) => outcome.status === "fulfilled" ? outcome.value : [])
+        .filter((result) => result.score >= minScore)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, options.maxResults ?? cfg.maxResults);
+    });
 
     // Sync ONE agent's `agent`-scope files from its own workspace into its own
     // dataset + per-agent index. Serialized per agentId. Used by per-agent mode.
@@ -907,7 +974,12 @@ const memoryCogneePlugin = {
     // fire-and-forget so they never block the agent loop.
     // ------------------------------------------------------------------
 
-    const captureEnabled = cfg.enableSessions && cfg.captureSession;
+    const captureMode = cfg.enableSessions ? cfg.sessionMemoryPolicy.capture : "off";
+    const captureEnabled = captureMode !== "off";
+    const promotionEnabled = cfg.enableSessions
+      && cfg.persistSessionsAfterEnd
+      && cfg.improveOnSessionEnd
+      && cfg.sessionMemoryPolicy.promotion === "all";
     const MAX_PARAM_CHARS = 4_000;
     const MAX_RETURN_CHARS = 8_000;
     const MAX_QA_CHARS = 8_000;
@@ -916,6 +988,11 @@ const memoryCogneePlugin = {
     // sessionId. Only the FIRST llm_output after a prompt forms the QA pair
     // (subagent/multi-call runs don't produce duplicate rows).
     const pendingPrompts = new Map<string, string>();
+    const pendingCaptureWrites = new Map<string, Set<Promise<unknown>>>();
+
+    function captureKey(rawAgentId: string | undefined, hostSessionId: string): string {
+      return `${normalizeAgentId(rawAgentId, cfg)}::${hostSessionId}`;
+    }
 
     function truncateForCapture(value: unknown, max: number): string {
       let s: string;
@@ -932,7 +1009,10 @@ const memoryCogneePlugin = {
     }
 
     function storeEntry(entry: Record<string, unknown>, rawAgentId: string | undefined, hostSessionId: string, kind: string): void {
-      client.rememberEntry({
+      const key = captureKey(rawAgentId, hostSessionId);
+      const writes = pendingCaptureWrites.get(key) ?? new Set<Promise<unknown>>();
+      pendingCaptureWrites.set(key, writes);
+      const write = client.rememberEntry({
         datasetName: captureDatasetName(rawAgentId),
         sessionId: cogneeSessionId(hostSessionId),
         entry,
@@ -940,10 +1020,14 @@ const memoryCogneePlugin = {
         api.logger.debug?.(`cognee-openclaw: ${kind} stored${entryId ? ` (${entryId})` : ""}`);
       }).catch((e: unknown) => {
         api.logger.warn?.(`cognee-openclaw: ${kind} store failed: ${String(e)}`);
+      }).finally(() => {
+        writes.delete(write);
+        if (writes.size === 0) pendingCaptureWrites.delete(key);
       });
+      writes.add(write);
     }
 
-    if (captureEnabled) {
+    if (captureMode === "qa-and-traces") {
       api.on("after_tool_call", async (event, ctx) => {
         if (!ctx.sessionId) return;
 
@@ -970,12 +1054,16 @@ const memoryCogneePlugin = {
         }, ctx.agentId, ctx.sessionId, "trace");
       });
 
+    }
+
+    if (captureEnabled) {
       api.on("llm_output", async (event, ctx) => {
         const hostSessionId = ctx.sessionId || event.sessionId;
         if (!hostSessionId) return;
-        const question = pendingPrompts.get(hostSessionId);
+        const key = captureKey(ctx.agentId, hostSessionId);
+        const question = pendingPrompts.get(key);
         if (!question) return;
-        pendingPrompts.delete(hostSessionId);
+        pendingPrompts.delete(key);
 
         const answer = truncateForCapture((event.assistantTexts ?? []).join("\n"), MAX_QA_CHARS);
         if (!answer) return;
@@ -994,7 +1082,7 @@ const memoryCogneePlugin = {
     api.on("before_prompt_build", async (event, ctx) => {
       if (cfg.enableSessions && ctx.sessionId) sessionId = ctx.sessionId;
       if (captureEnabled && ctx.sessionId && event.prompt && event.prompt.length >= 5) {
-        pendingPrompts.set(ctx.sessionId, truncateForCapture(event.prompt, MAX_QA_CHARS));
+        pendingPrompts.set(captureKey(ctx.agentId, ctx.sessionId), truncateForCapture(event.prompt, MAX_QA_CHARS));
       }
       if (cfg.enableSessions && ctx.sessionId) {
         const regKey = `${normalizeAgentId(ctx.agentId, cfg)}::${ctx.sessionId}`;
@@ -1031,8 +1119,10 @@ const memoryCogneePlugin = {
               // On unclean gateway death, bridge this session's cache into the
               // graph before unregistering. The gateway anchor watcher has no
               // session and stays unregister-only.
-              datasetName: captureDatasetName(ctx.agentId),
-              cogneeSessionId: cogneeSessionId(ctx.sessionId),
+              ...(promotionEnabled ? {
+                datasetName: captureDatasetName(ctx.agentId),
+                cogneeSessionId: cogneeSessionId(ctx.sessionId),
+              } : {}),
               logger: api.logger,
             }).catch(() => {});
           } catch (e: unknown) {
@@ -1395,10 +1485,12 @@ const memoryCogneePlugin = {
         // into THIS session's agent dataset. Must complete BEFORE unregister:
         // unregister can drop activeAgents to 0 and, in COGNEE_AGENT_MODE,
         // shut the server down mid-pipeline.
-        if (cfg.improveOnSessionEnd && endSessionId) {
+        if (promotionEnabled && endSessionId) {
+          const pendingWrites = pendingCaptureWrites.get(captureKey(endAgentId, rawSessionId));
+          if (pendingWrites?.size) await Promise.allSettled([...pendingWrites]);
           const dsName = multiScope ? datasetNameForScope("agent", cfg, endAgentId) : cfg.datasetName;
           await withFinalSyncRetries("session-end improve", async () => {
-            const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId] });
+            const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId], runInBackground: false });
             api.logger.info?.(`cognee-openclaw: session-end improve dispatched for session ${endSessionId} -> dataset "${dsName}" (status=${result.status ?? "?"})`);
           });
         }
