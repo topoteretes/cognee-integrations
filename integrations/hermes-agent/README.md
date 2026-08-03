@@ -21,19 +21,75 @@ Python package with the `hermes_agent.plugins` entry point.
   graph and unregisters from the server — so no session is lost and no server
   lingers. It stands down silently on a clean shutdown.
 
-## Install For Local Hermes Development
+## Quick start
 
-From a fresh checkout of this repository:
+### Prerequisites
+
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed
+  (`curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`).
+- **Local mode:** an LLM API key (e.g. OpenAI) — cognee uses it to build the
+  knowledge graph on your machine.
+- **Cloud mode:** a Cognee Cloud tenant URL and API key from your
+  [Cognee Cloud dashboard](https://platform.cognee.ai/). No LLM key needed —
+  the tenant runs the models.
+
+### 1. Install the plugin
+
+Until the PyPI release, install from a checkout of this repository:
 
 ```bash
 git clone https://github.com/topoteretes/cognee-integrations.git
-cd cognee-integrations
 mkdir -p ~/.hermes/plugins/cognee
-cp -R integrations/hermes-agent/. ~/.hermes/plugins/cognee/
+cp -R cognee-integrations/integrations/hermes-agent/. ~/.hermes/plugins/cognee/
+```
+
+### 2a. Connect locally (default)
+
+```bash
 hermes memory setup
 ```
 
-Select `cognee` in the memory provider picker.
+Select `cognee` in the provider picker, choose **Mode: local**, and paste your
+LLM API key when asked. That's the whole setup — the wizard writes non-secrets
+to `~/.hermes/cognee.json` and secrets to `~/.hermes/.env`.
+
+On your next `hermes` session the plugin starts a cognee server on
+`127.0.0.1:8011` — or attaches to one that a sibling cognee plugin (Claude
+Code, Codex, OpenClaw) already runs — with storage in `~/.cognee`. The very
+first boot runs database migrations and can take a couple of minutes; after
+that it's instant.
+
+Verify it's connected:
+
+```bash
+hermes cognee status                    # shows mode, dataset, service URL
+curl -s http://127.0.0.1:8011/health    # the server answers
+```
+
+Then, in a `hermes` chat: *"Remember that my favorite editor is Helix"* — the
+agent should call `cognee_remember`. Start a fresh conversation (`/new`) and
+ask *"What's my favorite editor?"* — it should recall it via `cognee_recall`.
+
+### 2b. Connect to Cognee Cloud
+
+Grab your tenant URL (`https://tenant-xxx.aws.cognee.ai`) and an API key from
+the [Cognee Cloud dashboard](https://platform.cognee.ai/), then run the same
+wizard and choose **Mode: remote**:
+
+```bash
+hermes memory setup     # cognee -> Mode: remote -> tenant URL + API key
+```
+
+Verify: `hermes cognee status` shows your tenant URL, and the same
+remember-`/new`-recall chat round trip works. Nothing runs locally in this
+mode — no server is spawned and no LLM key is used; every request goes to the
+tenant, authenticated with your API key via `X-Api-Key`.
+
+> **Switching modes? Re-run the wizard.** Values in `~/.hermes/cognee.json`
+> take precedence over environment variables, and a local setup records
+> `"service_url": ""` there — so *only* exporting `COGNEE_BASE_URL` will not
+> move an existing local install to the cloud. `hermes memory setup` (or
+> `hermes cognee setup`) rewrites both files consistently.
 
 ## PyPI Availability
 
@@ -49,8 +105,13 @@ cognee = "cognee_integration_hermes"
 
 ## Configuration
 
-The setup wizard writes non-secret settings to `$HERMES_HOME/cognee.json` and
-secrets to `$HERMES_HOME/.env`.
+The quick start above covers the common cases; this section is the full
+reference. Configuration comes from two places: `$HERMES_HOME/.env` (secrets
+and environment variables — Hermes loads it for every session) and
+`$HERMES_HOME/cognee.json` (non-secret settings). The setup wizard writes both.
+When a key appears in both places, **the JSON file wins** — which is why mode
+switches should go through the wizard rather than editing the environment
+alone.
 
 ### Modes
 
@@ -125,6 +186,9 @@ it its own `COGNEE_PLUGIN_DATASET`, or for full isolation its own
 belongs to whoever reaches its port first, so a private store needs a private
 port.
 
+The per-mode settings below live in `~/.hermes/.env` (the wizard puts them
+there; you can also edit the file by hand).
+
 local-server mode (default — just set your LLM creds):
 
 ```bash
@@ -134,10 +198,11 @@ LLM_MODEL=gpt-4o-mini
 # COGNEE_LOCAL_PORT=8011                 # optional; the other plugins' server port
 ```
 
-Remote / cloud mode:
+Remote / cloud mode (tenant URL and API key from the
+[Cognee Cloud dashboard](https://platform.cognee.ai/)):
 
 ```bash
-COGNEE_BASE_URL=https://your-cognee-service.example   # canonical name
+COGNEE_BASE_URL=https://tenant-xxx.aws.cognee.ai   # canonical name
 COGNEE_API_KEY=...
 ```
 
