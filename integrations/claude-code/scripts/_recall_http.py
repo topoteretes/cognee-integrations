@@ -7,9 +7,13 @@ plugin venv (the same constraint ``cognee-search.sh`` already works under).
 Contract — what gets printed to stdout:
   * a JSON **list** on a 2xx response. An **empty list is authoritative**:
     the server searched and found nothing.
-  * the sentinel ``UNREACHABLE`` ONLY when the server cannot be reached
-    (connection refused, timeout, DNS). The caller may then fall back to the
-    local CLI as a degraded path.
+  * the sentinel ``UNREACHABLE`` ONLY when the server is positively absent
+    (connection refused, DNS failure, unroutable host). The caller may then
+    fall back to the local CLI as a degraded path. A **timeout is NOT
+    unreachable**: a dead server refuses in milliseconds, a busy one times
+    out — so timeouts return a *transient* error envelope instead (see below),
+    and the caller keeps its prior view of the server rather than declaring
+    it down.
   * a JSON **error object** ``{"error", "status", "authoritative": false}`` on
     any HTTP error (5xx, 4xx, and especially **401/403** auth rejections) or an
     error-shaped 2xx body. The caller MUST NOT fall back to the local CLI here:
@@ -21,8 +25,10 @@ Contract — what gets printed to stdout:
 Diagnostics also go to stderr so the caller can surface them.
 """
 
+import errno
 import json
 import os
+import socket
 import ssl
 import sys
 import urllib.error
@@ -30,6 +36,46 @@ import urllib.parse
 import urllib.request
 
 UNREACHABLE = "UNREACHABLE"
+
+# Transport-exception verdicts (classify_transport_exception). Only DOWN is
+# evidence the server is absent; SLOW means it exists but did not answer in
+# time, and UNKNOWN is anything we cannot classify. The distinction matters:
+# a dead local server refuses connections in milliseconds, while a busy one
+# times out — conflating the two is what painted false "unreachable" states.
+DOWN = "down"
+SLOW = "slow"
+UNKNOWN = "unknown"
+
+# Errnos that positively identify an absent/unroutable server.
+_DOWN_ERRNOS = {errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH}
+
+
+def classify_transport_exception(exc) -> str:
+    """Classify a transport failure as DOWN, SLOW, or UNKNOWN.
+
+    Unwraps ``urllib.error.URLError`` (the real cause lives in ``.reason``, and
+    can be an exception *or* a plain string). Order matters below:
+    ``TimeoutError`` and ``ConnectionRefusedError`` are OSError subclasses, and
+    ``ssl.SSLError`` is too, so the generic errno check must come last.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        # The server answered; HTTP statuses are the caller's business.
+        return UNKNOWN
+    if isinstance(exc, urllib.error.URLError):
+        exc = exc.reason
+    if isinstance(exc, str):
+        return SLOW if "timed out" in exc else UNKNOWN
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return SLOW
+    if isinstance(exc, socket.gaierror):
+        return DOWN
+    if isinstance(exc, ConnectionRefusedError):
+        return DOWN
+    if isinstance(exc, ssl.SSLError):
+        return UNKNOWN
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in _DOWN_ERRNOS:
+        return DOWN
+    return UNKNOWN
 
 
 # macOS Python installations often lack root CA certs in the default bundle.
@@ -88,12 +134,18 @@ def coerce_scope(value, default="auto"):
         return default
 
 
-def _error(status, message):
-    """An error envelope — reachable server, but the request was rejected/failed.
+def _error(status, message, *, transient=False):
+    """An error envelope — the request failed, but the server is NOT known dead.
 
     Distinct from UNREACHABLE so the caller does NOT fall back to the local CLI.
+    ``transient=True`` marks a no-verdict failure (timeout / unclassifiable
+    transport error): the breaker must count it as neither success nor failure,
+    and no connection state should be rewritten because of it.
     """
-    return {"error": message, "status": status, "authoritative": False}
+    envelope = {"error": message, "status": status, "authoritative": False}
+    if transient:
+        envelope["transient"] = True
+    return envelope
 
 
 def do_recall(
@@ -154,11 +206,21 @@ def do_recall(
             msg = "server returned HTTP %s for /api/v1/recall" % e.code
         sys.stderr.write("[cognee-search] %s — NOT falling back to local CLI\n" % msg)
         return _error(e.code, msg)
-    except Exception as e:  # URLError / timeout / OSError → genuinely unreachable
+    except Exception as e:
+        verdict = classify_transport_exception(e)
+        if verdict == DOWN:  # refused / DNS / unroutable → positively absent
+            sys.stderr.write(
+                "[cognee-search] server unreachable at %s: %s\n" % (service_url, str(e)[:160])
+            )
+            return UNREACHABLE
+        # SLOW (timed out — alive but busy) or UNKNOWN (SSL / reset / a bug in
+        # our own request building): no verdict on the server. Not UNREACHABLE
+        # (no CLI fallback, no "down" marker) and flagged transient so the
+        # breaker counts it as neither success nor failure.
         sys.stderr.write(
-            "[cognee-search] server unreachable at %s: %s\n" % (service_url, str(e)[:160])
+            "[cognee-search] no verdict (%s) from %s: %s\n" % (verdict, service_url, str(e)[:160])
         )
-        return UNREACHABLE
+        return _error(0, "recall %s: %s" % (verdict, str(e)[:160]), transient=True)
 
     # The server responded. A body we can't parse is a SERVER-side bug, not an
     # unreachable server — report it as an error (do NOT trigger the CLI fallback).

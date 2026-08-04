@@ -115,14 +115,22 @@ def _mode_label() -> str:
     return f"{style}{mode}\033[0m" if style else mode
 
 
-_FAIL_STATES = ("auth_failed", "unreachable", "server_error")
+_FAIL_STATES = ("auth_failed", "unreachable", "server_error", "not_responding")
 # Of those, the ones that are a property of the SERVER rather than of the credential
 # the observing session happened to use. Only these may cross session boundaries: if
 # one terminal can't reach the server, neither can the others — but one terminal's
 # rejected API key says nothing about anyone else's. Letting auth_failed cross put a
 # red ✕ (incorrect_cognee_api_key) on a healthy local terminal for a few seconds
 # whenever a keyless cloud terminal started up.
-_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error")
+# "not_responding" (N consecutive recall timeouts) is server-wide too: a server
+# that isn't answering one terminal isn't answering the others either.
+_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error", "not_responding")
+
+# A failure verdict is only worth a red ✕ while it is FRESH. The hooks refresh a
+# genuine outage on every prompt (probe or recall attempt), so a failure marker
+# older than this means no session has re-confirmed it — ambiguous, and ambiguity
+# renders no glyph (same as the warming case) rather than a stale accusation.
+_FAIL_STATE_STALE_SECONDS = 30 * 60
 
 
 def _active_base_url() -> str:
@@ -241,14 +249,43 @@ def _url_mismatch(active_url: str, marked_url: str) -> bool:
     return bool(active_url and marked_url and active_url != marked_url)
 
 
+def _breaker_glyph(active_url: str) -> str:
+    """Red ✕ when THIS server's breaker is open, labeled with the real trip reason.
+
+    The breaker file is keyed by base_url (SDK-356): an entry for a different
+    server — a cloud tenant while this terminal is local, or Codex's target —
+    must not red this bar. A legacy flat file (machine-wide, target-blind) is
+    ignored for the same reason. The reason travels from the trip site, so a
+    breaker opened by 5xx reads ``server_error``, not a false ``unreachable``.
+    """
+    try:
+        raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    servers = raw.get("servers") if isinstance(raw, dict) else None
+    if not isinstance(servers, dict):
+        return ""
+    entry = servers.get(active_url.rstrip("/"))
+    if not isinstance(entry, dict):
+        return ""
+    try:
+        if float(entry.get("cooldown_until", 0) or 0) <= time.time():
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    reason = str(entry.get("reason") or "unreachable")
+    return _fail_glyph(_REASON_LABELS.get(reason, reason))
+
+
 def _health_prefix(session_id: str = "") -> str:
     """Server-connection glyph for THIS session, from local markers (no network).
 
-    Precedence — we keep it green until we actually know it is red:
-      1. a recorded failure state in the marker → ``✕ (<reason>)``
-      2. an open recall breaker (repeated recall failure) → ``✕ (unreachable)``
+    Precedence — red is reserved for CONFIRMED, FRESH, DEFINITIVE failures:
+      1. a fresh recorded failure state in the marker → ``✕ (<reason>)``
+         (older than _FAIL_STATE_STALE_SECONDS → ambiguous → no glyph)
+      2. an open recall breaker for THIS base_url → ``✕ (<trip reason>)``
       3. a "ready" marker → ``● ``
-      4. otherwise (no marker / warming / different target) → no glyph
+      4. otherwise (no marker / warming / stale / different target) → no glyph
     The marker (``server-ready.json``) carries {state, base_url, ...}; a state is
     trusted only when its base_url matches this session's, so a local-ready marker
     never greens a cloud session (or vice versa).
@@ -263,26 +300,18 @@ def _health_prefix(session_id: str = "") -> str:
         # Legacy marker (no 'state', has ready_at) reads as ready.
         state = str(marker.get("state") or ("ready" if marker.get("ready_at") else ""))
         if state in _FAIL_STATES:
-            return _fail_glyph(_REASON_LABELS.get(state, state))
+            if time.time() - _checked_at(marker) <= _FAIL_STATE_STALE_SECONDS:
+                return _fail_glyph(_REASON_LABELS.get(state, state))
+            # Stale verdict: nobody has re-confirmed the failure — treat as
+            # unknown rather than keep accusing a server that may be fine.
+            return _breaker_glyph(active_url)
         if state == "ready":
             # Breaker override: recall is failing repeatedly even if the last
             # readiness write still says ready — that means we now know it's red.
-            try:
-                raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-                if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
-                    return _fail_glyph("unreachable")
-            except Exception:
-                pass
-            return _ok_glyph()
+            return _breaker_glyph(active_url) or _ok_glyph()
 
     # No usable marker: fall back to the breaker as the only failure signal.
-    try:
-        raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
-            return _fail_glyph("unreachable")
-    except Exception:
-        pass
-    return ""
+    return _breaker_glyph(active_url)
 
 
 def _update_segment() -> str:

@@ -24,6 +24,7 @@ from typing import Optional
 
 import _proc
 from _env_file import load_env_file
+from _recall_http import DOWN, SLOW, UNKNOWN, classify_transport_exception
 
 # One-time config: ~/.cognee/.env acts like shell exports (setdefault — a real
 # export still wins). Loaded before any env read below or in importers.
@@ -1340,30 +1341,51 @@ def http_api_ready() -> bool:
     return bool(service_url and api_key)
 
 
-def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
-    """Return True iff GET {service_url}/health responds 200 (server serving).
+def probe_health(service_url: str = "", timeout: float = 1.0) -> str:
+    """Classified GET {service_url}/health probe.
 
-    The Cognee server runs migrations in its FastAPI lifespan *before* it
-    serves, so a 200 here reliably means migrations are done and the DBs are
-    reachable.
+    Returns:
+      "ready"   — 200 (the server runs migrations in its FastAPI lifespan
+                  *before* it serves, so this reliably means migrations are
+                  done and the DBs are reachable)
+      "down"    — connection refused / DNS / unroutable: positively absent
+      "slow"    — timed out: NO verdict (a busy server times out; a dead one
+                  refuses in milliseconds). Callers must keep prior state.
+      "unknown" — non-200 status, SSL trouble, resets, or no URL: no verdict
     """
     base = _normalize_service_url(service_url or _local_api_url())
     if not base:
-        return False
+        return UNKNOWN
     try:
         with urllib.request.urlopen(
             f"{base}/health", timeout=timeout, context=_https_context()
         ) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
+            return "ready" if resp.status == 200 else UNKNOWN
+    except Exception as exc:
+        verdict = classify_transport_exception(exc)
+        return verdict if verdict in (DOWN, SLOW) else UNKNOWN
+
+
+def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
+    """Return True iff /health responds 200. Boolean face of ``probe_health``.
+
+    Callers that must react to *failures* should use ``probe_health`` instead:
+    this bool cannot distinguish "down" (write a failure state) from "slow"
+    (no verdict — keep prior state).
+    """
+    return probe_health(service_url, timeout=timeout) == "ready"
 
 
 # Connection states recorded in the (shared) server-ready marker. "ready" means
 # the server is up AND authenticated; the failure states carry the reason shown
 # in the status line as "✕ (<state>)". Any non-"ready" state makes
 # server_ready_hint return False so recall does not attempt against a bad backend.
-CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error")
+# "unreachable" is reserved for POSITIVE absence (connection refused / DNS /
+# unroutable). "not_responding" is deliberately distinct: the server exists
+# (connections are not refused) but has not answered within budget for N
+# consecutive prompts — written only by the slow-streak escalation (see
+# record_slow_probe), never by a lone timeout.
+CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error", "not_responding")
 
 
 # Per-session copies of the status markers. The shared files above are
@@ -1451,6 +1473,83 @@ def mark_server_ready(service_url: str, version: str = "") -> None:
     write_connection_state("ready", service_url, version=version)
 
 
+# Slow-server hysteresis. A single timeout is "no verdict" and must not touch
+# the connection marker — but N consecutive timeout-only prompts with no
+# success in between are a pattern (wedged server, packet-dropping network),
+# not a blip. This counter, keyed by base_url, is how a lone blip stays
+# invisible while a persistent stall still escalates to a visible "slow" state
+# (and recall backoff) instead of leaving the bar green forever.
+_SLOW_STREAK_FILE = _PLUGIN_DIR / "slow-streak.json"
+
+
+def slow_streak_threshold() -> int:
+    """Consecutive timeout-only prompts before escalating to state "slow"."""
+    try:
+        return max(1, int(os.environ.get("COGNEE_SLOW_STREAK_THRESHOLD", "3") or 3))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _slow_streak_window_seconds() -> float:
+    """Ticks further apart than this don't chain — a streak must be recent."""
+    try:
+        return float(os.environ.get("COGNEE_SLOW_STREAK_WINDOW", "600") or 600)
+    except (TypeError, ValueError):
+        return 600.0
+
+
+def _read_slow_streaks() -> dict:
+    try:
+        raw = json.loads(_SLOW_STREAK_FILE.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_slow_streaks(state: dict) -> None:
+    try:
+        _SLOW_STREAK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SLOW_STREAK_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, _SLOW_STREAK_FILE)
+    except Exception:
+        pass
+
+
+def record_slow_probe(service_url: str) -> int:
+    """Count a consecutive no-verdict (timeout) observation; return the streak.
+
+    The streak resets itself when the previous tick is older than the window —
+    two timeouts hours apart are noise, not a pattern. The caller escalates to
+    ``write_connection_state("not_responding", ...)`` once the return value
+    reaches ``slow_streak_threshold()``.
+    """
+    url = _normalize_service_url(service_url)
+    now = datetime.now(timezone.utc).timestamp()
+    state = _read_slow_streaks()
+    entry = state.get(url) if isinstance(state.get(url), dict) else {}
+    try:
+        last_at = float(entry.get("last_at") or 0)
+        count = int(entry.get("count") or 0)
+    except (TypeError, ValueError):
+        last_at, count = 0.0, 0
+    if now - last_at > _slow_streak_window_seconds():
+        count = 0
+    count += 1
+    state[url] = {"count": count, "last_at": now}
+    _write_slow_streaks(state)
+    return count
+
+
+def clear_slow_streak(service_url: str) -> None:
+    """A definitive observation (success OR hard failure) ends the streak."""
+    url = _normalize_service_url(service_url)
+    state = _read_slow_streaks()
+    if url in state:
+        state.pop(url, None)
+        _write_slow_streaks(state)
+
+
 def same_connection_target(service_url: str, prior_url: str) -> bool:
     """True unless the two URLs are *provably* different servers.
 
@@ -1501,10 +1600,14 @@ def authed_liveness(service_url: str = "", api_key: str = "", timeout: float = 1
       "ready"        — 2xx (server up and the key is accepted)
       "auth_failed"  — 401/403 (server up, key rejected)
       "server_error" — 5xx
-      "unreachable"  — connection refused / timeout / DNS
-      "unknown"      — endpoint absent (404/405) or no key to send; caller should
-                       fall back to ``server_health_ok`` rather than trust this
-    Returns a string in ``CONNECTION_STATES`` or "unknown". Never raises.
+      "unreachable"  — connection refused / DNS / unroutable (positively absent)
+      "slow"         — timed out: NO verdict, the server may simply be busy.
+                       Callers must keep their prior state, not record a failure.
+      "unknown"      — endpoint absent (404/405), no key to send, or an
+                       unclassifiable transport error; caller should fall back
+                       to ``probe_health`` rather than trust this
+    Returns a string in ``CONNECTION_STATES``, "slow", or "unknown" — "slow"
+    is a probe verdict only, never a recorded marker state. Never raises.
     """
     base = _normalize_service_url(service_url or _local_api_url())
     if not base:
@@ -1530,8 +1633,11 @@ def authed_liveness(service_url: str = "", api_key: str = "", timeout: float = 1
         if exc.code >= 500:
             return "server_error"
         return "unknown"
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return "unreachable"
+    except Exception as exc:
+        verdict = classify_transport_exception(exc)
+        if verdict == DOWN:
+            return "unreachable"
+        return "slow" if verdict == SLOW else "unknown"
 
 
 # LLM-key health surfaced in the status line — LOCAL mode only, since LLM_API_KEY
