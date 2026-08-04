@@ -1,6 +1,6 @@
 name: cognee
 kind: exclusive
-version: 0.2.0
+version: 1.0.0
 description: "Cognee memory provider for Hermes Agent: session-aware graph memory, recall, forget, and session-end improvement."
 pip_dependencies:
   # Floor 1.2.1: the HTTP wire contract this plugin depends on

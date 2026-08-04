@@ -10,10 +10,10 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.2.0]
+## [1.0.0]
 
-Moves the provider onto cognee's REST API, the way the Claude Code, Codex and
-OpenClaw plugins already talk to it. The local cognee server was always there —
+First stable release, published to PyPI. Moves the provider onto cognee's REST
+API, the way the Claude Code, Codex and OpenClaw plugins already talk to it. The local cognee server was always there —
 what changed is the client: routing through the SDK's `cognee.serve()` /
 `CloudClient` silently dropped fields the server accepts.
 
