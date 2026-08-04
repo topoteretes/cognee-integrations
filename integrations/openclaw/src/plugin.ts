@@ -641,8 +641,10 @@ const memoryCogneePlugin = {
         .option("--hybrid", "Keep built-in memory providers enabled in config (slot exclusivity may still prevent co-loading)")
         .action(async (opts: { hybrid?: boolean }) => {
           // loadConfig/writeConfigFile are removed from the plugin runtime in
-          // OpenClaw 2026.7.2+; mutateConfigFile exists across the supported
-          // range (>=2026.6.5).
+          // OpenClaw 2026.7.2+. Their replacements — current() for reads and
+          // mutateConfigFile() for writes — are both declared on
+          // PluginRuntime.config as far back as openclaw 2026.6.5 (verified
+          // against its published typings), so the >=2026.6.5 peer range holds.
           await api.runtime.config.mutateConfigFile({
             afterWrite: { mode: "auto" },
             mutate: (config) => {
