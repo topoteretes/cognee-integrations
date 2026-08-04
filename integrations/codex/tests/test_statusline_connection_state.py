@@ -193,10 +193,15 @@ def test_a_fresher_shared_ready_does_not_clear_our_failure():
 # ── the pre-existing rules still hold ────────────────────────────────────
 
 
+def _breaker_for(url, *, cooldown_delta=60, reason="unreachable"):
+    """A per-server breaker file (SDK-356 schema) for `url`."""
+    return {"servers": {url: {"cooldown_until": time.time() + cooldown_delta, "reason": reason}}}
+
+
 def test_open_breaker_overrides_our_ready():
     with _Markers(
         mine=_rec("ready", _MINE),
-        breaker={"cooldown_until": time.time() + 60},
+        breaker=_breaker_for(_URL),
     ):
         assert sl._health_prefix(_MINE) == "✕ (unreachable) "
 
@@ -204,9 +209,65 @@ def test_open_breaker_overrides_our_ready():
 def test_expired_breaker_leaves_ready_alone():
     with _Markers(
         mine=_rec("ready", _MINE),
-        breaker={"cooldown_until": time.time() - 60},
+        breaker=_breaker_for(_URL, cooldown_delta=-60),
     ):
         assert sl._health_prefix(_MINE) == _READY
+
+
+def test_breaker_reports_its_real_trip_reason():
+    """A breaker opened by 5xx must read server_error, not a false unreachable."""
+    with _Markers(
+        mine=_rec("ready", _MINE),
+        breaker=_breaker_for(_URL, reason="server_error"),
+    ):
+        assert sl._health_prefix(_MINE) == "✕ (server_error) "
+
+
+def test_another_servers_breaker_does_not_red_this_bar():
+    """Cloud failures (or Claude Code's target) must not red a local terminal."""
+    with _Markers(
+        mine=_rec("ready", _MINE),
+        breaker=_breaker_for("https://tenant-x.aws.cognee.ai"),
+    ):
+        assert sl._health_prefix(_MINE) == _READY
+
+
+def test_legacy_flat_breaker_file_is_ignored():
+    """The pre-upgrade machine-wide breaker was target-blind — never render it."""
+    with _Markers(
+        mine=_rec("ready", _MINE),
+        breaker={"failures": 99, "cooldown_until": time.time() + 3600},
+    ):
+        assert sl._health_prefix(_MINE) == _READY
+
+
+# ── SDK-356: honest, fresh, definitive ─────────────────────────────────────
+
+
+def test_not_responding_renders_its_own_reason():
+    """The escalated timeout streak is its own state — never "unreachable"."""
+    with _Markers(mine=_rec("not_responding", _MINE)):
+        assert sl._health_prefix(_MINE) == "✕ (not_responding) "
+
+
+def test_fresher_shared_not_responding_overrides_our_older_ready():
+    """Server-wide: a server that isn't answering isn't answering anyone."""
+    with _Markers(
+        shared=_rec("not_responding", _THEIRS, age=1),
+        mine=_rec("ready", _MINE, age=600),
+    ):
+        assert sl._health_prefix(_MINE) == "✕ (not_responding) "
+
+
+def test_stale_failure_marker_renders_no_glyph():
+    """A failure nobody has re-confirmed within the TTL is ambiguity, not red."""
+    with _Markers(mine=_rec("unreachable", _MINE, age=sl._FAIL_STATE_STALE_SECONDS + 60)):
+        assert sl._health_prefix(_MINE) == ""
+
+
+def test_fresh_failure_marker_still_renders():
+    with _Markers(mine=_rec("unreachable", _MINE, age=60)):
+        assert sl._health_prefix(_MINE) == "✕ (unreachable) "
 
 
 def test_base_url_mismatch_is_ignored():

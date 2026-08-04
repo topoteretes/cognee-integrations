@@ -91,8 +91,8 @@ def test_http_401_403_auth_is_error_envelope_not_fallback():
         assert out != rh.UNREACHABLE
 
 
-def test_connection_error_is_unreachable():
-    # Only a genuine connection failure may fall back to the local CLI.
+def test_connection_refused_is_unreachable():
+    # Only a POSITIVE absence (refused/DNS/unroutable) may fall back to the CLI.
     assert (
         rh.do_recall(
             "http://x",
@@ -101,10 +101,67 @@ def test_connection_error_is_unreachable():
             "",
             '["graph"]',
             "5",
-            opener=_raises(urllib.error.URLError("refused")),
+            opener=_raises(urllib.error.URLError(ConnectionRefusedError(61, "refused"))),
         )
         == rh.UNREACHABLE
     )
+
+
+def test_dns_failure_is_unreachable():
+    import socket
+
+    assert (
+        rh.do_recall(
+            "http://x",
+            "",
+            "q",
+            "",
+            '["graph"]',
+            "5",
+            opener=_raises(urllib.error.URLError(socket.gaierror(8, "no such host"))),
+        )
+        == rh.UNREACHABLE
+    )
+
+
+def test_timeout_is_transient_envelope_not_unreachable():
+    """A timeout is 'alive but busy' — no CLI fallback, no breaker failure."""
+    for exc in (TimeoutError("timed out"), urllib.error.URLError(TimeoutError("timed out"))):
+        out = rh.do_recall("http://x", "", "q", "", '["graph"]', "5", opener=_raises(exc))
+        assert out != rh.UNREACHABLE
+        assert isinstance(out, dict) and out.get("transient") is True
+        assert out["authoritative"] is False
+
+
+def test_unclassifiable_error_is_transient_envelope():
+    """SSL trouble / vague reasons / our own bugs must not read as 'server down'."""
+    out = rh.do_recall(
+        "http://x", "", "q", "", '["graph"]', "5", opener=_raises(urllib.error.URLError("weird"))
+    )
+    assert out != rh.UNREACHABLE
+    assert isinstance(out, dict) and out.get("transient") is True
+
+
+def test_classifier_verdicts():
+    import socket
+
+    cases = [
+        (ConnectionRefusedError(61, "refused"), rh.DOWN),
+        (socket.gaierror(8, "no such host"), rh.DOWN),
+        (OSError(65, "no route to host"), rh.DOWN),  # EHOSTUNREACH
+        (TimeoutError("timed out"), rh.SLOW),
+        (urllib.error.URLError(TimeoutError("timed out")), rh.SLOW),
+        (urllib.error.URLError("timed out"), rh.SLOW),  # string reason
+        (urllib.error.URLError(ConnectionRefusedError(61, "x")), rh.DOWN),
+        (ConnectionResetError(54, "reset"), rh.UNKNOWN),
+        (ValueError("bug in our own code"), rh.UNKNOWN),
+    ]
+    import ssl as _ssl
+
+    cases.append((_ssl.SSLError("handshake"), rh.UNKNOWN))
+    for exc, want in cases:
+        got = rh.classify_transport_exception(exc)
+        assert got == want, f"{exc!r}: want {want}, got {got}"
 
 
 def test_malformed_json_is_error_not_unreachable():

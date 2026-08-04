@@ -42,7 +42,11 @@ def _reset_env(*keys):
 
 
 def _reset_breaker():
-    p = pathlib.Path(_TMP) / "recall-breaker.json"
+    # Resolve through _state_path(): other test modules also set
+    # COGNEE_PLUGIN_STATE_DIR at import, and under pytest the last import wins.
+    from _cognee_client import _state_path
+
+    p = _state_path()
     if p.exists():
         p.unlink()
 
@@ -342,9 +346,21 @@ def test_breaker_closed():
 def test_breaker_open():
     import time as _time
 
-    breaker_path = pathlib.Path(_TMP) / "recall-breaker.json"
-    breaker_path.write_text(
-        json.dumps({"failures": 10, "cooldown_until": _time.time() + 60}),
+    from _cognee_client import _state_path
+
+    # Per-server schema (SDK-356): entries are keyed by base_url; the no-URL
+    # doctor view reports the worst open entry across all servers.
+    _state_path().write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "http://x": {
+                        "cooldown_until": _time.time() + 60,
+                        "reason": "unreachable",
+                    }
+                }
+            }
+        ),
         encoding="utf-8",
     )
     try:
