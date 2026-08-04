@@ -75,10 +75,10 @@ integrations:
       Talks to a cognee server over the REST API (as claude-code/codex/openclaw do);
       still needs the cognee package installed, both to spawn the local server and
       for the opt-in in-process mode (COGNEE_EMBEDDED=true, COGNEE_TRANSPORT=sdk).
-      NOT published: Hermes discovers memory providers by directory scan only, so a
-      pip install cannot activate it — install under $HERMES_HOME/plugins/cognee.
-      Publishing needs either an upstream entry-point-discovery change or a switch
-      to git/directory distribution.
+      Hermes discovers memory providers by directory scan only, so the wheel ships
+      a cognee-hermes-install console script that copies the plugin into
+      $HERMES_HOME/plugins/cognee (re-run after pip install -U). Published to PyPI
+      from CI on hermes-agent-v* tags (hermes-agent-publish.yml).
 
   - slug: dify
     name: "Cognee Tool Plugin for Dify"

@@ -67,6 +67,11 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
 - **The spawned server no longer leaks.** The plugin registers an agent connection
   on connect and unregisters on shutdown, so cognee's idle watchdog can stop a
   server nobody is using.
+- **The exit watcher is safe on Windows.** Its liveness probe no longer uses
+  `os.kill(pid, 0)` there — CPython implements non-console "signals" on Windows
+  as `TerminateProcess`, so probing would have killed the running Hermes — and
+  queries the process handle (`OpenProcess`/`GetExitCodeProcess`) instead.
+  Group/broadcast pids (`<= 0`) are also never treated as watchable.
 - **A crashed Hermes no longer loses its session or strands the server.** In
   server/remote mode the plugin arms a small detached exit watcher (the pattern
   the claude-code/codex/openclaw plugins use) that polls the Hermes PID; on an
@@ -123,6 +128,14 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
 
 ### Added
 
+- **pip is now a working install channel.** The wheel ships the plugin-root
+  files (`plugin.yaml`, the `cli.py` shim, `after-install.md`) as package data,
+  and a new `cognee-hermes-install` console script copies the plugin into
+  `$HERMES_HOME/plugins/cognee` — the only place Hermes' directory scan looks.
+  `hermes cognee status` now shows the installed plugin version and warns when
+  the pip package is newer than the installed copy (after `pip install -U`,
+  re-run `cognee-hermes-install`). Releases publish to PyPI from CI on
+  `hermes-agent-v*` tags.
 - **The dataset is ensured at startup** (idempotent `POST /api/v1/datasets`, the
   other plugins' bootstrap call), so a session that opens with a recall on a
   fresh server or cloud tenant no longer hits a missing dataset. Best-effort:
@@ -137,9 +150,9 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
 - A *permanent* write cannot be linked to its originating session over HTTP:
   `/api/v1/remember` has no `session_ids` field. The session-to-graph bridge is
   unaffected. Logged once per session rather than dropped silently.
-- `pip install cognee-integration-hermes-agent` cannot activate the provider:
-  Hermes discovers memory providers by directory scan only. Install as a directory
-  plugin under `$HERMES_HOME/plugins/cognee`.
+- `pip install` alone cannot activate the provider — Hermes discovers memory
+  providers by directory scan only — which is why `cognee-hermes-install`
+  exists, and why it must be re-run after every `pip install -U`.
 
 ## [0.1.0]
 
