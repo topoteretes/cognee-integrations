@@ -12,7 +12,7 @@ pinned 1.4.0):
 
 ===================  =========================================================
 ``recall``           ``POST /api/v1/recall``   JSON: ``query``, ``search_type``,
-                     ``datasets``, ``top_k``, ``session_id``
+                     ``scope``, ``datasets``, ``top_k``, ``session_id``
 ``remember_session`` ``POST /api/v1/remember`` multipart: ``data``,
                      ``datasetName``, ``session_id``
 ``remember_permanent`` ``POST /api/v1/remember`` multipart: ``data``,
@@ -26,11 +26,19 @@ pinned 1.4.0):
 Note the field-name differences from the SDK: the endpoint calls them ``query``
 and ``search_type`` where the SDK says ``query_text`` and ``query_type``.
 
+**``search_type`` is always sent, null included.** The endpoint defaults a
+*missing* ``search_type`` to ``GRAPH_COMPLETION`` (deliberately, for backward
+compatibility with older clients); only an explicit null opts into the query
+classifier. That default also decides whether the session cache is searched at
+all — cognee resolves an ``auto`` scope to graph-only unless the search type is
+null — so omitting the key costs both auto-routing and every session read.
+
 **Fields the HTTP API does not have:**
 
 * ``auto_route`` — no such field on ``/api/v1/recall``, but the setting is still
-  honoured: ``auto_route=False`` is translated into an explicit
-  ``search_type=GRAPH_COMPLETION``, which is what it means server-side. See
+  honoured, in both directions: ``auto_route=False`` becomes an explicit
+  ``search_type=GRAPH_COMPLETION`` (what it means server-side), and
+  ``auto_route=True`` becomes an explicit ``search_type: null``. See
   :meth:`recall`.
 * ``session_ids`` on a *permanent* write — no such field on ``/api/v1/remember``
   and no equivalent, so a graph write cannot be linked to its session. Logged
@@ -427,15 +435,16 @@ class HttpBackend(MemoryBackend):
         top_k,
         auto_route,
         query_type,
+        scope=None,
         timeout,
     ) -> list[Any]:
         if not auto_route and not query_type:
             # /api/v1/recall has no auto_route field, but the setting is still
             # expressible: server-side, ``auto_route=False`` with no explicit type
-            # means "skip the query classifier and use GRAPH_COMPLETION"
-            # (recall.py:519). Naming that type directly bypasses the classifier
-            # too, so this is the same retrieval path — only cognee's
-            # router-override counter differs, which is pure telemetry.
+            # means "skip the query classifier and use GRAPH_COMPLETION". Naming
+            # that type directly bypasses the classifier too, so this is the same
+            # retrieval path — only cognee's router-override counter differs,
+            # which is pure telemetry.
             query_type = "GRAPH_COMPLETION"
 
         body: dict[str, Any] = {"query": query, "top_k": top_k}
@@ -443,10 +452,19 @@ class HttpBackend(MemoryBackend):
             body["session_id"] = session_id
         if datasets:
             body["datasets"] = datasets
-        if query_type:
-            # The endpoint calls this ``search_type``; an unknown name is rejected
-            # by the server's enum, so fall back the way the SDK transport does.
-            body["search_type"] = str(query_type).upper().strip()
+        if scope:
+            # State the scope outright. Without it the server infers sources from
+            # the other fields, and that inference requires a null search_type —
+            # so a caller who set COGNEE_AUTO_ROUTE=false would lose the session
+            # cache as a side effect of choosing a search strategy.
+            body["scope"] = scope
+        # Always sent, null included: the endpoint defaults a *missing*
+        # search_type to GRAPH_COMPLETION for backward compatibility, and only an
+        # explicit null opts into the query classifier. Omitting the key would
+        # therefore make auto_route=True behave exactly like auto_route=False.
+        # An unknown name is rejected by the server's enum, so it is normalized
+        # the way the SDK transport does.
+        body["search_type"] = str(query_type).upper().strip() if query_type else None
 
         result = self._request("POST", "/api/v1/recall", timeout=timeout, json_body=body)
         if isinstance(result, dict):

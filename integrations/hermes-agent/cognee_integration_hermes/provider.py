@@ -705,20 +705,25 @@ class CogneeMemoryProvider(MemoryProvider):
 
     def _recall_scope_params(
         self, scope: str, search_type: Any, session_id: str
-    ) -> tuple[Optional[str], Optional[list[str]], Optional[str]]:
+    ) -> tuple[Optional[str], Optional[list[str]], Optional[str], str]:
         """Map the tool's ``scope`` onto the backend's explicit targets.
 
         ``session`` searches only this conversation's cache, ``graph`` only the
         permanent dataset, ``auto`` both. A ``search_type`` override is
         meaningless for a pure session lookup, so it is dropped there.
+
+        The normalized scope name is returned alongside the targets so a
+        transport can pass the decision on rather than re-derive it. An
+        unrecognized name resolves to ``auto`` here rather than travelling
+        onward, so the backend is never handed a scope the server would reject.
         """
         normalized = (scope or "auto").lower()
         if normalized == "session":
-            return session_id, None, None
+            return session_id, None, None, normalized
         query_type = search_type or None
         if normalized == "graph":
-            return None, [self._dataset], query_type
-        return session_id, [self._dataset], query_type
+            return None, [self._dataset], query_type, normalized
+        return session_id, [self._dataset], query_type, "auto"
 
     def _recall(
         self,
@@ -729,7 +734,7 @@ class CogneeMemoryProvider(MemoryProvider):
         top_k: int,
         session_id: str,
     ) -> list[Any]:
-        target_session, datasets, query_type = self._recall_scope_params(
+        target_session, datasets, query_type, resolved_scope = self._recall_scope_params(
             scope, search_type, session_id
         )
         return self._backend.recall(
@@ -739,6 +744,7 @@ class CogneeMemoryProvider(MemoryProvider):
             top_k=top_k,
             auto_route=self._auto_route,
             query_type=query_type,
+            scope=resolved_scope,
             timeout=self._timeout("recall_timeout", 120),
         )
 

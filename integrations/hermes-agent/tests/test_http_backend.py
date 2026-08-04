@@ -163,8 +163,13 @@ class TestRecallWireFormat(unittest.TestCase):
         self.assertEqual(body["search_type"], "CHUNKS")
         self.assertNotIn("query_type", body)
 
-    def test_absent_query_type_is_omitted(self):
-        self.assertNotIn("search_type", self._recall()[0].json_body("/api/v1/recall"))
+    def test_absent_query_type_is_sent_as_an_explicit_null(self):
+        # Not omitted: a missing search_type defaults to GRAPH_COMPLETION
+        # server-side, which both disables auto-routing and drops the session
+        # cache out of the server's source resolution.
+        body = self._recall()[0].json_body("/api/v1/recall")
+        self.assertIn("search_type", body)
+        self.assertIsNone(body["search_type"])
 
     def test_api_key_header_is_sent(self):
         opener, _ = self._recall()
@@ -202,9 +207,35 @@ class TestRecallWireFormat(unittest.TestCase):
         self.assertEqual(body["search_type"], "CHUNKS")
 
     def test_auto_route_true_leaves_the_classifier_to_the_server(self):
-        self.assertNotIn(
-            "search_type", self._recall(auto_route=True)[0].json_body("/api/v1/recall")
-        )
+        # An explicit null is the *only* way to reach the classifier: the
+        # endpoint's search_type defaults to GRAPH_COMPLETION for backward
+        # compatibility, so omitting the key made auto_route=True and
+        # auto_route=False issue byte-identical requests.
+        body = self._recall(auto_route=True)[0].json_body("/api/v1/recall")
+        self.assertIn("search_type", body)
+        self.assertIsNone(body["search_type"])
+
+    def test_auto_route_true_and_false_no_longer_produce_the_same_request(self):
+        on = self._recall(auto_route=True)[0].json_body("/api/v1/recall")
+        off = self._recall(auto_route=False)[0].json_body("/api/v1/recall")
+        self.assertNotEqual(on["search_type"], off["search_type"])
+
+    def test_scope_is_stated_outright(self):
+        for scope in ("session", "graph", "auto"):
+            body = self._recall(scope=scope)[0].json_body("/api/v1/recall")
+            self.assertEqual(body["scope"], scope)
+
+    def test_scope_survives_an_explicit_search_type(self):
+        # The server infers sources from session_id/datasets only while
+        # search_type is null, so a caller who pins a search strategy (or sets
+        # COGNEE_AUTO_ROUTE=false) would otherwise lose the session cache as a
+        # side effect. The stated scope is what keeps that independent.
+        body = self._recall(scope="session", auto_route=False)[0].json_body("/api/v1/recall")
+        self.assertEqual(body["scope"], "session")
+        self.assertEqual(body["search_type"], "GRAPH_COMPLETION")
+
+    def test_absent_scope_is_omitted(self):
+        self.assertNotIn("scope", self._recall(scope=None)[0].json_body("/api/v1/recall"))
 
 
 class TestRememberWireFormat(unittest.TestCase):

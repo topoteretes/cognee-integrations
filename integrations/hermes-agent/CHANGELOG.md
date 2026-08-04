@@ -55,6 +55,17 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
 - **Session memory now reaches the permanent graph.** `improve()` is called with
   `session_ids`, which `CloudClient.improve` never forwarded — the session-to-graph
   bridge had silently become a dataset-wide improve.
+- **Recall can see the session cache.** Over HTTP, `search_type` is now always
+  sent — as an explicit `null` when auto-routing — and the scope travels by name
+  in cognee's own `scope` field. `/api/v1/recall` defaults a *missing*
+  `search_type` to `GRAPH_COMPLETION`, and cognee folds the session cache into an
+  `auto` scope only while the search type is null, so leaving the key out
+  resolved every scope — `session`, `auto` and `graph` alike — to graph-only.
+  Turns were being written to a cache that nothing could read until `improve()`
+  promoted them at session end.
+- **`COGNEE_AUTO_ROUTE` is honoured over HTTP.** Same root cause: with the key
+  omitted, `true` and `false` produced byte-identical requests and the query
+  classifier never ran.
 - **An unreachable `COGNEE_BASE_URL` now fails at startup.** `cognee.serve()` logged
   a warning and returned a client regardless, so a bad URL only surfaced on the
   first real call.

@@ -90,8 +90,17 @@ class MemoryBackend:
         top_k: int,
         auto_route: bool,
         query_type: Optional[str],
+        scope: Optional[str] = None,
         timeout: float,
     ) -> list[Any]:
+        """Search memory. ``scope`` is the provider's routing decision by name —
+        ``session``, ``graph`` or ``auto`` — alongside the targets it implies.
+
+        A transport that can state the scope outright should say it rather than
+        leave the server to infer it from which targets happen to be set: that
+        inference is conditional on other fields, so it silently changes meaning
+        when one of them moves.
+        """
         raise NotImplementedError
 
     def remember_session(self, *, text: str, session_id: str, dataset: str, timeout: float) -> Any:
@@ -241,8 +250,17 @@ class SdkBackend(MemoryBackend):
         top_k,
         auto_route,
         query_type,
+        scope=None,
         timeout,
     ) -> list[Any]:
+        # ``scope`` is accepted but not forwarded. ``cognee.recall`` grew a
+        # ``scope`` parameter after this plugin's 1.2.1 floor, and passing an
+        # unknown keyword to the older SDK is a TypeError, not a degraded search.
+        # Nothing is lost by leaving it out: the in-process path passes
+        # ``auto_route`` and ``query_type`` natively, so cognee resolves the same
+        # sources from them. Only the HTTP transport needs to say it explicitly,
+        # because the endpoint defaults ``search_type`` where the SDK does not.
+        del scope
         return self._bridge.run(
             self._do_recall(query, session_id, datasets, top_k, auto_route, query_type),
             timeout=timeout,
