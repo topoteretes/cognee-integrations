@@ -1,34 +1,40 @@
 ---
 name: cognee-memory
 version: 1.0.0
-description: AI知识引擎 - 6行代码实现记忆系统。remember/recall/forget/improve循环，向量+图搜索，支持OpenClaw插件。
+description: AI knowledge engine - a memory system in 6 lines of code. remember/recall/forget/improve loop, vector + graph search, OpenClaw plugin supported.
 keywords: [memory,knowledge,graph,vector,search,cognee,ai,rag]
 ---
 
 # Cognee Memory System
-AI知识引擎 - 6行代码实现记忆系统
 
-**官网：** https://cognee.ai  
-**GitHub：** https://github.com/topoteretes/cognee  
-**安装：** `pip install cognee`  
-**OpenClaw插件：** `@cognee/cognee-openclaw`
+AI knowledge engine — a memory system in 6 lines of code.
 
----
+> **Provenance:** contributed by ClawHub user [@smseow001](https://clawhub.ai/user/smseow001)
+> (originally published as [`cognee-memory` v1.0.0](https://clawhub.ai/smseow001/cognee-memory),
+> MIT-0). Translated from Chinese and adapted for this repository; the verbatim
+> original is preserved in this file's git history.
 
-## 核心API
-
-### 四大操作
-
-| 操作 | 功能 | 说明 |
-|------|------|------|
-| `remember` | 存储记忆 | 永久存储到知识图谱 |
-| `recall` | 查询记忆 | 自动路由最优搜索策略 |
-| `forget` | 删除记忆 | 删除过时/错误记忆 |
-| `improve` | 优化学习 | 持续学习提升准确性 |
+**Website:** https://cognee.ai
+**GitHub:** https://github.com/topoteretes/cognee
+**Install:** `pip install cognee`
+**OpenClaw plugin:** `@cognee/cognee-openclaw`
 
 ---
 
-## 快速开始
+## Core API
+
+### The four operations
+
+| Operation | Purpose | Notes |
+|-----------|---------|-------|
+| `remember` | Store a memory | Persisted into the knowledge graph |
+| `recall` | Query memories | Automatically routes to the best search strategy |
+| `forget` | Delete memories | Remove outdated or incorrect memories |
+| `improve` | Optimize learning | Continuous learning improves accuracy |
+
+---
+
+## Quick start
 
 ### Python API
 
@@ -37,18 +43,18 @@ import cognee
 import asyncio
 
 async def main():
-    # 存储到知识图谱
+    # Store into the knowledge graph
     await cognee.remember("Cognee turns documents into AI memory.")
-    
-    # 存储到会话缓存（快速）
+
+    # Store into the session cache (fast)
     await cognee.remember("User prefers detailed explanations.", session_id="chat_1")
-    
-    # 查询（自动路由）
+
+    # Query (auto-routed)
     results = await cognee.recall("What does Cognee do?")
     for result in results:
         print(result)
-    
-    # 删除
+
+    # Delete
     await cognee.forget(dataset="main_dataset")
 
 asyncio.run(main())
@@ -60,126 +66,135 @@ asyncio.run(main())
 cognee-cli remember "Cognee turns documents into AI memory."
 cognee-cli recall "What does Cognee do?"
 cognee-cli forget --all
-cognee-cli -ui  # 打开本地UI
+cognee-cli -ui  # open the local UI
 ```
 
 ---
 
-## 配置
+## Configuration
 
-### 环境变量
+### Environment variables
 
 ```bash
-# OpenAI API（必需）
+# LLM API key (required)
 export LLM_API_KEY="your-openai-key"
 
-# 或使用其他LLM提供商
-# 见: https://docs.cognee.ai/setup-configuration/llm-providers
+# Or use another LLM provider
+# See: https://docs.cognee.ai/setup-configuration/llm-providers
 
-# Cognee Cloud（可选）
+# Cognee Cloud (optional)
 export COGNEE_SERVICE_URL="https://your-instance.cognee.ai"
 export COGNEE_API_KEY="ck_..."
 ```
 
 ---
 
-## 使用场景
+## Use cases
 
-### 1. 客服Agent
+### 1. Customer-support agent
 ```
-用户："我的发票有问题还没解决"
-Cognee追踪：历史交互、失败操作、已解决案例、产品历史
-Agent回复："找到2个上月类似计费案例已解决，问题由支付系统同步延迟导致"
-```
-
-### 2. SQL Copilot（知识蒸馏）
-```
-用户："如何计算客户留存率？"
-Cognee追踪：专家SQL查询、工作流模式、schema结构、成功实现
-Agent回复："高级分析师解决了类似留存查询，这是他们的方案..."
+User: "My invoice issue still isn't resolved"
+Cognee tracks: interaction history, failed operations, resolved cases, product history
+Agent reply: "Found 2 similar billing cases resolved last month; the issue was
+caused by a payment-system sync delay"
 ```
 
-### 3. 跨会话记忆
+### 2. SQL copilot (knowledge distillation)
+```
+User: "How do I compute customer retention?"
+Cognee tracks: expert SQL queries, workflow patterns, schema structure, successful implementations
+Agent reply: "A senior analyst solved a similar retention query — here is their approach..."
+```
+
+### 3. Cross-session memory
 ```python
 # Session 1
-await cognee.remember("用户喜欢详细的解释", session_id="user_123")
+await cognee.remember("User prefers detailed explanations", session_id="user_123")
 
-# Session 2（跨会话查询）
-results = await cognee.recall("用户偏好什么？", session_id="user_123")
+# Session 2 (query across sessions)
+results = await cognee.recall("What does the user prefer?", session_id="user_123")
 ```
 
 ---
 
-## OpenClaw插件安装
+## OpenClaw plugin installation
 
 ```bash
-npm install @cognee/cognee-openclaw
+# Install through OpenClaw's plugin manager (not plain npm):
+openclaw plugins install @cognee/cognee-openclaw
+
+# Then configure Cognee as the memory provider:
+openclaw cognee setup
 ```
 
-插件自动集成：
-- `SessionStart` → 初始化记忆
-- `PostToolUse` → 捕获行动
-- `UserPromptSubmit` → 注入相关上下文
-- `PreCompact` → 跨上下文保留记忆
-- `SessionEnd` → 桥接到永久知识图谱
+The plugin integrates automatically via OpenClaw's hook system:
+
+- `before_prompt_build` → inject relevant memories into the prompt (auto-recall)
+- `after_tool_call` → capture tool activity as trace entries
+- `llm_output` → capture prompt/answer pairs into the session cache
+- `agent_end` → sync changed memory files after each run
+- `session_end` → bridge the session cache into the permanent knowledge graph
+
+See the [plugin README](../../README.md) for required hook permissions
+(`allowPromptInjection`, `allowConversationAccess`) and configuration options.
 
 ---
 
-## vs 其他记忆系统
+## vs. file-based memory
 
-| 功能 | 我们现有 | Cognee |
-|------|---------|--------|
-| 存储方式 | 文件 | 向量+图双存储 |
-| 搜索方式 | 关键词 | 语义+关系 |
-| 学习能力 | 无 | forget+improve |
-| 跨Agent | 不支持 | 共享知识图谱 |
-| 可视化 | 无 | CLI UI |
-
----
-
-## 部署选项
-
-| 平台 | 说明 |
-|------|------|
-| Cognee Cloud | 托管服务 |
-| Modal | 无服务器，GPU自动扩展 |
-| Railway | 简化PaaS |
-| Fly.io | 边缘部署 |
-| Render | 简单PaaS |
+| Capability | File-based memory | Cognee |
+|------------|-------------------|--------|
+| Storage | Files | Vector + graph dual store |
+| Search | Keywords | Semantic + relational |
+| Learning | None | forget + improve |
+| Cross-agent | Unsupported | Shared knowledge graph |
+| Visualization | None | CLI UI |
 
 ---
 
-## 示例代码
+## Deployment options
 
-### 完整记忆循环
+| Platform | Notes |
+|----------|-------|
+| Cognee Cloud | Managed service |
+| Modal | Serverless, GPU autoscaling |
+| Railway | Simplified PaaS |
+| Fly.io | Edge deployment |
+| Render | Simple PaaS |
+
+---
+
+## Example code
+
+### Full memory loop
 
 ```python
 import cognee
 import asyncio
 
 async def memory_loop():
-    # 1. 学习新知识
-    await cognee.remember("用户正在学习Python编程")
-    await cognee.remember("用户偏好边做边学的教学方式")
-    
-    # 2. 查询相关记忆
-    results = await cognee.recall("用户的学习偏好是什么？")
-    
-    # 3. 根据反馈改进
-    await cognee.improve("纠正对用户偏好的错误理解")
-    
-    # 4. 忘记错误记忆
-    await cognee.forget("错误的假设")
+    # 1. Learn new knowledge
+    await cognee.remember("The user is learning Python programming")
+    await cognee.remember("The user prefers learning by doing")
+
+    # 2. Query related memories
+    results = await cognee.recall("What are the user's learning preferences?")
+
+    # 3. Improve based on feedback
+    await cognee.improve("Correct the misunderstanding of the user's preferences")
+
+    # 4. Forget incorrect memories
+    await cognee.forget("The incorrect assumption")
 
 asyncio.run(memory_loop())
 ```
 
 ---
 
-## 安装状态
+## Installation status
 
-- Python包：✅ 已安装 `cognee`
-- OpenClaw插件：需额外安装 `@cognee/cognee-openclaw`
+- Python package: install `cognee`
+- OpenClaw plugin: install `@cognee/cognee-openclaw` separately
 
 ---
 
