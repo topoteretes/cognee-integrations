@@ -100,6 +100,11 @@ class CogneeMemoryProvider(MemoryProvider):
         self._backend: MemoryBackend = backend or default_backend()
         self._initialized = False
         self._remote_mode = False
+        # True when the server we talk to is the local one this plugin family
+        # boots, which runs with COGNEE_AGENT_MODE=true and shuts itself down
+        # once the last agent unregisters. Distinct from _remote_mode, which is
+        # only "a server is involved" and is true for the local server too.
+        self._local_server = False
         self._session_id = ""
         self._session_cognee_id = ""
         self._dataset = DEFAULT_DATASET
@@ -324,6 +329,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 )
                 self._backend.connect(url=local_url, api_key="", timeout=30)
                 self._remote_mode = True
+                self._local_server = True
             except Exception as exc:
                 raise RuntimeError(
                     "cognee local server failed to start, which is required for safe "
@@ -554,11 +560,26 @@ class CogneeMemoryProvider(MemoryProvider):
         ):
             return
         # When to background the graph-build: only when a server will outlive this
-        # process and finish the job. In embedded mode the work runs in-process, so
-        # it must complete synchronously before shutdown or it is lost. Override via
-        # COGNEE_IMPROVE_BACKGROUND.
+        # process *and finish the job*. Two ways that fails, both of which lose the
+        # session:
+        #
+        #   embedded — the work runs in-process, so it dies with this process.
+        #   local server — shutdown() unregisters us moments from now. The local
+        #     server runs with COGNEE_AGENT_MODE=true, and its watchdog SIGTERMs
+        #     the server within 60s of the agent count reaching zero, without
+        #     regard for pipelines still running. A backgrounded improve routinely
+        #     outlives that (COGNEE_IMPROVE_SUBMIT_TIMEOUT alone is 420s), so it
+        #     would be killed mid-promotion. exit_watcher.fire() runs improve
+        #     synchronously for exactly this reason; the clean path owes the same
+        #     guarantee.
+        #
+        # That leaves a genuinely remote/cloud server, which nothing here can shut
+        # down, as the only place backgrounding is safe. Override via
+        # COGNEE_IMPROVE_BACKGROUND — worth setting on a local server that other
+        # agents keep registered, where the watchdog will not fire.
+        default_background = self._remote_mode and not self._local_server
         raw_bg = str(self._config.get("improve_background") or "").strip()
-        background = str_to_bool(raw_bg, self._remote_mode) if raw_bg else self._remote_mode
+        background = str_to_bool(raw_bg, default_background) if raw_bg else default_background
         try:
             self._backend.improve(
                 dataset=self._dataset,

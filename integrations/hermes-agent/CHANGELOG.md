@@ -66,6 +66,13 @@ what changed is the client: routing through the SDK's `cognee.serve()` /
 - **`COGNEE_AUTO_ROUTE` is honoured over HTTP.** Same root cause: with the key
   omitted, `true` and `false` produced byte-identical requests and the query
   classifier never ran.
+- **The session-end improve is no longer killed by the server it runs on.** On
+  the local server it now runs synchronously, because `shutdown()` unregisters
+  immediately afterwards and `COGNEE_AGENT_MODE`'s watchdog SIGTERMs the server
+  within 60s of the agent count reaching zero — with no regard for running
+  pipelines, and a graph build routinely takes longer. Remote/cloud targets,
+  which nothing here can shut down, still background it;
+  `COGNEE_IMPROVE_BACKGROUND` overrides either way.
 - **An unreachable `COGNEE_BASE_URL` now fails at startup.** `cognee.serve()` logged
   a warning and returned a client regardless, so a bad URL only surfaced on the
   first real call.

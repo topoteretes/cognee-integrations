@@ -334,6 +334,7 @@ def make_provider(
     session_id="s-1",
     session_cognee_id=None,
     remote_mode=True,
+    local_server=False,
     writes_enabled=True,
     auto_route=True,
     improve_on_end=True,
@@ -349,6 +350,7 @@ def make_provider(
     )
     provider._initialized = True
     provider._remote_mode = remote_mode
+    provider._local_server = local_server
     provider._writes_enabled = writes_enabled
     provider._dataset = dataset
     provider._top_k = top_k

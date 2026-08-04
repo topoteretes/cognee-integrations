@@ -365,6 +365,40 @@ class TestSessionEnd(unittest.TestCase):
             provider.on_session_end([])
         self.assertEqual(fake.kwargs_for("improve"), [])
 
+    def _background_for(self, **kwargs):
+        with fake_backend() as fake:
+            make_provider(**kwargs).on_session_end([])
+            return fake.only_call("improve")["background"]
+
+    def test_the_local_server_gets_a_synchronous_improve(self):
+        # shutdown() unregisters moments later, the agent count hits zero, and
+        # the local server's COGNEE_AGENT_MODE watchdog SIGTERMs it within 60s
+        # without regard for running pipelines. A backgrounded improve routinely
+        # outlives that window, so it would be killed mid-promotion and the
+        # session's turns would never reach the graph.
+        self.assertFalse(self._background_for(remote_mode=True, local_server=True))
+
+    def test_a_remote_server_still_gets_a_backgrounded_improve(self):
+        # Nothing here can shut down a cloud/remote instance, so the session end
+        # need not wait for the graph build.
+        self.assertTrue(self._background_for(remote_mode=True, local_server=False))
+
+    def test_embedded_stays_synchronous(self):
+        # The work runs in this process, so it dies with it.
+        self.assertFalse(self._background_for(remote_mode=False, local_server=False))
+
+    def test_the_explicit_override_wins_in_both_directions(self):
+        self.assertTrue(
+            self._background_for(
+                remote_mode=True, local_server=True, config={"improve_background": "true"}
+            )
+        )
+        self.assertFalse(
+            self._background_for(
+                remote_mode=True, local_server=False, config={"improve_background": "false"}
+            )
+        )
+
 
 class TestMemoryWriteMirror(unittest.TestCase):
     def _mirror(self, *args, **kwargs):
