@@ -63,7 +63,13 @@ def _write(servers):
     try:
         path = _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"servers": servers}), encoding="utf-8")
+        # pid-suffixed tmp + atomic replace, matching the other marker writers:
+        # readers (other hooks, the status-line renderer) can never see a torn
+        # file. Concurrent writers remain last-write-wins — accepted for this
+        # advisory state; serializing them would need file locking.
+        tmp = path.with_name(".breaker-%d.json.tmp" % os.getpid())
+        tmp.write_text(json.dumps({"servers": servers}), encoding="utf-8")
+        os.replace(tmp, path)
     except Exception:
         pass
 
