@@ -174,7 +174,9 @@ async function saveApiKeyCache(baseUrl: string, key: string): Promise<void> {
 /**
  * Resolve a permanent Cognee API key for this deployment, using the same
  * strategy as the claude-code and codex integrations:
- *   1. COGNEE_API_KEY env
+ *   1. Explicitly configured key (config apiKey / COGNEE_API_KEY, both
+ *      resolved by the config layer and passed in as configuredApiKey —
+ *      this module deliberately does not read credential env vars itself)
  *   2. Cached key in ~/.cognee-plugin/api_key.json
  *   3. Existing key returned by GET /api/v1/auth/api-keys
  *   4. Mint a new one via POST /api/v1/auth/api-keys and cache it
@@ -186,9 +188,10 @@ async function saveApiKeyCache(baseUrl: string, key: string): Promise<void> {
 export async function resolveOrMintApiKey(
   client: ApiKeyClient,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
+  configuredApiKey = "",
 ): Promise<string> {
-  const envKey = (process.env["COGNEE_API_KEY"] ?? "").trim();
-  if (envKey) return envKey;
+  const configuredKey = configuredApiKey.trim();
+  if (configuredKey) return configuredKey;
 
   try {
     const cache = JSON.parse(await readFile(API_KEY_CACHE_PATH, "utf-8")) as Record<string, unknown>;

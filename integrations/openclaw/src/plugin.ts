@@ -833,7 +833,7 @@ const memoryCogneePlugin = {
       }
 
       if (!resolvedApiKey) {
-        resolvedApiKey = await resolveOrMintApiKey(client, logger).catch(() => "");
+        resolvedApiKey = await resolveOrMintApiKey(client, logger, cfg.apiKey).catch(() => "");
       }
       // Inject the resolved/minted key so every subsequent client call
       // authenticates via X-Api-Key instead of the JWT login fallback.
@@ -1030,7 +1030,7 @@ const memoryCogneePlugin = {
             // it's an env/file read — so the exit-watcher below always gets
             // a usable key instead of silently spawning keyless (401s).
             if (!resolvedApiKey) {
-              resolvedApiKey = await resolveOrMintApiKey(client, api.logger).catch(() => "");
+              resolvedApiKey = await resolveOrMintApiKey(client, api.logger, cfg.apiKey).catch(() => "");
             }
             // Inject into THIS instance's client — each plugin instance owns
             // its own client, and only key-authenticated calls work on servers

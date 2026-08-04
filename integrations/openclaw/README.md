@@ -40,7 +40,7 @@ Without this, any plugin found in your environment could be loaded automatically
 ```bash
 # Pin to an exact version to avoid unintended updates (supply-chain best practice).
 # Check https://www.npmjs.com/package/@cognee/cognee-openclaw for the latest release.
-openclaw plugins install @cognee/cognee-openclaw@2026.8.4
+openclaw plugins install @cognee/cognee-openclaw@2026.8.5
 ```
 
 ### Development install (symlink)
