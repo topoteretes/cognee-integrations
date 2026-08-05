@@ -10,9 +10,11 @@ final class GlobalHotKey {
     private let handler: () -> Void
 
     /// Default binding: Option+Space (Command+Space stays with real Spotlight).
+    /// Each registered hotkey needs its own ``id``.
     init?(
         keyCode: UInt32 = UInt32(kVK_Space),
         modifiers: UInt32 = UInt32(optionKey),
+        id: UInt32 = 1,
         handler: @escaping () -> Void
     ) {
         self.handler = handler
@@ -39,7 +41,7 @@ final class GlobalHotKey {
         guard installStatus == noErr else { return nil }
         eventHandler = installedHandler
 
-        let hotKeyID = EventHotKeyID(signature: OSType(0x4347_5350), id: 1)  // 'CGSP'
+        let hotKeyID = EventHotKeyID(signature: OSType(0x4347_5350), id: id)  // 'CGSP'
         var registeredRef: EventHotKeyRef?
         let registerStatus = RegisterEventHotKey(
             keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &registeredRef

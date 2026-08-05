@@ -188,3 +188,37 @@ async def test_semantic_zero_skips_chunks(client, workspace):
     await index_and_wait(client, workspace)
     data = (await client.get("/search", params={"q": "roadmap", "semantic": "0"})).json()
     assert data["results"] and all(r["source"] == "filename" for r in data["results"])
+
+
+async def test_capture_writes_note_and_indexes(client, tmp_path):
+    response = await client.post(
+        "/capture",
+        json={"text": "Deploy needs the staging flag.", "source": "quick-capture"},
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["ok"] is True
+
+    capture_dir = tmp_path / "state" / "capture"
+    notes = list(capture_dir.glob("*.md"))
+    assert len(notes) == 1
+    content = notes[0].read_text()
+    assert "Deploy needs the staging flag." in content
+    assert "captured from: quick-capture" in content
+
+    # the note indexes like any document and is findable by filename
+    for _ in range(100):
+        status = (await client.get("/index/status")).json()
+        if status["state"] in ("idle", "error"):
+            break
+        await asyncio.sleep(0.01)
+    assert status["state"] == "idle"
+    data = (await client.get("/search", params={"q": "deploy", "semantic": "0"})).json()
+    assert any(r["path"] == str(notes[0]) for r in data["results"])
+
+
+async def test_capture_rejects_empty_text(client, tmp_path):
+    response = await client.post("/capture", json={"text": "   "})
+    assert response.status_code == 202
+    assert response.json()["ok"] is False
+    assert not (tmp_path / "state" / "capture").exists()

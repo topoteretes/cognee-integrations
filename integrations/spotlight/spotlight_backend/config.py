@@ -22,6 +22,11 @@ DEFAULT_EXTENSIONS = {
     ".txt",
     ".rst",
     ".org",
+    # voice notes and meeting recordings — cognee's loaders transcribe audio
+    ".mp3",
+    ".m4a",
+    ".wav",
+    ".aac",
     ".pdf",
     ".docx",
     ".pptx",
