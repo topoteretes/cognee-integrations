@@ -1813,6 +1813,10 @@ _UPDATE_DEFAULT_REPO = "topoteretes/cognee-integrations"
 _UPDATE_DEFAULT_REF = "main"
 _UPDATE_PLUGIN_ENTRY = "cognee-memory"
 _KNOWN_MARKETPLACES = Path.home() / ".claude" / "plugins" / "known_marketplaces.json"
+# Claude Code's install registry: rewritten the moment `/plugin update` (or a
+# marketplace auto-update) installs a new version — unlike the version-pinned
+# plugin dirs, it reflects an update in the same session it happened in.
+_INSTALLED_PLUGINS_FILE = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 
 
 def _update_check_enabled() -> bool:
@@ -1855,6 +1859,33 @@ def _installed_plugin_version() -> str:
         except Exception:
             continue
     return ""
+
+
+def _recorded_install_version() -> str:
+    """Newest cognee-memory version recorded in Claude Code's install registry.
+
+    ``installed_plugins.json`` maps ``<plugin>@<marketplace>`` to a list of
+    installs. '' when the file is missing, unreadable, or has no parseable
+    cognee-memory entry. Mirrored (not imported) by the status-line renderer,
+    which stays free of this module.
+    """
+    try:
+        data = json.loads(_INSTALLED_PLUGINS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        return ""
+    best, best_str = (), ""
+    for key, installs in plugins.items():
+        if str(key).split("@", 1)[0] != _UPDATE_PLUGIN_ENTRY:
+            continue
+        for install in installs if isinstance(installs, list) else []:
+            version = str(install.get("version") or "") if isinstance(install, dict) else ""
+            parsed = _parse_semver(version)
+            if parsed and parsed > best:
+                best, best_str = parsed, version
+    return best_str
 
 
 def _update_source() -> Optional[tuple]:
@@ -1971,8 +2002,15 @@ def read_update_status() -> dict:
     the snapshot is only trustworthy while its ``installed_version`` is still the
     version actually running. A mismatch means the update already landed, so the
     nudge is suppressed immediately rather than after the next network check.
-    Note this compares against the RUNNING version, not the newest on disk — an
-    auto-update that a session has not reloaded yet correctly keeps nudging.
+    Two suppression signals, either one clears the nudge:
+    - the running version moved past the marker's ``installed_version`` (the
+      session restarted into the new copy), or
+    - Claude Code's install registry (``installed_plugins.json``) already
+      records a version at or past ``latest_version`` — `/plugin update`
+      rewrites it immediately, so this clears the nudge in the very session
+      the update happened in, even though that session still RUNS the old
+      copy (installs are version-pinned dirs and only a restart re-points
+      the hooks).
     """
     if not _update_check_enabled():
         return {}
@@ -1988,6 +2026,10 @@ def read_update_status() -> dict:
     # missing/unreadable plugin.json degrades to the previous behaviour.
     running = _installed_plugin_version()
     if running and running != marker.get("installed_version"):
+        return {}
+    recorded = _parse_semver(_recorded_install_version())
+    published = _parse_semver(str(marker.get("latest_version") or ""))
+    if recorded and published and recorded >= published:
         return {}
     return marker
 

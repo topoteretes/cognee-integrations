@@ -8,9 +8,12 @@ that read it — the status-line segment and the SessionStart nudge — therefor
 compare the marker's ``installed_version`` against the version *running*, and
 suppress the nudge on a mismatch.
 
-The comparison is deliberately against the RUNNING version rather than the newest
-copy on disk: a background auto-update that the session has not reloaded yet must
-keep nudging, because the session really is still on the old version.
+The running-version comparison alone cannot clear the nudge in the session the
+update happened in: installs are version-pinned dirs, and the old copy keeps
+running (and rendering) until a restart re-points the status line. Claude Code's
+install registry (``installed_plugins.json``) IS rewritten immediately, so both
+surfaces also suppress when it records a version at or past the marker's
+``latest_version`` — that is what makes the nudge disappear mid-session.
 
 Run: `python integrations/claude-code/tests/test_update_nudge_staleness.py` (or via pytest).
 """
@@ -49,17 +52,33 @@ def _marker(installed: str, latest: str) -> dict:
     }
 
 
+def _registry(version: str) -> dict:
+    """A minimal ~/.claude/plugins/installed_plugins.json payload."""
+    return {
+        "version": 2,
+        "plugins": {"cognee-memory@cognee": [{"scope": "user", "version": version}]},
+    }
+
+
 # --- status-line segment ------------------------------------------------------
 
 
-def _segment_with(marker: dict) -> str:
-    """Render just the update segment against a temp marker file."""
+def _segment_with(marker: dict, registry=None) -> str:
+    """Render just the update segment against temp marker/registry files.
+
+    The install-registry path is always redirected (to nothing, unless
+    ``registry`` is given) so a real ~/.claude/plugins/installed_plugins.json
+    on the machine running the tests cannot leak in.
+    """
     sl = _load("sl_staleness", "cognee_statusline_render.py")
     tmp = pathlib.Path(tempfile.mkdtemp())
     saved = os.environ.pop("COGNEE_UPDATE_CHECK", None)
     try:
         sl._UPDATE_CHECK_PATH = tmp / "update-check.json"
+        sl._INSTALLED_PLUGINS_PATH = tmp / "installed_plugins.json"
         _write(sl._UPDATE_CHECK_PATH, marker)
+        if registry is not None:
+            _write(sl._INSTALLED_PLUGINS_PATH, registry)
         return sl._update_segment()
     finally:
         if saved is not None:
@@ -83,6 +102,38 @@ def test_segment_hidden_once_running_version_moved_past_marker():
     assert out == "", repr(out)
 
 
+def test_segment_hidden_once_registry_records_latest():
+    """Mid-session update: the old copy still renders, but the registry moved."""
+    sl = _load("sl_staleness", "cognee_statusline_render.py")
+    running = sl._running_plugin_version()
+    out = _segment_with(_marker(running, "99.0.0"), registry=_registry("99.0.0"))
+    assert out == "", repr(out)
+
+
+def test_segment_hidden_when_registry_moved_past_latest():
+    sl = _load("sl_staleness", "cognee_statusline_render.py")
+    running = sl._running_plugin_version()
+    out = _segment_with(_marker(running, "99.0.0"), registry=_registry("99.0.1"))
+    assert out == "", repr(out)
+
+
+def test_segment_still_shown_while_registry_behind_latest():
+    """No update yet: the registry records the same old version that runs."""
+    sl = _load("sl_staleness", "cognee_statusline_render.py")
+    running = sl._running_plugin_version()
+    out = _segment_with(_marker(running, "99.0.0"), registry=_registry(running))
+    assert "update available" in out, repr(out)
+
+
+def test_segment_malformed_registry_is_ignored():
+    """A broken registry must not disable the nudge."""
+    sl = _load("sl_staleness", "cognee_statusline_render.py")
+    running = sl._running_plugin_version()
+    for payload in ({}, {"plugins": []}, {"plugins": {"cognee-memory@cognee": [{}]}}):
+        out = _segment_with(_marker(running, "99.0.0"), registry=payload)
+        assert "update available" in out, (payload, out)
+
+
 def test_running_version_matches_plugin_manifest():
     """The renderer resolves its own version from its own location, not the env."""
     sl = _load("sl_staleness", "cognee_statusline_render.py")
@@ -95,13 +146,16 @@ def test_running_version_matches_plugin_manifest():
 # --- SessionStart nudge (shared read used by _apply_update_nudge) -------------
 
 
-def _status_with(marker: dict) -> dict:
+def _status_with(marker: dict, registry=None) -> dict:
     common = _load("common_staleness", "_plugin_common.py")
     tmp = pathlib.Path(tempfile.mkdtemp())
     saved = os.environ.pop("COGNEE_UPDATE_CHECK", None)
     try:
         common._UPDATE_CHECK_FILE = tmp / "update-check.json"
+        common._INSTALLED_PLUGINS_FILE = tmp / "installed_plugins.json"
         _write(common._UPDATE_CHECK_FILE, marker)
+        if registry is not None:
+            _write(common._INSTALLED_PLUGINS_FILE, registry)
         return common.read_update_status()
     finally:
         if saved is not None:
@@ -120,6 +174,21 @@ def test_read_update_status_returns_marker_when_current():
 
 def test_read_update_status_suppressed_after_update():
     assert _status_with(_marker("0.0.1", "99.0.0")) == {}
+
+
+def test_read_update_status_suppressed_once_registry_records_latest():
+    """Mid-session update: still running the old copy, but the registry moved."""
+    common = _load("common_staleness", "_plugin_common.py")
+    running = common._installed_plugin_version()
+    status = _status_with(_marker(running, "99.0.0"), registry=_registry("99.0.0"))
+    assert status == {}, repr(status)
+
+
+def test_read_update_status_kept_while_registry_behind_latest():
+    common = _load("common_staleness", "_plugin_common.py")
+    running = common._installed_plugin_version()
+    status = _status_with(_marker(running, "99.0.0"), registry=_registry(running))
+    assert status.get("update_available") is True, repr(status)
 
 
 def test_unreadable_running_version_falls_back_to_marker():

@@ -10,6 +10,23 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.4]
+
+### Fixed
+- **The "update available" nudge now clears in the same session the update is
+  applied in.** The v1.1.1 fix compared the marker against the *running* plugin
+  version, but installs are version-pinned directories: after `/plugin update`
+  the old copy keeps rendering the status line until a restart re-points it, so
+  the running version never moved and the nudge survived the whole session.
+  Both surfaces (status-line segment and SessionStart message) now also consult
+  Claude Code's install registry (`~/.claude/plugins/installed_plugins.json`),
+  which is rewritten the moment an update lands: once it records a version at or
+  past the marker's `latest_version`, the nudge is suppressed — the status line
+  clears on its next refresh (~2s), no restart needed. A missing or malformed
+  registry changes nothing (previous behaviour). The Codex plugin is unaffected:
+  it updates in place, so its existing running-version guard already clears
+  mid-session.
+
 ## [1.2.3]
 
 ### Fixed

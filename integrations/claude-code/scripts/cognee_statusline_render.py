@@ -28,6 +28,10 @@ _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
+# Claude Code's own install registry: rewritten the moment `/plugin update`
+# (or a marketplace auto-update) installs a new version, which makes it the
+# only signal that clears the update nudge mid-session (see _update_segment).
+_INSTALLED_PLUGINS_PATH = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 _PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "claude-code" / "llm-state.json"
 _RECALL_PATH = _SHARED_ROOT / "claude-code" / "last_recall.json"
@@ -343,6 +347,17 @@ def _update_segment() -> str:
     running = _running_plugin_version()
     if running and running != installed:
         return ""
+    # Mid-session update guard: `/plugin update` installs the new version into
+    # its own version-pinned cache dir, but settings.json keeps pointing the
+    # status line at THIS (old) copy until the next SessionStart — so the
+    # running-version check above never trips in the session where the update
+    # happened. Claude Code does rewrite installed_plugins.json immediately,
+    # so a recorded install at or past `latest` means the user already
+    # updated: clear the nudge on this refresh instead of after a restart.
+    recorded = _parse_semver(_recorded_install_version())
+    published = _parse_semver(latest)
+    if recorded and published and recorded >= published:
+        return ""
     return f"   \033[1;33m⬆ Cognee update available {installed}→{latest}\033[0m"
 
 
@@ -367,6 +382,49 @@ def _running_plugin_version() -> str:
         except Exception:
             continue
     return ""
+
+
+def _parse_semver(value: str):
+    """Numeric X.Y.Z core as a tuple (ignoring -pre/+build), or None.
+
+    Kept in sync with ``_plugin_common._parse_semver`` — duplicated because the
+    renderer never imports the plugin runtime (see module docstring).
+    """
+    core = str(value or "").strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
+        return None
+
+
+def _recorded_install_version() -> str:
+    """Newest cognee-memory version recorded in Claude Code's install registry.
+
+    ``installed_plugins.json`` maps ``<plugin>@<marketplace>`` to a list of
+    installs; it is rewritten the moment an update lands, regardless of which
+    (possibly older) plugin copy this renderer belongs to. '' when the file is
+    missing, unreadable, or has no parseable cognee-memory entry.
+    """
+    try:
+        data = json.loads(_INSTALLED_PLUGINS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        return ""
+    best, best_str = (), ""
+    for key, installs in plugins.items():
+        if str(key).split("@", 1)[0] != "cognee-memory":
+            continue
+        for install in installs if isinstance(installs, list) else []:
+            version = str(install.get("version") or "") if isinstance(install, dict) else ""
+            parsed = _parse_semver(version)
+            if parsed and parsed > best:
+                best, best_str = parsed, version
+    return best_str
 
 
 def _pipeline_health_glyph() -> str:
