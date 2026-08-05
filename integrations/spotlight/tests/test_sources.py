@@ -91,3 +91,40 @@ def test_manager_from_env_configures_sources(tmp_path, monkeypatch):
     names = [s.name for s in manager.sources]
     assert names == ["folders", "slack", "gdrive"]
     assert manager.sources[1].channels == ["C1", "C2"]
+
+
+async def test_mock_connectors_stage_demo_content(tmp_path, monkeypatch):
+    from spotlight_backend.sources import MockConnectorSource
+
+    class DummyIndexer:
+        class _catalog:
+            roots = []
+
+    monkeypatch.setenv("SPOTLIGHT_MOCK_SOURCES", "slack, gdrive")
+    manager = SourceManager.from_env(DummyIndexer(), tmp_path)
+    names = [s.name for s in manager.sources]
+    assert names == ["folders", "slack", "gdrive"]
+
+    slack = manager.sources[1]
+    assert isinstance(slack, MockConnectorSource)
+    detail = await slack.sync()
+    assert "connected (demo)" in detail
+    staged = list((tmp_path / "sources" / "slack").glob("*.md"))
+    assert staged
+    # second sync: content unchanged, nothing rewritten
+    assert "0 refreshed" in await slack.sync()
+
+
+def test_mock_connectors_yield_to_real_credentials(tmp_path, monkeypatch):
+    from spotlight_backend.sources import SlackSource
+
+    class DummyIndexer:
+        class _catalog:
+            roots = []
+
+    monkeypatch.setenv("SLACK_TOKEN", "t")
+    monkeypatch.setenv("SLACK_CHANNELS", "C1")
+    monkeypatch.setenv("SPOTLIGHT_MOCK_SOURCES", "slack")
+    manager = SourceManager.from_env(DummyIndexer(), tmp_path)
+    slack = [s for s in manager.sources if s.name == "slack"]
+    assert len(slack) == 1 and isinstance(slack[0], SlackSource)

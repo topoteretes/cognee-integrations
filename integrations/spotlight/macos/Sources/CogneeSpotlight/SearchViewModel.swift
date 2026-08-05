@@ -24,6 +24,9 @@ final class SearchViewModel: ObservableObject {
     @Published var contradictions: [Contradiction] = []
     /// Whether the backend runs with latent features enabled.
     @Published var experimentsEnabled = false
+    /// The data sources feeding memory (folders, Slack, Drive, …), shown as
+    /// chips in the panel so it's visible what a search draws from.
+    @Published var connections: [SourceConnection] = []
     /// One conversation per panel appearance: follow-up ⇧↩ questions thread.
     private(set) var threadID = UUID().uuidString
     /// Bumped every time the panel is shown so the view can re-grab focus.
@@ -64,6 +67,11 @@ final class SearchViewModel: ObservableObject {
         Task { [weak self] in
             if let health = try? await BackendClient().health() {
                 self?.experimentsEnabled = health.experiments ?? false
+            }
+            if let sources = try? await BackendClient().sources() {
+                self?.connections = sources.sources.map { name in
+                    SourceConnection(name: name, ok: sources.status[name]?.ok)
+                }
             }
         }
     }
