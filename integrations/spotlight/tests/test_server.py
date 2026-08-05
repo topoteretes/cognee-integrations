@@ -206,3 +206,6 @@ async def test_sources_describe_themselves(tmp_path, monkeypatch):
     assert by_name["slack"]["label"] == "Slack"
     assert by_name["gdrive"]["icon"] == "externaldrive"
     assert by_name["folders"]["ok"] is None  # no sync has run yet
+    # sources report what they indexed: folder roots / staged documents
+    for source in data["sources"]:
+        assert "items" in source and "count" in source

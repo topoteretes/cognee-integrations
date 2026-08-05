@@ -17,6 +17,10 @@ struct SearchView: View {
     var body: some View {
         VStack(spacing: 0) {
             searchField
+            if let detail = model.connectionDetail {
+                divider
+                connectionDetailView(detail)
+            }
             if let error = model.errorText {
                 divider
                 statusLine(icon: "bolt.horizontal.circle", text: error)
@@ -126,10 +130,15 @@ struct SearchView: View {
                 .font(.system(size: 21))
                 .focused($fieldFocused)
             if !model.connections.isEmpty {
-                // what this search draws from: one quiet icon per connection
+                // what this search draws from: one quiet icon per connection;
+                // click opens what it indexed and when it last synced
                 HStack(spacing: 9) {
                     ForEach(model.connections) { connection in
-                        ConnectionBadge(connection: connection)
+                        ConnectionBadge(
+                            connection: connection,
+                            isOpen: model.connectionDetail?.id == connection.id
+                        )
+                        .onTapGesture { model.toggleConnectionDetail(connection) }
                     }
                 }
                 .padding(.leading, 4)
@@ -137,6 +146,47 @@ struct SearchView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 50)
+    }
+
+    /// The clicked chip's contents: every root/document that connection has
+    /// indexed, plus its last-sync time — the receipts behind "connected".
+    private func connectionDetailView(_ connection: SourceConnection) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.cognee)
+                Text("\(connection.label) — \(connection.count ?? 0) item(s)")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if !connection.lastSyncText.isEmpty {
+                    Text(connection.lastSyncText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let items = connection.items, !items.isEmpty {
+                ForEach(items, id: \.self) { item in
+                    Text(item)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let count = connection.count, count > items.count {
+                    Text("… and \(count - items.count) more")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Nothing indexed from this source yet.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: results
@@ -313,13 +363,14 @@ struct SearchView: View {
 /// description, so any new connector renders here untouched.
 private struct ConnectionBadge: View {
     let connection: SourceConnection
+    var isOpen: Bool = false
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: symbolName)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isOpen ? AnyShapeStyle(Color.cognee) : AnyShapeStyle(.secondary))
                 .overlay(alignment: .bottomTrailing) {
                     Circle()
                         .fill(dotColor)
@@ -327,7 +378,7 @@ private struct ConnectionBadge: View {
                         .offset(x: 2.5, y: 2.5)
                 }
             if hovering {
-                Text("\(connection.label) · \(connection.statusText)")
+                Text(hoverText)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -338,13 +389,21 @@ private struct ConnectionBadge: View {
         .padding(.horizontal, hovering ? 7 : 0)
         .padding(.vertical, hovering ? 3 : 0)
         .background(
-            hovering ? AnyShapeStyle(.quaternary.opacity(0.5)) : AnyShapeStyle(.clear),
+            hovering || isOpen
+                ? AnyShapeStyle(.quaternary.opacity(0.5)) : AnyShapeStyle(.clear),
             in: Capsule()
         )
+        .contentShape(Capsule())
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.12)) { hovering = inside }
         }
         .accessibilityLabel("\(connection.label): \(connection.statusText)")
+    }
+
+    private var hoverText: String {
+        var parts = ["\(connection.label) · \(connection.statusText)"]
+        if !connection.lastSyncText.isEmpty { parts.append(connection.lastSyncText) }
+        return parts.joined(separator: " · ")
     }
 
     /// The backend names an SF Symbol; fall back if this macOS lacks it.

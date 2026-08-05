@@ -78,13 +78,31 @@ def create_app(
     source_manager = SourceManager.from_env(indexer, settings.data_dir)
     app.state.sources = source_manager
 
+    def _source_items(s: Any) -> tuple[list[str], int]:
+        """What a source has actually brought in: connectors list their
+        staged documents (newest first); the folder source lists the
+        indexed roots. Capped for display — ``count`` carries the total."""
+        staging = getattr(s, "staging", None)
+        if staging is None:
+            return list(catalog.roots), len(catalog)
+        if not staging.exists():
+            return [], 0
+        files = sorted(
+            (p for p in staging.rglob("*") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        return [str(p.relative_to(staging)) for p in files[:12]], len(files)
+
     @app.get("/sources")
     async def sources() -> dict:
-        """Each source describes itself (label + SF Symbol icon), so the app
-        renders whatever connectors exist without hardcoding any of them."""
+        """Each source describes itself (label + SF Symbol icon) and reports
+        what it indexed and when it last synced, so the app renders whatever
+        connectors exist — with real insight — without hardcoding any."""
         described = []
         for s in source_manager.sources:
             status = source_manager.status.get(s.name, {})
+            items, count = _source_items(s)
             described.append(
                 {
                     "name": s.name,
@@ -93,6 +111,8 @@ def create_app(
                     "ok": status.get("ok"),
                     "detail": status.get("detail", ""),
                     "at": status.get("at"),
+                    "items": items,
+                    "count": count,
                 }
             )
         return {"sources": described, "interval": source_manager.interval}
