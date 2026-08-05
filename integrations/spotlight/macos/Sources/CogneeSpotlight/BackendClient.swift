@@ -55,42 +55,17 @@ struct IndexProgress: Decodable {
     let indexed_files: Int?
 }
 
-struct SourceStatus: Decodable, Equatable {
-    let ok: Bool
-    let detail: String
-    let at: Double
-}
-
-struct SourcesResponse: Decodable {
-    let sources: [String]
-    let interval: Double
-    let status: [String: SourceStatus]
-}
-
-/// One connected data source, shaped for display in the panel.
-struct SourceConnection: Identifiable, Equatable {
+/// One connected data source, exactly as the backend describes it — the
+/// backend owns the catalog of connectors (name, display label, SF Symbol),
+/// so new sources appear in the panel without app changes.
+struct SourceConnection: Decodable, Identifiable, Equatable {
     let name: String  // backend connector name: folders | slack | gdrive | …
+    let label: String
+    let icon: String  // SF Symbol name reported by the backend
     let ok: Bool?  // nil until the first sync reports in
+    let detail: String?
 
     var id: String { name }
-
-    var label: String {
-        switch name {
-        case "folders": return "Folders"
-        case "slack": return "Slack"
-        case "gdrive": return "Drive"
-        default: return name.capitalized
-        }
-    }
-
-    var symbol: String {
-        switch name {
-        case "folders": return "folder"
-        case "slack": return "bubble.left.and.bubble.right"
-        case "gdrive": return "externaldrive"
-        default: return "puzzlepiece.extension"
-        }
-    }
 
     var statusText: String {
         switch ok {
@@ -99,6 +74,11 @@ struct SourceConnection: Identifiable, Equatable {
         default: return "waiting for first sync"
         }
     }
+}
+
+struct SourcesResponse: Decodable {
+    let sources: [SourceConnection]
+    let interval: Double
 }
 
 struct Health: Decodable {

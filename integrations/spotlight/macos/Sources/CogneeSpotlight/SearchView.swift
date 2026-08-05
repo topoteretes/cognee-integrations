@@ -148,7 +148,8 @@ struct SearchView: View {
                     ForEach(Array(model.results.enumerated()), id: \.element.id) { index, result in
                         ResultRow(
                             result: result, isSelected: index == model.selectedIndex,
-                            query: model.query
+                            query: model.query,
+                            originLabel: model.originLabel(for: result.path)
                         )
                             .id(index)
                             .onTapGesture {
@@ -298,11 +299,13 @@ struct SearchView: View {
 
 /// A data source feeding memory: its icon plus a status dot (green =
 /// connected, amber = sync error, gray = hasn't synced yet). Hover names it.
+/// Icon and label come from the backend's source description, so any new
+/// connector renders here untouched.
 private struct ConnectionBadge: View {
     let connection: SourceConnection
 
     var body: some View {
-        Image(systemName: connection.symbol)
+        Image(systemName: symbolName)
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(.secondary)
             .overlay(alignment: .bottomTrailing) {
@@ -313,6 +316,12 @@ private struct ConnectionBadge: View {
             }
             .help("\(connection.label) — \(connection.statusText)")
             .accessibilityLabel("\(connection.label): \(connection.statusText)")
+    }
+
+    /// The backend names an SF Symbol; fall back if this macOS lacks it.
+    private var symbolName: String {
+        NSImage(systemSymbolName: connection.icon, accessibilityDescription: nil) != nil
+            ? connection.icon : "puzzlepiece.extension"
     }
 
     private var dotColor: Color {
@@ -330,6 +339,8 @@ private struct ResultRow: View {
     let result: SearchResult
     let isSelected: Bool
     let query: String
+    /// Which connection this memory arrived through (named by the backend).
+    let originLabel: String?
 
     var body: some View {
         HStack(spacing: 11) {
@@ -417,17 +428,6 @@ private struct ResultRow: View {
 
     private var abbreviatedPath: String {
         (result.path as NSString).abbreviatingWithTildeInPath
-    }
-
-    /// Connector staging paths are `<data_dir>/sources/<name>/…`, so the
-    /// path itself says which connection a memory arrived through.
-    private var originLabel: String? {
-        if result.path.contains("/sources/slack/") { return "Slack" }
-        if result.path.contains("/sources/gdrive/") { return "Drive" }
-        if result.path.contains("/.cognee-spotlight/"), result.path.contains("/capture/") {
-            return "Captured"
-        }
-        return nil
     }
 
     /// Bold the query's words inside the snippet — semantic hits become

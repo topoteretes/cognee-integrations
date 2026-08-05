@@ -53,6 +53,22 @@ final class SearchViewModel: ObservableObject {
         }
     }
 
+    /// Which connection a result arrived through, derived from its staging
+    /// path (`<data_dir>/sources/<name>/…`) and named by the backend's own
+    /// source description — no connector names hardcoded here.
+    func originLabel(for path: String) -> String? {
+        if let range = path.range(of: "/sources/") {
+            let name = String(path[range.upperBound...].prefix(while: { $0 != "/" }))
+            if !name.isEmpty {
+                return connections.first(where: { $0.name == name })?.label ?? name.capitalized
+            }
+        }
+        if path.contains("/.cognee-spotlight/"), path.contains("/capture/") {
+            return "Captured"
+        }
+        return nil
+    }
+
     func reset() {
         query = ""
         results = []
@@ -69,9 +85,7 @@ final class SearchViewModel: ObservableObject {
                 self?.experimentsEnabled = health.experiments ?? false
             }
             if let sources = try? await BackendClient().sources() {
-                self?.connections = sources.sources.map { name in
-                    SourceConnection(name: name, ok: sources.status[name]?.ok)
-                }
+                self?.connections = sources.sources
             }
         }
     }

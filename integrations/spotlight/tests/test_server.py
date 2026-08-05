@@ -188,3 +188,21 @@ async def test_semantic_zero_skips_chunks(client, workspace):
     await index_and_wait(client, workspace)
     data = (await client.get("/search", params={"q": "roadmap", "semantic": "0"})).json()
     assert data["results"] and all(r["source"] == "filename" for r in data["results"])
+
+
+async def test_sources_describe_themselves(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPOTLIGHT_MOCK_SOURCES", "slack,gdrive")
+    settings = Settings()
+    settings.data_dir = tmp_path / "state"
+    app = create_app(settings, adapter=FakeAdapter())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        data = (await client.get("/sources")).json()
+    by_name = {s["name"]: s for s in data["sources"]}
+    assert set(by_name) == {"folders", "slack", "gdrive"}
+    # every source describes its own rendering — nothing for the app to hardcode
+    for source in data["sources"]:
+        assert source["label"] and source["icon"]
+    assert by_name["slack"]["label"] == "Slack"
+    assert by_name["gdrive"]["icon"] == "externaldrive"
+    assert by_name["folders"]["ok"] is None  # no sync has run yet
