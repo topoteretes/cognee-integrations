@@ -56,7 +56,7 @@ struct SearchView: View {
                     }
                     Spacer()
                     Text("↩ send · esc cancel")
-                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 9)
@@ -258,13 +258,21 @@ struct SearchView: View {
 
     private func hint(_ key: String, _ label: String) -> some View {
         HStack(spacing: 5) {
+            // primary text + a real keycap fill: tertiary/quaternary washed
+            // out to invisible against the dark translucent material
             Text(key)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-                .foregroundStyle(.secondary)
-            Text(label).font(.system(size: 11)).foregroundStyle(.tertiary)
+                .background(
+                    Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+                )
+                .foregroundStyle(.primary)
+            Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
         }
     }
 
