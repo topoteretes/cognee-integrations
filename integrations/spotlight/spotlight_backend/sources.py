@@ -177,6 +177,110 @@ class GoogleDriveSource:
             return await client.get(url, headers=headers, params=params)
 
 
+class GitHubSource:
+    """Repository knowledge -> markdown -> one dataset per repo.
+
+    Ingests the discussion layer, not the code: issues (with recent
+    comments), pull-request threads, and release notes — the "why" that
+    never shows up in a working tree. Works with any ``owner/repo``;
+    public repos need no token. Each repo lands in its own
+    ``github-<owner>-<repo>`` dataset, so it appears as its own memory
+    layer in the graph and in answer attribution.
+    """
+
+    name = "github"
+    label = "GitHub"
+    icon = "chevron.left.forwardslash.chevron.right"
+
+    def __init__(self, staging: Path, token: str, repos: list[str], *, client: Any = None) -> None:
+        self.staging = staging
+        self.token = token
+        self.repos = repos
+        self._client = client  # injectable for tests
+
+    @property
+    def datasets(self) -> dict[str, str]:
+        """Staging-path prefix -> dataset, one per repository."""
+        return {str(self.staging / _slug(repo)): f"github-{_slug(repo)}" for repo in self.repos}
+
+    async def sync(self) -> str:
+        written = 0
+        for repo in self.repos:
+            written += await self._sync_repo(repo)
+        return f"synced {written} file(s) from {len(self.repos)} repo(s)"
+
+    async def _sync_repo(self, repo: str) -> int:
+        base = f"https://api.github.com/repos/{repo}"
+        dest = self.staging / _slug(repo)
+        # three list calls per repo: issues+PRs, recent comments, releases
+        issues = await self._get_json(
+            f"{base}/issues",
+            {"state": "all", "per_page": 50, "sort": "updated", "direction": "desc"},
+        )
+        comments = await self._get_json(
+            f"{base}/issues/comments", {"per_page": 100, "sort": "updated", "direction": "desc"}
+        )
+        releases = await self._get_json(f"{base}/releases", {"per_page": 20})
+
+        by_issue: dict[str, list[dict]] = {}
+        for comment in comments:
+            by_issue.setdefault(str(comment.get("issue_url", "")), []).append(comment)
+
+        written = 0
+        for issue in issues:
+            number = issue.get("number", "")
+            kind = "pr" if issue.get("pull_request") else "issue"
+            lines = [f"# {repo} {kind} #{number}: {issue.get('title', '')}", ""]
+            lines.append(f"- state: {issue.get('state', '')}")
+            if author := (issue.get("user") or {}).get("login"):
+                lines.append(f"- author: {author}")
+            if labels := [
+                lab.get("name", "") for lab in issue.get("labels", []) if isinstance(lab, dict)
+            ]:
+                lines.append(f"- labels: {', '.join(labels)}")
+            lines += ["", str(issue.get("body") or "").strip()]
+            for comment in by_issue.get(str(issue.get("url", "")), []):
+                who = (comment.get("user") or {}).get("login", "someone")
+                lines += ["", "---", f"{who} commented:", str(comment.get("body") or "").strip()]
+            title_slug = _slug(str(issue.get("title", "")))[:60]
+            written += self._write(dest / f"{kind}-{number}-{title_slug}.md", "\n".join(lines))
+        if releases:
+            lines = [f"# {repo} releases", ""]
+            for release in releases:
+                lines += [
+                    f"## {release.get('tag_name', '')} — {release.get('name', '')}",
+                    str(release.get("body") or "").strip(),
+                    "",
+                ]
+            written += self._write(dest / "releases.md", "\n".join(lines))
+        return written
+
+    @staticmethod
+    def _write(path: Path, content: str) -> int:
+        content = content.rstrip() + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.read_text() == content:
+            return 0
+        path.write_text(content)
+        return 1
+
+    async def _get_json(self, url: str, params: dict) -> list[dict]:
+        import httpx
+
+        headers = {"Accept": "application/vnd.github+json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self._client is not None:
+            response = await self._client.request("GET", url, headers=headers, params=params)
+        else:
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers, params=params)
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        return data if isinstance(data, list) else []
+
+
 class MockConnectorSource:
     """A demo stand-in for a real connector: stages canned fictional content
     into ``<data_dir>/sources/<name>/`` so the app shows a live connection
@@ -193,12 +297,16 @@ class MockConnectorSource:
         files: dict[str, str],
         label: str = "",
         icon: str = "",
+        datasets: Optional[dict[str, str]] = None,
     ) -> None:
         self.name = name
         self.staging = staging
-        self.files = files
+        self.files = files  # keys may contain subdirs, e.g. "repo/issue-1.md"
         self.label = label or name.title()
         self.icon = icon or "puzzlepiece.extension"
+        # relative subdir -> dataset, resolved against staging like the real
+        # connector's mapping (so mock GitHub lands in github-<repo> too)
+        self.datasets = {str(staging / sub): ds for sub, ds in (datasets or {}).items()}
 
     async def sync(self) -> str:
         written = 0
@@ -232,6 +340,53 @@ MOCK_SLACK_FILES = {
         "- alex.chen: postmortem action: keep response caching off for "
         "search-as-you-type paths, warm the engine at boot instead\n"
         "- jamie.park: added the regression check to the deploy runbook\n"
+    ),
+}
+
+# One fictional repository for the GitHub mock — issues, a PR review thread,
+# and release notes for Meridian's (invented) search platform.
+MOCK_GITHUB_REPO = "meridian/search-platform"
+MOCK_GITHUB_FILES = {
+    "meridian-search-platform/issue-42-search-latency-spikes.md": (
+        "# meridian/search-platform issue #42: Search latency spikes to 4s "
+        "when session cache rewrites queries\n\n"
+        "- state: closed\n- author: sam-rivera\n- labels: bug, performance\n\n"
+        "Type-ahead searches jumped from 250ms to 4s after enabling the "
+        "session cache. Every keystroke goes through an LLM query rewrite "
+        "before the vector search.\n\n---\n"
+        "alex-chen commented:\nRoot cause confirmed: the cache is built for "
+        "chat agents, not search-as-you-type. Fix is to disable response "
+        "caching on the type-ahead path and warm the engine at boot instead.\n"
+        "\n---\n"
+        "sam-rivera commented:\nShipped in v2.2.1 — latency back to 250ms. "
+        "Added a regression check to the deploy runbook.\n"
+    ),
+    "meridian-search-platform/pr-57-batch-supplier-api-calls.md": (
+        "# meridian/search-platform pr #57: Batch supplier API v3 calls to "
+        "stay under rate limits\n\n"
+        "- state: closed\n- author: alex-chen\n- labels: supplier-api\n\n"
+        "Supplier API v3 throttles above 40 rps. This batches availability "
+        "lookups into windows of 25 so peak-season traffic stays under the "
+        "limit.\n\n---\n"
+        "jamie-park commented:\nReview: ship it behind the flag until the "
+        "peak-season load test passes — same rollout playbook as unified "
+        "search.\n"
+    ),
+    "meridian-search-platform/issue-61-loyalty-referral-hook.md": (
+        "# meridian/search-platform issue #61: Loyalty v2 referral hook must "
+        "land before September\n\n"
+        "- state: open\n- author: jamie-park\n- labels: loyalty\n\n"
+        "StayFinder's loyalty tiers are getting press. Our v2 needs the "
+        "referral hook in the September release or the board update slips.\n"
+    ),
+    "meridian-search-platform/releases.md": (
+        "# meridian/search-platform releases\n\n"
+        "## v2.3.0 — Unified search beta\n"
+        "Meaning-based search behind a flag for 5% of traffic. Early data: "
+        "12% better conversion than keyword.\n\n"
+        "## v2.2.1 — Search latency hotfix\n"
+        "Disabled per-query cache rewrites on type-ahead; engine warms at "
+        "boot. Latency restored to 250ms.\n"
     ),
 }
 
@@ -280,21 +435,39 @@ class SourceManager:
                     data_dir / "sources" / "gdrive", token, os.getenv("GDRIVE_QUERY", "")
                 )
             )
+        if repos_env := os.getenv("GITHUB_REPOS"):
+            repos = [r.strip() for r in repos_env.split(",") if r.strip()]
+            if repos:
+                manager.sources.append(
+                    GitHubSource(
+                        data_dir / "sources" / "github", os.getenv("GITHUB_TOKEN", ""), repos
+                    )
+                )
         # demo connections: mock connectors for sources with no credentials,
         # skipped for any name already covered by a real connector above.
-        # Each mock borrows the real connector's label/icon so it renders
-        # identically in the app.
+        # Each mock borrows the real connector's label/icon (and, for GitHub,
+        # its dataset-per-repo layout) so it renders identically in the app.
         mocks = {
-            "slack": (MOCK_SLACK_FILES, SlackSource.label, SlackSource.icon),
-            "gdrive": (MOCK_GDRIVE_FILES, GoogleDriveSource.label, GoogleDriveSource.icon),
+            "slack": (MOCK_SLACK_FILES, SlackSource, {}),
+            "gdrive": (MOCK_GDRIVE_FILES, GoogleDriveSource, {}),
+            "github": (
+                MOCK_GITHUB_FILES,
+                GitHubSource,
+                {_slug(MOCK_GITHUB_REPO): f"github-{_slug(MOCK_GITHUB_REPO)}"},
+            ),
         }
         configured = {s.name for s in manager.sources}
         for name in (x.strip().lower() for x in os.getenv("SPOTLIGHT_MOCK_SOURCES", "").split(",")):
             if name in mocks and name not in configured:
-                files, label, icon = mocks[name]
+                files, real, datasets = mocks[name]
                 manager.sources.append(
                     MockConnectorSource(
-                        name, data_dir / "sources" / name, files, label=label, icon=icon
+                        name,
+                        data_dir / "sources" / name,
+                        files,
+                        label=real.label,
+                        icon=real.icon,
+                        datasets=datasets,
                     )
                 )
         return manager
@@ -315,6 +488,11 @@ class SourceManager:
                 str(s.staging) for s in self.sources if hasattr(s, "staging") and s.staging.exists()
             ]
             if staged:
+                # register per-source dataset routing (e.g. github-<repo>)
+                # before the run so staged files land in the right dataset
+                for source in self.sources:
+                    if datasets := getattr(source, "datasets", None):
+                        self.indexer.dataset_overrides.update(datasets)
                 self.indexer.start(staged)
             for source in self.sources:
                 if isinstance(source, LocalFolderSource):

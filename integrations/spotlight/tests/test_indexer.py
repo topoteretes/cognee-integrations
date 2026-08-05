@@ -28,3 +28,39 @@ def test_discover_accepts_single_file_and_dedupes(tmp_path):
     settings = Settings()
     found = discover_files([str(f), str(tmp_path)], settings)
     assert found == [Path(f)]
+
+
+async def test_dataset_overrides_route_files_and_cognify(tmp_path):
+    import asyncio
+
+    from spotlight_backend.adapters import FakeAdapter
+    from spotlight_backend.catalog import Catalog
+    from spotlight_backend.indexer import Indexer
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "note.md").write_text("a plain note")
+    repo = tmp_path / "sources" / "github" / "acme-rockets"
+    repo.mkdir(parents=True)
+    (repo / "issue-1.md").write_text("a repo issue")
+
+    settings = Settings()
+    settings.data_dir = tmp_path / "state"
+    adapter = FakeAdapter(dataset="spotlight")
+    indexer = Indexer(adapter, Catalog(settings.data_dir / "catalog.json"), settings)
+    indexer.dataset_overrides[str(repo)] = "github-acme-rockets"
+
+    async def run():
+        indexer.start([str(docs), str(tmp_path / "sources" / "github")])
+        for _ in range(200):
+            if indexer.status["state"] in ("idle", "error"):
+                break
+            await asyncio.sleep(0.01)
+        assert indexer.status["state"] == "idle", indexer.status
+
+    await run()
+
+    assert adapter.dataset_of[str(docs / "note.md")] == "spotlight"
+    assert adapter.dataset_of[str(repo / "issue-1.md")] == "github-acme-rockets"
+    # both datasets got their graphs built
+    assert set(adapter.cognified_datasets) == {"spotlight", "github-acme-rockets"}
