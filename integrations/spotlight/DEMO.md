@@ -125,6 +125,28 @@ what the agents learned.
 Switch Profile back to `default`. "One graph: my files, my agents' work, my
 team's lessons. Spotlight is just the window into it."
 
+## Optional flex — memory that argues back (1 min)
+
+Needs `SPOTLIGHT_EXPERIMENTS=1` in `~/.cognee-spotlight/backend.env`
+(restart the backend after). Three things switch on:
+
+1. **Conflicting memory.** ⌥ Space → **`what happened with the websockets
+   version`** → ⇧↩. Under the answer an orange ⚠ chip appears:
+   *"conflicting memory: websockets version conflict vs targeted code
+   inspection"* — a real disagreement cognee recorded from an agent session
+   instead of silently overwriting one side. Talking point: *"memory that
+   never loses the losing argument."*
+2. **Temporal phrasing.** Ask **`what changed in search since last month`**
+   — time-cued questions route to temporal search where the deployment
+   supports it, and degrade to a normal graph answer where it doesn't
+   (cognee cloud today). Same panel, no error either way.
+3. **Feedback thumbs.** Every answer gains 👍/👎. A 👍 re-ingests the Q&A as
+   a confirmed learning — the graph gets more sure of itself; a 👎 is logged
+   for correction.
+
+Leave the flag off if you want the demo minimal — everything above is
+additive and the rest of the script is unchanged.
+
 ---
 
 ## If something misbehaves
