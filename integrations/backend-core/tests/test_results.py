@@ -30,6 +30,16 @@ def test_first_text_on_unwrapped_graph_completion():
     assert first_text(unwrap_results(wrapped)) == "The owner is Vasilije."
 
 
+def test_chunk_text_handles_strings_and_dicts():
+    from cognee_backend_core import chunk_text
+
+    # some tenants return bare strings from CHUNKS searches
+    assert chunk_text("A plain chunk string. ") == "A plain chunk string."
+    assert chunk_text({"text": "dict chunk"}) == "dict chunk"
+    assert chunk_text({"no": "text keys"}) == ""
+    assert chunk_text(None) == ""
+
+
 def test_extract_file_hint_nested():
     chunk = {"meta": {"origin": [{"raw_data_location": "/docs/a.md"}]}}
     assert extract_file_hint(chunk) == "/docs/a.md"

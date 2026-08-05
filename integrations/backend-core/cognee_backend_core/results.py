@@ -106,12 +106,19 @@ def first_text(results: Optional[list[Any]]) -> str:
     return ""
 
 
-def chunk_text(chunk: dict[str, Any]) -> str:
-    """The renderable text of one chunk result."""
-    for key in ("text", "content", "chunk", "answer"):
-        value = chunk.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+def chunk_text(chunk: Any) -> str:
+    """The renderable text of one chunk result.
+
+    Chunk shapes differ between cognee versions and transports — some
+    tenants return bare strings instead of dicts.
+    """
+    if isinstance(chunk, str):
+        return chunk.strip()
+    if isinstance(chunk, dict):
+        for key in ("text", "content", "chunk", "answer"):
+            value = chunk.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return ""
 
 
