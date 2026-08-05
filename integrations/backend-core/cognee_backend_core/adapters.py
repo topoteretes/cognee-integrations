@@ -35,12 +35,12 @@ class LocalCogneeAdapter:
     def __init__(self, dataset: str) -> None:
         self.dataset = dataset
 
-    async def add(self, paths: list[str]) -> None:
+    async def add(self, paths: list[str], dataset: str = "") -> None:
         import cognee
 
-        await cognee.add(paths, dataset_name=self.dataset)
+        await cognee.add(paths, dataset_name=dataset or self.dataset)
 
-    async def cognify(self) -> None:
+    async def cognify(self, datasets: Any = None) -> None:
         """Build the graph in-process, sharing the single persistent engine.
 
         In single-user posture one warm engine owns the store for the process
@@ -49,7 +49,7 @@ class LocalCogneeAdapter:
         """
         import cognee
 
-        await cognee.cognify(datasets=[self.dataset])
+        await cognee.cognify(datasets=list(datasets) if datasets else [self.dataset])
 
     async def chunks(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
         results = await self._search(query, "CHUNKS", top_k)
@@ -101,18 +101,22 @@ class HttpCogneeAdapter:
         self._client = client  # injectable for tests
 
     # -- files / graph -------------------------------------------------------
-    async def add(self, paths: list[str]) -> None:
+    async def add(self, paths: list[str], dataset: str = "") -> None:
         files = []
         for p in paths:
             path = Path(p)
             files.append(("data", (path.name, path.read_bytes(), "application/octet-stream")))
         response = await self._request(
-            "POST", "/api/v1/add", data={"datasetName": self.dataset}, files=files
+            "POST",
+            "/api/v1/add",
+            data={"datasetName": dataset or self.dataset},
+            files=files,
         )
         response.raise_for_status()
 
-    async def cognify(self) -> None:
-        response = await self._request("POST", "/api/v1/cognify", json={"datasets": [self.dataset]})
+    async def cognify(self, datasets: Any = None) -> None:
+        payload = {"datasets": list(datasets) if datasets else [self.dataset]}
+        response = await self._request("POST", "/api/v1/cognify", json=payload)
         response.raise_for_status()
 
     async def chunks(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
@@ -267,18 +271,22 @@ class FakeAdapter:
     def __init__(self, dataset: str = "main") -> None:
         self.dataset = dataset
         self._docs: dict[str, str] = {}  # path -> text
+        self.dataset_of: dict[str, str] = {}  # path -> dataset it landed in
         self.cognified = False
+        self.cognified_datasets: list[str] = []
 
-    async def add(self, paths: list[str]) -> None:
+    async def add(self, paths: list[str], dataset: str = "") -> None:
         for p in paths:
             try:
                 self._docs[p] = Path(p).read_text(errors="ignore")
             except OSError:
                 self._docs[p] = ""
+            self.dataset_of[p] = dataset or self.dataset
 
-    async def cognify(self) -> None:
+    async def cognify(self, datasets: Any = None) -> None:
         await asyncio.sleep(0)  # keep the same async shape as the real thing
         self.cognified = True
+        self.cognified_datasets = list(datasets) if datasets else [self.dataset]
 
     async def chunks(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
         q = query.lower()

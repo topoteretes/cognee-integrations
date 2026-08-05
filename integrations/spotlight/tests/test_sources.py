@@ -128,3 +128,86 @@ def test_mock_connectors_yield_to_real_credentials(tmp_path, monkeypatch):
     manager = SourceManager.from_env(DummyIndexer(), tmp_path)
     slack = [s for s in manager.sources if s.name == "slack"]
     assert len(slack) == 1 and isinstance(slack[0], SlackSource)
+
+
+async def test_github_source_writes_issue_threads_per_repo(tmp_path):
+    from spotlight_backend.sources import GitHubSource
+
+    issue_url = "https://api.github.com/repos/acme/rockets/issues/7"
+    client = ScriptedClient(
+        [
+            FakeResponse(
+                200,
+                [
+                    {
+                        "number": 7,
+                        "url": issue_url,
+                        "title": "Fuel gauge reads empty on full tank",
+                        "state": "closed",
+                        "user": {"login": "wile"},
+                        "labels": [{"name": "bug"}],
+                        "body": "Gauge inverted after sensor swap.",
+                    },
+                    {
+                        "number": 9,
+                        "url": issue_url.replace("/7", "/9"),
+                        "title": "Add parachute deploy retries",
+                        "state": "open",
+                        "user": {"login": "road"},
+                        "labels": [],
+                        "body": "One attempt is not enough.",
+                        "pull_request": {"url": "..."},
+                    },
+                ],
+            ),
+            FakeResponse(
+                200,
+                [
+                    {
+                        "issue_url": issue_url,
+                        "user": {"login": "road"},
+                        "body": "Confirmed: polarity flipped in the harness.",
+                    }
+                ],
+            ),
+            FakeResponse(200, [{"tag_name": "v1.2.0", "name": "Retry era", "body": "Retries!"}]),
+        ]
+    )
+    source = GitHubSource(tmp_path / "github", "ghp-token", ["acme/rockets"], client=client)
+    detail = await source.sync()
+    assert "3 file(s)" in detail and "1 repo(s)" in detail
+
+    repo_dir = tmp_path / "github" / "acme-rockets"
+    issue = (repo_dir / "issue-7-fuel-gauge-reads-empty-on-full-tank.md").read_text()
+    assert "state: closed" in issue and "author: wile" in issue
+    assert "road commented:" in issue and "polarity flipped" in issue
+    pr = (repo_dir / "pr-9-add-parachute-deploy-retries.md").read_text()
+    assert "pr #9" in pr
+    assert "v1.2.0" in (repo_dir / "releases.md").read_text()
+    # per-repo dataset mapping, and the token went out as a bearer header
+    assert source.datasets == {str(repo_dir): "github-acme-rockets"}
+    assert client.requests[0]["headers"]["Authorization"] == "Bearer ghp-token"
+
+    # second sync with identical content rewrites nothing
+    client.responses = [
+        FakeResponse(200, []),
+        FakeResponse(200, []),
+        FakeResponse(200, []),
+    ]
+    assert "0 file(s)" in await source.sync()
+
+
+def test_mock_github_repo_gets_its_own_dataset(tmp_path, monkeypatch):
+    from spotlight_backend.sources import MockConnectorSource
+
+    class DummyIndexer:
+        class _catalog:
+            roots = []
+
+    monkeypatch.setenv("SPOTLIGHT_MOCK_SOURCES", "github")
+    manager = SourceManager.from_env(DummyIndexer(), tmp_path)
+    github = next(s for s in manager.sources if s.name == "github")
+    assert isinstance(github, MockConnectorSource)
+    assert github.label == "GitHub"
+    repo_prefix = str(tmp_path / "sources" / "github" / "meridian-search-platform")
+    assert github.datasets == {repo_prefix: "github-meridian-search-platform"}

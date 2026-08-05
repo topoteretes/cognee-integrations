@@ -353,6 +353,8 @@ def _layer_label(dataset: str) -> str:
     """Friendly memory-layer name for answer attribution."""
     if dataset.startswith("handover-") or dataset.startswith("team-") or dataset == "org-memory":
         return "team handover"
+    if dataset.startswith("github-"):
+        return "github"
     if "agent" in dataset or "session" in dataset:
         return "agent session"
     if dataset == "spotlight":
