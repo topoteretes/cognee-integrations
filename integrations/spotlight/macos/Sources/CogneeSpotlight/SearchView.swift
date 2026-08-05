@@ -298,24 +298,45 @@ struct SearchView: View {
 // MARK: - Connection badge
 
 /// A data source feeding memory: its icon plus a status dot (green =
-/// connected, amber = sync error, gray = hasn't synced yet). Hover names it.
-/// Icon and label come from the backend's source description, so any new
-/// connector renders here untouched.
+/// connected, amber = sync error, gray = hasn't synced yet). Hovering
+/// expands the chip inline to name it — system tooltips never appear on a
+/// non-activating panel (the app stays inactive), so the label must live
+/// in the view itself. Icon and label come from the backend's source
+/// description, so any new connector renders here untouched.
 private struct ConnectionBadge: View {
     let connection: SourceConnection
+    @State private var hovering = false
 
     var body: some View {
-        Image(systemName: symbolName)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.secondary)
-            .overlay(alignment: .bottomTrailing) {
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 5, height: 5)
-                    .offset(x: 2.5, y: 2.5)
+        HStack(spacing: 5) {
+            Image(systemName: symbolName)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .overlay(alignment: .bottomTrailing) {
+                    Circle()
+                        .fill(dotColor)
+                        .frame(width: 5, height: 5)
+                        .offset(x: 2.5, y: 2.5)
+                }
+            if hovering {
+                Text("\(connection.label) · \(connection.statusText)")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .transition(.opacity)
             }
-            .help("\(connection.label) — \(connection.statusText)")
-            .accessibilityLabel("\(connection.label): \(connection.statusText)")
+        }
+        .padding(.horizontal, hovering ? 7 : 0)
+        .padding(.vertical, hovering ? 3 : 0)
+        .background(
+            hovering ? AnyShapeStyle(.quaternary.opacity(0.5)) : AnyShapeStyle(.clear),
+            in: Capsule()
+        )
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.12)) { hovering = inside }
+        }
+        .accessibilityLabel("\(connection.label): \(connection.statusText)")
     }
 
     /// The backend names an SF Symbol; fall back if this macOS lacks it.
