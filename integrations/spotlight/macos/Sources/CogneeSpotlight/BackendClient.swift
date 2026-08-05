@@ -64,6 +64,9 @@ struct SourceConnection: Decodable, Identifiable, Equatable {
     let icon: String  // SF Symbol name reported by the backend
     let ok: Bool?  // nil until the first sync reports in
     let detail: String?
+    let at: Double?  // unix time of the last sync
+    let items: [String]?  // what it indexed: folder roots / staged documents
+    let count: Int?  // total item count (items is display-capped)
 
     var id: String { name }
 
@@ -72,6 +75,19 @@ struct SourceConnection: Decodable, Identifiable, Equatable {
         case true: return "connected"
         case false: return "sync error"
         default: return "waiting for first sync"
+        }
+    }
+
+    /// "synced just now" / "synced 4m ago" — the last-sync timestamp,
+    /// humanized. Empty until the first sync reports.
+    var lastSyncText: String {
+        guard let at else { return "" }
+        let seconds = max(0, Date().timeIntervalSince1970 - at)
+        switch seconds {
+        case ..<60: return "synced just now"
+        case ..<3600: return "synced \(Int(seconds / 60))m ago"
+        case ..<86400: return "synced \(Int(seconds / 3600))h ago"
+        default: return "synced \(Int(seconds / 86400))d ago"
         }
     }
 }

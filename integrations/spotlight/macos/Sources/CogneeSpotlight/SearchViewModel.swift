@@ -27,6 +27,13 @@ final class SearchViewModel: ObservableObject {
     /// The data sources feeding memory (folders, Slack, Drive, …), shown as
     /// chips in the panel so it's visible what a search draws from.
     @Published var connections: [SourceConnection] = []
+    /// Chip that was clicked open: its indexed items + last sync show in a
+    /// detail row under the search field.
+    @Published var connectionDetail: SourceConnection?
+
+    func toggleConnectionDetail(_ connection: SourceConnection) {
+        connectionDetail = connectionDetail?.id == connection.id ? nil : connection
+    }
     /// One conversation per panel appearance: follow-up ⇧↩ questions thread.
     private(set) var threadID = UUID().uuidString
     /// Bumped every time the panel is shown so the view can re-grab focus.
@@ -78,6 +85,7 @@ final class SearchViewModel: ObservableObject {
         errorText = nil
         selectedIndex = 0
         isAsking = false
+        connectionDetail = nil
         threadID = UUID().uuidString  // a fresh panel is a fresh conversation
         focusGeneration += 1
         Task { [weak self] in

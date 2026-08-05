@@ -119,7 +119,11 @@ final class SearchPanelController: NSObject, NSWindowDelegate {
             }
         }
         switch event.keyCode {
-        case 53:  // esc
+        case 53:  // esc closes the open connection detail first, then the panel
+            if model.connectionDetail != nil {
+                model.connectionDetail = nil
+                return true
+            }
             hide()
             return true
         case 125:  // down
