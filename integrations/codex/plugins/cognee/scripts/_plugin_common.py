@@ -418,6 +418,13 @@ def load_resolved(session_key: str = "") -> dict:
                 agent_user_id = str(agent.get("user_id") or "").strip()
                 if agent_user_id:
                     resolved["user_id"] = agent_user_id
+                # Which cloud tenant this connection belongs to (null on local
+                # single-user servers). The credits display keys its balance
+                # entries on this, so multi-tenant machines track each tenant
+                # separately (SDK-355).
+                tenant_id = str(agent.get("tenant_id") or "").strip()
+                if tenant_id:
+                    resolved["tenant_id"] = tenant_id
                 status = str(agent.get("status") or "").strip().lower()
                 resolved["registered"] = status == "active"
     except Exception as exc:
@@ -1640,6 +1647,266 @@ def server_usable(service_url: str = "", probe_timeout: float = 1.0) -> bool:
     return False
 
 
+# --- Credits marker (status-line budget display, SDK-355) ---------------------
+# The status-line renderer is pure-local by contract, so the credits balance it
+# shows comes from this marker, written by hooks/watchers that are already
+# allowed to touch the network. Cloud-only: a local server has no credit
+# concept, so the fetch is gated on a non-loopback base URL (the renderer
+# independently gates on its mode label).
+_CREDITS_MARKER = _PLUGIN_DIR / "credits.json"
+_PLATFORM_API_URL_DEFAULT = "https://api.aws.cognee.ai"
+
+
+def _platform_api_url() -> str:
+    """The cloud control-plane API host (billing/account routes).
+
+    Distinct from the memory data plane: cloud sessions talk to a per-tenant
+    host (``tenant-<id>.aws.cognee.ai``), which serves recall/remember/improve
+    but has NO billing routes — asking it for the credits overview 404s. The
+    billing routes live only on the platform API, which accepts the same
+    tenant ``COGNEE_API_KEY``. Overridable for other cloud deployments.
+    """
+    return (
+        str(os.environ.get("COGNEE_PLATFORM_API_URL", "") or _PLATFORM_API_URL_DEFAULT)
+        .strip()
+        .rstrip("/")
+    )
+
+
+# The marker is a MAP keyed by tenant id: several concurrent Claude sessions
+# on one machine can be connected to DIFFERENT cloud tenants, and a flat
+# last-writer-wins record made them clobber each other's balance. Each entry
+# carries the service base_url it was observed under — that binding is how
+# readers with only a URL in hand (the renderer, the Stop hook) find their
+# tenant's entry.
+_CREDITS_LOCK = _PLUGIN_DIR / "credits.lock"
+_CREDITS_LOCK_STALE_SECONDS = 30.0
+_CREDITS_ENTRY_MAX_AGE_SECONDS = 7 * 24 * 3600.0
+
+
+def read_credits_marker() -> dict:
+    """Return the tenant-keyed credits map, or {} — never raises."""
+    try:
+        raw = json.loads(_CREDITS_MARKER.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _credits_entry_for_url(marker: dict, service_url: str) -> tuple[str, dict]:
+    """Find the (tenant_id, entry) bound to ``service_url``, or ("", {})."""
+    want = _normalize_service_url(service_url)
+    for key, entry in marker.items():
+        if (
+            isinstance(entry, dict)
+            and _normalize_service_url(str(entry.get("base_url") or "")) == want
+        ):
+            return str(key), entry
+    return "", {}
+
+
+def _try_acquire_credits_lock() -> bool:
+    """Guard the marker's read-modify-write; concurrent writers on different
+    tenants would otherwise each write back a map missing the other's entry.
+    Fail-open like the drain lock: a rare lost update beats a wedged marker."""
+    try:
+        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+        if _CREDITS_LOCK.exists():
+            try:
+                if time.time() - _CREDITS_LOCK.stat().st_mtime > _CREDITS_LOCK_STALE_SECONDS:
+                    _CREDITS_LOCK.unlink()
+            except FileNotFoundError:
+                pass
+        fd = os.open(str(_CREDITS_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
+def _release_credits_lock() -> None:
+    try:
+        _CREDITS_LOCK.unlink()
+    except Exception:
+        pass
+
+
+def _select_tenant_budget(overview: dict, tenant_id: str) -> tuple[str, dict, str]:
+    """Pick the budget record for OUR tenant from the credits overview.
+
+    Returns ``(tenant_id, {remaining/spent/total}, source)``. Preference:
+      1. the ``tenants`` entry matching ``tenant_id`` — the balance of the
+         tenant this session is actually connected to;
+      2. the sole ``tenants`` entry when the account has exactly one (also
+         teaches us the tenant id when the caller had none);
+      3. the account-wide ``budget`` aggregate — last resort, still better
+         than nothing, but wrong for multi-tenant users (SDK-355 follow-up).
+    """
+    tenants = overview.get("tenants")
+    tenants = [t for t in tenants if isinstance(t, dict)] if isinstance(tenants, list) else []
+    chosen, source = None, ""
+    if tenant_id:
+        for t in tenants:
+            if str(t.get("tenantId") or "").strip() == tenant_id:
+                chosen, source = t, "tenant"
+                break
+    if chosen is None and len(tenants) == 1:
+        chosen, source = tenants[0], "single_tenant"
+        tenant_id = str(chosen.get("tenantId") or "").strip() or tenant_id
+    if chosen is not None:
+        return (
+            tenant_id,
+            {
+                "remaining_usd": chosen.get("remainingUsd"),
+                "spent_usd": chosen.get("spentUsd"),
+                "total_usd": chosen.get("maxBudgetUsd"),
+            },
+            source,
+        )
+    budget = overview.get("budget") or {}
+    return (
+        tenant_id,
+        {
+            "remaining_usd": budget.get("remainingUsd"),
+            "spent_usd": budget.get("spentUsd"),
+            "total_usd": budget.get("totalUsd"),
+        },
+        "account",
+    )
+
+
+def refresh_credits(op_label: str = "", *, tenant_id: str = "", timeout: float = 3.0) -> dict:
+    """Fetch the cloud credits overview and update this tenant's marker entry.
+
+    Best-effort by contract: any failure returns {} and leaves the existing
+    marker untouched — the renderer's staleness TTL handles an aging balance,
+    and a fetch problem must never propagate into the calling hook.
+
+    ``tenant_id`` comes from ``load_resolved()`` (the connections/me lookup)
+    when the caller has it; otherwise the tenant is recovered from the marker
+    entry already bound to this service URL (established by the prompt-time
+    refresh), falling back per ``_select_tenant_budget``.
+
+    ``op_label`` ("turn" / "remember" / "improve") attributes the spend
+    recorded since the previous reading OF THIS TENANT to the operation that
+    just ran. Approximate by design — the cloud aggregates spend
+    asynchronously and concurrent operations overlap, so the delta reads as
+    "~cost", not an invoice. A non-positive delta (aggregation lag, or a
+    top-up between readings) refreshes the balance but records no last_op:
+    a negative "cost" is meaningless, and the prior last_op is kept so the
+    display doesn't flicker away on every idle refresh.
+    """
+    service_url = _local_api_url()
+    if service_url_is_local(service_url):
+        return {}
+    platform_url = _platform_api_url()
+    try:
+        marker = read_credits_marker()
+        tenant_id = str(tenant_id or "").strip()
+        if not tenant_id:
+            tenant_id, _ = _credits_entry_for_url(marker, service_url)
+        overview = _json_http_request(
+            "/api/v1/billing/credits/overview",
+            None,
+            method="GET",
+            timeout=timeout,
+            base_url=platform_url,
+        )
+        tenant_id, budget, source = _select_tenant_budget(overview or {}, tenant_id)
+        remaining = budget.get("remaining_usd")
+        spent = budget.get("spent_usd")
+        if remaining is None and spent is None:
+            hook_log(
+                "credits_fetch_empty",
+                {"platform_url": platform_url, "tenant_id": tenant_id, "source": source},
+            )
+            return {}
+        now_ts = datetime.now(timezone.utc).timestamp()
+        # Entries without a tenant id (account-aggregate fallback) still need a
+        # stable map key; "account" cannot collide with a UUID tenant id.
+        entry_key = tenant_id or "account"
+        entry = {
+            "remaining_usd": remaining,
+            "spent_usd": spent,
+            "total_usd": budget.get("total_usd"),
+            # The service URL this tenant was observed under: the renderer and
+            # tenantless callers look their entry up by it.
+            "base_url": service_url,
+            "platform_url": platform_url,
+            "source": source,
+            "checked_at": now_ts,
+        }
+        if tenant_id:
+            entry["tenant_id"] = tenant_id
+        acquired = _try_acquire_credits_lock()
+        try:
+            # Re-read under the lock: another tenant's refresh may have
+            # updated the map since the pre-fetch read.
+            marker = read_credits_marker()
+            prior = marker.get(entry_key)
+            prior = prior if isinstance(prior, dict) else {}
+            last_op = prior.get("last_op")
+            if op_label:
+                delta = None
+                try:
+                    # Prefer the spend counter; fall back to the remaining-
+                    # balance drop when the API reports only one of the two.
+                    if spent is not None and prior.get("spent_usd") is not None:
+                        delta = float(spent) - float(prior["spent_usd"])
+                    elif remaining is not None and prior.get("remaining_usd") is not None:
+                        delta = float(prior["remaining_usd"]) - float(remaining)
+                except (TypeError, ValueError):
+                    delta = None
+                if delta is not None and delta > 0:
+                    last_op = {
+                        "label": str(op_label)[:24],
+                        "cost_usd": round(delta, 4),
+                        "at": now_ts,
+                    }
+            if isinstance(last_op, dict):
+                entry["last_op"] = last_op
+            marker[entry_key] = entry
+            # Prune long-dead tenants so one-off connections don't accumulate.
+            for key in [
+                k
+                for k, v in marker.items()
+                if k != entry_key
+                and (
+                    not isinstance(v, dict)
+                    or now_ts - float(v.get("checked_at", 0) or 0) > _CREDITS_ENTRY_MAX_AGE_SECONDS
+                )
+            ]:
+                marker.pop(key, None)
+            _CREDITS_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            # Per-pid tmp: a shared staging name let one writer truncate the
+            # file another was about to os.replace into place, and the
+            # renderer briefly saw a torn marker (the "credits disappear
+            # mid-search" flicker).
+            tmp = _CREDITS_MARKER.with_name(f"{_CREDITS_MARKER.name}.{os.getpid()}.tmp")
+            try:
+                tmp.write_text(json.dumps(marker), encoding="utf-8")
+                os.replace(tmp, _CREDITS_MARKER)
+            finally:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+        finally:
+            if acquired:
+                _release_credits_lock()
+        return entry
+    except Exception as exc:
+        # platform_url in the detail: a 404 here once cost a PID-correlation
+        # hunt to discover WHICH host was being asked.
+        hook_log(
+            "credits_fetch_failed",
+            {"error": str(exc)[:200], "platform_url": platform_url},
+        )
+        return {}
+
+
 # --- Plugin update check (Phase 2) -------------------------------------------
 # Background, hourly-guarded check comparing the installed plugin version against the
 # version published on the tracked git ref. The network call runs only here (in
@@ -1851,8 +2118,12 @@ def _json_http_request(
     *,
     method: str = "POST",
     timeout: float = 30.0,
+    base_url: str | None = None,
 ):
-    base_url = _local_api_url().rstrip("/")
+    # base_url overrides the resolved service URL for calls that target a
+    # different host than the memory data plane (e.g. the cloud platform API's
+    # billing routes); the same principal X-Api-Key is attached either way.
+    base_url = (base_url or _local_api_url()).rstrip("/")
     api_key = _api_key()
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -2556,6 +2827,12 @@ def _run_session_improve_locked(dataset: str, session_id: str) -> bool:
             "error": str(outcome.get("error") or "")[:120],
         },
     )
+    if outcome.get("ok"):
+        # Status-line credits: attribute the spend recorded since the previous
+        # reading to this improve. Approximate on purpose — the submit is
+        # run_in_background, so part of this run's cognify cost lands in later
+        # unlabeled refreshes. refresh_credits never raises and no-ops locally.
+        refresh_credits("improve")
     if remaining:
         # Buffered entries never reached the server cache, so the improve above
         # persisted an incomplete session. Partial persist beats none (hence the

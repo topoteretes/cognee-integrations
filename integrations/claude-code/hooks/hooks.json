@@ -51,9 +51,25 @@
           },
           {
             "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py",
+            "async": true
+          },
+          {
+            "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/clear-transcript-context.py",
             "timeout": 5,
             "statusMessage": "Clearing Claude context..."
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py",
+            "async": true
           }
         ]
       }

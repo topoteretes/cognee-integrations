@@ -268,6 +268,20 @@ def main(argv):
     a = list(argv) + [""] * 5
     result = do_remember(a[0], a[1], a[2], a[3], a[4])
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
+    if result != UNREACHABLE:
+        # Refresh the status-line credits marker, attributing the spend delta
+        # to this remember (cloud-only; the fetch itself no-ops on a local
+        # server). Lazy, guarded import: this module is standalone by design,
+        # and the opt-out env stops _plugin_common's venv re-exec — an execv
+        # here would re-run main() and double-submit the remember.
+        try:
+            os.environ.setdefault("COGNEE_PLUGIN_IN_VENV", "1")
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _plugin_common import refresh_credits
+
+            refresh_credits("remember")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

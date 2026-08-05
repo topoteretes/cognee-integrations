@@ -10,6 +10,44 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.3]
+
+### Added
+- **Cloud credits in the status line.** Cloud sessions now show the
+  connected tenant's balance right after the mode — `credits: $14.23`, plain
+  text (`-$…` once negative) — followed by the approximate cost of the last
+  memory operation, e.g. `· last turn ~$0.04`. Motivated by an incident where
+  a tenant overshot its budget by ~$159 through the integration path with no
+  client-side visibility at any point.
+  - **Costs appear when the turn finishes, not one prompt later.** A dedicated
+    `credits-refresh.py` hook on `Stop` diffs the tenant's spend counter
+    against the turn-start baseline and attributes the delta as `turn`;
+    explicit `remember` and `improve` operations are attributed at their own
+    completion points. (Codex does not support async command hooks — an
+    `async: true` hook is skipped entirely — so the refresh runs as a plain
+    Stop entry with a 10s timeout; Codex launches matching hooks
+    concurrently, so the QA store on the same event does not wait on it.)
+    Costs carry a `~` on purpose: spend aggregates asynchronously and
+    concurrent operations overlap, so the delta is an attribution, not an
+    invoice. Most conversational turns genuinely cost ~$0 — recall runs with
+    `only_context=true` (no LLM completion) — so the label typically moves on
+    improve/remember, while the balance refreshes every turn.
+  - **Multi-tenant correct.** The balance comes from the platform API's
+    per-tenant spend records (`/api/v1/billing/credits/overview` on
+    `COGNEE_PLATFORM_API_URL`, default `https://api.aws.cognee.ai` — the
+    tenant data plane has no billing routes), selected by the tenant id the
+    `connections/me` lookup already returns (zero extra calls). The marker
+    (`credits.json`) is a map keyed by tenant id, so several terminals
+    connected to different tenants each display their own balance, and one
+    tenant's spend can never be misattributed to another's turn. Entries are
+    written atomically under a lock (per-pid staging files), so concurrent
+    refreshes can't tear the file or drop each other's tenants.
+  - The status-line renderer stays pure-local (reads only the marker, 15-min
+    staleness TTL) and the segment hides entirely for local servers, which
+    have no credits concept. Refresh cadence: per turn (prompt + turn end)
+    plus an idle-watcher poll (`COGNEE_CREDITS_CHECK_INTERVAL`, 300s). Opt
+    out with `COGNEE_STATUSLINE_CREDITS=off`.
+
 ## [1.3.2]
 
 ### Fixed
