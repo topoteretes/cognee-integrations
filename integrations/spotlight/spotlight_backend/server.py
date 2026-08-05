@@ -48,6 +48,12 @@ class SeenRequest(BaseModel):
     ids: list[str]
 
 
+class FeedbackRequest(BaseModel):
+    query: str
+    answer: str
+    rating: int  # 1-5; >=4 reinforces memory
+
+
 def create_app(
     settings: Optional[Settings] = None,
     adapter: Any = None,
@@ -64,6 +70,25 @@ def create_app(
     app.state.catalog = catalog
     app.state.indexer = indexer
     app.state.handover = handover
+
+    from .experiments import ConversationThreads, is_temporal
+    from .sources import SourceManager
+
+    threads = ConversationThreads()
+    source_manager = SourceManager.from_env(indexer, settings.data_dir)
+    app.state.sources = source_manager
+
+    @app.get("/sources")
+    async def sources() -> dict:
+        return {
+            "sources": [s.name for s in source_manager.sources],
+            "interval": source_manager.interval,
+            "status": source_manager.status,
+        }
+
+    @app.on_event("startup")
+    async def start_sources() -> None:
+        source_manager.start()
 
     @app.on_event("startup")
     async def warm_semantic_search() -> None:
@@ -86,6 +111,7 @@ def create_app(
             "dataset": settings.dataset,
             "indexed_files": len(catalog),
             "index": indexer.status,
+            "experiments": settings.experiments,
             "handover": (
                 {"user": handover.config.user, "team": handover.config.team} if handover else None
             ),
@@ -167,30 +193,69 @@ def create_app(
             search_cache.pop(next(iter(search_cache)))
         search_cache[key] = (time.time(), value)
 
+    @app.post("/feedback")
+    async def feedback(request: FeedbackRequest) -> dict:
+        if not settings.experiments:
+            return {"ok": False, "detail": "experiments off"}
+        from .experiments import record_feedback
+
+        outcome = await record_feedback(
+            adapter, settings.data_dir, request.query, request.answer, request.rating
+        )
+        return {"ok": True, "outcome": outcome}
+
+    @app.get("/experts")
+    async def experts(q: str, limit: int = 5) -> dict:
+        """Who knows about this — people ranked by their footprint in the
+        matching memory (chunk provenance + handover senders)."""
+        from .experts import find_experts
+
+        return {"query": q, "experts": await find_experts(adapter, q, limit=limit)}
+
     @app.get("/search")
-    async def search(q: str, mode: str = "files", limit: int = 12, semantic: int = 1) -> dict:
+    async def search(
+        q: str, mode: str = "files", limit: int = 12, semantic: int = 1, thread: str = ""
+    ) -> dict:
         q = q.strip()
         if not q:
             return {"query": q, "answer": None, "results": []}
 
         cache_key = (q.lower(), mode, limit, bool(semantic))
-        if (cached := cache_get(cache_key)) is not None:
+        if mode != "answer" and (cached := cache_get(cache_key)) is not None:
             return cached
 
         if mode == "answer":
+            effective_q = threads.contextualize(thread, q) if thread else q
+            cache_key = (effective_q.lower(), mode, limit, bool(semantic))
+            if (cached := cache_get(cache_key)) is not None:
+                return cached
+            search_type = "GRAPH_COMPLETION"
+            if settings.experiments and is_temporal(q):
+                search_type = "TEMPORAL"
             if hasattr(adapter, "answer_with_sources"):
-                meta = await adapter.answer_with_sources(q)
+                meta = await adapter.answer_with_sources(effective_q, search_type=search_type)
                 answer = meta["answer"]
                 sources = [
                     {"dataset": name, "layer": _layer_label(name)} for name in meta["sources"]
                 ]
             else:
-                answer = await adapter.answer(q)
+                answer = await adapter.answer(effective_q)
                 sources = []
+            contradictions: list = []
+            if settings.experiments and answer:
+                from .experiments import contradictions_for
+
+                try:
+                    contradictions = (await contradictions_for(adapter, q))[:3]
+                except Exception:
+                    contradictions = []
+            if thread and answer:
+                threads.remember_turn(thread, q, answer)
             response = {
                 "query": q,
                 "answer": answer or None,
                 "sources": sources,
+                "contradictions": contradictions,
                 "results": [],
             }
             if answer:

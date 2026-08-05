@@ -124,11 +124,13 @@ class HttpCogneeAdapter:
     async def answer(self, query: str, top_k: int = 8) -> str:
         return (await self.answer_with_sources(query, top_k))["answer"]
 
-    async def answer_with_sources(self, query: str, top_k: int = 8) -> dict[str, Any]:
+    async def answer_with_sources(
+        self, query: str, top_k: int = 8, search_type: str = "GRAPH_COMPLETION"
+    ) -> dict[str, Any]:
         """The best completion plus which datasets substantively contributed
         (refusal-only datasets are not sources)."""
         # Answers are worth a wait: span everything the key can read.
-        raw = await self._search_raw(query, "GRAPH_COMPLETION", top_k, scope_all=self.search_all)
+        raw = await self._search_raw(query, search_type, top_k, scope_all=self.search_all)
         pairs = completions_by_dataset(raw)
         answer = best_text([text for _, text in pairs])
         if not answer:

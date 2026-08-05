@@ -18,10 +18,29 @@ struct AnswerSource: Decodable, Equatable {
     let layer: String
 }
 
+struct Contradiction: Decodable, Equatable {
+    let a: String
+    let b: String
+    let relation: String
+    let dataset: String
+}
+
+struct Expert: Decodable, Identifiable {
+    let name: String
+    let evidence: Int
+    var id: String { name }
+}
+
+struct ExpertsResponse: Decodable {
+    let query: String
+    let experts: [Expert]
+}
+
 struct SearchResponse: Decodable {
     let query: String
     let answer: String?
     let sources: [AnswerSource]?
+    let contradictions: [Contradiction]?
     let results: [SearchResult]
 }
 
@@ -41,6 +60,7 @@ struct Health: Decodable {
     let mode: String
     let dataset: String
     let indexed_files: Int
+    let experiments: Bool?
     let handover: HandoverIdentity?
 }
 
@@ -87,7 +107,7 @@ struct BackendClient {
     }
 
     func search(
-        _ query: String, mode: String = "files", semantic: Bool = true
+        _ query: String, mode: String = "files", semantic: Bool = true, thread: String = ""
     ) async throws -> SearchResponse {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("search"), resolvingAgainstBaseURL: false
@@ -97,7 +117,22 @@ struct BackendClient {
             URLQueryItem(name: "mode", value: mode),
             URLQueryItem(name: "semantic", value: semantic ? "1" : "0"),
         ]
+        if !thread.isEmpty {
+            components.queryItems?.append(URLQueryItem(name: "thread", value: thread))
+        }
         return try await get(components.url!)
+    }
+
+    func experts(_ query: String) async throws -> ExpertsResponse {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("experts"), resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "q", value: query)]
+        return try await get(components.url!)
+    }
+
+    func sendFeedback(query: String, answer: String, rating: Int) async throws {
+        try await post("feedback", body: ["query": query, "answer": answer, "rating": rating])
     }
 
     func health() async throws -> Health {

@@ -20,6 +20,12 @@ final class SearchViewModel: ObservableObject {
     @Published var sharedToast: String?
     /// Which memory layers the current answer drew from.
     @Published var answerSources: [AnswerSource] = []
+    /// Conflicting facts touching the answer's topic (experiments only).
+    @Published var contradictions: [Contradiction] = []
+    /// Whether the backend runs with latent features enabled.
+    @Published var experimentsEnabled = false
+    /// One conversation per panel appearance: follow-up ⇧↩ questions thread.
+    private(set) var threadID = UUID().uuidString
     /// Bumped every time the panel is shown so the view can re-grab focus.
     @Published var focusGeneration: Int = 0
 
@@ -48,10 +54,18 @@ final class SearchViewModel: ObservableObject {
         query = ""
         results = []
         answer = nil
+        answerSources = []
+        contradictions = []
         errorText = nil
         selectedIndex = 0
         isAsking = false
+        threadID = UUID().uuidString  // a fresh panel is a fresh conversation
         focusGeneration += 1
+        Task { [weak self] in
+            if let health = try? await BackendClient().health() {
+                self?.experimentsEnabled = health.experiments ?? false
+            }
+        }
     }
 
     /// Two-phase search, so typing always feels instant even though semantic
@@ -72,6 +86,25 @@ final class SearchViewModel: ObservableObject {
             return
         }
         Self.debugLog("scheduleSearch q=\(q)")
+        // "who knows …" routes to expert finding instead of file search
+        if q.lowercased().hasPrefix("who knows") {
+            instantTask = Task { [weak self] in
+                guard let self,
+                    let response = try? await BackendClient().experts(q),
+                    !Task.isCancelled, self.isCurrent(q)
+                else { return }
+                self.results = response.experts.map { expert in
+                    SearchResult(
+                        kind: "person", title: expert.name,
+                        path: "",
+                        snippet: "\(expert.evidence) matching memories",
+                        score: Double(expert.evidence), source: "experts")
+                }
+                self.selectedIndex = 0
+                self.errorText = nil
+            }
+            return
+        }
         instantTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -148,10 +181,12 @@ final class SearchViewModel: ObservableObject {
             guard let self else { return }
             defer { self.isLoading = false }
             do {
-                let response = try await BackendClient().search(q, mode: "answer")
+                let response = try await BackendClient().search(
+                    q, mode: "answer", thread: self.threadID)
                 guard !Task.isCancelled else { return }
                 self.answer = response.answer ?? "No answer found in the index yet."
                 self.answerSources = response.sources ?? []
+                self.contradictions = response.contradictions ?? []
                 self.errorText = nil
             } catch {
                 guard !Task.isCancelled else { return }
@@ -208,6 +243,19 @@ final class SearchViewModel: ObservableObject {
                 self?.sharedToast = "Share failed — is the backend up?"
             }
             try? await Task.sleep(nanoseconds: 2_200_000_000)
+            self?.sharedToast = nil
+        }
+    }
+
+    /// 👍/👎 under an answer (experiments): positive ratings reinforce memory.
+    func rateAnswer(_ rating: Int) {
+        guard let answer = answer else { return }
+        let q = query
+        sharedToast = rating >= 4 ? "Reinforcing memory…" : "Noted 👍"
+        Task { [weak self] in
+            try? await BackendClient().sendFeedback(query: q, answer: answer, rating: rating)
+            self?.sharedToast = rating >= 4 ? "Confirmed — memory reinforced ✓" : "Feedback logged ✓"
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
             self?.sharedToast = nil
         }
     }

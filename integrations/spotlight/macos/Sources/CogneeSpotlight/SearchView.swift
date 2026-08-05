@@ -180,9 +180,37 @@ struct SearchView: View {
                             .font(.system(size: 9))
                         Text(sourcesLine(model.answerSources))
                             .font(.system(size: 11))
+                        Spacer()
+                        if model.experimentsEnabled {
+                            Button { model.rateAnswer(5) } label: {
+                                Image(systemName: "hand.thumbsup")
+                            }
+                            .buttonStyle(.plain)
+                            .help("Good answer — reinforce this in memory")
+                            Button { model.rateAnswer(1) } label: {
+                                Image(systemName: "hand.thumbsdown")
+                            }
+                            .buttonStyle(.plain)
+                            .help("Wrong or unhelpful — log for correction")
+                        }
                     }
                     .foregroundStyle(.tertiary)
                     .padding(.top, 2)
+                }
+                if model.experimentsEnabled, !model.contradictions.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                        Text(
+                            "conflicting memory: \(model.contradictions[0].a) vs \(model.contradictions[0].b)"
+                        )
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                    .padding(.top, 2)
+                    .help("cognee never overwrites conflicting facts — it records both and flags the disagreement")
                 }
             }
             .padding(.horizontal, 22)
@@ -315,7 +343,15 @@ private struct ResultRow: View {
     /// The file's real Finder icon — what makes rows read as native macOS.
     /// Snippets (passages without a local file) keep a quiet glyph tile.
     @ViewBuilder private var fileIcon: some View {
-        if !result.path.isEmpty, FileManager.default.fileExists(atPath: result.path) {
+        if result.kind == "person" {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.cognee.opacity(isSelected ? 0.25 : 0.12))
+                .overlay(
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Color.cognee)
+                )
+        } else if !result.path.isEmpty, FileManager.default.fileExists(atPath: result.path) {
             Image(nsImage: NSWorkspace.shared.icon(forFile: result.path))
                 .resizable()
                 .interpolation(.high)

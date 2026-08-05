@@ -77,6 +77,7 @@ class Settings:
     user: str = ""  # this backend's identity (SPOTLIGHT_USER)
     search_scope: str = "all"  # cloud mode: "all" tenant datasets | "dataset" (just ours)
     exclude_datasets: set[str] = field(default_factory=set)  # kept out of "all" searches
+    experiments: bool = False  # latent features (feedback, contradictions, temporal)
     data_dir: Path = field(default_factory=lambda: Path.home() / ".cognee-spotlight")
     max_file_size: int = 5 * 1024 * 1024  # skip files larger than 5 MB
     extensions: set[str] = field(default_factory=lambda: set(DEFAULT_EXTENSIONS))
@@ -94,6 +95,7 @@ class Settings:
         s.search_scope = os.getenv("SPOTLIGHT_SEARCH_SCOPE", s.search_scope).strip().lower()
         if excluded := os.getenv("SPOTLIGHT_EXCLUDE_DATASETS"):
             s.exclude_datasets = {x.strip() for x in excluded.split(",") if x.strip()}
+        s.experiments = os.getenv("SPOTLIGHT_EXPERIMENTS", "").lower() in {"1", "true", "yes"}
         if data_dir := os.getenv("SPOTLIGHT_DATA_DIR"):
             s.data_dir = Path(data_dir)
         if exts := os.getenv("SPOTLIGHT_EXTENSIONS"):
