@@ -39,3 +39,43 @@ def test_conversation_threads_contextualize():
     followup = threads.contextualize("t1", "and in the north region?")
     assert "who are our competitors?" in followup
     assert "Follow-up question: and in the north region?" in followup
+
+
+class GraphAdapter:
+    """Tenant double: one dataset whose graph has a conflicts_with edge."""
+
+    exclude_datasets: set = set()
+
+    class _Response:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    async def _request(self, method, path, **kwargs):
+        if path == "/api/v1/datasets":
+            return self._Response([{"name": "agent_sessions", "id": "ds1"}])
+        return self._Response(
+            {
+                "nodes": [
+                    {"id": "n1", "label": "websockets version conflict"},
+                    {"id": "n2", "label": "targeted code inspection"},
+                ],
+                # cloud tenants label these conflicts_with, not contradicts
+                "edges": [{"source": "n1", "target": "n2", "label": "conflicts_with"}],
+            }
+        )
+
+
+async def test_contradictions_match_conflicts_with_edges():
+    from spotlight_backend.experiments import _contradiction_cache, contradictions_for
+
+    _contradiction_cache.clear()
+    hits = await contradictions_for(GraphAdapter(), "the websockets upgrade")
+    assert hits and hits[0]["a"] == "websockets version conflict"
+    assert hits[0]["relation"] == "conflicts_with"
+    # unrelated query terms match nothing
+    _contradiction_cache.clear()
+    assert await contradictions_for(GraphAdapter(), "quarterly revenue") == []

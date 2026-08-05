@@ -95,7 +95,9 @@ async def _contradiction_edges(
                 "relation": str(e.get("label", "")),
             }
             for e in payload.get("edges", [])
-            if "contradict" in str(e.get("label", "")).lower()
+            # deployments differ: "contradicts" in some cognee versions,
+            # "conflicts_with" on the current cloud tenant
+            if any(cue in str(e.get("label", "")).lower() for cue in ("contradict", "conflict"))
         ]
     except Exception:
         edges = []

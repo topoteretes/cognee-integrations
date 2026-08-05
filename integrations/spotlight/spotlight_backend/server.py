@@ -278,6 +278,10 @@ def create_app(
                 search_type = "TEMPORAL"
             if hasattr(adapter, "answer_with_sources"):
                 meta = await adapter.answer_with_sources(effective_q, search_type=search_type)
+                if not meta.get("answer") and search_type != "GRAPH_COMPLETION":
+                    # not every deployment supports TEMPORAL (cognee cloud
+                    # returns 400) — degrade to the plain graph answer
+                    meta = await adapter.answer_with_sources(effective_q)
                 answer = meta["answer"]
                 sources = [
                     {"dataset": name, "layer": _layer_label(name)} for name in meta["sources"]
