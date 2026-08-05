@@ -84,7 +84,8 @@ def create_app(
         indexed roots. Capped for display — ``count`` carries the total."""
         staging = getattr(s, "staging", None)
         if staging is None:
-            return list(catalog.roots), len(catalog)
+            roots = list(catalog.roots)
+            return roots, len(roots)
         if not staging.exists():
             return [], 0
         files = sorted(
