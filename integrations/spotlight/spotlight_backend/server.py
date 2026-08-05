@@ -86,11 +86,22 @@ def create_app(
 
     @app.get("/sources")
     async def sources() -> dict:
-        return {
-            "sources": [s.name for s in source_manager.sources],
-            "interval": source_manager.interval,
-            "status": source_manager.status,
-        }
+        """Each source describes itself (label + SF Symbol icon), so the app
+        renders whatever connectors exist without hardcoding any of them."""
+        described = []
+        for s in source_manager.sources:
+            status = source_manager.status.get(s.name, {})
+            described.append(
+                {
+                    "name": s.name,
+                    "label": getattr(s, "label", s.name.title()),
+                    "icon": getattr(s, "icon", "puzzlepiece.extension"),
+                    "ok": status.get("ok"),
+                    "detail": status.get("detail", ""),
+                    "at": status.get("at"),
+                }
+            )
+        return {"sources": described, "interval": source_manager.interval}
 
     @app.on_event("startup")
     async def start_sources() -> None:

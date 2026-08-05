@@ -222,3 +222,21 @@ async def test_capture_rejects_empty_text(client, tmp_path):
     assert response.status_code == 202
     assert response.json()["ok"] is False
     assert not (tmp_path / "state" / "capture").exists()
+
+
+async def test_sources_describe_themselves(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPOTLIGHT_MOCK_SOURCES", "slack,gdrive")
+    settings = Settings()
+    settings.data_dir = tmp_path / "state"
+    app = create_app(settings, adapter=FakeAdapter())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        data = (await client.get("/sources")).json()
+    by_name = {s["name"]: s for s in data["sources"]}
+    assert set(by_name) == {"folders", "slack", "gdrive"}
+    # every source describes its own rendering — nothing for the app to hardcode
+    for source in data["sources"]:
+        assert source["label"] and source["icon"]
+    assert by_name["slack"]["label"] == "Slack"
+    assert by_name["gdrive"]["icon"] == "externaldrive"
+    assert by_name["folders"]["ok"] is None  # no sync has run yet

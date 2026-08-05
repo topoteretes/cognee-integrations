@@ -38,6 +38,8 @@ class LocalFolderSource:
     """The watched-folder source: whatever roots the catalog knows re-sync."""
 
     name = "folders"
+    label = "Folders"
+    icon = "folder"  # SF Symbol; the app renders whatever the backend reports
 
     def __init__(self, indexer: Any) -> None:
         self._indexer = indexer
@@ -58,6 +60,8 @@ class SlackSource:
     """
 
     name = "slack"
+    label = "Slack"
+    icon = "bubble.left.and.bubble.right"
 
     def __init__(
         self, staging: Path, token: str, channels: list[str], *, client: Any = None
@@ -117,6 +121,8 @@ class GoogleDriveSource:
     """
 
     name = "gdrive"
+    label = "Drive"
+    icon = "externaldrive"
 
     def __init__(self, staging: Path, token: str, query: str = "", *, client: Any = None) -> None:
         self.staging = staging
@@ -180,10 +186,19 @@ class MockConnectorSource:
     once per file; the incremental indexer ignores unchanged files after that.
     """
 
-    def __init__(self, name: str, staging: Path, files: dict[str, str]) -> None:
+    def __init__(
+        self,
+        name: str,
+        staging: Path,
+        files: dict[str, str],
+        label: str = "",
+        icon: str = "",
+    ) -> None:
         self.name = name
         self.staging = staging
         self.files = files
+        self.label = label or name.title()
+        self.icon = icon or "puzzlepiece.extension"
 
     async def sync(self) -> str:
         written = 0
@@ -266,13 +281,21 @@ class SourceManager:
                 )
             )
         # demo connections: mock connectors for sources with no credentials,
-        # skipped for any name already covered by a real connector above
-        mocks = {"slack": MOCK_SLACK_FILES, "gdrive": MOCK_GDRIVE_FILES}
+        # skipped for any name already covered by a real connector above.
+        # Each mock borrows the real connector's label/icon so it renders
+        # identically in the app.
+        mocks = {
+            "slack": (MOCK_SLACK_FILES, SlackSource.label, SlackSource.icon),
+            "gdrive": (MOCK_GDRIVE_FILES, GoogleDriveSource.label, GoogleDriveSource.icon),
+        }
         configured = {s.name for s in manager.sources}
         for name in (x.strip().lower() for x in os.getenv("SPOTLIGHT_MOCK_SOURCES", "").split(",")):
             if name in mocks and name not in configured:
+                files, label, icon = mocks[name]
                 manager.sources.append(
-                    MockConnectorSource(name, data_dir / "sources" / name, mocks[name])
+                    MockConnectorSource(
+                        name, data_dir / "sources" / name, files, label=label, icon=icon
+                    )
                 )
         return manager
 
