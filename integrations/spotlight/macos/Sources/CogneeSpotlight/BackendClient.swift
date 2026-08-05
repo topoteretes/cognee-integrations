@@ -55,6 +55,52 @@ struct IndexProgress: Decodable {
     let indexed_files: Int?
 }
 
+struct SourceStatus: Decodable, Equatable {
+    let ok: Bool
+    let detail: String
+    let at: Double
+}
+
+struct SourcesResponse: Decodable {
+    let sources: [String]
+    let interval: Double
+    let status: [String: SourceStatus]
+}
+
+/// One connected data source, shaped for display in the panel.
+struct SourceConnection: Identifiable, Equatable {
+    let name: String  // backend connector name: folders | slack | gdrive | …
+    let ok: Bool?  // nil until the first sync reports in
+
+    var id: String { name }
+
+    var label: String {
+        switch name {
+        case "folders": return "Folders"
+        case "slack": return "Slack"
+        case "gdrive": return "Drive"
+        default: return name.capitalized
+        }
+    }
+
+    var symbol: String {
+        switch name {
+        case "folders": return "folder"
+        case "slack": return "bubble.left.and.bubble.right"
+        case "gdrive": return "externaldrive"
+        default: return "puzzlepiece.extension"
+        }
+    }
+
+    var statusText: String {
+        switch ok {
+        case true: return "connected"
+        case false: return "sync error"
+        default: return "waiting for first sync"
+        }
+    }
+}
+
 struct Health: Decodable {
     let status: String
     let mode: String
@@ -137,6 +183,10 @@ struct BackendClient {
 
     func health() async throws -> Health {
         try await get(baseURL.appendingPathComponent("health"))
+    }
+
+    func sources() async throws -> SourcesResponse {
+        try await get(baseURL.appendingPathComponent("sources"))
     }
 
     func indexStatus() async throws -> IndexProgress {

@@ -171,6 +171,74 @@ class GoogleDriveSource:
             return await client.get(url, headers=headers, params=params)
 
 
+class MockConnectorSource:
+    """A demo stand-in for a real connector: stages canned fictional content
+    into ``<data_dir>/sources/<name>/`` so the app shows a live connection
+    (and its documents index and search) without any external credentials.
+
+    Enabled with ``SPOTLIGHT_MOCK_SOURCES=slack,gdrive``. Content is written
+    once per file; the incremental indexer ignores unchanged files after that.
+    """
+
+    def __init__(self, name: str, staging: Path, files: dict[str, str]) -> None:
+        self.name = name
+        self.staging = staging
+        self.files = files
+
+    async def sync(self) -> str:
+        written = 0
+        for filename, content in self.files.items():
+            path = self.staging / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists() or path.read_text() != content:
+                path.write_text(content)
+                written += 1
+        return f"connected (demo) — {len(self.files)} document(s), {written} refreshed"
+
+
+# Fictional Meridian Travel Group content for the mock connectors — same
+# invented company as the demo corpus, so nothing real can leak.
+MOCK_SLACK_FILES = {
+    "slack-product-2026-08-04.md": (
+        "# Slack #product — 2026-08-04\n\n"
+        "- alex.chen: unified search beta is live for 5% of traffic — "
+        "meaning-based queries convert 12% better than keyword so far\n"
+        "- sam.rivera: RoomRover cut prices again in the São Paulo market, "
+        "sales wants the counter-offer playbook updated by Friday\n"
+        "- alex.chen: supplier API v3 rate limits bite above 40 rps — "
+        "batching fix is in review, ships with Thursday's deploy\n"
+        "- jamie.park: StayFinder's new loyalty tiers are getting press; "
+        "our v2 needs the referral hook to stay competitive\n"
+    ),
+    "slack-eng-incidents-2026-08-03.md": (
+        "# Slack #eng-incidents — 2026-08-03\n\n"
+        "- sam.rivera: search latency spiked to 4s after the cache change — "
+        "rolled back, root cause was per-query session rewrites\n"
+        "- alex.chen: postmortem action: keep response caching off for "
+        "search-as-you-type paths, warm the engine at boot instead\n"
+        "- jamie.park: added the regression check to the deploy runbook\n"
+    ),
+}
+
+MOCK_GDRIVE_FILES = {
+    "gdrive-board-update-q3-draft.txt": (
+        "Meridian Travel Group — Q3 Board Update (draft)\n\n"
+        "Growth: bookings up 18% QoQ, driven by the unified search beta.\n"
+        "Competition: RoomRover discounting aggressively in Brazil; "
+        "Wanderly retreating to premium segments.\n"
+        "Risks: supplier API v3 migration must land before peak season; "
+        "loyalty v2 slips if referral hook misses September.\n"
+    ),
+    "gdrive-partner-pricing-tiers.txt": (
+        "Meridian partner pricing tiers (internal)\n\n"
+        "Tier 1 (chains, >500 properties): 8% commission, dedicated support.\n"
+        "Tier 2 (regional groups): 11% commission, quarterly reviews.\n"
+        "Tier 3 (independents): 14% commission, self-serve onboarding.\n"
+        "Price-match escalations go through the sales playbook, not ad hoc.\n"
+    ),
+}
+
+
 class SourceManager:
     """Runs every configured source on an interval and indexes what lands."""
 
@@ -197,6 +265,15 @@ class SourceManager:
                     data_dir / "sources" / "gdrive", token, os.getenv("GDRIVE_QUERY", "")
                 )
             )
+        # demo connections: mock connectors for sources with no credentials,
+        # skipped for any name already covered by a real connector above
+        mocks = {"slack": MOCK_SLACK_FILES, "gdrive": MOCK_GDRIVE_FILES}
+        configured = {s.name for s in manager.sources}
+        for name in (x.strip().lower() for x in os.getenv("SPOTLIGHT_MOCK_SOURCES", "").split(",")):
+            if name in mocks and name not in configured:
+                manager.sources.append(
+                    MockConnectorSource(name, data_dir / "sources" / name, mocks[name])
+                )
         return manager
 
     def start(self) -> None:

@@ -125,6 +125,15 @@ struct SearchView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 21))
                 .focused($fieldFocused)
+            if !model.connections.isEmpty {
+                // what this search draws from: one quiet icon per connection
+                HStack(spacing: 9) {
+                    ForEach(model.connections) { connection in
+                        ConnectionBadge(connection: connection)
+                    }
+                }
+                .padding(.leading, 4)
+            }
         }
         .padding(.horizontal, 16)
         .frame(height: 50)
@@ -285,6 +294,36 @@ struct SearchView: View {
     }
 }
 
+// MARK: - Connection badge
+
+/// A data source feeding memory: its icon plus a status dot (green =
+/// connected, amber = sync error, gray = hasn't synced yet). Hover names it.
+private struct ConnectionBadge: View {
+    let connection: SourceConnection
+
+    var body: some View {
+        Image(systemName: connection.symbol)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.secondary)
+            .overlay(alignment: .bottomTrailing) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 5, height: 5)
+                    .offset(x: 2.5, y: 2.5)
+            }
+            .help("\(connection.label) — \(connection.statusText)")
+            .accessibilityLabel("\(connection.label): \(connection.statusText)")
+    }
+
+    private var dotColor: Color {
+        switch connection.ok {
+        case true: return .green
+        case false: return .orange
+        default: return .gray
+        }
+    }
+}
+
 // MARK: - Result row
 
 private struct ResultRow: View {
@@ -306,6 +345,15 @@ private struct ResultRow: View {
                         Image(systemName: "sparkle")
                             .font(.system(size: 9.5))
                             .foregroundStyle(Color.cognee.opacity(0.9))
+                    }
+                    if let origin = originLabel {
+                        // which connection this memory arrived through
+                        Text(origin)
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(Color.cognee.opacity(0.12), in: Capsule())
+                            .foregroundStyle(Color.cognee)
                     }
                 }
                 if !result.snippet.isEmpty {
@@ -369,6 +417,17 @@ private struct ResultRow: View {
 
     private var abbreviatedPath: String {
         (result.path as NSString).abbreviatingWithTildeInPath
+    }
+
+    /// Connector staging paths are `<data_dir>/sources/<name>/…`, so the
+    /// path itself says which connection a memory arrived through.
+    private var originLabel: String? {
+        if result.path.contains("/sources/slack/") { return "Slack" }
+        if result.path.contains("/sources/gdrive/") { return "Drive" }
+        if result.path.contains("/.cognee-spotlight/"), result.path.contains("/capture/") {
+            return "Captured"
+        }
+        return nil
     }
 
     /// Bold the query's words inside the snippet — semantic hits become
