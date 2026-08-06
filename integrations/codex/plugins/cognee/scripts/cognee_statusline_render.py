@@ -38,6 +38,13 @@ _CONN_STATE_DIR = _SHARED_ROOT / "codex" / "conn-state"
 # there is no periodic re-check — so a verdict this old came from a session that is
 # gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
 _LLM_STATE_STALE_SECONDS = 30 * 60
+_CREDITS_PATH = _SHARED_ROOT / "codex" / "credits.json"
+
+# TTL for the credits balance. Written per turn (prompt + Stop hooks) and by
+# the idle watcher every ~5 minutes — older than this means every writer has
+# stopped (session over, watcher dead); hide the balance rather than show a
+# number that no longer reflects spend.
+_CREDITS_STALE_SECONDS = 15 * 60
 _DEFAULT_DATASET = "agent_sessions"
 # Must match _plugin_common._DEFAULT_LOCAL_SERVICE_URL: the hooks stamp this URL into
 # the markers this renderer compares against.
@@ -363,12 +370,63 @@ def _status_prefix(session_id: str = "") -> str:
     return _llm_prefix(session_id) or server
 
 
+def _credits_segment() -> str:
+    """Cloud credits balance + approximate cost of the last memory operation.
+
+    Pure-local like everything here: reads only ``credits.json`` — a MAP keyed
+    by tenant id (several terminals can be on different tenants at once), each
+    entry carrying the service base_url it was observed under. Select OUR
+    tenant's entry by that binding. Plain text (the Codex line carries no ANSI
+    styling). Renders nothing unless ALL of: cloud mode, matching fresh entry
+    with a numeric balance, not opted out (``COGNEE_STATUSLINE_CREDITS=off``).
+    """
+    if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return ""
+    if _active_mode() != "cloud":
+        return ""
+    marker = _read_json(_CREDITS_PATH)
+    active = _active_base_url().rstrip("/")
+    entry = None
+    for candidate in marker.values():
+        if (
+            isinstance(candidate, dict)
+            and str(candidate.get("base_url") or "").rstrip("/") == active
+        ):
+            entry = candidate
+            break
+    if entry is None:
+        return ""
+    remaining = entry.get("remaining_usd")
+    if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+        return ""
+    try:
+        checked_at = float(entry.get("checked_at", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if time.time() - checked_at > _CREDITS_STALE_SECONDS:
+        return ""
+    sign = "-" if remaining < 0 else ""
+    seg = f" · credits: {sign}${abs(remaining):,.2f}"
+    last_op = entry.get("last_op")
+    if isinstance(last_op, dict):
+        label = str(last_op.get("label") or "").strip()
+        cost = last_op.get("cost_usd")
+        if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            seg += f" · last {label} ~${cost:,.2f}"
+    return seg
+
+
 def render_status_for_host(host_id: str) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
     return (
         f"{_status_prefix(str(host_id or ''))}cognee: {_active_dataset()} · {_active_mode()}"
-        f"{_update_segment()}"
+        f"{_credits_segment()}{_update_segment()}"
     )
 
 
@@ -392,7 +450,8 @@ def main() -> None:
     except Exception:
         pass
     sys.stdout.write(
-        f"{_status_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
+        f"{_status_prefix()}cognee: {_active_dataset()} · {_active_mode()}"
+        f"{_credits_segment()}{_update_segment()}"
     )
 
 

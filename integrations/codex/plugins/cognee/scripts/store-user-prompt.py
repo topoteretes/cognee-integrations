@@ -26,6 +26,7 @@ from _plugin_common import (
     load_resolved,
     notify,
     quiet_hook_output,
+    refresh_credits,
     remember_pending_prompt,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
@@ -45,16 +46,17 @@ _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _WATCHER_SCRIPT = Path(__file__).with_name("idle-watcher.py")
 
 
-def _load_session() -> tuple[str, str, str]:
+def _load_session() -> tuple[str, str, str, str]:
     resolved = load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
+    tenant_id = resolved.get("tenant_id", "")
     if not session_id or not dataset:
         config = load_config()
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
-    return session_id, dataset, user_id
+    return session_id, dataset, user_id, tenant_id
 
 
 def _watcher_alive() -> bool:
@@ -128,7 +130,7 @@ def _prompt_context(payload: dict) -> str:
 
 
 async def _store(prompt: str, payload: dict):
-    session_id, dataset, user_id = _load_session()
+    session_id, dataset, user_id, tenant_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"event": "prompt"})
         return
@@ -172,6 +174,14 @@ async def _store(prompt: str, payload: dict):
             drain_warmup_entries(dataset, session_id)
         except Exception as exc:
             hook_log("warmup_drain_failed", {"error": str(exc)[:200]})
+        # Status-line credits: unlabeled refresh at turn START. This reading
+        # is the baseline the Stop-time refresh (credits-refresh.py) diffs
+        # against to attribute the finished turn's cost — labeling it here
+        # would misattribute the PREVIOUS turn's tail as this turn's recall.
+        # tenant_id (from this turn's connections/me lookup) binds the marker
+        # entry to our tenant, so the tenantless Stop-hook refresh can find it
+        # by base_url. Never raises; no-ops on a local server.
+        refresh_credits(tenant_id=tenant_id)
 
 
 def main():
