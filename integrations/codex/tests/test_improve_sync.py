@@ -54,7 +54,7 @@ def test_improve_posts_expected_json_payload():
     captured = {}
     orig = urllib.request.urlopen
 
-    def _fake(req, timeout=None):
+    def _fake(req, timeout=None, context=None):
         captured["req"] = req
         captured["timeout"] = timeout
         return _Resp(b'{"status":"running"}')
@@ -80,7 +80,7 @@ def test_improve_404_marks_unsupported():
     marker_writes = {}
     orig = urllib.request.urlopen
 
-    def _raise(req, timeout=None):
+    def _raise(req, timeout=None, context=None):
         raise urllib.error.HTTPError("http://x", 404, "Not Found", {}, None)
 
     urllib.request.urlopen = _raise
@@ -103,7 +103,7 @@ def test_improve_404_marks_unsupported():
 def test_improve_network_error_is_graceful():
     orig = urllib.request.urlopen
 
-    def _raise(req, timeout=None):
+    def _raise(req, timeout=None, context=None):
         raise urllib.error.URLError("connection refused")
 
     urllib.request.urlopen = _raise
@@ -186,7 +186,7 @@ def test_improve_lock_skip_reports_busy():
     # must surface that as busy, never as success.
     orig = urllib.request.urlopen
 
-    def _fake(req, timeout=None):
+    def _fake(req, timeout=None, context=None):
         return _Resp(b"{}")
 
     urllib.request.urlopen = _fake
