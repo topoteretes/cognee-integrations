@@ -44,7 +44,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   - The status-line renderer stays pure-local (reads only the marker, 15-min
     staleness TTL) and the segment hides entirely for local servers, which
     have no credits concept. Refresh cadence: per turn (prompt + turn end)
-    plus an idle-watcher poll (`COGNEE_CREDITS_CHECK_INTERVAL`, 300s). Opt
+    plus a session-long background poll (`COGNEE_CREDITS_CHECK_INTERVAL`,
+    300s), so the balance stays fresh through long idle stretches. Opt
     out with `COGNEE_STATUSLINE_CREDITS=off`.
 
 ## [1.2.4]
