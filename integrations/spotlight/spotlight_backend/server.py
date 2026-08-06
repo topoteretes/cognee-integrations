@@ -54,6 +54,12 @@ class FeedbackRequest(BaseModel):
     rating: int  # 1-5; >=4 reinforces memory
 
 
+class CaptureRequest(BaseModel):
+    text: str
+    title: str = ""
+    source: str = ""  # e.g. "quick-capture", "git:repo-name", "share-sheet"
+
+
 def create_app(
     settings: Optional[Settings] = None,
     adapter: Any = None,
@@ -280,6 +286,33 @@ def create_app(
         if len(search_cache) > 200:
             search_cache.pop(next(iter(search_cache)))
         search_cache[key] = (time.time(), value)
+
+    @app.post("/capture", status_code=202)
+    async def capture(request: CaptureRequest) -> dict:
+        """One thought (or commit, or shared selection) into memory.
+
+        The note lands in the capture folder and indexes like any document —
+        quick-capture hotkey, the share CLI, and the git hook all funnel here.
+        """
+        import re as _re
+        import time as _time
+
+        text = request.text.strip()
+        if not text:
+            return {"ok": False, "detail": "empty"}
+        title = request.title.strip() or text.splitlines()[0][:60]
+        slug = _re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-") or "note"
+        capture_dir = settings.data_dir / "capture"
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        stamp = _time.strftime("%Y%m%d-%H%M%S")
+        path = capture_dir / f"{stamp}-{slug}.md"
+        header = f"# {title}\n\n"
+        if request.source:
+            header += f"- captured from: {request.source}\n"
+        header += f"- captured at: {_time.strftime('%Y-%m-%d %H:%M')}\n\n"
+        path.write_text(header + text + "\n")
+        indexer.start([str(capture_dir)])
+        return {"ok": True, "path": str(path)}
 
     @app.post("/feedback")
     async def feedback(request: FeedbackRequest) -> dict:

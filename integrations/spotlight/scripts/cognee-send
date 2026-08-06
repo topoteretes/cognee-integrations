@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Send anything to your cognee memory from anywhere.
+
+    cognee-send "a thought worth keeping"          # into your memory
+    cognee-send --to boris "read the runbook"      # handover to a teammate
+    cognee-send report.pdf notes.md                # index files
+    pbpaste | cognee-send --title "from clipboard" # stdin works too
+
+Stdlib-only on purpose: this is what the macOS Quick Action and the git hook
+call, and neither can rely on a virtualenv.
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.request
+
+BACKEND = os.environ.get("SPOTLIGHT_URL", "http://127.0.0.1:8765")
+
+
+def post(path: str, payload: dict) -> dict:
+    request = urllib.request.Request(
+        BACKEND + path,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return json.loads(response.read().decode() or "{}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("items", nargs="*", help="text, or file paths to index")
+    parser.add_argument("--to", default="", help="share to a user, team:<name>, or org")
+    parser.add_argument("--title", default="", help="title for captured text")
+    parser.add_argument("--source", default="cognee-send", help="provenance label")
+    args = parser.parse_args()
+
+    paths = [item for item in args.items if os.path.exists(item)]
+    words = [item for item in args.items if not os.path.exists(item)]
+    text = " ".join(words).strip()
+    if not text and not paths and not sys.stdin.isatty():
+        text = sys.stdin.read().strip()
+
+    if paths:
+        result = post("/index", {"paths": [os.path.abspath(p) for p in paths]})
+        print(f"indexing {len(paths)} file(s): {result}")
+    if text:
+        if args.to:
+            result = post("/share", {"to": args.to, "title": args.title or text[:60], "body": text})
+            print(f"shared with {args.to}: {result.get('ok')}")
+        else:
+            result = post("/capture", {"text": text, "title": args.title, "source": args.source})
+            print(f"captured: {result.get('ok')}")
+    if not text and not paths:
+        parser.error("nothing to send (no text, no existing files, empty stdin)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
