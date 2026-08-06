@@ -1893,48 +1893,27 @@ def _release_credits_lock() -> None:
         pass
 
 
-def _select_tenant_budget(overview: dict, tenant_id: str) -> tuple[str, dict, str]:
-    """Pick the budget record for OUR tenant from the credits overview.
+def _select_tenant_budget(overview: dict, tenant_id: str) -> dict | None:
+    """Return the budget record of OUR tenant from the credits overview, or None.
 
-    Returns ``(tenant_id, {remaining/spent/total}, source)``. Preference:
-      1. the ``tenants`` entry matching ``tenant_id`` — the balance of the
-         tenant this session is actually connected to;
-      2. the sole ``tenants`` entry when the account has exactly one (also
-         teaches us the tenant id when the caller had none);
-      3. the account-wide ``budget`` aggregate — last resort, still better
-         than nothing, but wrong for multi-tenant users (SDK-355 follow-up).
+    Exact match only, on purpose: the display answers "what does the tenant I
+    am connected to have left?", and no other number is a valid answer. The
+    overview's account-wide ``budget`` aggregates every workspace the user
+    owns, and its ``tenants`` list may contain workspaces other than the one
+    this session talks to (e.g. your personal workspace while connected to a
+    shared tenant someone else owns) — showing either would be wrong, so with
+    no exact match the caller shows nothing at all.
     """
     tenants = overview.get("tenants")
     tenants = [t for t in tenants if isinstance(t, dict)] if isinstance(tenants, list) else []
-    chosen, source = None, ""
-    if tenant_id:
-        for t in tenants:
-            if str(t.get("tenantId") or "").strip() == tenant_id:
-                chosen, source = t, "tenant"
-                break
-    if chosen is None and len(tenants) == 1:
-        chosen, source = tenants[0], "single_tenant"
-        tenant_id = str(chosen.get("tenantId") or "").strip() or tenant_id
-    if chosen is not None:
-        return (
-            tenant_id,
-            {
-                "remaining_usd": chosen.get("remainingUsd"),
-                "spent_usd": chosen.get("spentUsd"),
-                "total_usd": chosen.get("maxBudgetUsd"),
-            },
-            source,
-        )
-    budget = overview.get("budget") or {}
-    return (
-        tenant_id,
-        {
-            "remaining_usd": budget.get("remainingUsd"),
-            "spent_usd": budget.get("spentUsd"),
-            "total_usd": budget.get("totalUsd"),
-        },
-        "account",
-    )
+    for t in tenants:
+        if str(t.get("tenantId") or "").strip() == tenant_id:
+            return {
+                "remaining_usd": t.get("remainingUsd"),
+                "spent_usd": t.get("spentUsd"),
+                "total_usd": t.get("maxBudgetUsd"),
+            }
+    return None
 
 
 def refresh_credits(op_label: str = "", *, tenant_id: str = "", timeout: float = 3.0) -> dict:
@@ -1947,7 +1926,9 @@ def refresh_credits(op_label: str = "", *, tenant_id: str = "", timeout: float =
     ``tenant_id`` comes from ``load_resolved()`` (the connections/me lookup)
     when the caller has it; otherwise the tenant is recovered from the marker
     entry already bound to this service URL (established by the prompt-time
-    refresh), falling back per ``_select_tenant_budget``.
+    refresh). Strictly the CONNECTED tenant's budget or nothing: when the
+    tenant cannot be determined, or is not in the overview, no entry is
+    written and the segment simply does not render.
 
     ``op_label`` ("turn" / "remember" / "improve") attributes the spend
     recorded since the previous reading OF THIS TENANT to the operation that
@@ -1967,6 +1948,13 @@ def refresh_credits(op_label: str = "", *, tenant_id: str = "", timeout: float =
         tenant_id = str(tenant_id or "").strip()
         if not tenant_id:
             tenant_id, _ = _credits_entry_for_url(marker, service_url)
+        if not tenant_id:
+            # Connected tenant unknown (no id from the caller, no prior URL
+            # binding): show nothing rather than someone's other workspace or
+            # the all-tenants aggregate. Skipped BEFORE the fetch — a doomed
+            # lookup is not worth a network call.
+            hook_log("credits_refresh_skipped_no_tenant", {"base_url": service_url})
+            return {}
         overview = _json_http_request(
             "/api/v1/billing/credits/overview",
             None,
@@ -1974,19 +1962,23 @@ def refresh_credits(op_label: str = "", *, tenant_id: str = "", timeout: float =
             timeout=timeout,
             base_url=platform_url,
         )
-        tenant_id, budget, source = _select_tenant_budget(overview or {}, tenant_id)
+        budget = _select_tenant_budget(overview or {}, tenant_id)
+        if budget is None:
+            hook_log(
+                "credits_tenant_not_in_overview",
+                {"tenant_id": tenant_id, "platform_url": platform_url},
+            )
+            return {}
         remaining = budget.get("remaining_usd")
         spent = budget.get("spent_usd")
         if remaining is None and spent is None:
             hook_log(
                 "credits_fetch_empty",
-                {"platform_url": platform_url, "tenant_id": tenant_id, "source": source},
+                {"platform_url": platform_url, "tenant_id": tenant_id},
             )
             return {}
         now_ts = datetime.now(timezone.utc).timestamp()
-        # Entries without a tenant id (account-aggregate fallback) still need a
-        # stable map key; "account" cannot collide with a UUID tenant id.
-        entry_key = tenant_id or "account"
+        entry_key = tenant_id
         entry = {
             "remaining_usd": remaining,
             "spent_usd": spent,
@@ -1995,11 +1987,9 @@ def refresh_credits(op_label: str = "", *, tenant_id: str = "", timeout: float =
             # tenantless callers look their entry up by it.
             "base_url": service_url,
             "platform_url": platform_url,
-            "source": source,
+            "tenant_id": tenant_id,
             "checked_at": now_ts,
         }
-        if tenant_id:
-            entry["tenant_id"] = tenant_id
         acquired = _try_acquire_credits_lock()
         try:
             # Re-read under the lock: another tenant's refresh may have

@@ -42,8 +42,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
     written atomically under a lock (per-pid staging files), so concurrent
     refreshes can't tear the file or drop each other's tenants.
   - The status-line renderer stays pure-local (reads only the marker, 15-min
-    staleness TTL) and the segment hides entirely for local servers, which
-    have no credits concept. Refresh cadence: per turn (prompt + turn end)
+    staleness TTL). Strictly the connected tenant's budget or nothing: the
+    segment hides entirely for local servers (no credits concept) and
+    whenever the connected tenant cannot be determined — never another
+    workspace's number, never the all-tenants aggregate. Refresh cadence: per turn (prompt + turn end)
     plus a session-long background poll (`COGNEE_CREDITS_CHECK_INTERVAL`,
     300s), so the balance stays fresh through long idle stretches. Opt
     out with `COGNEE_STATUSLINE_CREDITS=off`.

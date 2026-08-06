@@ -109,7 +109,6 @@ def test_tenant_id_selects_matching_tenant_entry():
         assert entry["remaining_usd"] == 9.5
         assert entry["spent_usd"] == 0.5
         assert entry["total_usd"] == 10.0
-        assert entry["source"] == "tenant"
         assert entry["tenant_id"] == _TENANT_A
         on_disk = pc.read_credits_marker()
         assert set(on_disk) == {_TENANT_A}
@@ -130,38 +129,34 @@ def test_tenant_id_selects_matching_tenant_entry():
     )
 
 
-def test_single_tenant_fallback_learns_id():
-    """No tenant id in hand + exactly one tenant in the account: use it and
-    adopt its id as the map key."""
+def test_tenantless_caller_with_no_binding_writes_nothing():
+    """Connected tenant unknown (no id, no prior URL binding): strictly
+    nothing is shown — not even a sole listed tenant — and the doomed fetch
+    is skipped entirely."""
 
     def _t(calls):
-        entry = pc.refresh_credits()
-        assert entry["source"] == "single_tenant"
-        assert entry["tenant_id"] == _TENANT_A
-        assert set(pc.read_credits_marker()) == {_TENANT_A}
+        assert pc.refresh_credits() == {}
+        assert calls["fetches"] == 0
+        assert not pc._CREDITS_MARKER.exists()
+        assert any(ev == "credits_refresh_skipped_no_tenant" for ev, _ in calls["events"])
 
     _drive(_t, responses=[_overview(9.5, 0.5, tenants=[_tenant(_TENANT_A, 9.5, 0.5)])])
 
 
-def test_account_budget_fallback_when_tenant_unknown():
-    """Several tenants and no id: fall back to the account aggregate under the
-    'account' key rather than guessing a tenant."""
+def test_explicit_tenant_not_in_overview_writes_nothing():
+    """An explicit tenant id absent from the overview (e.g. connected to a
+    shared tenant someone else owns): nothing is written or shown — never
+    another workspace's budget, never the all-tenants aggregate."""
 
     def _t(calls):
-        entry = pc.refresh_credits()
-        assert entry["source"] == "account"
-        assert entry["remaining_usd"] == 100.0
-        assert set(pc.read_credits_marker()) == {"account"}
+        assert pc.refresh_credits(tenant_id=_TENANT_A) == {}
+        assert calls["fetches"] == 1
+        assert not pc._CREDITS_MARKER.exists()
+        assert any(ev == "credits_tenant_not_in_overview" for ev, _ in calls["events"])
 
     _drive(
         _t,
-        responses=[
-            _overview(
-                100.0,
-                55.0,
-                tenants=[_tenant(_TENANT_A, 9.5, 0.5), _tenant(_TENANT_B, 90.5, 54.5)],
-            )
-        ],
+        responses=[_overview(100.0, 55.0, tenants=[_tenant(_TENANT_B, 90.5, 54.5)])],
     )
 
 
@@ -173,7 +168,6 @@ def test_tenantless_caller_recovers_tenant_from_url_binding():
         pc.refresh_credits(tenant_id=_TENANT_A)  # binds URL_A -> tenant A
         entry = pc.refresh_credits("turn")  # no tenant_id passed
         assert entry["tenant_id"] == _TENANT_A
-        assert entry["source"] == "tenant"
         assert entry["last_op"]["label"] == "turn"
         assert abs(entry["last_op"]["cost_usd"] - 0.25) < 1e-9
         assert set(pc.read_credits_marker()) == {_TENANT_A}
@@ -257,10 +251,10 @@ def test_fetch_targets_platform_api():
 def test_platform_url_env_override():
     def _t(calls):
         os.environ["COGNEE_PLATFORM_API_URL"] = "https://platform.example/"
-        pc.refresh_credits()
+        pc.refresh_credits(tenant_id=_TENANT_A)
         assert calls["base_urls"] == ["https://platform.example"]
 
-    _drive(_t, responses=[_overview(14.23, 5.77)])
+    _drive(_t, responses=[_overview(0, 0, tenants=[_tenant(_TENANT_A, 9.5, 0.5)])])
 
 
 def test_delta_falls_back_to_remaining_drop():
@@ -314,12 +308,13 @@ def test_fetch_failure_leaves_marker_untouched():
 
 
 def test_empty_budget_payload_writes_nothing():
+    # The connected tenant exists in the overview but reports null values.
     def _t(calls):
-        assert pc.refresh_credits() == {}
+        assert pc.refresh_credits(tenant_id=_TENANT_A) == {}
         assert not pc._CREDITS_MARKER.exists()
         assert any(ev == "credits_fetch_empty" for ev, _ in calls["events"])
 
-    _drive(_t, responses=[{"budget": {}, "tenants": []}])
+    _drive(_t, responses=[_overview(0, 0, tenants=[_tenant(_TENANT_A, None, None)])])
 
 
 def test_read_marker_never_raises():
@@ -370,6 +365,22 @@ def test_lock_leftover_does_not_wedge_writer():
         assert entry["remaining_usd"] == 9.5
 
     _drive(_t, responses=[_overview(0, 0, tenants=[_tenant(_TENANT_A, 9.5, 0.5)])])
+
+
+def test_explicit_tenant_miss_never_adopts_the_sole_listed_tenant():
+    """Blocker regression (PR review): an explicit tenant id that is NOT in
+    the overview's tenants list must not adopt the single listed tenant
+    (someone's other workspace) — under exact-match-or-nothing it writes
+    nothing at all."""
+
+    def _t(calls):
+        assert pc.refresh_credits(tenant_id=_TENANT_A) == {}
+        assert _TENANT_B not in pc.read_credits_marker()
+
+    _drive(
+        _t,
+        responses=[_overview(100.0, 55.0, tenants=[_tenant(_TENANT_B, 90.5, 54.5)])],
+    )
 
 
 if __name__ == "__main__":
