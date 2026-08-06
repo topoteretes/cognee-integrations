@@ -370,34 +370,51 @@ class TestSessionEnd(unittest.TestCase):
             make_provider(**kwargs).on_session_end([])
             return fake.only_call("improve")["background"]
 
-    def test_the_local_server_gets_a_synchronous_improve(self):
-        # shutdown() unregisters moments later, the agent count hits zero, and
-        # the local server's COGNEE_AGENT_MODE watchdog SIGTERMs it within 60s
-        # without regard for running pipelines. A backgrounded improve routinely
-        # outlives that window, so it would be killed mid-promotion and the
-        # session's turns would never reach the graph.
-        self.assertFalse(self._background_for(remote_mode=True, local_server=True))
-
-    def test_a_remote_server_still_gets_a_backgrounded_improve(self):
-        # Nothing here can shut down a cloud/remote instance, so the session end
-        # need not wait for the graph build.
-        self.assertTrue(self._background_for(remote_mode=True, local_server=False))
-
-    def test_embedded_stays_synchronous(self):
-        # The work runs in this process, so it dies with it.
-        self.assertFalse(self._background_for(remote_mode=False, local_server=False))
-
-    def test_the_explicit_override_wins_in_both_directions(self):
-        self.assertTrue(
-            self._background_for(
-                remote_mode=True, local_server=True, config={"improve_background": "true"}
+    def test_an_armed_session_end_hands_the_close_to_a_detached_worker(self):
+        # The headline guarantee: the user's exit does not wait on a graph build.
+        # Nothing is improved in this process — the detached worker does it, and
+        # only it may unregister afterwards.
+        with fake_backend() as fake:
+            provider = make_provider(
+                watcher_state_path=Path("/tmp/w.json"), session_cognee_id="hermes_sZ"
             )
-        )
-        self.assertFalse(
-            self._background_for(
-                remote_mode=True, local_server=False, config={"improve_background": "false"}
-            )
-        )
+            with mock.patch.object(
+                provider_mod.exit_watcher, "finalize", return_value=True
+            ) as finalize:
+                provider.on_session_end([])
+            self.assertEqual(fake.kwargs_for("improve"), [])
+        kwargs = finalize.call_args.kwargs
+        self.assertEqual(kwargs["session_id"], "hermes_sZ")
+        self.assertEqual(kwargs["dataset"], "hermes")
+        self.assertTrue(kwargs["improve"])
+        self.assertTrue(provider._close_handed_off)
+
+    def test_a_failed_handoff_falls_back_to_an_inline_synchronous_improve(self):
+        # shutdown() is about to unregister and take the server with it, so the
+        # bridge has to finish here or not at all.
+        with fake_backend() as fake:
+            provider = make_provider(watcher_state_path=Path("/tmp/w.json"))
+            with mock.patch.object(provider_mod.exit_watcher, "finalize", return_value=False):
+                provider.on_session_end([])
+            self.assertIs(fake.only_call("improve")["background"], False)
+        self.assertFalse(provider._close_handed_off)
+
+    def test_no_watcher_means_an_inline_synchronous_improve(self):
+        # Embedded mode: the work runs in this process and dies with it, so there
+        # is nobody to hand off to and no server to protect.
+        self.assertFalse(self._background_for(remote_mode=False))
+
+    def test_the_override_opts_out_of_the_handoff_entirely(self):
+        for value, expected in (("true", True), ("false", False)):
+            with fake_backend() as fake:
+                provider = make_provider(
+                    watcher_state_path=Path("/tmp/w.json"),
+                    config={"improve_background": value},
+                )
+                with mock.patch.object(provider_mod.exit_watcher, "finalize") as finalize:
+                    provider.on_session_end([])
+                finalize.assert_not_called()
+                self.assertIs(fake.only_call("improve")["background"], expected)
 
 
 class TestMemoryWriteMirror(unittest.TestCase):

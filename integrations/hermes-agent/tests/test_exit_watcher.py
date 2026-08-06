@@ -144,6 +144,92 @@ class TestStateFileApi(unittest.TestCase):
         proc.wait()
         self.assertFalse(ew.pid_alive(proc.pid))
 
+    def test_non_positive_pids_are_not_alive(self):
+        # os.kill() reads these as process groups — 0 is "my group", -1 is
+        # "everything I may signal" — so a bare os.kill would answer "alive" and
+        # strand a worker polling a parent that never existed.
+        for pid in (0, -1, -123, None, "nonsense"):
+            self.assertFalse(ew.pid_alive(pid), f"pid {pid!r} must not read as alive")
+
+    def test_arm_clears_a_stale_once_marker(self):
+        # State files are keyed on the Hermes pid and pids recycle, so a marker
+        # left behind by whoever held this pid last would silently no-op the new
+        # session's close.
+        state_path = Path(self.tmp) / "w.json"
+        ew.marker_path(state_path).write_text("stale", encoding="utf-8")
+        with mock.patch.object(ew.subprocess, "Popen"):
+            ew.arm(
+                state_path=state_path,
+                log_path=Path(self.tmp) / "w.log",
+                parent_pid=123,
+                url="http://127.0.0.1:8011",
+                api_key="",
+                agent_session_name="hermes",
+                dataset="agent_sessions",
+                session_id="hermes_s1",
+                improve=True,
+                improve_timeout=300,
+            )
+        self.assertFalse(ew.marker_path(state_path).exists())
+        self.assertTrue(ew.claim_once(state_path))
+
+    def test_disarm_removes_the_marker_too(self):
+        path = _state(self.tmp)
+        ew.claim_once(path)
+        ew.disarm(path)
+        self.assertFalse(path.exists())
+        self.assertFalse(ew.marker_path(path).exists())
+
+
+class TestFinalize(unittest.TestCase):
+    """The clean handoff: state refreshed, worker spawned, poller left armed."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+
+    def _finalize(self, path, **overrides):
+        params = {
+            "api_key": "secret-key",
+            "session_id": "hermes_new",
+            "dataset": "agent_sessions",
+            "improve": True,
+            "improve_timeout": 42.0,
+        }
+        params.update(overrides)
+        return ew.finalize(path, **params)
+
+    def test_refreshes_the_state_and_spawns_a_final_worker(self):
+        path = _state(self.tmp, session_id="hermes_old")
+        with mock.patch.object(ew.subprocess, "Popen") as popen:
+            self.assertTrue(self._finalize(path))
+        state = ew.read_state(path)
+        self.assertEqual(state["session_id"], "hermes_new")
+        self.assertEqual(state["improve_timeout"], 42.0)
+        args, kwargs = popen.call_args
+        self.assertIn("--final", args[0])
+        self.assertIn("--state", args[0])
+        self.assertTrue(kwargs["start_new_session"])
+        # The key travels by env, never in argv or on disk.
+        self.assertNotIn("secret-key", " ".join(args[0]))
+        self.assertNotIn("api_key", state)
+        self.assertEqual(kwargs["env"]["COGNEE_API_KEY"], "secret-key")
+
+    def test_without_an_armed_watcher_it_reports_no_handoff(self):
+        missing = Path(self.tmp) / "missing.json"
+        with mock.patch.object(ew.subprocess, "Popen") as popen:
+            self.assertFalse(self._finalize(missing))
+        popen.assert_not_called()
+
+    def test_a_failed_spawn_reports_no_handoff_and_leaves_the_poller_armed(self):
+        # The caller then closes the session itself, and the poller is still
+        # there as insurance if it cannot.
+        path = _state(self.tmp)
+        with mock.patch.object(ew.subprocess, "Popen", side_effect=OSError("no fork")):
+            self.assertFalse(self._finalize(path))
+        self.assertTrue(path.exists())
+
 
 class TestFire(unittest.TestCase):
     def setUp(self):
@@ -187,6 +273,90 @@ class TestFire(unittest.TestCase):
         with mock.patch.object(ew, "_post", side_effect=flaky):
             ew.fire(state)
         self.assertEqual([r["path"] for r in self.server.requests], ["/api/v1/agents/unregister"])
+
+    def test_a_session_is_closed_at_most_once(self):
+        # The poller stays armed after a handoff on purpose, so both workers can
+        # reach fire() for the same session. The marker decides which one acts.
+        path = _state(self.tmp, url=self.server.url)
+        state = ew.read_state(path)
+        self.assertTrue(ew.fire(state, state_path=path))
+        self.assertFalse(ew.fire(state, state_path=path))
+        self.assertEqual(
+            [r["path"] for r in self.server.requests],
+            ["/api/v1/improve", "/api/v1/agents/unregister"],
+        )
+
+    def test_without_a_state_path_there_is_no_claim(self):
+        # Backwards compatible: a bare fire(state) still just acts.
+        state = ew.read_state(_state(self.tmp, url=self.server.url))
+        self.assertTrue(ew.fire(state))
+        self.assertTrue(ew.fire(state))
+        self.assertEqual(len(self.server.requests), 4)
+
+
+class TestFinalWorker(unittest.TestCase):
+    """``--final``: improve now, but hold the registration until hermes is gone."""
+
+    def setUp(self):
+        self.server = _RecordingServer()
+        self.addCleanup(self.server.close)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+
+    def test_it_improves_immediately_but_unregisters_only_after_the_parent_exits(self):
+        # The improve does not wait for hermes — that is the whole point of the
+        # handoff. The unregister does, because dropping the agent count to zero
+        # retires the server, and a hermes still running may still need it.
+        parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(parent.kill)
+        path = _state(
+            self.tmp,
+            url=self.server.url,
+            parent_pid=parent.pid,
+            unregister_grace=15.0,
+            poll_interval=0.05,
+        )
+
+        finished = threading.Event()
+
+        def _run():
+            ew.run_final(path)
+            finished.set()
+
+        threading.Thread(target=_run, daemon=True).start()
+
+        self.assertTrue(self.server.wait_for(1), "improve never arrived")
+        self.assertEqual([r["path"] for r in self.server.requests], ["/api/v1/improve"])
+        time.sleep(0.4)  # several poll intervals: still holding the registration
+        self.assertEqual(len(self.server.requests), 1)
+
+        parent.kill()
+        parent.wait()
+
+        self.assertTrue(self.server.wait_for(2), "unregister never arrived")
+        self.assertEqual(self.server.requests[1]["path"], "/api/v1/agents/unregister")
+        self.assertTrue(finished.wait(10.0))
+        self.assertFalse(path.exists())
+
+    def test_a_dead_parent_closes_the_session_without_waiting(self):
+        path = _state(
+            self.tmp,
+            url=self.server.url,
+            parent_pid=-1,  # never alive
+            unregister_grace=30.0,
+            poll_interval=0.05,
+        )
+        ew.run_final(path)
+        self.assertEqual(
+            [r["path"] for r in self.server.requests],
+            ["/api/v1/improve", "/api/v1/agents/unregister"],
+        )
+
+    def test_a_disarmed_state_means_nothing_happens(self):
+        missing = Path(self.tmp) / "gone.json"
+        self.assertEqual(ew.run_final(missing), 0)
+        self.assertEqual(self.server.requests, [])
 
 
 class TestLiveWatcher(unittest.TestCase):
@@ -241,6 +411,49 @@ class TestLiveWatcher(unittest.TestCase):
         while state_path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertFalse(state_path.exists())
+
+    def test_the_clean_path_closes_the_session_in_one_detached_process(self):
+        # The whole handoff, for real: hermes arms a poller at session start,
+        # hands the close off at session end, and exits. The session must be
+        # closed exactly once even though two workers are now entitled to do it.
+        parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        self.addCleanup(parent.kill)
+        state_path = self._arm(parent.pid)
+
+        handed = ew.finalize(
+            state_path,
+            api_key="k-live",
+            session_id="hermes_live",
+            dataset="agent_sessions",
+            improve=True,
+            improve_timeout=10.0,
+            unregister_grace=15.0,
+        )
+        self.assertTrue(handed)
+
+        parent.kill()
+        parent.wait()
+
+        log = Path(self.tmp) / "watcher.log"
+        self.assertTrue(
+            self.server.wait_for(2),
+            f"session was never closed; log:\n{log.read_text() if log.exists() else '(none)'}",
+        )
+        time.sleep(1.0)  # let the losing worker prove it stays out
+        self.assertEqual(
+            [r["path"] for r in self.server.requests],
+            ["/api/v1/improve", "/api/v1/agents/unregister"],
+            f"session closed more than once; log:\n{log.read_text() if log.exists() else '(none)'}",
+        )
+        self.assertEqual(self.server.requests[0]["body"]["session_ids"], ["hermes_live"])
+        self.assertIs(self.server.requests[0]["body"]["run_in_background"], False)
+        self.assertEqual(self.server.requests[0]["api_key"], "k-live")
+
+        deadline = time.monotonic() + 5.0
+        while state_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(state_path.exists())
+        self.assertFalse(ew.marker_path(state_path).exists())
 
     def test_a_clean_disarm_means_the_watcher_never_acts(self):
         # The parent (this test process) stays alive; disarming must be enough.

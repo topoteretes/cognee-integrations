@@ -334,7 +334,7 @@ def make_provider(
     session_id="s-1",
     session_cognee_id=None,
     remote_mode=True,
-    local_server=False,
+    watcher_state_path=None,
     writes_enabled=True,
     auto_route=True,
     improve_on_end=True,
@@ -350,7 +350,9 @@ def make_provider(
     )
     provider._initialized = True
     provider._remote_mode = remote_mode
-    provider._local_server = local_server
+    # Non-None makes the provider look armed, so on_session_end will try to hand
+    # the close to a detached worker instead of improving in-process.
+    provider._watcher_state_path = watcher_state_path
     provider._writes_enabled = writes_enabled
     provider._dataset = dataset
     provider._top_k = top_k

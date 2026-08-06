@@ -16,10 +16,11 @@ Python package with the `hermes_agent.plugins` entry point.
 - Runs `cognee.improve()` at Hermes session end to bridge session memory into the graph.
 - Mirrors explicit Hermes memory writes through `on_memory_write`.
 - Supports local embedded Cognee and remote Cognee service mode.
-- Survives crashes: a detached exit watcher (the same pattern the other cognee
-  plugins use) notices an uncleanly-died Hermes, bridges the session into the
-  graph and unregisters from the server — so no session is lost and no server
-  lingers. It stands down silently on a clean shutdown.
+- Closes every session out of process, the way the other cognee plugins do: a
+  detached worker bridges the session into the graph and only then unregisters
+  from the server. Exiting Hermes never waits on a graph build, and the promotion
+  is never cut short by the server retiring. The same worker covers an uncleanly
+  died Hermes, so no session is lost and no server lingers either way.
 
 ## Quick start
 
@@ -255,13 +256,22 @@ LLM_API_KEY=sk-...
 > `COGNEE_PLUGIN_DATASET`. Both still work; new setups should use the canonical
 > names.
 
-> **`improve_background`** controls whether the session-end graph build
-> (`improve()`) runs in the background. Default `auto`: it backgrounds in
-> server/remote mode (the server outlives the agent and finishes the job) and runs
-> synchronously in `embedded` mode (the work runs in-process and must complete
-> before shutdown, or it is lost). Set `COGNEE_IMPROVE_BACKGROUND=true|false` to
-> force it. Previously `improve()` was always synchronous; this is the one
-> behavior change to be aware of when upgrading.
+> **`improve_background`** decides where the session-end graph build
+> (`improve()`) runs. Default `auto`: whenever a server is involved, the close is
+> handed to a **detached worker** — the same process that already covers crashes —
+> which runs `improve()` to completion and only then unregisters the agent
+> connection. Hermes exits immediately; nothing waits on the graph build. That
+> ordering is required, not stylistic: the local server runs with
+> `COGNEE_AGENT_MODE=true` and retires itself within 60s of the last agent
+> unregistering, so unregistering first would kill the promotion halfway. In
+> `embedded` mode there is no server and no worker, so the build runs in-process
+> and synchronously — it dies with the process otherwise.
+>
+> Setting `COGNEE_IMPROVE_BACKGROUND=true|false` opts out of the handoff and does
+> the work in-process: `true` submits the build and returns (right for a
+> cloud/remote server nothing here can shut down; on a local server it
+> reintroduces the race above), `false` blocks Hermes' exit until the build
+> finishes.
 
 ## Hermes Commands
 

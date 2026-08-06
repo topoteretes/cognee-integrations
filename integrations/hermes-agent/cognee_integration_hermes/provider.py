@@ -100,11 +100,9 @@ class CogneeMemoryProvider(MemoryProvider):
         self._backend: MemoryBackend = backend or default_backend()
         self._initialized = False
         self._remote_mode = False
-        # True when the server we talk to is the local one this plugin family
-        # boots, which runs with COGNEE_AGENT_MODE=true and shuts itself down
-        # once the last agent unregisters. Distinct from _remote_mode, which is
-        # only "a server is involved" and is true for the local server too.
-        self._local_server = False
+        # Set once a detached worker has taken this session's improve-then-
+        # unregister; from then on this process must not touch either.
+        self._close_handed_off = False
         self._session_id = ""
         self._session_cognee_id = ""
         self._dataset = DEFAULT_DATASET
@@ -329,7 +327,6 @@ class CogneeMemoryProvider(MemoryProvider):
                 )
                 self._backend.connect(url=local_url, api_key="", timeout=30)
                 self._remote_mode = True
-                self._local_server = True
             except Exception as exc:
                 raise RuntimeError(
                     "cognee local server failed to start, which is required for safe "
@@ -559,27 +556,51 @@ class CogneeMemoryProvider(MemoryProvider):
             or self._is_breaker_open()
         ):
             return
-        # When to background the graph-build: only when a server will outlive this
-        # process *and finish the job*. Two ways that fails, both of which lose the
-        # session:
-        #
-        #   embedded — the work runs in-process, so it dies with this process.
-        #   local server — shutdown() unregisters us moments from now. The local
-        #     server runs with COGNEE_AGENT_MODE=true, and its watchdog SIGTERMs
-        #     the server within 60s of the agent count reaching zero, without
-        #     regard for pipelines still running. A backgrounded improve routinely
-        #     outlives that (COGNEE_IMPROVE_SUBMIT_TIMEOUT alone is 420s), so it
-        #     would be killed mid-promotion. exit_watcher.fire() runs improve
-        #     synchronously for exactly this reason; the clean path owes the same
-        #     guarantee.
-        #
-        # That leaves a genuinely remote/cloud server, which nothing here can shut
-        # down, as the only place backgrounding is safe. Override via
-        # COGNEE_IMPROVE_BACKGROUND — worth setting on a local server that other
-        # agents keep registered, where the watchdog will not fire.
-        default_background = self._remote_mode and not self._local_server
-        raw_bg = str(self._config.get("improve_background") or "").strip()
-        background = str_to_bool(raw_bg, default_background) if raw_bg else default_background
+        if self._hand_off_session_close():
+            return
+        self._improve_inline()
+
+    def _hand_off_session_close(self) -> bool:
+        """Give improve-then-unregister to a detached worker. True when it took them.
+
+        Two requirements that cannot both hold in this process: the user's exit
+        must not wait on a graph build, and the improve must finish *before* the
+        agent unregisters — the local server runs with COGNEE_AGENT_MODE=true and
+        its watchdog SIGTERMs the server within 60s of the agent count reaching
+        zero, running pipelines or not. Outside this process both hold at once:
+        the worker blocks on the improve, and its blocking costs nobody anything.
+        This is how the claude-code, codex and openclaw plugins close a session.
+        """
+        if self._watcher_state_path is None:
+            return False  # embedded mode, or arming failed — nobody to hand to
+        if str(self._config.get("improve_background") or "").strip():
+            return False  # an explicit override asked for the in-process path
+        try:
+            info = self._backend.connection_info() or {}
+            handed = exit_watcher.finalize(
+                self._watcher_state_path,
+                api_key=str(info.get("api_key") or ""),
+                session_id=self._session_cognee_id,
+                dataset=self._dataset,
+                improve=True,
+                improve_timeout=self._timeout("improve_timeout", 300),
+            )
+        except Exception as exc:
+            logger.debug("could not hand off the cognee session close: %s", exc)
+            return False
+        self._close_handed_off = handed
+        return handed
+
+    def _improve_inline(self) -> None:
+        """Bridge the session here, because no detached worker will.
+
+        Synchronous by default: this is either embedded mode, where the work runs
+        in this process and dies with it, or a failed handoff, where shutdown() is
+        about to unregister and take the server with it.
+        ``COGNEE_IMPROVE_BACKGROUND=true`` opts out for a server nothing here can
+        shut down.
+        """
+        background = str_to_bool(self._config.get("improve_background"), False)
         try:
             self._backend.improve(
                 dataset=self._dataset,
@@ -608,9 +629,11 @@ class CogneeMemoryProvider(MemoryProvider):
             self._sync_thread.join(timeout=5.0)
         self._session_id = new_session_id
         self._session_cognee_id = self._build_cognee_session_id(new_session_id, **kwargs)
-        if self._watcher_state_path is not None:
+        if self._watcher_state_path is not None and not self._close_handed_off:
             # Re-point the crash insurance at the new session (and re-enable the
-            # improve half in case a previous session end disabled it).
+            # improve half in case a previous session end disabled it). Skipped
+            # after a handoff: that state file describes the session a detached
+            # worker is still closing, and is its to delete.
             exit_watcher.update(
                 self._watcher_state_path,
                 session_id=self._session_cognee_id,
@@ -674,9 +697,18 @@ class CogneeMemoryProvider(MemoryProvider):
         for thread in (self._prefetch_thread, self._sync_thread):
             if thread and thread.is_alive():
                 thread.join(timeout=5.0)
+        if self._close_handed_off:
+            # A detached worker owns improve-then-unregister for this session.
+            # Unregistering here would drop the agent count to zero while that
+            # improve is still running, and COGNEE_AGENT_MODE's watchdog would
+            # retire the server mid-promotion — the exact race the handoff
+            # removes. The worker owns the state file too, so nothing to disarm.
+            self._backend.close(timeout=5, unregister=False)
+            return
         if self._watcher_state_path is not None:
-            # This is the clean path — stand the insurance down BEFORE closing the
-            # backend, so the watcher can never race the orderly unregister.
+            # No handoff, so this is the orderly path — stand the insurance down
+            # BEFORE closing the backend, so the watcher can never race the
+            # unregister that is about to happen.
             exit_watcher.disarm(self._watcher_state_path)
             self._watcher_state_path = None
         self._backend.close(timeout=5)

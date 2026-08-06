@@ -292,7 +292,13 @@ class HttpBackend(MemoryBackend):
                 raise
             self._request("POST", "/api/v1/datasets/", timeout=timeout, json_body={"name": dataset})
 
-    def close(self, *, timeout: float = 5.0) -> None:
+    def close(self, *, timeout: float = 5.0, unregister: bool = True) -> None:
+        if not unregister:
+            # A detached worker owns the unregister and is still improving this
+            # session. Stay registered so the server's idle watchdog cannot
+            # retire it mid-promotion; the worker drops the registration when
+            # the improve returns.
+            return
         if not self.registered:
             return
         try:

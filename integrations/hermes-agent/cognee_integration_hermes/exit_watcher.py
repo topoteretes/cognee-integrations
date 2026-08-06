@@ -1,23 +1,33 @@
-"""Crash insurance for a Hermes session: improve-then-unregister on unclean death.
+"""Closing a Hermes session: improve, then unregister — always out of process.
 
-The provider already closes a session properly — ``on_session_end`` bridges the
-session cache into the graph and ``shutdown`` unregisters the agent connection.
-But none of that runs when Hermes crashes or is killed, and then two things leak:
-the agent registration (so the server's ``COGNEE_AGENT_MODE`` idle watchdog never
-sees zero agents and the server lingers forever) and the session's turns (nothing
-ever promotes them into the permanent graph).
+Closing a session means two calls in a fixed order: ``improve(session_ids=[...])``
+promotes the session's turns into the permanent graph, and only then may the agent
+connection be unregistered. The order is load-bearing. The local server runs with
+``COGNEE_AGENT_MODE=true``, so unregistering drops the agent count to zero and its
+watchdog SIGTERMs the server within 60s — with no regard for pipelines still
+running. Unregister first and the promotion is killed halfway.
 
-So ``arm()`` spawns this file as a small detached process — the same pattern the
-claude-code, codex and openclaw plugins use — that polls the Hermes PID and, when
-it dies without a clean shutdown, runs ``improve(session_ids=[...])``
-synchronously and then unregisters. A clean shutdown ``disarm()``s the watcher by
-deleting its state file, and the watcher exits without acting.
+Doing that in Hermes itself forces a choice between two things the user should not
+have to trade: a fast exit, or a session that actually reaches the graph. Out of
+process there is no trade — the worker blocks on the improve and its blocking
+costs nobody anything. So both paths out of a session route here:
 
-The watcher half of this module runs as a plain script (``python exit_watcher.py
---state <path>``), outside the package, so nothing here may import from the
-package — everything it needs travels in the state file, plus the API key, which
-stays out of world-readable places: it is handed over via the child's
-environment and falls back to the shared ``~/.cognee-plugin/api_key.json`` cache.
+* **clean** — ``finalize()`` hands the close to a detached worker (``--final``)
+  the moment ``on_session_end`` fires, and Hermes exits without waiting.
+* **unclean** — ``arm()`` leaves a watcher polling the Hermes PID from session
+  start; if Hermes dies without ever handing off, the watcher closes the session
+  itself.
+
+Both converge on :func:`fire`, which claims a once-marker beside the state file
+so that a session is closed exactly once no matter how many workers reach it. The
+poller is deliberately *not* stood down when a finalizer is spawned: if that
+spawn dies before claiming, the poller is still there to catch it.
+
+This module runs as a plain script (``python exit_watcher.py --state <path>
+[--final]``), outside the package, so nothing here may import from the package —
+everything it needs travels in the state file, plus the API key, which stays out
+of world-readable places: it is handed over via the child's environment and falls
+back to the shared ``~/.cognee-plugin/api_key.json`` cache.
 """
 
 import argparse
@@ -38,6 +48,10 @@ _SHARED_KEY_CACHE = Path.home() / ".cognee-plugin" / "api_key.json"
 
 _DEFAULT_POLL_SECONDS = 2.0
 _UNREGISTER_TIMEOUT = 15.0
+# How long a finalizer will hold the agent registration open waiting for Hermes to
+# exit, once its improve is done. Only ever waited out if Hermes outlives its own
+# session end; normally the parent is long gone and this returns immediately.
+_DEFAULT_UNREGISTER_GRACE = 60.0
 
 
 # --- state file ---------------------------------------------------------------
@@ -66,7 +80,18 @@ def write_state(state_path, state):
 
 def pid_alive(pid):
     try:
-        os.kill(int(pid), 0)
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    # os.kill() reads non-positive pids as process *groups* — 0 is "my group" and
+    # -1 is "every process I may signal", both of which would answer "alive" and
+    # leave a watcher polling a parent that does not exist. A state file without a
+    # real pid is malformed; treat it as a parent already gone so the worker
+    # closes the session and exits rather than spinning forever.
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -74,6 +99,60 @@ def pid_alive(pid):
     except Exception:
         return False
     return True
+
+
+def marker_path(state_path):
+    """The once-marker guarding the session this state file describes."""
+    return Path(str(state_path) + ".done")
+
+
+def claim_once(state_path):
+    """True when this process is the one that gets to close the session.
+
+    A finalizer and the poller can both reach :func:`fire` for the same session,
+    by design — the poller stays armed as a backstop in case the finalizer never
+    starts. The filesystem arbitrates: whoever creates the marker acts, the other
+    bows out. A failure for any *other* reason returns True, because a duplicate
+    improve costs some wasted work while a skipped one costs the whole session.
+    """
+    try:
+        os.close(os.open(str(marker_path(state_path)), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
+def _spawn(state_path, extra_args, *, api_key, log_path):
+    """Start this file as a detached process that outlives its parent."""
+    env = dict(os.environ)
+    if api_key:
+        env["COGNEE_API_KEY"] = str(api_key)
+    log = subprocess.DEVNULL
+    if log_path:
+        try:
+            log = open(log_path, "ab", buffering=0)  # noqa: SIM115 — handed to the child
+        except Exception:
+            log = subprocess.DEVNULL
+    try:
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--state",
+                str(state_path),
+                *extra_args,
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,  # detach: must outlive Hermes to be of any use
+        )
+    finally:
+        if log is not subprocess.DEVNULL:
+            log.close()
 
 
 # --- the provider-facing API ---------------------------------------------------
@@ -99,6 +178,12 @@ def arm(
     child's environment instead, and the watcher can re-read the shared cache at
     fire time (the key may not even exist yet when Hermes starts).
     """
+    # State files are keyed on the Hermes pid, and pids recycle. A marker left by
+    # whoever held this pid last would silently no-op this session's close.
+    try:
+        marker_path(state_path).unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug("could not clear a stale cognee session-close marker: %s", exc)
     write_state(
         state_path,
         {
@@ -110,26 +195,11 @@ def arm(
             "improve": bool(improve),
             "improve_timeout": float(improve_timeout),
             "poll_interval": float(poll_interval),
+            # Recorded so finalize() can reuse the same log without re-deriving it.
+            "log_path": str(log_path) if log_path else "",
         },
     )
-    env = dict(os.environ)
-    if api_key:
-        env["COGNEE_API_KEY"] = str(api_key)
-    try:
-        log = open(log_path, "ab", buffering=0)  # noqa: SIM115 — handed to the child
-    except Exception:
-        log = subprocess.DEVNULL
-    try:
-        subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--state", str(state_path)],
-            env=env,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,  # detach: must outlive Hermes to be of any use
-        )
-    finally:
-        if log is not subprocess.DEVNULL:
-            log.close()
+    _spawn(state_path, [], api_key=api_key, log_path=log_path)
 
 
 def update(state_path, **fields):
@@ -148,12 +218,55 @@ def update(state_path, **fields):
         logger.debug("could not update the cognee exit watcher state: %s", exc)
 
 
+def finalize(
+    state_path,
+    *,
+    api_key,
+    session_id,
+    dataset,
+    improve,
+    improve_timeout,
+    unregister_grace=_DEFAULT_UNREGISTER_GRACE,
+):
+    """Hand improve-then-unregister to a detached worker. True when it took them.
+
+    False means nothing was handed off and the caller still owes this session a
+    close of its own — there is no armed watcher to take it (embedded mode), or
+    the spawn failed.
+
+    The armed poller is deliberately left in place either way. If this worker dies
+    before claiming the once-marker, the poller still catches Hermes exiting; if
+    it claims, the poller finds the marker taken and bows out.
+    """
+    state = read_state(state_path)
+    if state is None:
+        return False
+    state.update(
+        {
+            "session_id": str(session_id),
+            "dataset": str(dataset),
+            "improve": bool(improve),
+            "improve_timeout": float(improve_timeout),
+            "unregister_grace": float(unregister_grace),
+        }
+    )
+    try:
+        write_state(state_path, state)
+        _spawn(state_path, ["--final"], api_key=api_key, log_path=state.get("log_path"))
+        return True
+    except Exception as exc:
+        # State left intact: the poller is still valid insurance.
+        logger.debug("could not spawn the cognee session-close worker: %s", exc)
+        return False
+
+
 def disarm(state_path):
     """Delete the state file; the watcher notices and exits without acting."""
-    try:
-        Path(state_path).unlink(missing_ok=True)
-    except Exception as exc:
-        logger.debug("could not disarm the cognee exit watcher: %s", exc)
+    for path in (Path(state_path), marker_path(state_path)):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.debug("could not disarm the cognee exit watcher: %s", exc)
 
 
 # --- the watcher process --------------------------------------------------------
@@ -193,13 +306,29 @@ def _post(url, path, payload, *, api_key, timeout):
         return getattr(response, "status", None) or response.getcode()
 
 
-def fire(state):
-    """The unclean-death path: improve first, then unregister.
+def _await_parent_exit(state, grace):
+    """Wait, bounded, for Hermes to be gone."""
+    deadline = time.monotonic() + float(grace)
+    interval = float(state.get("poll_interval") or _DEFAULT_POLL_SECONDS)
+    while time.monotonic() < deadline and pid_alive(state.get("parent_pid", -1)):
+        time.sleep(interval)
+
+
+def fire(state, *, state_path=None, wait_for_parent=0.0):
+    """Close the session: improve first, then unregister. True when we did it.
 
     That order is load-bearing (and matches openclaw's exit watcher): the improve
     must finish while this connection still counts as a registered agent, or the
     server's idle watchdog could tear the server down mid-promotion.
+
+    ``state_path`` enables the once-marker, so whichever worker gets here first
+    is the only one that acts. ``wait_for_parent`` holds the registration open,
+    bounded, until Hermes is actually gone — the improve is already done by then,
+    so this only avoids pulling the server out from under a Hermes still using it.
     """
+    if state_path is not None and not claim_once(state_path):
+        _log("session already closed by another worker; exiting")
+        return False
     url = str(state.get("url") or "")
     api_key = os.environ.get("COGNEE_API_KEY", "").strip() or _cached_api_key(url)
     session_id = str(state.get("session_id") or "")
@@ -219,6 +348,8 @@ def fire(state):
             _log("improve submitted for session %s" % session_id)
         except Exception as exc:
             _log("improve failed for session %s: %s" % (session_id, exc))
+    if wait_for_parent:
+        _await_parent_exit(state, wait_for_parent)
     try:
         _post(
             url,
@@ -230,6 +361,7 @@ def fire(state):
         _log("agent connection unregistered")
     except Exception as exc:
         _log("unregister failed: %s" % exc)
+    return True
 
 
 def watch(state_path):
@@ -254,17 +386,37 @@ def watch(state_path):
             return 0
         if not pid_alive(state.get("parent_pid", -1)):
             _log("hermes pid %s is gone; closing the session" % state.get("parent_pid"))
-            fire(state)
-            disarm(state_path)
+            if fire(state, state_path=state_path):
+                disarm(state_path)
             return 0
         time.sleep(float(state.get("poll_interval") or _DEFAULT_POLL_SECONDS))
 
 
+def run_final(state_path):
+    """The clean path: Hermes asked us to close the session, so close it now."""
+    state = read_state(state_path)
+    if state is None:
+        return 0
+    _log("closing session %s on request" % state.get("session_id"))
+    if fire(
+        state,
+        state_path=state_path,
+        wait_for_parent=float(state.get("unregister_grace") or _DEFAULT_UNREGISTER_GRACE),
+    ):
+        disarm(state_path)
+    return 0
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="cognee-hermes exit watcher")
+    parser = argparse.ArgumentParser(description="cognee-hermes session-close worker")
     parser.add_argument("--state", required=True)
+    parser.add_argument(
+        "--final",
+        action="store_true",
+        help="close the session now instead of polling for the parent to die",
+    )
     args = parser.parse_args(argv)
-    return watch(args.state)
+    return run_final(args.state) if args.final else watch(args.state)
 
 
 if __name__ == "__main__":

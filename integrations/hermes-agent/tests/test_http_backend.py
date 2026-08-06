@@ -423,6 +423,18 @@ class TestConnect(unittest.TestCase):
         HttpBackend(opener=fresh).close(timeout=_TIMEOUT)
         self.assertEqual(fresh.paths(), [])
 
+    def test_close_without_unregister_stays_registered_and_sends_nothing(self):
+        # A detached worker owns the unregister and is still improving. Dropping
+        # the agent count to zero here would let the server's idle watchdog
+        # retire it mid-promotion.
+        opener = self._opener(**{"/api/v1/agents/unregister": {"active_agents": 0}})
+        backend = HttpBackend(opener=opener)
+        backend.connect(url=_URL, api_key="k", timeout=_TIMEOUT)
+        before = opener.paths()
+        backend.close(timeout=_TIMEOUT, unregister=False)
+        self.assertEqual(opener.paths(), before)
+        self.assertTrue(backend.registered)
+
 
 class TestApiKeyResolution(unittest.TestCase):
     def setUp(self):

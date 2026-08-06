@@ -59,8 +59,13 @@ class MemoryBackend:
         """Resolve the principal this transport writes as, if it owns one."""
         return None
 
-    def close(self, *, timeout: float = 5.0) -> None:
-        """Release connections and background resources."""
+    def close(self, *, timeout: float = 5.0, unregister: bool = True) -> None:
+        """Release connections and background resources.
+
+        ``unregister=False`` keeps the agent registration alive on the way out,
+        because a detached worker owns it and is still running this session's
+        improve. Dropping it here would let the server retire mid-promotion.
+        """
 
     def connection_info(self) -> Optional[dict[str, Any]]:
         """How to reach the server this transport is attached to, if that server
@@ -231,7 +236,12 @@ class SdkBackend(MemoryBackend):
         self._user = self._bridge.run(self._ensure_identity(email, password), timeout=timeout)
         return self._user
 
-    def close(self, *, timeout: float = 5.0) -> None:
+    def close(self, *, timeout: float = 5.0, unregister: bool = True) -> None:
+        # ``unregister`` is accepted and ignored: this transport never registers
+        # an agent connection, and its connection_info() is None, so it is never
+        # on the handoff path. Disconnecting and stopping the bridge are pure
+        # local teardown with nothing for a detached worker to inherit.
+        del unregister
         if self.served:
             try:
                 self._bridge.run(self._do_disconnect(), timeout=timeout)

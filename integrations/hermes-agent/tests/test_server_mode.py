@@ -357,8 +357,13 @@ class TestInitializeModes(unittest.TestCase):
         self.assertFalse(rec["roots_called"])
 
 
-class TestImproveBackgroundDecision(unittest.TestCase):
-    """on_session_end backgrounds improve only when a server will finish the job."""
+class TestInlineImproveFallback(unittest.TestCase):
+    """When nothing can take the close, on_session_end improves here — and waits.
+
+    The handoff covers every server mode, so reaching this path means either
+    embedded (the work dies with this process) or a failed spawn (shutdown is
+    about to unregister). Both make waiting the only way to keep the session.
+    """
 
     def _run_session_end(self, *, remote_mode, env_override=None):
         p, _ = _make_provider()
@@ -371,8 +376,8 @@ class TestImproveBackgroundDecision(unittest.TestCase):
         p.on_session_end([])
         return p._backend.only_call("improve")["background"]
 
-    def test_server_mode_backgrounds(self):
-        self.assertTrue(self._run_session_end(remote_mode=True))
+    def test_an_unarmed_server_mode_improves_synchronously(self):
+        self.assertFalse(self._run_session_end(remote_mode=True))
 
     def test_embedded_mode_runs_synchronously(self):
         self.assertFalse(self._run_session_end(remote_mode=False))
@@ -519,19 +524,34 @@ class TestExitWatcherLifecycle(unittest.TestCase):
         self.assertEqual(kwargs["session_id"], p._session_cognee_id)
         self.assertTrue(kwargs["improve"])
 
-    def test_session_end_stands_down_the_improve_half_only(self):
+    def test_session_end_hands_the_close_to_a_detached_worker(self):
         p = self._armed_provider()
-        with mock.patch.object(provider_mod.exit_watcher, "update") as update:
+        with mock.patch.object(
+            provider_mod.exit_watcher, "finalize", return_value=True
+        ) as finalize:
             p.on_session_end([])
-        self.assertIs(update.call_args.kwargs["improve"], False)
-        # Still armed: the unregister half must survive until shutdown.
+        self.assertEqual(finalize.call_args.kwargs["session_id"], p._session_cognee_id)
+        self.assertEqual(p._backend.kwargs_for("improve"), [])
+        self.assertTrue(p._close_handed_off)
+        # The state file now belongs to the worker, so it stays put.
         self.assertIsNotNone(p._watcher_state_path)
 
-    def test_a_failed_session_end_improve_keeps_the_insurance(self):
+    def test_a_failed_handoff_still_closes_the_session_inline(self):
+        p = self._armed_provider()
+        with mock.patch.object(provider_mod.exit_watcher, "finalize", return_value=False):
+            with mock.patch.object(provider_mod.exit_watcher, "update") as update:
+                p.on_session_end([])
+        self.assertIs(p._backend.only_call("improve")["background"], False)
+        # Bridged here, so a later crash must not improve the same session again.
+        self.assertIs(update.call_args.kwargs["improve"], False)
+        self.assertFalse(p._close_handed_off)
+
+    def test_a_failed_inline_improve_keeps_the_insurance(self):
         p = self._armed_provider()
         p._backend.errors["improve"] = RuntimeError("server hiccup")
-        with mock.patch.object(provider_mod.exit_watcher, "update") as update:
-            p.on_session_end([])
+        with mock.patch.object(provider_mod.exit_watcher, "finalize", return_value=False):
+            with mock.patch.object(provider_mod.exit_watcher, "update") as update:
+                p.on_session_end([])
         update.assert_not_called()
 
     def test_shutdown_disarms_before_closing_the_backend(self):
@@ -546,6 +566,25 @@ class TestExitWatcherLifecycle(unittest.TestCase):
             p.shutdown()
         self.assertEqual(order, ["disarm", "close"])
         self.assertIsNone(p._watcher_state_path)
+
+    def test_shutdown_after_a_handoff_neither_disarms_nor_unregisters(self):
+        # Both would sabotage the worker: disarming deletes the state it is
+        # closing from, and unregistering drops the agent count to zero while its
+        # improve is still running, letting the watchdog retire the server.
+        p = self._armed_provider()
+        p._close_handed_off = True
+        with mock.patch.object(provider_mod.exit_watcher, "disarm") as disarm:
+            p.shutdown()
+        disarm.assert_not_called()
+        self.assertIs(p._backend.only_call("close")["unregister"], False)
+        self.assertIsNotNone(p._watcher_state_path)
+
+    def test_a_switch_after_a_handoff_leaves_the_workers_state_alone(self):
+        p = self._armed_provider()
+        p._close_handed_off = True
+        with mock.patch.object(provider_mod.exit_watcher, "update") as update:
+            p.on_session_switch("next-session")
+        update.assert_not_called()
 
 
 class TestConfigModes(unittest.TestCase):
