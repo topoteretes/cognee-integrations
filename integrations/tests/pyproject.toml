@@ -1,0 +1,20 @@
+[project]
+name = "cognee-integrations-shared-tests"
+version = "0.1.0"
+description = "Shared test harness for the claude-code and codex Cognee integrations"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+# Test-only project: nothing to build or install.
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-httpserver>=1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

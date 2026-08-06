@@ -1,14 +1,16 @@
 """State isolation: redirect all plugin state into a per-test temporary HOME.
 
-The hook scripts derive their config/state dir from ``Path.home()/".cognee-plugin"``
-as **import-time constants**, resolved from ``$HOME`` (POSIX) / ``USERPROFILE``
-(Windows). So isolation must set HOME *before* those constants are bound:
+The hook scripts derive their config/state dirs from ``Path.home()`` as
+**import-time constants** (``~/.cognee-plugin[/...]`` in config.py /
+_plugin_common.py, ``~/.cognee`` in _env_file.py / _plugin_common.py), resolved
+from ``$HOME`` (POSIX) / ``USERPROFILE`` (Windows). So isolation must set HOME
+*before* those constants are bound:
 
   - end-to-end (subprocess): set HOME in the child's env — done here in ``run_hook``.
   - unit (in-process import): set HOME, then import the module fresh — done here in
     ``load_suite_module``.
 
-Nothing ever touches the real ~/.cognee-plugin.
+Nothing ever touches the real ~/.cognee-plugin or ~/.cognee.
 """
 
 from __future__ import annotations
@@ -24,8 +26,30 @@ from typing import Any
 
 from .suites import Suite
 
-#: Module names the suites expose under their scripts dir.
-ISOLATED_MODULES = ("config", "_plugin_common")
+#: Module names the suites expose under their scripts dir. All carry import-time
+#: state (dir constants, env reads), so they are popped/reloaded together.
+ISOLATED_MODULES = (
+    "config",
+    "_plugin_common",
+    "_cognee_client",
+    "_env_file",
+    "_proc",
+    "_recall_http",
+    "_remember_http",
+)
+
+#: Env vars that make hook subprocesses deterministic in tests:
+#:   - COGNEE_IDLE_DISABLED suppresses the background idle/exit watcher spawns
+#:     (store-user-prompt.py) whose extra requests are timing-dependent;
+#:   - COGNEE_UPDATE_CHECK=off stops the update checker from calling
+#:     raw.githubusercontent.com;
+#:   - COGNEE_LAZY_BOOTSTRAP=0 makes SessionStart bootstrap synchronously
+#:     instead of via a detached worker that can outlive the test.
+DETERMINISTIC_ENV = {
+    "COGNEE_IDLE_DISABLED": "1",
+    "COGNEE_UPDATE_CHECK": "off",
+    "COGNEE_LAZY_BOOTSTRAP": "0",
+}
 
 
 def build_env(
@@ -35,20 +59,24 @@ def build_env(
     service_url: str | None = None,
     api_key: str | None = None,
     cwd: Path | str | None = None,
-    disable_idle_watcher: bool = True,
+    deterministic: bool = True,
     extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Build a subprocess environment with HOME redirected into ``home``."""
+    """Build a subprocess environment with HOME redirected into ``home``.
+
+    ``service_url`` is injected as ``COGNEE_BASE_URL`` (the var config.py's
+    _ENV_MAP reads) and also as ``COGNEE_PLATFORM_API_URL`` so billing calls
+    (credits-refresh) can never escape to the real cloud platform API.
+    """
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["USERPROFILE"] = str(home)  # Windows
     env[suite.cwd_env] = str(cwd if cwd is not None else home)
-    if disable_idle_watcher:
-        # Suppress the background idle/exit watcher subprocesses unless a test
-        # specifically wants them (keeps request logs deterministic).
-        env["COGNEE_IDLE_DISABLED"] = "1"
+    if deterministic:
+        env.update(DETERMINISTIC_ENV)
     if service_url is not None:
-        env["COGNEE_SERVICE_URL"] = service_url
+        env["COGNEE_BASE_URL"] = service_url
+        env.setdefault("COGNEE_PLATFORM_API_URL", service_url)
     if api_key is not None:
         env["COGNEE_API_KEY"] = api_key
     if extra:
@@ -107,7 +135,7 @@ def load_suite_module(
     home: Path | str,
     monkeypatch,
 ) -> ModuleType:
-    """Import a suite module (``config`` / ``_plugin_common``) under isolated HOME.
+    """Import a suite module (see ``ISOLATED_MODULES``) under isolated HOME.
 
     The module's dir constants are re-evaluated against ``home`` because the
     import happens after HOME is set. The ``monkeypatch`` fixture handles env and
@@ -119,6 +147,8 @@ def load_suite_module(
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    for key, value in DETERMINISTIC_ENV.items():
+        monkeypatch.setenv(key, value)
     # Suite scripts dir must resolve first so sibling imports (e.g. `import config`)
     # bind to this suite. monkeypatch.syspath_prepend restores on teardown.
     monkeypatch.syspath_prepend(str(suite.scripts_dir))

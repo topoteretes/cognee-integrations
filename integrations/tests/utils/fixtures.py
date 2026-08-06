@@ -1,7 +1,6 @@
 """Pytest fixtures wiring the shared infrastructure together.
 
-Registered as a plugin by ``integrations/tests/conftest.py``. Tests written in
-later tasks consume these fixtures; task 1 ships only the harness.
+Registered as a plugin by ``integrations/tests/conftest.py``.
 
 Key fixtures:
   - ``suite``            : parametrized over claude-code and codex
@@ -9,7 +8,7 @@ Key fixtures:
   - ``project_dir``      : isolated working dir (the hook ``cwd``)
   - ``mock_server``      : running MockCogneeServer (ephemeral port)
   - ``run_hook``         : run a hook script as a subprocess (end-to-end)
-  - ``isolated_modules`` : import a suite's config/_plugin_common in-process (unit)
+  - ``isolated_modules`` : import a suite's script modules in-process (unit)
   - ``payloads``         : the payload-builder module
 """
 
@@ -27,6 +26,10 @@ from utils.isolation import run_hook as _run_hook
 from utils.mock_cognee import MockCogneeServer
 from utils.suites import ALL_SUITES, Suite
 
+#: API key run_hook injects by default; mock_server pre-marks it valid so the
+#: happy path needs no per-test identity seeding.
+DEFAULT_TEST_API_KEY = "test-api-key"
+
 
 @pytest.fixture(params=ALL_SUITES, ids=lambda s: s.name)
 def suite(request) -> Suite:
@@ -36,7 +39,7 @@ def suite(request) -> Suite:
 
 @pytest.fixture
 def temp_home(tmp_path: Path) -> Path:
-    """A per-test HOME. All plugin state (~/.cognee-plugin) lands under here."""
+    """A per-test HOME. All plugin state (~/.cognee-plugin, ~/.cognee) lands here."""
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
     return home
@@ -55,12 +58,14 @@ def mock_server():
     """A running mock Cognee server on an ephemeral free port.
 
     Starts before the test and is torn down afterwards even on failure (yield
-    fixture finalization).
+    fixture finalization). The default run_hook API key is pre-seeded as valid.
     """
     server = HTTPServer(host="localhost", port=0)
     server.start()
     try:
-        yield MockCogneeServer(server)
+        mock = MockCogneeServer(server)
+        mock.identity.seed_api_key(DEFAULT_TEST_API_KEY)
+        yield mock
     finally:
         server.stop()
 
@@ -76,7 +81,7 @@ def run_hook(temp_home: Path, project_dir: Path):
     """Return a callable that runs a hook script as a subprocess (end-to-end).
 
     Usage: ``run_hook(suite, "session-start.py", stdin=payloads.session_start(),
-    service_url=mock_server.url)``.
+    service_url=mock_server.url)``. The URL is injected as COGNEE_BASE_URL.
     """
 
     def _call(
@@ -85,7 +90,7 @@ def run_hook(temp_home: Path, project_dir: Path):
         *args: str,
         stdin=None,
         service_url: str | None = None,
-        api_key: str | None = "test-api-key",
+        api_key: str | None = DEFAULT_TEST_API_KEY,
         env: dict | None = None,
         timeout: float = 30.0,
         python: str | None = None,

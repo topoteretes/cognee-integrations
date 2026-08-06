@@ -1,22 +1,28 @@
 """Stateful in-memory fake of Cognee's auth / agent / dataset endpoints.
 
-Reproduces the full SessionStart identity flow so the real client branch logic is
-exercised end to end:
+Reproduces the current single-principal-key identity flow the hooks run
+(session-start.py `_resolve_single_principal_key` and friends):
 
-  login -> owner API key (reuse or create) -> agent create (incl. 409 -> list ->
-  delete -> retry) -> users/me key validation -> register -> POST /datasets.
+  env COGNEE_API_KEY -> cached key -> POST /auth/login (form) ->
+  GET /auth/api-keys (cookie, reuse) -> POST /auth/api-keys (mint) ->
+  GET /users/me (key probe) -> POST /agents/register ->
+  GET /agents/connections/me -> POST /agents/unregister at SessionEnd.
+
+The legacy per-agent bootstrap (auth/register, agents/create with the
+409 -> list -> delete -> retry dance) was removed from the runtime and is
+deliberately absent here.
 
 The class is transport-agnostic: each method takes already-parsed inputs and
 returns ``(status_code, body)``. ``mock_cognee`` adapts requests to it.
 
 Field names mirror the real backend exactly (the client breaks otherwise):
-  - /auth/login            -> {"access_token": <jwt>}
-  - /auth/register         -> {"id": <uuid>} (201) or 409
-  - /auth/api-keys  (GET)  -> [{"key": <k>}]
-  - /auth/api-keys  (POST) -> {"key": <k>}
-  - /agents/create         -> {"agentId": ..., "agentApiKey": ...}  (camelCase!)
-  - /agents/list           -> [{"agentEmail": "<n>@cognee.agent", "agentId": ...}]
-  - /users/me              -> {"id": ...} (200) or 401
+  - /auth/login             -> {"access_token": <jwt>}
+  - /auth/api-keys  (GET)   -> [{"key": <k>}]           (keys[0].key is reused)
+  - /auth/api-keys  (POST)  -> {"key": <k>}
+  - /users/me               -> {"id": ...} (200) or 401
+  - /agents/unregister      -> {"activeAgents": <n>}
+  - /agents/connections/me  -> {"agent": {"agent_session_name", "user_id",
+                                          "tenant_id", "status"}}
 """
 
 from __future__ import annotations
@@ -26,8 +32,6 @@ import itertools
 import json
 from typing import Any
 
-_AGENT_EMAIL_SUFFIX = "@cognee.agent"
-
 
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
@@ -36,8 +40,8 @@ def _b64url(raw: bytes) -> str:
 def make_jwt(sub: str) -> str:
     """A structurally valid (unsigned) JWT whose payload carries ``sub``.
 
-    The client reads ``sub`` via base64-decoding the middle segment without
-    verifying the signature, so three dot-separated segments suffice.
+    Three dot-separated base64 segments, so any client that decodes the middle
+    segment without verifying the signature can read ``sub``.
     """
     header = _b64url(json.dumps({"alg": "none", "typ": "JWT"}).encode())
     payload = _b64url(json.dumps({"sub": sub}).encode())
@@ -47,8 +51,12 @@ def make_jwt(sub: str) -> str:
 class IdentityFake:
     """Holds identity state for one test and answers identity endpoints.
 
-    Defaults to the happy path (any login accepted, clean agent creation). Use the
-    ``seed_*`` / ``force_*`` helpers to drive a specific branch.
+    Defaults to the happy path (any login accepted, key minted on demand). Use
+    the ``seed_*`` / knob attributes to drive a specific branch:
+      - ``seed_owner_key``   -> GET /auth/api-keys returns it, POST mint skipped
+      - ``invalidate_key``   -> GET /users/me answers 401 (re-bootstrap path)
+      - ``reject_login``     -> POST /auth/login answers 401
+      - ``tenant_id``        -> surfaced in /agents/connections/me
     """
 
     def __init__(self) -> None:
@@ -56,15 +64,16 @@ class IdentityFake:
         self.users: dict[str, dict[str, Any]] = {}  # email -> {password, id}
         self.jwt_to_email: dict[str, str] = {}
         self.user_api_keys: dict[str, list[dict[str, str]]] = {}  # email -> [{"key": k}]
-        # api_key -> {"owner": email | None, "agent": name | None, "valid": bool}
+        # api_key -> {"owner": email, "valid": bool}
         self.valid_keys: dict[str, dict[str, Any]] = {}
-        self.agents: dict[str, dict[str, str]] = {}  # name -> {agentId, agentApiKey, agentEmail}
-        self.agent_id_to_name: dict[str, str] = {}
         self.datasets: dict[str, dict[str, str]] = {}  # name -> {id, name}
+        # agent_session_name -> {"status": "active", ...}; last registered wins
+        self.registered_agents: dict[str, dict[str, Any]] = {}
+        self.current_agent: str = ""
 
         # knobs
         self.reject_login = False
-        self.force_register_conflict = False
+        self.tenant_id = "tenant-test"
 
     # -- id helpers --------------------------------------------------------
     def _new_id(self, prefix: str) -> str:
@@ -80,21 +89,14 @@ class IdentityFake:
         self.seed_user(email)
         key = key or self._new_id("ownerkey")
         self.user_api_keys[email].append({"key": key})
-        self.valid_keys[key] = {"owner": email, "agent": None, "valid": True}
+        self.valid_keys[key] = {"owner": email, "valid": True}
         return key
 
-    def seed_agent(self, name: str, api_key: str | None = None) -> dict[str, str]:
-        """Pre-create an agent so the next /agents/create returns 409."""
-        api_key = api_key or self._new_id("agentkey")
-        record = {
-            "agentId": self._new_id("agent"),
-            "agentApiKey": api_key,
-            "agentEmail": f"{name}{_AGENT_EMAIL_SUFFIX}",
-        }
-        self.agents[name] = record
-        self.agent_id_to_name[record["agentId"]] = name
-        self.valid_keys[api_key] = {"owner": None, "agent": name, "valid": True}
-        return record
+    def seed_api_key(self, key: str = "test-api-key", email: str = "default_user@example.com"):
+        """Mark an arbitrary key (e.g. the one run_hook injects) as valid."""
+        self.seed_user(email)
+        self.valid_keys[key] = {"owner": email, "valid": True}
+        return key
 
     def invalidate_key(self, key: str) -> None:
         """Mark a key invalid so GET /users/me returns 401 (re-bootstrap path)."""
@@ -110,12 +112,6 @@ class IdentityFake:
         self.jwt_to_email[jwt] = username
         return 200, {"access_token": jwt}
 
-    def register(self, email: str) -> tuple[int, dict[str, Any]]:
-        if self.force_register_conflict or email in self.users:
-            return 409, {"detail": "user already exists"}
-        self.seed_user(email)
-        return 201, {"id": self.users[email]["id"]}
-
     def list_api_keys(self, auth_token: str | None) -> tuple[int, list[dict[str, str]]]:
         email = self.jwt_to_email.get(auth_token or "")
         return 200, list(self.user_api_keys.get(email or "", []))
@@ -126,45 +122,53 @@ class IdentityFake:
             return 401, {"detail": "not authenticated"}
         key = self._new_id("apikey")
         self.user_api_keys.setdefault(email, []).append({"key": key})
-        self.valid_keys[key] = {"owner": email, "agent": None, "valid": True}
+        self.valid_keys[key] = {"owner": email, "valid": True}
         return 200, {"key": key}
 
     def users_me(self, api_key: str | None) -> tuple[int, dict[str, Any]]:
         entry = self.valid_keys.get(api_key or "")
         if entry and entry["valid"]:
             owner = entry.get("owner")
-            user_id = self.users.get(owner, {}).get("id") if owner else entry.get("agent")
+            user_id = self.users.get(owner, {}).get("id") if owner else ""
             return 200, {"id": user_id or "user"}
         return 401, {"detail": "invalid api key"}
 
-    def agents_create(self, name: str) -> tuple[int, dict[str, Any]]:
-        if name in self.agents:
-            return 409, {"detail": "agent already exists"}
-        record = self.seed_agent(name)
-        return 200, {"agentId": record["agentId"], "agentApiKey": record["agentApiKey"]}
-
-    def agents_list(self) -> tuple[int, list[dict[str, str]]]:
-        return 200, [
-            {"agentEmail": rec["agentEmail"], "agentId": rec["agentId"]}
-            for rec in self.agents.values()
-        ]
-
-    def agents_delete(self, agent_id: str) -> tuple[int, dict[str, Any]]:
-        name = self.agent_id_to_name.pop(agent_id, None)
+    def agents_register(self, payload: dict | None = None) -> tuple[int, dict[str, Any]]:
+        payload = payload or {}
+        name = str(payload.get("agent_session_name") or "")
+        record = {
+            "agent_session_name": name,
+            "session_id": str(payload.get("session_id") or ""),
+            "status": "active",
+        }
         if name:
-            rec = self.agents.pop(name, None)
-            if rec:
-                self.valid_keys.pop(rec["agentApiKey"], None)
-        return 200, {}
+            self.registered_agents[name] = record
+            self.current_agent = name
+        return 200, {"registered": True, "activeAgents": len(self.registered_agents), **record}
 
-    def agents_register(self) -> tuple[int, dict[str, Any]]:
-        return 200, {"registered": True, "activeAgents": 1}
+    def agents_unregister(self, payload: dict | None = None) -> tuple[int, dict[str, Any]]:
+        name = str((payload or {}).get("agent_session_name") or "")
+        self.registered_agents.pop(name, None)
+        if self.current_agent == name:
+            self.current_agent = ""
+        return 200, {"activeAgents": len(self.registered_agents)}
 
-    def agents_unregister(self) -> tuple[int, dict[str, Any]]:
-        return 200, {"activeAgents": 0}
-
-    def agents_connections_me(self) -> tuple[int, dict[str, Any]]:
-        return 200, {"activeAgents": 0, "agents": []}
+    def agents_connections_me(
+        self, agent_session_name: str | None = None
+    ) -> tuple[int, dict[str, Any]]:
+        name = agent_session_name or self.current_agent
+        record = self.registered_agents.get(name or "")
+        if not record:
+            return 200, {"agent": None}
+        owner = next(iter(self.users), "")
+        agent = {
+            "agent_session_name": record["agent_session_name"],
+            "session_id": record["session_id"],
+            "user_id": self.users.get(owner, {}).get("id", "user"),
+            "tenant_id": self.tenant_id,
+            "status": record["status"],
+        }
+        return 200, {"agent": agent}
 
     def datasets_create(self, name: str) -> tuple[int, dict[str, Any]]:
         new = name not in self.datasets

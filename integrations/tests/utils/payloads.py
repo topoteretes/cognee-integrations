@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-DEFAULT_SESSION_ID = "cc_test_session"
+DEFAULT_SESSION_ID = "test_session"
 DEFAULT_CWD = "/tmp/cognee-test-project"
 
 
