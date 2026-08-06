@@ -65,6 +65,7 @@ struct SourceConnection: Decodable, Identifiable, Equatable {
     let ok: Bool?  // nil until the first sync reports in
     let detail: String?
     let at: Double?  // unix time of the last sync
+    let scope: [String]?  // what "connected" covers: channels, repos, roots
     let items: [String]?  // what it indexed: folder roots / staged documents
     let count: Int?  // total item count (items is display-capped)
 

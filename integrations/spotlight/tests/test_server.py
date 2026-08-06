@@ -209,6 +209,9 @@ async def test_sources_describe_themselves(tmp_path, monkeypatch):
     # sources report what they indexed: folder roots / staged documents
     for source in data["sources"]:
         assert "items" in source and "count" in source
+    # ...and what "connected" actually covers (channels, repos, roots)
+    assert by_name["slack"]["scope"] == ["#product", "#eng-incidents"]
+    assert by_name["gdrive"]["scope"] == ["My Drive — shared docs"]
 
 
 async def test_whisper_surfaces_related_memory(client, workspace):

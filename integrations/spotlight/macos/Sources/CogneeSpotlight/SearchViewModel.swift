@@ -37,6 +37,8 @@ final class SearchViewModel: ObservableObject {
     /// Chip that was clicked open: its indexed items + last sync show in a
     /// detail row under the search field.
     @Published var connectionDetail: SourceConnection?
+    /// Chip under the pointer: a mini dropdown lists what's connected there.
+    @Published var hoveredConnection: SourceConnection?
     /// The current proactive suggestion (repeat-lookup nudge, expert share).
     @Published var assistantHint: AssistantHint?
     /// This backend's identity, so expert suggestions skip yourself.
@@ -151,6 +153,7 @@ final class SearchViewModel: ObservableObject {
         selectedIndex = 0
         isAsking = false
         connectionDetail = nil
+        hoveredConnection = nil
         assistantHint = nil
         threadID = UUID().uuidString  // a fresh panel is a fresh conversation
         focusGeneration += 1
