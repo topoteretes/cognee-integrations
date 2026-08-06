@@ -36,7 +36,19 @@ Python package with the `hermes_agent.plugins` entry point.
 
 ### 1. Install the plugin
 
-Until the PyPI release, install from a checkout of this repository:
+Via pip (recommended):
+
+```bash
+pip install cognee-integration-hermes-agent
+cognee-hermes-install
+```
+
+Hermes discovers plugins by scanning `~/.hermes/plugins/`, so the second
+command copies the plugin there — `pip install` alone is not enough, and after
+a `pip install -U` you re-run `cognee-hermes-install` to update the copy
+(`hermes cognee status` reminds you when the two drift).
+
+Or from a checkout of this repository:
 
 ```bash
 git clone https://github.com/topoteretes/cognee-integrations.git
@@ -92,17 +104,26 @@ tenant, authenticated with your API key via `X-Api-Key`.
 > move an existing local install to the cloud. `hermes memory setup` (or
 > `hermes cognee setup`) rewrites both files consistently.
 
-## PyPI Availability
+## How the pip install works
 
-`cognee-integration-hermes-agent` is not currently published on PyPI. Use the
-local installation steps above until a release is available.
+Hermes has no entry-point plugin discovery (yet) — it scans
+`$HERMES_HOME/plugins/` for directories with a `plugin.yaml`. The wheel
+therefore ships the plugin-root files as package data and provides the
+`cognee-hermes-install` console script, which materializes the exact directory
+shape the scanner expects. Because Hermes runs that *copy*, upgrading is always
+two steps: `pip install -U cognee-integration-hermes-agent`, then
+`cognee-hermes-install` again.
 
-The project is prepared for future package distribution and exposes:
+The package also declares the entry point Hermes would use if it grows native
+discovery, at which point the copy step becomes unnecessary:
 
 ```toml
 [project.entry-points."hermes_agent.plugins"]
 cognee = "cognee_integration_hermes"
 ```
+
+Releases are published from CI on `hermes-agent-v*` tags
+(`.github/workflows/hermes-agent-publish.yml`).
 
 ## Configuration
 

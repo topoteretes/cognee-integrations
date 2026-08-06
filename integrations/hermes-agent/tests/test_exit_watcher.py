@@ -144,6 +144,25 @@ class TestStateFileApi(unittest.TestCase):
         proc.wait()
         self.assertFalse(ew.pid_alive(proc.pid))
 
+    def test_pid_alive_rejects_group_and_garbage_pids(self):
+        # POSIX gives pid<=0 group/broadcast semantics — os.kill(-1, 0) would
+        # "succeed" and read as alive forever. Never wait on those.
+        for bogus in (0, -1, None, "not-a-pid"):
+            self.assertFalse(ew.pid_alive(bogus))
+
+    def test_pid_alive_on_windows_never_signals(self):
+        # On Windows os.kill implements non-console signals as TerminateProcess:
+        # "probing" with it would kill the watched Hermes. The Windows path must
+        # route through the process-handle query and never touch os.kill.
+        with (
+            mock.patch.object(ew, "_WINDOWS", True),
+            mock.patch.object(ew, "_pid_alive_windows", return_value=True) as win_probe,
+            mock.patch.object(ew.os, "kill") as kill,
+        ):
+            self.assertTrue(ew.pid_alive(1234))
+        win_probe.assert_called_once_with(1234)
+        kill.assert_not_called()
+
     def test_non_positive_pids_are_not_alive(self):
         # os.kill() reads these as process groups — 0 is "my group", -1 is
         # "everything I may signal" — so a bare os.kill would answer "alive" and

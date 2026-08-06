@@ -48,6 +48,7 @@ _SHARED_KEY_CACHE = Path.home() / ".cognee-plugin" / "api_key.json"
 
 _DEFAULT_POLL_SECONDS = 2.0
 _UNREGISTER_TIMEOUT = 15.0
+_WINDOWS = os.name == "nt"
 # How long a finalizer will hold the agent registration open waiting for Hermes to
 # exit, once its improve is done. Only ever waited out if Hermes outlives its own
 # session end; normally the parent is long gone and this returns immediately.
@@ -79,17 +80,23 @@ def write_state(state_path, state):
 
 
 def pid_alive(pid):
+    """True when *pid* is a live process.
+
+    POSIX probes with signal 0, which touches nothing. Windows MUST NOT go
+    through ``os.kill``: CPython implements non-console signals there as
+    ``OpenProcess`` + ``TerminateProcess`` — "probing" would kill the very
+    Hermes this watcher is guarding — so it queries the process handle instead.
+    """
     try:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
-    # os.kill() reads non-positive pids as process *groups* — 0 is "my group" and
-    # -1 is "every process I may signal", both of which would answer "alive" and
-    # leave a watcher polling a parent that does not exist. A state file without a
-    # real pid is malformed; treat it as a parent already gone so the worker
-    # closes the session and exits rather than spinning forever.
     if pid <= 0:
+        # POSIX gives pid<=0 group/broadcast semantics; never treat those as
+        # "a process worth waiting on".
         return False
+    if _WINDOWS:
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -99,6 +106,37 @@ def pid_alive(pid):
     except Exception:
         return False
     return True
+
+
+def _pid_alive_windows(pid):
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    ERROR_ACCESS_DENIED = 5
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            # Access denied means the pid exists but belongs to someone else.
+            return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            # Documented Windows ambiguity: a process that exited with the
+            # literal code 259 reads as alive. Acceptable for a 2s poll —
+            # the watcher just fires one poll later than it could have.
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        # An identity we cannot determine is treated as alive: firing improve/
+        # unregister against a session that is still running is worse than
+        # firing late.
+        return True
 
 
 def marker_path(state_path):
