@@ -44,6 +44,11 @@ class LocalFolderSource:
     def __init__(self, indexer: Any) -> None:
         self._indexer = indexer
 
+    @property
+    def scope(self) -> list[str]:
+        """What exactly is connected: the watched roots."""
+        return list(self._indexer._catalog.roots)
+
     async def sync(self) -> str:
         if not self._indexer._catalog.roots:
             return "no folders indexed yet"
@@ -70,6 +75,11 @@ class SlackSource:
         self.token = token
         self.channels = channels
         self._client = client  # injectable for tests
+
+    @property
+    def scope(self) -> list[str]:
+        """What exactly is connected: the configured channels."""
+        return [c if c.startswith("#") else f"#{c}" for c in self.channels]
 
     async def sync(self) -> str:
         written = 0
@@ -129,6 +139,11 @@ class GoogleDriveSource:
         self.token = token
         self.query = query or "trashed = false"
         self._client = client
+
+    @property
+    def scope(self) -> list[str]:
+        """What exactly is connected: the Drive file query."""
+        return [f"query: {self.query}"]
 
     async def sync(self) -> str:
         listing = await self._get(
@@ -197,6 +212,11 @@ class GitHubSource:
         self.token = token
         self.repos = repos
         self._client = client  # injectable for tests
+
+    @property
+    def scope(self) -> list[str]:
+        """What exactly is connected: the repositories."""
+        return list(self.repos)
 
     @property
     def datasets(self) -> dict[str, str]:
@@ -298,12 +318,14 @@ class MockConnectorSource:
         label: str = "",
         icon: str = "",
         datasets: Optional[dict[str, str]] = None,
+        scope: Optional[list[str]] = None,
     ) -> None:
         self.name = name
         self.staging = staging
         self.files = files  # keys may contain subdirs, e.g. "repo/issue-1.md"
         self.label = label or name.title()
         self.icon = icon or "puzzlepiece.extension"
+        self.scope = list(scope or [])  # what "connected" means for the demo
         # relative subdir -> dataset, resolved against staging like the real
         # connector's mapping (so mock GitHub lands in github-<repo> too)
         self.datasets = {str(staging / sub): ds for sub, ds in (datasets or {}).items()}
@@ -448,18 +470,19 @@ class SourceManager:
         # Each mock borrows the real connector's label/icon (and, for GitHub,
         # its dataset-per-repo layout) so it renders identically in the app.
         mocks = {
-            "slack": (MOCK_SLACK_FILES, SlackSource, {}),
-            "gdrive": (MOCK_GDRIVE_FILES, GoogleDriveSource, {}),
+            "slack": (MOCK_SLACK_FILES, SlackSource, {}, ["#product", "#eng-incidents"]),
+            "gdrive": (MOCK_GDRIVE_FILES, GoogleDriveSource, {}, ["My Drive — shared docs"]),
             "github": (
                 MOCK_GITHUB_FILES,
                 GitHubSource,
                 {_slug(MOCK_GITHUB_REPO): f"github-{_slug(MOCK_GITHUB_REPO)}"},
+                [MOCK_GITHUB_REPO],
             ),
         }
         configured = {s.name for s in manager.sources}
         for name in (x.strip().lower() for x in os.getenv("SPOTLIGHT_MOCK_SOURCES", "").split(",")):
             if name in mocks and name not in configured:
-                files, real, datasets = mocks[name]
+                files, real, datasets, scope = mocks[name]
                 manager.sources.append(
                     MockConnectorSource(
                         name,
@@ -468,6 +491,7 @@ class SourceManager:
                         label=real.label,
                         icon=real.icon,
                         datasets=datasets,
+                        scope=scope,
                     )
                 )
         return manager

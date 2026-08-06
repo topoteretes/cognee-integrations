@@ -118,6 +118,7 @@ def create_app(
                     "ok": status.get("ok"),
                     "detail": status.get("detail", ""),
                     "at": status.get("at"),
+                    "scope": list(getattr(s, "scope", [])),
                     "items": items,
                     "count": count,
                 }

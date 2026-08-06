@@ -96,6 +96,16 @@ struct SearchView: View {
                 )
         )
         .shadow(color: .black.opacity(0.38), radius: 34, y: 14)
+        .overlay(alignment: .topTrailing) {
+            // hover dropdown floats over whatever is below the field
+            if let hovered = model.hoveredConnection {
+                connectionDropdown(hovered)
+                    .offset(x: -12, y: 54)
+                    .transition(.opacity)
+                    .zIndex(10)
+                    .allowsHitTesting(false)
+            }
+        }
         .padding(.horizontal, 40)
         .padding(.top, 40)  // shadow headroom
         // Fixed canvas, card pinned to the top: the window never needs to
@@ -132,13 +142,19 @@ struct SearchView: View {
                 .focused($fieldFocused)
             if !model.connections.isEmpty {
                 // what this search draws from: one quiet icon per connection;
-                // click opens what it indexed and when it last synced
+                // hover drops down what's connected, click opens the receipts
                 HStack(spacing: 9) {
                     ForEach(model.connections) { connection in
                         ConnectionBadge(
                             connection: connection,
                             isOpen: model.connectionDetail?.id == connection.id
-                        )
+                        ) { inside in
+                            if inside {
+                                model.hoveredConnection = connection
+                            } else if model.hoveredConnection?.id == connection.id {
+                                model.hoveredConnection = nil
+                            }
+                        }
                         .onTapGesture { model.toggleConnectionDetail(connection) }
                     }
                 }
@@ -147,6 +163,60 @@ struct SearchView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 50)
+    }
+
+    /// The hover mini-dropdown: what exactly this connection covers —
+    /// channels for Slack, repositories for GitHub, watched roots for
+    /// Folders — plus sync freshness and the indexed count.
+    private func connectionDropdown(_ connection: SourceConnection) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text(connection.label)
+                    .font(.system(size: 12, weight: .semibold))
+                Circle()
+                    .fill(connection.ok == true ? Color.green : Color.orange)
+                    .frame(width: 5, height: 5)
+                Spacer()
+                if !connection.lastSyncText.isEmpty {
+                    Text(connection.lastSyncText)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Divider().opacity(0.5)
+            if let scope = connection.scope, !scope.isEmpty {
+                ForEach(scope, id: \.self) { entry in
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.cognee.opacity(0.7))
+                            .frame(width: 3.5, height: 3.5)
+                        Text((entry as NSString).abbreviatingWithTildeInPath)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            } else {
+                Text("Nothing configured yet.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            if let count = connection.count, count > 0 {
+                Text("\(count) document\(count == 1 ? "" : "s") indexed · click for the list")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 1)
+            }
+        }
+        .padding(12)
+        .frame(width: 280, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(.white.opacity(0.15), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.3), radius: 16, y: 6)
     }
 
     /// The clicked chip's contents: every root/document that connection has
@@ -405,54 +475,38 @@ struct SearchView: View {
 // MARK: - Connection badge
 
 /// A data source feeding memory: its icon plus a status dot (green =
-/// connected, amber = sync error, gray = hasn't synced yet). Hovering
-/// expands the chip inline to name it — system tooltips never appear on a
-/// non-activating panel (the app stays inactive), so the label must live
-/// in the view itself. Icon and label come from the backend's source
-/// description, so any new connector renders here untouched.
+/// connected, amber = sync error, gray = hasn't synced yet). Hover raises
+/// the mini-dropdown (system tooltips never appear on a non-activating
+/// panel); click opens the full detail row. Icon and label come from the
+/// backend's source description, so any new connector renders untouched.
 private struct ConnectionBadge: View {
     let connection: SourceConnection
     var isOpen: Bool = false
+    var onHoverChange: (Bool) -> Void = { _ in }
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: symbolName)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isOpen ? AnyShapeStyle(Color.cognee) : AnyShapeStyle(.secondary))
-                .overlay(alignment: .bottomTrailing) {
-                    Circle()
-                        .fill(dotColor)
-                        .frame(width: 5, height: 5)
-                        .offset(x: 2.5, y: 2.5)
-                }
-            if hovering {
-                Text(hoverText)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .transition(.opacity)
+        Image(systemName: symbolName)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(isOpen ? AnyShapeStyle(Color.cognee) : AnyShapeStyle(.secondary))
+            .overlay(alignment: .bottomTrailing) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 5, height: 5)
+                    .offset(x: 2.5, y: 2.5)
             }
-        }
-        .padding(.horizontal, hovering ? 7 : 0)
-        .padding(.vertical, hovering ? 3 : 0)
-        .background(
-            hovering || isOpen
-                ? AnyShapeStyle(.quaternary.opacity(0.5)) : AnyShapeStyle(.clear),
-            in: Capsule()
-        )
-        .contentShape(Capsule())
-        .onHover { inside in
-            withAnimation(.easeOut(duration: 0.12)) { hovering = inside }
-        }
-        .accessibilityLabel("\(connection.label): \(connection.statusText)")
-    }
-
-    private var hoverText: String {
-        var parts = ["\(connection.label) · \(connection.statusText)"]
-        if !connection.lastSyncText.isEmpty { parts.append(connection.lastSyncText) }
-        return parts.joined(separator: " · ")
+            .padding(5)
+            .background(
+                hovering || isOpen
+                    ? AnyShapeStyle(.quaternary.opacity(0.5)) : AnyShapeStyle(.clear),
+                in: Circle()
+            )
+            .contentShape(Circle())
+            .onHover { inside in
+                withAnimation(.easeOut(duration: 0.12)) { hovering = inside }
+                onHoverChange(inside)
+            }
+            .accessibilityLabel("\(connection.label): \(connection.statusText)")
     }
 
     /// The backend names an SF Symbol; fall back if this macOS lacks it.
