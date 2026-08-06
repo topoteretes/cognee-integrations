@@ -64,13 +64,7 @@ struct InboxView: View {
 
             Group {
                 if let item = model.selected {
-                    ScrollView {
-                        Text(item.body.isEmpty ? "(no content)" : item.body)
-                            .font(.system(size: 13, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
-                    }
+                    noteDetail(item)
                 } else if !model.statusText.isEmpty {
                     Text(model.statusText).foregroundStyle(.secondary).padding()
                 } else {
@@ -82,6 +76,66 @@ struct InboxView: View {
         }
         .frame(width: 720, height: 420)
         .onAppear { model.refresh() }
+    }
+
+    /// The note, read like a note: a header card (sender, layer, when) with a
+    /// copy button, then the body as rendered markdown instead of a raw dump.
+    private func noteDetail(_ item: HandoverItem) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                senderAvatar(item.sender)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text("from \(item.sender)")
+                        if let when = Self.relativeDate(item.created_at) {
+                            Text("· \(when)")
+                        }
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                layerBadge(item.layer)
+                CopyButton(text: item.body, help: "Copy note")
+            }
+            .padding(14)
+            Divider()
+            ScrollView {
+                Text(SearchView.markdown(item.body.isEmpty ? "*(no content)*" : item.body))
+                    .font(.system(size: 13.5, design: .serif))
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+            }
+        }
+    }
+
+    private func senderAvatar(_ sender: String) -> some View {
+        Circle()
+            .fill(Color.cognee.opacity(0.18))
+            .frame(width: 30, height: 30)
+            .overlay(
+                Text(String(sender.prefix(1)).uppercased())
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.cognee)
+            )
+    }
+
+    /// "2 days ago" from the tenant's ISO timestamp; nil when unparseable.
+    static func relativeDate(_ iso: String) -> String? {
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        guard let date = withFractional.date(from: iso) ?? plain.date(from: iso) else {
+            return nil
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 
     private func layerBadge(_ layer: String) -> some View {
