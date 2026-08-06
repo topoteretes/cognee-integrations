@@ -546,9 +546,9 @@ def _credits_segment() -> str:
     balance, marker fresh (``_CREDITS_STALE_SECONDS``), marker written for the
     server this session talks to, and not opted out. Balance is green —
     red once negative, which is exactly the state the user most needs to see
-    (a negative balance is real unfunded spend). The last-op cost is faint,
-    like the recall counters, and carries a ``~``: spend aggregates
-    asynchronously server-side, so the delta is an attribution, not an invoice.
+    (a negative balance is real unfunded spend). The last-op cost renders at
+    normal weight and carries a ``~``: spend aggregates asynchronously
+    server-side, so the delta is an attribution, not an invoice.
     """
     if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
         "0",
@@ -593,7 +593,10 @@ def _credits_segment() -> str:
         label = str(last_op.get("label") or "").strip()
         cost = last_op.get("cost_usd")
         if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            seg += f" \033[2m· last {label} ~${cost:,.2f}\033[0m"
+            # Normal weight (like the `cognee: <dataset>` text), NOT faint like
+            # the recall/saved counters: what the last operation cost is a
+            # first-class signal, not diagnostics.
+            seg += f" · last {label} ~${cost:,.2f}"
     return seg
 
 

@@ -4,8 +4,9 @@ balance + last-operation cost in the Claude Code status line (SDK-355).
 Rendering contract:
 
   * shape: ` · credits: $<n>.<nn>` in green (red when the balance is negative,
-    formatted `-$3.50`), optionally followed by a faint ` · last <op> ~$<n>.<nn>`,
-    both reset so no color bleeds into the rest of the bar;
+    formatted `-$3.50`), reset so no color bleeds, optionally followed by
+    ` · last <op> ~$<n>.<nn>` at normal weight (NOT faint — the cost is a
+    first-class signal, unlike the recall/saved diagnostics);
   * gated: cloud mode only, fresh marker only (`_CREDITS_STALE_SECONDS`), matching
     base_url only, `COGNEE_STATUSLINE_CREDITS=off` hides it;
   * a missing/malformed/balance-less marker renders nothing and never raises.
@@ -179,21 +180,19 @@ def test_negative_balance_renders_red_with_sign():
         assert sl._credits_segment() == f" · {_RED}credits: -$158.86{_RESET}"
 
 
-def test_last_op_appended_faint():
+def test_last_op_appended_normal_weight():
     marker = _fresh_marker(last_op={"label": "improve", "cost_usd": 0.14, "at": time.time()})
     with _Credits(marker):
-        assert sl._credits_segment() == (
-            f" · {_GREEN}credits: $14.23{_RESET} {_FAINT}· last improve ~$0.14{_RESET}"
-        )
+        seg = sl._credits_segment()
+        assert seg == f" · {_GREEN}credits: $14.23{_RESET} · last improve ~$0.14"
+        assert _FAINT not in seg, "last-op cost must not be faint"
 
 
 def test_turn_label_renders():
     # The Stop/StopFailure hook attributes the finished turn's spend as "turn".
     marker = _fresh_marker(last_op={"label": "turn", "cost_usd": 0.04, "at": time.time()})
     with _Credits(marker):
-        assert sl._credits_segment() == (
-            f" · {_GREEN}credits: $14.23{_RESET} {_FAINT}· last turn ~$0.04{_RESET}"
-        )
+        assert sl._credits_segment() == (f" · {_GREEN}credits: $14.23{_RESET} · last turn ~$0.04")
 
 
 def test_hooks_json_wires_credits_refresh_at_turn_end():
