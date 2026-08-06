@@ -37,7 +37,7 @@ export class CogneeApi implements ICredentialType {
   test: ICredentialTestRequest = {
     request: {
       baseURL: '={{$credentials.baseUrl}}',
-      url: '/api/health',
+      url: '/health',
       headers: {
         'X-Api-Key': '={{$credentials.apiKey}}',
       },

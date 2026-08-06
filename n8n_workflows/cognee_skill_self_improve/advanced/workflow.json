@@ -69,7 +69,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const runner = '\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve}/run_n8n_action.sh\"';\nconst quote = (value) => `'${String(value).replace(/'/g, `'\\\\''`)}'`;\nconst command = [\n  `COGNEE_SKILL_NAME=${quote($json.skill_name)}`,\n  `COGNEE_SKILL_SCORE=${quote($json.eval_score)}`,\n  `COGNEE_SKILL_SCORE_THRESHOLD=${quote($json.score_threshold)}`,\n  `COGNEE_SELF_IMPROVE_APPROVED=${quote($json.approved)}`,\n  `COGNEE_SELF_IMPROVE_APPLY=${quote($json.apply)}`,\n  `COGNEE_SELF_IMPROVE_SYNC_FILE=${quote($json.sync_file)}`,\n  runner,\n  'init-state',\n].join(' ');\nreturn [{ json: { ...$json, command } }];"
+        "jsCode": "const runner = '\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve/advanced}/run_n8n_action.sh\"';\nconst quote = (value) => `'${String(value).replace(/'/g, `'\\\\''`)}'`;\nconst command = [\n  `COGNEE_SKILL_NAME=${quote($json.skill_name)}`,\n  `COGNEE_SKILL_SCORE=${quote($json.eval_score)}`,\n  `COGNEE_SKILL_SCORE_THRESHOLD=${quote($json.score_threshold)}`,\n  `COGNEE_SELF_IMPROVE_APPROVED=${quote($json.approved)}`,\n  `COGNEE_SELF_IMPROVE_APPLY=${quote($json.apply)}`,\n  `COGNEE_SELF_IMPROVE_SYNC_FILE=${quote($json.sync_file)}`,\n  runner,\n  'init-state',\n].join(' ');\nreturn [{ json: { ...$json, command } }];"
       },
       "id": "cad48eb3-df36-4492-8acf-c2daf6ac0017",
       "name": "Build Init Command",
@@ -108,7 +108,7 @@
     },
     {
       "parameters": {
-        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve}/run_n8n_action.sh\" remember-skills"
+        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve/advanced}/run_n8n_action.sh\" remember-skills"
       },
       "id": "a94273c5-0373-4349-854f-59b9a0c9da81",
       "name": "Remember Skills",
@@ -134,7 +134,7 @@
     },
     {
       "parameters": {
-        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve}/run_n8n_action.sh\" run-agent"
+        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve/advanced}/run_n8n_action.sh\" run-agent"
       },
       "id": "ee4805c3-f6f2-4585-b35a-d44adee4f595",
       "name": "Run Skill Agent",
@@ -194,7 +194,7 @@
     },
     {
       "parameters": {
-        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve}/run_n8n_action.sh\" record-feedback"
+        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve/advanced}/run_n8n_action.sh\" record-feedback"
       },
       "id": "942accbd-462f-48a0-9ccf-336e421c3b18",
       "name": "Record Feedback Proposal",
@@ -220,7 +220,7 @@
     },
     {
       "parameters": {
-        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve}/run_n8n_action.sh\" review-packet"
+        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve/advanced}/run_n8n_action.sh\" review-packet"
       },
       "id": "87fe45ad-3499-4b72-a999-bb34f4edbdc9",
       "name": "Build Review Packet",
@@ -280,7 +280,7 @@
     },
     {
       "parameters": {
-        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve}/run_n8n_action.sh\" apply-proposal"
+        "command": "\"${COGNEE_SELF_IMPROVE_WORKFLOW_ROOT:-./n8n_workflows/cognee_skill_self_improve/advanced}/run_n8n_action.sh\" apply-proposal"
       },
       "id": "f5f390b8-a212-4a1c-9a60-f0bbd6d7f236",
       "name": "Apply Proposal",

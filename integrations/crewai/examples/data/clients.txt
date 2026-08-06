@@ -1,0 +1,10 @@
+We have signed a contract with the following company: "HealthBridge Systems". Company is in the healthcare industry. Start date is Feb 2023 and end date is Jan 2026. Contract value is £2.4M.
+We have signed a contract with the following company: "NovaCare Diagnostics". Company is in the healthcare industry. Start date is May 2024 and end date is Apr 2027. Contract value is £1.6M.
+We have signed a contract with the following company: "SkyPort Logistics". Company is in the logistics industry. Start date is Nov 2022 and end date is Oct 2026. Contract value is £3.1M.
+We have signed a contract with the following company: "BrightWave Energy". Company is in the renewable energy industry. Start date is Jul 2023 and end date is Jun 2028. Contract value is £7.8M.
+We have signed a contract with the following company: "Apex Finance Group". Company is in the financial services industry. Start date is Jan 2022 and end date is Dec 2025. Contract value is £2.2M.
+We have signed a contract with the following company: "AgroSphere Foods". Company is in the agriculture industry. Start date is Sep 2024 and end date is Aug 2029. Contract value is £4.9M.
+We have signed a contract with the following company: "Stellar Aerospace". Company is in the aerospace industry. Start date is Mar 2023 and end date is Feb 2027. Contract value is £9.2M.
+We have signed a contract with the following company: "MetroBuild Contractors". Company is in the construction industry. Start date is Oct 2022 and end date is Sep 2026. Contract value is £5.4M.
+We have signed a contract with the following company: "FutureLearn Academy". Company is in the education industry. Start date is Jun 2024 and end date is May 2027. Contract value is £980K.
+We have signed a contract with the following company: "BlueWave Media". Company is in the media & entertainment industry. Start date is Dec 2023 and end date is Nov 2026. Contract value is £1.3M.

@@ -1,7 +1,7 @@
 {
   "name": "cognee-local",
   "interface": {
-    "displayName": "Cognee Local Plugins"
+    "displayName": "Cognee Local"
   },
   "plugins": [
     {

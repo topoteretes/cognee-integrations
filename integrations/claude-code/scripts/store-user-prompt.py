@@ -20,38 +20,43 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     bump_save_counter,
+    drain_warmup_entries,
     get_session_key,
     hook_log,
     load_resolved,
     notify,
     quiet_hook_output,
+    refresh_credits,
     remember_pending_prompt,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
     resolve_user,
     server_ready_hint,
+    server_usable,
     set_session_key,
     touch_activity,
 )
+from _proc import pid_alive
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
-_STATE_DIR = Path.home() / ".cognee-plugin"
+_STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _WATCHER_PID = _STATE_DIR / "watcher.pid"
 _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _WATCHER_SCRIPT = Path(__file__).with_name("idle-watcher.py")
 
 
-def _load_session() -> tuple[str, str, str]:
+def _load_session() -> tuple[str, str, str, str]:
     resolved = load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
+    tenant_id = resolved.get("tenant_id", "")
     if not session_id or not dataset:
         config = load_config()
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
-    return session_id, dataset, user_id
+    return session_id, dataset, user_id, tenant_id
 
 
 def _watcher_alive() -> bool:
@@ -59,11 +64,10 @@ def _watcher_alive() -> bool:
         return False
     try:
         pid = int(_WATCHER_PID.read_text(encoding="utf-8").strip())
-        os.kill(pid, 0)
-        return True
     except Exception as exc:
         hook_log("prompt_watcher_alive_check_failed", {"error": str(exc)[:200]})
         return False
+    return pid_alive(pid)
 
 
 def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: dict) -> None:
@@ -85,7 +89,7 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
         "user_id": user_id,
         "session_key": os.environ.get("COGNEE_SESSION_KEY", ""),
         "config": {
-            "service_url": config.get("service_url", ""),
+            "base_url": config.get("base_url", ""),
             "llm_model": config.get("llm_model", ""),
             "dataset": dataset,
         },
@@ -126,7 +130,7 @@ def _prompt_context(payload: dict) -> str:
 
 
 async def _store(prompt: str, payload: dict):
-    session_id, dataset, user_id = _load_session()
+    session_id, dataset, user_id, tenant_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"event": "prompt"})
         return
@@ -141,13 +145,13 @@ async def _store(prompt: str, payload: dict):
         {
             "hook": "store-user-prompt",
             "mode": runtime["mode"],
-            "service_url": runtime.get("service_url", ""),
+            "base_url": runtime.get("base_url", ""),
             "url_source": runtime.get("url_source", ""),
             "key_source": runtime.get("key_source", ""),
             "api_key_present": runtime.get("api_key_present", False),
         },
     )
-    if runtime["mode"] == "local_sdk" and server_ready_hint(runtime.get("service_url", "")):
+    if runtime["mode"] == "local_sdk" and server_ready_hint(runtime.get("base_url", "")):
         # Keep Cognee initialization parity with Claude so fresh local
         # databases, identities, and datasets are ready before Stop writes.
         # Skipped while the server is still warming so this hook never blocks;
@@ -158,15 +162,41 @@ async def _store(prompt: str, payload: dict):
         except Exception as exc:
             hook_log("prompt_prepare_warning", {"error": str(exc)[:200]})
 
+    # Round-trip through utf-8 with errors="replace": prompts pasted from
+    # transcripts can carry lone surrogates, and one stored surrogate 500s
+    # the session-detail endpoint and wedges the improve pipeline server-side.
+    safe_prompt = prompt[:MAX_TEXT].encode("utf-8", errors="replace").decode("utf-8")
     remember_pending_prompt(
         session_id,
-        prompt[:MAX_TEXT],
+        safe_prompt,
         turn_id=str(payload.get("turn_id") or ""),
         context=_prompt_context(payload),
     )
     hook_log("prompt_pending", {"chars": len(prompt), "turn_id": payload.get("turn_id")})
     notify(f"user prompt pending ({len(prompt)} chars)")
     bump_save_counter(session_id, "prompt")
+
+    # Replay any warmup-buffered entries. This hook is the async sibling of
+    # session-context-lookup on the same UserPromptSubmit event — identical
+    # trigger point, but nothing waits on it, so the drain (N sequential
+    # /remember/entry calls) can no longer stall the prompt (#298). It runs
+    # LAST so a mid-drain kill cannot cost the fast bookkeeping above; the
+    # drain itself is a cheap no-op on an empty buffer, preserves the
+    # unreplayed tail on failure, and is single-flighted by its own lock
+    # against the improve/SessionEnd paths that also drain.
+    if server_usable(runtime.get("base_url", "")):
+        try:
+            drain_warmup_entries(dataset, session_id)
+        except Exception as exc:
+            hook_log("warmup_drain_failed", {"error": str(exc)[:200]})
+        # Status-line credits: unlabeled refresh at turn START. This reading
+        # is the baseline the Stop-time refresh (credits-refresh.py) diffs
+        # against to attribute the finished turn's cost — labeling it here
+        # would misattribute the PREVIOUS turn's tail as this turn's recall.
+        # tenant_id (from this turn's connections/me lookup) binds the marker
+        # entry to our tenant, so the tenantless Stop-hook refresh can find it
+        # by base_url. Never raises; no-ops on a local server.
+        refresh_credits(tenant_id=tenant_id)
 
 
 def main():

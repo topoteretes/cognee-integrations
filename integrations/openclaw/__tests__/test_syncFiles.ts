@@ -420,6 +420,39 @@ describe("syncFiles", () => {
 
     expect(mockRemember).toHaveBeenCalledWith(expect.objectContaining({ datasetName: "acme-company" }));
   });
+
+  it("ignores stale cached datasetId when cached datasetName differs from active dataset", async () => {
+    const files = [createFile("new.md", "content")];
+    const syncIndex: SyncIndex = { entries: {}, datasetName: "openclaw", datasetId: "stale-id" };
+    mockRemember.mockResolvedValue(rememberResult("ds1", "test", [{ filePath: "new.md", dataId: "id1" }]));
+
+    const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
+
+    expect(result.datasetId).toBe("ds1");
+    const rememberArgs = mockRemember.mock.calls[0]?.[0] as { datasetId?: string; datasetName: string };
+    expect(rememberArgs.datasetName).toBe("test");
+    expect(rememberArgs.datasetId).toBeUndefined();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("ignoring stale datasetId"),
+    );
+  });
+
+  it("retries remember once without datasetId on dataset access errors", async () => {
+    const files = [createFile("new.md", "content")];
+    const syncIndex: SyncIndex = { entries: {}, datasetName: "openclaw", datasetId: "stale-id" };
+    mockRemember
+      .mockRejectedValueOnce(new Error("UnauthorizedDataAccessError: Dataset stale-id not accessible. (Status code: 401)"))
+      .mockResolvedValueOnce(rememberResult("ds-fresh", "test", [{ filePath: "new.md", dataId: "id1" }]));
+
+    const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
+
+    expect(result).toEqual({ added: 1, updated: 0, skipped: 0, errors: 0, deleted: 0, datasetId: "ds-fresh" });
+    expect(mockRemember).toHaveBeenCalledTimes(2);
+    const firstCall = mockRemember.mock.calls[0]?.[0] as { datasetId?: string };
+    const secondCall = mockRemember.mock.calls[1]?.[0] as { datasetId?: string };
+    expect(firstCall.datasetId).toBeUndefined();
+    expect(secondCall.datasetId).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

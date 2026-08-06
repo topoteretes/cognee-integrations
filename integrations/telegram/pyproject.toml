@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-telegram"
+version = "0.1.0"
+description = "Telegram bot powered by cognee memory — each chat is a memory you can remember, recall, and forget."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Cognee team" }]
+dependencies = [
+    "python-telegram-bot>=21.0,<22.0",
+    "httpx>=0.27,<1",
+]
+
+[project.scripts]
+cognee-telegram = "cognee_integration_telegram.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/telegram"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_telegram*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.14.6",
+]

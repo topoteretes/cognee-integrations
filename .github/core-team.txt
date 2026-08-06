@@ -1,0 +1,12 @@
+# Core team GitHub logins (one per line). Lines may begin with @; case-insensitive.
+# Only these authors get the advisory Claude review + Slack DM.
+borisarzentar
+daukadolt
+dexters1
+hajdul88
+hande-k
+lxobr
+pazone
+NMZivkovic
+siillee
+vasilije1990

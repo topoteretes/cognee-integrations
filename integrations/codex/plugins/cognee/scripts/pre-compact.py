@@ -11,6 +11,7 @@ synthetic text back into Cognee as if it were a user question.
 """
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -24,7 +25,9 @@ from _plugin_common import (
     load_resolved,
     quiet_hook_output,
     recall_via_http,
+    resolve_session_key_from_payload,
     resolve_user,
+    set_session_key,
 )
 from config import (
     ensure_cognee_ready,
@@ -119,6 +122,7 @@ async def _recall(
                 scope=scope,
                 only_context=True,
                 search_type=qtype,
+                dataset=get_dataset(config),
             )
         else:
             import cognee
@@ -271,8 +275,17 @@ async def _run():
 
 
 def main():
-    # Read stdin (PreCompact payload); we don't use the body, just the trigger.
-    sys.stdin.read()
+    # Read the PreCompact payload to recover the host session id, which lets the
+    # session resolver map back to this launch's Cognee session id (the body is
+    # otherwise unused — PreCompact is just a trigger).
+    payload_raw = sys.stdin.read()
+    try:
+        payload = json.loads(payload_raw) if payload_raw.strip() else {}
+    except json.JSONDecodeError:
+        payload = {}
+    session_key_candidate, _ = resolve_session_key_from_payload(payload)
+    if session_key_candidate:
+        set_session_key(session_key_candidate)
 
     anchor = ""
     try:

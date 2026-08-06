@@ -6,11 +6,13 @@ on:
     paths:
       - 'integrations/**'
       - '.github/workflows/ci.yml'
+      - '.github/core-team.txt'
   push:
     branches: [main]
     paths:
       - 'integrations/**'
       - '.github/workflows/ci.yml'
+      - '.github/core-team.txt'
 
 jobs:
   detect-changes:
@@ -124,3 +126,96 @@ jobs:
       - name: Type check
         working-directory: integrations/${{ matrix.integration }}
         run: npx tsc --noEmit --skipLibCheck
+
+  # ── Advisory Claude Code review — pulls the private skill from cognee-ci at runtime ──
+  # Rubric + Slack map live in the private cognee-ci repo; this job carries no review logic.
+  # Runs after the integration tests settle (skips tolerated; never on a test failure),
+  # core-team PRs only, advisory (continue-on-error — never blocks a merge).
+  claude-review:
+    name: Claude Code Review
+    needs: [ detect-changes, test-python, test-typescript ]
+    if: >-
+      ${{ !cancelled()
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && needs.detect-changes.result == 'success'
+          && needs.test-python.result != 'failure'
+          && needs.test-typescript.result != 'failure' }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Core-team gate
+        id: gate
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          author_lc="$(printf '%s' "$AUTHOR" | tr '[:upper:]' '[:lower:]')"
+          if grep -vE '^[[:space:]]*#' .github/core-team.txt \
+               | sed 's/^@//' | tr '[:upper:]' '[:lower:]' | grep -qxF "$author_lc"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "PR author '$AUTHOR' not in core-team.txt — skipping."
+          fi
+
+      - name: Mint private-repo token
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: cognee-ci
+
+      - name: Fetch private review skill + slack map
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/cognee-ci
+          token: ${{ steps.app-token.outputs.token }}
+          path: .ci-private
+
+      - name: Stage skill into the user skills dir
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: |
+          # Stage into the USER skills dir ($HOME/.claude), NOT the repo's .claude/.
+          # claude-code-action sanitizes the repo .claude for untrusted PR heads
+          # (it moves the working-tree .claude to .claude-pr/ and restores a clean
+          # .claude from the base branch), which wipes the staged private skill and
+          # leaves /pr-review unresolved -> 0 turns, nothing posted. $HOME/.claude is
+          # untouched by that sanitization and is loaded via settingSources: [user,...].
+          mkdir -p "$HOME/.claude/skills"
+          cp -r .ci-private/.claude/skills/pr-review "$HOME/.claude/skills/"
+
+      - name: Claude Code review
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: "/pr-review"
+          claude_args: >-
+            --allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob,Grep"
+            --max-turns 20
+            --model claude-sonnet-4-5-20250929
+
+      - name: DM review summary to PR author on Slack
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO: ${{ github.repository }}
+        run: python3 .ci-private/scripts/pr_review_slack_notify.py

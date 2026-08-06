@@ -94,3 +94,4 @@ node_modules/
 # Dify plugin CLI binary and packages
 dify-plugin
 *.difypkg
+.aider*

@@ -25,13 +25,13 @@ from pathlib import Path
 from typing import Optional
 
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
-# threshold means you have to actively pause a full minute, and the 20s
-# bridge cooldown prevents back-to-back runs when activity is sporadic.
+# threshold means you have to actively pause a full minute, and the 10-minute
+# improve cooldown prevents back-to-back improve runs when activity is sporadic.
 POLL_SECONDS = float(os.environ.get("COGNEE_IDLE_POLL", "10"))
 IDLE_SECONDS = float(os.environ.get("COGNEE_IDLE_THRESHOLD", "60"))
-IMPROVE_COOLDOWN = float(os.environ.get("COGNEE_IMPROVE_COOLDOWN", "120"))
+IMPROVE_COOLDOWN = float(os.environ.get("COGNEE_IMPROVE_COOLDOWN", "600"))
 
-_PLUGIN_DIR = Path.home() / ".cognee-plugin"
+_PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _ACTIVITY = _PLUGIN_DIR / "activity.ts"
 _PIDFILE = _PLUGIN_DIR / "watcher.pid"
 _STOPFILE = _PLUGIN_DIR / "watcher.stop"
@@ -83,14 +83,14 @@ def _install_signal_handlers() -> None:
 
 
 async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
-    """Fire one session bridge cycle. Returns True on success."""
+    """Fire one session improve cycle. Returns True on success."""
     sys.path.insert(0, os.path.dirname(__file__))
     try:
         from _plugin_common import (  # type: ignore
             http_api_ready,
             load_resolved,
-            persist_session_cache_to_graph_via_http,
             resolve_user,
+            run_session_improve,
             set_session_key,
             sync_lock,
         )
@@ -99,6 +99,8 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
         if session_key:
             set_session_key(session_key)
         api_mode = http_api_ready()
+        # Server-side improve has its own per-session lock; only local SDK
+        # mode needs the cross-hook file lock.
         lock = nullcontext(True) if api_mode else sync_lock("idle-watcher")
     except Exception as exc:
         _log("sync_lock_import_error", error=str(exc)[:200])
@@ -115,17 +117,16 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
                 ensure_cognee_ready,
                 ensure_dataset_ready,
                 ensure_identity,
-                persist_session_cache_to_graph,
-                sync_graph_context_to_session,
+                improve_session_local,
             )
 
             if api_mode:
-                wrote = persist_session_cache_to_graph_via_http(dataset, session_id)
+                wrote = run_session_improve(dataset, session_id)
                 _log(
                     "session_bridge_done",
                     session=session_id,
                     dataset=dataset,
-                    via="http_remember",
+                    via="http_improve",
                     wrote=wrote,
                 )
                 return True
@@ -138,20 +139,136 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
             user = await resolve_user(user_id) if user_id else None
             if user:
                 await ensure_dataset_ready(dataset, user)
-                wrote = await persist_session_cache_to_graph(dataset, session_id, user)
-                graph_result = await sync_graph_context_to_session(dataset, session_id, user)
+                result = await improve_session_local(dataset, session_id, user)
                 _log(
                     "session_bridge_done",
                     session=session_id,
                     dataset=dataset,
                     user_id=str(user.id),
-                    wrote=wrote,
-                    graph_synced=graph_result.get("synced", 0),
+                    via="local_improve",
+                    ok=bool(result.get("ok")),
                 )
             return True
         except Exception as exc:
             _log("bridge_error", error=str(exc)[:300])
             return False
+
+
+def _run_update_check() -> None:
+    """Fire the background, interval-guarded plugin update check (best-effort)."""
+    try:
+        sys.path.insert(0, os.path.dirname(__file__))
+        from _plugin_common import maybe_check_for_update  # type: ignore
+
+        maybe_check_for_update()
+    except Exception as exc:
+        _log("update_check_error", error=str(exc)[:200])
+
+
+def _check_llm_key(config: dict) -> None:
+    """Provider-agnostic LLM-key validation for the status line (local mode).
+
+    Runs in this BACKGROUND watcher — never a hot-path hook — because it imports
+    cognee/litellm (heavy) and makes one tiny real LLM call. That real call is the
+    only way to validate a key that works across ALL providers: litellm normalizes
+    every provider's rejection into ``AuthenticationError``, so we don't hardcode
+    any provider's endpoint/auth. (recall can't be used — the plugin passes
+    only_context=True, which skips the LLM entirely.)
+
+    ``max_tokens=1`` is a floor on cost, not a guarantee: providers differ on whether
+    it caps reasoning tokens or only content, so a reasoning model may bill more than
+    one token (or reject the request outright — see the classifier below). That is
+    acceptable here because the call is infrequent, off the hot path, bounded by a
+    15s timeout, and its response is discarded unread.
+
+    Writes the shared llm-state marker: ``ok`` / ``auth_failed`` / ``not_set``.
+    Local mode only (LLM_API_KEY is unused against a remote server). Throttled via
+    the marker's ``checked_at``. Honors COGNEE_LLM_KEY_CHECK=off.
+    """
+    try:
+        if os.environ.get("COGNEE_LLM_KEY_CHECK", "").strip().lower() in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
+            return
+        sys.path.insert(0, os.path.dirname(__file__))
+        from _plugin_common import (
+            get_session_key,
+            read_llm_state,
+            service_url_is_local,
+            write_llm_state,
+        )
+
+        base_url = str(config.get("base_url") or "")
+        if base_url and not service_url_is_local(base_url):
+            return  # cloud: the remote server owns its own LLM key
+
+        # Throttle against OUR OWN last verdict only. The marker is machine-wide, so
+        # honouring another session's timestamp would let a keyless launch's verdict
+        # stand in for ours and leave this session permanently unvalidated.
+        interval = float(os.environ.get("COGNEE_LLM_CHECK_INTERVAL", "") or 300.0)
+        prior = read_llm_state()
+        if str(prior.get("session_key") or "") == get_session_key() and (
+            time.time() - float(prior.get("checked_at", 0) or 0) < interval
+        ):
+            return
+
+        from cognee.infrastructure.llm.config import get_llm_config
+
+        cfg = get_llm_config()
+        key = str(getattr(cfg, "llm_api_key", "") or "").strip()
+        if not key:
+            # Logged, not silent: this write is what puts ✕ (incorrect_llm_api_key) on the bar,
+            # and tracking down an unexplained one cost real time.
+            write_llm_state("not_set")
+            _log("llm_key_not_set")
+            return
+
+        import litellm
+
+        try:
+            litellm.completion(
+                model=cfg.llm_model,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+                api_key=cfg.llm_api_key,
+                api_base=getattr(cfg, "llm_endpoint", None) or None,
+                custom_llm_provider=(getattr(cfg, "llm_provider", None) or None),
+                timeout=15,
+            )
+            write_llm_state("ok")
+            _log("llm_key_ok")
+        except Exception as exc:
+            # Classify by the provider's HTTP status, NOT by "did a completion
+            # succeed": `max_tokens=1` legitimately 400s on reasoning models
+            # ("Could not finish the message because max_tokens or model output
+            # limit was reached" — the single token goes to reasoning, leaving no
+            # room for content), so demanding a clean 200 leaves a perfectly good
+            # key permanently unverified and an earlier "not_set" unclearable.
+            # Providers authenticate BEFORE they validate anything else, so any
+            # status other than 401/403 already proves the key was accepted.
+            status = getattr(exc, "status_code", None)
+            try:
+                status = int(status) if status is not None else None
+            except (TypeError, ValueError):
+                status = None
+            if exc.__class__.__name__ == "AuthenticationError" or status in (401, 403):
+                write_llm_state("auth_failed", detail=str(exc)[:200])
+                _log("llm_key_auth_failed")
+            elif status is not None:
+                # Reached the provider and got a non-auth rejection (400 output
+                # limit, 404 unknown model, 429, 5xx): the key itself works.
+                write_llm_state("ok")
+                _log("llm_key_ok", status=status)
+            else:
+                # No HTTP status at all → local/transport failure (timeout, DNS,
+                # bad api_base): not a key verdict either way, so leave the marker
+                # untouched rather than falsely accuse or falsely clear.
+                _log("llm_key_check_inconclusive", error=str(exc)[:200])
+    except Exception as exc:
+        _log("llm_key_check_error", error=str(exc)[:200])
 
 
 async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
@@ -163,6 +280,11 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         poll=POLL_SECONDS,
         idle=IDLE_SECONDS,
     )
+    # Runs once per watcher launch (≈ once per session); the check itself is
+    # internally rate-limited to ≤ once per COGNEE_UPDATE_CHECK_INTERVAL.
+    _run_update_check()
+    # Validate the LLM key once at session start (background, provider-agnostic).
+    _check_llm_key(config)
     last_improved_at = 0.0
     exit_reason = "loop_complete"
     bridge_disabled = False
@@ -242,7 +364,7 @@ def main():
         sys.exit(1)
 
     session_id = bootstrap.get("session_id", "")
-    dataset = bootstrap.get("dataset", "claude_sessions")
+    dataset = bootstrap.get("dataset", "agent_sessions")
     user_id = bootstrap.get("user_id", "")
     session_key = str(bootstrap.get("session_key", "") or "").strip()
     try:

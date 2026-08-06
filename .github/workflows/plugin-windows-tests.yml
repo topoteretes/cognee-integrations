@@ -1,0 +1,59 @@
+name: Plugin Windows Tests
+
+# The claude-code and codex plugins ship platform-specific process helpers
+# (_proc.py: Windows liveness via OpenProcess/WaitForSingleObject, process
+# ancestry via CreateToolhelp32Snapshot) and a status-line renderer whose stdio
+# encoding is Windows-sensitive (cp1252 cannot encode the health glyphs). Those
+# paths never run on the ubuntu-only integration matrix, so exercise them on a
+# real Windows runner.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'integrations/claude-code/**'
+      - 'integrations/codex/**'
+      - '.github/workflows/plugin-windows-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'integrations/claude-code/**'
+      - 'integrations/codex/**'
+      - '.github/workflows/plugin-windows-tests.yml'
+
+jobs:
+  test-plugins-windows:
+    runs-on: windows-latest
+    steps:
+      # The repo has deeply-nested committed artifacts (n8n_workflows LanceDB
+      # files) whose paths exceed Windows' MAX_PATH; sparse-checkout the plugin
+      # trees this job needs and allow long paths so checkout cannot break.
+      - name: Allow long paths for checkout
+        run: git config --global core.longpaths true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            integrations/claude-code
+            integrations/codex
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: claude-code process-helper tests
+        run: python integrations/claude-code/tests/test_proc.py
+
+      - name: codex process-helper tests
+        run: python integrations/codex/tests/test_proc.py
+
+      - name: claude-code status-line renderer tests
+        run: python integrations/claude-code/tests/test_statusline_render.py
+
+      - name: codex status-line renderer tests
+        run: python integrations/codex/tests/test_statusline_render.py
+
+      - name: codex endpoint and doctor tests
+        run: python integrations/codex/plugins/cognee/tests/test_doctor.py

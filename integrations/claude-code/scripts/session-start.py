@@ -10,60 +10,64 @@ Runs on the SessionStart hook. Responsibilities:
 """
 
 import asyncio
-import hashlib
 import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    _COGNEE_CACHE_DIR,
+    _COGNEE_DATA_DIR,
+    _COGNEE_SYSTEM_DIR,
+    _VENV_DIR,
+    _VENV_PYTHON,
+    _VENV_READY_MARKER,
+    _https_context,
+    _reexec_into_venv,
+    apply_cognee_env,
+    ensure_launch_record,
     hook_log,
-    mark_server_ready,
+    probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
-    server_health_ok,
     server_ready_hint,
     set_session_key,
     touch_activity,
+    write_connection_state,
 )
+from _proc import find_host_ancestor_windows
+from _proc import pid_alive as _pid_alive
 from config import (
+    _cloud_http_request,
+    _user_id_via_api,
     ensure_cognee_ready,
     ensure_dataset_ready,
     ensure_dataset_ready_via_api,
     ensure_identity,
     get_dataset,
-    get_session_id,
     is_cloud_mode,
     load_config,
     save_config,
 )
 
-_STATE_DIR = Path.home() / ".cognee-plugin"
+_STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _GLOBAL_STATE_DIR = Path.home() / ".cognee-plugin"
 _WATCHER_PID = _STATE_DIR / "watcher.pid"
 _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _WATCHER_SCRIPT = Path(__file__).with_name("idle-watcher.py")
 _EXIT_WATCHER_SCRIPT = Path(__file__).with_name("exit-watcher.py")
 _EXIT_WATCHERS_DIR = _STATE_DIR / "exit-watchers"
-_AGENT_KEYS_CACHE = _STATE_DIR / "agent_keys.json"
-_AGENT_KEYS_LOCK = _STATE_DIR / "agent_keys.lock"
-_AGENT_KEYS_LOCK_STALE_SECONDS = 120
-_AGENT_KEYS_LOCK_WAIT_SECONDS = 4.0
-_AGENT_KEYS_LOCK_POLL_SECONDS = 0.05
-_AGENT_LIFECYCLE_LOCKS_DIR = _STATE_DIR / "agent_lifecycle_locks"
-_AGENT_LIFECYCLE_LOCK_STALE_SECONDS = 120
-_AGENT_LIFECYCLE_LOCK_WAIT_SECONDS = 20.0
-_AGENT_LIFECYCLE_LOCK_POLL_SECONDS = 0.05
 _LOCAL_SERVICE_URL = "http://localhost:8011"
 _HEALTH_URL = f"{_LOCAL_SERVICE_URL}/health"
 _HEALTH_TIMEOUT_SECONDS = 30
@@ -85,16 +89,263 @@ _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() n
     "no",
 )
 
+# --- Self-managed cognee install ---------------------------------------------
+# uv is kept self-contained under ~/.cognee-plugin so we never touch the user's
+# Python or PATH. A uv-managed Python guarantees a cognee-compatible runtime
+# (cognee requires 3.10-3.14) regardless of what's installed on the machine.
+_UV_DIR = _GLOBAL_STATE_DIR / "uv"
+_UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
+_UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
+_UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
+_PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
+_PINNED_COGNEE_VERSION = "1.4.0"
+_INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
+
+# Install single-flight. Distinct from the server boot lock (which is short, on
+# the assumption a boot completes in ~a minute): a cold cognee install can take
+# minutes, so concurrent sessions must NOT install into the same venv at once.
+_VENV_INSTALL_LOCK = _GLOBAL_STATE_DIR / "venv-install.lock"
+_VENV_INSTALL_LOCK_STALE_SECONDS = _INSTALL_TIMEOUT_SECONDS + 60.0
+_VENV_INSTALL_WAIT_SECONDS = _INSTALL_TIMEOUT_SECONDS + 60.0
+_VENV_INSTALL_POLL_SECONDS = 0.5
+
+
+def _find_uv() -> str:
+    """Locate uv: prefer our self-managed copy, then anything on PATH."""
+    if _UV_BIN.exists():
+        return str(_UV_BIN)
+    found = shutil.which("uv")
+    return found or ""
+
+
+def _install_uv() -> str:
+    """Install the standalone uv binary into ~/.cognee-plugin/uv (no PATH edits)."""
+    try:
+        _UV_DIR.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        # UV_UNMANAGED_INSTALL drops the binary in the given dir without editing
+        # shell profiles or managing updates — exactly what we want.
+        env["UV_UNMANAGED_INSTALL"] = str(_UV_DIR)
+        subprocess.run(
+            ["sh", "-c", f"curl -LsSf {_UV_INSTALL_URL} | sh"],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if _UV_BIN.exists():
+            return str(_UV_BIN)
+    except Exception as exc:
+        hook_log("uv_install_failed", {"error": str(exc)[:300]})
+    return ""
+
+
+def _venv_cognee_version() -> str:
+    """Installed cognee version inside the plugin venv, or '' if unimportable."""
+    if not _VENV_PYTHON.exists():
+        return ""
+    try:
+        out = subprocess.run(
+            [
+                str(_VENV_PYTHON),
+                "-c",
+                "import importlib.metadata as m; print(m.version('cognee'))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception as exc:
+        hook_log("cognee_version_probe_failed", {"error": str(exc)[:200]})
+    return ""
+
+
+def _write_venv_ready(version: str) -> None:
+    try:
+        payload = {
+            "cognee_version": version,
+            "python": str(_VENV_PYTHON),
+            "updated_at": time.time(),
+        }
+        tmp = _VENV_READY_MARKER.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, _VENV_READY_MARKER)
+    except Exception as exc:
+        hook_log("venv_ready_write_failed", {"error": str(exc)[:200]})
+
+
+def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
+    """Ensure the plugin venv exists and holds the pinned cognee version.
+
+    Called from the server-boot critical section (so it is already
+    single-flighted) and only at boot points — i.e. when no healthy server is
+    serving. Always installs the exact pinned version (_PINNED_COGNEE_VERSION) so the
+    server's FastAPI lifespan migrations run on a known-good release.
+
+    Fails soft: if the install can't run (e.g. offline) but a usable cognee is
+    already present, returns True with whatever version is there. Returns False
+    only when no importable cognee venv exists afterwards.
+    """
+    apply_cognee_env()
+    for directory in (_COGNEE_SYSTEM_DIR, _COGNEE_DATA_DIR, _COGNEE_CACHE_DIR):
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            hook_log(
+                "cognee_data_dir_mkdir_failed", {"dir": str(directory), "error": str(exc)[:200]}
+            )
+
+    owner = f"install:{os.getpid()}"
+    acquired = False
+    deadline = time.monotonic() + _VENV_INSTALL_WAIT_SECONDS
+    try:
+        _VENV_INSTALL_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            now = time.time()
+            if _VENV_INSTALL_LOCK.exists():
+                stale = False
+                try:
+                    raw = json.loads(_VENV_INSTALL_LOCK.read_text(encoding="utf-8"))
+                    pid = int(raw.get("pid", 0) or 0)
+                    created_at = float(raw.get("created_at", 0) or 0)
+                    stale = (not _pid_alive(pid)) or (
+                        now - created_at > _VENV_INSTALL_LOCK_STALE_SECONDS
+                    )
+                except Exception:
+                    stale = True
+                if stale:
+                    try:
+                        _VENV_INSTALL_LOCK.unlink()
+                    except Exception as exc:
+                        hook_log("venv_install_lock_unlink_failed", {"error": str(exc)[:200]})
+
+            try:
+                fd = os.open(str(_VENV_INSTALL_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
+                acquired = True
+                break
+            except FileExistsError:
+                # Another process owns the install. Don't install concurrently —
+                # wait for it to produce a usable venv, then reuse it.
+                if _venv_cognee_version() == _PINNED_COGNEE_VERSION:
+                    return True
+                if time.monotonic() >= deadline:
+                    return bool(_venv_cognee_version())
+                time.sleep(_VENV_INSTALL_POLL_SECONDS)
+
+        uv = _find_uv() or _install_uv()
+        venv_present = _VENV_PYTHON.exists()
+
+        if uv:
+            env = os.environ.copy()
+            env.setdefault("UV_PYTHON_INSTALL_DIR", str(_UV_PYTHON_DIR))
+            try:
+                if not venv_present:
+                    subprocess.run(
+                        [uv, "venv", str(_VENV_DIR), "--python", _PINNED_PYTHON],
+                        env=env,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                    )
+                subprocess.run(
+                    [
+                        uv,
+                        "pip",
+                        "install",
+                        "--upgrade",
+                        "--python",
+                        str(_VENV_PYTHON),
+                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                    ],
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                hook_log("cognee_install_failed", {"via": "uv", "error": str(exc)[:300]})
+        elif not venv_present:
+            # Last-resort fallback: stdlib venv + pip. Slower, and relies on the
+            # system python3 being a cognee-compatible version (3.10-3.14).
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "venv", str(_VENV_DIR)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                subprocess.run(
+                    [
+                        str(_VENV_PYTHON),
+                        "-m",
+                        "pip",
+                        "install",
+                        "--upgrade",
+                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                hook_log("cognee_install_failed", {"via": "venv_pip", "error": str(exc)[:300]})
+
+        version = _venv_cognee_version()
+        if not version:
+            hook_log("cognee_venv_unusable", {"venv_python": str(_VENV_PYTHON)})
+            return False
+        _write_venv_ready(version)
+        hook_log("cognee_install_ready", {"version": version})
+        return True
+    finally:
+        if acquired:
+            try:
+                _VENV_INSTALL_LOCK.unlink()
+            except Exception as exc:
+                hook_log("venv_install_lock_release_failed", {"error": str(exc)[:200]})
+
+
+def _parse_host_port(url: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+    return (parsed.hostname or "localhost"), (parsed.port or 8011)
+
+
+def _is_local_url(url: str) -> bool:
+    """True if the URL points at this machine (so we may boot a server on it)."""
+    host, _ = _parse_host_port(url)
+    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def _with_scheme(url: str) -> str:
+    """Ensure the URL has a scheme so urllib + downstream HTTP helpers accept it."""
+    url = str(url or "").strip()
+    if url and "://" not in url:
+        url = f"http://{url}"
+    return url.rstrip("/")
+
+
+def _health_url(service_url: str) -> str:
+    return f"{_with_scheme(service_url or _LOCAL_SERVICE_URL)}/health"
+
 
 def _health_ok(url: str = _HEALTH_URL, timeout: float = 2.0) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with urllib.request.urlopen(url, timeout=timeout, context=_https_context()) as response:
             return response.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
 
 
-def _wait_for_health(deadline_seconds: float) -> bool:
+def _wait_for_health(deadline_seconds: float, health_url: str = _HEALTH_URL) -> bool:
     """Poll /health until the server is serving or the deadline elapses.
 
     Used by bootstrap workers that did not win the boot single-flight: they
@@ -103,7 +354,7 @@ def _wait_for_health(deadline_seconds: float) -> bool:
     """
     deadline = time.monotonic() + deadline_seconds
     while True:
-        if _health_ok():
+        if _health_ok(health_url):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -113,10 +364,26 @@ def _wait_for_health(deadline_seconds: float) -> bool:
 def _ensure_local_server_running(
     config: dict, health_timeout: float = _HEALTH_TIMEOUT_SECONDS
 ) -> None:
-    if _health_ok():
-        config["service_url"] = _LOCAL_SERVICE_URL
-        os.environ["COGNEE_SERVICE_URL"] = _LOCAL_SERVICE_URL
+    # Target the configured local URL (any port) or the default; boot uvicorn on
+    # that URL's port if it's not already serving.
+    service_url = _with_scheme(config.get("base_url", "") or _LOCAL_SERVICE_URL)
+    health_url = _health_url(service_url)
+    _, port = _parse_host_port(service_url)
+
+    def _ready() -> None:
+        config["base_url"] = service_url
+        os.environ["COGNEE_BASE_URL"] = service_url
+
+    if _health_ok(health_url):
+        _ready()
         return
+
+    # No server is serving and we're at a boot point: ensure the venv holds the
+    # latest cognee BEFORE booting, so the server's lifespan migrations run on
+    # the upgraded code. Single-flighted on its own (long) lock, separate from
+    # the short boot lock below, since a cold install can take minutes.
+    if not ensure_cognee_installed():
+        raise RuntimeError("cognee runtime unavailable (install/upgrade failed)")
 
     owner = f"session-start:{os.getpid()}"
     acquired = False
@@ -151,36 +418,38 @@ def _ensure_local_server_running(
                 hook_log("server_bootstrap_lock_acquired", {"owner": owner})
                 break
             except FileExistsError:
-                if _health_ok():
-                    config["service_url"] = _LOCAL_SERVICE_URL
-                    os.environ["COGNEE_SERVICE_URL"] = _LOCAL_SERVICE_URL
+                if _health_ok(health_url):
+                    _ready()
                     return
                 if time.monotonic() >= deadline:
                     raise RuntimeError("server bootstrap lock timeout")
                 time.sleep(_SERVER_BOOT_LOCK_POLL_SECONDS)
 
-        if _health_ok():
-            config["service_url"] = _LOCAL_SERVICE_URL
-            os.environ["COGNEE_SERVICE_URL"] = _LOCAL_SERVICE_URL
+        if _health_ok(health_url):
+            _ready()
             return
 
         server_env = os.environ.copy()
+        # Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
+        # so the copy carries them to the server process.
+        # Run in agent mode: the server tears itself down once all registered
+        # agents disconnect.
+        server_env["COGNEE_AGENT_MODE"] = "true"
         subprocess.Popen(
-            ["uvicorn", "cognee.api.client:app", "--port", "8011"],
+            [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
             start_new_session=True,
         )
 
         health_deadline = time.monotonic() + health_timeout
         while time.monotonic() < health_deadline:
-            if _health_ok():
-                config["service_url"] = _LOCAL_SERVICE_URL
-                os.environ["COGNEE_SERVICE_URL"] = _LOCAL_SERVICE_URL
+            if _health_ok(health_url):
+                _ready()
                 return
             time.sleep(_HEALTH_POLL_SECONDS)
 
         raise RuntimeError(
-            f"Cognee server did not become healthy at {_HEALTH_URL} within {health_timeout}s"
+            f"Cognee server did not become healthy at {health_url} within {health_timeout}s"
         )
     finally:
         if acquired:
@@ -191,202 +460,59 @@ def _ensure_local_server_running(
                 hook_log("server_bootstrap_lock_release_failed", {"error": str(exc)[:200]})
 
 
-def _load_agent_keys_cache() -> dict:
-    empty = {"version": 1, "entries": {}}
-    try:
-        if _AGENT_KEYS_CACHE.exists():
-            data = json.loads(_AGENT_KEYS_CACHE.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and isinstance(data.get("entries"), dict):
-                return data
-    except Exception as exc:
-        hook_log("agent_keys_cache_load_failed", {"error": str(exc)[:200]})
-    return empty
-
-
-def _pid_alive(pid: int) -> bool:
-    if pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except Exception:
-        return False
-
-
-@contextmanager
-def _agent_keys_lock(owner: str):
-    acquired = False
-    deadline = time.monotonic() + _AGENT_KEYS_LOCK_WAIT_SECONDS
-    try:
-        _AGENT_KEYS_LOCK.parent.mkdir(parents=True, exist_ok=True)
-        while True:
-            now = time.time()
-            if _AGENT_KEYS_LOCK.exists():
-                stale = False
-                try:
-                    raw = json.loads(_AGENT_KEYS_LOCK.read_text(encoding="utf-8"))
-                    pid = int(raw.get("pid", 0) or 0)
-                    created_at = float(raw.get("created_at", 0) or 0)
-                    stale = (not _pid_alive(pid)) or (
-                        now - created_at > _AGENT_KEYS_LOCK_STALE_SECONDS
-                    )
-                except Exception:
-                    stale = True
-                if stale:
-                    try:
-                        _AGENT_KEYS_LOCK.unlink()
-                    except Exception as exc:
-                        hook_log("agent_keys_lock_unlink_failed", {"error": str(exc)[:200]})
-
-            try:
-                fd = os.open(str(_AGENT_KEYS_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
-                acquired = True
-                break
-            except FileExistsError:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("agent keys lock timeout")
-                time.sleep(_AGENT_KEYS_LOCK_POLL_SECONDS)
-
-        yield
-    finally:
-        if acquired:
-            try:
-                _AGENT_KEYS_LOCK.unlink()
-            except Exception as exc:
-                hook_log("agent_keys_lock_release_failed", {"error": str(exc)[:200]})
-
-
-def _save_agent_keys_cache(data: dict) -> None:
-    try:
-        _AGENT_KEYS_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _AGENT_KEYS_CACHE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, _AGENT_KEYS_CACHE)
-    except Exception as exc:
-        hook_log("agent_keys_cache_save_failed", {"error": str(exc)[:200]})
-
-
 def _normalize_service_url(service_url: str) -> str:
     return str(service_url or "").strip().rstrip("/")
 
 
-def _agent_cache_key(service_url: str, agent_name: str) -> str:
-    return f"{_normalize_service_url(service_url)}::{agent_name}"
-
-
-def _utc_iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _agent_lifecycle_lock_path(service_url: str, agent_name: str) -> Path:
-    lock_key = _agent_cache_key(service_url, agent_name)
-    digest = hashlib.sha256(lock_key.encode("utf-8")).hexdigest()[:32]
-    return _AGENT_LIFECYCLE_LOCKS_DIR / f"{digest}.lock"
-
-
-@contextmanager
-def _agent_lifecycle_lock(service_url: str, agent_name: str, owner: str):
-    acquired = False
-    lock_path = _agent_lifecycle_lock_path(service_url, agent_name)
-    deadline = time.monotonic() + _AGENT_LIFECYCLE_LOCK_WAIT_SECONDS
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        while True:
-            now = time.time()
-            if lock_path.exists():
-                stale = False
-                try:
-                    raw = json.loads(lock_path.read_text(encoding="utf-8"))
-                    pid = int(raw.get("pid", 0) or 0)
-                    created_at = float(raw.get("created_at", 0) or 0)
-                    stale = (not _pid_alive(pid)) or (
-                        now - created_at > _AGENT_LIFECYCLE_LOCK_STALE_SECONDS
-                    )
-                except Exception:
-                    stale = True
-                if stale:
-                    try:
-                        lock_path.unlink()
-                    except Exception as exc:
-                        hook_log("agent_lifecycle_lock_unlink_failed", {"error": str(exc)[:200]})
-
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
-                acquired = True
-                break
-            except FileExistsError:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("agent lifecycle lock timeout")
-                time.sleep(_AGENT_LIFECYCLE_LOCK_POLL_SECONDS)
-        yield
-    finally:
-        if acquired:
-            try:
-                lock_path.unlink()
-            except Exception as exc:
-                hook_log("agent_lifecycle_lock_release_failed", {"error": str(exc)[:200]})
-
-
 async def _login_default_user_for_owner_api_key(service_url: str, config: dict) -> str:
-    import aiohttp
-
     base = _normalize_service_url(service_url)
     email = config.get("user_email", "")
     password = config.get("user_password", "")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"{base}/api/v1/auth/login",
-            data={"username": email, "password": password},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(
-                    "default-user login failed "
-                    f"({resp.status}: {body[:200]}). "
-                    "Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly."
-                )
-            login_data = await resp.json()
-            jwt = str(login_data.get("access_token", "") or "")
+    status, body = _cloud_http_request(
+        f"{base}/api/v1/auth/login",
+        method="POST",
+        form_body={"username": email, "password": password},
+        timeout=30.0,
+    )
+    if status != 200:
+        raise RuntimeError(
+            "default-user login failed "
+            f"({status}: {body[:200]}). "
+            "Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly."
+        )
+    login_data = json.loads(body) if body else {}
+    jwt = str(login_data.get("access_token", "") or "")
+    if not jwt:
+        raise RuntimeError("default-user login returned no access token")
 
-        if not jwt:
-            raise RuntimeError("default-user login returned no access token")
+    status, body = _cloud_http_request(
+        f"{base}/api/v1/auth/api-keys",
+        method="GET",
+        cookies={"auth_token": jwt},
+        timeout=30.0,
+    )
+    if status == 200:
+        keys = json.loads(body) if body else []
+        if isinstance(keys, list) and keys:
+            key = str(keys[0].get("key", "") or "")
+            if key:
+                return key
 
-        async with session.get(
-            f"{base}/api/v1/auth/api-keys",
-            cookies={"auth_token": jwt},
-        ) as resp:
-            if resp.status == 200:
-                keys = await resp.json()
-                if isinstance(keys, list) and keys:
-                    key = str(keys[0].get("key", "") or "")
-                    if key:
-                        return key
-
-        async with session.post(
-            f"{base}/api/v1/auth/api-keys",
-            json={"name": "claude-owner-bootstrap"},
-            cookies={"auth_token": jwt},
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(
-                    f"default-user API key creation failed ({resp.status}: {body[:200]})"
-                )
-            payload = await resp.json()
-            key = str(payload.get("key", "") or "")
-            if not key:
-                raise RuntimeError("default-user API key creation returned empty key")
-            return key
+    status, body = _cloud_http_request(
+        f"{base}/api/v1/auth/api-keys",
+        method="POST",
+        json_body={"name": "claude-owner-bootstrap"},
+        cookies={"auth_token": jwt},
+        timeout=30.0,
+    )
+    if status != 200:
+        raise RuntimeError(f"default-user API key creation failed ({status}: {body[:200]})")
+    payload = json.loads(body) if body else {}
+    key = str(payload.get("key", "") or "")
+    if not key:
+        raise RuntimeError("default-user API key creation returned empty key")
+    return key
 
 
 def _resolve_agent_name(config: dict, cwd: str) -> str:
@@ -405,220 +531,65 @@ def _resolve_agent_name(config: dict, cwd: str) -> str:
     return _normalize(f"claude-{Path(cwd).name}")
 
 
-async def _create_agent_with_bootstrap_key(
-    service_url: str,
-    agent_name: str,
-    bootstrap_key: str,
-) -> tuple[str, str]:
-    import aiohttp
+async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
+    """Resolve the one API key for this deployment.
 
-    async def _delete_agent_by_name(
-        session: aiohttp.ClientSession, base_url: str, name: str
-    ) -> bool:
-        async with session.get(f"{base_url}/api/v1/agents/list") as list_resp:
-            if list_resp.status != 200:
-                body = await list_resp.text()
-                raise RuntimeError(f"list agents failed ({list_resp.status}: {body[:200]})")
-            agents = await list_resp.json()
+    Order: env ``COGNEE_API_KEY`` -> single cached key -> mint once from the
+    default user (and cache it). No per-agent users or keys.
+    """
+    from _plugin_common import load_cached_api_key, save_cached_api_key
 
-        target_id = ""
-        for item in agents if isinstance(agents, list) else []:
-            if not isinstance(item, dict):
-                continue
-            email = str(item.get("agentEmail", "") or "").strip()
-            short_name = email[:-13] if email.endswith("@cognee.agent") else email
-            if short_name == name:
-                target_id = str(item.get("agentId", "") or "").strip()
-                break
-
-        if not target_id:
-            return False
-
-        async with session.delete(f"{base_url}/api/v1/agents/{target_id}") as del_resp:
-            if del_resp.status not in (200, 204):
-                body = await del_resp.text()
-                raise RuntimeError(f"delete agent failed ({del_resp.status}: {body[:200]})")
-        return True
-
-    def _parse_create_payload(payload: dict) -> tuple[str, str]:
-        return (
-            str(payload.get("agentId", "") or ""),
-            str(payload.get("agentApiKey", "") or ""),
-        )
-
-    headers = {"Content-Type": "application/json"}
-    if bootstrap_key:
-        headers["X-Api-Key"] = bootstrap_key
-
-    base = service_url.rstrip("/")
-    async with aiohttp.ClientSession(headers=headers) as session:
-        async with session.post(
-            f"{base}/api/v1/agents/create", params={"name": agent_name}
-        ) as resp:
-            if resp.status == 200:
-                payload = await resp.json()
-                return _parse_create_payload(payload)
-            if resp.status == 409:
-                deleted = await _delete_agent_by_name(session, base, agent_name)
-                if not deleted:
-                    raise RuntimeError(
-                        f"Agent '{agent_name}' already exists on {base}, "
-                        "but it could not be resolved for deletion."
-                    )
-                async with session.post(
-                    f"{base}/api/v1/agents/create", params={"name": agent_name}
-                ) as retry_resp:
-                    if retry_resp.status == 200:
-                        payload = await retry_resp.json()
-                        return _parse_create_payload(payload)
-                    text = await retry_resp.text()
-                    raise RuntimeError(
-                        f"create_agent retry failed ({retry_resp.status}: {text[:200]})"
-                    )
-            text = await resp.text()
-            raise RuntimeError(f"create_agent failed ({resp.status}: {text[:200]})")
-
-
-async def _agent_api_key_is_valid(service_url: str, api_key: str) -> bool:
-    import aiohttp
-
-    base = _normalize_service_url(service_url)
-    if not base or not str(api_key or "").strip():
-        return False
-    try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(
-            timeout=timeout,
-            headers={"X-Api-Key": str(api_key).strip()},
-        ) as session:
-            async with session.get(f"{base}/api/v1/users/me") as resp:
-                return resp.status == 200
-    except Exception as exc:
-        hook_log("agent_key_validation_failed", {"error": str(exc)[:200]})
-        return False
+    api_key = str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
+    if not api_key:
+        api_key = load_cached_api_key(service_url)
+    if not api_key:
+        api_key = await _login_default_user_for_owner_api_key(service_url, config)
+        if api_key:
+            save_cached_api_key(service_url, api_key)
+    return api_key
 
 
 async def _ensure_agent_credentials_and_register(
     config: dict, cwd: str, session_id: str, agent_session_name: str, session_key: str
 ) -> tuple[str, str, str, bool]:
-    service_url = _normalize_service_url(str(config.get("service_url", "") or ""))
+    service_url = _normalize_service_url(str(config.get("base_url", "") or ""))
     if not service_url:
         return "", "", "", False
 
-    agent_name = _resolve_agent_name(config, cwd)
-    cache_key = _agent_cache_key(service_url, agent_name)
-    agent_id = ""
-    agent_api_key = ""
-    registered = False
-    registration: dict = {}
-    lifecycle_owner = f"session-start:lifecycle:{os.getpid()}"
-    with _agent_lifecycle_lock(service_url, agent_name, lifecycle_owner):
-        with _agent_keys_lock("session-start:read"):
-            cache = _load_agent_keys_cache()
-            entries = cache.get("entries", {}) if isinstance(cache, dict) else {}
-            cached = entries.get(cache_key, {}) if isinstance(entries, dict) else {}
-            agent_id = str(cached.get("agent_id", "") or "")
-            agent_api_key = str(cached.get("api_key", "") or "")
-            if agent_api_key:
-                cached["last_used_at"] = _utc_iso_now()
-                entries[cache_key] = cached
-                cache["entries"] = entries
-                _save_agent_keys_cache(cache)
+    api_key = await _resolve_single_principal_key(service_url, config)
+    if not api_key:
+        return "", "", "", False
 
-        if agent_api_key:
-            key_valid = await _agent_api_key_is_valid(service_url, agent_api_key)
-            if not key_valid:
-                hook_log(
-                    "agent_key_stale_detected",
-                    {"agent_name": agent_name, "service_url": service_url},
-                )
-                agent_id = ""
-                agent_api_key = ""
-                with _agent_keys_lock("session-start:invalidate-stale"):
-                    cache = _load_agent_keys_cache()
-                    entries = cache.get("entries", {}) if isinstance(cache, dict) else {}
-                    if isinstance(entries, dict):
-                        entries.pop(cache_key, None)
-                        cache["entries"] = entries
-                        _save_agent_keys_cache(cache)
-            else:
-                with _agent_keys_lock("session-start:touch-last-used"):
-                    cache = _load_agent_keys_cache()
-                    entries = cache.get("entries", {}) if isinstance(cache, dict) else {}
-                    latest = entries.get(cache_key, {}) if isinstance(entries, dict) else {}
-                    if isinstance(latest, dict):
-                        latest["last_used_at"] = _utc_iso_now()
-                        entries[cache_key] = latest
-                        cache["entries"] = entries
-                        _save_agent_keys_cache(cache)
+    os.environ["COGNEE_API_KEY"] = api_key
+    config["api_key"] = api_key
 
-        created_agent_id = ""
-        created_key = ""
-        if not agent_api_key:
-            bootstrap_key = str(
-                config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")
-            ).strip()
-            if not bootstrap_key:
-                bootstrap_key = await _login_default_user_for_owner_api_key(service_url, config)
-            created_agent_id, created_key = await _create_agent_with_bootstrap_key(
-                service_url, agent_name, bootstrap_key
-            )
-            if created_key:
-                agent_id = created_agent_id
-                agent_api_key = created_key
-                with _agent_keys_lock("session-start:write"):
-                    cache = _load_agent_keys_cache()
-                    entries = cache.get("entries", {}) if isinstance(cache, dict) else {}
-                    latest = entries.get(cache_key, {}) if isinstance(entries, dict) else {}
-                    latest_key = str(latest.get("api_key", "") or "")
-                    if latest_key:
-                        agent_id = str(latest.get("agent_id", "") or "") or agent_id
-                        agent_api_key = latest_key
-                        latest["last_used_at"] = _utc_iso_now()
-                        entries[cache_key] = latest
-                    else:
-                        entries[cache_key] = {
-                            "agent_id": agent_id,
-                            "agent_name": agent_name,
-                            "api_key": agent_api_key,
-                            "service_url": service_url,
-                            "created_at": _utc_iso_now(),
-                            "last_used_at": _utc_iso_now(),
-                        }
-                    cache["entries"] = entries
-                    _save_agent_keys_cache(cache)
+    # The principal user id (best-effort) — used for dataset readiness + watchers.
+    user_id = await _user_id_via_api(service_url, api_key)
 
-        if not agent_api_key:
-            return "", "", agent_name, False
+    from _plugin_common import register_agent_via_http
 
-        os.environ["COGNEE_API_KEY"] = agent_api_key
-        config["api_key"] = agent_api_key
+    # Registration is now purely a lifecycle counter + connection registry under
+    # the single principal. The connection handle IS the Cognee session id.
+    registered, registration = register_agent_via_http(
+        agent_session_name=agent_session_name,
+        session_id=session_id,
+        dataset_names=[str(config.get("dataset", "") or "").strip()],
+    )
+    if not registered:
+        raise RuntimeError(f"Failed to register session '{session_id}' on {service_url}.")
 
-        from _plugin_common import register_agent_via_http
-
-        registered, registration = register_agent_via_http(
-            agent_session_name=agent_session_name,
-            session_id=session_id,
-            dataset_names=[str(config.get("dataset", "") or "").strip()],
-        )
-        if not registered:
-            raise RuntimeError(
-                f"Failed to register agent '{agent_name}' on {service_url}. "
-                "Cached key may be invalid. Delete and recreate the agent."
-            )
     hook_log(
         "agent_register_result",
         {
-            "agent_name": agent_name,
-            "agent_id": agent_id,
             "agent_session_name": agent_session_name,
             "registered": registered,
             "connection_id": str(registration.get("id", "")),
             "session_id": session_id,
+            "user_id": user_id,
         },
     )
 
-    return agent_id, agent_api_key, agent_name, registered
+    return user_id, api_key, agent_session_name, registered
 
 
 def _watcher_alive() -> bool:
@@ -626,10 +597,9 @@ def _watcher_alive() -> bool:
         return False
     try:
         pid = int(_WATCHER_PID.read_text(encoding="utf-8").strip())
-        os.kill(pid, 0)
-        return True
     except Exception:
         return False
+    return _pid_alive(pid)
 
 
 def _spawn_idle_watcher(
@@ -664,7 +634,7 @@ def _spawn_idle_watcher(
         "user_id": user_id,
         "session_key": session_key,
         "config": {
-            "service_url": config.get("service_url", ""),
+            "base_url": config.get("base_url", ""),
             "llm_model": config.get("llm_model", ""),
             "dataset": dataset,
         },
@@ -699,6 +669,8 @@ def _spawn_idle_watcher(
 def _find_claude_parent_pid() -> int:
     """Find the nearest live Claude ancestor, skipping hook shells."""
     fallback = os.getppid()
+    if sys.platform == "win32":
+        return find_host_ancestor_windows(fallback, "claude")
     try:
         raw = subprocess.check_output(
             ["ps", "-axo", "pid=,ppid=,command="],
@@ -721,13 +693,18 @@ def _find_claude_parent_pid() -> int:
             continue
         table[pid] = (ppid, parts[2])
 
+    import re
+
+    # Match "claude" as an executable basename anywhere in the command line,
+    # tolerant of spaces in the executable path (a naive split()[0] mis-tokenizes
+    # paths like "/…/Application Support/…/claude").
+    host_re = re.compile(r"(?:^|/)claude(?:-[\w.]+)?(?:\s|$)")
     pid = fallback
     seen: set[int] = set()
     while pid > 1 and pid not in seen:
         seen.add(pid)
         ppid, command = table.get(pid, (0, ""))
-        executable = Path(command.split()[0]).name if command else ""
-        if executable == "claude" or executable.startswith("claude-"):
+        if command and host_re.search(command):
             return pid
         pid = ppid
     return fallback
@@ -743,19 +720,6 @@ def _spawn_exit_watcher(
     service_url: str = "",
 ) -> None:
     """Launch a detached watcher that syncs only after Claude exits."""
-
-    def _pid_alive(pid: int) -> bool:
-        if pid <= 1:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except Exception:
-            return False
 
     # Cleanup stale watcher pidfiles so the directory does not grow forever.
     try:
@@ -791,7 +755,7 @@ def _spawn_exit_watcher(
         "session_key": session_key,
         "agent_session_name": agent_session_name,
         "api_key": api_key,
-        "service_url": service_url,
+        "base_url": service_url,
         "pidfile": str(watcher_pidfile),
     }
     log_path = _STATE_DIR / "exit-watcher.log"
@@ -900,7 +864,7 @@ def _spawn_bootstrap(
         "session_key": session_key,
         "dataset": dataset,
         "agent_session_name": agent_session_name,
-        "service_url": str(config.get("service_url", "") or _LOCAL_SERVICE_URL),
+        "base_url": str(config.get("base_url", "") or _LOCAL_SERVICE_URL),
     }
     log_path = _STATE_DIR / "bootstrap.log"
     try:
@@ -927,6 +891,28 @@ def _spawn_bootstrap(
         hook_log("bootstrap_spawn_failed", {"error": str(exc)[:300]})
 
 
+def _status_from_error(message: str) -> int:
+    """Extract an HTTP status embedded as ``(<status>: ...)`` in an error string.
+
+    ``ensure_cognee_ready`` and ``ensure_dataset_ready_via_api`` both format their
+    RuntimeError as ``... (<status>: <body>)``; return 0 when none is present
+    (e.g. a connection error carries no HTTP status).
+    """
+    import re
+
+    m = re.search(r"\((\d{3})[:\s)]", str(message or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _classify_conn_status(status: int) -> str:
+    """Map an HTTP status to a connection-failure state."""
+    if status in (401, 403):
+        return "auth_failed"
+    if status >= 500:
+        return "server_error"
+    return "unreachable"
+
+
 async def _run_heavy(
     config: dict,
     cwd: str,
@@ -951,11 +937,29 @@ async def _run_heavy(
         except Exception as exc:
             hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
 
+    # On a cold start this worker began under the host python3, so the
+    # _plugin_common import-time guard could not re-exec us. The boot above
+    # (via ensure_cognee_installed) has now built the venv, so flip into it
+    # before any cognee/aiohttp import below resolves against the host. No-op
+    # when the venv is absent (connect/managed mode never builds one) or when
+    # we are already inside it (warm start).
+    _reexec_into_venv()
+
+    # Track the cloud connection outcome so the status line can show a precise
+    # "✕ (<reason>)". Stays None in local mode (handled by the health probe at
+    # the tail).
+    _conn_state = None
+    _conn_detail = ""
+
     # Configure cognee (cloud or local)
     try:
         await ensure_cognee_ready(config)
     except Exception as e:
         print(f"cognee-plugin: init warning ({e})", file=sys.stderr)
+        if is_cloud_mode(config):
+            status = _status_from_error(e)
+            _conn_state = _classify_conn_status(status) if status else "unreachable"
+            _conn_detail = str(e)[:200]
 
     # Register agent identity.
     user_id = ""
@@ -964,8 +968,8 @@ async def _run_heavy(
     agent_name = _resolve_agent_name(config, cwd)
     os.environ["COGNEE_AGENT_NAME"] = agent_name
 
-    # Preferred HTTP path: create/get named agent, use its API key,
-    # and register this session in agent-mode.
+    # HTTP path: resolve the single principal key (env / cache / mint from the
+    # default user) and register this session as an agent-mode connection.
     if is_cloud_mode(config):
         try:
             (
@@ -982,6 +986,31 @@ async def _run_heavy(
             message = str(exc)[:300]
             hook_log("agent_lifecycle_error", {"error": message})
             print(f"cognee-plugin: agent lifecycle failed ({message})", file=sys.stderr)
+            # Classify for the status line. Preserve an earlier health-derived
+            # state; otherwise a reachable server rejecting registration is almost
+            # always auth, while a positively-absent one is a connection failure.
+            # A timed-out probe is NO verdict (busy != down): keep the prior
+            # recorded state rather than stamp a false "unreachable".
+            if _conn_state is None:
+                try:
+                    health = probe_health(
+                        _normalize_service_url(str(config.get("base_url", "") or "")), timeout=1.5
+                    )
+                except Exception:
+                    health = "unknown"
+                if health == "ready":
+                    _conn_state, _conn_detail = "auth_failed", message
+                elif health == "down":
+                    _conn_state, _conn_detail = "unreachable", message
+            if _conn_state:
+                write_connection_state(
+                    _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
+                )
+            else:
+                hook_log(
+                    "conn_state_unverified",
+                    {"reason": "probe returned no verdict after registration failure"},
+                )
             return "", "", False
     else:
         # Local SDK fallback path.
@@ -994,9 +1023,13 @@ async def _run_heavy(
             print(f"cognee-plugin: identity warning ({e})", file=sys.stderr)
 
     try:
-        if user_id and is_cloud_mode(config):
+        # Cloud: the API key IS the identity (the server derives the principal
+        # from X-Api-Key), so dataset creation must NOT be gated on user_id —
+        # servers without /users/me (e.g. cloud tenants) leave user_id empty
+        # while auth works fine. Only the SDK branch below needs a User object.
+        if is_cloud_mode(config):
             await ensure_dataset_ready_via_api(
-                config.get("service_url", ""),
+                config.get("base_url", ""),
                 agent_api_key or config.get("api_key", ""),
                 dataset,
             )
@@ -1009,16 +1042,41 @@ async def _run_heavy(
             await ensure_dataset_ready(dataset, user)
     except Exception as e:
         print(f"cognee-plugin: dataset warning ({e})", file=sys.stderr)
+        if is_cloud_mode(config):
+            status = _status_from_error(e)
+            # An authed 401/403 here is a definitive auth failure — let it win.
+            if status in (401, 403):
+                _conn_state, _conn_detail = "auth_failed", str(e)[:200]
+            elif status >= 500 and _conn_state is None:
+                _conn_state, _conn_detail = "server_error", str(e)[:200]
     if user_id:
         os.environ["COGNEE_USER_ID"] = user_id
 
-    # Mark the server ready so hot-path recall can engage — only once it is
-    # actually serving (or managed) so we never advertise a half-migrated DB.
-    service_url = _normalize_service_url(str(config.get("service_url", "") or ""))
+    # Record the connection outcome so the status line shows "● " (ready) or
+    # "✕ (<reason>)". Cloud: use the classified state gathered above, else confirm
+    # ready. Local/managed: a health probe decides ready-vs-unreachable.
+    service_url = _normalize_service_url(str(config.get("base_url", "") or ""))
     if not service_url and not managed_endpoint:
         service_url = _LOCAL_SERVICE_URL
-    if service_url and (managed_endpoint or server_health_ok(service_url, timeout=1.5)):
-        mark_server_ready(service_url)
+    if is_cloud_mode(config):
+        if _conn_state and _conn_state != "ready":
+            write_connection_state(
+                _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
+            )
+        elif service_url:
+            health = probe_health(service_url, timeout=1.5)
+            if health == "ready":
+                write_connection_state("ready", service_url)
+            elif health == "down":
+                write_connection_state(
+                    "unreachable", str(config.get("base_url", "") or service_url)
+                )
+            else:
+                # "slow"/"unknown": no verdict — keep whatever state is already
+                # recorded instead of branding a busy server unreachable.
+                hook_log("conn_state_unverified", {"base_url": service_url, "health": health})
+    elif service_url and probe_health(service_url, timeout=1.5) == "ready":
+        write_connection_state("ready", service_url)
 
     return user_id, agent_api_key, True
 
@@ -1031,24 +1089,27 @@ async def _run_bootstrap(bootstrap: dict) -> None:
          so concurrent agents don't each spawn uvicorn. Workers that don't win
          the lock just wait for /health instead of returning.
       2. Register THIS agent/session — runs for EVERY agent, regardless of who
-         booted, because registration is per-agent (and concurrency-safe via
-         the agent-keys / agent-lifecycle locks inside _run_heavy).
+         booted, because registration is per-session (the connection handle is
+         the Cognee session id) under the single principal.
     """
     config = load_config()
     cwd = str(bootstrap.get("cwd") or os.getcwd())
     session_id = str(bootstrap.get("session_id", "") or "")
     session_key = str(bootstrap.get("session_key", "") or "")
     dataset = str(bootstrap.get("dataset", "") or get_dataset(config))
-    agent_session_name = str(bootstrap.get("agent_session_name", "") or session_key)
+    agent_session_name = str(bootstrap.get("agent_session_name", "") or session_id)
     if session_key:
         os.environ["COGNEE_SESSION_KEY"] = session_key
-    os.environ["COGNEE_AGENT_MODE"] = "true"
-    config["service_url"] = _LOCAL_SERVICE_URL
-    os.environ["COGNEE_SERVICE_URL"] = _LOCAL_SERVICE_URL
+    if session_id:
+        os.environ["COGNEE_SESSION_ID"] = session_id
+    service_url = _with_scheme(bootstrap.get("base_url", "") or _LOCAL_SERVICE_URL)
+    health_url = _health_url(service_url)
+    config["base_url"] = service_url
+    os.environ["COGNEE_BASE_URL"] = service_url
 
     # 1. Ensure the server is up. Only the single-flight winner spawns uvicorn;
     #    everyone else waits for /health (the winner may still be migrating).
-    if not _health_ok():
+    if not _health_ok(health_url):
         with _bootstrap_singleflight() as acquired:
             if acquired:
                 try:
@@ -1059,7 +1120,7 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                     hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
             else:
                 hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
-        if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS):
+        if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
             hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
             return
 
@@ -1110,51 +1171,200 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
     }
 
 
+def _ensure_statusline_configured() -> None:
+    """Write the statusLine entry to ~/.claude/settings.json when safe.
+
+    Claude Code hot-reloads settings.json, so the status line becomes active on
+    the next status refresh without requiring a restart.
+    """
+    if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
+        hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
+        return
+
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if plugin_root:
+        statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
+    else:
+        statusline_sh = Path(__file__).resolve().parent / "cognee-statusline.sh"
+
+    if not statusline_sh.exists():
+        hook_log(
+            "statusline_setup_skipped", {"reason": "script_not_found", "path": str(statusline_sh)}
+        )
+        return
+
+    settings_path = Path.home() / ".claude" / "settings.json"
+    # Guard on the script's existence at run time. Claude Code does not remove
+    # this statusLine entry when the plugin is uninstalled, and the command runs
+    # through a shell — so if the plugin's files are later purged from the cache,
+    # a bare path would fail on every refresh. The `[ -x ] && exec … || true`
+    # guard degrades to a clean, empty status line instead. (When the files
+    # linger but the plugin is disabled, the renderer self-evicts this entry.)
+    guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
+    desired = {"type": "command", "command": guarded_command}
+    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
+    # to Claude's event-driven updates, so the connection glyph reflects a change
+    # (e.g. a bad key detected at SessionStart, or the server dying) while the
+    # session is idle — event triggers go quiet when idle, and settings changes
+    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
+    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
+    try:
+        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
+    except ValueError:
+        _interval = 2
+    if _interval >= 1:
+        desired["refreshInterval"] = _interval
+
+    try:
+        settings: dict = {}
+        if settings_path.exists():
+            text = settings_path.read_text(encoding="utf-8").strip()
+            if text:
+                settings = json.loads(text)
+
+        existing = settings.get("statusLine")
+        if existing == desired:
+            return
+
+        existing_command = existing.get("command") if isinstance(existing, dict) else None
+        is_cognee_owned = (
+            isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command
+        )
+        if existing and not is_cognee_owned:
+            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
+            return
+
+        settings["statusLine"] = desired
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+                f.write("\n")
+            os.replace(tmp, settings_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        hook_log("statusline_configured", {"path": str(statusline_sh)})
+    except Exception as exc:
+        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
+
+
+_MEMORY_PREFERENCE_STEER = (
+    "Memory policy for this session: Cognee is the preferred, authoritative long-term "
+    "memory. On every user request, Cognee memory relevant to the prompt is "
+    "automatically recalled and injected into your context before you answer — consult "
+    "that recalled Cognee context FIRST. When you need to look up or store durable "
+    "information, use the Cognee tools/skills (cognee-search, cognee-remember) in "
+    "preference to Claude Code's built-in file memory (MEMORY.md), and do not duplicate "
+    "durable knowledge into MEMORY.md. Cognee is the source of truth for memory."
+)
+
+
+def _apply_memory_preference(output: dict) -> dict:
+    """Steer Claude to treat Cognee as the preferred memory over native auto-memory.
+
+    Claude Code's built-in auto memory (MEMORY.md) can't be reliably disabled by a
+    plugin, so instead we assert Cognee as the authoritative memory via a SessionStart
+    ``additionalContext`` instruction (injected into the model's context, not shown to
+    the user). Applied across all SessionStart branches. Opt out with
+    ``COGNEE_PREFER_MEMORY=false``.
+    """
+    try:
+        val = load_config().get("prefer_cognee_memory", True)
+    except Exception:
+        val = True
+    if str(val).strip().lower() in {"0", "false", "no", "off"}:
+        return output
+
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("additionalContext") or "").strip()
+    hso["additionalContext"] = (
+        f"{existing}\n\n{_MEMORY_PREFERENCE_STEER}" if existing else _MEMORY_PREFERENCE_STEER
+    )
+    result["hookSpecificOutput"] = hso
+    return result
+
+
+def _apply_update_nudge(output: dict) -> dict:
+    """Append a one-time 'update available' systemMessage (once per new version).
+
+    The version comparison + marker are produced by the background check in the
+    idle watcher; here we only READ the marker (no network). The status line
+    surfaces the same info ambiently on every refresh — this message is the
+    actionable, one-shot nudge. Shown once per newly-detected version (tracked
+    via ``notified_version``) so it never nags, and auto-stops once updated.
+    """
+    try:
+        from _plugin_common import mark_update_notified, read_update_status
+
+        status = read_update_status()
+    except Exception:
+        return output
+    if not status:
+        return output
+    installed = str(status.get("installed_version") or "")
+    latest = str(status.get("latest_version") or "")
+    if not (installed and latest) or status.get("notified_version") == latest:
+        return output
+
+    message = (
+        f"Cognee update available {installed} → {latest} — run "
+        "`/plugin update cognee-memory@cognee` (or enable marketplace auto-update)."
+    )
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    try:
+        mark_update_notified(latest)
+    except Exception:
+        pass
+    return result
+
+
 async def _start(payload: dict | None = None) -> dict:
+    _ensure_statusline_configured()
     config = load_config()
     payload = payload or {}
     cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
-    explicit_service_url = str(config.get("service_url", "") or "").strip()
-    explicit_api_key = str(config.get("api_key", "") or "").strip()
-    managed_endpoint = bool(explicit_service_url and explicit_api_key)
+    # The service URL is the sole router (api_key is optional auth, with a
+    # default-user fallback in registration). COGNEE_AGENT_MODE is NOT decided
+    # here: it's set only when we actually boot a server (in
+    # _ensure_local_server_running), so connecting to an already-running server
+    # never claims ownership of its teardown.
+    configured_url = _with_scheme(str(config.get("base_url", "") or "").strip())
+    api_key = str(config.get("api_key", "") or "").strip()
+    target_url = configured_url or _LOCAL_SERVICE_URL
+    config["base_url"] = target_url
+    os.environ["COGNEE_BASE_URL"] = target_url
+    if api_key:
+        os.environ["COGNEE_API_KEY"] = api_key
 
-    if managed_endpoint:
-        os.environ["COGNEE_AGENT_MODE"] = "false"
-        os.environ["COGNEE_SERVICE_URL"] = explicit_service_url
-        os.environ["COGNEE_API_KEY"] = explicit_api_key
-        hook_log(
-            "endpoint_mode_selected",
-            {"mode": "managed_endpoint", "service_url": explicit_service_url},
-        )
-    else:
-        # Local agent mode. The service URL is known up front; whether the
-        # server is already serving is decided below (inline vs deferred boot).
-        os.environ["COGNEE_AGENT_MODE"] = "true"
-        config["service_url"] = _LOCAL_SERVICE_URL
-        os.environ["COGNEE_SERVICE_URL"] = _LOCAL_SERVICE_URL
-        hook_log(
-            "endpoint_mode_selected",
-            {"mode": "integration_local", "service_url": _LOCAL_SERVICE_URL},
-        )
+    # NOTE: the local server's LLM_API_KEY health is deliberately NOT judged here.
+    # A hook-env read (config's llm_api_key / OPENAI_API_KEY) is blind to a key that
+    # lives in cognee's own config or a .env the server loads, so a session launched
+    # from a shell without the export wrote "not_set" into a marker that EVERY
+    # session's status line reads — a false ✕ (incorrect_llm_api_key) for sessions whose key is
+    # fine. The idle watcher is the sole authority instead: it resolves the key the
+    # same way the server does (cognee's get_llm_config) and validates it against
+    # the provider, so the verdict matches reality. It runs at session start, so the
+    # signal still appears within seconds of launch.
 
-    session_id = get_session_id(config, cwd)
-    payload_session_id = (
-        str(payload.get("session_id", "") or "").strip() if isinstance(payload, dict) else ""
-    )
+    # The host (Claude) session id is a local correlation key only: it keeps every
+    # hook process of this launch resolving the SAME Cognee session id (via the
+    # host-keyed map). It is never sent to Cognee as an identity.
     session_candidate, session_source = resolve_session_key_from_payload(payload)
     session_key = set_session_key(session_candidate)
-    hook_log(
-        "session_key_resolved",
-        {
-            "source": session_source,
-            "session_key": session_key,
-            "payload_session_id_present": bool(payload_session_id),
-        },
-    )
     if not session_key:
-        hook_log(
-            "missing_payload_session_id", {"session_id": session_id, "cwd": cwd, "payload": payload}
-        )
+        hook_log("missing_payload_session_id", {"cwd": cwd, "payload": payload})
         print(
             "cognee-plugin: missing payload session_id; refusing to register",
             file=sys.stderr,
@@ -1165,21 +1375,42 @@ async def _start(payload: dict | None = None) -> dict:
                 "systemMessage": "Cognee Memory: session key missing in SessionStart payload.",
             }
         }
-    agent_session_name = session_key
     os.environ["COGNEE_SESSION_KEY"] = session_key
+
+    # Resolve (and persist) this launch's record: session_id (data scoping, unique
+    # per launch) + conn_uuid (liveness handle for registration/counting). Written
+    # synchronously here so prompt hooks read back the identical ids before any run.
+    session_id, conn_uuid = ensure_launch_record(session_key, cwd)
+    os.environ["COGNEE_SESSION_ID"] = session_id
+    agent_session_name = conn_uuid
+    hook_log(
+        "session_resolved",
+        {
+            "source": session_source,
+            "session_key": session_key,
+            "session_id": session_id,
+            "conn_uuid": conn_uuid,
+        },
+    )
     dataset = get_dataset(config)
 
-    # Heavy work = agent registration + dataset creation (+ a server boot wait
-    # only when the server isn't up yet). Routing:
-    #   * managed endpoint or lazy disabled -> inline (legacy behavior)
-    #   * lazy + server already live         -> inline; registration is fast
-    #     against a healthy server, so recall works on the very first prompt
-    #   * lazy + server not yet live         -> defer to the detached bootstrapper
-    #     so SessionStart never blocks on a cold boot / migrations
+    # Boot-vs-connect is decided purely by whether the server is already up:
+    #   * up                -> connect (we don't boot, so agent mode is left as-is)
+    #   * down + local URL  -> boot it; agent mode is set at the uvicorn spawn so
+    #                          the server tears down once all agents disconnect
+    #   * down + remote URL -> can't boot a remote host; connect and degrade
     user_id = ""
     agent_api_key = ""
-    server_live = (not managed_endpoint) and _health_ok()
-    if managed_endpoint or not _LAZY_BOOTSTRAP or server_live:
+    server_live = _health_ok(_health_url(target_url))
+    will_boot = (not server_live) and _is_local_url(target_url)
+    hook_log(
+        "endpoint_mode_selected",
+        {"base_url": target_url, "server_live": server_live, "will_boot": will_boot},
+    )
+    if will_boot and _LAZY_BOOTSTRAP:
+        _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+        user_id = os.environ.get("COGNEE_USER_ID", "")
+    else:
         user_id, agent_api_key, ok = await _run_heavy(
             config,
             cwd,
@@ -1187,25 +1418,21 @@ async def _start(payload: dict | None = None) -> dict:
             agent_session_name,
             session_key,
             dataset,
-            managed_endpoint=managed_endpoint,
+            managed_endpoint=not will_boot,
             boot_timeout=_HEALTH_TIMEOUT_SECONDS,
         )
         if not ok:
-            if _LAZY_BOOTSTRAP and not managed_endpoint:
-                # Registration against a live server failed; retry out of band
-                # rather than aborting the session.
+            if _LAZY_BOOTSTRAP and _is_local_url(target_url):
+                # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:
                 return {}
-    else:
-        _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
-        user_id = os.environ.get("COGNEE_USER_ID", "")
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
     _purge_legacy_resolved_files()
 
     # Create config file on first run if it doesn't exist
-    config_file = Path.home() / ".cognee-plugin" / "config.json"
+    config_file = _STATE_DIR / "config.json"
     if not config_file.exists():
         save_config(config)
 
@@ -1214,8 +1441,10 @@ async def _start(payload: dict | None = None) -> dict:
     # an immediate improve on startup.
     touch_activity()
 
-    # Launch the idle watcher. If COGNEE_IDLE_DISABLED is set, skip it.
-    if not config.get("service_url") and os.environ.get("COGNEE_IDLE_DISABLED", "").lower() not in (
+    # Launch the idle watcher (syncs session memory to graph after the agent
+    # goes idle). Runs in both local-server and cloud modes — the watcher picks
+    # the HTTP or local sync path itself. COGNEE_IDLE_DISABLED opts out.
+    if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() not in (
         "1",
         "true",
         "yes",
@@ -1228,21 +1457,29 @@ async def _start(payload: dict | None = None) -> dict:
         session_key=session_key,
         agent_session_name=agent_session_name,
         api_key=agent_api_key,
-        service_url=str(config.get("service_url", "") or ""),
+        service_url=str(config.get("base_url", "") or ""),
     )
 
-    mode = "cloud" if config.get("service_url") else "local"
+    mode = "cloud" if config.get("base_url") else "local"
     print(
         f"cognee-plugin: session ready (mode={mode}, "
         f"session={session_id}, dataset={dataset}, user={user_id[:8]}...)",
         file=sys.stderr,
     )
 
-    ready = managed_endpoint or server_ready_hint(str(config.get("service_url", "") or ""))
+    ready = server_live or server_ready_hint(str(config.get("base_url", "") or ""))
     return _session_start_guidance(mode, dataset, session_id, ready)
 
 
 def main():
+    # First run: leave a commented ~/.cognee/.env template so one-time config
+    # has a documented file to land in. Values (if any) were already loaded
+    # into os.environ when _plugin_common was imported.
+    from _env_file import ensure_env_file_template, env_file_path
+
+    if ensure_env_file_template():
+        hook_log("env_file_template_created", {"path": str(env_file_path())})
+
     # Detached bootstrap mode: run the slow server boot + registration out of
     # band so the SessionStart hook itself returns fast.
     if _BOOTSTRAP_ARG in sys.argv:
@@ -1270,6 +1507,8 @@ def main():
             output = asyncio.run(_start(payload))
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
+    output = _apply_memory_preference(output)
+    output = _apply_update_nudge(output)
     print(json.dumps(output or {}))
 
 

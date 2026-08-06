@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { buildMemoryFlushPlan } from "../src/flush-plan";
 
 function createConfig(overrides?: Partial<OpenClawConfig>): OpenClawConfig {
@@ -53,6 +53,8 @@ describe("buildMemoryFlushPlan", () => {
           defaults: {
             userTimezone: "UTC",
             timeFormat: "24",
+            // reserveTokensFloor left the AgentCompactionConfig type in
+            // OpenClaw 2026.7.2 but is still honored when present.
             compaction: {
               reserveTokensFloor: 1234,
               memoryFlush: {
@@ -60,8 +62,10 @@ describe("buildMemoryFlushPlan", () => {
                 forceFlushTranscriptBytes: "3mb",
                 prompt: "Custom flush for YYYY-MM-DD",
                 systemPrompt: "System flush for YYYY-MM-DD",
-              } as unknown as OpenClawConfig["agents"]["defaults"]["compaction"]["memoryFlush"],
-            },
+              },
+            } as unknown as NonNullable<
+              NonNullable<OpenClawConfig["agents"]>["defaults"]
+            >["compaction"],
           },
         },
       }),

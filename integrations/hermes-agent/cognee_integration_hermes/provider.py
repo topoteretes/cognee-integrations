@@ -21,10 +21,12 @@ from .config import (
     save_config as save_plugin_config,
 )
 from .schemas import FORGET_SCHEMA, RECALL_SCHEMA, REMEMBER_SCHEMA
+from .server_bootstrap import ensure_local_server
 
 try:
     from agent.memory_provider import MemoryProvider
 except ImportError:  # pragma: no cover - lets package smoke tests run outside Hermes.
+
     class MemoryProvider:  # type: ignore[no-redef]
         @property
         def name(self) -> str:
@@ -78,8 +80,12 @@ def _has_cognee() -> bool:
 
 
 def _safe_session_component(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in value)
-    return cleaned.strip("_") or "session"
+    # Sanitization kept consistent with the other integrations' session-id helpers
+    # (claude-code/codex `_sanitize_session_key`, openclaw `sanitizeSessionKey`):
+    # keep alphanumerics plus `-` `_` `.`, replace others with `_`, trim `._` ends,
+    # cap length at 120.
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value)
+    return safe.strip("._")[:120] or "session"
 
 
 def _format_turn(user_content: str, assistant_content: str) -> str:
@@ -153,9 +159,9 @@ class CogneeMemoryProvider(MemoryProvider):
         return [
             {
                 "key": "service_url",
-                "description": "Cognee service URL (blank for local embedded mode)",
+                "description": "Cognee service URL (blank for local-server mode)",
                 "required": False,
-                "env_var": "COGNEE_SERVICE_URL",
+                "env_var": "COGNEE_BASE_URL",
             },
             {
                 "key": "api_key",
@@ -199,9 +205,7 @@ class CogneeMemoryProvider(MemoryProvider):
 
     def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
         non_secret = {
-            key: value
-            for key, value in values.items()
-            if key not in {"api_key", "llm_api_key"}
+            key: value for key, value in values.items() if key not in {"api_key", "llm_api_key"}
         }
         if non_secret:
             save_plugin_config(non_secret, hermes_home)
@@ -236,13 +240,15 @@ class CogneeMemoryProvider(MemoryProvider):
             )
             if service_url:
                 file_values["service_url"] = service_url
-                env_values["COGNEE_SERVICE_URL"] = service_url
+                env_values["COGNEE_BASE_URL"] = service_url
+                env_values["COGNEE_SERVICE_URL"] = ""  # clear deprecated alias
             api_key = _prompt_secret("Cognee API key", keep=bool(current.get("api_key")))
             if api_key:
                 env_values["COGNEE_API_KEY"] = api_key
         else:
             file_values["service_url"] = ""
-            env_values["COGNEE_SERVICE_URL"] = ""
+            env_values["COGNEE_BASE_URL"] = ""
+            env_values["COGNEE_SERVICE_URL"] = ""  # clear deprecated alias
             llm_key = _prompt_secret("LLM API key", keep=bool(current.get("llm_api_key")))
             if llm_key:
                 env_values["LLM_API_KEY"] = llm_key
@@ -283,24 +289,69 @@ class CogneeMemoryProvider(MemoryProvider):
         self._writes_enabled = kwargs.get("agent_context", "primary") in {"", "primary", None}
         self._session_cognee_id = self._build_cognee_session_id(session_id, **kwargs)
 
-        self._configure_cognee_local_roots()
         self._configure_cognee_models()
 
+        # Connection mode (see README "Modes"):
+        #   remote        — service_url set: thin client to a managed/cloud cognee.
+        #   local-server  — default: ensure a local cognee server (single DB owner)
+        #                   and connect as a thin client. No in-process DB ops, so
+        #                   no "database is locked" under Hermes' background threads.
+        #   embedded      — opt-in (COGNEE_EMBEDDED=true): run cognee in-process.
+        #                   Single-process / offline only; the local single-writer
+        #                   DBs are NOT safe under concurrent / multi-process use.
         service_url = str(self._config.get("service_url") or "")
+        embedded = str_to_bool(self._config.get("embedded"), False)
+
+        # No silent fallbacks between modes: a failure in an explicitly chosen mode
+        # is surfaced. Falling back to embedded would reintroduce the exact DB-lock
+        # risk this PR removes; falling back from remote to local would mask config
+        # errors and silently diverge data. Embedded is reachable only on purpose
+        # (COGNEE_EMBEDDED=true).
         if service_url:
             try:
                 api_key = str(self._config.get("api_key") or "")
                 self._bridge.run(self._do_serve(service_url, api_key), timeout=30)
                 self._remote_mode = True
             except Exception as exc:
-                self._remote_mode = False
-                logger.warning("Cognee remote connection failed, using local mode: %s", exc)
+                raise RuntimeError(
+                    f"COGNEE_BASE_URL is set to {service_url!r} but the connection failed. "
+                    "Fix the URL/network/credentials, or unset it to use local mode."
+                ) from exc
+        elif embedded:
+            self._configure_cognee_local_roots()
+            self._remote_mode = False
+        else:
+            try:
+                local_url = ensure_local_server(
+                    int(self._config.get("local_port") or 8000),
+                    data_root=str(self._config.get("data_root") or ""),
+                    system_root=str(self._config.get("system_root") or ""),
+                    boot_timeout=float(self._config.get("server_boot_timeout", 30)),
+                )
+                self._bridge.run(self._do_serve(local_url, ""), timeout=30)
+                self._remote_mode = True
+            except Exception as exc:
+                raise RuntimeError(
+                    "cognee local server failed to start, which is required for safe "
+                    "concurrent DB access. Check for a port conflict on "
+                    f"{self._config.get('local_port') or 8000}, missing dependencies "
+                    "(uvicorn/cognee), or permissions. To run single-process in-process "
+                    "instead (no concurrency safety), set COGNEE_EMBEDDED=true."
+                ) from exc
 
-        try:
-            self._user = self._bridge.run(self._ensure_identity(), timeout=30)
-        except Exception as exc:
+        # Identity only matters in embedded mode (a local relational DB exists to
+        # hold the user). In server/remote mode the server owns identity via the
+        # api-key principal, and touching the local DB here would be meaningless.
+        if self._remote_mode:
             self._user = None
-            logger.warning("Cognee identity initialization failed; using SDK default user: %s", exc)
+        else:
+            try:
+                self._user = self._bridge.run(self._ensure_identity(), timeout=30)
+            except Exception as exc:
+                self._user = None
+                logger.warning(
+                    "Cognee identity initialization failed; using SDK default user: %s", exc
+                )
 
         self._initialized = True
 
@@ -333,7 +384,7 @@ class CogneeMemoryProvider(MemoryProvider):
             try:
                 results = self._bridge.run(
                     self._do_recall(query, None, min(self._top_k, 5), "auto", cognee_session_id),
-                    timeout=float(self._config.get("recall_timeout", 60)),
+                    timeout=float(self._config.get("recall_timeout", 120)),
                 )
                 lines = self._format_recall_lines(results, limit=5)
                 if lines:
@@ -405,9 +456,15 @@ class CogneeMemoryProvider(MemoryProvider):
             self._sync_thread.join(timeout=10.0)
         if not self._writes_enabled or not self._improve_on_end or self._is_breaker_open():
             return
+        # When to background the graph-build: only when a server will outlive this
+        # process and finish the job. In embedded mode the work runs in-process, so
+        # it must complete synchronously before shutdown or it is lost. Override via
+        # COGNEE_IMPROVE_BACKGROUND.
+        raw_bg = str(self._config.get("improve_background") or "").strip()
+        background = str_to_bool(raw_bg, self._remote_mode) if raw_bg else self._remote_mode
         try:
             self._bridge.run(
-                self._do_improve(),
+                self._do_improve(run_in_background=background),
                 timeout=float(self._config.get("improve_timeout", 300)),
             )
             self._record_success()
@@ -482,16 +539,11 @@ class CogneeMemoryProvider(MemoryProvider):
         self._bridge.shutdown()
 
     def _build_cognee_session_id(self, session_id: str, **kwargs) -> str:
+        # Convention across integrations: "{agent}_{native_session_id}" —
+        # e.g. hermes_<hermes-session-id>. (kwargs like agent_workspace/user_id are
+        # accepted for call-site compatibility but no longer embedded in the name.)
         prefix = str(self._config.get("session_prefix") or "hermes")
-        workspace = str(kwargs.get("agent_workspace") or "")
-        user_id = str(kwargs.get("user_id") or "")
-        parts = [prefix]
-        if workspace:
-            parts.append(_safe_session_component(workspace))
-        if user_id:
-            parts.append(_safe_session_component(user_id))
-        parts.append(_safe_session_component(session_id))
-        return "_".join(parts)
+        return f"{prefix}_{_safe_session_component(session_id)}"
 
     def _session_cognee_id_for(self, session_id: str) -> str:
         if not session_id or session_id == self._session_id:
@@ -567,6 +619,17 @@ class CogneeMemoryProvider(MemoryProvider):
 
         return await cognee.disconnect()
 
+    def _add_user_kwarg(self, kwargs: dict[str, Any]) -> None:
+        """Inject the local user only in embedded mode.
+
+        In server/remote mode the server owns identity (api-key principal) and
+        ``self._user`` is None. Passing ``user=None`` is not the same as omitting
+        the key — the SDK may treat an explicit None differently (overriding a
+        default, affecting tenant scoping) — so we omit it entirely instead.
+        """
+        if not self._remote_mode and self._user is not None:
+            kwargs["user"] = self._user
+
     async def _do_recall(
         self,
         query: str,
@@ -581,8 +644,7 @@ class CogneeMemoryProvider(MemoryProvider):
             "top_k": top_k,
             "auto_route": self._auto_route,
         }
-        if self._user is not None:
-            kwargs["user"] = self._user
+        self._add_user_kwarg(kwargs)
 
         normalized_scope = (scope or "auto").lower()
         if normalized_scope == "session":
@@ -607,8 +669,7 @@ class CogneeMemoryProvider(MemoryProvider):
             "session_id": session_id,
             "self_improvement": False,
         }
-        if self._user is not None:
-            kwargs["user"] = self._user
+        self._add_user_kwarg(kwargs)
         return await cognee.remember(**kwargs)
 
     async def _do_remember_permanent(self, content: str, dataset: str):
@@ -620,8 +681,7 @@ class CogneeMemoryProvider(MemoryProvider):
             "self_improvement": True,
             "session_ids": [self._session_cognee_id],
         }
-        if self._user is not None:
-            kwargs["user"] = self._user
+        self._add_user_kwarg(kwargs)
         return await cognee.remember(**kwargs)
 
     async def _do_forget(
@@ -639,20 +699,20 @@ class CogneeMemoryProvider(MemoryProvider):
         }
         if dataset and not everything:
             kwargs["dataset"] = dataset
-        if self._user is not None:
-            kwargs["user"] = self._user
+        self._add_user_kwarg(kwargs)
         return await cognee.forget(**kwargs)
 
-    async def _do_improve(self):
+    async def _do_improve(self, run_in_background: bool = False):
+        # Default stays False (synchronous) so the method contract is unchanged for
+        # any caller that relies on completion. on_session_end() chooses the flag.
         import cognee
 
         kwargs: dict[str, Any] = {
             "dataset": self._dataset,
             "session_ids": [self._session_cognee_id],
-            "run_in_background": False,
+            "run_in_background": run_in_background,
         }
-        if self._user is not None:
-            kwargs["user"] = self._user
+        self._add_user_kwarg(kwargs)
         return await cognee.improve(**kwargs)
 
     def _handle_recall(self, args: dict[str, Any]) -> str:
@@ -666,11 +726,18 @@ class CogneeMemoryProvider(MemoryProvider):
         try:
             results = self._bridge.run(
                 self._do_recall(query, search_type, top_k, scope, self._session_cognee_id),
-                timeout=float(self._config.get("recall_timeout", 60)),
+                timeout=float(self._config.get("recall_timeout", 120)),
             )
             self._record_success()
             items = [self._normalize_recall_item(item) for item in results]
             if not items:
+                # Distinguish a genuine miss from an embedding-model change that
+                # makes recall structurally unable to match (stored vs query
+                # vectors differ in size). Embedded mode only; a confirmed
+                # mismatch is a hard error.
+                dim_message = self._embedding_dimension_mismatch_hint()
+                if dim_message:
+                    return json.dumps({"error": dim_message, "count": 0})
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
             return json.dumps({"results": items, "count": len(items)})
         except Exception as exc:
@@ -735,6 +802,20 @@ class CogneeMemoryProvider(MemoryProvider):
             lines.append(f"- [{source}] {text[:500]}")
         return lines
 
+    def _embedding_dimension_mismatch_hint(self) -> Optional[str]:
+        """Confirmed embedding-dimension mismatch diagnostic (embedded mode only), or None.
+
+        In server/remote mode the server owns the vector store, so introspecting
+        the local in-process engine would be meaningless — skip. Best-effort;
+        never raises.
+        """
+        if self._remote_mode:
+            return None
+        try:
+            return self._bridge.run(_dimension_mismatch_hint(), timeout=5.0)
+        except Exception:
+            return None
+
     def _is_breaker_open(self) -> bool:
         if self._consecutive_failures < _BREAKER_THRESHOLD:
             return False
@@ -755,6 +836,77 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._consecutive_failures,
                 _BREAKER_COOLDOWN_SECS,
             )
+
+
+# --- Embedding-dimension mismatch detection ---------------------------------
+# When the embedding model changes between writing and reading, stored vectors
+# and query vectors differ in size, so recall silently matches nothing. These
+# helpers turn that silent miss into a one-line actionable error naming both
+# dimensions and the active embedder. Best-effort and fail-safe (any uncertainty
+# returns None). Only valid in embedded mode, where this process owns the vector
+# store; in server/remote mode the server owns it and the in-process engine here
+# would not reflect it.
+
+
+async def _sample_stored_vector_dim(engine) -> Optional[int]:
+    """Sample the dimension of a stored vector from any populated collection, or None.
+
+    Enumerates the store's actual collections via the vector interface's
+    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
+    uses) rather than assuming fixed collection names, so it also covers custom
+    pipelines. Never raises: each collection is probed independently and any
+    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
+    backends whose connection can't enumerate return None and fall back to the normal
+    empty-recall path.
+    """
+    try:
+        connection = await engine.get_connection()
+        names = await connection.table_names()
+    except Exception:
+        return None
+    for name in names:
+        try:
+            collection = await engine.get_collection(name)
+            rows = await collection.query().limit(1).to_list()
+            if rows:
+                vector = rows[0].get("vector")
+                if vector is not None:
+                    return len(vector)
+        except Exception:
+            continue
+    return None
+
+
+async def _dimension_mismatch_hint(engine=None) -> Optional[str]:
+    """One-line diagnostic when the stored vectors differ in size from the active
+    embedder's query vectors (so recall can never match), else None.
+
+    ``engine`` is injectable for testing. Best-effort and fail-safe: any error, or
+    an indeterminate/matching dimension, returns None so the caller keeps the
+    normal empty-recall behavior.
+    """
+    try:
+        if engine is None:
+            from cognee.infrastructure.databases.vector import get_vector_engine
+
+            engine = get_vector_engine()
+        embed = getattr(engine, "embedding_engine", None)
+        if embed is None:
+            return None
+        query_dim = int(embed.get_vector_size())
+        stored_dim = await _sample_stored_vector_dim(engine)
+        if not stored_dim or not query_dim or stored_dim == query_dim:
+            return None
+        model = getattr(embed, "model", None) or "unknown-model"
+        provider = getattr(embed, "provider", None) or "unknown-provider"
+        return (
+            "Cognee recall found nothing because the embedder changed: stored vectors are "
+            f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
+            f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
+            f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
+        )
+    except Exception:
+        return None
 
 
 def _resolve_search_type(search_type: str):

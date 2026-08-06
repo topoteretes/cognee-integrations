@@ -123,6 +123,29 @@ export function normalizeAgentId(agentId: string | undefined, cfg: Required<Cogn
 }
 
 /**
+ * Sanitize a host session id to the same character set the Python integrations use
+ * (`_sanitize_session_key`): keep alphanumerics plus `-` `_` `.`, replace anything
+ * else with `_`, trim leading/trailing `.`/`_`, and cap length at 120.
+ */
+function sanitizeSessionKey(value: string): string {
+  let safe = "";
+  for (const ch of value) safe += /[A-Za-z0-9\-_.]/.test(ch) ? ch : "_";
+  return safe.replace(/^[._]+/, "").replace(/[._]+$/, "").slice(0, 120);
+}
+
+/**
+ * Build the Cognee session id from the host (OpenClaw) session id, following the
+ * cross-integration convention `{agent}_{native_session_id}` —
+ * e.g. `open_claw_<openclaw-session-id>`. Keeps the session self-describing in the
+ * Cognee dashboard and decoupled from working-directory/agent naming. Returns "" for
+ * an empty input so downstream truthy checks still skip an absent session id.
+ */
+export function cogneeSessionId(nativeSessionId: string | undefined): string {
+  const native = sanitizeSessionKey((nativeSessionId ?? "").trim());
+  return native ? `open_claw_${native}` : "";
+}
+
+/**
  * Resolve the Cognee dataset name for a given memory scope.
  *
  * `runtimeAgentId` lets multi-agent gateways pass the active agent's identity

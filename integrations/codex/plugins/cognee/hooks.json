@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/scripts/session-start.py\"",
-            "timeout": 15,
+            "timeout": 120,
             "statusMessage": "Initializing Cognee memory..."
           }
         ]
@@ -19,13 +19,13 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/scripts/session-context-lookup.py\"",
-            "timeout": 15,
+            "timeout": 120,
             "statusMessage": "Searching session memory..."
           },
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/scripts/store-user-prompt.py\"",
-            "timeout": 15,
+            "timeout": 120,
             "statusMessage": "Saving user prompt..."
           }
         ]
@@ -38,7 +38,7 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/scripts/store-to-session.py\"",
-            "timeout": 15,
+            "timeout": 120,
             "statusMessage": "Saving tool trace..."
           }
         ]
@@ -50,8 +50,13 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
-            "timeout": 15,
+            "timeout": 120,
             "statusMessage": "Saving assistant response..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/credits-refresh.py\"",
+            "timeout": 10
           }
         ]
       }
@@ -62,7 +67,7 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/scripts/pre-compact.py\"",
-            "timeout": 15,
+            "timeout": 120,
             "statusMessage": "Building memory anchor..."
           }
         ]
@@ -74,7 +79,6 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end",
-            "timeout": 15,
             "statusMessage": "Syncing session memory..."
           }
         ]

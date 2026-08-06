@@ -14,7 +14,10 @@ import sys
 import time
 from pathlib import Path
 
-_PLUGIN_DIR = Path.home() / ".cognee-plugin"
+sys.path.insert(0, os.path.dirname(__file__))
+from _proc import pid_alive as _pid_alive
+
+_PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"
 _PIDFILE = _PLUGIN_DIR / "exit-watcher.pid"
 _LOGFILE = _PLUGIN_DIR / "exit-watcher.log"
@@ -34,21 +37,6 @@ def _log(event: str, **detail) -> None:
             fh.write(json.dumps(line, default=str) + "\n")
     except Exception:
         pass
-
-
-def _pid_alive(pid: int) -> bool:
-    if pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except Exception as exc:
-        _log("pid_alive_check_failed", parent_pid=pid, error=str(exc)[:200])
-        return False
 
 
 def _owns_pidfile(pidfile: Path) -> bool:
@@ -83,7 +71,7 @@ def _spawn_sync(
         if api_key:
             env["COGNEE_API_KEY"] = api_key
         if service_url:
-            env["COGNEE_SERVICE_URL"] = service_url
+            env["COGNEE_BASE_URL"] = service_url
         subprocess.Popen(
             [sys.executable, str(_SYNC_SCRIPT), _DETACHED_SYNC_ARG],
             cwd=os.getcwd(),
@@ -98,6 +86,36 @@ def _spawn_sync(
         _log("exit_sync_detach_failed", error=str(exc)[:300])
 
 
+def _refresh_credits_marker(service_url: str) -> None:
+    """Keep the status-line credits marker fresh for the WHOLE session.
+
+    This is the only plugin process whose lifetime matches the host session —
+    the idle watcher exits at ``bridge_complete``, minutes after the last
+    activity, so a credits poll there dies with it and the segment ages out
+    of its 15-minute TTL during any longer idle stretch. Cloud only,
+    throttled against our tenant's own entry, best-effort by contract.
+    """
+    try:
+        from _plugin_common import (
+            _credits_entry_for_url,
+            _local_api_url,
+            read_credits_marker,
+            refresh_credits,
+            service_url_is_local,
+        )
+
+        base_url = str(service_url or "") or _local_api_url()
+        if service_url_is_local(base_url):
+            return  # local server: no credits concept
+        interval = float(os.environ.get("COGNEE_CREDITS_CHECK_INTERVAL", "") or 300.0)
+        _tid, prior = _credits_entry_for_url(read_credits_marker(), base_url)
+        if time.time() - float(prior.get("checked_at", 0) or 0) < interval:
+            return
+        refresh_credits()
+    except Exception as exc:
+        _log("credits_check_error", error=str(exc)[:200])
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         _log("fatal_missing_args")
@@ -110,11 +128,11 @@ def main() -> None:
 
     parent_pid = int(bootstrap.get("parent_pid") or 0)
     session_id = str(bootstrap.get("session_id") or "")
-    dataset = str(bootstrap.get("dataset") or "claude_sessions")
+    dataset = str(bootstrap.get("dataset") or "agent_sessions")
     session_key = str(bootstrap.get("session_key") or "")
     agent_session_name = str(bootstrap.get("agent_session_name") or "")
     api_key = str(bootstrap.get("api_key") or "")
-    service_url = str(bootstrap.get("service_url") or "")
+    service_url = str(bootstrap.get("base_url") or "")
     pidfile_raw = str(bootstrap.get("pidfile") or "").strip()
     pidfile = Path(pidfile_raw) if pidfile_raw else _PIDFILE
     if not parent_pid:
@@ -154,6 +172,8 @@ def main() -> None:
         pidfile=str(pidfile),
     )
     while _owns_pidfile(pidfile) and _pid_alive(parent_pid):
+        # Session-long steady-state credits refresh (throttled internally).
+        _refresh_credits_marker(service_url)
         time.sleep(_POLL_SECONDS)
 
     if not _owns_pidfile(pidfile):

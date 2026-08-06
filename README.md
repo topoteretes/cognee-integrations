@@ -1,6 +1,197 @@
+<div align="center">
+  <a href="https://github.com/topoteretes/cognee">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee/refs/heads/dev/assets/cognee-logo-transparent.png" alt="Cognee Logo" height="60">
+  </a>
+
+  <br />
+
+  Cognee Integrations - AI Memory for Your Agent Framework
+
+  <p align="center">
+  <a href="https://www.youtube.com/watch?v=8hmqS2Y5RVQ&t=13s">Demo</a>
+  .
+  <a href="https://docs.cognee.ai/">Docs</a>
+  .
+  <a href="https://cognee.ai">Learn More</a>
+  ·
+  <a href="https://discord.gg/NQPKmU5CCg">Join Discord</a>
+  ·
+  <a href="https://www.reddit.com/r/AIMemory/">Join r/AIMemory</a>
+  .
+  <a href="https://github.com/topoteretes/cognee">Core Repo</a>
+  </p>
+
+  [![GitHub forks](https://img.shields.io/github/forks/topoteretes/cognee-integrations.svg?style=social&label=Fork&maxAge=2592000)](https://GitHub.com/topoteretes/cognee-integrations/network/)
+  [![GitHub stars](https://img.shields.io/github/stars/topoteretes/cognee-integrations.svg?style=social&label=Star&maxAge=2592000)](https://GitHub.com/topoteretes/cognee-integrations/stargazers/)
+  [![Downloads](https://static.pepy.tech/badge/cognee)](https://pepy.tech/project/cognee)
+  [![License](https://img.shields.io/github/license/topoteretes/cognee-integrations?colorA=00C586&colorB=000000)](https://github.com/topoteretes/cognee-integrations/blob/main/LICENSE)
+  [![Contributors](https://img.shields.io/github/contributors/topoteretes/cognee-integrations?colorA=00C586&colorB=000000)](https://github.com/topoteretes/cognee-integrations/graphs/contributors)
+  <a href="https://github.com/sponsors/topoteretes"><img src="https://img.shields.io/badge/Sponsor-❤️-ff69b4.svg" alt="Sponsor"></a>
+
+</div>
+
 # Cognee Integrations
 
-Monorepo for all Cognee-owned integration packages.
+Monorepo for all Cognee-owned integration packages. Each integration gives an agent
+framework (Strands, CrewAI, LangGraph, Google ADK, …) a persistent **memory layer**
+backed by [cognee](https://github.com/topoteretes/cognee): a permanent knowledge graph
+plus a fast session cache.
+
+## Available Integrations
+
+Install these from their public registries — you do **not** need to clone this monorepo to use them.
+
+| Framework | Package | Install |
+|---|---|---|
+| Strands | `cognee-integration-strands` | `pip install cognee-integration-strands` |
+| CrewAI | `cognee-integration-crewai` | `pip install cognee-integration-crewai` |
+| LangGraph | `cognee-integration-langgraph` | `pip install cognee-integration-langgraph` |
+| Google ADK | `cognee-integration-google-adk` | `pip install cognee-integration-google-adk` |
+| Claude Agent SDK | `cognee-integration-claude` | `pip install cognee-integration-claude` |
+| Hermes Agent | `cognee-integration-hermes-agent` | `pip install cognee-integration-hermes-agent` |
+| OpenClaw | `@cognee/cognee-openclaw` | `npm install @cognee/cognee-openclaw` or install from clawhub.ai|
+| n8n | `n8n-nodes-cognee` | install via n8n community nodes |
+| Dify (Cloud) | `cognee` | install from the Dify marketplace |
+| Dify (self-hosted) | `cognee-sdk` | install from the Dify marketplace |
+
+Each integration has its own `README.md` under `integrations/<name>/` with the full tool
+reference and runnable examples. The table above is generated from
+[`integrations/inventory.yml`](integrations/inventory.yml) — see it for ownership,
+versions, and compatible cognee ranges.
+
+### Chat bots & editor
+
+Memory apps and editor tooling that talk to a running **cognee server**
+(`COGNEE_BASE_URL`) over its HTTP API — no in-process cognee. Each lives under
+`integrations/<name>/` with a runnable example and its own `README.md`.
+
+| Integration | Package | What it does |
+|---|---|---|
+| Chat-memory core | `cognee-integration-chat-memory` | the shared `ChatMemoryAdapter` every cognee chat bot builds on |
+| Telegram | `cognee-integration-telegram` | each chat is a memory; `/ask` with cited message links |
+| Slack | `cognee-integration-slack` | per-channel memory; `@cognee` / `/recall` cited answers |
+| Web chat widget | `cognee-integration-web-widget` | one-script-tag embeddable widget + "ask our docs" |
+| Second brain | `cognee-integration-second-brain` | cross-transport personal memory (Telegram + web), `/link` identity merge |
+| VS Code | `cognee-vscode` | remember/recall + "ask my project memory" with source-file citations |
+
+## Claude Code Quickstart
+
+The Claude Code integration is a **plugin** — it gives Claude Code persistent memory
+across sessions with no code to write. It auto-captures your prompts, tool traces, and
+responses, and auto-recalls relevant context on every prompt.
+
+**1. Install the Claude Code plugin**
+
+Run these slash commands directly in the Claude Code chat:
+
+```
+/plugin marketplace add topoteretes/cognee-integrations
+/plugin install cognee-memory@cognee
+```
+
+**2. Configure your LLM key**
+
+In local mode (the default), the plugin bootstraps a local Cognee API on
+`http://localhost:8011`. Cognee extracts knowledge with an LLM, so set `LLM_API_KEY`
+**once** in `~/.cognee/.env` (shared by the Claude Code and Codex plugins) — one
+paste, no editor needed:
+
+```bash
+mkdir -p ~/.cognee
+cat >> ~/.cognee/.env <<'EOF'
+LLM_API_KEY="sk-..."
+EOF
+chmod 600 ~/.cognee/.env
+```
+
+A plain `export` in the launching shell also works and overrides the file. Re-pasting
+the block with a new value is safe — the last value wins.
+
+To target Cognee Cloud or a remote server instead, set `COGNEE_BASE_URL` and
+`COGNEE_API_KEY` there. On startup you should see a **"Cognee Memory Connected"** message.
+
+**3. Use Claude Code as usual**
+
+Memory is captured and recalled automatically — no extra steps. You can also invoke the
+skills explicitly:
+
+```
+/cognee-memory:cognee-remember   # store something now
+/cognee-memory:cognee-search     # query memory
+/cognee-memory:cognee-sync       # persist the session into the graph
+```
+
+For full configuration (datasets, sessions, sync watchers, cloud mode), see
+[`integrations/claude-code/README.md`](integrations/claude-code/README.md).
+
+> **Using an agent framework instead?** The Python SDK integrations (Strands, CrewAI,
+> LangGraph, Google ADK, Claude Agent SDK) follow a `pip install` →
+> set `LLM_API_KEY` → attach `cognee_tools()` pattern. See each integration's README
+> under `integrations/<name>/` for a runnable example.
+
+### Two memory tiers
+
+Built on cognee v1.0, the integrations share the same two tiers:
+
+- **Permanent knowledge graph** — durable memory that survives across sessions.
+- **Session cache** — a cheap per-session cache (no graph extraction up front) that is
+  promoted into the permanent graph on sync (`/cognee-memory:cognee-sync`, or
+  `cognee.improve(session_ids=[...])` in the SDK integrations).
+
+## Using the Python Integrations
+
+Every Python integration installs from PyPI and follows the same shape: **install →
+set `LLM_API_KEY` → build the cognee tools → pass them to your agent.** The only thing
+that differs per framework is the import line and how you construct the agent.
+
+```bash
+pip install cognee-integration-strands       # or -crewai, -langgraph, -google-adk, -claude
+export LLM_API_KEY="sk-..."                   # cognee extracts knowledge with an LLM
+```
+
+The tools come in two styles depending on the integration's version:
+
+| Framework | Package | Build the tools with | Tools |
+|---|---|---|---|
+| Strands | `cognee-integration-strands` | `cognee_tools(session_id=None)` | `remember`, `recall` |
+| Claude Agent SDK | `cognee-integration-claude` | `cognee_tools(session_id=None)` | `remember`, `recall` |
+| CrewAI | `cognee-integration-crewai` | `from … import add_tool, search_tool` | `add_tool`, `search_tool` |
+| Google ADK | `cognee-integration-google-adk` | `from … import add_tool, search_tool` | `add_tool`, `search_tool` |
+| LangGraph | `cognee-integration-langgraph` | `get_sessionized_cognee_tools(user_id)` | `add_tool`, `search_tool` |
+
+**`cognee_tools()` style** (cognee v1.0 — Strands, Claude Agent SDK). Writes go to the
+permanent graph; pass `session_id=...` to use the session cache instead:
+
+```python
+from cognee_integration_strands import cognee_tools
+from strands import Agent
+from strands.models.openai import OpenAIModel
+
+agent = Agent(model=OpenAIModel(...), tools=cognee_tools())
+agent("Remember that we signed a contract with Meditech Solutions for £1.2M.")
+print(agent("What is the value of the Meditech Solutions contract?"))
+```
+
+**`add_tool` / `search_tool` style** (CrewAI, Google ADK, LangGraph). Here you also ingest
+source documents yourself with `cognee.add(...)` + `cognee.cognify()` before searching:
+
+```python
+import cognee
+from cognee_integration_crewai import add_tool, search_tool   # CrewAI / Google ADK
+from crewai import Agent
+
+await cognee.add("Meditech Solutions — healthcare industry, contract worth £1.2M.")
+await cognee.cognify()                                        # build the knowledge graph
+
+agent = Agent(role="Analyst", goal="…", backstory="…", tools=[add_tool, search_tool])
+print(agent.kickoff("Which contracts are in the healthcare industry?"))
+```
+
+LangGraph is the same style but builds its tools per user:
+`add_tool, search_tool = get_sessionized_cognee_tools("user-1")`.
+
+Each integration's `README.md` under `integrations/<name>/` has a complete runnable
+example (`examples/`) and the full tool reference.
 
 ## Structure
 

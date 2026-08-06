@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Search session + trace + graph-context for context relevant to the user's prompt.
+"""Search session + trace + agent guidance + graph for context relevant to the user's prompt.
 
-Runs on the Codex UserPromptSubmit hook. Calls ``cognee.recall`` with
-``scope=["session","trace","graph_context"]`` so every layer the
-SessionManager holds (QA entries, agent trace steps, and the distilled
-graph-knowledge snapshot from ``improve()``) flows back into Codex's
-context.
+Runs on the Codex UserPromptSubmit hook. Calls ``cognee.recall`` once per
+scope (``session``, ``trace``, ``session_context``, ``graph``) so every
+layer the SessionManager holds (QA entries, agent trace steps, standing
+agent guidance, and the graph knowledge built by ``improve()``) flows back
+into Codex's context.
 
 Configuration:
     Resolves session state via Cognee HTTP endpoints.
@@ -20,22 +20,33 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    authed_liveness,
+    bounded_dim_mismatch_hint,
+    clear_slow_streak,
+    elapsed_ms,
     get_session_key,
     hook_log,
     load_resolved,
     mark_server_ready,
     notify,
+    probe_health,
     quiet_hook_output,
     read_and_reset_save_counter,
+    read_connection_state,
     recall_via_http,
+    record_slow_probe,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
     resolve_user,
-    server_health_ok,
+    same_connection_target,
     server_ready_hint,
+    service_url_is_local,
     set_session_key,
+    slow_streak_threshold,
+    write_connection_state,
 )
-from config import ensure_cognee_ready, get_session_id, load_config
+from _recall_http import DOWN, SLOW, classify_transport_exception
+from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 
 def _float_env(name: str, default: float) -> float:
@@ -50,6 +61,9 @@ TRUNCATE_ANSWER = 500
 TRUNCATE_RETURN = 400
 TRUNCATE_GRAPH_CTX = 1500
 RECENT_TRACE_FALLBACK_TOP_K = 5
+# Smallest per-scope timeout worth dispatching; with less budget than this
+# left, remaining scopes are skipped rather than fired with a doomed deadline.
+MIN_SCOPE_TIMEOUT = 0.2
 
 
 def _load_session_id() -> str:
@@ -74,6 +88,10 @@ def _format_entry(entry: dict) -> str:
         # (folded in from scope=graph) carry `text`. Try both.
         content = str(entry.get("content", "") or entry.get("text", ""))[:TRUNCATE_GRAPH_CTX]
         return f"[graph-snapshot]\n{content}"
+
+    if source == "session_context":
+        content = str(entry.get("content", "") or entry.get("text", ""))[:TRUNCATE_GRAPH_CTX]
+        return f"[agent-guidance]\n{content}"
 
     if source == "trace":
         origin = entry.get("origin_function", "?")
@@ -107,6 +125,8 @@ def _has_entry_content(entry: dict) -> bool:
     """Return True when a recall entry has useful content to inject."""
     source = entry.get("source", "")
     if source == "graph_context":
+        return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
+    if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "trace":
         fields = ("origin_function", "status", "session_feedback", "method_return_value")
@@ -159,22 +179,56 @@ async def _run(prompt: str) -> dict | None:
         {
             "hook": "session-context-lookup",
             "mode": runtime["mode"],
-            "service_url": runtime.get("service_url", ""),
+            "base_url": runtime.get("base_url", ""),
             "url_source": runtime.get("url_source", ""),
             "key_source": runtime.get("key_source", ""),
             "api_key_present": runtime.get("api_key_present", False),
         },
     )
-    # Readiness gate: never block the user's prompt on a warming/migrating
-    # backend. Trust a fresh readiness marker (zero-network); on a miss, do one
-    # short /health probe and record the result. If still not ready, skip recall
-    # entirely so the prompt is answered at full speed (memory turns on later).
-    service_url = runtime.get("service_url", "")
-    if not server_ready_hint(service_url):
-        if server_health_ok(service_url, timeout=_float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)):
+    # Readiness gate, redesigned (SDK-356): the recall attempt itself is the
+    # probe. A fresh "ready" marker or a merely-stale/unknown state goes
+    # STRAIGHT to recall — a successful scope call is an authenticated,
+    # real-workload confirmation that beats any synthetic /health check, and
+    # the recall budget already bounds the worst case. Probing survives only
+    # as a cheap re-entry gate while the marker holds a KNOWN failure state,
+    # so a confirmed-bad backend costs one bounded probe per prompt instead of
+    # the full budget.
+    service_url = runtime.get("base_url", "")
+    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)
+    prior = read_connection_state()
+    # Permissive on purpose: "same target" unless the two URLs provably differ,
+    # so a recorded state still applies when a URL is unknown. Mirrors the
+    # renderer's _url_mismatch (equivalence pinned by
+    # tests/test_connection_target_match.py).
+    prior_same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
+    prior_state = str(prior.get("state") or ("ready" if prior.get("ready_at") else ""))
+    known_bad = prior_same_target and prior_state in (
+        "auth_failed",
+        "unreachable",
+        "server_error",
+        "not_responding",
+    )
+    if known_bad:
+        # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
+        # auth_failed instead of being masked as "ready" by an unauthenticated
+        # /health 200. Fall back to /health only when the authed probe can't
+        # classify (no key, or the endpoint is absent on an older server).
+        state = authed_liveness(service_url, timeout=probe_timeout)
+        if state == "unknown":
+            health = probe_health(service_url, timeout=probe_timeout)
+            state = {"ready": "ready", "down": "unreachable"}.get(health, health)
+        if state == "ready":
             mark_server_ready(service_url)
+            clear_slow_streak(service_url)
+            # fall through to recall below
         else:
-            hook_log("recall_skipped_warming", {"service_url": service_url})
+            if state in ("auth_failed", "unreachable", "server_error"):
+                # A definitive verdict: refresh/replace the recorded failure.
+                write_connection_state(state, service_url, detail="authed liveness probe")
+                clear_slow_streak(service_url)
+            # "slow"/"unknown" from the probe is NO verdict — keep the recorded
+            # state untouched rather than promote a timeout to a failure.
+            hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             return None
 
     if not cloud_mode:
@@ -185,6 +239,11 @@ async def _run(prompt: str) -> dict | None:
         hook_log("no_session_id", {"event": "context_lookup"})
         return None
 
+    # NOTE: the warmup-buffer drain deliberately does NOT run here. This hook
+    # is synchronous on the keystroke->answer path, and replaying N buffered
+    # entries (~1s of server work each) stalled the prompt for 10-30s after any
+    # long turn (#298). The async sibling hook on this same event
+    # (store-user-prompt.py) drains instead; improve/SessionEnd re-drain too.
     saves_last_turn = read_and_reset_save_counter(session_id)
 
     # Run scopes independently: a failure in one (e.g. graph search hitting an
@@ -192,11 +251,19 @@ async def _run(prompt: str) -> dict | None:
     # others. cognee.recall loops over scopes and re-raises on the first failure,
     # so we call it once per scope and collect whatever succeeds.
     results: list = []
+    # Cheap scopes first (tens of ms each), the graph search last: it is the
+    # only call that can consume a full per-call timeout, and running it
+    # earlier starved session_context out of the budget entirely. A single
+    # graph scope on purpose: the server (cognee >= 1.4) aliases the old
+    # graph_context scope to graph, so a graph_context + graph pair ran the
+    # same full graph retrieval twice per prompt. HYBRID_COMPLETION combines
+    # BM25 + vector + graph retrieval (with only_context=True the LLM
+    # completion is skipped server-side either way).
     scope_specs = [
-        (["session"], None),
-        (["trace"], None),
-        (["graph_context"], None),
-        (["graph"], "GRAPH_COMPLETION"),
+        (["session"], None, None),
+        (["trace"], None, None),
+        (["session_context"], None, "agent"),
+        (["graph"], "HYBRID_COMPLETION", None),
     ]
     if not cloud_mode:
         import cognee
@@ -204,15 +271,59 @@ async def _run(prompt: str) -> dict | None:
 
         user = await resolve_user(_load_user_id())
 
+    # Per-scope instrumentation (WS7 observability): capture {hits, elapsed_ms}
+    # for every scope, keyed by its stable label. Pre-seed all scopes as
+    # skipped, in canonical order and before the breaker-open branch below can
+    # blank scope_specs, so the event always carries the full set; the loop
+    # overwrites each scope that actually runs. Purely additive: it must not
+    # touch recall results, ordering, or control flow, and must never raise into
+    # the keystroke->answer path.
+    per_scope: dict[str, dict] = {
+        scope_list[0]: {"hits": 0, "elapsed_ms": 0, "skipped": True}
+        for scope_list, _qtype, _profile in scope_specs
+    }
+
     # Hard time-box: this hook is on the keystroke->answer path, so recall must
     # never be the long pole. Each scope gets a short per-call timeout, and the
     # whole loop stops once the overall budget is spent. Partial results are fine.
     recall_timeout = _float_env("COGNEE_RECALL_TIMEOUT", 2.5)
-    budget_deadline = time.monotonic() + _float_env("COGNEE_RECALL_BUDGET", 4.0)
-    for scope_list, qtype in scope_specs:
-        if time.monotonic() >= budget_deadline:
+    recall_start = time.monotonic()
+    budget_deadline = recall_start + _float_env("COGNEE_RECALL_BUDGET", 4.0)
+    # Respect the shared circuit breaker: when the server has been failing (tripped
+    # by the explicit recall path), skip this per-prompt recall rather than hammering
+    # a down backend on every keystroke. HTTP/cloud mode only.
+    if cloud_mode:
+        try:
+            from _cognee_client import breaker_open
+
+            _bopen, _bretry = breaker_open(service_url)
+        except Exception:
+            _bopen, _bretry = False, 0
+        if _bopen:
+            hook_log("recall_breaker_open", {"retry_in": _bretry})
+            scope_specs = []
+    # Health accounting for this prompt's recall attempts (the attempt IS the
+    # probe): a scope that returns is proof of life; a refused connection is
+    # proof of death; timeouts alone are no verdict and only feed the streak.
+    scopes_ok = 0  # calls that returned (even empty — the server answered)
+    scopes_answered_err = 0  # HTTP-level errors: reachable, but not healthy
+    scope_timeouts = 0
+    server_down = False
+    auth_rejected = False  # 401/403: the server answered and rejected OUR key
+    server_errors = 0  # 5xx answers: reachable but failing
+    for scope_list, qtype, context_profile in scope_specs:
+        # Clamp each call to what is left of the budget so a single scope can
+        # never overshoot the deadline (previously a scope dispatched just
+        # before the deadline could run a full recall_timeout past it). Below
+        # the floor a call cannot return anything useful, so skip the
+        # remaining scopes instead of firing a doomed request.
+        remaining = budget_deadline - time.monotonic()
+        if remaining < MIN_SCOPE_TIMEOUT:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
+        scope_timeout = min(recall_timeout, remaining)
+        part = None
+        t0 = time.monotonic()
         try:
             if cloud_mode:
                 part = recall_via_http(
@@ -222,10 +333,12 @@ async def _run(prompt: str) -> dict | None:
                     scope=scope_list,
                     only_context=True,
                     search_type=qtype,
-                    timeout=recall_timeout,
+                    context_profile=context_profile,
+                    dataset=get_dataset(config),
+                    timeout=scope_timeout,
                 )
             else:
-                query_type = SearchType.GRAPH_COMPLETION if qtype == "GRAPH_COMPLETION" else None
+                query_type = getattr(SearchType, qtype, None) if qtype else None
                 part = await asyncio.wait_for(
                     cognee.recall(
                         prompt,
@@ -235,26 +348,146 @@ async def _run(prompt: str) -> dict | None:
                         only_context=True,
                         query_type=query_type,
                         user=user,
+                        **({"context_profile": context_profile} if context_profile else {}),
                     ),
-                    timeout=recall_timeout,
+                    timeout=scope_timeout,
                 )
             if part:
                 results.extend(part)
+            scopes_ok += 1
         except Exception as exc:
-            hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
+            import urllib.error as _urlerr
+
+            if isinstance(exc, asyncio.TimeoutError):
+                verdict = SLOW  # pre-3.11 asyncio.TimeoutError isn't TimeoutError
+            else:
+                verdict = classify_transport_exception(exc)
+            if isinstance(exc, _urlerr.HTTPError):
+                scopes_answered_err += 1
+                if exc.code in (401, 403):
+                    auth_rejected = True
+                elif exc.code >= 500:
+                    server_errors += 1
+            elif verdict == SLOW:
+                scope_timeouts += 1
+            elif verdict == DOWN:
+                server_down = True
+            hook_log(
+                "recall_error",
+                {"scope": scope_list, "error": str(exc)[:200], "verdict": verdict},
+            )
+        finally:
+            # hits = raw count from this scope's call (pre-bucketing/filtering);
+            # elapsed_ms measured around the call, recorded even when it errored.
+            per_scope[scope_list[0]] = {
+                "hits": len(part or []),
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+        if server_down:
+            # Positively absent (refused/DNS): the remaining scopes would fail
+            # the same way in milliseconds each — stop here.
+            hook_log("recall_server_down", {"base_url": service_url})
+            break
+        if auth_rejected:
+            # Every scope shares the same API key, so the remaining scopes are
+            # doomed to the same 401/403 — don't spend the budget on them.
+            hook_log("recall_auth_rejected", {"base_url": service_url})
+            break
+
+    # Fold this prompt's recall outcomes back into the shared health state.
+    # Best-effort: accounting must never break the keystroke->answer path.
+    try:
+        if server_down:
+            # Suppress the write during a genuine cold-start warm-up: a refused
+            # connection with no prior ready marker for this URL is likely the
+            # server still launching/migrating — stay quiet rather than flash a
+            # false red (and don't feed the breaker with warm-up refusals).
+            warming = not (prior_state == "ready" and prior_same_target)
+            if not warming:
+                write_connection_state(
+                    "unreachable", service_url, detail="connection refused during recall"
+                )
+                clear_slow_streak(service_url)
+                if cloud_mode:
+                    try:
+                        from _cognee_client import record_failure as _breaker_failure
+
+                        _breaker_failure(
+                            "connection refused",
+                            service_url=service_url,
+                            reason="unreachable",
+                        )
+                    except Exception:
+                        pass
+        elif auth_rejected and not scopes_ok:
+            # The server answered and rejected the key — definitive, and the
+            # same signal the pre-recall authed probe used to provide, now from
+            # a real request. The re-entry gate's authed probe lifts the state
+            # once the key is fixed.
+            write_connection_state("auth_failed", service_url, detail="401/403 during recall")
+            clear_slow_streak(service_url)
+        elif scopes_ok:
+            # The server answered — an authenticated, real-workload proof of
+            # life. Refresh the marker only when it isn't already fresh-ready,
+            # so steady-state prompts don't rewrite the file every keystroke.
+            clear_slow_streak(service_url)
+            if not server_ready_hint(service_url):
+                mark_server_ready(service_url)
+            if cloud_mode:
+                try:
+                    from _cognee_client import record_success as _breaker_success
+
+                    _breaker_success(service_url)
+                except Exception:
+                    pass
+        elif server_errors:
+            # Reachable but failing (5xx on every answered scope, none ok):
+            # record the state and, mirroring the explicit-search path, one
+            # breaker failure for the prompt.
+            write_connection_state("server_error", service_url, detail="5xx during recall")
+            clear_slow_streak(service_url)
+            if cloud_mode:
+                try:
+                    from _cognee_client import record_failure as _breaker_failure
+
+                    _breaker_failure("http 5xx", service_url=service_url, reason="server_error")
+                except Exception:
+                    pass
+        elif scope_timeouts and not scopes_answered_err:
+            # Every attempted scope timed out and none got an HTTP answer: no
+            # verdict on its own, but N consecutive such prompts are a pattern.
+            # Escalate to "not_responding" — deliberately distinct from
+            # "unreachable" (positively absent: refused/DNS): the server exists
+            # but is not answering. A lone timeout never writes anything.
+            streak = record_slow_probe(service_url)
+            if streak >= slow_streak_threshold():
+                write_connection_state(
+                    "not_responding",
+                    service_url,
+                    detail="%d consecutive timeout-only prompts" % streak,
+                )
+                hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
+    except Exception as exc:
+        hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
     # mode returns plain dicts via HTTP. Normalize to dicts here.
-    by_source: dict[str, list] = {"session": [], "trace": [], "graph_context": []}
+    by_source: dict[str, list] = {
+        "session": [],
+        "trace": [],
+        "graph_context": [],
+        "session_context": [],
+    }
     for r in results or []:
         if hasattr(r, "model_dump"):
             r = r.model_dump()
         if not isinstance(r, dict):
             continue
         src = r.get("source", "session")
-        # Fold scope=graph (GRAPH_COMPLETION) results into the graph_context
-        # bucket so the displayed `g` counter reflects what was retrieved.
+        # The graph scope tags results source=graph; keep the historical
+        # graph_context bucket name so the status line, last_recall.json
+        # consumers and the `g` counter stay stable.
         if src == "graph":
             r["source"] = "graph_context"
             src = "graph_context"
@@ -280,21 +513,35 @@ async def _run(prompt: str) -> dict | None:
     try:
         from pathlib import Path as _Path
 
-        _state = _Path.home() / ".cognee-plugin" / "last_recall.json"
+        _state = _Path.home() / ".cognee-plugin" / "claude-code" / "last_recall.json"
         _state.parent.mkdir(parents=True, exist_ok=True)
-        _state.write_text(
-            json.dumps(
-                {
-                    "session_id": session_id,
-                    "ts": __import__("datetime")
-                    .datetime.now(__import__("datetime").timezone.utc)
-                    .isoformat(timespec="seconds"),
-                    "hits": counts,
-                    "saves_last_turn": saves_last_turn,
-                }
-            ),
-            encoding="utf-8",
+        _payload = json.dumps(
+            {
+                "session_id": session_id,
+                # Host session key too: the marker is per-integration, so the
+                # status line needs this to tell "my counts" from another live
+                # session's before rendering them.
+                "session_key": get_session_key(),
+                "ts": __import__("datetime")
+                .datetime.now(__import__("datetime").timezone.utc)
+                .isoformat(timespec="seconds"),
+                "hits": counts,
+                "per_scope": per_scope,
+                "saves_last_turn": saves_last_turn,
+            }
         )
+        # Machine-wide copy: kept because cognee_plugin.py resolves the active
+        # session id from it.
+        _state.write_text(_payload, encoding="utf-8")
+        # Per-session copy, which is what the status line reads: with several
+        # terminals open the single shared file only ever holds the counts of
+        # whoever prompted last, so every other bar would show nothing (or, worse,
+        # a neighbour's numbers).
+        _key = get_session_key()
+        if _key and all(c.isalnum() or c in "._-" for c in _key):
+            _per = _state.parent / "recall" / f"{_key}.json"
+            _per.parent.mkdir(parents=True, exist_ok=True)
+            _per.write_text(_payload, encoding="utf-8")
     except Exception as exc:
         hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
 
@@ -304,12 +551,17 @@ async def _run(prompt: str) -> dict | None:
     header = (
         "Cognee memory: recall "
         f"{counts['session']} session / {counts['trace']} trace / "
-        f"{counts['graph_context']} graph; saved last turn "
+        f"{counts['graph_context']} graph / {counts['session_context']} agent; saved last turn "
         f"{saves_last_turn['prompt']} prompt / {saves_last_turn['trace']} trace / "
         f"{saves_last_turn['answer']} answer"
     )
 
     section_lines = []
+    if by_source.get("session_context"):
+        section_lines.append("=== Active agent guidance ===")
+        for e in by_source["session_context"]:
+            section_lines.append(_format_entry(e))
+            section_lines.append("")
     if by_source.get("graph_context"):
         section_lines.append("=== Knowledge graph snapshot ===")
         for e in by_source["graph_context"]:
@@ -331,12 +583,43 @@ async def _run(prompt: str) -> dict | None:
             f"{header}\n\nRelevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        hook_log("context_lookup_hit", {"counts": counts, "saves_last_turn": saves_last_turn})
+        hook_log(
+            "context_lookup_hit",
+            {
+                "counts": counts,
+                "per_scope": per_scope,
+                "saves_last_turn": saves_last_turn,
+                "elapsed_ms": elapsed_ms(recall_start),
+            },
+        )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        hook_log("context_lookup_empty", {"saves_last_turn": saves_last_turn})
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
+        # Zero results can mean a genuine miss OR that the embedding model changed
+        # since indexing (stored vs query vectors differ in size, so nothing can
+        # match). Only the local store is introspectable here; surface a one-line
+        # actionable error when a mismatch is positively confirmed, else fall back
+        # to the normal "no matches" line.
+        dim_message = None
+        if service_url_is_local(service_url):
+            try:
+                dim_message = await bounded_dim_mismatch_hint(timeout=2.0)
+            except Exception as exc:
+                hook_log("dim_check_error", {"error": str(exc)[:200]})
+        if dim_message:
+            full_context = f"{header}\n\n{dim_message}"
+            hook_log("context_lookup_dim_mismatch", {"message": dim_message})
+            notify(dim_message)
+        else:
+            full_context = f"{header}\n\n(no memory matches for this prompt)"
+            hook_log(
+                "context_lookup_empty",
+                {
+                    "per_scope": per_scope,
+                    "saves_last_turn": saves_last_turn,
+                    "elapsed_ms": elapsed_ms(recall_start),
+                },
+            )
+            notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.
@@ -345,7 +628,7 @@ async def _run(prompt: str) -> dict | None:
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
-        _audit = _Path.home() / ".cognee-plugin" / "recall-audit.log"
+        _audit = _Path.home() / ".cognee-plugin" / "claude-code" / "recall-audit.log"
         _audit.parent.mkdir(parents=True, exist_ok=True)
         with _audit.open("a", encoding="utf-8") as fh:
             fh.write(
@@ -355,6 +638,7 @@ async def _run(prompt: str) -> dict | None:
                         "session_id": session_id,
                         "prompt": prompt,
                         "hits": counts,
+                        "per_scope": per_scope,
                         "context": full_context,
                     }
                 )
