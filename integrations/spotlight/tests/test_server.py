@@ -243,3 +243,49 @@ async def test_sources_describe_themselves(tmp_path, monkeypatch):
     # sources report what they indexed: folder roots / staged documents
     for source in data["sources"]:
         assert "items" in source and "count" in source
+
+
+async def test_whisper_surfaces_related_memory(client, workspace):
+    await index_and_wait(client, workspace)
+    data = (await client.get("/whisper", params={"q": "Pasta carbonara: eggs"})).json()
+    assert data["related"] and "pecorino" in data["related"][0]
+    assert data["conflicts"] == []
+    # too-short notes stay silent
+    short = (await client.get("/whisper", params={"q": "carbonara"})).json()
+    assert short == {"related": [], "conflicts": []}
+
+
+async def test_digest_counts_new_agent_learnings(tmp_path):
+    class TenantDouble:
+        class _Response:
+            def __init__(self, payload):
+                self.status_code = 200
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        dataset = "spotlight"
+
+        async def chunks(self, query, top_k=8):
+            return []
+
+        async def _request(self, method, path, **kwargs):
+            if path == "/api/v1/datasets":
+                return self._Response([{"name": "agent_sessions", "id": "ds1"}])
+            return self._Response(
+                [
+                    {"name": "old-learning", "created_at": "2026-08-01T10:00:00Z"},
+                    {"name": "fresh-learning", "created_at": "2026-08-06T09:00:00Z"},
+                ]
+            )
+
+    settings = Settings()
+    settings.data_dir = tmp_path / "state"
+    app = create_app(settings, adapter=TenantDouble())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # since Aug 3rd 2026 (1785700000): only the fresh learning counts
+        data = (await client.get("/digest", params={"since": 1785700000})).json()
+    assert data["count"] == 1
+    assert data["titles"] == ["fresh-learning"]
