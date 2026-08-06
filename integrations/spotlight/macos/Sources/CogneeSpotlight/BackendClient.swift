@@ -97,6 +97,18 @@ struct SourcesResponse: Decodable {
     let interval: Double
 }
 
+/// Memory's reaction to a note being typed: closest known facts + conflicts.
+struct WhisperResponse: Decodable {
+    let related: [String]
+    let conflicts: [Contradiction]
+}
+
+/// What the agent-session layer learned since a given moment.
+struct DigestResponse: Decodable {
+    let count: Int
+    let titles: [String]
+}
+
 struct Health: Decodable {
     let status: String
     let mode: String
@@ -183,6 +195,22 @@ struct BackendClient {
 
     func sources() async throws -> SourcesResponse {
         try await get(baseURL.appendingPathComponent("sources"))
+    }
+
+    func whisper(_ text: String) async throws -> WhisperResponse {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("whisper"), resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "q", value: text)]
+        return try await get(components.url!)
+    }
+
+    func digest(since: Double) async throws -> DigestResponse {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("digest"), resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "since", value: String(since))]
+        return try await get(components.url!)
     }
 
     func indexStatus() async throws -> IndexProgress {

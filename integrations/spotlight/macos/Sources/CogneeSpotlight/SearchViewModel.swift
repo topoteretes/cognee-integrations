@@ -2,6 +2,13 @@ import AppKit
 import Combine
 import Foundation
 
+/// A quiet, Clippy-like suggestion the panel shows above the hint bar —
+/// one at a time, dismissible, never modal.
+struct AssistantHint: Equatable {
+    let icon: String
+    let text: String
+}
+
 /// Drives the search panel: debounced search-as-you-type against the backend,
 /// arrow-key selection, and an explicit "ask" mode (Shift+Return) that trades
 /// instant file results for an LLM answer over the knowledge graph.
@@ -30,9 +37,67 @@ final class SearchViewModel: ObservableObject {
     /// Chip that was clicked open: its indexed items + last sync show in a
     /// detail row under the search field.
     @Published var connectionDetail: SourceConnection?
+    /// The current proactive suggestion (repeat-lookup nudge, expert share).
+    @Published var assistantHint: AssistantHint?
+    /// This backend's identity, so expert suggestions skip yourself.
+    private var ownUser = ""
 
     func toggleConnectionDetail(_ connection: SourceConnection) {
         connectionDetail = connectionDetail?.id == connection.id ? nil : connection
+    }
+
+    // -- proactive assistant -----------------------------------------------
+
+    private static let historyKey = "queryHistory"
+
+    /// Track when a query was genuinely looked up; returns how many times in
+    /// the last week. Reruns within a minute count as the same lookup.
+    private func recordQuery(_ q: String) -> Int {
+        let key = q.lowercased().trimmingCharacters(in: .whitespaces)
+        guard key.count >= 4 else { return 0 }
+        var history =
+            UserDefaults.standard.dictionary(forKey: Self.historyKey) as? [String: [Double]] ?? [:]
+        let now = Date().timeIntervalSince1970
+        let weekAgo = now - 7 * 86400
+        var times = (history[key] ?? []).filter { $0 > weekAgo }
+        if let last = times.last, now - last < 60 { return times.count }
+        times.append(now)
+        history[key] = times
+        if history.count > 100 {  // bound the store to recent, repeated queries
+            history = history.filter { $0.value.contains { $0 > weekAgo } }
+        }
+        UserDefaults.standard.set(history, forKey: Self.historyKey)
+        return times.count
+    }
+
+    /// Third lookup of the same thing in a week → suggest keeping it closer.
+    private func nudgeIfRepeat(_ q: String) {
+        let count = recordQuery(q)
+        guard count >= 3, assistantHint == nil else { return }
+        assistantHint = AssistantHint(
+            icon: "lightbulb",
+            text: "You've looked this up \(count) times this week — ⌘S shares it with the team."
+        )
+    }
+
+    /// Expert finding, reversed: a teammate has real memory on this topic →
+    /// offer to send them the answer, with the ⌘S picker pre-aimed at them.
+    private func suggestExpert(for q: String) {
+        Task { [weak self] in
+            guard let self,
+                let response = try? await BackendClient().experts(q),
+                self.isCurrent(q), self.answer != nil
+            else { return }
+            let expert = response.experts.first {
+                $0.evidence >= 2 && $0.name.lowercased() != self.ownUser.lowercased()
+            }
+            guard let expert else { return }
+            Preferences.defaultShareRecipient = expert.name
+            self.assistantHint = AssistantHint(
+                icon: "person.wave.2",
+                text: "\(expert.name) has worked on this — ⌘S sends them this answer."
+            )
+        }
     }
     /// One conversation per panel appearance: follow-up ⇧↩ questions thread.
     private(set) var threadID = UUID().uuidString
@@ -86,11 +151,13 @@ final class SearchViewModel: ObservableObject {
         selectedIndex = 0
         isAsking = false
         connectionDetail = nil
+        assistantHint = nil
         threadID = UUID().uuidString  // a fresh panel is a fresh conversation
         focusGeneration += 1
         Task { [weak self] in
             if let health = try? await BackendClient().health() {
                 self?.experimentsEnabled = health.experiments ?? false
+                self?.ownUser = health.handover?.user ?? ""
             }
             if let sources = try? await BackendClient().sources() {
                 self?.connections = sources.sources
@@ -106,6 +173,7 @@ final class SearchViewModel: ObservableObject {
     private func scheduleSearch() {
         answer = nil
         answerSources = []
+        assistantHint = nil
         searchTask?.cancel()
         instantTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
@@ -181,6 +249,7 @@ final class SearchViewModel: ObservableObject {
                 self.results = response.results
                 self.selectedIndex = min(self.selectedIndex, max(response.results.count - 1, 0))
                 self.errorText = nil
+                if !response.results.isEmpty { self.nudgeIfRepeat(q) }
             } else if response == nil, self.isCurrent(q), self.results.isEmpty {
                 self.errorText = "Backend unreachable — start it with scripts/run_backend.sh"
             }
@@ -218,6 +287,10 @@ final class SearchViewModel: ObservableObject {
                 self.answerSources = response.sources ?? []
                 self.contradictions = response.contradictions ?? []
                 self.errorText = nil
+                if response.answer != nil {
+                    self.nudgeIfRepeat(q)
+                    self.suggestExpert(for: q)
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 self.errorText = "Backend unreachable — start it with scripts/run_backend.sh"

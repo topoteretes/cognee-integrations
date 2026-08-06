@@ -32,10 +32,11 @@ struct SearchView: View {
                 resultsList
             } else if !model.query.isEmpty, !model.isLoading {
                 divider
-                statusLine(
-                    icon: "circle.dashed",
-                    text: "Nothing matches “\(model.query)” yet — ⇧↩ asks your knowledge graph instead."
-                )
+                statusLine(icon: "circle.dashed", text: emptyCoachText)
+            }
+            if let hint = model.assistantHint {
+                divider
+                assistantRow(hint)
             }
             if let recipients = model.shareRecipients {
                 divider
@@ -294,6 +295,50 @@ struct SearchView: View {
         .font(.system(size: 12.5))
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
+    }
+
+    /// One quiet proactive suggestion — cognee-tinted icon, dismissible,
+    /// never modal. The panel's whole "Clippy" is this row.
+    private func assistantRow(_ hint: AssistantHint) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: hint.icon)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.cognee)
+            Text(hint.text)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+            Button {
+                model.assistantHint = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss suggestion")
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+    }
+
+    /// No results: coach the next move instead of shrugging. If the query
+    /// smells like a source that isn't connected, say so.
+    private var emptyCoachText: String {
+        let q = model.query.lowercased()
+        let wanted: [(keywords: [String], name: String, label: String)] = [
+            (["slack", "channel", "thread", "message"], "slack", "Slack"),
+            (["drive", "gdoc", "spreadsheet", "google doc"], "gdrive", "Google Drive"),
+            (["github", "repo", "issue", "pull request", "release"], "github", "GitHub"),
+        ]
+        let connected = Set(model.connections.map(\.name))
+        for want in wanted
+        where want.keywords.contains(where: q.contains) && !connected.contains(want.name) {
+            return
+                "Nothing matches “\(model.query)” — this looks like a \(want.label) question, and that connection isn't set up yet."
+        }
+        return "Nothing matches “\(model.query)” yet — ⇧↩ asks your knowledge graph instead."
     }
 
     private var hintBar: some View {

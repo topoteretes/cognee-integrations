@@ -246,6 +246,7 @@ final class HandoverNotifier {
 
     private func poll() {
         Task {
+            await checkDigest()
             guard let response = try? await BackendClient().inbox() else { return }
             onUnseenCount?(response.unseen)
             var notified = Set(UserDefaults.standard.stringArray(forKey: notifiedKey) ?? [])
@@ -263,5 +264,36 @@ final class HandoverNotifier {
             }
             UserDefaults.standard.set(Array(notified), forKey: notifiedKey)
         }
+    }
+
+    /// Every ~6 hours: "your agents learned N new things" — the passive
+    /// agent-session ingestion, made visible. First run only sets a baseline
+    /// so a fresh install doesn't announce months of history.
+    private let digestKey = "lastDigestCheck"
+
+    private func checkDigest() async {
+        let now = Date().timeIntervalSince1970
+        let last = UserDefaults.standard.double(forKey: digestKey)
+        if last == 0 {
+            UserDefaults.standard.set(now, forKey: digestKey)
+            return
+        }
+        guard now - last > 6 * 3600 else { return }
+        UserDefaults.standard.set(now, forKey: digestKey)
+        guard let digest = try? await BackendClient().digest(since: last), digest.count > 0
+        else { return }
+        let content = UNMutableNotificationContent()
+        content.title =
+            digest.count == 1
+            ? "Your agents learned 1 new thing"
+            : "Your agents learned \(digest.count) new things"
+        content.body =
+            (digest.titles.first.map { "Latest: \($0). " } ?? "")
+            + "⌥Space to explore, ⌘S to share."
+        try? await UNUserNotificationCenter.current().add(
+            UNNotificationRequest(
+                identifier: "digest-\(Int(now))", content: content, trigger: nil
+            )
+        )
     }
 }

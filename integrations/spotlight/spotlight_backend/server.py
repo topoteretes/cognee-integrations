@@ -118,6 +118,61 @@ def create_app(
             )
         return {"sources": described, "interval": source_manager.interval}
 
+    @app.get("/whisper")
+    async def whisper(q: str) -> dict:
+        """Memory talking back while a note is typed: the closest thing it
+        already knows, and (experiments) whether the note conflicts with
+        recorded facts. Backs the quick-capture whisper line."""
+        q = q.strip()
+        if len(q) < 12:  # too little signal to be worth a lookup
+            return {"related": [], "conflicts": []}
+        related: list[str] = []
+        try:
+            for chunk in await adapter.chunks(q, top_k=2):
+                if text := chunk_text(chunk):
+                    related.append(_trim(text, limit=140))
+        except Exception:
+            pass
+        conflicts: list = []
+        if settings.experiments:
+            from .experiments import contradictions_for
+
+            try:
+                conflicts = (await contradictions_for(adapter, q))[:1]
+            except Exception:
+                conflicts = []
+        return {"related": related[:2], "conflicts": conflicts}
+
+    @app.get("/digest")
+    async def digest(since: float = 0) -> dict:
+        """How much the agent-session layer grew since ``since`` (unix time).
+        Backs the "your agents learned N things" notification."""
+        if not hasattr(adapter, "_request") or since <= 0:
+            return {"count": 0, "titles": []}
+        try:
+            listing = await adapter._request("GET", "/api/v1/datasets")
+            datasets = listing.json() if isinstance(listing.json(), list) else []
+            ds = next(
+                (
+                    d
+                    for d in datasets
+                    if "agent" in str(d.get("name", "")) or "session" in str(d.get("name", ""))
+                ),
+                None,
+            )
+            if ds is None:
+                return {"count": 0, "titles": []}
+            data = await adapter._request("GET", f"/api/v1/datasets/{ds['id']}/data")
+            items = data.json() if isinstance(data.json(), list) else []
+            fresh = [
+                str(item.get("name", "")) or "learning"
+                for item in items
+                if _iso_to_unix(str(item.get("created_at", ""))) > since
+            ]
+            return {"count": len(fresh), "titles": fresh[:5]}
+        except Exception:
+            return {"count": 0, "titles": []}
+
     @app.on_event("startup")
     async def start_sources() -> None:
         source_manager.start()
@@ -407,3 +462,12 @@ def _resolve_path(chunk: dict, catalog: Catalog) -> str:
 def _trim(text: str, limit: int = 220) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _iso_to_unix(iso: str) -> float:
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
