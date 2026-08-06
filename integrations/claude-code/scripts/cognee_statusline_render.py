@@ -28,6 +28,10 @@ _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
+# Claude Code's own install registry: rewritten the moment `/plugin update`
+# (or a marketplace auto-update) installs a new version, which makes it the
+# only signal that clears the update nudge mid-session (see _update_segment).
+_INSTALLED_PLUGINS_PATH = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 _PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "claude-code" / "llm-state.json"
 _RECALL_PATH = _SHARED_ROOT / "claude-code" / "last_recall.json"
@@ -122,14 +126,22 @@ def _mode_label() -> str:
     return f"{style}{mode}\033[0m" if style else mode
 
 
-_FAIL_STATES = ("auth_failed", "unreachable", "server_error")
+_FAIL_STATES = ("auth_failed", "unreachable", "server_error", "not_responding")
 # Of those, the ones that are a property of the SERVER rather than of the credential
 # the observing session happened to use. Only these may cross session boundaries: if
 # one terminal can't reach the server, neither can the others — but one terminal's
 # rejected API key says nothing about anyone else's. Letting auth_failed cross put a
 # red ✕ (incorrect_cognee_api_key) on a healthy local terminal for a few seconds
 # whenever a keyless cloud terminal started up.
-_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error")
+# "not_responding" (N consecutive recall timeouts) is server-wide too: a server
+# that isn't answering one terminal isn't answering the others either.
+_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error", "not_responding")
+
+# A failure verdict is only worth a red ✕ while it is FRESH. The hooks refresh a
+# genuine outage on every prompt (probe or recall attempt), so a failure marker
+# older than this means no session has re-confirmed it — ambiguous, and ambiguity
+# renders no glyph (same as the warming case) rather than a stale accusation.
+_FAIL_STATE_STALE_SECONDS = 30 * 60
 
 
 def _active_base_url() -> str:
@@ -248,14 +260,43 @@ def _url_mismatch(active_url: str, marked_url: str) -> bool:
     return bool(active_url and marked_url and active_url != marked_url)
 
 
+def _breaker_glyph(active_url: str) -> str:
+    """Red ✕ when THIS server's breaker is open, labeled with the real trip reason.
+
+    The breaker file is keyed by base_url (SDK-356): an entry for a different
+    server — a cloud tenant while this terminal is local, or Codex's target —
+    must not red this bar. A legacy flat file (machine-wide, target-blind) is
+    ignored for the same reason. The reason travels from the trip site, so a
+    breaker opened by 5xx reads ``server_error``, not a false ``unreachable``.
+    """
+    try:
+        raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    servers = raw.get("servers") if isinstance(raw, dict) else None
+    if not isinstance(servers, dict):
+        return ""
+    entry = servers.get(active_url.rstrip("/"))
+    if not isinstance(entry, dict):
+        return ""
+    try:
+        if float(entry.get("cooldown_until", 0) or 0) <= time.time():
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    reason = str(entry.get("reason") or "unreachable")
+    return _fail_glyph(_REASON_LABELS.get(reason, reason))
+
+
 def _health_prefix(session_id: str = "") -> str:
     """Server-connection glyph for THIS session, from local markers (no network).
 
-    Precedence — we keep it green until we actually know it is red:
-      1. a recorded failure state in the marker → ``✕ (<reason>)``
-      2. an open recall breaker (repeated recall failure) → ``✕ (unreachable)``
+    Precedence — red is reserved for CONFIRMED, FRESH, DEFINITIVE failures:
+      1. a fresh recorded failure state in the marker → ``✕ (<reason>)``
+         (older than _FAIL_STATE_STALE_SECONDS → ambiguous → no glyph)
+      2. an open recall breaker for THIS base_url → ``✕ (<trip reason>)``
       3. a "ready" marker → ``● ``
-      4. otherwise (no marker / warming / different target) → no glyph
+      4. otherwise (no marker / warming / stale / different target) → no glyph
     The marker (``server-ready.json``) carries {state, base_url, ...}; a state is
     trusted only when its base_url matches this session's, so a local-ready marker
     never greens a cloud session (or vice versa).
@@ -270,26 +311,18 @@ def _health_prefix(session_id: str = "") -> str:
         # Legacy marker (no 'state', has ready_at) reads as ready.
         state = str(marker.get("state") or ("ready" if marker.get("ready_at") else ""))
         if state in _FAIL_STATES:
-            return _fail_glyph(_REASON_LABELS.get(state, state))
+            if time.time() - _checked_at(marker) <= _FAIL_STATE_STALE_SECONDS:
+                return _fail_glyph(_REASON_LABELS.get(state, state))
+            # Stale verdict: nobody has re-confirmed the failure — treat as
+            # unknown rather than keep accusing a server that may be fine.
+            return _breaker_glyph(active_url)
         if state == "ready":
             # Breaker override: recall is failing repeatedly even if the last
             # readiness write still says ready — that means we now know it's red.
-            try:
-                raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-                if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
-                    return _fail_glyph("unreachable")
-            except Exception:
-                pass
-            return _ok_glyph()
+            return _breaker_glyph(active_url) or _ok_glyph()
 
     # No usable marker: fall back to the breaker as the only failure signal.
-    try:
-        raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
-            return _fail_glyph("unreachable")
-    except Exception:
-        pass
-    return ""
+    return _breaker_glyph(active_url)
 
 
 def _update_segment() -> str:
@@ -321,6 +354,17 @@ def _update_segment() -> str:
     running = _running_plugin_version()
     if running and running != installed:
         return ""
+    # Mid-session update guard: `/plugin update` installs the new version into
+    # its own version-pinned cache dir, but settings.json keeps pointing the
+    # status line at THIS (old) copy until the next SessionStart — so the
+    # running-version check above never trips in the session where the update
+    # happened. Claude Code does rewrite installed_plugins.json immediately,
+    # so a recorded install at or past `latest` means the user already
+    # updated: clear the nudge on this refresh instead of after a restart.
+    recorded = _parse_semver(_recorded_install_version())
+    published = _parse_semver(latest)
+    if recorded and published and recorded >= published:
+        return ""
     return f"   \033[1;33m⬆ Cognee update available {installed}→{latest}\033[0m"
 
 
@@ -345,6 +389,49 @@ def _running_plugin_version() -> str:
         except Exception:
             continue
     return ""
+
+
+def _parse_semver(value: str):
+    """Numeric X.Y.Z core as a tuple (ignoring -pre/+build), or None.
+
+    Kept in sync with ``_plugin_common._parse_semver`` — duplicated because the
+    renderer never imports the plugin runtime (see module docstring).
+    """
+    core = str(value or "").strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
+        return None
+
+
+def _recorded_install_version() -> str:
+    """Newest cognee-memory version recorded in Claude Code's install registry.
+
+    ``installed_plugins.json`` maps ``<plugin>@<marketplace>`` to a list of
+    installs; it is rewritten the moment an update lands, regardless of which
+    (possibly older) plugin copy this renderer belongs to. '' when the file is
+    missing, unreadable, or has no parseable cognee-memory entry.
+    """
+    try:
+        data = json.loads(_INSTALLED_PLUGINS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        return ""
+    best, best_str = (), ""
+    for key, installs in plugins.items():
+        if str(key).split("@", 1)[0] != "cognee-memory":
+            continue
+        for install in installs if isinstance(installs, list) else []:
+            version = str(install.get("version") or "") if isinstance(install, dict) else ""
+            parsed = _parse_semver(version)
+            if parsed and parsed > best:
+                best, best_str = parsed, version
+    return best_str
 
 
 def _pipeline_health_glyph() -> str:

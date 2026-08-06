@@ -219,9 +219,13 @@ def test_cloud_mode_suppresses_llm_glyph():
 
 
 def test_server_failure_wins_over_llm_failure():
+    import time as _time
+
     with _Renderer(
         llm_state={"llm_state": "not_set"},
-        server_marker={"state": "auth_failed", "base_url": _LOCAL_URL},
+        # checked_at present and fresh: red is reserved for fresh failures
+        # (a failure marker of unknown age renders no glyph since SDK-356).
+        server_marker={"state": "auth_failed", "base_url": _LOCAL_URL, "checked_at": _time.time()},
     ):
         assert sl._status_prefix() == sl._fail_glyph(sl._COGNEE_KEY_REASON)
 

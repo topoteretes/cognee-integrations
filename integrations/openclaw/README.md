@@ -14,7 +14,7 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Health check**: Verifies Cognee API connectivity before operations
 - **Auto-index**: Syncs memory markdown files to Cognee via `/remember` (add new, update changed, forget removed, skip unchanged). The `/remember` endpoint runs ingest, graph build, and graph enrichment in one server-side call.
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
-- **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider
+- **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider and sets the required hook permissions
 - **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
 
 ## Security: Recommended Plugin Allowlist
@@ -38,8 +38,9 @@ Without this, any plugin found in your environment could be loaded automatically
 ### Published package
 
 ```bash
-# Pin to an exact version to avoid unintended updates (supply-chain best practice)
-openclaw plugins install @cognee/cognee-openclaw@2026.3.0
+# Pin to an exact version to avoid unintended updates (supply-chain best practice).
+# Check https://www.npmjs.com/package/@cognee/cognee-openclaw for the latest release.
+openclaw plugins install @cognee/cognee-openclaw@2026.8.5
 ```
 
 ### Development install (symlink)
@@ -85,6 +86,8 @@ openclaw cognee setup --hybrid
 
 **Hybrid mode** keeps `memory-core` enabled in config, but on OpenClaw versions with exclusive memory slots only the slot winner loads at runtime. This plugin registers its own memory flush plan, so pre-compaction flush works when Cognee owns the memory slot.
 
+Both modes also write the plugin's hook permissions (`allowPromptInjection`, `allowConversationAccess`) into the plugin entry — see the note below for why both are needed.
+
 Then configure the Cognee connection in `~/.openclaw/openclaw.json`:
 
 ```json
@@ -95,7 +98,8 @@ Then configure the Cognee connection in `~/.openclaw/openclaw.json`:
       "cognee-openclaw": {
         "enabled": true,
         "hooks": {
-          "allowPromptInjection": true
+          "allowPromptInjection": true,
+          "allowConversationAccess": true
         },
         "config": {
           "baseUrl": "http://localhost:8011",
@@ -112,7 +116,12 @@ Then configure the Cognee connection in `~/.openclaw/openclaw.json`:
 }
 ```
 
-> **`hooks.allowPromptInjection: true` is required.** Without it, OpenClaw blocks the plugin from reading the prompt content in the `before_prompt_build` hook — recall is silently skipped and no memories are injected. This key was named `allowConversationAccess` in versions before OpenClaw 2026.4.2; the old key is silently rejected, so if you copied config from an older guide, update to `allowPromptInjection`. Restart the gateway after adding or changing the flag.
+> **Both `hooks` keys are required — they gate different hook groups.** `openclaw cognee setup` writes them for you; if you configure manually, set both:
+>
+> - **`allowConversationAccess: true`** — OpenClaw blocks *conversation hooks* (`llm_output`, `agent_end`) for installed (non-bundled) plugins unless this is explicitly `true`. Without it, Q&A session capture and post-agent memory sync are **silently skipped** — the only trace is a warning in gateway diagnostics.
+> - **`allowPromptInjection: true`** — gates *prompt-injection hooks* (`before_prompt_build`), which the plugin uses to inject recalled memories. This one defaults to allowed, but set it explicitly: it also signals hook startup intent to OpenClaw's plugin activation.
+>
+> Earlier versions of this README claimed `allowConversationAccess` was renamed to `allowPromptInjection` in OpenClaw 2026.4.2 — that was wrong; the two keys coexist and both matter. Restart the gateway after adding or changing either flag.
 
 ### Multi-Agent Quick Start
 
@@ -125,7 +134,7 @@ For a gateway with multiple named agents sharing a default dataset:
     "entries": {
       "cognee-openclaw": {
         "enabled": true,
-        "hooks": { "allowPromptInjection": true }
+        "hooks": { "allowPromptInjection": true, "allowConversationAccess": true }
       },
       "memory-core": { "enabled": false },
       "memory-lancedb": { "enabled": false }
@@ -192,6 +201,7 @@ Cognee Cloud tenants (staging and production) serve the **same `/api/v1/*` API a
     "entries": {
       "cognee-openclaw": {
         "enabled": true,
+        "hooks": { "allowPromptInjection": true, "allowConversationAccess": true },
         "config": {
           "baseUrl": "https://tenant-xxx.aws.cognee.ai",
           "apiKey": "${COGNEE_API_KEY}"
@@ -238,6 +248,7 @@ For production use, enable multi-scope mode by setting any scope-specific datase
     "entries": {
       "cognee-openclaw": {
         "enabled": true,
+        "hooks": { "allowPromptInjection": true, "allowConversationAccess": true },
         "config": {
           "baseUrl": "http://localhost:8011",
           "companyDataset": "acme-shared",
