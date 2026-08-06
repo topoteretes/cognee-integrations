@@ -224,11 +224,15 @@ struct SearchView: View {
     private func answerView(_ answer: String) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                Label("From your knowledge graph", systemImage: "sparkle")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .textCase(.uppercase)
-                    .kerning(0.8)
-                    .foregroundStyle(Color.cognee)
+                HStack {
+                    Label("From your knowledge graph", systemImage: "sparkle")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .textCase(.uppercase)
+                        .kerning(0.8)
+                        .foregroundStyle(Color.cognee)
+                    Spacer()
+                    CopyButton(text: answer, help: "Copy answer")
+                }
                 Text(Self.markdown(answer))
                     .font(.system(size: 15, design: .serif))
                     .lineSpacing(4)
