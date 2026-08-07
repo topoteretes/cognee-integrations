@@ -22,6 +22,7 @@ function createApi() {
     registerMemoryFlushPlan: mockRegisterMemoryFlushPlan,
     registerCli: jest.fn(),
     registerService: jest.fn(),
+    registerTool: jest.fn(),
     on: jest.fn(),
   };
 

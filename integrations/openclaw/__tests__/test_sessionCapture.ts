@@ -28,7 +28,7 @@ function resetMockImplementations(): void {
 
 type HookHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
 
-function createApi() {
+function createApi(pluginConfig: Record<string, unknown> = {}) {
   const handlers = new Map<string, HookHandler[]>();
   const api = {
     id: "cognee-openclaw",
@@ -41,12 +41,14 @@ function createApi() {
       enableSessions: true,
       captureSession: true,
       datasetName: "testds",
+      ...pluginConfig,
     },
     runtime: {},
     logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn() },
     registerMemoryFlushPlan: jest.fn(),
     registerCli: jest.fn(),
     registerService: jest.fn(),
+    registerTool: jest.fn(),
     on: jest.fn((name: string, fn: HookHandler) => {
       const list = handlers.get(name) ?? [];
       list.push(fn);
@@ -205,6 +207,7 @@ describe("session_end final chain", () => {
     const improveArg = mockImprove.mock.calls[0]![0] as unknown as { datasetName: string; sessionIds: string[] };
     expect(improveArg.datasetName).toBe("testds");
     expect(improveArg.sessionIds).toEqual(["open_claw_s1"]);
+    expect(improveArg).toEqual(expect.objectContaining({ runInBackground: false }));
     expect(mockUnregisterAgent).toHaveBeenCalledWith({ agentSessionName: "s1-will" });
 
     const improveOrder = mockImprove.mock.invocationCallOrder[0]!;
@@ -287,5 +290,66 @@ describe("session_end final chain", () => {
 
     expect(mockImprove).toHaveBeenCalledTimes(1);
     expect(mockUnregisterAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["improveOnSessionEnd=false", { improveOnSessionEnd: false }],
+    ["persistSessionsAfterEnd=false", { persistSessionsAfterEnd: false }],
+    ["enableSessions=false", { enableSessions: false }],
+    ["policy promotion=off", { sessionMemoryPolicy: { promotion: "off" } }],
+  ])("does not promote when %s", async (_label, config) => {
+    const { emit } = createApi(config);
+    await emit("gateway_start", { port: 1 }, {});
+    await flush();
+    await emit("before_prompt_build", { prompt: "hello there" }, { agentId: "will", sessionId: "s1" });
+    await flush();
+
+    await emit("session_end", { sessionId: "s1", messageCount: 1 }, { agentId: "will", sessionId: "s1" });
+    await flush(30);
+
+    expect(mockImprove).not.toHaveBeenCalled();
+  });
+
+  it("does not give the crash watcher promotion arguments when promotion is disabled", async () => {
+    const { emit } = createApi({ improveOnSessionEnd: false });
+    await emit("before_prompt_build", { prompt: "hello there" }, { agentId: "will", sessionId: "s1" });
+    await flush();
+
+    expect(spawnExitWatcher).toHaveBeenCalledWith(expect.not.objectContaining({
+      datasetName: expect.anything(),
+      cogneeSessionId: expect.anything(),
+    }));
+  });
+
+  it("captures QA but not traces in qa-only mode", async () => {
+    const { emit } = createApi({ sessionMemoryPolicy: { capture: "qa-only", promotion: "off" } });
+
+    await emit("after_tool_call", { toolName: "exec", params: { command: "ls" }, result: "ok" }, { agentId: "will", sessionId: "s1" });
+    await emit("before_prompt_build", { prompt: "remember this decision" }, { agentId: "will", sessionId: "s1" });
+    await flush();
+    mockRememberEntry.mockClear();
+    await emit("llm_output", { assistantTexts: ["recorded"] }, { agentId: "will", sessionId: "s1" });
+    await flush();
+
+    expect(mockRememberEntry).toHaveBeenCalledTimes(1);
+    expect((mockRememberEntry.mock.calls[0]![0] as { entry: { type: string } }).entry.type).toBe("qa");
+  });
+
+  it("waits for pending capture writes before promotion", async () => {
+    let releaseCapture!: (value: { entryId?: string }) => void;
+    mockRememberEntry.mockImplementationOnce(() => new Promise((resolve) => { releaseCapture = resolve; }));
+    const { emit } = createApi({ sessionMemoryPolicy: { capture: "qa-only", promotion: "all" } });
+    await emit("gateway_start", { port: 1 }, {});
+    await flush();
+    await emit("before_prompt_build", { prompt: "remember this decision" }, { agentId: "will", sessionId: "s1" });
+    await flush();
+    await emit("llm_output", { assistantTexts: ["recorded"] }, { agentId: "will", sessionId: "s1" });
+    await emit("session_end", { sessionId: "s1", messageCount: 1 }, { agentId: "will", sessionId: "s1" });
+    await flush(10);
+
+    expect(mockImprove).not.toHaveBeenCalled();
+    releaseCapture({ entryId: "e1" });
+    await flush(30);
+    expect(mockImprove).toHaveBeenCalledTimes(1);
   });
 });
