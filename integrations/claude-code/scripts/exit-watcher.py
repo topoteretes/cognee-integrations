@@ -86,6 +86,36 @@ def _spawn_sync(
         _log("exit_sync_detach_failed", error=str(exc)[:300])
 
 
+def _refresh_credits_marker(service_url: str) -> None:
+    """Keep the status-line credits marker fresh for the WHOLE session.
+
+    This is the only plugin process whose lifetime matches the host session —
+    the idle watcher exits at ``bridge_complete``, minutes after the last
+    activity, so a credits poll there dies with it and the segment ages out
+    of its 15-minute TTL during any longer idle stretch. Cloud only,
+    throttled against our tenant's own entry, best-effort by contract.
+    """
+    try:
+        from _plugin_common import (
+            _credits_entry_for_url,
+            _local_api_url,
+            read_credits_marker,
+            refresh_credits,
+            service_url_is_local,
+        )
+
+        base_url = str(service_url or "") or _local_api_url()
+        if service_url_is_local(base_url):
+            return  # local server: no credits concept
+        interval = float(os.environ.get("COGNEE_CREDITS_CHECK_INTERVAL", "") or 300.0)
+        _tid, prior = _credits_entry_for_url(read_credits_marker(), base_url)
+        if time.time() - float(prior.get("checked_at", 0) or 0) < interval:
+            return
+        refresh_credits()
+    except Exception as exc:
+        _log("credits_check_error", error=str(exc)[:200])
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         _log("fatal_missing_args")
@@ -142,6 +172,8 @@ def main() -> None:
         pidfile=str(pidfile),
     )
     while _owns_pidfile(pidfile) and _pid_alive(parent_pid):
+        # Session-long steady-state credits refresh (throttled internally).
+        _refresh_credits_marker(service_url)
         time.sleep(_POLL_SECONDS)
 
     if not _owns_pidfile(pidfile):

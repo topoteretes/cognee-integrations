@@ -28,10 +28,15 @@ _CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
+# Claude Code's own install registry: rewritten the moment `/plugin update`
+# (or a marketplace auto-update) installs a new version, which makes it the
+# only signal that clears the update nudge mid-session (see _update_segment).
+_INSTALLED_PLUGINS_PATH = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 _PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "claude-code" / "llm-state.json"
 _RECALL_PATH = _SHARED_ROOT / "claude-code" / "last_recall.json"
 _RECALL_DIR = _SHARED_ROOT / "claude-code" / "recall"
+_CREDITS_PATH = _SHARED_ROOT / "claude-code" / "credits.json"
 # Per-session copies (see _plugin_common._write_session_marker): the shared files
 # above are coordination state, these are what THIS terminal observed.
 _LLM_STATE_DIR = _SHARED_ROOT / "claude-code" / "llm-state"
@@ -56,6 +61,12 @@ _LLM_STATE_STALE_SECONDS = 30 * 60
 # so anything older than that means the sweep itself has stopped, which is its
 # own separate (unmonitored-by-this-glyph) problem, not something to imply here.
 _PIPELINE_HEALTH_STALE_SECONDS = 30 * 60
+
+# TTL for the credits balance. Written per turn (async prompt hook), after
+# improve/remember, and by the idle watcher every ~5 minutes — so a marker
+# older than this means every writer has stopped (session over, watcher dead);
+# hide the balance rather than show a number that no longer reflects spend.
+_CREDITS_STALE_SECONDS = 15 * 60
 
 # Self-eviction: when the plugin is uninstalled/disabled but its files still
 # linger in the version cache (Claude Code does not remove the statusLine key we
@@ -343,6 +354,17 @@ def _update_segment() -> str:
     running = _running_plugin_version()
     if running and running != installed:
         return ""
+    # Mid-session update guard: `/plugin update` installs the new version into
+    # its own version-pinned cache dir, but settings.json keeps pointing the
+    # status line at THIS (old) copy until the next SessionStart — so the
+    # running-version check above never trips in the session where the update
+    # happened. Claude Code does rewrite installed_plugins.json immediately,
+    # so a recorded install at or past `latest` means the user already
+    # updated: clear the nudge on this refresh instead of after a restart.
+    recorded = _parse_semver(_recorded_install_version())
+    published = _parse_semver(latest)
+    if recorded and published and recorded >= published:
+        return ""
     return f"   \033[1;33m⬆ Cognee update available {installed}→{latest}\033[0m"
 
 
@@ -367,6 +389,49 @@ def _running_plugin_version() -> str:
         except Exception:
             continue
     return ""
+
+
+def _parse_semver(value: str):
+    """Numeric X.Y.Z core as a tuple (ignoring -pre/+build), or None.
+
+    Kept in sync with ``_plugin_common._parse_semver`` — duplicated because the
+    renderer never imports the plugin runtime (see module docstring).
+    """
+    core = str(value or "").strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
+        return None
+
+
+def _recorded_install_version() -> str:
+    """Newest cognee-memory version recorded in Claude Code's install registry.
+
+    ``installed_plugins.json`` maps ``<plugin>@<marketplace>`` to a list of
+    installs; it is rewritten the moment an update lands, regardless of which
+    (possibly older) plugin copy this renderer belongs to. '' when the file is
+    missing, unreadable, or has no parseable cognee-memory entry.
+    """
+    try:
+        data = json.loads(_INSTALLED_PLUGINS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        return ""
+    best, best_str = (), ""
+    for key, installs in plugins.items():
+        if str(key).split("@", 1)[0] != "cognee-memory":
+            continue
+        for install in installs if isinstance(installs, list) else []:
+            version = str(install.get("version") or "") if isinstance(install, dict) else ""
+            parsed = _parse_semver(version)
+            if parsed and parsed > best:
+                best, best_str = parsed, version
+    return best_str
 
 
 def _pipeline_health_glyph() -> str:
@@ -559,6 +624,69 @@ def _recall_segment(session_id: str) -> str:
     return f" \033[2m· recall {recall}\033[0m"
 
 
+def _credits_segment() -> str:
+    """Cloud credits balance + approximate cost of the last memory operation.
+
+    Pure-local like everything here: reads only ``credits.json``, which the
+    hooks/idle watcher keep fresh (see ``_plugin_common.refresh_credits``).
+    Renders nothing unless ALL of: cloud mode, marker present with a numeric
+    balance, marker fresh (``_CREDITS_STALE_SECONDS``), marker written for the
+    server this session talks to, and not opted out. Balance is green —
+    red once negative, which is exactly the state the user most needs to see
+    (a negative balance is real unfunded spend). The last-op cost renders at
+    normal weight and carries a ``~``: spend aggregates asynchronously
+    server-side, so the delta is an attribution, not an invoice.
+    """
+    if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return ""
+    if _active_mode() != "cloud":
+        return ""
+    # The marker is a MAP keyed by tenant id (several terminals can be on
+    # different tenants at once); each entry carries the service base_url it
+    # was observed under. Select OUR tenant's entry by that binding — an
+    # old-format flat marker has no dict values with a matching base_url, so
+    # it simply renders nothing until the first new-format refresh.
+    marker = _read_json(_CREDITS_PATH)
+    active = _active_base_url().rstrip("/")
+    entry = None
+    for candidate in marker.values():
+        if (
+            isinstance(candidate, dict)
+            and str(candidate.get("base_url") or "").rstrip("/") == active
+        ):
+            entry = candidate
+            break
+    if entry is None:
+        return ""
+    remaining = entry.get("remaining_usd")
+    if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+        return ""
+    try:
+        checked_at = float(entry.get("checked_at", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if time.time() - checked_at > _CREDITS_STALE_SECONDS:
+        return ""
+    color = "\033[32m" if remaining >= 0 else "\033[31m"
+    sign = "-" if remaining < 0 else ""
+    seg = f" · {color}credits: {sign}${abs(remaining):,.2f}\033[0m"
+    last_op = entry.get("last_op")
+    if isinstance(last_op, dict):
+        label = str(last_op.get("label") or "").strip()
+        cost = last_op.get("cost_usd")
+        if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            # Normal weight (like the `cognee: <dataset>` text), NOT faint like
+            # the recall/saved counters: what the last operation cost is a
+            # first-class signal, not diagnostics.
+            seg += f" · last {label} ~${cost:,.2f}"
+    return seg
+
+
 def _status_prefix(session_id: str = "") -> str:
     """The single left glyph slot shared by the server- and LLM-key signals.
 
@@ -621,7 +749,7 @@ def main() -> None:
     sys.stdout.write(
         f"{_pipeline_health_glyph()}{_status_prefix(_session_id)}"
         f"cognee: {_active_dataset()} · {_mode_label()}"
-        f"{_recall_segment(_session_id)}{_update_segment()}"
+        f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
     )
 
 

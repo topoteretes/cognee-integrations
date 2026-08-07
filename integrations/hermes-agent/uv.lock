@@ -696,7 +696,7 @@ wheels = [
 
 [[package]]
 name = "cognee"
-version = "1.2.1"
+version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -746,14 +746,14 @@ dependencies = [
     { name = "uvicorn" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/f1/7eca21f6bb468a86d0f57cefcae642382b614b3af3da8b7c83f90a3f1aa4/cognee-1.2.1.tar.gz", hash = "sha256:c527d3b58978759a73079fbb7e081620499f2bd8d80dc01dd4466971123b9a81", size = 19272567, upload-time = "2026-06-21T18:30:04.128Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/21/68e640d10ea9445b55b01715a8ae87a9d469e443614a87261c18c3e507e8/cognee-1.4.0.tar.gz", hash = "sha256:e783dd802ea25471b2c6feec317e8628fa99d67ed9223f22ca339add8fb7da1a", size = 23166925, upload-time = "2026-07-17T15:39:36.9Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/4a/ccdb4b5a6256559cf8bcdb13b483cade9a5c7432a2a65d01dd13c1ccb56d/cognee-1.2.1-py3-none-any.whl", hash = "sha256:4d3248d7551ae07b5248dd82ca2756e75e2c8891404e8823e524c0d00cf718d1", size = 2830094, upload-time = "2026-06-21T18:30:00.918Z" },
+    { url = "https://files.pythonhosted.org/packages/54/f7/2388c4307fb1c5a20e02dad9188fad96f62f28d46f930e12fa402462732a/cognee-1.4.0-py3-none-any.whl", hash = "sha256:51ed9f1f8ca5b5caf215b00f10522e6291e6f3e82f19aaf2864e21ec8176ee0d", size = 3555996, upload-time = "2026-07-17T15:39:33.348Z" },
 ]
 
 [[package]]
 name = "cognee-integration-hermes-agent"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "cognee" },
@@ -766,7 +766,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "cognee", specifier = ">=1.0.0,<2.0.0" }]
+requires-dist = [{ name = "cognee", specifier = ">=1.2.1,<=1.4.0" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -938,7 +938,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [

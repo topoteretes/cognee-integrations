@@ -52,6 +52,11 @@
             "command": "python3 \"${PLUGIN_ROOT}/scripts/store-to-session.py\" --stop || python \"${PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
             "timeout": 120,
             "statusMessage": "Saving assistant response..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/credits-refresh.py\" || python \"${PLUGIN_ROOT}/scripts/credits-refresh.py\"",
+            "timeout": 10
           }
         ]
       }
