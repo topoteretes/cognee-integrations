@@ -12,12 +12,15 @@ integrations/tests/
   conftest.py          # sys.path bootstrap + registers utils.fixtures as a plugin
   utils/
     suites.py          # Suite descriptors (per-suite constants) + dir helpers
-    isolation.py       # temp-HOME isolation: build_env / run_hook / load_suite_module
+    isolation.py       # temp-HOME isolation: build_env / run_hook / module loaders
     identity_fake.py   # stateful auth / agent-session / dataset fake
     mock_cognee.py     # MockCogneeServer on pytest-httpserver, all routes
     payloads.py        # stdin payload builders for every hook event
     fixtures.py        # pytest fixtures wiring it all together
-  tests/               # the actual test files (run by CI)
+  tests/
+    unit/              # in-process, no mock server (isolated_modules/hook_module)
+    integration/       # in-process code exercising the mock server over real HTTP
+    e2e/               # hook scripts run as subprocesses against the mock server
 ```
 
 Run locally from this directory:
@@ -43,6 +46,22 @@ all trigger this suite.
 | `session_prefix` | `claude` | `codex` |
 | cwd env var | `CLAUDE_CWD` | `CODEX_CWD` |
 | Agent-session suffix | `_claude` | `_codex` |
+| `has_background_remember` | `True` | `False` |
+
+`Suite.has_background_remember` gates the one large **intentional** divergence:
+claude-code has the background-remember + cognify-poll refactor (writes post
+`run_in_background=true`, `_post_remember_document` returns an `{"ok": ...}`
+envelope instead of raising, `wait_for_cognify` exists, `_remember_http` honours
+a bounded wait, and improve polls cognify/memify). codex still has the older
+synchronous, raise-on-error path, so tests for those behaviours skip on codex.
+
+Two **unintentional** gaps are marked `xfail` rather than skipped, so they turn
+green the moment codex is fixed:
+
+- codex has no surrogate sanitization (`_strip_surrogates` is absent, and its
+  `_truncate_str` returns text verbatim), so a lone surrogate from binary tool
+  output still reaches its session cache — see
+  `unit/test_surrogate_sanitization.py`.
 
 Shared facts that shape the harness:
 
@@ -121,13 +140,35 @@ calls) and `assert_not_called`.
 - `assert_clean_real_home` — guard fixture asserting the real
   `~/.cognee-plugin` is untouched.
 
-## Test-style guidance
+## Test-style guidance — which tier?
 
-- **Pure logic** (session ids, config layering, truncation, statusline
-  rendering): plain in-process tests, no mock server.
-- **HTTP boundary** (what request was sent / how a response or status code is
-  handled): in-process via `isolated_modules` + `mock_server` — this exercises
-  the real urllib stack over a socket, unlike hand-rolled `urlopen` fakes.
-- **End-to-end** (a hook's full behavior): `run_hook` + `mock_server`.
-- Connection-refused paths: point `COGNEE_BASE_URL` at an unbound port, not at
-  the mock. Timeouts: a slow mock handler.
+- **`unit/`** — pure logic and local state (session ids, config layering,
+  truncation, locks, dedup bookkeeping, statusline rendering) plus the
+  exception taxonomies a server cannot produce (DNS failure, SSL handshake,
+  connection reset). Use `isolated_modules` / `hook_module`; no mock server.
+- **`integration/`** — the HTTP boundary: what request actually went on the
+  wire, and how a real response or status code is handled. In-process code via
+  `isolated_modules` pointed at `mock_server`, which exercises the real urllib
+  stack over a socket unlike a hand-rolled `urlopen` fake. Assert with
+  `assert_called(method, path, **fields)`.
+- **`e2e/`** — a hook script's full behavior via `run_hook` + `mock_server`,
+  including what it leaves on disk under the temp HOME.
+
+Rule of thumb: if the assertion is about "what request did we send" or "how do
+we react to what the server returned", it belongs in `integration/` even when
+it reads like a unit test. If it is about local computation or state, `unit/`.
+
+Practical notes:
+
+- **Connection refused**: use the `closed_port_url` fixture (a genuinely
+  unbound port) — the mock server cannot express "server absent". Timeouts: a
+  slow mock handler or a short client deadline.
+- **Malformed bodies**: `force_response(..., body=b"raw bytes")` sends the body
+  verbatim so it can be invalid JSON.
+- **Sequences**: `set_dataset_status([...])` and `set_credits_overview([...])`
+  walk one entry per request (last sticks); an `int` entry answers with that
+  HTTP status, which is how a transient mid-poll failure is expressed.
+- **Speed**: the HTTPServers are session-scoped and reset per test by
+  `mock_server` / `platform_server` (stopping a server costs ~0.5s, which at
+  this test count dominated the run). Never hold a reference to a mock across
+  tests.

@@ -44,6 +44,14 @@ class Suite:
     cwd_env: str
     #: Suffix _resolve_agent_name appends to the agent session name.
     session_suffix: str
+    #: Capability: has the background-remember + cognify-poll refactor.
+    #: claude-code submits writes with run_in_background=true, returns an
+    #: {"ok": ...} envelope from _post_remember_document instead of raising,
+    #: exposes _plugin_common.wait_for_cognify, honours the bounded wait in
+    #: _remember_http, and polls cognify/memify after an improve. codex still
+    #: has the older synchronous, raise-on-error path, so tests for any of
+    #: those behaviours are suite-conditional.
+    has_background_remember: bool
 
 
 CLAUDE = Suite(
@@ -56,6 +64,7 @@ CLAUDE = Suite(
     session_prefix="claude",
     cwd_env="CLAUDE_CWD",
     session_suffix="_claude",
+    has_background_remember=True,
 )
 
 CODEX = Suite(
@@ -68,6 +77,7 @@ CODEX = Suite(
     session_prefix="codex",
     cwd_env="CODEX_CWD",
     session_suffix="_codex",
+    has_background_remember=False,
 )
 
 ALL_SUITES = [CLAUDE, CODEX]

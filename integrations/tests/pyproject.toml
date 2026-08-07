@@ -18,3 +18,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The same basename may appear in more than one tier (e.g. a module's wire tests
+# in integration/ and its pure-logic tests in unit/). importlib mode drops the
+# unique-basename requirement of the legacy prepend mode.
+addopts = "--import-mode=importlib"
