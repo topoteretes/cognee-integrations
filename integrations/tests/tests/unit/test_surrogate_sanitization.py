@@ -30,16 +30,28 @@ def store_session(suite, hook_module):
 
 
 @pytest.fixture
-def sanitizes(suite):
-    """xfail codex: it has no surrogate sanitization yet (KNOWN BUG, not by design).
+def sanitizes(suite, request):
+    """Expect failure on codex: it has no surrogate sanitization yet.
 
-    claude-code strips lone surrogates in _plugin_common._strip_surrogates and
-    round-trips _truncate_str through utf-8 with errors="replace"; codex has
-    neither, so a surrogate from binary tool output still reaches its session
-    cache. Delete this gate once codex is fixed.
+    A KNOWN BUG, not a design difference — claude-code strips lone surrogates in
+    `_plugin_common._strip_surrogates` and round-trips `_truncate_str` through
+    utf-8 with errors="replace"; codex has neither, so a surrogate from binary
+    tool output still reaches its session cache.
+
+    Deliberately a **strict** xfail marker rather than an imperative
+    `pytest.xfail()` call: the imperative form aborts the test body, so it can
+    never report XPASS and would keep silently not-testing codex forever once
+    the fix lands. With strict=True the body still runs, and the moment codex is
+    fixed the unexpected pass is reported as a failure — which is the signal to
+    delete this fixture and its uses.
     """
     if suite.name == "codex":
-        pytest.xfail("codex lacks surrogate sanitization (no _strip_surrogates)")
+        request.node.add_marker(
+            pytest.mark.xfail(
+                reason="codex lacks surrogate sanitization (no _strip_surrogates)",
+                strict=True,
+            )
+        )
 
 
 def test_payload_surrogate_reproduces_encode_error():
@@ -56,7 +68,10 @@ def test_truncate_str_sanitizes_untruncated_text(store_session, sanitizes):
     assert out == "binary ? output"
 
 
-def test_truncate_str_sanitizes_truncated_text(store_session, sanitizes):
+def test_truncate_str_sanitizes_truncated_text(store_session):
+    # Not gated: the truncation branch has always decoded the re-encoded bytes,
+    # so it was already safe on both suites. Only the under-the-cap path (above)
+    # returned the text verbatim.
     long_text = SURROGATE_TEXT * 500
     out = store_session._truncate_str(long_text, 100)
     out.encode("utf-8")  # must not raise

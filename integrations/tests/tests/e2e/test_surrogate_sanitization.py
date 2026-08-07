@@ -25,16 +25,30 @@ from utils.suites import state_dir
 SURROGATE_TEXT = json.loads('{"v": "binary \\udc88 output"}')["v"]
 
 
-def test_pending_prompt_written_by_the_hook_is_valid_utf8(
-    suite, run_hook, mock_server, payloads, temp_home
-):
-    if suite.name == "codex":
-        # KNOWN BUG, not a design difference: codex has no _strip_surrogates, so
-        # the surrogate survives into its pending-prompt file (written with
-        # ensure_ascii, hence no local write error) and only blows up later,
-        # server-side. Delete this gate once codex is fixed.
-        pytest.xfail("codex lacks surrogate sanitization (no _strip_surrogates)")
+@pytest.fixture
+def sanitizes(suite, request):
+    """Expect failure on codex — a KNOWN BUG, not a design difference.
 
+    codex has no `_strip_surrogates`, so the surrogate survives into its
+    pending-prompt file (written with ensure_ascii, hence no local write error)
+    and only blows up later, server-side.
+
+    Strict marker, not an imperative `pytest.xfail()`: the body must still run so
+    that fixing codex reports an unexpected pass instead of silently leaving the
+    test inert. That failure is the signal to delete this gate.
+    """
+    if suite.name == "codex":
+        request.node.add_marker(
+            pytest.mark.xfail(
+                reason="codex lacks surrogate sanitization (no _strip_surrogates)",
+                strict=True,
+            )
+        )
+
+
+def test_pending_prompt_written_by_the_hook_is_valid_utf8(
+    suite, run_hook, mock_server, payloads, temp_home, sanitizes
+):
     result = run_hook(
         suite,
         "store-user-prompt.py",
