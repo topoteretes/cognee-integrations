@@ -179,7 +179,7 @@ cognee: my-project · cloud
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host.
 
-A connection glyph precedes the line: `●` once the server is confirmed up **and** authenticated, or `✕ (<reason>)` on failure — `incorrect_cognee_api_key` (a missing, wrong, or expired `COGNEE_API_KEY`), `unreachable` (server down, including a server that dies mid-session), or `server_error` (5xx). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so it stays green until a failure is actually observed and clears back to `●` on the next success. Read from local state only — no network on refresh.
+A connection glyph precedes the line: `●` once the server is confirmed up **and** authenticated, or `✕ (<reason>)` on failure — `incorrect_cognee_api_key` (a missing, wrong, or expired `COGNEE_API_KEY`), `unreachable` (server positively absent: connection refused or DNS failure, including a server that dies mid-session), `server_error` (5xx), or `not_responding` (the server accepts connections but hasn't answered for several consecutive prompts — a single slow response never triggers it, so a busy server is not misreported as unreachable). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so it stays green until a failure is actually observed and clears back to `●` on the next success. Read from local state only — no network on refresh.
 
 | Env var | Default | Effect |
 |---|---|---|

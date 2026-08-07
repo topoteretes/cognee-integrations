@@ -58,8 +58,12 @@ def _drive_run(recall_map, *, breaker=(False, 0), recall_fn=None):
 
     # The breaker is imported lazily inside _run (cloud mode); inject a fake so
     # the test is deterministic regardless of any on-disk breaker state.
+    # breaker_open is keyed by service_url since SDK-356; record_success /
+    # record_failure are the hot-path accounting hooks (no-ops here).
     fake_client = types.ModuleType("_cognee_client")
-    fake_client.breaker_open = lambda: breaker
+    fake_client.breaker_open = lambda service_url="": breaker
+    fake_client.record_success = lambda service_url="": None
+    fake_client.record_failure = lambda *a, **k: None
     saved_client = sys.modules.get("_cognee_client")
     sys.modules["_cognee_client"] = fake_client
 

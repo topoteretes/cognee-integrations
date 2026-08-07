@@ -88,10 +88,11 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const recallBreakerThreshold = typeof raw.recallBreakerThreshold === "number" ? raw.recallBreakerThreshold : DEFAULT_RECALL_BREAKER_THRESHOLD;
   const recallBreakerCooldownMs = typeof raw.recallBreakerCooldownMs === "number" ? raw.recallBreakerCooldownMs : DEFAULT_RECALL_BREAKER_COOLDOWN_MS;
 
+  // All credential env reads live here, in the network-free config layer;
+  // downstream modules receive resolved values (see resolveOrMintApiKey).
   const apiKey =
     raw.apiKey && raw.apiKey.length > 0 ? resolveEnvVars(raw.apiKey)
-    : mode === "cloud" ? process.env.COGNEE_API_KEY || ""
-    : "";
+    : process.env.COGNEE_API_KEY?.trim() || "";
   const username = raw.username?.trim() || process.env.COGNEE_USERNAME || "";
   const password = raw.password?.trim() || process.env.COGNEE_PASSWORD || "";
 

@@ -94,9 +94,15 @@ def test_dead_holder_lock_is_reclaimed():
     # dead-pid branch must be what clears it. pid_alive is stubbed rather than
     # guessing an unused pid, so the test can't flake on a recycled pid.
     p.write_text(json.dumps({"owner": "dead", "pid": 4242, "created_at": 9e9}))
+    # c._proc is the SHARED module object (sys.modules singleton): restore the
+    # stub or it leaks into every later test module (seen in test_proc).
+    _orig_pid_alive = c._proc.pid_alive
     c._proc.pid_alive = lambda pid: False
-    with c.improve_session_lock("sess-A", "reclaimer") as claimed:
-        assert claimed is True, "stale lock from a dead pid must be reclaimed"
+    try:
+        with c.improve_session_lock("sess-A", "reclaimer") as claimed:
+            assert claimed is True, "stale lock from a dead pid must be reclaimed"
+    finally:
+        c._proc.pid_alive = _orig_pid_alive
 
 
 def test_live_holder_lock_is_not_stolen():
@@ -112,9 +118,13 @@ def test_live_holder_lock_is_not_stolen():
 
     now = _dt.datetime.now(_dt.timezone.utc).timestamp()
     p.write_text(json.dumps({"owner": "live", "pid": 4242, "created_at": now}))
+    _orig_pid_alive = c._proc.pid_alive
     c._proc.pid_alive = lambda pid: True
-    with c.improve_session_lock("sess-A", "intruder") as claimed:
-        assert claimed is False, "a live holder's lock must be respected"
+    try:
+        with c.improve_session_lock("sess-A", "intruder") as claimed:
+            assert claimed is False, "a live holder's lock must be respected"
+    finally:
+        c._proc.pid_alive = _orig_pid_alive
 
 
 def test_missing_session_id_never_blocks():

@@ -101,7 +101,7 @@ def test_store_user_prompt_sanitizes_pending_prompt():
             "bump_save_counter",
         )
     }
-    store_prompt._load_session = lambda: ("sess1", "ds", "u1")
+    store_prompt._load_session = lambda: ("sess1", "ds", "u1", "")
     store_prompt.load_config = lambda: {}
     store_prompt.touch_activity = lambda: None
     store_prompt._ensure_idle_watcher = lambda *a, **kw: None

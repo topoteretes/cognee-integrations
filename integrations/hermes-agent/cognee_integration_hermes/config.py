@@ -7,7 +7,24 @@ import os
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DATASET = "hermes"
+# The other cognee agent plugins (claude-code, codex, openclaw) share one brain:
+# one dataset, one store under ~/.cognee, one server on 8011, one minted API key
+# under ~/.cognee-plugin. Hermes joins that convention — same names, same paths —
+# so memory written in any of them is recalled in all of them.
+DEFAULT_DATASET = "agent_sessions"
+SHARED_PLUGIN_STATE_DIR = Path.home() / ".cognee-plugin"
+SHARED_COGNEE_HOME = Path.home() / ".cognee"
+# Port for the local cognee server. 8011 matches the other cognee agent plugins
+# and deliberately avoids cognee's own default of 8000, so we never attach to —
+# or contend with — a server the user is running themselves.
+DEFAULT_LOCAL_PORT = 8011
+# How long a boot may take before giving up, matching the other plugins'
+# COGNEE_SERVER_BOOT_DEADLINE. A *first* boot runs DB migrations and store
+# initialization and can take minutes on a slow machine; giving up early leaves
+# memory off for the whole session even though the server finishes booting
+# moments later. A genuinely broken spawn never waits this out — the bootstrap
+# fails fast once the child is dead and nothing owns the port.
+DEFAULT_SERVER_BOOT_TIMEOUT = 600
 DEFAULT_IDENTITY_EMAIL = "hermes-agent@cognee.local"
 DEFAULT_IDENTITY_PASSWORD = "hermes-agent-plugin"
 
@@ -48,6 +65,25 @@ def config_path(hermes_home: str | Path | None = None) -> Path | None:
     return home / "cognee.json" if home else None
 
 
+def resolve_local_roots(config: dict[str, Any]) -> tuple[str, str]:
+    """Where cognee should keep its data and system directories.
+
+    Explicit ``COGNEE_DATA_ROOT`` / ``COGNEE_SYSTEM_ROOT`` win. Otherwise both
+    default to ``~/.cognee/{data,system}`` — the exact roots the claude-code,
+    codex and openclaw plugins pin — so every plugin's server serves the same
+    store no matter which of them booted it first.
+
+    The trade-off is deliberate: memory is shared across agents *and* across
+    Hermes profiles by default. To isolate a profile, point
+    ``COGNEE_DATA_ROOT`` / ``COGNEE_SYSTEM_ROOT`` somewhere else and give it its
+    own ``COGNEE_LOCAL_PORT`` — a server belongs to whoever reaches its port
+    first, so shared port means shared store regardless of these roots.
+    """
+    data_root = str(config.get("data_root") or "") or str(SHARED_COGNEE_HOME / "data")
+    system_root = str(config.get("system_root") or "") or str(SHARED_COGNEE_HOME / "system")
+    return data_root, system_root
+
+
 def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     """Load plugin config from environment variables and HERMES_HOME/cognee.json."""
     # COGNEE_BASE_URL is the canonical name; COGNEE_SERVICE_URL is a deprecated alias
@@ -62,9 +98,17 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         # embedded=true runs cognee in-process (single-process/offline only);
         # otherwise local mode ensures a local server on local_port (DB-safe).
         "embedded": str_to_bool(os.environ.get("COGNEE_EMBEDDED"), False),
-        "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), 8000),
-        "server_boot_timeout": str_to_int(os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), 30),
-        "dataset": os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
+        # Which transport reaches cognee: "" / "sdk" (default) or "http" for the
+        # direct REST client the other cognee plugins use. See backend.build_backend.
+        "transport": os.environ.get("COGNEE_TRANSPORT", ""),
+        "local_port": str_to_int(os.environ.get("COGNEE_LOCAL_PORT"), DEFAULT_LOCAL_PORT),
+        "server_boot_timeout": str_to_int(
+            os.environ.get("COGNEE_SERVER_BOOT_TIMEOUT"), DEFAULT_SERVER_BOOT_TIMEOUT
+        ),
+        # COGNEE_PLUGIN_DATASET is the name the other cognee plugins read;
+        # COGNEE_DATASET is this plugin's 0.1.x name, kept as an alias.
+        "dataset": os.environ.get("COGNEE_PLUGIN_DATASET")
+        or os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
         "top_k": str_to_int(os.environ.get("COGNEE_TOP_K"), 5),
         "auto_route": str_to_bool(os.environ.get("COGNEE_AUTO_ROUTE"), True),
         "improve_on_end": str_to_bool(os.environ.get("COGNEE_IMPROVE_ON_END"), True),
@@ -99,8 +143,12 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 120))
     config["write_timeout"] = max(1, str_to_int(config.get("write_timeout"), 120))
     config["improve_timeout"] = max(1, str_to_int(config.get("improve_timeout"), 300))
-    config["local_port"] = min(65535, max(1, str_to_int(config.get("local_port"), 8000)))
-    config["server_boot_timeout"] = max(1, str_to_int(config.get("server_boot_timeout"), 30))
+    config["local_port"] = min(
+        65535, max(1, str_to_int(config.get("local_port"), DEFAULT_LOCAL_PORT))
+    )
+    config["server_boot_timeout"] = max(
+        1, str_to_int(config.get("server_boot_timeout"), DEFAULT_SERVER_BOOT_TIMEOUT)
+    )
     config["auto_route"] = str_to_bool(config.get("auto_route"), True)
     config["improve_on_end"] = str_to_bool(config.get("improve_on_end"), True)
     config["embedded"] = str_to_bool(config.get("embedded"), False)

@@ -20,13 +20,38 @@ def _provider_active() -> bool:
         return False
 
 
+def _installed_plugin_version() -> str:
+    """The version of the plugin copy this code runs from (its plugin.yaml)."""
+    manifest = Path(__file__).resolve().parents[1] / "plugin.yaml"
+    try:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if line.startswith("version:"):
+                return line.split(":", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return ""
+
+
+def _pip_package_version() -> str:
+    """The pip-installed package version, if the package is in this env."""
+    try:
+        from importlib.metadata import version
+
+        return version("cognee-integration-hermes-agent")
+    except Exception:
+        return ""
+
+
 def _print_status(args) -> None:
     cfg = load_config()
     path = config_path()
+    plugin_version = _installed_plugin_version()
+    pip_version = _pip_package_version()
     print("\nCognee memory")
     print("-" * 40)
     print(f"  Active provider: {'yes' if _provider_active() else 'no'}")
     print(f"  Cognee package:  {'installed' if importlib.util.find_spec('cognee') else 'missing'}")
+    print(f"  Plugin version:  {plugin_version or '(unknown)'}")
     print(f"  Mode:            {'remote' if cfg.get('service_url') else 'local'}")
     print(f"  Dataset:         {cfg.get('dataset')}")
     print(f"  Config:          {path or '(unknown)'}")
@@ -34,6 +59,13 @@ def _print_status(args) -> None:
     print(f"  LLM key:         {'set' if cfg.get('llm_api_key') else 'missing'}")
     print(f"  API key:         {'set' if cfg.get('api_key') else 'missing'}")
     print(f"  Improve on end:  {cfg.get('improve_on_end')}")
+    if pip_version and plugin_version and pip_version != plugin_version:
+        # Hermes runs the copy under HERMES_HOME/plugins, so `pip install -U`
+        # alone changes nothing until the installer refreshes that copy.
+        print(
+            f"  Update:          pip package is {pip_version} but this installed copy "
+            f"is {plugin_version} — run `cognee-hermes-install` to update"
+        )
     print()
 
 
@@ -57,15 +89,13 @@ def _run_setup(args) -> None:
 
 def _print_install(args) -> None:
     here = Path(__file__).resolve().parents[1]
-    print("\nInstall as a local Hermes directory plugin:")
+    print("\nInstall via pip (recommended):")
+    print("  pip install cognee-integration-hermes-agent")
+    print("  cognee-hermes-install     # copies the plugin into $HERMES_HOME/plugins")
+    print("  hermes memory setup")
+    print("\nInstall as a local Hermes directory plugin (from a checkout):")
     print("  mkdir -p ~/.hermes/plugins/cognee")
     print(f"  cp -R {here}/. ~/.hermes/plugins/cognee/")
-    print("  hermes memory setup")
-    print("\nInstall from a standalone git repo once published:")
-    print("  hermes plugins install <owner>/<repo>")
-    print("  hermes memory setup")
-    print("\nInstall via pip:")
-    print("  pip install cognee-integration-hermes-agent")
     print("  hermes memory setup\n")
 
 

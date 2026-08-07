@@ -13,6 +13,14 @@
       "replaySafe": true
     }
   },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        { "path": "apiKey", "expected": "string" },
+        { "path": "password", "expected": "string" }
+      ]
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -24,6 +24,7 @@ from typing import Optional
 
 import _proc
 from _env_file import load_env_file
+from _recall_http import DOWN, SLOW, UNKNOWN, classify_transport_exception
 
 # One-time config: ~/.cognee/.env acts like shell exports (setdefault — a real
 # export still wins). Loaded before any env read below or in importers.
@@ -418,6 +419,13 @@ def load_resolved(session_key: str = "") -> dict:
                 agent_user_id = str(agent.get("user_id") or "").strip()
                 if agent_user_id:
                     resolved["user_id"] = agent_user_id
+                # Which cloud tenant this connection belongs to (null on local
+                # single-user servers). The credits display keys its balance
+                # entries on this, so multi-tenant machines track each tenant
+                # separately (SDK-355).
+                tenant_id = str(agent.get("tenant_id") or "").strip()
+                if tenant_id:
+                    resolved["tenant_id"] = tenant_id
                 status = str(agent.get("status") or "").strip().lower()
                 resolved["registered"] = status == "active"
     except Exception as exc:
@@ -462,6 +470,36 @@ def _write_json_file(path: Path, data: dict) -> None:
         os.replace(tmp, path)
     except Exception as exc:
         hook_log("json_write_failed", {"path": str(path), "error": str(exc)[:200]})
+
+
+def _strip_surrogates(text: str) -> str:
+    """Remove lone UTF-16 surrogate codepoints (U+D800-U+DFFF).
+
+    A legitimate supplementary-plane character (emoji, etc.) is always ONE code
+    point in Python's str, never a surrogate. Any char in this range in a real
+    str is therefore always broken/unpaired (a bad UTF-16<->UTF-8 boundary
+    upstream -- Windows console/clipboard, mis-decoded tool output), never a
+    valid character. It round-trips silently through json.dumps/loads
+    (ensure_ascii escapes it, loads() reconstitutes it) -- only a raw UTF-8
+    encode downstream (embedding tokenizer, LLM adapter, cognify) catches it,
+    by which point the entry is already persisted. Strip (don't replace) to keep
+    surrounding text readable with no placeholder glyph.
+    """
+    if not text or not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join(ch for ch in text if not (0xD800 <= ord(ch) <= 0xDFFF))
+
+
+def _sanitize_value(value):
+    """Recursively strip surrogates from every string leaf in a JSON-shaped value.
+    Only string VALUES are touched -- dict keys, ints, bools, None pass through."""
+    if isinstance(value, str):
+        return _strip_surrogates(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_value(v) for v in value]
+    return value
 
 
 def _bridge_cache_key(dataset: str, session_id: str) -> str:
@@ -566,6 +604,9 @@ def append_http_bridge_entry(
         return
     if not (question or answer or trace):
         return
+    question = _strip_surrogates(question)
+    answer = _strip_surrogates(answer)
+    trace = _strip_surrogates(trace)
 
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
@@ -987,6 +1028,8 @@ def remember_pending_prompt(
     """Store the current prompt until Codex Stop provides the assistant answer."""
     if not session_id or not prompt.strip():
         return
+    prompt = _strip_surrogates(prompt)
+    context = _strip_surrogates(context)
     data = _load_json_file(_pending_file(session_id))
     turn_key, session_key = _pending_keys(session_id, turn_id)
     entry = {
@@ -1287,30 +1330,51 @@ def http_api_ready() -> bool:
     return bool(service_url and api_key)
 
 
-def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
-    """Return True iff GET {service_url}/health responds 200 (server serving).
+def probe_health(service_url: str = "", timeout: float = 1.0) -> str:
+    """Classified GET {service_url}/health probe.
 
-    The Cognee server runs migrations in its FastAPI lifespan *before* it
-    serves, so a 200 here reliably means migrations are done and the DBs are
-    reachable.
+    Returns:
+      "ready"   — 200 (the server runs migrations in its FastAPI lifespan
+                  *before* it serves, so this reliably means migrations are
+                  done and the DBs are reachable)
+      "down"    — connection refused / DNS / unroutable: positively absent
+      "slow"    — timed out: NO verdict (a busy server times out; a dead one
+                  refuses in milliseconds). Callers must keep prior state.
+      "unknown" — non-200 status, SSL trouble, resets, or no URL: no verdict
     """
     base = _normalize_service_url(service_url or _local_api_url())
     if not base:
-        return False
+        return UNKNOWN
     try:
         with urllib.request.urlopen(
             f"{base}/health", timeout=timeout, context=_https_context()
         ) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
+            return "ready" if resp.status == 200 else UNKNOWN
+    except Exception as exc:
+        verdict = classify_transport_exception(exc)
+        return verdict if verdict in (DOWN, SLOW) else UNKNOWN
+
+
+def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
+    """Return True iff /health responds 200. Boolean face of ``probe_health``.
+
+    Callers that must react to *failures* should use ``probe_health`` instead:
+    this bool cannot distinguish "down" (write a failure state) from "slow"
+    (no verdict — keep prior state).
+    """
+    return probe_health(service_url, timeout=timeout) == "ready"
 
 
 # Connection states recorded in the (shared) server-ready marker. "ready" means
 # the server is up AND authenticated; the failure states carry the reason shown
 # in the status line as "✕ (<state>)". Any non-"ready" state makes
 # server_ready_hint return False so recall does not attempt against a bad backend.
-CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error")
+# "unreachable" is reserved for POSITIVE absence (connection refused / DNS /
+# unroutable). "not_responding" is deliberately distinct: the server exists
+# (connections are not refused) but has not answered within budget for N
+# consecutive prompts — written only by the slow-streak escalation (see
+# record_slow_probe), never by a lone timeout.
+CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error", "not_responding")
 
 
 # Per-session copies of the status markers. The shared files above are
@@ -1398,6 +1462,83 @@ def mark_server_ready(service_url: str, version: str = "") -> None:
     write_connection_state("ready", service_url, version=version)
 
 
+# Slow-server hysteresis. A single timeout is "no verdict" and must not touch
+# the connection marker — but N consecutive timeout-only prompts with no
+# success in between are a pattern (wedged server, packet-dropping network),
+# not a blip. This counter, keyed by base_url, is how a lone blip stays
+# invisible while a persistent stall still escalates to a visible "slow" state
+# (and recall backoff) instead of leaving the bar green forever.
+_SLOW_STREAK_FILE = _PLUGIN_DIR / "slow-streak.json"
+
+
+def slow_streak_threshold() -> int:
+    """Consecutive timeout-only prompts before escalating to state "slow"."""
+    try:
+        return max(1, int(os.environ.get("COGNEE_SLOW_STREAK_THRESHOLD", "3") or 3))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _slow_streak_window_seconds() -> float:
+    """Ticks further apart than this don't chain — a streak must be recent."""
+    try:
+        return float(os.environ.get("COGNEE_SLOW_STREAK_WINDOW", "600") or 600)
+    except (TypeError, ValueError):
+        return 600.0
+
+
+def _read_slow_streaks() -> dict:
+    try:
+        raw = json.loads(_SLOW_STREAK_FILE.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_slow_streaks(state: dict) -> None:
+    try:
+        _SLOW_STREAK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SLOW_STREAK_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, _SLOW_STREAK_FILE)
+    except Exception:
+        pass
+
+
+def record_slow_probe(service_url: str) -> int:
+    """Count a consecutive no-verdict (timeout) observation; return the streak.
+
+    The streak resets itself when the previous tick is older than the window —
+    two timeouts hours apart are noise, not a pattern. The caller escalates to
+    ``write_connection_state("not_responding", ...)`` once the return value
+    reaches ``slow_streak_threshold()``.
+    """
+    url = _normalize_service_url(service_url)
+    now = datetime.now(timezone.utc).timestamp()
+    state = _read_slow_streaks()
+    entry = state.get(url) if isinstance(state.get(url), dict) else {}
+    try:
+        last_at = float(entry.get("last_at") or 0)
+        count = int(entry.get("count") or 0)
+    except (TypeError, ValueError):
+        last_at, count = 0.0, 0
+    if now - last_at > _slow_streak_window_seconds():
+        count = 0
+    count += 1
+    state[url] = {"count": count, "last_at": now}
+    _write_slow_streaks(state)
+    return count
+
+
+def clear_slow_streak(service_url: str) -> None:
+    """A definitive observation (success OR hard failure) ends the streak."""
+    url = _normalize_service_url(service_url)
+    state = _read_slow_streaks()
+    if url in state:
+        state.pop(url, None)
+        _write_slow_streaks(state)
+
+
 def same_connection_target(service_url: str, prior_url: str) -> bool:
     """True unless the two URLs are *provably* different servers.
 
@@ -1447,10 +1588,14 @@ def authed_liveness(service_url: str = "", api_key: str = "", timeout: float = 1
       "ready"        — 2xx (server up and the key is accepted)
       "auth_failed"  — 401/403 (server up, key rejected)
       "server_error" — 5xx
-      "unreachable"  — connection refused / timeout / DNS
-      "unknown"      — endpoint absent (404/405) or no key to send; caller should
-                       fall back to ``server_health_ok`` rather than trust this
-    Returns a string in ``CONNECTION_STATES`` or "unknown". Never raises.
+      "unreachable"  — connection refused / DNS / unroutable (positively absent)
+      "slow"         — timed out: NO verdict, the server may simply be busy.
+                       Callers must keep their prior state, not record a failure.
+      "unknown"      — endpoint absent (404/405), no key to send, or an
+                       unclassifiable transport error; caller should fall back
+                       to ``probe_health`` rather than trust this
+    Returns a string in ``CONNECTION_STATES``, "slow", or "unknown" — "slow"
+    is a probe verdict only, never a recorded marker state. Never raises.
     """
     base = _normalize_service_url(service_url or _local_api_url())
     if not base:
@@ -1476,8 +1621,11 @@ def authed_liveness(service_url: str = "", api_key: str = "", timeout: float = 1
         if exc.code >= 500:
             return "server_error"
         return "unknown"
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return "unreachable"
+    except Exception as exc:
+        verdict = classify_transport_exception(exc)
+        if verdict == DOWN:
+            return "unreachable"
+        return "slow" if verdict == SLOW else "unknown"
 
 
 # LLM-key health surfaced in the status line — LOCAL mode only, since LLM_API_KEY
@@ -1638,6 +1786,256 @@ def server_usable(service_url: str = "", probe_timeout: float = 1.0) -> bool:
     except Exception:
         pass
     return False
+
+
+# --- Credits marker (status-line budget display, SDK-355) ---------------------
+# The status-line renderer is pure-local by contract, so the credits balance it
+# shows comes from this marker, written by hooks/watchers that are already
+# allowed to touch the network. Cloud-only: a local server has no credit
+# concept, so the fetch is gated on a non-loopback base URL (the renderer
+# independently gates on its mode label).
+_CREDITS_MARKER = _PLUGIN_DIR / "credits.json"
+_PLATFORM_API_URL_DEFAULT = "https://api.aws.cognee.ai"
+
+
+def _platform_api_url() -> str:
+    """The cloud control-plane API host (billing/account routes).
+
+    Distinct from the memory data plane: cloud sessions talk to a per-tenant
+    host (``tenant-<id>.aws.cognee.ai``), which serves recall/remember/improve
+    but has NO billing routes — asking it for the credits overview 404s. The
+    billing routes live only on the platform API, which accepts the same
+    tenant ``COGNEE_API_KEY``. Overridable for other cloud deployments.
+    """
+    return (
+        str(os.environ.get("COGNEE_PLATFORM_API_URL", "") or _PLATFORM_API_URL_DEFAULT)
+        .strip()
+        .rstrip("/")
+    )
+
+
+# The marker is a MAP keyed by tenant id: several concurrent Claude sessions
+# on one machine can be connected to DIFFERENT cloud tenants, and a flat
+# last-writer-wins record made them clobber each other's balance. Each entry
+# carries the service base_url it was observed under — that binding is how
+# readers with only a URL in hand (the renderer, the Stop hook) find their
+# tenant's entry.
+_CREDITS_LOCK = _PLUGIN_DIR / "credits.lock"
+_CREDITS_LOCK_STALE_SECONDS = 30.0
+_CREDITS_ENTRY_MAX_AGE_SECONDS = 7 * 24 * 3600.0
+
+
+def read_credits_marker() -> dict:
+    """Return the tenant-keyed credits map, or {} — never raises."""
+    try:
+        raw = json.loads(_CREDITS_MARKER.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _credits_entry_for_url(marker: dict, service_url: str) -> tuple[str, dict]:
+    """Find the (tenant_id, entry) bound to ``service_url``, or ("", {})."""
+    want = _normalize_service_url(service_url)
+    for key, entry in marker.items():
+        if (
+            isinstance(entry, dict)
+            and _normalize_service_url(str(entry.get("base_url") or "")) == want
+        ):
+            return str(key), entry
+    return "", {}
+
+
+def _try_acquire_credits_lock() -> bool:
+    """Guard the marker's read-modify-write; concurrent writers on different
+    tenants would otherwise each write back a map missing the other's entry.
+    Fail-open like the drain lock: a rare lost update beats a wedged marker."""
+    try:
+        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+        if _CREDITS_LOCK.exists():
+            try:
+                if time.time() - _CREDITS_LOCK.stat().st_mtime > _CREDITS_LOCK_STALE_SECONDS:
+                    _CREDITS_LOCK.unlink()
+            except FileNotFoundError:
+                pass
+        fd = os.open(str(_CREDITS_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
+def _release_credits_lock() -> None:
+    try:
+        _CREDITS_LOCK.unlink()
+    except Exception:
+        pass
+
+
+def _select_tenant_budget(overview: dict, tenant_id: str) -> dict | None:
+    """Return the budget record of OUR tenant from the credits overview, or None.
+
+    Exact match only, on purpose: the display answers "what does the tenant I
+    am connected to have left?", and no other number is a valid answer. The
+    overview's account-wide ``budget`` aggregates every workspace the user
+    owns, and its ``tenants`` list may contain workspaces other than the one
+    this session talks to (e.g. your personal workspace while connected to a
+    shared tenant someone else owns) — showing either would be wrong, so with
+    no exact match the caller shows nothing at all.
+    """
+    tenants = overview.get("tenants")
+    tenants = [t for t in tenants if isinstance(t, dict)] if isinstance(tenants, list) else []
+    for t in tenants:
+        if str(t.get("tenantId") or "").strip() == tenant_id:
+            return {
+                "remaining_usd": t.get("remainingUsd"),
+                "spent_usd": t.get("spentUsd"),
+                "total_usd": t.get("maxBudgetUsd"),
+            }
+    return None
+
+
+def refresh_credits(op_label: str = "", *, tenant_id: str = "", timeout: float = 3.0) -> dict:
+    """Fetch the cloud credits overview and update this tenant's marker entry.
+
+    Best-effort by contract: any failure returns {} and leaves the existing
+    marker untouched — the renderer's staleness TTL handles an aging balance,
+    and a fetch problem must never propagate into the calling hook.
+
+    ``tenant_id`` comes from ``load_resolved()`` (the connections/me lookup)
+    when the caller has it; otherwise the tenant is recovered from the marker
+    entry already bound to this service URL (established by the prompt-time
+    refresh). Strictly the CONNECTED tenant's budget or nothing: when the
+    tenant cannot be determined, or is not in the overview, no entry is
+    written and the segment simply does not render.
+
+    ``op_label`` ("turn" / "remember" / "improve") attributes the spend
+    recorded since the previous reading OF THIS TENANT to the operation that
+    just ran. Approximate by design — the cloud aggregates spend
+    asynchronously and concurrent operations overlap, so the delta reads as
+    "~cost", not an invoice. A non-positive delta (aggregation lag, or a
+    top-up between readings) refreshes the balance but records no last_op:
+    a negative "cost" is meaningless, and the prior last_op is kept so the
+    display doesn't flicker away on every idle refresh.
+    """
+    service_url = _local_api_url()
+    if service_url_is_local(service_url):
+        return {}
+    platform_url = _platform_api_url()
+    try:
+        marker = read_credits_marker()
+        tenant_id = str(tenant_id or "").strip()
+        if not tenant_id:
+            tenant_id, _ = _credits_entry_for_url(marker, service_url)
+        if not tenant_id:
+            # Connected tenant unknown (no id from the caller, no prior URL
+            # binding): show nothing rather than someone's other workspace or
+            # the all-tenants aggregate. Skipped BEFORE the fetch — a doomed
+            # lookup is not worth a network call.
+            hook_log("credits_refresh_skipped_no_tenant", {"base_url": service_url})
+            return {}
+        overview = _json_http_request(
+            "/api/v1/billing/credits/overview",
+            None,
+            method="GET",
+            timeout=timeout,
+            base_url=platform_url,
+        )
+        budget = _select_tenant_budget(overview or {}, tenant_id)
+        if budget is None:
+            hook_log(
+                "credits_tenant_not_in_overview",
+                {"tenant_id": tenant_id, "platform_url": platform_url},
+            )
+            return {}
+        remaining = budget.get("remaining_usd")
+        spent = budget.get("spent_usd")
+        if remaining is None and spent is None:
+            hook_log(
+                "credits_fetch_empty",
+                {"platform_url": platform_url, "tenant_id": tenant_id},
+            )
+            return {}
+        now_ts = datetime.now(timezone.utc).timestamp()
+        entry_key = tenant_id
+        entry = {
+            "remaining_usd": remaining,
+            "spent_usd": spent,
+            "total_usd": budget.get("total_usd"),
+            # The service URL this tenant was observed under: the renderer and
+            # tenantless callers look their entry up by it.
+            "base_url": service_url,
+            "platform_url": platform_url,
+            "tenant_id": tenant_id,
+            "checked_at": now_ts,
+        }
+        acquired = _try_acquire_credits_lock()
+        try:
+            # Re-read under the lock: another tenant's refresh may have
+            # updated the map since the pre-fetch read.
+            marker = read_credits_marker()
+            prior = marker.get(entry_key)
+            prior = prior if isinstance(prior, dict) else {}
+            last_op = prior.get("last_op")
+            if op_label:
+                delta = None
+                try:
+                    # Prefer the spend counter; fall back to the remaining-
+                    # balance drop when the API reports only one of the two.
+                    if spent is not None and prior.get("spent_usd") is not None:
+                        delta = float(spent) - float(prior["spent_usd"])
+                    elif remaining is not None and prior.get("remaining_usd") is not None:
+                        delta = float(prior["remaining_usd"]) - float(remaining)
+                except (TypeError, ValueError):
+                    delta = None
+                if delta is not None and delta > 0:
+                    last_op = {
+                        "label": str(op_label)[:24],
+                        "cost_usd": round(delta, 4),
+                        "at": now_ts,
+                    }
+            if isinstance(last_op, dict):
+                entry["last_op"] = last_op
+            marker[entry_key] = entry
+            # Prune long-dead tenants so one-off connections don't accumulate.
+            for key in [
+                k
+                for k, v in marker.items()
+                if k != entry_key
+                and (
+                    not isinstance(v, dict)
+                    or now_ts - float(v.get("checked_at", 0) or 0) > _CREDITS_ENTRY_MAX_AGE_SECONDS
+                )
+            ]:
+                marker.pop(key, None)
+            _CREDITS_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            # Per-pid tmp: a shared staging name let one writer truncate the
+            # file another was about to os.replace into place, and the
+            # renderer briefly saw a torn marker (the "credits disappear
+            # mid-search" flicker).
+            tmp = _CREDITS_MARKER.with_name(f"{_CREDITS_MARKER.name}.{os.getpid()}.tmp")
+            try:
+                tmp.write_text(json.dumps(marker), encoding="utf-8")
+                os.replace(tmp, _CREDITS_MARKER)
+            finally:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+        finally:
+            if acquired:
+                _release_credits_lock()
+        return entry
+    except Exception as exc:
+        # platform_url in the detail: a 404 here once cost a PID-correlation
+        # hunt to discover WHICH host was being asked.
+        hook_log(
+            "credits_fetch_failed",
+            {"error": str(exc)[:200], "platform_url": platform_url},
+        )
+        return {}
 
 
 # --- Plugin update check (Phase 2) -------------------------------------------
@@ -1851,8 +2249,12 @@ def _json_http_request(
     *,
     method: str = "POST",
     timeout: float = 30.0,
+    base_url: str | None = None,
 ):
-    base_url = _local_api_url().rstrip("/")
+    # base_url overrides the resolved service URL for calls that target a
+    # different host than the memory data plane (e.g. the cloud platform API's
+    # billing routes); the same principal X-Api-Key is attached either way.
+    base_url = (base_url or _local_api_url()).rstrip("/")
     api_key = _api_key()
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -1889,6 +2291,7 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    entry = _sanitize_value(entry)
     return _json_http_request(
         "/api/v1/remember/entry",
         {
@@ -2192,6 +2595,7 @@ def append_warmup_entry(dataset: str, session_id: str, entry: dict) -> None:
     """
     if not dataset or not session_id or not isinstance(entry, dict):
         return
+    entry = _sanitize_value(entry)
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
         key = _bridge_cache_key(dataset, session_id)
@@ -2556,6 +2960,12 @@ def _run_session_improve_locked(dataset: str, session_id: str) -> bool:
             "error": str(outcome.get("error") or "")[:120],
         },
     )
+    if outcome.get("ok"):
+        # Status-line credits: attribute the spend recorded since the previous
+        # reading to this improve. Approximate on purpose — the submit is
+        # run_in_background, so part of this run's cognify cost lands in later
+        # unlabeled refreshes. refresh_credits never raises and no-ops locally.
+        refresh_credits("improve")
     if remaining:
         # Buffered entries never reached the server cache, so the improve above
         # persisted an incomplete session. Partial persist beats none (hence the

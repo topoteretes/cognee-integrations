@@ -10,6 +10,79 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.4]
+
+### Added
+- **Cloud credits in the status line.** Cloud sessions now show the
+  connected tenant's balance right after the mode — `credits: $14.23`, plain
+  text (`-$…` once negative) — followed by the approximate cost of the last
+  memory operation, e.g. `· last turn ~$0.04`. Motivated by an incident where
+  a tenant overshot its budget by ~$159 through the integration path with no
+  client-side visibility at any point.
+  - **Costs appear when the turn finishes, not one prompt later.** A dedicated
+    `credits-refresh.py` hook on `Stop` diffs the tenant's spend counter
+    against the turn-start baseline and attributes the delta as `turn`;
+    explicit `remember` and `improve` operations are attributed at their own
+    completion points. (Codex does not support async command hooks — an
+    `async: true` hook is skipped entirely — so the refresh runs as a plain
+    Stop entry with a 10s timeout; Codex launches matching hooks
+    concurrently, so the QA store on the same event does not wait on it.)
+    Costs carry a `~` on purpose: spend aggregates asynchronously and
+    concurrent operations overlap, so the delta is an attribution, not an
+    invoice. Most conversational turns genuinely cost ~$0 — recall runs with
+    `only_context=true` (no LLM completion) — so the label typically moves on
+    improve/remember, while the balance refreshes every turn.
+  - **Multi-tenant correct.** The balance comes from the platform API's
+    per-tenant spend records (`/api/v1/billing/credits/overview` on
+    `COGNEE_PLATFORM_API_URL`, default `https://api.aws.cognee.ai` — the
+    tenant data plane has no billing routes), selected by the tenant id the
+    `connections/me` lookup already returns (zero extra calls). The marker
+    (`credits.json`) is a map keyed by tenant id, so several terminals
+    connected to different tenants each display their own balance, and one
+    tenant's spend can never be misattributed to another's turn. Entries are
+    written atomically under a lock (per-pid staging files), so concurrent
+    refreshes can't tear the file or drop each other's tenants.
+  - The status-line renderer stays pure-local (reads only the marker, 15-min
+    staleness TTL). Strictly the connected tenant's budget or nothing: the
+    segment hides entirely for local servers (no credits concept) and
+    whenever the connected tenant cannot be determined — never another
+    workspace's number, never the all-tenants aggregate. Refresh cadence: per turn (prompt + turn end)
+    plus a session-long background poll (`COGNEE_CREDITS_CHECK_INTERVAL`,
+    300s), so the balance stays fresh through long idle stretches. Opt
+    out with `COGNEE_STATUSLINE_CREDITS=off`.
+
+## [1.3.3]
+
+### Fixed
+- **False `✕ (unreachable)` in the status line.** Probe and recall
+  timeouts were classified as "unreachable" and persisted into the shared
+  connection state, so a busy-but-healthy server randomly turned the status red
+  and skipped recall — in both local and cloud mode. Timeouts are now a
+  no-verdict: transport failures are classified (connection refused / DNS →
+  `unreachable`; timeout → keep prior state), and `unreachable` is only ever
+  written on positive absence.
+  - The recall attempt itself is now the health probe: a successful scope call
+    marks ready, a refused connection marks `unreachable`, a 401/403 marks
+    `auth_failed` (detected from the real request, remaining scopes skipped),
+    and all-5xx marks `server_error`. The synthetic pre-recall probe survives
+    only as a re-entry check while the marker holds a failure state.
+  - The recall circuit breaker is keyed by `base_url` (cloud failures no
+    longer red a local status, and vice versa — including across the Claude
+    Code plugin, which shares the breaker file), counts failures in a sliding
+    window instead of forever, re-arms half-open after cooldown, never counts
+    timeouts, and the status line renders its real trip reason.
+  - The renderer shows a ✕ only for fresh, definitive failures (30 min TTL);
+    stale or ambiguous state renders no glyph.
+  - Breaker state writes use tmp + atomic replace so readers never see a torn
+    file.
+
+### Added
+- **`✕ (not_responding)` status** — distinct from `unreachable`: the server
+  accepts connections but hasn't answered for N consecutive timeout-only
+  prompts (default 3, `COGNEE_SLOW_STREAK_THRESHOLD`; streak window
+  `COGNEE_SLOW_STREAK_WINDOW`, 600s). A single slow response never triggers
+  it. Lifted back to `●` by the next successful probe or recall.
+
 ## [1.3.2]
 
 ### Fixed

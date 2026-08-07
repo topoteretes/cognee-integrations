@@ -37,9 +37,9 @@ from _plugin_common import (
     apply_cognee_env,
     ensure_launch_record,
     hook_log,
+    probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
-    server_health_ok,
     set_session_key,
     touch_activity,
     write_connection_state,
@@ -987,19 +987,29 @@ async def _run_heavy(
             print(f"cognee-plugin: agent lifecycle failed ({message})", file=sys.stderr)
             # Classify for the status line. Preserve an earlier health-derived
             # state; otherwise a reachable server rejecting registration is almost
-            # always auth, while an unreachable one is a connection failure.
+            # always auth, while a positively-absent one is a connection failure.
+            # A timed-out probe is NO verdict (busy != down): keep the prior
+            # recorded state rather than stamp a false "unreachable".
             if _conn_state is None:
                 try:
-                    healthy = server_health_ok(
+                    health = probe_health(
                         _normalize_service_url(str(config.get("base_url", "") or "")), timeout=1.5
                     )
                 except Exception:
-                    healthy = False
-                _conn_state = "auth_failed" if healthy else "unreachable"
-                _conn_detail = message
-            write_connection_state(
-                _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
-            )
+                    health = "unknown"
+                if health == "ready":
+                    _conn_state, _conn_detail = "auth_failed", message
+                elif health == "down":
+                    _conn_state, _conn_detail = "unreachable", message
+            if _conn_state:
+                write_connection_state(
+                    _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
+                )
+            else:
+                hook_log(
+                    "conn_state_unverified",
+                    {"reason": "probe returned no verdict after registration failure"},
+                )
             return "", "", False
     else:
         # Local SDK fallback path.
@@ -1052,11 +1062,19 @@ async def _run_heavy(
             write_connection_state(
                 _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
             )
-        elif service_url and server_health_ok(service_url, timeout=1.5):
-            write_connection_state("ready", service_url)
-        else:
-            write_connection_state("unreachable", str(config.get("base_url", "") or ""))
-    elif service_url and server_health_ok(service_url, timeout=1.5):
+        elif service_url:
+            health = probe_health(service_url, timeout=1.5)
+            if health == "ready":
+                write_connection_state("ready", service_url)
+            elif health == "down":
+                write_connection_state(
+                    "unreachable", str(config.get("base_url", "") or service_url)
+                )
+            else:
+                # "slow"/"unknown": no verdict — keep whatever state is already
+                # recorded instead of branding a busy server unreachable.
+                hook_log("conn_state_unverified", {"base_url": service_url, "health": health})
+    elif service_url and probe_health(service_url, timeout=1.5) == "ready":
         write_connection_state("ready", service_url)
 
     return user_id, agent_api_key, True

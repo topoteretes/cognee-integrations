@@ -22,26 +22,30 @@ sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     authed_liveness,
     bounded_dim_mismatch_hint,
+    clear_slow_streak,
     elapsed_ms,
     get_session_key,
     hook_log,
     load_resolved,
     mark_server_ready,
     notify,
+    probe_health,
     quiet_hook_output,
     read_and_reset_save_counter,
     read_connection_state,
     recall_via_http,
+    record_slow_probe,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
     resolve_user,
     same_connection_target,
-    server_health_ok,
     server_ready_hint,
     service_url_is_local,
     set_session_key,
+    slow_streak_threshold,
     write_connection_state,
 )
+from _recall_http import DOWN, SLOW, classify_transport_exception
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 
@@ -181,42 +185,49 @@ async def _run(prompt: str) -> dict | None:
             "api_key_present": runtime.get("api_key_present", False),
         },
     )
-    # Readiness gate: never block the user's prompt on a warming/migrating
-    # backend. Trust a fresh readiness marker (zero-network); on a miss, do one
-    # short /health probe and record the result. If still not ready, skip recall
-    # entirely so the prompt is answered at full speed (memory turns on later).
+    # Readiness gate, redesigned (SDK-356): the recall attempt itself is the
+    # probe. A fresh "ready" marker or a merely-stale/unknown state goes
+    # STRAIGHT to recall — a successful scope call is an authenticated,
+    # real-workload confirmation that beats any synthetic /health check, and
+    # the recall budget already bounds the worst case. Probing survives only
+    # as a cheap re-entry gate while the marker holds a KNOWN failure state,
+    # so a confirmed-bad backend costs one bounded probe per prompt instead of
+    # the full budget.
     service_url = runtime.get("base_url", "")
     probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)
-    if not server_ready_hint(service_url):
+    prior = read_connection_state()
+    # Permissive on purpose: "same target" unless the two URLs provably differ,
+    # so a recorded state still applies when a URL is unknown. Mirrors the
+    # renderer's _url_mismatch (equivalence pinned by
+    # tests/test_connection_target_match.py).
+    prior_same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
+    prior_state = str(prior.get("state") or ("ready" if prior.get("ready_at") else ""))
+    known_bad = prior_same_target and prior_state in (
+        "auth_failed",
+        "unreachable",
+        "server_error",
+        "not_responding",
+    )
+    if known_bad:
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
         # auth_failed instead of being masked as "ready" by an unauthenticated
         # /health 200. Fall back to /health only when the authed probe can't
         # classify (no key, or the endpoint is absent on an older server).
         state = authed_liveness(service_url, timeout=probe_timeout)
         if state == "unknown":
-            state = (
-                "ready" if server_health_ok(service_url, timeout=probe_timeout) else "unreachable"
-            )
-
+            health = probe_health(service_url, timeout=probe_timeout)
+            state = {"ready": "ready", "down": "unreachable"}.get(health, health)
         if state == "ready":
             mark_server_ready(service_url)
+            clear_slow_streak(service_url)
+            # fall through to recall below
         else:
-            # A recorded failure (auth_failed / unreachable / server_error) makes
-            # the status line show ✕ (<reason>) and recall skip this turn. Suppress
-            # the write only during a genuine cold-start warm-up: an "unreachable"
-            # with no prior ready marker for this URL is likely the server still
-            # migrating, so stay silent rather than flash a false red.
-            prior = read_connection_state()
-            # Permissive on purpose: "same target" unless the two URLs provably differ,
-            # so a server that really did die is still reported when a URL is unknown.
-            # Mirrors the renderer's _url_mismatch (equivalence pinned by
-            # tests/test_connection_target_match.py).
-            same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
-            warming = state == "unreachable" and not (
-                str(prior.get("state")) == "ready" and same_target
-            )
-            if not warming:
+            if state in ("auth_failed", "unreachable", "server_error"):
+                # A definitive verdict: refresh/replace the recorded failure.
                 write_connection_state(state, service_url, detail="authed liveness probe")
+                clear_slow_streak(service_url)
+            # "slow"/"unknown" from the probe is NO verdict — keep the recorded
+            # state untouched rather than promote a timeout to a failure.
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             return None
 
@@ -285,12 +296,21 @@ async def _run(prompt: str) -> dict | None:
         try:
             from _cognee_client import breaker_open
 
-            _bopen, _bretry = breaker_open()
+            _bopen, _bretry = breaker_open(service_url)
         except Exception:
             _bopen, _bretry = False, 0
         if _bopen:
             hook_log("recall_breaker_open", {"retry_in": _bretry})
             scope_specs = []
+    # Health accounting for this prompt's recall attempts (the attempt IS the
+    # probe): a scope that returns is proof of life; a refused connection is
+    # proof of death; timeouts alone are no verdict and only feed the streak.
+    scopes_ok = 0  # calls that returned (even empty — the server answered)
+    scopes_answered_err = 0  # HTTP-level errors: reachable, but not healthy
+    scope_timeouts = 0
+    server_down = False
+    auth_rejected = False  # 401/403: the server answered and rejected OUR key
+    server_errors = 0  # 5xx answers: reachable but failing
     for scope_list, qtype, context_profile in scope_specs:
         # Clamp each call to what is left of the budget so a single scope can
         # never overshoot the deadline (previously a scope dispatched just
@@ -334,8 +354,28 @@ async def _run(prompt: str) -> dict | None:
                 )
             if part:
                 results.extend(part)
+            scopes_ok += 1
         except Exception as exc:
-            hook_log("recall_error", {"scope": scope_list, "error": str(exc)[:200]})
+            import urllib.error as _urlerr
+
+            if isinstance(exc, asyncio.TimeoutError):
+                verdict = SLOW  # pre-3.11 asyncio.TimeoutError isn't TimeoutError
+            else:
+                verdict = classify_transport_exception(exc)
+            if isinstance(exc, _urlerr.HTTPError):
+                scopes_answered_err += 1
+                if exc.code in (401, 403):
+                    auth_rejected = True
+                elif exc.code >= 500:
+                    server_errors += 1
+            elif verdict == SLOW:
+                scope_timeouts += 1
+            elif verdict == DOWN:
+                server_down = True
+            hook_log(
+                "recall_error",
+                {"scope": scope_list, "error": str(exc)[:200], "verdict": verdict},
+            )
         finally:
             # hits = raw count from this scope's call (pre-bucketing/filtering);
             # elapsed_ms measured around the call, recorded even when it errored.
@@ -343,6 +383,92 @@ async def _run(prompt: str) -> dict | None:
                 "hits": len(part or []),
                 "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
             }
+        if server_down:
+            # Positively absent (refused/DNS): the remaining scopes would fail
+            # the same way in milliseconds each — stop here.
+            hook_log("recall_server_down", {"base_url": service_url})
+            break
+        if auth_rejected:
+            # Every scope shares the same API key, so the remaining scopes are
+            # doomed to the same 401/403 — don't spend the budget on them.
+            hook_log("recall_auth_rejected", {"base_url": service_url})
+            break
+
+    # Fold this prompt's recall outcomes back into the shared health state.
+    # Best-effort: accounting must never break the keystroke->answer path.
+    try:
+        if server_down:
+            # Suppress the write during a genuine cold-start warm-up: a refused
+            # connection with no prior ready marker for this URL is likely the
+            # server still launching/migrating — stay quiet rather than flash a
+            # false red (and don't feed the breaker with warm-up refusals).
+            warming = not (prior_state == "ready" and prior_same_target)
+            if not warming:
+                write_connection_state(
+                    "unreachable", service_url, detail="connection refused during recall"
+                )
+                clear_slow_streak(service_url)
+                if cloud_mode:
+                    try:
+                        from _cognee_client import record_failure as _breaker_failure
+
+                        _breaker_failure(
+                            "connection refused",
+                            service_url=service_url,
+                            reason="unreachable",
+                        )
+                    except Exception:
+                        pass
+        elif auth_rejected and not scopes_ok:
+            # The server answered and rejected the key — definitive, and the
+            # same signal the pre-recall authed probe used to provide, now from
+            # a real request. The re-entry gate's authed probe lifts the state
+            # once the key is fixed.
+            write_connection_state("auth_failed", service_url, detail="401/403 during recall")
+            clear_slow_streak(service_url)
+        elif scopes_ok:
+            # The server answered — an authenticated, real-workload proof of
+            # life. Refresh the marker only when it isn't already fresh-ready,
+            # so steady-state prompts don't rewrite the file every keystroke.
+            clear_slow_streak(service_url)
+            if not server_ready_hint(service_url):
+                mark_server_ready(service_url)
+            if cloud_mode:
+                try:
+                    from _cognee_client import record_success as _breaker_success
+
+                    _breaker_success(service_url)
+                except Exception:
+                    pass
+        elif server_errors:
+            # Reachable but failing (5xx on every answered scope, none ok):
+            # record the state and, mirroring the explicit-search path, one
+            # breaker failure for the prompt.
+            write_connection_state("server_error", service_url, detail="5xx during recall")
+            clear_slow_streak(service_url)
+            if cloud_mode:
+                try:
+                    from _cognee_client import record_failure as _breaker_failure
+
+                    _breaker_failure("http 5xx", service_url=service_url, reason="server_error")
+                except Exception:
+                    pass
+        elif scope_timeouts and not scopes_answered_err:
+            # Every attempted scope timed out and none got an HTTP answer: no
+            # verdict on its own, but N consecutive such prompts are a pattern.
+            # Escalate to "not_responding" — deliberately distinct from
+            # "unreachable" (positively absent: refused/DNS): the server exists
+            # but is not answering. A lone timeout never writes anything.
+            streak = record_slow_probe(service_url)
+            if streak >= slow_streak_threshold():
+                write_connection_state(
+                    "not_responding",
+                    service_url,
+                    detail="%d consecutive timeout-only prompts" % streak,
+                )
+                hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
+    except Exception as exc:
+        hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})
 
     # Bucket results by _source for human-readable output.
     # Local SDK mode returns Pydantic models (ResponseQAEntry, etc.); cloud
