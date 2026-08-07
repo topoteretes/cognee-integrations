@@ -93,6 +93,18 @@ def payloads():
 
 
 @pytest.fixture
+def statusline(suite, isolated_modules, monkeypatch):
+    """The suite's status-line renderer, isolated under the per-test HOME.
+
+    Every marker path in the renderer derives from ``Path.home()``, so the
+    isolated import already points them inside the temp HOME — tests write real
+    marker files at the module's own constants. COGNEE_BASE_URL is left unset
+    (local mode) unless a test sets it.
+    """
+    return isolated_modules(suite, "cognee_statusline_render")
+
+
+@pytest.fixture
 def run_hook(temp_home: Path, project_dir: Path):
     """Return a callable that runs a hook script as a subprocess (end-to-end).
 

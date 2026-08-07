@@ -40,6 +40,10 @@ class Suite:
     default_dataset: str
     agent_name: str
     session_prefix: str
+    #: The suite's hooks.json manifest (claude: <root>/hooks/, codex: plugin root).
+    hooks_json: Path
+    #: The plugin manifest whose "version" the runtime reports as its own.
+    plugin_manifest: Path
     #: Env var the scripts read for the working directory.
     cwd_env: str
     #: Suffix _resolve_agent_name appends to the agent session name.
@@ -57,6 +61,8 @@ class Suite:
 CLAUDE = Suite(
     name="claude-code",
     scripts_dir=_INTEGRATIONS / "claude-code" / "scripts",
+    hooks_json=_INTEGRATIONS / "claude-code" / "hooks" / "hooks.json",
+    plugin_manifest=_INTEGRATIONS / "claude-code" / ".claude-plugin" / "plugin.json",
     config_subdir="claude-code",
     state_subdir="claude-code",
     default_dataset="agent_sessions",
@@ -70,6 +76,13 @@ CLAUDE = Suite(
 CODEX = Suite(
     name="codex",
     scripts_dir=_INTEGRATIONS / "codex" / "plugins" / "cognee" / "scripts",
+    hooks_json=_INTEGRATIONS / "codex" / "plugins" / "cognee" / "hooks.json",
+    plugin_manifest=_INTEGRATIONS
+    / "codex"
+    / "plugins"
+    / "cognee"
+    / ".codex-plugin"
+    / "plugin.json",
     config_subdir="",
     state_subdir="codex",
     default_dataset="agent_sessions",

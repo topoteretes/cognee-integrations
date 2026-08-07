@@ -16,6 +16,7 @@ integrations/tests/
     identity_fake.py   # stateful auth / agent-session / dataset fake
     mock_cognee.py     # MockCogneeServer on pytest-httpserver, all routes
     payloads.py        # stdin payload builders for every hook event
+    statusline.py      # suite-aware status-line expectations (styled vs plain)
     fixtures.py        # pytest fixtures wiring it all together
   tests/
     unit/              # in-process, no mock server (isolated_modules/hook_module)
@@ -55,13 +56,28 @@ envelope instead of raising, `wait_for_cognify` exists, `_remember_http` honours
 a bounded wait, and improve polls cognify/memify). codex still has the older
 synchronous, raise-on-error path, so tests for those behaviours skip on codex.
 
-Two **unintentional** gaps are marked `xfail` rather than skipped, so they turn
-green the moment codex is fixed:
+One **unintentional** gap is marked `xfail` rather than skipped, so it turns
+green the moment codex is fixed: codex has no surrogate sanitization
+(`_strip_surrogates` is absent, and its `_truncate_str` returns text verbatim),
+so a lone surrogate from binary tool output still reaches its session cache — see
+`unit/test_surrogate_sanitization.py`.
 
-- codex has no surrogate sanitization (`_strip_surrogates` is absent, and its
-  `_truncate_str` returns text verbatim), so a lone surrogate from binary tool
-  output still reaches its session cache — see
-  `unit/test_surrogate_sanitization.py`.
+### Status line: styled (claude-code) vs plain text (codex)
+
+The renderers share their resolution logic — which glyph wins, marker
+attribution and freshness, the base_url mismatch guard, path containment — but
+claude-code styles the bar with ANSI for a terminal while codex's string is
+injected into the model's context and must stay plain. Shared tests therefore
+assert through `utils.statusline` (`ok_glyph`, `fail_glyph`, `mode_label`,
+`strip_ansi`); the styling rules and the plain-text guards live in per-suite
+sections that skip on the other suite. Segments codex simply does not have
+(`_mode_label`, `_recall_segment`, `_pipeline_health_glyph`) are gated on the
+function's presence, as is claude-code's install registry
+(`_INSTALLED_PLUGINS_PATH`, which codex has no equivalent of).
+
+Marker paths all derive from `Path.home()`, so the `statusline` fixture needs no
+path patching — tests write real marker files at the module's own constants
+inside the per-test HOME.
 
 Shared facts that shape the harness:
 
@@ -121,6 +137,26 @@ Shared facts that shape the harness:
 Assert traffic with `mock_server.assert_called(method, path, **json_fields)`
 (subset match — never deep-equal a whole body; async hooks may emit extra
 calls) and `assert_not_called`.
+
+## What stays in the per-integration test dirs
+
+Five files are deliberately **not** migrated, because
+`.github/workflows/plugin-windows-tests.yml` runs them on Windows as bare
+`python <file>` with no installed dependencies — they must stay stdlib-only
+self-runners:
+
+- `{claude-code,codex}/tests/test_proc.py`
+- `{claude-code,codex}/tests/test_statusline_render.py` (the cp1252 encoding
+  regression; it also needs `COGNEE_BASE_URL` *unset*, which `run_hook` injects)
+- `codex/plugins/cognee/tests/test_doctor.py` — duplicated by
+  `unit/test_doctor_resolution.py` + `integration/test_doctor.py` until that
+  workflow changes
+
+Also still there, deferred rather than kept: `test_hook_timing.py` and
+`test_per_scope_timing.py` (load-sensitive timing assertions and a process-wide
+`time.monotonic` patch) and `test_recall_health_accounting.py` (its assertions
+are all on stubbed state-writer seams, so converting it is a rewrite, not a
+port).
 
 ## Fixture API
 
