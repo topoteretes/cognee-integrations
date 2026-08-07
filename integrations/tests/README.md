@@ -56,11 +56,20 @@ envelope instead of raising, `wait_for_cognify` exists, `_remember_http` honours
 a bounded wait, and improve polls cognify/memify). codex still has the older
 synchronous, raise-on-error path, so tests for those behaviours skip on codex.
 
-One **unintentional** gap is marked `xfail` rather than skipped, so it turns
-green the moment codex is fixed: codex has no surrogate sanitization
-(`_strip_surrogates` is absent, and its `_truncate_str` returns text verbatim),
-so a lone surrogate from binary tool output still reaches its session cache — see
-`unit/test_surrogate_sanitization.py`.
+When a divergence is an **unintentional gap** rather than a design difference,
+gate it with a *strict* conditional `xfail` marker, never `pytest.skip` and never
+an imperative `pytest.xfail()` call:
+
+```python
+if suite.name == "codex":
+    request.node.add_marker(pytest.mark.xfail(reason="...", strict=True))
+```
+
+The imperative form aborts the test body, so it can never report XPASS and would
+keep silently not-testing the suite forever once the bug is fixed. With
+`strict=True` the body still runs and the fix surfaces as an `XPASS(strict)`
+failure — the signal to delete the gate. That is how the surrogate-sanitization
+gap (fixed in #334) closed itself; there are no such gates open today.
 
 ### Status line: styled (claude-code) vs plain text (codex)
 

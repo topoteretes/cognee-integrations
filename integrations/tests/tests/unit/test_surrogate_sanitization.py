@@ -29,38 +29,13 @@ def store_session(suite, hook_module):
     return hook_module(suite, "store-to-session.py")
 
 
-@pytest.fixture
-def sanitizes(suite, request):
-    """Expect failure on codex: it has no surrogate sanitization yet.
-
-    A KNOWN BUG, not a design difference — claude-code strips lone surrogates in
-    `_plugin_common._strip_surrogates` and round-trips `_truncate_str` through
-    utf-8 with errors="replace"; codex has neither, so a surrogate from binary
-    tool output still reaches its session cache.
-
-    Deliberately a **strict** xfail marker rather than an imperative
-    `pytest.xfail()` call: the imperative form aborts the test body, so it can
-    never report XPASS and would keep silently not-testing codex forever once
-    the fix lands. With strict=True the body still runs, and the moment codex is
-    fixed the unexpected pass is reported as a failure — which is the signal to
-    delete this fixture and its uses.
-    """
-    if suite.name == "codex":
-        request.node.add_marker(
-            pytest.mark.xfail(
-                reason="codex lacks surrogate sanitization (no _strip_surrogates)",
-                strict=True,
-            )
-        )
-
-
 def test_payload_surrogate_reproduces_encode_error():
     # Sanity-check the failure mode this suite guards against.
     with pytest.raises(UnicodeEncodeError):
         SURROGATE_TEXT.encode("utf-8")
 
 
-def test_truncate_str_sanitizes_untruncated_text(store_session, sanitizes):
+def test_truncate_str_sanitizes_untruncated_text(store_session):
     # The common case: text under the cap must NOT be returned verbatim.
     out = store_session._truncate_str(SURROGATE_TEXT, 4000)
     out.encode("utf-8")  # must not raise
@@ -79,7 +54,7 @@ def test_truncate_str_sanitizes_truncated_text(store_session):
     assert "\udc88" not in out
 
 
-def test_truncate_str_sanitizes_non_string_values(store_session, sanitizes):
+def test_truncate_str_sanitizes_non_string_values(store_session):
     out = store_session._truncate_str({"nested": SURROGATE_TEXT}, 4000)
     out.encode("utf-8")  # must not raise
     assert "\udc88" not in out
@@ -91,7 +66,7 @@ def test_truncate_str_none_and_plain_text_unchanged(store_session):
     assert store_session._truncate_str("émoji ✨", 100) == "émoji ✨"
 
 
-def test_infer_status_error_message_sanitized(store_session, sanitizes):
+def test_infer_status_error_message_sanitized(store_session):
     payload = {"tool_response": {"is_error": True, "error": SURROGATE_TEXT}}
     status, err = store_session._infer_status(payload)
     assert status == "error"
