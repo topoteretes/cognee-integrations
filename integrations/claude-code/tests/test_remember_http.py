@@ -178,6 +178,45 @@ def test_explicit_wait_timeout():
         os.environ.pop("COGNEE_COGNIFY_POLL_INTERVAL", None)
 
 
+def test_remember_timeout_default_is_60():
+    os.environ.pop("COGNEE_REMEMBER_TIMEOUT", None)
+    assert rh._remember_timeout() == 60.0
+
+
+def test_remember_timeout_reads_env():
+    try:
+        os.environ["COGNEE_REMEMBER_TIMEOUT"] = "12.5"
+        assert rh._remember_timeout() == 12.5
+    finally:
+        os.environ.pop("COGNEE_REMEMBER_TIMEOUT", None)
+
+
+def test_remember_timeout_bad_value_falls_back_to_default():
+    try:
+        os.environ["COGNEE_REMEMBER_TIMEOUT"] = "not-a-number"
+        assert rh._remember_timeout() == 60.0
+    finally:
+        os.environ.pop("COGNEE_REMEMBER_TIMEOUT", None)
+
+
+def test_main_passes_remember_timeout_to_do_remember():
+    captured = {}
+    original = rh.do_remember
+
+    def _fake(*_args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return {"ok": True}
+
+    rh.do_remember = _fake
+    try:
+        os.environ["COGNEE_REMEMBER_TIMEOUT"] = "7"
+        rh.main(["http://x", "", "content", "ds", "ns"])
+        assert captured["timeout"] == 7.0
+    finally:
+        rh.do_remember = original
+        os.environ.pop("COGNEE_REMEMBER_TIMEOUT", None)
+
+
 if __name__ == "__main__":
     failures = 0
     for _name, _fn in sorted(globals().items()):
