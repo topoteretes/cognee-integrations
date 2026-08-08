@@ -127,6 +127,58 @@ jobs:
         working-directory: integrations/${{ matrix.integration }}
         run: npx tsc --noEmit --skipLibCheck
 
+  version-consistency:
+    name: Version Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check manifest version consistency
+        run: |
+          set -euo pipefail
+          FAIL=0
+
+          # 1. marketplace.json.plugins[].version == plugin.json.version
+          PLUGIN_COUNT=$(jq '.plugins | length' .claude-plugin/marketplace.json)
+          for i in $(seq 0 $((PLUGIN_COUNT - 1))); do
+            PLUGIN_NAME=$(jq -r ".plugins[$i].name" .claude-plugin/marketplace.json)
+            PLUGIN_SRC=$(jq -r ".plugins[$i].source" .claude-plugin/marketplace.json)
+            MKT_VERSION=$(jq -r ".plugins[$i].version" .claude-plugin/marketplace.json)
+            PLUGIN_JSON="${PLUGIN_SRC}/.claude-plugin/plugin.json"
+
+            if [ -f "$PLUGIN_JSON" ]; then
+              PLUGIN_VERSION=$(jq -r '.version' "$PLUGIN_JSON")
+              if [ "$MKT_VERSION" != "$PLUGIN_VERSION" ]; then
+                echo "::error file=$PLUGIN_JSON::marketplace.json=$MKT_VERSION vs plugin.json=$PLUGIN_VERSION for $PLUGIN_NAME"
+                FAIL=1
+              fi
+            fi
+          done
+
+          # 2. inventory.yml.current_version == plugin.json.version
+          for plugin_json in integrations/*/.claude-plugin/plugin.json; do
+            SLUG=$(echo "$plugin_json" | cut -d/ -f2)
+            PLUGIN_VERSION=$(jq -r '.version' "$plugin_json")
+            INV_VERSION=$(awk -v slug="$SLUG" '
+              $0 ~ "slug: " slug { found=1 }
+              found && /current_version:/ {
+                gsub(/"/, "", $2); print $2; exit
+              }
+            ' integrations/inventory.yml)
+
+            if [ -n "$INV_VERSION" ] && [ "$INV_VERSION" != "$PLUGIN_VERSION" ]; then
+              echo "::error file=integrations/inventory.yml::inventory.yml=$INV_VERSION vs plugin.json=$PLUGIN_VERSION for $SLUG"
+              FAIL=1
+            fi
+          done
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::error::Version consistency check failed — see annotations above."
+            exit 1
+          fi
+          echo "All versions consistent."
+
   # ── Advisory Claude Code review — pulls the private skill from cognee-ci at runtime ──
   # Rubric + Slack map live in the private cognee-ci repo; this job carries no review logic.
   # Runs after the integration tests settle (skips tolerated; never on a test failure),
