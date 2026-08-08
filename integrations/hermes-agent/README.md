@@ -135,9 +135,9 @@ When a key appears in both places, **the JSON file wins** — which is why mode
 switches should go through the wizard rather than editing the environment
 alone.
 
-### Modes
+## Modes
 
-The provider connects to cognee in one of three modes. It picks the mode
+The provider connects to Cognee in one of three modes. It picks the mode
 automatically from your config:
 
 | Mode | When it's used | How it talks to cognee |
