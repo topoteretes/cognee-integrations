@@ -127,6 +127,15 @@ jobs:
         working-directory: integrations/${{ matrix.integration }}
         run: npx tsc --noEmit --skipLibCheck
 
+      # Opt-in integration smoke. Scoped to n8n so it never runs other TS
+      # integrations' test scripts. The suite is describe.skip'd unless
+      # COGNEE_RUN_INTEGRATION + creds are set, so it reports as skipped (green)
+      # in default CI and only exercises the live path when opted in.
+      - name: Integration smoke (opt-in)
+        if: matrix.integration == 'n8n'
+        working-directory: integrations/n8n
+        run: npm test
+
   # ── Advisory Claude Code review — pulls the private skill from cognee-ci at runtime ──
   # Rubric + Slack map live in the private cognee-ci repo; this job carries no review logic.
   # Runs after the integration tests settle (skips tolerated; never on a test failure),
