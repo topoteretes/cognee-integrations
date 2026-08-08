@@ -171,6 +171,11 @@ End-to-end example workflow:
 
 Troubleshooting:
 
+For cross-integration failures such as cloud cold starts, embedding-dimension
+mismatches, Python environment issues, session mapping surprises, and
+empty-recall-vs-not-yet-cognified states, see the shared
+[`../TROUBLESHOOTING.md`](../TROUBLESHOOTING.md) guide.
+
 - 401/403 errors: Check the API key and that `X-Api-Key` is accepted by your Cognee instance.
 - Connection errors: Verify Base URL and network access from your n8n host.
 

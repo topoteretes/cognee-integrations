@@ -363,6 +363,11 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 ## Troubleshooting
 
+For cross-integration failures such as cloud cold starts, embedding-dimension
+mismatches, Python environment issues, session mapping surprises, and
+empty-recall-vs-not-yet-cognified states, see the shared
+[`../TROUBLESHOOTING.md`](../TROUBLESHOOTING.md) guide.
+
 **Recall returns empty but data was ingested**
 - Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `agent_sessions`).
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
