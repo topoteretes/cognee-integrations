@@ -5,16 +5,30 @@ on:
     branches: [main]
     paths:
       - 'integrations/**'
+      - 'scripts/**'
+      - '.claude-plugin/**'
+      - '.agents/**'
       - '.github/workflows/ci.yml'
       - '.github/core-team.txt'
   push:
     branches: [main]
     paths:
       - 'integrations/**'
+      - 'scripts/**'
+      - '.claude-plugin/**'
+      - '.agents/**'
       - '.github/workflows/ci.yml'
       - '.github/core-team.txt'
 
 jobs:
+  check-version-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Verify plugin versions match marketplace manifests
+        run: python3 scripts/check_version_consistency.py --check-inventory
+
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
