@@ -101,6 +101,49 @@ _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
 _PINNED_COGNEE_VERSION = "1.4.0"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
+# Maps a configured backend provider env var to the cognee package "extra" that
+# provides its driver. A bare `cognee==<version>` install has none of these, so
+# the server crashes on first use of any non-default backend (#232): Postgres
+# needs psycopg2/asyncpg (via `postgres-binary`), Neo4j needs its driver, a
+# local Ollama LLM needs the `ollama` extra, and `fastembed` embeddings need
+# their own extra (fastembed is not cognee's own pydantic default -- openai is
+# -- but it's the plugin's documented zero-external-dependency local setup, and
+# is missing its extra just as much as the self-hosted-DB path is -- confirmed
+# independently on macOS, issue #232 comment). `postgres`/`pgvector` share one
+# driver, so VECTOR_DB_PROVIDER=pgvector maps to the same extra as DB_PROVIDER=
+# postgres rather than a separate one.
+_PROVIDER_EXTRAS = (
+    ("DB_PROVIDER", {"postgres": "postgres-binary", "postgresql": "postgres-binary"}),
+    ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
+    ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
+    ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
+    ("LLM_PROVIDER", {"ollama": "ollama"}),
+)
+
+
+def _detect_required_extras() -> str:
+    """Detect the cognee extras actually needed from the configured backend
+    providers, so the install below brings in exactly what's needed instead of
+    either a bare install (missing drivers) or unconditionally installing every
+    possible extra regardless of what's actually configured."""
+    extras: list[str] = []
+    for env_var, mapping in _PROVIDER_EXTRAS:
+        value = os.environ.get(env_var, "").strip().lower()
+        extra = mapping.get(value)
+        if extra and extra not in extras:
+            extras.append(extra)
+    return ",".join(extras)
+
+
+def _cognee_install_spec() -> str:
+    extras = _detect_required_extras()
+    return (
+        f"cognee[{extras}]=={_PINNED_COGNEE_VERSION}"
+        if extras
+        else f"cognee=={_PINNED_COGNEE_VERSION}"
+    )
+
+
 # Install single-flight. Distinct from the server boot lock (which is short, on
 # the assumption a boot completes in ~a minute): a cold cognee install can take
 # minutes, so concurrent sessions must NOT install into the same venv at once.
@@ -261,7 +304,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "--upgrade",
                         "--python",
                         str(_VENV_PYTHON),
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     env=env,
                     check=True,
@@ -289,7 +332,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "pip",
                         "install",
                         "--upgrade",
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     check=True,
                     capture_output=True,
@@ -361,6 +404,36 @@ def _wait_for_health(deadline_seconds: float, health_url: str = _HEALTH_URL) -> 
         time.sleep(_HEALTH_POLL_SECONDS)
 
 
+def _build_server_env(config: dict) -> dict:
+    """Build the environment for the spawned local Cognee server.
+
+    Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
+    so os.environ.copy() carries them to the server process fine. LLM
+    credentials are NOT already in os.environ when they came from the config
+    FILE rather than a live env var: ensure_cognee_ready() applies them only
+    in-process via cognee.config.set_llm_api_key()/set_llm_model(), and
+    save_config() deliberately never persists them back to a place a fresh
+    process's environment would pick up ("transient_keys" -- by design, so a
+    secret never lands in the config file). The spawned server is a SEPARATE
+    process that reads its own LLM config from its own environment, so without
+    this it silently gets no key and every extraction fails with
+    LLMAPIKeyNotSetError -- writes report success (the document is stored) but
+    nothing is ever extracted into the graph, so recall keeps returning empty.
+    `setdefault` so an explicit LLM_API_KEY/LLM_MODEL already in the
+    environment always wins over config.
+
+    Run in agent mode: the server tears itself down once all registered
+    agents disconnect.
+    """
+    server_env = os.environ.copy()
+    if config.get("llm_api_key"):
+        server_env.setdefault("LLM_API_KEY", config["llm_api_key"])
+    if config.get("llm_model"):
+        server_env.setdefault("LLM_MODEL", config["llm_model"])
+    server_env["COGNEE_AGENT_MODE"] = "true"
+    return server_env
+
+
 def _ensure_local_server_running(
     config: dict, health_timeout: float = _HEALTH_TIMEOUT_SECONDS
 ) -> None:
@@ -429,12 +502,7 @@ def _ensure_local_server_running(
             _ready()
             return
 
-        server_env = os.environ.copy()
-        # Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
-        # so the copy carries them to the server process.
-        # Run in agent mode: the server tears itself down once all registered
-        # agents disconnect.
-        server_env["COGNEE_AGENT_MODE"] = "true"
+        server_env = _build_server_env(config)
         subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
