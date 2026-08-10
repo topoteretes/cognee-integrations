@@ -116,7 +116,7 @@ async def test_answer_with_sources_attributes_contributing_datasets():
             "search_result": ["I'm sorry, the graph contains only technical entities."],
         },
         {
-            "dataset_name": "spotlight",
+            "dataset_name": "main",
             "search_result": [
                 "**Main competitors** - StayFinder leads the threat tiers in the north region."
             ],
@@ -130,7 +130,7 @@ async def test_answer_with_sources_attributes_contributing_datasets():
     )
     meta = await adapter.answer_with_sources("who are our competitors")
     assert meta["answer"].startswith("**Main competitors**")
-    assert meta["sources"] == ["spotlight"]  # the refusal dataset is not a source
+    assert meta["sources"] == ["main"]  # the refusal dataset is not a source
 
 
 async def test_http_adapter_context_manager_closes_client():
@@ -143,7 +143,7 @@ async def test_http_adapter_context_manager_closes_client():
             self.closed = True
 
     client = ClosableClient()
-    async with HttpCogneeAdapter("spotlight", "http://hub") as adapter:
+    async with HttpCogneeAdapter("main", "http://hub") as adapter:
         adapter._own_client = client
     assert client.closed
     assert adapter._own_client is None

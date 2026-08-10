@@ -45,7 +45,7 @@ for the store lock).
 
 | Integration | Status |
 |---|---|
-| `spotlight` | ✅ built on this package (`spotlight_backend.adapters` is a thin re-export) |
+| `desktop` | ✅ built on this package (`desktop_backend.adapters` is a thin re-export) |
 | `second-brain` | candidate: its `CogneeHttpClient` ≈ `HttpCogneeAdapter.remember/recall/forget` |
 | `chat-memory` | candidate: same HTTP surface |
 | `claude-code` | hook scripts must stay stdlib-only (no venv at hook runtime); its wire contract is mirrored here, not imported |
