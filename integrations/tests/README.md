@@ -147,6 +147,59 @@ Assert traffic with `mock_server.assert_called(method, path, **json_fields)`
 (subset match — never deep-equal a whole body; async hooks may emit extra
 calls) and `assert_not_called`.
 
+## The live tier (`e2e/live/`)
+
+Same driver as the rest of `e2e/` — hook scripts as subprocesses — but pointed at
+a **real cognee server that the plugin boots itself**, with real LLM calls and a
+real graph. It exists because a hermetic e2e can only prove "the hook ran and
+produced well-formed output": with a mock there is no graph, so nothing about
+memory actually working is testable.
+
+```bash
+COGNEE_RUN_LIVE=1 LLM_API_KEY=sk-... uv run pytest tests/e2e/live -m live
+```
+
+Needs no Claude account, no agent CLI and no `ANTHROPIC_API_KEY`: the host is
+simulated by invoking the hooks directly. What that gives up — *would the host
+actually call these hooks* — is covered hermetically by
+`unit/test_hooks_contract.py`, which asserts `hooks.json` wires every event the
+live driver simulates, to a script that exists, with the same args.
+
+Assertions come in two deterministic layers, so a failure says *where* the chain
+broke:
+
+- **L1** the graph itself holds the memory (direct `POST /api/v1/recall`)
+- **L2** the plugin *injects* it into a fresh session's prompt — the actual
+  product contract
+
+There is no "the model said it" layer: no model runs here. Every memory
+assertion hangs off a per-test **nonce** (`ZEPHYR-xxxxxx`) that cannot exist in
+training data, so a pass is evidence rather than coincidence.
+
+Non-obvious rules this tier encodes (each one learned by getting it wrong —
+`utils/live.py`'s docstring has the details):
+
+- **`COGNEE_BASE_URL`** is what selects server mode. Setting only
+  `COGNEE_LOCAL_API_URL` leaves `base_url` empty, so the plugin runs local-SDK
+  mode, boots nothing, and every hook still exits 0 — a test that passes while
+  exercising the wrong backend. `started_session` asserts a server really is
+  listening.
+- **Never the default port 8011** — a developer's own cognee usually owns it, and
+  a live test must never write into a real graph. Ports are ephemeral and pinned.
+- **`improve_fired` is not a completion signal**: it can report `ok: true` with
+  empty `cognify`/`memify` while the graph *was* written. The readiness gate is
+  "poll recall until the content comes back".
+- **The venv is seeded** from the host's `~/.cognee-plugin/venv` so boot is ~15s
+  instead of a multi-minute `uv` install. That caches the *install* only.
+- **Recall timeouts are raised** (`COGNEE_RECALL_TIMEOUT`/`_BUDGET`). Production
+  keeps them tight (2.5s/4s) so memory can never stall an interactive prompt, and
+  a cold server's first graph query correctly exceeds that. These tests ask
+  whether memory crosses sessions, not whether cold-start recall is fast — so
+  cold-start deserves its own scenario rather than silently failing this one.
+
+Failures dump `hook.log`, the recall-related events, `recall-audit.log` and
+`last_recall.json` automatically; a live failure without them is unactionable.
+
 ## What stays in the per-integration test dirs
 
 Five files are deliberately **not** migrated, because

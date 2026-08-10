@@ -21,4 +21,12 @@ testpaths = ["tests"]
 # The same basename may appear in more than one tier (e.g. a module's wire tests
 # in integration/ and its pure-logic tests in unit/). importlib mode drops the
 # unique-basename requirement of the legacy prepend mode.
-addopts = "--import-mode=importlib"
+#
+# `-m "not live"` keeps every default invocation hermetic and free: the live tier
+# boots a real cognee server and spends real LLM credits. A user-supplied `-m`
+# comes after addopts on the command line and wins, so
+# `pytest tests/e2e/live -m live` opts in.
+addopts = "--import-mode=importlib -m 'not live'"
+markers = [
+    "live: needs a real cognee server + real LLM calls (COGNEE_RUN_LIVE=1, LLM_API_KEY)",
+]
