@@ -25,7 +25,7 @@ const ENSURE_SCRIPT_CONTENT = [
   "UV_BIN = os.path.join(UV_DIR, 'uv' + _ext)",
   "READY_MARKER = os.path.join(BASE, '.venv-ready.json')",
   "INSTALL_LOCK = os.path.join(BASE, 'venv-install.lock')",
-  "COGNEE_VERSION = '1.2.2.dev3'",
+  "COGNEE_VERSION = '1.4.2'",
   "",
   "# Self-daemonize so the caller returns immediately.",
   "if '--daemon' not in sys.argv:",
