@@ -264,6 +264,14 @@ class HttpCogneeAdapter:
             await self._own_client.aclose()
             self._own_client = None
 
+    # context-manager support, so short-lived uses can't leak the pooled
+    # connections: `async with HttpCogneeAdapter(...) as adapter: ...`
+    async def __aenter__(self) -> "HttpCogneeAdapter":
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        await self.aclose()
+
 
 class FakeAdapter:
     """Offline stand-in: reads the files it is given and does substring search."""

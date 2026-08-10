@@ -86,7 +86,12 @@ def test_single_user_runtime_env(tmp_path, monkeypatch):
 
     for key in ("CACHING", "ENABLE_BACKEND_ACCESS_CONTROL", "DATA_ROOT_DIRECTORY"):
         monkeypatch.delenv(key, raising=False)
-    env = single_user_runtime(tmp_path / "store")
+    import pytest
+
+    # the attestation is mandatory: this posture disables access control
+    with pytest.raises(ValueError, match="multi-tenant|single_user|access control"):
+        single_user_runtime(tmp_path / "store")
+    env = single_user_runtime(tmp_path / "store", _i_am_single_tenant=True)
     import os
 
     assert os.environ["CACHING"] == "false"
@@ -126,3 +131,19 @@ async def test_answer_with_sources_attributes_contributing_datasets():
     meta = await adapter.answer_with_sources("who are our competitors")
     assert meta["answer"].startswith("**Main competitors**")
     assert meta["sources"] == ["spotlight"]  # the refusal dataset is not a source
+
+
+async def test_http_adapter_context_manager_closes_client():
+    from cognee_backend_core.adapters import HttpCogneeAdapter
+
+    class ClosableClient:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    client = ClosableClient()
+    async with HttpCogneeAdapter("spotlight", "http://hub") as adapter:
+        adapter._own_client = client
+    assert client.closed
+    assert adapter._own_client is None

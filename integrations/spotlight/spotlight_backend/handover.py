@@ -136,6 +136,18 @@ class HandoverService:
     async def share(self, to: str, title: str, body: str, source: str = "") -> dict[str, Any]:
         """Compose a handover note and remember it into the recipient's dataset."""
         dataset = self.dataset_for_recipient(to)
+        # A local single-user engine enforces no permissions (access control
+        # is off in that posture) — writing into another user's inbox there
+        # would be an unchecked cross-user write. Only a real hub, where the
+        # server checks the API key's grants, may deliver to other people.
+        from cognee_backend_core.adapters import LocalCogneeAdapter
+
+        if isinstance(self.adapter, LocalCogneeAdapter) and dataset != self.inbox_dataset:
+            return {
+                "ok": False,
+                "error": "sharing with others needs a central hub (cloud mode); "
+                "the local engine has no permission enforcement",
+            }
         date = time.strftime("%Y-%m-%d %H:%M")
         note = (
             f"# Handover: {title}\n\n"

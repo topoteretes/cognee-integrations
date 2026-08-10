@@ -308,13 +308,17 @@ def create_app(
         if not q:
             return {"query": q, "answer": None, "results": []}
 
-        cache_key = (q.lower(), mode, limit, bool(semantic))
+        # scoped by principal: one process serves one user today, but a
+        # cache key that ignores identity is a data leak waiting for the
+        # first shared deployment
+        principal = settings.user or settings.dataset
+        cache_key = (principal, q.lower(), mode, limit, bool(semantic))
         if mode != "answer" and (cached := cache_get(cache_key)) is not None:
             return cached
 
         if mode == "answer":
             effective_q = threads.contextualize(thread, q) if thread else q
-            cache_key = (effective_q.lower(), mode, limit, bool(semantic))
+            cache_key = (principal, effective_q.lower(), mode, limit, bool(semantic))
             if (cached := cache_get(cache_key)) is not None:
                 return cached
             search_type = "GRAPH_COMPLETION"

@@ -66,6 +66,15 @@ def _walk(base: Path) -> list[Path]:
         name = entry.name
         if name.startswith("."):
             continue
+        if entry.is_symlink():
+            # a symlink can point anywhere on disk; only follow it when the
+            # target stays inside the tree being indexed, so a planted link
+            # can't pull ~/.ssh or another user's files into the index
+            try:
+                if not entry.resolve().is_relative_to(base.resolve()):
+                    continue
+            except OSError:
+                continue
         if entry.is_dir():
             if name not in SKIP_DIR_NAMES:
                 out.extend(_walk(entry))

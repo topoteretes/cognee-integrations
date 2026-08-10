@@ -31,12 +31,28 @@ from pathlib import Path
 from typing import Union
 
 
-def single_user_runtime(root: Union[str, Path], apply: bool = True) -> dict[str, str]:
+def single_user_runtime(
+    root: Union[str, Path], apply: bool = True, *, _i_am_single_tenant: bool = False
+) -> dict[str, str]:
     """Environment for a fast, isolated, single-user in-process cognee.
 
     Returns the variables; also applies them to ``os.environ`` unless
     ``apply=False``. Must run before cognee is first imported.
+
+    ``_i_am_single_tenant=True`` is a deliberate attestation, not a flag to
+    copy-paste: this posture turns cognee's access control **off**. If the
+    process serves more than one principal — a shared server, a multi-user
+    deployment, anything with a login — every user sees every other user's
+    data. Only pass True for a process that runs as exactly one person.
     """
+    if not _i_am_single_tenant:
+        raise ValueError(
+            "single_user_runtime disables cognee's access control "
+            "(ENABLE_BACKEND_ACCESS_CONTROL=false). In a multi-tenant process "
+            "this leaks every user's data to every other user. Pass "
+            "_i_am_single_tenant=True only when this process serves exactly "
+            "one principal (e.g. a per-user local app)."
+        )
     base = Path(root).expanduser()
     env = {
         "DATA_ROOT_DIRECTORY": str(base / "data"),
