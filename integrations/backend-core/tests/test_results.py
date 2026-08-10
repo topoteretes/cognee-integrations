@@ -7,7 +7,7 @@ def test_unwrap_dataset_envelopes():
     wrapped = [
         {
             "dataset_id": "ddbaa7f1",
-            "dataset_name": "spotlight",
+            "dataset_name": "main",
             "search_result": [
                 {"text": "Carbonara: eggs...", "document_name": "pasta"},
                 {"text": "Q3 roadmap...", "document_name": "quarterly-roadmap"},
@@ -26,7 +26,7 @@ def test_unwrap_passes_flat_lists_through():
 
 
 def test_first_text_on_unwrapped_graph_completion():
-    wrapped = [{"dataset_name": "spotlight", "search_result": ["The owner is Vasilije."]}]
+    wrapped = [{"dataset_name": "main", "search_result": ["The owner is Vasilije."]}]
     assert first_text(unwrap_results(wrapped)) == "The owner is Vasilije."
 
 
