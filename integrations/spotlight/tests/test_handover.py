@@ -176,3 +176,21 @@ async def test_http_share_and_inbox_roundtrip(api_client, tmp_path):
 
     await client.post("/inbox/seen", json={"ids": [data["items"][0]["id"]]})
     assert (await client.get("/inbox")).json()["unseen"] == 0
+
+
+async def test_local_engine_refuses_cross_user_shares(tmp_path):
+    """The local single-user engine enforces no permissions, so delivering
+    into another user's inbox is refused; only a real hub may do that."""
+    from cognee_backend_core.adapters import LocalCogneeAdapter
+    from spotlight_backend.handover import HandoverConfig, HandoverService
+
+    service = HandoverService(
+        config=HandoverConfig(user="vasilije", team="core", base_url="http://hub"),
+        data_dir=tmp_path,
+        adapter=LocalCogneeAdapter("spotlight"),
+    )
+    result = await service.share("boris", "runbook", "steps")
+    assert result["ok"] is False and "hub" in result["error"]
+    # own inbox would still be allowed (no cross-user write) — the guard
+    # only rejects datasets that are not the sender's own
+    assert service.dataset_for_recipient("vasilije") == service.inbox_dataset

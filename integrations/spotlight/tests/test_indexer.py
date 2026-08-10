@@ -64,3 +64,21 @@ async def test_dataset_overrides_route_files_and_cognify(tmp_path):
     assert adapter.dataset_of[str(repo / "issue-1.md")] == "github-acme-rockets"
     # both datasets got their graphs built
     assert set(adapter.cognified_datasets) == {"spotlight", "github-acme-rockets"}
+
+
+def test_walk_skips_symlinks_escaping_the_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("not yours to index")
+    root = tmp_path / "watched"
+    root.mkdir()
+    (root / "mine.md").write_text("fine")
+    (root / "escape").symlink_to(outside)
+    (root / "escape.md").symlink_to(outside / "secret.md")
+    # a symlink pointing back inside the tree is still fine
+    (root / "alias.md").symlink_to(root / "mine.md")
+
+    settings = Settings()
+    found = {p.name for p in discover_files([str(root)], settings)}
+    assert "mine.md" in found and "alias.md" in found
+    assert "secret.md" not in found and "escape.md" not in found

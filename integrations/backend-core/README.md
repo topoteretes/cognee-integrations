@@ -12,7 +12,7 @@ from cognee_backend_core import (
     single_user_runtime,  # env posture — call before `import cognee`
 )
 
-single_user_runtime("~/.myapp/cognee")  # local mode only
+single_user_runtime("~/.myapp/cognee", _i_am_single_tenant=True)  # local, ONE user only
 adapter = LocalCogneeAdapter("my_dataset")
 await adapter.add(["/path/doc.md"])
 await adapter.cognify()
