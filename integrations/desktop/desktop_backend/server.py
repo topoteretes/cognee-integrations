@@ -241,11 +241,25 @@ def create_app(
         from .graphview import collect_graph, native_visualization, render_html
 
         if not hasattr(adapter, "_request"):
+            if settings.mode == "local":
+                # local cognee renders its own visualization in-process
+                try:
+                    import inspect
+
+                    import cognee
+
+                    html = cognee.visualize_graph(dataset=dataset or settings.dataset)
+                    if inspect.isawaitable(html):
+                        html = await html
+                    if isinstance(html, str) and "<" in html:
+                        return html
+                except Exception:
+                    pass
             return (
                 "<html><body style='font-family:sans-serif;padding:40px'>"
-                "<h2>Graph view needs cloud mode</h2><p>This backend runs "
-                f"in <b>{settings.mode}</b> mode; the visual graph reads the "
-                "tenant's dataset graph API.</p></body></html>"
+                "<h2>Graph view is unavailable</h2><p>This backend runs "
+                f"in <b>{settings.mode}</b> mode and its graph could not be "
+                "rendered.</p></body></html>"
             )
         native = await native_visualization(
             adapter, dataset, max_nodes, query, exclude=settings.exclude_datasets

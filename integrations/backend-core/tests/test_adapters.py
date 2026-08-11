@@ -147,3 +147,72 @@ async def test_http_adapter_context_manager_closes_client():
         adapter._own_client = client
     assert client.closed
     assert adapter._own_client is None
+
+
+async def test_local_adapter_scope_all_spans_datasets_with_exclusions(monkeypatch):
+    """Local search-all runs one search per dataset (a merged local search
+    has no dataset envelopes), keeps attribution, and honors exclusions —
+    the same contract as the HTTP adapter against a tenant."""
+    import sys
+    import types
+
+    from cognee_backend_core.adapters import LocalCogneeAdapter
+
+    per_dataset = {
+        "main": ["I'm sorry, the knowledge-graph does not contain that."],
+        "github-acme-rockets": [
+            "The retry logic was added in PR #9 after the fuel gauge incident, "
+            "with a review note to keep attempts bounded and the parachute "
+            "deploy sequence idempotent across all failure modes."
+        ],
+        "handover-inbox-someone-else": ["private mail"],
+    }
+    searched: list[list[str]] = []
+
+    async def fake_search(**kwargs):
+        searched.append(kwargs["datasets"])
+        return per_dataset.get(kwargs["datasets"][0], [])
+
+    class DS:
+        def __init__(self, name):
+            self.name = name
+
+    async def fake_get_datasets(user_id):
+        return [DS(n) for n in per_dataset]
+
+    async def fake_get_default_user():
+        return types.SimpleNamespace(id="u1")
+
+    mods = {
+        "cognee": types.ModuleType("cognee"),
+        "cognee.api": types.ModuleType("cognee.api"),
+        "cognee.api.v1": types.ModuleType("cognee.api.v1"),
+        "cognee.api.v1.search": types.ModuleType("cognee.api.v1.search"),
+        "cognee.modules": types.ModuleType("cognee.modules"),
+        "cognee.modules.data": types.ModuleType("cognee.modules.data"),
+        "cognee.modules.data.methods": types.ModuleType("cognee.modules.data.methods"),
+        "cognee.modules.users": types.ModuleType("cognee.modules.users"),
+        "cognee.modules.users.methods": types.ModuleType("cognee.modules.users.methods"),
+    }
+    mods["cognee"].SearchType = {"GRAPH_COMPLETION": "GRAPH_COMPLETION", "CHUNKS": "CHUNKS"}
+    mods["cognee.api.v1.search"].search = fake_search
+    mods["cognee.modules.data.methods"].get_datasets = fake_get_datasets
+    mods["cognee.modules.users.methods"].get_default_user = fake_get_default_user
+    for name, mod in mods.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    adapter = LocalCogneeAdapter(
+        "main",
+        search_all=True,
+        exclude_predicate=lambda n: n.startswith("handover-inbox-"),
+    )
+    meta = await adapter.answer_with_sources("what changed in the rockets repo")
+    # one search per non-excluded dataset, never the excluded inbox
+    assert sorted(d[0] for d in searched) == ["github-acme-rockets", "main"]
+    assert "retry logic" in meta["answer"]
+    assert meta["sources"] == ["github-acme-rockets"]  # the refusal is not a source
+
+    # scoped search still pins to the adapter's own dataset
+    searched.clear()
+    await adapter.chunks("query")
+    assert searched == [["main"]]
