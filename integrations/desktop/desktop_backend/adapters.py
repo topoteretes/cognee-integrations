@@ -25,7 +25,16 @@ _first_text = first_text
 
 def make_adapter(settings):
     if settings.mode == "local":
-        return LocalCogneeAdapter(settings.dataset)
+        # Same scope contract as cloud: answers span every local dataset —
+        # connector datasets (github-<repo>, staged sources) and the inbox
+        # included — so the integrations tie together in local mode too.
+        own_inbox = f"handover-inbox-{settings.user.lower()}" if settings.user else ""
+        return LocalCogneeAdapter(
+            settings.dataset,
+            search_all=settings.search_scope != "dataset",
+            exclude_datasets=settings.exclude_datasets,
+            exclude_predicate=lambda name: name.startswith("handover-inbox-") and name != own_inbox,
+        )
     if settings.mode == "cloud":
         # Search the whole tenant by default: someone connecting their cloud
         # tenant expects to find the data already living there, not just what

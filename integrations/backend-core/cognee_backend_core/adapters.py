@@ -23,17 +23,57 @@ Adapters:
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
 from .results import _is_refusal, best_text, completions_by_dataset, unwrap_results
 
 
-class LocalCogneeAdapter:
-    """In-process cognee. Needs ``LLM_API_KEY``; data stays on this machine."""
+def _attributed_answer(raw: list[Any]) -> dict[str, Any]:
+    """The best completion plus which datasets substantively contributed
+    (refusal-only datasets are not sources). Shared by the local and HTTP
+    adapters so attribution means the same thing in both modes."""
+    pairs = completions_by_dataset(raw)
+    answer = best_text([text for _, text in pairs])
+    if not answer:
+        return {"answer": "", "sources": []}
+    # A co-source must have said something substantive, not just produced
+    # a short on-topic guess — otherwise every dataset with any text
+    # inflates the count and the attribution stops meaning anything.
+    floor = max(150, int(0.3 * len(answer)))
+    substantial = [
+        name
+        for name, text in pairs
+        if name and not _is_refusal(text) and (text == answer or len(text) >= floor)
+    ]
+    # the winning dataset first, the rest in listing order
+    winner = next((name for name, text in pairs if text == answer), "")
+    sources = [winner] + [n for n in substantial if n != winner] if winner else substantial
+    return {"answer": answer, "sources": [s for s in sources if s]}
 
-    def __init__(self, dataset: str) -> None:
-        self.dataset = dataset
+
+class LocalCogneeAdapter:
+    """In-process cognee. Needs ``LLM_API_KEY``; data stays on this machine.
+
+    Feature parity with :class:`HttpCogneeAdapter` — multi-dataset search
+    with per-dataset attribution, remember, exclusions — so connectors and
+    handover behave the same against local cognee as against a cloud tenant.
+    """
+
+    def __init__(
+        self,
+        dataset: str,
+        *,
+        search_all: bool = False,
+        exclude_datasets: Any = None,
+        exclude_predicate: Any = None,
+    ) -> None:
+        self.dataset = dataset  # where writes land
+        self.search_all = search_all
+        self.exclude_datasets = set(exclude_datasets or ())
+        self.exclude_predicate = exclude_predicate
+        self._dataset_names: tuple[float, list[str]] = (0.0, [])
 
     async def add(self, paths: list[str], dataset: str = "") -> None:
         import cognee
@@ -52,23 +92,96 @@ class LocalCogneeAdapter:
         await cognee.cognify(datasets=list(datasets) if datasets else [self.dataset])
 
     async def chunks(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
-        results = await self._search(query, "CHUNKS", top_k)
+        # always scoped to this adapter's dataset, for type-ahead latency —
+        # same contract as the HTTP adapter
+        results = await self._search(query, "CHUNKS", top_k, scope_all=False)
         return [r if isinstance(r, dict) else {"text": str(r)} for r in results or []]
 
     async def answer(self, query: str, top_k: int = 8) -> str:
-        return best_text(await self._search(query, "GRAPH_COMPLETION", top_k))
+        return (await self.answer_with_sources(query, top_k))["answer"]
 
-    async def _search(self, query: str, search_type: str, top_k: int) -> list[Any]:
+    async def answer_with_sources(
+        self, query: str, top_k: int = 8, search_type: str = "GRAPH_COMPLETION"
+    ) -> dict[str, Any]:
+        raw = await self._search_raw(query, search_type, top_k, scope_all=self.search_all)
+        return _attributed_answer(raw)
+
+    async def remember(self, text: str, *, filename: str = "note.txt", node_set: str = "") -> None:
+        """Durably store ``text``; the graph builds in the background so the
+        caller (inbox ingest, feedback) is not blocked on an LLM pipeline."""
+        import asyncio
+
+        import cognee
+
+        await cognee.add(text, dataset_name=self.dataset, node_set=[node_set] if node_set else None)
+
+        async def _cognify_quietly() -> None:
+            try:
+                await cognee.cognify(datasets=[self.dataset])
+            except Exception:
+                pass  # the pending-marker path rebuilds on the next index run
+
+        asyncio.get_running_loop().create_task(_cognify_quietly())
+
+    async def recall(self, query: str, top_k: int = 15) -> list[Any]:
+        return await self._search(query, "GRAPH_COMPLETION", top_k)
+
+    async def _search(
+        self, query: str, search_type: str, top_k: int, scope_all: bool | None = None
+    ) -> list[Any]:
+        return unwrap_results(await self._search_raw(query, search_type, top_k, scope_all))
+
+    async def _readable_datasets(self) -> list[str]:
+        """Local dataset names, cached briefly (same contract as HTTP)."""
+        stamp, names = self._dataset_names
+        if time.time() - stamp < 60:
+            return names
+        from cognee.modules.data.methods import get_datasets
+        from cognee.modules.users.methods import get_default_user
+
+        user = await get_default_user()
+        names = [str(d.name) for d in await get_datasets(user.id)]
+        self._dataset_names = (time.time(), names)
+        return names
+
+    async def _search_raw(
+        self, query: str, search_type: str, top_k: int, scope_all: bool | None = None
+    ) -> list[Any]:
+        """Search, keeping per-dataset envelopes (for attribution).
+
+        A merged local search returns flat payloads with no dataset names,
+        so scope-all runs one search per dataset — exactly what the server
+        does for an explicit dataset list — and wraps each result set in an
+        envelope. Connector datasets (github-<repo>) are first-class this
+        way: they answer, and they show up in attribution.
+        """
+        scope_all = self.search_all if scope_all is None else scope_all
+        if not scope_all:
+            names = [self.dataset]
+        else:
+            names = [
+                n
+                for n in await self._readable_datasets()
+                if n not in self.exclude_datasets
+                and not (self.exclude_predicate and self.exclude_predicate(n))
+            ] or [self.dataset]
+
         from cognee import SearchType
         from cognee.api.v1.search import search
 
-        results = await search(
-            query_text=query,
-            query_type=SearchType[search_type],
-            datasets=[self.dataset],
-            top_k=top_k,
-        )
-        return unwrap_results(results)
+        async def one(name: str) -> dict[str, Any]:
+            try:
+                results = await search(
+                    query_text=query,
+                    query_type=SearchType[search_type],
+                    datasets=[name],
+                    top_k=top_k,
+                )
+            except Exception:
+                results = []  # a missing/empty dataset is "no results"
+            return {"dataset_name": name, "dataset_id": "", "search_result": list(results or [])}
+
+        return list(await asyncio.gather(*(one(n) for n in names)))
 
 
 class HttpCogneeAdapter:
@@ -131,27 +244,9 @@ class HttpCogneeAdapter:
     async def answer_with_sources(
         self, query: str, top_k: int = 8, search_type: str = "GRAPH_COMPLETION"
     ) -> dict[str, Any]:
-        """The best completion plus which datasets substantively contributed
-        (refusal-only datasets are not sources)."""
         # Answers are worth a wait: span everything the key can read.
         raw = await self._search_raw(query, search_type, top_k, scope_all=self.search_all)
-        pairs = completions_by_dataset(raw)
-        answer = best_text([text for _, text in pairs])
-        if not answer:
-            return {"answer": "", "sources": []}
-        # A co-source must have said something substantive, not just produced
-        # a short on-topic guess — otherwise every dataset with any text
-        # inflates the count and the attribution stops meaning anything.
-        floor = max(150, int(0.3 * len(answer)))
-        substantial = [
-            name
-            for name, text in pairs
-            if name and not _is_refusal(text) and (text == answer or len(text) >= floor)
-        ]
-        # the winning dataset first, the rest in listing order
-        winner = next((name for name, text in pairs if text == answer), "")
-        sources = [winner] + [n for n in substantial if n != winner] if winner else substantial
-        return {"answer": answer, "sources": [s for s in sources if s]}
+        return _attributed_answer(raw)
 
     # -- chat memory (the second-brain / Claude Code plugin surface) ----------
     async def remember(self, text: str, *, filename: str = "note.txt", node_set: str = "") -> None:
