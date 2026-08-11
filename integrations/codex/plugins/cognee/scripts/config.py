@@ -84,6 +84,12 @@ _ENV_MAP = {
     "COGNEE_USER_PASSWORD": "user_password",
     "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
+    # Background remember + cognify polling (read at the call sites via _float_env;
+    # registered here for config-file support and discoverability).
+    "COGNEE_COGNIFY_POLL_INTERVAL": "cognify_poll_interval",
+    "COGNEE_BRIDGE_POLL_DEADLINE": "bridge_poll_deadline",
+    "COGNEE_BRIDGE_SUBMIT_TIMEOUT": "bridge_submit_timeout",
+    "COGNEE_STATUS_REQUEST_TIMEOUT": "status_request_timeout",
     # Legacy compat
     "COGNEE_SESSION_ID": "_static_session_id",
 }
