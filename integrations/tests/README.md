@@ -200,6 +200,32 @@ Non-obvious rules this tier encodes (each one learned by getting it wrong —
 Failures dump `hook.log`, the recall-related events, `recall-audit.log` and
 `last_recall.json` automatically; a live failure without them is unactionable.
 
+### Scenarios
+
+| File | Covers | Cognify? |
+|---|---|---|
+| `test_cross_session_recall.py` | the core promise: two turns in session A are recalled by a fresh session B on the same dataset | yes |
+| `test_session_capture.py` | within-session recall of prompts, answers and tool traces, plus the save counters behind the status line | no — the session cache answers directly, so these are the cheap ones |
+| `test_resilience.py` | hooks stay successful when the server dies; a mid-outage write should be buffered (**strict xfail**, see below); a slow cold query is judged `slow`, not `down`, and never trips the breaker | one |
+| `test_shared_brain.py` | Codex recalls what Claude Code wrote to the shared graph — only testable live, and cheap now that no CLI is involved | yes |
+
+Assertions prefer the per-scope hit counts in `last_recall.json` over the prose a
+semantic search returns: "the trace scope found something" is a structural fact,
+while which sentence comes back is not something the plugin controls.
+
+### Open gap this tier found
+
+`test_writes_during_an_outage_are_buffered_not_dropped` is a **strict xfail**
+recording a real defect, not an intended difference. `store-to-session.py` buffers
+to the warmup spillway only when `server_usable()` is already False (a *stale*
+ready marker plus a failed probe). The marker has a 30s TTL, so a server that dies
+inside that window leaves `server_usable()` returning True: the hook attempts a
+real write, it raises, and the `except` branch only logs `stop_store_error` — the
+entry is buffered nowhere and that turn is lost, which is exactly what the
+spillway exists to prevent. The fix is to call `append_warmup_entry` in that
+`except` branch, as the not-usable path already does; the strict marker turns red
+the moment that happens.
+
 ## What stays in the per-integration test dirs
 
 Five files are deliberately **not** migrated, because

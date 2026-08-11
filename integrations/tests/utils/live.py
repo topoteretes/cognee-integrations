@@ -152,6 +152,22 @@ def reap_port(port: int) -> list[str]:
     return found
 
 
+def kill_server(base_url: str, port: int, *, deadline: float = 30.0) -> list[str]:
+    """Kill the server and wait until it really stops answering.
+
+    SIGTERM is not instant: uvicorn finishes in-flight work first, so a health
+    probe right after ``kill`` still returns 200. A test that asserts "the server
+    is down" without waiting is asserting a race.
+    """
+    killed = reap_port(port)
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        if server_health(base_url, timeout=1.0) is None:
+            return killed
+        time.sleep(0.5)
+    raise AssertionError(f"server on {base_url} still answering {deadline}s after kill {killed}")
+
+
 def hook_events(suite: Suite, home: Path) -> list[tuple[str, dict]]:
     """Every (event, detail) the hooks have logged so far, in order."""
     path = state_dir(suite, home) / "hook.log"
@@ -165,6 +181,50 @@ def hook_events(suite: Suite, home: Path) -> list[tuple[str, dict]]:
             continue
         events.append((str(entry.get("event", "")), entry.get("detail") or {}))
     return events
+
+
+def read_last_recall(suite: Suite, home: Path) -> dict:
+    """The per-scope hit counts the last recall recorded (what the bar shows).
+
+    Structural evidence that a scope actually returned something, independent of
+    how a semantic search happened to phrase its answer.
+    """
+    path = state_dir(suite, home) / "last_recall.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def bridge_state(suite: Suite, home: Path) -> dict:
+    """Every session's bridge file merged into one dict.
+
+    ``pending_entries`` under a key is the warmup spillway holding entries the
+    server has not accepted yet — the observable proof that a write survived an
+    outage instead of being dropped.
+    """
+    merged: dict[str, Any] = {}
+    bridge_dir = state_dir(suite, home) / "bridge"
+    if not bridge_dir.exists():
+        return merged
+    for path in bridge_dir.glob("*.json"):
+        try:
+            merged.update(json.loads(path.read_text(encoding="utf-8")) or {})
+        except Exception:
+            continue
+    return merged
+
+
+def pending_entries(suite: Suite, home: Path) -> list:
+    """Warmup-buffered entries across all sessions, undelivered so far."""
+    buffered: list = []
+    for key, value in bridge_state(suite, home).items():
+        if key == "_state" or not isinstance(value, dict):
+            continue
+        buffered.extend(value.get("pending_entries") or [])
+    return buffered
 
 
 def wait_for_event(
