@@ -27,6 +27,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   Tunables registered in config: `COGNEE_BRIDGE_POLL_DEADLINE`,
   `COGNEE_BRIDGE_SUBMIT_TIMEOUT`, `COGNEE_COGNIFY_POLL_INTERVAL`,
   `COGNEE_STATUS_REQUEST_TIMEOUT`.
+- **Explicit remember now confirms queryability**, also ported from the
+  claude-code plugin. `cognee-remember.sh` submitted in the background but
+  discarded the response, so it could never confirm completion — a recall
+  right after "remember this" silently hit the not-yet-cognified graph, and
+  an errored cognify was never surfaced. `_remember_http.py` now captures the
+  enqueue handle (`dataset_id`, `pipeline_run_id`, `status`) and, by default,
+  waits a bounded `COGNEE_REMEMBER_WAIT_SECONDS` (8s) polling
+  `GET /api/v1/datasets/status`, adding `queryable`/`wait_outcome` to the
+  result. Set `COGNEE_REMEMBER_WAIT_SECONDS=0` for fire-and-forget, or
+  `COGNEE_REMEMBER_BACKGROUND=false` for a fully synchronous write. The
+  memory skill documents the background + eventual-consistency semantics.
 
 ## [1.3.4]
 
