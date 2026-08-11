@@ -7,8 +7,23 @@ import Foundation
 enum Profiles {
     static let basePort = 8765
 
+    /// State lives in ~/.cognee-desktop, unless a pre-rename
+    /// ~/.cognee-spotlight already holds it — mirroring the backend's
+    /// fallback, so old installs keep their profiles, configs, and ports.
+    static var stateRoot: String {
+        let home = NSHomeDirectory() as NSString
+        let new = home.appendingPathComponent(".cognee-desktop")
+        let legacy = home.appendingPathComponent(".cognee-spotlight")
+        if !FileManager.default.fileExists(atPath: new),
+            FileManager.default.fileExists(atPath: legacy)
+        {
+            return legacy
+        }
+        return new
+    }
+
     static var root: String {
-        (NSHomeDirectory() as NSString).appendingPathComponent(".cognee-desktop/profiles")
+        (stateRoot as NSString).appendingPathComponent("profiles")
     }
 
     static var active: String {
@@ -31,17 +46,20 @@ enum Profiles {
 
     static func configPath(_ name: String) -> String {
         name == "default"
-            ? (NSHomeDirectory() as NSString).appendingPathComponent(
-                ".cognee-desktop/backend.env")
+            ? (stateRoot as NSString).appendingPathComponent("backend.env")
             : (root as NSString).appendingPathComponent("\(name)/backend.env")
     }
 
     static func port(_ name: String) -> Int {
         if let text = try? String(contentsOfFile: configPath(name), encoding: .utf8) {
-            for line in text.split(separator: "\n") where line.hasPrefix("COGNEE_DESKTOP_PORT=") {
-                let value = line.dropFirst("COGNEE_DESKTOP_PORT=".count)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "'\" "))
-                if let port = Int(value) { return port }
+            for line in text.split(separator: "\n") {
+                // canonical spelling first, then the pre-rename legacy one
+                for prefix in ["COGNEE_DESKTOP_PORT=", "SPOTLIGHT_PORT="]
+                where line.hasPrefix(prefix) {
+                    let value = line.dropFirst(prefix.count)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "'\" "))
+                    if let port = Int(value) { return port }
+                }
             }
         }
         // deterministic assignment: default 8765, extras 8766+ in list order

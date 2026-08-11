@@ -28,6 +28,16 @@ final class InboxModel: ObservableObject {
         }
     }
 
+    /// Profile switched: these messages belong to someone else now. Drop
+    /// them immediately (no stale flash) and load the new profile's inbox.
+    func profileChanged() {
+        items = []
+        unseen = 0
+        selectedID = nil
+        statusText = ""
+        refresh()
+    }
+
     func select(_ item: HandoverItem) {
         selectedID = item.id
         guard !item.seen else { return }
@@ -241,6 +251,12 @@ final class HandoverNotifier {
         timer = Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
+        poll()
+    }
+
+    /// Immediate re-poll — the unread badge must reflect a profile switch
+    /// now, not on the next 45-second tick.
+    func pollNow() {
         poll()
     }
 

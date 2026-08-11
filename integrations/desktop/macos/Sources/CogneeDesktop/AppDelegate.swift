@@ -222,12 +222,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = buildMenu()  // refresh checkmarks
         settingsModel.refresh()
         onboardingModel.loadExisting()
+        // messages belong to the new identity now: drop the old profile's
+        // inbox instantly and re-poll so the unread badge flips with it
+        inboxModel.profileChanged()
+        notifier.pollNow()
         Task { @MainActor in
             if Profiles.isConfigured(sender.title) {
                 // make sure this profile's backend is up
                 if (try? await BackendClient().health()) == nil {
                     _ = await BackendLauncher.restart(profile: sender.title)
                 }
+                // backend may have just started or switched: reload messages
+                // once it answers, so the open Inbox shows the right person
+                self.inboxModel.refresh()
+                self.notifier.pollNow()
             } else {
                 self.openSetup()  // brand-new profile: walk through setup
             }
