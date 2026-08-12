@@ -19,6 +19,31 @@ project adheres to [Semantic Versioning](https://semver.org/).
   an *omitted* session id to a per-dataset default (`default_session_<dataset_id>`),
   but the plugin always sends its explicit per-session session id, which passes
   through unchanged.
+- **Background remember + cognify status polling in the session→graph bridge**,
+  ported from the claude-code plugin. The legacy document bridge
+  (`persist_session_cache_to_graph_via_http`) previously POSTed to
+  `/api/v1/remember` synchronously (`run_in_background=false`) with a 600s
+  timeout — roughly the cloud's 10-minute NGINX request ceiling. A large
+  cognify got abandoned mid-flight (504/HTML; the server still finishes), so
+  the bridge wrongly read it as a failure and retried, duplicating work. The
+  bridge now submits with `run_in_background=true` and polls
+  `GET /api/v1/datasets/status` (`wait_for_cognify`) to completion, and marks
+  the SHA256 dedup digest ONLY on completed/unknown — errored/timeout stay
+  unmarked so the detached retry re-submits (no loss, no dup-on-success).
+  Tunables registered in config: `COGNEE_BRIDGE_POLL_DEADLINE`,
+  `COGNEE_BRIDGE_SUBMIT_TIMEOUT`, `COGNEE_COGNIFY_POLL_INTERVAL`,
+  `COGNEE_STATUS_REQUEST_TIMEOUT`.
+- **Explicit remember now confirms queryability**, also ported from the
+  claude-code plugin. `cognee-remember.sh` submitted in the background but
+  discarded the response, so it could never confirm completion — a recall
+  right after "remember this" silently hit the not-yet-cognified graph, and
+  an errored cognify was never surfaced. `_remember_http.py` now captures the
+  enqueue handle (`dataset_id`, `pipeline_run_id`, `status`) and, by default,
+  waits a bounded `COGNEE_REMEMBER_WAIT_SECONDS` (8s) polling
+  `GET /api/v1/datasets/status`, adding `queryable`/`wait_outcome` to the
+  result. Set `COGNEE_REMEMBER_WAIT_SECONDS=0` for fire-and-forget, or
+  `COGNEE_REMEMBER_BACKGROUND=false` for a fully synchronous write. The
+  memory skill documents the background + eventual-consistency semantics.
 
 ## [1.3.4]
 
