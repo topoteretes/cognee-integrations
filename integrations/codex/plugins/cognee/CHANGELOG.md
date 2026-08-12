@@ -13,6 +13,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [1.3.5]
 
 ### Changed
+- **Pinned cognee version is now `1.4.2`** (was `1.4.0`). The plugin installs
+  this into its own managed venv on session start, so existing installs pick it
+  up on the next session. No plugin-side behavior changes: cognee 1.4.1+ resolves
+  an *omitted* session id to a per-dataset default (`default_session_<dataset_id>`),
+  but the plugin always sends its explicit per-session session id, which passes
+  through unchanged.
 - **Background remember + cognify status polling in the session→graph bridge**,
   ported from the claude-code plugin. The legacy document bridge
   (`persist_session_cache_to_graph_via_http`) previously POSTed to
