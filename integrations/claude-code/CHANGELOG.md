@@ -10,6 +10,16 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.6]
+
+### Changed
+- **Pinned cognee version is now `1.4.2`** (was `1.4.0`). The plugin installs
+  this into its own managed venv on session start, so existing installs pick it
+  up on the next session. No plugin-side behavior changes: cognee 1.4.1+ resolves
+  an *omitted* session id to a per-dataset default (`default_session_<dataset_id>`),
+  but the plugin always sends its explicit per-conversation session id, which
+  passes through unchanged.
+
 ## [1.2.5]
 
 ### Added
