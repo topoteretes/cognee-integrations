@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -45,6 +46,42 @@ from .suites import Suite, state_dir
 
 #: The port a developer's own cognee almost certainly occupies.
 FORBIDDEN_PORT = 8011
+
+
+def deactivated_path() -> str:
+    """PATH with this test venv removed — what a real user's shell looks like.
+
+    ``uv run`` activates the test venv by prepending its ``bin`` to PATH and
+    setting ``VIRTUAL_ENV``. Hooks inherited that, which is unlike any real
+    install and breaks the plugin's own interpreter resolution (below).
+    """
+    venv = os.environ.get("VIRTUAL_ENV", "").strip()
+    entries = os.environ.get("PATH", "").split(os.pathsep)
+    if not venv:
+        return os.pathsep.join(entries)
+    venv_bin = str(Path(venv) / "bin")
+    return os.pathsep.join(e for e in entries if e and e != venv_bin)
+
+
+def host_python() -> str:
+    """The interpreter the *host* would launch hooks with.
+
+    hooks.json runs ``python3 <script>``, so live tests must too — and crucially
+    the ``python3`` a *user* has, not this test venv's.
+
+    Why it matters: on import, ``_plugin_common`` re-execs into the plugin venv so
+    cognee is importable, and it skips that when
+    ``os.path.samefile(venv_python, sys.executable)``. The test venv and the plugin
+    venv are both pinned to 3.12, and a venv's ``bin/python`` is a symlink to its
+    base interpreter — so both resolve to the same file, ``samefile`` is True, the
+    re-exec is skipped, and any local-SDK path (pre-compact's ``cognee.recall``,
+    for one) dies with "No module named 'cognee'".
+
+    Resolving through :func:`deactivated_path` avoids that and exercises the
+    re-exec for real. Production is unaffected: a user's ``python3`` is a
+    different interpreter from the plugin's pinned one.
+    """
+    return shutil.which("python3", path=deactivated_path()) or sys.executable
 
 
 def free_port() -> int:
@@ -124,8 +161,15 @@ def build_live_env(
             # than silently failing this one.
             "COGNEE_RECALL_TIMEOUT": "30",
             "COGNEE_RECALL_BUDGET": "60",
+            # Hand the hooks a de-activated environment. Under `uv run` this
+            # process has the test venv on PATH and VIRTUAL_ENV set, which no real
+            # install has — and the plugin resolves `python3` itself when it
+            # spawns watchers and boots its server, so leaving it in would point
+            # those at an interpreter with no cognee.
+            "PATH": deactivated_path(),
         }
     )
+    env.pop("VIRTUAL_ENV", None)
     if extra:
         env.update(extra)
     return env
@@ -230,7 +274,12 @@ def pending_entries(suite: Suite, home: Path) -> list:
 def wait_for_event(
     suite: Suite, home: Path, name: str, *, deadline: float, interval: float = 2.0
 ) -> dict | None:
-    """Poll hook.log until ``name`` appears; return its detail, or None on timeout."""
+    """Poll hook.log until ``name`` appears; return its detail, or None on timeout.
+
+    Careful with repeated actions: this returns immediately if an *earlier* round
+    already logged ``name``. To wait for a new occurrence, use
+    :func:`wait_for_event_count` with the expected total.
+    """
     end = time.monotonic() + deadline
     while time.monotonic() < end:
         for event, detail in hook_events(suite, home):
@@ -238,6 +287,25 @@ def wait_for_event(
                 return detail
         time.sleep(interval)
     return None
+
+
+def wait_for_event_count(
+    suite: Suite, home: Path, name: str, count: int, *, deadline: float, interval: float = 2.0
+) -> int:
+    """Poll until ``name`` has been logged ``count`` times; return the count seen.
+
+    The honest way to wait on a repeated step. Waiting on mere *presence* of an
+    event silently succeeds on the previous round's entry — which is how a test
+    ends up asserting state from before the action it just performed.
+    """
+    end = time.monotonic() + deadline
+    seen = 0
+    while time.monotonic() < end:
+        seen = sum(1 for event, _ in hook_events(suite, home) if event == name)
+        if seen >= count:
+            return seen
+        time.sleep(interval)
+    return seen
 
 
 @dataclass
@@ -290,8 +358,32 @@ class LiveSession:
         started = time.monotonic()
         try:
             proc = subprocess.run(
-                [sys.executable, str(self.suite.scripts_dir / script), *args],
+                [host_python(), str(self.suite.scripts_dir / script), *args],
                 input=json.dumps(payload),
+                env=self.env,
+                cwd=str(self.project),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            rc: int | str = proc.returncode
+            out, err = proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired:
+            rc, out, err = "TIMEOUT", "", ""
+        run = HookRun(script, args, rc, out, err, time.monotonic() - started)
+        self.runs.append(run)
+        return run
+
+    def run_shell(self, script: str, *args: str, timeout: float = 300.0) -> HookRun:
+        """Run one of the suite's shell entrypoints (cognee-search.sh, …).
+
+        These are what a user invokes directly, so they get exercised the same
+        way — same env, same HOME, no stdin.
+        """
+        started = time.monotonic()
+        try:
+            proc = subprocess.run(
+                ["bash", str(self.suite.scripts_dir / script), *args],
                 env=self.env,
                 cwd=str(self.project),
                 capture_output=True,

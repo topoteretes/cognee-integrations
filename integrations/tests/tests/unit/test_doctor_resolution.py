@@ -13,8 +13,9 @@ its own `_API_KEY_CACHE` constant, which the fixture accounts for.
 
 The `/health` probe and the full report live in integration/test_doctor.py.
 Migrated from claude-code/tests/test_doctor.py and
-codex/plugins/cognee/tests/test_doctor.py; codex's copy stays in place for the
-Windows workflow, which runs it as a bare script.
+codex/plugins/cognee/tests/test_doctor.py, both now deleted: every case in
+codex's copy has a counterpart here or in integration/test_doctor.py, and the
+Windows workflow runs this suite rather than that script.
 """
 
 from __future__ import annotations

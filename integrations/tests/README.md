@@ -206,45 +206,100 @@ Failures dump `hook.log`, the recall-related events, `recall-audit.log` and
 |---|---|---|
 | `test_cross_session_recall.py` | the core promise: two turns in session A are recalled by a fresh session B on the same dataset | yes |
 | `test_session_capture.py` | within-session recall of prompts, answers and tool traces, plus the save counters behind the status line | no — the session cache answers directly, so these are the cheap ones |
-| `test_resilience.py` | hooks stay successful when the server dies; a mid-outage write should be buffered (**strict xfail**, see below); a slow cold query is judged `slow`, not `down`, and never trips the breaker | one |
+| `test_user_surfaces.py` | the three places a user meets memory: the status-line counts, the pre-compact anchor (**strict xfail**, see below), and `cognee-search.sh` | no |
+| `test_resilience.py` | hooks stay successful when the server dies; a mid-outage write should be buffered (**strict xfail**, see below); buffered turns replay once the server returns; a slow cold query is judged `slow`, not `down`, and never trips the breaker | one |
+| `test_concurrency.py` | two sessions' interleaved turns both reach the graph, and each session claims its own final sync | one |
+| `test_graph_writes.py` | two populated datasets do not leak into each other; a repeated SessionEnd starts exactly one final-sync worker | two |
 | `test_shared_brain.py` | Codex recalls what Claude Code wrote to the shared graph — only testable live, and cheap now that no CLI is involved | yes |
+
+Two behaviours worth knowing before writing more of these, both learned by
+getting them wrong:
+
+- **The warmup buffer is per session.** `_bridge_file(session_id)` means a session
+  replays only what it buffered, so another session's prompt can never drain a
+  stranded backlog. Recovery is driven by the session that buffered it.
+- **The drain rides on the prompt hook.** Polling the buffer file while nobody
+  prompts will never see it move, and a drain that failed during an outage arms a
+  ~60s backoff worth prompting past.
+
+Waiting on a repeated step needs `wait_for_event_count`, not `wait_for_event`:
+the latter returns immediately on a previous round's entry, which is how a test
+ends up asserting state from before the action it just performed.
 
 Assertions prefer the per-scope hit counts in `last_recall.json` over the prose a
 semantic search returns: "the trace scope found something" is a structural fact,
 while which sentence comes back is not something the plugin controls.
 
-### Open gap this tier found
+### Open gaps this tier found
 
-`test_writes_during_an_outage_are_buffered_not_dropped` is a **strict xfail**
-recording a real defect, not an intended difference. `store-to-session.py` buffers
-to the warmup spillway only when `server_usable()` is already False (a *stale*
-ready marker plus a failed probe). The marker has a 30s TTL, so a server that dies
-inside that window leaves `server_usable()` returning True: the hook attempts a
-real write, it raises, and the `except` branch only logs `stop_store_error` — the
-entry is buffered nowhere and that turn is lost, which is exactly what the
-spillway exists to prevent. The fix is to call `append_warmup_entry` in that
-`except` branch, as the not-usable path already does; the strict marker turns red
-the moment that happens.
+Both are **strict xfails** recording real defects, not intended differences, so
+each turns red the moment it is fixed. They share a shape: the plugin is careful
+never to break the agent, and the cost is that these failures are *silent* — a log
+line and carry on.
 
-## What stays in the per-integration test dirs
+**1. A mid-session outage can lose a turn.**
+`test_writes_during_an_outage_are_buffered_not_dropped`. `store-to-session.py`
+buffers to the warmup spillway only when `server_usable()` is already False (a
+*stale* ready marker plus a failed probe). The marker has a 30s TTL, so a server
+that dies inside that window leaves `server_usable()` returning True: the hook
+attempts a real write, it raises, and the `except` branch only logs
+`stop_store_error` — the entry is buffered nowhere and that turn is lost, which is
+exactly what the spillway exists to prevent. Fix: call `append_warmup_entry` in
+that `except` branch, as the not-usable path already does.
 
-Five files are deliberately **not** migrated, because
-`.github/workflows/plugin-windows-tests.yml` runs them on Windows as bare
-`python <file>` with no installed dependencies — they must stay stdlib-only
-self-runners:
+**2. PreCompact produces no anchor in server mode.**
+`test_precompact_produces_an_anchor_carrying_the_session`. `pre-compact.py` has no
+HTTP path at all: it recalls via `cognee.recall` and falls back to
+`get_session_manager()`, both local-SDK only, while in server mode the session
+cache lives on the server. Session and trace entries come back empty, the derived
+query stays empty, the graph scopes are never queried, and it logs
+`precompact_empty` and prints nothing. Every sibling hook branches on HTTP vs SDK
+(`recall_via_http`, `remember_entry_via_http`); this one never got one. The effect
+is that anyone running against a server loses their anchor at exactly the moment
+compaction discards the transcript.
 
-- `{claude-code,codex}/tests/test_proc.py`
-- `{claude-code,codex}/tests/test_statusline_render.py` (the cp1252 encoding
-  regression; it also needs `COGNEE_BASE_URL` *unset*, which `run_hook` injects)
-- `codex/plugins/cognee/tests/test_doctor.py` — duplicated by
-  `unit/test_doctor_resolution.py` + `integration/test_doctor.py` until that
-  workflow changes
+## The per-integration test dirs are gone
 
-Also still there, deferred rather than kept: `test_hook_timing.py` and
-`test_per_scope_timing.py` (load-sensitive timing assertions and a process-wide
-`time.monotonic` patch) and `test_recall_health_accounting.py` (its assertions
-are all on stubbed state-writer seams, so converting it is a rewrite, not a
-port).
+`claude-code/tests/`, `codex/tests/` and `codex/plugins/cognee/tests/` no longer
+exist; everything they held now lives here. What made this worth finishing rather
+than leaving as accepted duplication is that those eight files were not duplicates
+at all:
+
+- `plugin-windows-tests.yml` invoked five of them directly as `python <file>`, so
+  they ran **only on Windows** and never on Linux or macOS;
+- `ci.yml` only ever runs `pytest tests/` (this suite), so the other three —
+  `test_hook_timing.py`, `test_per_scope_timing.py`,
+  `test_recall_health_accounting.py` — ran in **no CI job on any platform**.
+
+Where each landed:
+
+| Was | Now | Notes |
+| --- | --- | --- |
+| `{claude-code,codex}/tests/test_proc.py` | `unit/test_proc_helpers.py` | `_proc.py` is byte-identical across suites, so parametrizing it is a drift guard; the Toolhelp path is a real `skipif`, not a silent early `return` |
+| `{claude-code,codex}/tests/test_statusline_render.py` | `e2e/test_statusline_encoding.py` | cp1252 regression; asserts **bytes**, since decoding in the parent would hide what the child actually wrote |
+| `claude-code/tests/test_hook_timing.py` | `unit/test_timing_metrics.py` | claude-only via `has_timing_metrics` |
+| `claude-code/tests/test_per_scope_timing.py` | `unit/test_recall_per_scope.py` | applies to **both** suites — codex has the same `per_scope`/budget machinery |
+| `claude-code/tests/test_recall_health_accounting.py` | `unit/test_recall_health_accounting.py` | both suites; seams are seam-for-seam identical |
+| `codex/plugins/cognee/tests/test_doctor.py` | already covered | every one of its 25 cases has a counterpart in `unit/test_doctor_resolution.py` or `integration/test_doctor.py` |
+
+The two recall files share `utils/recall.py`, which drives
+`session-context-lookup._run` in cloud mode and captures every seam at once
+(events, connection-state writes, breaker calls, dispatched scopes and their
+timeouts). Its stubs use `monkeypatch.setattr` at the default `raising=True`, so
+a seam renamed in one integration and not the other fails loudly rather than
+quietly testing nothing.
+
+### Windows
+
+`plugin-windows-tests.yml` now runs this suite on `windows-latest` instead of
+five hand-listed scripts, which means any test added here is checked on Windows
+automatically. Isolation works there because `build_env` and `_isolate_process_env`
+set `USERPROFILE` alongside `HOME` (`Path.home()` reads the former on Windows),
+and the handful of tests that encode POSIX file-mode semantics skip themselves on
+`os.name == "nt"`.
+
+**Unverified:** the suite has never actually executed on Windows — it was
+statically audited, not run. The first run of that workflow is the real check.
 
 ## Fixture API
 

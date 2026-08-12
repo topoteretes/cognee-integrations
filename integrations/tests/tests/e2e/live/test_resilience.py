@@ -12,6 +12,8 @@ No cognify here — nothing needs the graph — so these are cheap to run.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from utils.live import (
     hook_events,
@@ -101,6 +103,70 @@ def test_writes_during_an_outage_are_buffered_not_dropped(
     assert buffered, (
         "nothing was buffered while the server was down — that turn is lost. "
         f"last events: {events[-8:]}"
+    )
+
+
+def test_buffered_turns_are_replayed_once_the_server_returns(
+    started_session, live_suite, live_home, live_port, live_base_url, nonce
+):
+    """The spillway, end to end: buffer while down, replay when back.
+
+    This is the path the mid-outage xfail above does *not* reach.
+    ``server_usable()`` only reports False once the ready marker has gone stale
+    (30s TTL, ``_SERVER_READY_TTL_SECONDS``) **and** a probe fails — so the test
+    waits out the marker before capturing. That is exactly the real warmup case:
+    the plugin knows the server is unavailable, so it buffers instead of trying.
+
+    Then a fresh session boots the server again and its prompt hook drains the
+    buffer, which is what makes an outage cost nothing permanent.
+    """
+    session = started_session("spillway")
+    kill_server(live_base_url, live_port)
+
+    # Wait out the ready marker so server_usable() actually reports False.
+    time.sleep(35)
+    assert server_health(live_base_url) is None, "server came back on its own"
+
+    session.prompt(f"Captured while down: {nonce} uses a 5-node quorum.", turn_id="t1")
+    session.answer(f"{nonce}: 5-node quorum.", turn_id="t1")
+
+    buffered = pending_entries(live_suite, live_home)
+    events = [event for event, _ in hook_events(live_suite, live_home)]
+    assert buffered, (
+        "the turn was not buffered even with a stale marker and a dead server — "
+        f"the spillway never engaged. Events: {events[-10:]}"
+    )
+    assert "store_buffered_warming" in events, (
+        f"no store_buffered_warming event recorded. Events: {events[-10:]}"
+    )
+
+    # Bring the server back. Only SessionStart boots one, so a second session
+    # plays the part of the user opening a new terminal after a restart.
+    started_session("revived")
+
+    # The drain must then be driven by the *stranded* session, not the new one:
+    # the warmup buffer is per-session (``_bridge_file(session_id)``), so each
+    # session replays only what it buffered. This mirrors the real recovery —
+    # the terminal that was open when the server died prompts again and its own
+    # backlog goes out. The drain also rides on the prompt hook, so polling the
+    # file alone would never see it move, and a drain that failed during the
+    # outage arms a ~60s backoff worth prompting past.
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        session.prompt("Back online — anything, to trigger the drain.", turn_id="t2")
+        if not pending_entries(live_suite, live_home):
+            break
+        time.sleep(15)
+
+    leftover = pending_entries(live_suite, live_home)
+    drain_events = [
+        event
+        for event, _ in hook_events(live_suite, live_home)
+        if "drain" in event or "warmup" in event
+    ]
+    assert not leftover, (
+        f"{len(leftover)} entr(ies) never replayed after the server returned. "
+        f"Drain-related events: {drain_events[-8:]}. First leftover: {leftover[0]}"
     )
 
 

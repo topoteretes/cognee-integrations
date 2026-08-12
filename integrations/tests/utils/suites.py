@@ -48,6 +48,12 @@ class Suite:
     cwd_env: str
     #: Suffix _resolve_agent_name appends to the agent session name.
     session_suffix: str
+    #: Base name of the host CLI's own executable, as _proc's Windows ancestry
+    #: walk matches it (``claude.exe`` / ``codex.exe``, and ``<stem>-*`` variants
+    #: like ``claude-nightly.exe``). Deliberately separate from session_prefix:
+    #: the two happen to share a value, but one names a process and the other a
+    #: session, and nothing keeps them equal.
+    host_stem: str
     #: Capability: has the background-remember + cognify-poll refactor.
     #: claude-code submits writes with run_in_background=true, returns an
     #: {"ok": ...} envelope from _post_remember_document instead of raising,
@@ -56,6 +62,12 @@ class Suite:
     #: has the older synchronous, raise-on-error path, so tests for any of
     #: those behaviours are suite-conditional.
     has_background_remember: bool
+    #: Capability: has the observability timing work (#3676) — a shared
+    #: ``_plugin_common.elapsed_ms`` helper and an aggregate ``elapsed_ms`` field
+    #: on the ``context_lookup_*`` events. codex has neither: it times each recall
+    #: scope inline (so ``per_scope[*]["elapsed_ms"]`` IS present on both) but
+    #: reports no total, and has no helper to share.
+    has_timing_metrics: bool
 
 
 CLAUDE = Suite(
@@ -70,7 +82,9 @@ CLAUDE = Suite(
     session_prefix="claude",
     cwd_env="CLAUDE_CWD",
     session_suffix="_claude",
+    host_stem="claude",
     has_background_remember=True,
+    has_timing_metrics=True,
 )
 
 CODEX = Suite(
@@ -90,7 +104,9 @@ CODEX = Suite(
     session_prefix="codex",
     cwd_env="CODEX_CWD",
     session_suffix="_codex",
+    host_stem="codex",
     has_background_remember=False,
+    has_timing_metrics=False,
 )
 
 ALL_SUITES = [CLAUDE, CODEX]
