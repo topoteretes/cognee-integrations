@@ -1,0 +1,92 @@
+name: Live E2E (real server + real LLM)
+
+# Deliberately NOT on pull_request. This tier boots a real cognee server and
+# spends real LLM credits on every cognify, so it must never gate a merge or run
+# on an untrusted head. Nightly plus on-demand is enough to catch regressions in
+# the memory chain that the hermetic suite cannot see.
+on:
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: 'Extra pytest args (e.g. -k shared_brain)'
+        required: false
+        default: ''
+  schedule:
+    # 04:20 UTC daily — off-peak, and after the day's merges have settled.
+    - cron: '20 4 * * *'
+
+concurrency:
+  # One live run at a time: concurrent runs would race on the cached plugin venv.
+  group: live-e2e
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: live tier
+    runs-on: ubuntu-latest
+    # A failure here fails the run. The tier is deliberately not on pull_request,
+    # so this gates nothing — it only decides whether a nightly regression is
+    # visible or silent, and silent is the worse failure mode. The two known
+    # product gaps are strict xfails rather than allowed failures, so they are
+    # already green; anything that goes red here is genuinely new.
+    continue-on-error: false
+    # Every scenario runs against both integrations: ~24m30s locally with a
+    # seeded venv, and a cache-miss run also pays the full plugin-venv build
+    # before any test.
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: integrations/tests/.python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # The plugin builds its own venv (uv + a pinned cognee) on first
+      # SessionStart, which takes minutes. Locally the harness symlinks the
+      # developer's; in CI there is none, so cache it across runs instead.
+      # COGNEE_LIVE_ALLOW_BUILD lets the first (cache-miss) run build it.
+      - name: Cache the plugin runtime venv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cognee-plugin/venv
+          key: cognee-plugin-venv-${{ runner.os }}-${{ hashFiles('integrations/claude-code/scripts/session-start.py') }}
+          restore-keys: |
+            cognee-plugin-venv-${{ runner.os }}-
+
+      - name: Install test dependencies
+        working-directory: integrations/tests
+        run: uv sync --locked --dev
+
+      - name: Run the live tier
+        working-directory: integrations/tests
+        env:
+          COGNEE_RUN_LIVE: '1'
+          COGNEE_LIVE_ALLOW_BUILD: '1'
+          LLM_API_KEY: ${{ secrets.LIVE_E2E_LLM_API_KEY }}
+          # Keep cognify cheap; the agent side is simulated, so this is the only
+          # model spend in the run.
+          LLM_MODEL: openai/gpt-4o-mini
+        run: |
+          if [ -z "${LLM_API_KEY}" ]; then
+            echo "::error::LIVE_E2E_LLM_API_KEY is not set — the live tier cannot run."
+            exit 1
+          fi
+          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }}
+
+      # A live failure is only actionable with the plugin's own logs, and the
+      # temp HOMEs are gone by the time anyone looks at the run.
+      - name: Collect plugin logs on failure
+        if: failure()
+        run: |
+          echo "### hook logs from temp HOMEs" >> "$GITHUB_STEP_SUMMARY"
+          find /tmp /var/folders -name 'hook.log' -path '*cognee-plugin*' 2>/dev/null | while read -r f; do
+            echo "--- $f" >> "$GITHUB_STEP_SUMMARY"
+            tail -80 "$f" >> "$GITHUB_STEP_SUMMARY"
+          done

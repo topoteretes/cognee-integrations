@@ -42,15 +42,28 @@ jobs:
 
           PY_LIST=""
           TS_LIST=""
+          RUN_SHARED=""
 
           for dir in $CHANGED_DIRS; do
             [ ! -d "integrations/$dir" ] && continue
+            # claude-code and codex have no pyproject of their own; their shared
+            # pytest suite lives in integrations/tests and must run when they change.
+            case "$dir" in
+              claude-code|codex|tests) RUN_SHARED=1 ;;
+            esac
             if [ -f "integrations/$dir/pyproject.toml" ]; then
               PY_LIST="${PY_LIST}\"${dir}\","
             elif [ -f "integrations/$dir/package.json" ]; then
               TS_LIST="${TS_LIST}\"${dir}\","
             fi
           done
+
+          if [ -n "$RUN_SHARED" ]; then
+            case "$PY_LIST" in
+              *'"tests"'*) ;;  # already included (integrations/tests itself changed)
+              *) PY_LIST="${PY_LIST}\"tests\"," ;;
+            esac
+          fi
 
           # Build JSON arrays
           if [ -n "$PY_LIST" ]; then

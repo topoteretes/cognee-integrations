@@ -1,0 +1,32 @@
+[project]
+name = "cognee-integrations-shared-tests"
+version = "0.1.0"
+description = "Shared test harness for the claude-code and codex Cognee integrations"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+# Test-only project: nothing to build or install.
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-httpserver>=1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The same basename may appear in more than one tier (e.g. a module's wire tests
+# in integration/ and its pure-logic tests in unit/). importlib mode drops the
+# unique-basename requirement of the legacy prepend mode.
+#
+# `-m "not live"` keeps every default invocation hermetic and free: the live tier
+# boots a real cognee server and spends real LLM credits. A user-supplied `-m`
+# comes after addopts on the command line and wins, so
+# `pytest tests/e2e/live -m live` opts in.
+addopts = "--import-mode=importlib -m 'not live'"
+markers = [
+    "live: needs a real cognee server + real LLM calls (COGNEE_RUN_LIVE=1, LLM_API_KEY)",
+]
