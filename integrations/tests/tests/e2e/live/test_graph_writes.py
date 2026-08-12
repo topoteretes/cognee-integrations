@@ -27,7 +27,7 @@ pytestmark = pytest.mark.live
 
 
 def test_two_datasets_do_not_leak_into_each_other(
-    started_session, live_env, live_base_url, live_home, live_suite, nonce
+    started_session, live_env, live_base_url, live_home, nonce
 ):
     """Both datasets get real content; neither may answer with the other's."""
     other_dataset = f"{live_env['COGNEE_PLUGIN_DATASET']}_b"
@@ -44,7 +44,6 @@ def test_two_datasets_do_not_leak_into_each_other(
         base_url=live_base_url,
         dataset=live_env["COGNEE_PLUGIN_DATASET"],
         home=live_home,
-        suite=live_suite,
     )
     graph_a.wait_until_recalled(f"What does {nonce} use?", "paxos", deadline=600.0)
 
@@ -56,9 +55,7 @@ def test_two_datasets_do_not_leak_into_each_other(
     b.end()
     assert b.wait_for_sync(deadline=600.0) is not None, "dataset B was never bridged"
 
-    graph_b = GraphClient(
-        base_url=live_base_url, dataset=other_dataset, home=live_home, suite=live_suite
-    )
+    graph_b = GraphClient(base_url=live_base_url, dataset=other_dataset, home=live_home)
     graph_b.wait_until_recalled(f"What does {nonce_b} use?", "byzantine", deadline=600.0)
 
     # ── neither dataset may answer with the other's content ──────────────

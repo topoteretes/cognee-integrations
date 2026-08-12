@@ -33,7 +33,7 @@ from utils.live import (
     seed_plugin_venv,
     server_health,
 )
-from utils.suites import CLAUDE, Suite, state_dir
+from utils.suites import ALL_SUITES, Suite, state_dir
 
 pytestmark = pytest.mark.live
 
@@ -58,15 +58,26 @@ def live_prereqs() -> str:
     return key
 
 
-@pytest.fixture
-def live_suite() -> Suite:
-    """Only claude-code for now; adding codex is a one-line change here."""
-    return CLAUDE
+@pytest.fixture(params=ALL_SUITES, ids=lambda s: s.name)
+def live_suite(request) -> Suite:
+    """Every scenario runs against both integrations.
+
+    This doubles the tier's wall-clock and LLM spend, which is the point: the two
+    plugins diverge in exactly the places a mock cannot show (codex's bridge is
+    synchronous and has no cognify poll), so a shared graph is the only place that
+    divergence becomes visible.
+    """
+    return request.param
 
 
 @pytest.fixture
-def live_home(live_suite: Suite, tmp_path: Path) -> Path:
-    """A per-test HOME with the plugin venv seeded so boot is seconds, not minutes."""
+def live_home(tmp_path: Path) -> Path:
+    """A per-test HOME with the plugin venv seeded so boot is seconds, not minutes.
+
+    Deliberately suite-agnostic: the venv and ``~/.cognee`` are shared, and both
+    suites keep their own state subdirectory beneath it. Cross-suite tests need one
+    HOME holding both, so this must not depend on ``live_suite``.
+    """
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
     seeded = seed_plugin_venv(home)
@@ -198,14 +209,66 @@ def started_session(live_session_factory, live_base_url: str, live_suite: Suite,
 
 
 @pytest.fixture
-def graph(live_base_url: str, live_dataset: str, live_home: Path, live_suite: Suite) -> GraphClient:
-    return GraphClient(
-        base_url=live_base_url, dataset=live_dataset, home=live_home, suite=live_suite
-    )
+def graph(live_base_url: str, live_dataset: str, live_home: Path) -> GraphClient:
+    return GraphClient(base_url=live_base_url, dataset=live_dataset, home=live_home)
+
+
+@pytest.fixture
+def session_for(
+    live_prereqs: str,
+    live_home: Path,
+    live_project: Path,
+    live_base_url: str,
+    live_dataset: str,
+    live_port: int,
+):
+    """Boot a session for an *explicitly named* suite, sharing one server.
+
+    For cross-suite scenarios, which cannot use ``started_session``: that rides
+    the ``live_suite`` parametrization, so a writer/reader pair built from it would
+    always be the same integration on both sides. Here the caller names each side.
+
+    Every session shares the HOME, port, and dataset — so the graph is shared while
+    each suite keeps its own state subdirectory, which is exactly the arrangement
+    the shared-brain claim rests on.
+    """
+
+    def _make(suite: Suite, name: str, *, start: bool = True) -> LiveSession:
+        session = LiveSession(
+            suite=suite,
+            home=live_home,
+            project=live_project,
+            env=build_live_env(
+                home=live_home,
+                project=live_project,
+                base_url=live_base_url,
+                dataset=live_dataset,
+                llm_api_key=live_prereqs,
+                suite=suite,
+            ),
+            session_id=f"live-{name}-{uuid.uuid4().hex[:8]}",
+        )
+        if not start:
+            return session
+
+        run = session.start()
+        assert run.ok, f"{suite.name} SessionStart failed (rc={run.returncode}): {run.stderr[:800]}"
+        deadline = time.monotonic() + BOOT_DEADLINE
+        while time.monotonic() < deadline:
+            if server_health(live_base_url) == 200:
+                return session
+            time.sleep(2.0)
+        raise AssertionError(f"no healthy server on {live_base_url} within {BOOT_DEADLINE}s")
+
+    yield _make
+
+    reaped = reap_port(live_port)
+    if reaped:
+        print(f"[live] reaped server pids on {live_port}: {reaped}")
 
 
 @pytest.fixture(autouse=True)
-def live_artifacts(request, live_suite: Suite, live_home: Path, live_base_url: str):
+def live_artifacts(request, live_home: Path, live_base_url: str):
     """On failure, dump the state that makes a live failure diagnosable.
 
     Without this a red live test says only "recall never returned X", which is
@@ -214,6 +277,13 @@ def live_artifacts(request, live_suite: Suite, live_home: Path, live_base_url: s
     Failure is detected via the session's counter rather than a
     ``pytest_runtest_makereport`` hook: the counter is incremented before
     teardown runs and needs no hook wiring to be correct.
+
+    Deliberately does NOT depend on ``live_suite``. As an autouse fixture it would
+    otherwise force the suite parametrization onto every test in this directory,
+    including the cross-suite ones that need two named suites at once. Iterating
+    the suites instead also makes it strictly more useful: a cross-suite failure
+    dumps both sides, and for a single-suite test the other suite's state dir was
+    never created, so nothing extra is printed.
     """
     failed_before = request.session.testsfailed
     yield
@@ -223,24 +293,29 @@ def live_artifacts(request, live_suite: Suite, live_home: Path, live_base_url: s
     print(f"\n[live artifacts] home={live_home} base_url={live_base_url}")
     print(f"[live artifacts] server health: {server_health(live_base_url)}")
 
-    events = hook_events(live_suite, live_home)
-    print(f"[live artifacts] {len(events)} hook events; last 30:")
-    for event, detail in events[-30:]:
-        print(f"    {event}: {str(detail)[:220]}")
+    for suite in ALL_SUITES:
+        if not state_dir(suite, live_home).exists():
+            continue  # this suite never ran in this test
+        print(f"\n[live artifacts] ── {suite.name} ──")
 
-    # Why a recall came back empty is almost always here: which scopes were
-    # dispatched, what each returned, and whether the 4s budget cut them off.
-    recall_events = [
-        (e, d)
-        for e, d in events
-        if e.startswith(("recall", "context_lookup")) or "budget" in e or "scope" in e
-    ]
-    if recall_events:
-        print("[live artifacts] recall-related events:")
-        for event, detail in recall_events:
-            print(f"    {event}: {str(detail)[:300]}")
+        events = hook_events(suite, live_home)
+        print(f"[live artifacts] {len(events)} hook events; last 30:")
+        for event, detail in events[-30:]:
+            print(f"    {event}: {str(detail)[:220]}")
 
-    for name in ("last_recall.json", "recall-audit.log", "exit-watcher.log", "hook.log"):
-        path = state_dir(live_suite, live_home) / name
-        if path.exists():
-            _dump(name, path.read_text(encoding="utf-8", errors="replace"))
+        # Why a recall came back empty is almost always here: which scopes were
+        # dispatched, what each returned, and whether the budget cut them off.
+        recall_events = [
+            (e, d)
+            for e, d in events
+            if e.startswith(("recall", "context_lookup")) or "budget" in e or "scope" in e
+        ]
+        if recall_events:
+            print("[live artifacts] recall-related events:")
+            for event, detail in recall_events:
+                print(f"    {event}: {str(detail)[:300]}")
+
+        for name in ("last_recall.json", "recall-audit.log", "exit-watcher.log", "hook.log"):
+            path = state_dir(suite, live_home) / name
+            if path.exists():
+                _dump(f"{suite.name}/{name}", path.read_text(encoding="utf-8", errors="replace"))

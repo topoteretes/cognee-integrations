@@ -68,6 +68,17 @@ class Suite:
     #: scope inline (so ``per_scope[*]["elapsed_ms"]`` IS present on both) but
     #: reports no total, and has no helper to share.
     has_timing_metrics: bool
+    #: Capability: renders a rich terminal status bar (health glyphs, recall-count
+    #: and pipeline-health segments). codex instead emits a short plain-text line
+    #: that is injected into the model's context, so segment-level assertions do
+    #: not apply to it — but the bar still has to render and name the dataset.
+    has_rich_statusline: bool
+    #: Capability: ``pre-compact.py`` branches on ``is_cloud_mode`` and recalls via
+    #: ``recall_via_http``. The one place codex is AHEAD: claude-code's pre-compact
+    #: is local-SDK only, so it produces no anchor at all in server mode. Since
+    #: ``is_cloud_mode`` is just ``bool(base_url)``, a loopback server counts, and
+    #: codex takes the HTTP path everywhere the live tier runs.
+    has_precompact_http: bool
 
 
 CLAUDE = Suite(
@@ -85,6 +96,8 @@ CLAUDE = Suite(
     host_stem="claude",
     has_background_remember=True,
     has_timing_metrics=True,
+    has_rich_statusline=True,
+    has_precompact_http=False,
 )
 
 CODEX = Suite(
@@ -107,6 +120,8 @@ CODEX = Suite(
     host_stem="codex",
     has_background_remember=False,
     has_timing_metrics=False,
+    has_rich_statusline=False,
+    has_precompact_http=True,
 )
 
 ALL_SUITES = [CLAUDE, CODEX]

@@ -206,11 +206,41 @@ Failures dump `hook.log`, the recall-related events, `recall-audit.log` and
 |---|---|---|
 | `test_cross_session_recall.py` | the core promise: two turns in session A are recalled by a fresh session B on the same dataset | yes |
 | `test_session_capture.py` | within-session recall of prompts, answers and tool traces, plus the save counters behind the status line | no — the session cache answers directly, so these are the cheap ones |
-| `test_user_surfaces.py` | the three places a user meets memory: the status-line counts, the pre-compact anchor (**strict xfail**, see below), and `cognee-search.sh` | no |
+| `test_user_surfaces.py` | the three places a user meets memory: the status line (rendering for both, counts for claude-code), the pre-compact anchor (**strict xfail on claude-code only**, see below), and `cognee-search.sh` | no |
 | `test_resilience.py` | hooks stay successful when the server dies; a mid-outage write should be buffered (**strict xfail**, see below); buffered turns replay once the server returns; a slow cold query is judged `slow`, not `down`, and never trips the breaker | one |
 | `test_concurrency.py` | two sessions' interleaved turns both reach the graph, and each session claims its own final sync | one |
 | `test_graph_writes.py` | two populated datasets do not leak into each other; a repeated SessionEnd starts exactly one final-sync worker | two |
-| `test_shared_brain.py` | Codex recalls what Claude Code wrote to the shared graph — only testable live, and cheap now that no CLI is involved | yes |
+| `test_shared_brain.py` | either integration recalls what the other wrote to the shared graph, **in both directions** — only testable live, and cheap now that no CLI is involved | yes |
+
+### Both integrations, every scenario
+
+`live_suite` is parametrized over `ALL_SUITES`, so all 17 scenarios run twice —
+34 suite-parametrized tests plus the 2 shared-brain directions. That doubles
+wall-clock and LLM spend deliberately: the two plugins diverge precisely where a
+mock cannot show it. codex's bridge is synchronous with no cognify poll
+(`has_background_remember=False`), so codex-as-writer reaches the graph by a
+different path, and only a real graph can tell you whether it arrives.
+
+Three fixtures are deliberately **suite-agnostic**, which is what makes the
+cross-suite direction possible:
+
+- `live_home` — the venv and `~/.cognee` are shared; each suite keeps its own
+  state subdirectory beneath it.
+- `graph` / `GraphClient` — the principal key is minted once per HOME at the
+  shared `~/.cognee-plugin` root, and the graph is scoped by dataset, not by
+  plugin. (`GraphClient.suite` existed but was never read; it is gone.)
+- `live_artifacts` — as an **autouse** fixture, depending on `live_suite` would
+  force the parametrization onto every test in the directory, including the
+  cross-suite ones. It iterates the suites instead, which also means a cross-suite
+  failure dumps both sides.
+
+Cross-suite tests use `session_for(suite, name)` rather than `started_session`:
+the latter rides the parametrization, so a writer/reader pair built from it would
+be the same integration on both sides.
+
+Whole tier: **32 passed, 1 skipped, 3 xfailed in ~24m30s** (the skip is codex's
+counts segment; the xfails are the gaps below). Roughly 3x the single-suite time
+rather than 2x, because each suite boots its own server per test.
 
 Two behaviours worth knowing before writing more of these, both learned by
 getting them wrong:
@@ -237,7 +267,7 @@ each turns red the moment it is fixed. They share a shape: the plugin is careful
 never to break the agent, and the cost is that these failures are *silent* — a log
 line and carry on.
 
-**1. A mid-session outage can lose a turn.**
+**1. A mid-session outage can lose a turn — both integrations.**
 `test_writes_during_an_outage_are_buffered_not_dropped`. `store-to-session.py`
 buffers to the warmup spillway only when `server_usable()` is already False (a
 *stale* ready marker plus a failed probe). The marker has a 30s TTL, so a server
@@ -245,18 +275,35 @@ that dies inside that window leaves `server_usable()` returning True: the hook
 attempts a real write, it raises, and the `except` branch only logs
 `stop_store_error` — the entry is buffered nowhere and that turn is lost, which is
 exactly what the spillway exists to prevent. Fix: call `append_warmup_entry` in
-that `except` branch, as the not-usable path already does.
+that `except` branch, as the not-usable path already does. The two suites are
+structurally identical here, so this xfails on both.
 
-**2. PreCompact produces no anchor in server mode.**
-`test_precompact_produces_an_anchor_carrying_the_session`. `pre-compact.py` has no
-HTTP path at all: it recalls via `cognee.recall` and falls back to
-`get_session_manager()`, both local-SDK only, while in server mode the session
-cache lives on the server. Session and trace entries come back empty, the derived
-query stays empty, the graph scopes are never queried, and it logs
-`precompact_empty` and prints nothing. Every sibling hook branches on HTTP vs SDK
-(`recall_via_http`, `remember_entry_via_http`); this one never got one. The effect
-is that anyone running against a server loses their anchor at exactly the moment
-compaction discards the transcript.
+**2. PreCompact produces no anchor in server mode — claude-code only.**
+`test_precompact_produces_an_anchor_carrying_the_session`. Running this against
+both integrations changed the diagnosis: this is not a missing feature, it is a
+**port that never happened**. codex's `pre-compact.py` branches on
+`is_cloud_mode` and recalls via `recall_via_http`; claude-code's recalls via
+`cognee.recall` with a `get_session_manager()` fallback, both local-SDK only, while
+in server mode the session cache lives on the server. So on claude-code the session
+and trace entries come back empty, the derived query stays empty, the graph scopes
+are never queried, and it logs `precompact_empty` and prints nothing.
+
+`is_cloud_mode` is just `bool(base_url)`, so a loopback server counts and codex
+takes the HTTP path everywhere this tier runs. The effect on claude-code is that
+anyone running against a server loses their anchor at exactly the moment compaction
+discards the transcript. The fix does not need designing — it exists in the sibling
+integration. Gated on `has_precompact_http`, so it xfails strictly on claude-code
+and must **pass** on codex.
+
+### A third gap, not yet covered by a test
+
+**A session stranded at SessionEnd never replays.** Surfaced while fixing
+`test_buffered_turns_are_replayed_once_the_server_returns`: because the warmup
+buffer is keyed per session, a session whose server is still down when it ends
+leaves its buffered turns on disk with nothing scheduled to replay them — no other
+session can drain a session-keyed buffer. Recorded here rather than as an xfail
+because it needs a product decision (who owns an orphaned buffer?) rather than a
+one-line fix.
 
 ## The per-integration test dirs are gone
 

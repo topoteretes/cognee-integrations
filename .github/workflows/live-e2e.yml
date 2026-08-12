@@ -27,7 +27,10 @@ jobs:
     # Advisory until the tier has proven stable in CI. Flip this off once a few
     # consecutive nightlies are green, otherwise a real regression stays quiet.
     continue-on-error: true
-    timeout-minutes: 45
+    # Every scenario runs against both integrations, so the tier is ~2x what it
+    # was when it covered claude-code alone (~15min locally with a seeded venv).
+    # A cache-miss run also pays the full plugin-venv build before any test.
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@v4

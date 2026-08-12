@@ -480,12 +480,17 @@ class LiveSession:
 
 @dataclass
 class GraphClient:
-    """Queries the real graph the way cognee-search does, independent of hooks."""
+    """Queries the real graph the way cognee-search does, independent of hooks.
+
+    Deliberately suite-agnostic: the principal key is minted once per HOME at the
+    shared ``~/.cognee-plugin`` root, and the graph itself is scoped by dataset
+    rather than by plugin. That is what makes the shared-brain claim testable —
+    one client can verify what either integration wrote.
+    """
 
     base_url: str
     dataset: str
     home: Path
-    suite: Suite
 
     @property
     def api_key(self) -> str:

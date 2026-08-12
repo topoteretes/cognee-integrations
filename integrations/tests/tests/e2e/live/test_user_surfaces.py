@@ -23,8 +23,14 @@ from utils.statusline import write_json
 pytestmark = pytest.mark.live
 
 
-def _enable_plugin(live_home) -> None:
-    """claude-code's renderer self-evicts unless the plugin is enabled."""
+def _enable_plugin(suite, live_home) -> None:
+    """claude-code's renderer self-evicts unless the plugin is enabled.
+
+    An evicted renderer prints nothing, which would make the assertions below
+    vacuous rather than red. codex has no enablement gate.
+    """
+    if suite.name != "claude-code":
+        return
     write_json(
         live_home / ".claude" / "settings.json",
         {"enabledPlugins": {"cognee-memory@cognee": True}},
@@ -40,15 +46,15 @@ def captured_session(started_session, nonce):
     return session
 
 
-def test_status_line_shows_the_counts_from_a_real_recall(
-    captured_session, live_suite, live_home, nonce
-):
-    """A recall that found something must be visible in the bar.
+@pytest.fixture
+def recalled_session(captured_session, live_suite, live_home, nonce):
+    """A session that has just performed a recall which genuinely found something.
 
-    The counts are the user's only signal that memory is working; a silent
-    regression here looks exactly like a quiet session.
+    Both status-line tests need this precondition, and it is worth asserting
+    separately: if the recall found nothing, a bar with no counts would be correct
+    and the test would be measuring the wrong thing.
     """
-    _enable_plugin(live_home)
+    _enable_plugin(live_suite, live_home)
 
     lookup = captured_session.recall(f"Where does {nonce} run?", turn_id="t2")
     assert lookup.ok, f"recall failed (rc={lookup.returncode}): {lookup.stderr[:500]}"
@@ -56,12 +62,41 @@ def test_status_line_shows_the_counts_from_a_real_recall(
     hits = read_last_recall(live_suite, live_home).get("hits") or {}
     recalled = sum(int(v or 0) for v in hits.values())
     assert recalled > 0, f"nothing recalled, so the bar has nothing to show: {hits}"
+    return captured_session, recalled
 
-    bar = captured_session.run(
-        "cognee_statusline_render.py", {"session_id": captured_session.session_id}
-    )
+
+def test_the_status_line_renders_against_a_real_server(recalled_session, live_suite):
+    """Whatever shape the bar takes, it must render and name the dataset.
+
+    Both integrations have a bar; only its form differs (claude-code styles a
+    terminal line, codex emits plain text for the model's context). This is the
+    part that must hold for both — a renderer that crashes or self-evicts against a
+    live server costs the user their only signal that memory is alive.
+    """
+    session, _recalled = recalled_session
+
+    bar = session.run("cognee_statusline_render.py", {"session_id": session.session_id})
     assert bar.ok, f"status line render failed (rc={bar.returncode}): {bar.stderr[:500]}"
+    assert "Traceback" not in bar.stderr, f"renderer raised:\n{bar.stderr[:800]}"
     assert "cognee:" in bar.stdout, f"unrecognisable status line: {bar.stdout!r}"
+
+
+def test_the_status_line_shows_the_counts_from_a_real_recall(recalled_session, live_suite):
+    """A recall that found something must be visible in the counts segment.
+
+    The counts are the user's only quantitative signal that memory is working; a
+    silent regression here looks exactly like a quiet session.
+
+    claude-code only: codex's bar is a short plain-text string for the model's
+    context and carries no diagnostics strip.
+    """
+    if not live_suite.has_rich_statusline:
+        pytest.skip(f"{live_suite.name}: the bar is plain text and has no counts segment")
+
+    session, recalled = recalled_session
+    bar = session.run("cognee_statusline_render.py", {"session_id": session.session_id})
+    assert bar.ok, f"status line render failed (rc={bar.returncode}): {bar.stderr[:500]}"
+
     assert "recall " in bar.stdout, (
         f"the bar omitted the recall counts after a successful recall: {bar.stdout!r}"
     )
@@ -71,34 +106,42 @@ def test_status_line_shows_the_counts_from_a_real_recall(
     )
 
 
-def test_precompact_produces_an_anchor_carrying_the_session(captured_session, nonce, request):
+def test_precompact_produces_an_anchor_carrying_the_session(
+    captured_session, live_suite, nonce, request
+):
     """Compaction drops the transcript; the anchor is what carries memory across it.
 
-    KNOWN GAP, not a design choice: ``pre-compact.py`` has **no HTTP path**. It
-    recalls via ``cognee.recall`` and falls back to ``get_session_manager()`` —
-    both local-SDK only — while in server mode the session cache lives on the
-    server. So session and trace entries come back empty, the derived query stays
-    empty, the graph scopes are never queried, and the hook logs
-    ``precompact_empty`` and prints nothing. Every other hook branches on HTTP vs
-    SDK (``recall_via_http``, ``remember_entry_via_http``); this one never got one.
+    **The two integrations diverge here, and codex is the one that is right.**
+    codex's ``pre-compact.py`` branches on ``is_cloud_mode`` and recalls via
+    ``recall_via_http``, so it produces an anchor against a server. claude-code's
+    recalls via ``cognee.recall`` with a ``get_session_manager()`` fallback — both
+    local-SDK only — while in server mode the session cache lives on the server. So
+    on claude-code the session and trace entries come back empty, the derived query
+    stays empty, the graph scopes are never queried, and the hook logs
+    ``precompact_empty`` and prints nothing.
 
-    The effect is that anyone running against a server — the setup this whole
-    tier exercises — loses their anchor at exactly the moment compaction throws
-    the transcript away, and nothing errors to say so.
+    Since ``is_cloud_mode`` is just ``bool(base_url)``, a loopback server counts:
+    codex takes the HTTP path everywhere this tier runs.
 
-    Strict xfail: it turns red as soon as pre-compact learns to recall over HTTP.
+    The effect on claude-code is that anyone running against a server loses their
+    anchor at exactly the moment compaction throws the transcript away, and nothing
+    errors to say so. The fix does not need designing — it exists in codex and can
+    be ported.
+
+    Strict xfail on claude-code only, so it turns red the moment that port lands.
     Driving this hook is trivial here and effectively untestable through the real
     CLI, where triggering a compaction on demand is the hard part.
     """
-    request.node.add_marker(
-        pytest.mark.xfail(
-            reason=(
-                "pre-compact.py is local-SDK only, so it produces no anchor in "
-                "HTTP/server mode (logs precompact_empty)"
-            ),
-            strict=True,
+    if not live_suite.has_precompact_http:
+        request.node.add_marker(
+            pytest.mark.xfail(
+                reason=(
+                    f"{live_suite.name}: pre-compact.py is local-SDK only, so it "
+                    "produces no anchor in HTTP/server mode (logs precompact_empty)"
+                ),
+                strict=True,
+            )
         )
-    )
 
     run = captured_session.run(
         "pre-compact.py",
