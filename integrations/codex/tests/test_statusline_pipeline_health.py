@@ -158,6 +158,38 @@ def test_warn_only_returns_empty_never_pushed_never_shown():
         shutil.rmtree(tmp.parent, ignore_errors=True)
 
 
+def test_non_numeric_classification_values_return_empty_never_raise():
+    """The isinstance guard only vets the container: non-numeric VALUES
+    ("many", None, nested dicts) must degrade to no glyph, not a TypeError —
+    a raise here would abort the context-injection hook and silently drop the
+    turn's recalled memory."""
+    for bad_values in (
+        {"warn": 0, "alert": "many", "critical": 0},
+        {"alert": None},
+        {"critical": {"count": 2}},
+    ):
+        tmp = _tmp_path()
+        _write(
+            tmp,
+            {
+                "generated_at": _iso(),
+                "server": {"up": True},
+                "summary": {
+                    "total_open": 1,
+                    "worst_classification": "critical",
+                    "by_classification": bad_values,
+                },
+            },
+        )
+        orig = sl._PIPELINE_HEALTH_PATH
+        try:
+            sl._PIPELINE_HEALTH_PATH = tmp
+            assert sl._pipeline_health_glyph() == "", bad_values
+        finally:
+            sl._PIPELINE_HEALTH_PATH = orig
+            shutil.rmtree(tmp.parent, ignore_errors=True)
+
+
 # ── real findings → glyph shown ──────────────────────────────────────────
 
 

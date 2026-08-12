@@ -348,11 +348,18 @@ def _pipeline_health_glyph() -> str:
         return "⚠ server-down "
     summary = raw.get("summary") or {}
     worst = str(summary.get("worst_classification") or "ok")
-    flagged = (
-        sum((summary.get("by_classification") or {}).values())
-        if isinstance(summary.get("by_classification"), dict)
-        else 0
-    )
+    # The isinstance guard only vets the container; a non-numeric VALUE
+    # ("many", None, a nested dict) would make sum() raise — and this module
+    # must never raise (a crash here aborts the whole context-injection hook,
+    # silently dropping the turn's recalled memory, not just this glyph).
+    try:
+        flagged = (
+            sum((summary.get("by_classification") or {}).values())
+            if isinstance(summary.get("by_classification"), dict)
+            else 0
+        )
+    except (TypeError, ValueError):
+        flagged = 0
     if worst in ("alert", "critical") and flagged > 0:
         return f"⚠ {flagged} pipeline(s) stuck "
     return ""
