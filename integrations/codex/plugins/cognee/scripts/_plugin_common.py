@@ -2709,6 +2709,12 @@ def persist_session_cache_to_graph_via_http(
                 # The POST consumed the remaining budget — don't start a poll. Time it
                 # like the sibling post-POST logs so a submit slow enough to blow the
                 # whole bridge budget stays visible, not just silently deadline-broken.
+                # The digest stays unmarked ON PURPOSE even though the submit was
+                # enqueued: marking an unconfirmed write would silently lose the
+                # document if that cognify errors. The detached retry's re-submit can
+                # therefore duplicate a cognify of identical content — the same
+                # bounded, accepted cost as the errored/timeout poll outcomes below
+                # (retry-over-loss, never loss-over-duplicate).
                 hook_log(
                     "http_bridge_deadline_exceeded",
                     {"dataset": dataset, "kind": kind, "elapsed_ms": elapsed_ms(doc_start)},
