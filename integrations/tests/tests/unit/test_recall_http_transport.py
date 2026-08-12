@@ -6,11 +6,20 @@ verdict taxonomy (DOWN / SLOW / UNKNOWN) is what decides whether the wrapper is
 allowed to fall back to the local CLI. The wire-level half of this module's
 tests lives in integration/test_recall_http.py.
 
+Errnos come from the ``errno`` module, never as literals: the numbers differ by
+platform, and only one side of this comparison is portable. ``EHOSTUNREACH`` is 65
+on macOS/BSD but 113 on Linux — where 65 is ``ENOPKG`` and therefore *correctly*
+classified UNKNOWN. The classifier was always right (it builds its set from
+``errno.*``); the hardcoded 65 was the bug, and it only surfaced once this suite
+started running on Linux CI, having previously lived in ``claude-code/tests/``
+where no CI job ever ran it.
+
 Migrated from claude-code/tests/test_recall_http.py.
 """
 
 from __future__ import annotations
 
+import errno
 import socket
 import ssl
 import urllib.error
@@ -35,7 +44,7 @@ def _recall(rh, opener):
 
 
 def test_dns_failure_is_unreachable(rh):
-    exc = urllib.error.URLError(socket.gaierror(8, "no such host"))
+    exc = urllib.error.URLError(socket.gaierror(socket.EAI_NONAME, "no such host"))
     assert _recall(rh, _raises(exc)) == rh.UNREACHABLE
 
 
@@ -57,20 +66,41 @@ def test_unclassifiable_error_is_transient_envelope(rh):
 
 def test_classifier_verdicts(rh):
     cases = [
-        (ConnectionRefusedError(61, "refused"), rh.DOWN),
-        (socket.gaierror(8, "no such host"), rh.DOWN),
-        (OSError(65, "no route to host"), rh.DOWN),  # EHOSTUNREACH
+        # Matched by exception class, so the errno is incidental — but it is still
+        # taken from `errno` so the case reads as the failure it represents.
+        (ConnectionRefusedError(errno.ECONNREFUSED, "refused"), rh.DOWN),
+        (socket.gaierror(socket.EAI_NONAME, "no such host"), rh.DOWN),
+        # A bare OSError is the one case decided purely by errno, so this is the
+        # case that must use the symbol rather than a number.
+        (OSError(errno.EHOSTUNREACH, "no route to host"), rh.DOWN),
+        (OSError(errno.ENETUNREACH, "network unreachable"), rh.DOWN),
         (TimeoutError("timed out"), rh.SLOW),
         (urllib.error.URLError(TimeoutError("timed out")), rh.SLOW),
         (urllib.error.URLError("timed out"), rh.SLOW),  # string reason
-        (urllib.error.URLError(ConnectionRefusedError(61, "x")), rh.DOWN),
-        (ConnectionResetError(54, "reset"), rh.UNKNOWN),
+        (urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "x")), rh.DOWN),
+        # A reset means something answered and then dropped it — not an absent
+        # server, so it must not license a CLI fallback.
+        (ConnectionResetError(errno.ECONNRESET, "reset"), rh.UNKNOWN),
         (ValueError("bug in our own code"), rh.UNKNOWN),
         (ssl.SSLError("handshake"), rh.UNKNOWN),
     ]
     for exc, want in cases:
         got = rh.classify_transport_exception(exc)
         assert got == want, f"{exc!r}: want {want}, got {got}"
+
+
+def test_an_unroutable_errno_is_down_on_this_platform(rh):
+    """Guards the assumption the hardcoded-65 bug violated.
+
+    The classifier builds its down-set from ``errno.*``, so it is portable by
+    construction. This pins that the *test suite* agrees with the platform it is
+    running on, which is what a literal errno silently broke on Linux.
+    """
+    for name in ("ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH"):
+        code = getattr(errno, name)
+        assert rh.classify_transport_exception(OSError(code, name)) == rh.DOWN, (
+            f"{name}={code} is not classified down on {socket.gethostname()!r}'s platform"
+        )
 
 
 def test_coerce_top_k(rh):

@@ -27,6 +27,7 @@ CI job on any platform.
 
 from __future__ import annotations
 
+import errno
 import urllib.error
 
 import pytest
@@ -52,7 +53,7 @@ def _http_error(code: int):
 
 
 def _refused():
-    return urllib.error.URLError(ConnectionRefusedError(61, "refused"))
+    return urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
 
 
 # ── a rejected key: detected from the real request, budget not wasted ──────────
