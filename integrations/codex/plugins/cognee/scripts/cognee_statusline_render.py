@@ -343,10 +343,13 @@ def _pipeline_health_glyph() -> str:
             return ""
     except (ValueError, TypeError):
         return ""
-    server = raw.get("server") or {}
+    # isinstance, not `or {}`: a truthy non-dict ("yes", 5) would flow through
+    # an `or` fallback and raise AttributeError on .get() — and this module must
+    # never raise (see the sum() guard below).
+    server = raw.get("server") if isinstance(raw.get("server"), dict) else {}
     if server.get("up") is False:
         return "⚠ server-down "
-    summary = raw.get("summary") or {}
+    summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else {}
     worst = str(summary.get("worst_classification") or "ok")
     # The isinstance guard only vets the container; a non-numeric VALUE
     # ("many", None, a nested dict) would make sum() raise — and this module

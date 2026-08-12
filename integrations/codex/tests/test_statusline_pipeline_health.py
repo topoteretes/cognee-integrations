@@ -158,6 +158,27 @@ def test_warn_only_returns_empty_never_pushed_never_shown():
         shutil.rmtree(tmp.parent, ignore_errors=True)
 
 
+def test_truthy_non_dict_server_and_summary_return_empty_never_raise():
+    """`or {}` would let a truthy non-dict ("yes", 5, a list) through to .get()
+    and raise AttributeError; the isinstance coercion must degrade to no glyph
+    instead — a raise here aborts the context-injection hook."""
+    for payload in (
+        {"generated_at": _iso(), "server": "yes", "summary": {}},
+        {"generated_at": _iso(), "server": 5, "summary": {}},
+        {"generated_at": _iso(), "server": {"up": True}, "summary": "bad"},
+        {"generated_at": _iso(), "server": {"up": True}, "summary": [1, 2]},
+    ):
+        tmp = _tmp_path()
+        _write(tmp, payload)
+        orig = sl._PIPELINE_HEALTH_PATH
+        try:
+            sl._PIPELINE_HEALTH_PATH = tmp
+            assert sl._pipeline_health_glyph() == "", payload
+        finally:
+            sl._PIPELINE_HEALTH_PATH = orig
+            shutil.rmtree(tmp.parent, ignore_errors=True)
+
+
 def test_non_numeric_classification_values_return_empty_never_raise():
     """The isinstance guard only vets the container: non-numeric VALUES
     ("many", None, nested dicts) must degrade to no glyph, not a TypeError —
