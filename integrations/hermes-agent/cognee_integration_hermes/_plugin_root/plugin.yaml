@@ -5,10 +5,10 @@ description: "Cognee memory provider for Hermes Agent: session-aware graph memor
 pip_dependencies:
   # Floor 1.2.1: the HTTP wire contract this plugin depends on
   # (/api/v1/remember/entry, improve(session_ids)) first shipped there.
-  # Cap 1.4.2: the newest version verified against the test suite and a live
+  # Cap 1.4.0: the newest version verified against the test suite and a live
   # server boot. Repo policy (scripts/check_version_pins.py) requires a bounded
-  # range rather than an exact pin; the lockfile resolves to 1.4.2.
-  - cognee>=1.2.1,<=1.4.2
+  # range rather than an exact pin; the lockfile resolves to 1.4.0.
+  - cognee>=1.2.1,<=1.4.0
 hooks:
   - on_session_end
   - on_memory_write

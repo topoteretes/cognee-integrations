@@ -696,7 +696,7 @@ wheels = [
 
 [[package]]
 name = "cognee"
-version = "1.4.2"
+version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -705,7 +705,6 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
     { name = "cbor2" },
-    { name = "cryptography" },
     { name = "datamodel-code-generator" },
     { name = "diskcache" },
     { name = "fakeredis", extra = ["lua"] },
@@ -747,9 +746,9 @@ dependencies = [
     { name = "uvicorn" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/47/06/cf0da41e9dbe28f4d1c8f1f8c3d0e4fbc224fe9f1a281e9a189fdfac5ba4/cognee-1.4.2.tar.gz", hash = "sha256:ca94b26d674c66ad11bdf4bde24881f7b6a6044bdc029cf673c79a6f07f2631f", size = 27031477, upload-time = "2026-08-08T18:02:32.632Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/21/68e640d10ea9445b55b01715a8ae87a9d469e443614a87261c18c3e507e8/cognee-1.4.0.tar.gz", hash = "sha256:e783dd802ea25471b2c6feec317e8628fa99d67ed9223f22ca339add8fb7da1a", size = 23166925, upload-time = "2026-07-17T15:39:36.9Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a6/c7/f3c62c5c872314bb24fa6a81a0e8987ac313655e0e4c41b1ba8f703092eb/cognee-1.4.2-py3-none-any.whl", hash = "sha256:8fd91bed9ec87155970d5c3d79996701076bfedb87bf1a1f056a18e857a1f57d", size = 7496972, upload-time = "2026-08-08T18:02:29.899Z" },
+    { url = "https://files.pythonhosted.org/packages/54/f7/2388c4307fb1c5a20e02dad9188fad96f62f28d46f930e12fa402462732a/cognee-1.4.0-py3-none-any.whl", hash = "sha256:51ed9f1f8ca5b5caf215b00f10522e6291e6f3e82f19aaf2864e21ec8176ee0d", size = 3555996, upload-time = "2026-07-17T15:39:33.348Z" },
 ]
 
 [[package]]
@@ -767,7 +766,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "cognee", specifier = ">=1.2.1,<=1.4.2" }]
+requires-dist = [{ name = "cognee", specifier = ">=1.2.1,<=1.4.0" }]
 
 [package.metadata.requires-dev]
 dev = [
