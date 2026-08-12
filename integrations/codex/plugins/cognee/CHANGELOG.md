@@ -45,6 +45,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `COGNEE_REMEMBER_BACKGROUND=false` for a fully synchronous write. The
   memory skill documents the background + eventual-consistency semantics.
 
+### Added
+- **Pipeline-health warning in the status line.** The status injected into
+  model context now leads with `⚠ N pipeline(s) stuck` or `⚠ server-down`
+  when the external pipeline-health sweep has a fresh finding, matching the
+  Claude Code bar. Reads the machine-wide, integration-neutral
+  `~/.cognee-plugin/pipeline-health.json` the sweep already writes — plain
+  text (no ANSI), never raises, and hides findings older than 30 minutes
+  (a stale file means the sweep itself stopped, which this glyph does not
+  monitor). Bare `warn` classifications stay silent per the notify policy;
+  only `alert`/`critical` (or a down server) surface.
+
 ## [1.3.4]
 
 ### Added
