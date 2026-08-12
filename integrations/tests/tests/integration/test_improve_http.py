@@ -14,7 +14,9 @@ Contract:
   * an empty {} body means the per-session improve lock skipped the run — busy,
     never success;
   * a dataset_id in the response triggers best-effort cognify+memify polling
-    (claude-code only; codex's helper is submit-only).
+    (gated on ``has_improve_pipeline_polling`` — claude-code only: the port that
+    gave codex the background bridge did NOT cover its improve path, which still
+    reports no cognify_status).
 
 Migrated from {claude-code,codex}/tests/test_improve_sync.py; the
 run_session_improve orchestration lives in unit/test_improve_orchestration.py.
@@ -105,7 +107,7 @@ def test_improve_lock_skip_reports_busy(pc, mock_server):
 
 def test_improve_polls_cognify_then_memify(pc, suite, mock_server):
     """A dataset_id in the response triggers both pipeline polls."""
-    if not suite.has_background_remember:
+    if not suite.has_improve_pipeline_polling:
         pytest.skip(f"{suite.name}: improve is submit-only (no cognify/memify polling)")
 
     res = pc.improve_session_via_http("ds", "sid")

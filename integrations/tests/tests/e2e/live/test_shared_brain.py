@@ -11,11 +11,12 @@ would need a Claude account *and* a Codex install, both authenticated, before it
 could assert anything; here each side is one more ``LiveSession`` pointed at the
 other suite's scripts inside the same temp HOME.
 
-**Both directions are exercised**, and they are not symmetric. codex's bridge is
-synchronous with no cognify poll (``has_background_remember=False``), so
-codex-as-writer takes a genuinely different path to the graph than claude-code
-does — the asymmetry a mock server cannot show. This file is the only place both
-write paths are compared against one shared reader.
+**Both directions are exercised.** They were sharply asymmetric when codex's bridge
+was synchronous with no cognify poll; the port that landed in main gave codex the
+background bridge, so the two write paths have largely converged. They are still
+worth running in both directions: the improve path did *not* travel with that port
+(``has_improve_pipeline_polling`` is still claude-code only), and this is the only
+place either integration's writes are verified through the other's reader.
 
 Note the suites keep separate *local* state (``~/.cognee-plugin/claude-code`` vs
 ``~/.cognee-plugin/codex``) — only the server-side graph is shared. That is exactly

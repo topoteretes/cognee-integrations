@@ -250,14 +250,14 @@ def test_hooks_json_wires_credits_refresh_at_turn_end(suite):
     entries = _credits_entries(suite, "Stop")
     assert entries, "credits-refresh.py not registered on Stop"
 
-    if suite.has_background_remember:  # claude-code
+    if suite.has_async_hooks:
         for event in ("Stop", "StopFailure"):
             event_entries = _credits_entries(suite, event)
             assert event_entries, f"credits-refresh.py not registered on {event}"
             assert all(h.get("async") is True for h in event_entries), (
                 f"{event} entry must be async"
             )
-    else:  # codex
+    else:
         for hook in entries:
-            assert "async" not in hook, "codex skips async hooks entirely"
+            assert "async" not in hook, f"{suite.name} skips async hooks entirely"
             assert isinstance(hook.get("timeout"), (int, float)) and hook["timeout"] <= 15

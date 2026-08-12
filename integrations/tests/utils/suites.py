@@ -54,24 +54,46 @@ class Suite:
     #: the two happen to share a value, but one names a process and the other a
     #: session, and nothing keeps them equal.
     host_stem: str
-    #: Capability: has the background-remember + cognify-poll refactor.
-    #: claude-code submits writes with run_in_background=true, returns an
-    #: {"ok": ...} envelope from _post_remember_document instead of raising,
-    #: exposes _plugin_common.wait_for_cognify, honours the bounded wait in
-    #: _remember_http, and polls cognify/memify after an improve. codex still
-    #: has the older synchronous, raise-on-error path, so tests for any of
-    #: those behaviours are suite-conditional.
+    #: Capability: has the background-remember + cognify-poll refactor. Submits
+    #: writes with run_in_background=true, returns an {"ok": ...} envelope from
+    #: _post_remember_document instead of raising, exposes
+    #: _plugin_common.wait_for_cognify, and honours the bounded wait in
+    #: _remember_http. The improve path has its own flag below — that part of the
+    #: refactor did not travel with the rest.
+    #:
+    #: True for BOTH suites as of the port that landed in main: codex previously
+    #: had the older synchronous, raise-on-error path, which meant one document's
+    #: HTTP error aborted its sibling. Kept as a flag rather than deleted because
+    #: it names a real contract that a future integration may not satisfy.
     has_background_remember: bool
-    #: Capability: has the observability timing work (#3676) — a shared
-    #: ``_plugin_common.elapsed_ms`` helper and an aggregate ``elapsed_ms`` field
-    #: on the ``context_lookup_*`` events. codex has neither: it times each recall
-    #: scope inline (so ``per_scope[*]["elapsed_ms"]`` IS present on both) but
-    #: reports no total, and has no helper to share.
-    has_timing_metrics: bool
-    #: Capability: renders a rich terminal status bar (health glyphs, recall-count
-    #: and pipeline-health segments). codex instead emits a short plain-text line
-    #: that is injected into the model's context, so segment-level assertions do
-    #: not apply to it — but the bar still has to render and name the dataset.
+    #: Capability: ``improve_session_via_http`` polls the cognify and memify
+    #: pipelines and reports ``cognify_status``/``memify_status``. Split out from
+    #: has_background_remember because the port that landed in main covered the
+    #: bridge, ``wait_for_cognify`` and the bounded ``do_remember`` wait, but NOT
+    #: the improve path — codex has no ``cognify_status`` anywhere.
+    has_improve_pipeline_polling: bool
+    #: Capability: the host runs ``async`` hooks and emits ``StopFailure``, so
+    #: credits can refresh at turn end without adding a prompt of lag. codex skips
+    #: async hooks entirely and has no StopFailure, so its entry must be a plain
+    #: sync Stop hook with a tight timeout.
+    has_async_hooks: bool
+    #: Capability: exposes the shared ``_plugin_common.elapsed_ms`` helper (#3676),
+    #: and logs it on the bridge's ``http_bridge_poll`` / failed-submit events.
+    has_elapsed_ms_helper: bool
+    #: Capability: logs an *aggregate* ``elapsed_ms`` on the ``context_lookup_*``
+    #: events. Split from the helper flag because codex now has the helper but
+    #: still times only each recall scope inline — so ``per_scope[*]["elapsed_ms"]``
+    #: is present on both suites while the per-prompt total is claude-code only.
+    has_recall_latency_metric: bool
+    #: Capability: renders a rich terminal status bar — the health glyphs, the
+    #: recall-counts diagnostics strip, the mode word and the plugin-install
+    #: registry. codex instead emits a short plain-text line injected into the
+    #: model's context, so those segment-level assertions do not apply to it, though
+    #: its bar still has to render and name the dataset.
+    #:
+    #: Not a blanket "codex has no segments": codex *does* have
+    #: ``_pipeline_health_glyph`` as of the same port. Tests for individual segments
+    #: probe for their own symbol, so they pick that up on their own.
     has_rich_statusline: bool
     #: Capability: ``pre-compact.py`` branches on ``is_cloud_mode`` and recalls via
     #: ``recall_via_http``. The one place codex is AHEAD: claude-code's pre-compact
@@ -95,7 +117,10 @@ CLAUDE = Suite(
     session_suffix="_claude",
     host_stem="claude",
     has_background_remember=True,
-    has_timing_metrics=True,
+    has_improve_pipeline_polling=True,
+    has_async_hooks=True,
+    has_elapsed_ms_helper=True,
+    has_recall_latency_metric=True,
     has_rich_statusline=True,
     has_precompact_http=False,
 )
@@ -118,8 +143,11 @@ CODEX = Suite(
     cwd_env="CODEX_CWD",
     session_suffix="_codex",
     host_stem="codex",
-    has_background_remember=False,
-    has_timing_metrics=False,
+    has_background_remember=True,
+    has_improve_pipeline_polling=False,
+    has_async_hooks=False,
+    has_elapsed_ms_helper=True,
+    has_recall_latency_metric=False,
     has_rich_statusline=False,
     has_precompact_http=True,
 )

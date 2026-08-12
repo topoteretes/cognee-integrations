@@ -12,8 +12,9 @@ Covers the two fixes:
     caller does not fall back to the CLI and risk a duplicate write — while a
     real connection failure still returns UNREACHABLE.
 
-The bounded cognify wait is claude-code-only (codex's do_remember is
-submit-only), gated on ``suite.has_background_remember``.
+The bounded cognify wait is gated on ``suite.has_background_remember`` and now
+holds for both suites — codex's ``do_remember`` gained it in the port that landed
+in main.
 
 Migrated from claude-code/tests/test_remember_http.py; the transport-exception
 half lives in unit/test_remember_http_transport.py.

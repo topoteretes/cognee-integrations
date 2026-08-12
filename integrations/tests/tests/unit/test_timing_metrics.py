@@ -13,11 +13,14 @@ Contract:
   * ``context_lookup_hit`` and ``context_lookup_empty`` both carry it, without
     dropping the fields they already had.
 
-claude-code only, by capability rather than by probe: codex has no shared
-``elapsed_ms`` helper and logs no aggregate total (it does time each recall scope
-inline — that breakdown is asserted for both suites in test_recall_per_scope.py).
-The bridge half additionally needs the background-remember refactor's
-``wait_for_cognify``.
+Gated by capability rather than by probe, and the two halves now differ:
+
+* the **helper** and the **bridge** halves run on both suites — codex gained
+  ``elapsed_ms`` and the cognify poll in the port that landed in main, and its
+  ``http_bridge_poll`` times the submit and the confirm together;
+* the **recall** half stays claude-code only: codex logs no aggregate per-prompt
+  total, timing each scope inline instead. That per-scope breakdown is asserted
+  for both suites in test_recall_per_scope.py.
 
 Migrated from claude-code/tests/test_hook_timing.py, which ran in no CI job on any
 platform.
@@ -33,14 +36,14 @@ from utils.recall import drive_recall
 
 @pytest.fixture
 def pc(suite, isolated_modules):
-    if not suite.has_timing_metrics:
+    if not suite.has_elapsed_ms_helper:
         pytest.skip(f"{suite.name}: no elapsed_ms helper (scopes are timed inline instead)")
     return isolated_modules(suite, "_plugin_common")
 
 
 @pytest.fixture
 def lookup(suite, hook_module):
-    if not suite.has_timing_metrics:
+    if not suite.has_recall_latency_metric:
         pytest.skip(f"{suite.name}: context_lookup events carry no aggregate elapsed_ms")
     return hook_module(suite, "session-context-lookup.py")
 

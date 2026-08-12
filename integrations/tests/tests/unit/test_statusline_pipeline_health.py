@@ -11,7 +11,11 @@ stay silent unless the finding is FRESH and actually actionable:
   * `server.up == False` takes priority and gets its own glyph;
   * alert/critical report the combined stuck count.
 
-claude-code only: codex's renderer has no `_pipeline_health_glyph`.
+Both suites: codex's renderer gained `_pipeline_health_glyph` in the port that
+landed in main, so this covered claude-code alone until then. The `hasattr` probe
+in the fixture is what let it start covering codex without any edit here — the
+same probe would also silently stop covering it if the symbol were renamed, which
+is the tradeoff of probing rather than declaring.
 
 Migrated from claude-code/tests/test_statusline_pipeline_health.py, which
 repeated a save/restore of the path constant in every test — the isolated import

@@ -10,8 +10,12 @@ Confirms a background remember can be confirmed/abandoned correctly:
   * a 404 (older server without the status route) returns "unknown" immediately
   * a transient poll failure does not abort the whole deadline
 
-claude-code only: codex's _plugin_common has no wait_for_cognify (its writes are
-submit-only). Migrated from claude-code/tests/test_cognify_poll.py.
+Both suites: codex gained ``wait_for_cognify`` in the background-remember port
+that landed in main, so this ran claude-code-only until then. Gated on
+``suite.has_background_remember`` rather than a suite name, which is what let it
+start covering codex the moment the capability arrived.
+
+Migrated from claude-code/tests/test_cognify_poll.py.
 """
 
 from __future__ import annotations

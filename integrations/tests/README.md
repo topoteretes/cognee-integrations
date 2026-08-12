@@ -47,14 +47,36 @@ all trigger this suite.
 | `session_prefix` | `claude` | `codex` |
 | cwd env var | `CLAUDE_CWD` | `CODEX_CWD` |
 | Agent-session suffix | `_claude` | `_codex` |
-| `has_background_remember` | `True` | `False` |
+### Capability flags
 
-`Suite.has_background_remember` gates the one large **intentional** divergence:
-claude-code has the background-remember + cognify-poll refactor (writes post
-`run_in_background=true`, `_post_remember_document` returns an `{"ok": ...}`
-envelope instead of raising, `wait_for_cognify` exists, `_remember_http` honours
-a bounded wait, and improve polls cognify/memify). codex still has the older
-synchronous, raise-on-error path, so tests for those behaviours skip on codex.
+Divergences are named by a declared flag on `Suite`, never inferred from
+`suite.name` and never from another flag that happens to correlate:
+
+| Flag | `claude-code` | `codex` | Gates |
+|---|---|---|---|
+| `has_background_remember` | `True` | `True` | background bridge, `{"ok": ...}` envelope, `wait_for_cognify`, bounded `do_remember` wait |
+| `has_improve_pipeline_polling` | `True` | `False` | `improve_session_via_http` reports `cognify_status`/`memify_status` |
+| `has_async_hooks` | `True` | `False` | `async` hook entries + `StopFailure` in `hooks.json` |
+| `has_elapsed_ms_helper` | `True` | `True` | `_plugin_common.elapsed_ms`, and `elapsed_ms` on the bridge events |
+| `has_recall_latency_metric` | `True` | `False` | aggregate `elapsed_ms` on `context_lookup_*` |
+| `has_rich_statusline` | `True` | `False` | health glyphs, recall-counts strip, mode word, install registry |
+| `has_precompact_http` | `False` | `True` | `pre-compact.py` recalls over HTTP — the one place codex is ahead |
+| `host_stem` | `claude` | `codex` | `_proc`'s Windows ancestry match |
+
+`has_background_remember` was `False` for codex until the refactor was ported in
+main; **39 codex tests started passing the moment the flag flipped**, with no test
+edits, which is the payoff for gating on a capability rather than a suite name.
+
+Two lessons from that flip, both worth keeping:
+
+- **The port was partial.** It covered the bridge, `wait_for_cognify` and the
+  bounded `do_remember` wait, but not the improve path — hence
+  `has_improve_pipeline_polling`. One flag covering four behaviours hid the fact
+  that they could travel separately.
+- **A flag used as a proxy for a suite name is a latent bug.** A status-line test
+  branched on `if suite.has_background_remember:  # claude-code` to assert
+  claude-only `hooks.json` wiring. When the flag flipped for codex the branch fired
+  for codex and failed — correctly. That is what `has_async_hooks` now names.
 
 When a divergence is an **unintentional gap** rather than a design difference,
 gate it with a *strict* conditional `xfail` marker, never `pytest.skip` and never
@@ -216,10 +238,11 @@ Failures dump `hook.log`, the recall-related events, `recall-audit.log` and
 
 `live_suite` is parametrized over `ALL_SUITES`, so all 17 scenarios run twice —
 34 suite-parametrized tests plus the 2 shared-brain directions. That doubles
-wall-clock and LLM spend deliberately: the two plugins diverge precisely where a
-mock cannot show it. codex's bridge is synchronous with no cognify poll
-(`has_background_remember=False`), so codex-as-writer reaches the graph by a
-different path, and only a real graph can tell you whether it arrives.
+wall-clock and LLM spend deliberately: the plugins still diverge in ways a mock
+cannot show. The write paths largely converged when the background bridge was
+ported to codex, but the improve path did not travel with it
+(`has_improve_pipeline_polling`), and a real graph is the only place you can see
+whether a write actually arrives by either route.
 
 Three fixtures are deliberately **suite-agnostic**, which is what makes the
 cross-suite direction possible:

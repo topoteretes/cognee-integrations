@@ -62,6 +62,37 @@ def test_event_is_wired_to_its_script(suite, manifest, event, script, arg):
         )
 
 
+def test_every_python_hook_falls_back_to_python(suite, manifest):
+    """Every `python3 x.py` must carry a `|| python x.py` fallback.
+
+    Windows installs routinely provide `python` but not `python3`, so a bare
+    `python3` invocation fails at the shell before the hook is ever reached — and
+    a hook that never runs is silent by design: memory simply stops being captured
+    with nothing to indicate why.
+
+    Asserted for the *whole* manifest rather than the events in EXPECTED, because a
+    hook added later without the fallback would be just as broken and there is
+    nothing to remind whoever adds it.
+    """
+    missing = []
+    for event, groups in manifest.items():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for hook in group.get("hooks", []):
+                command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+                if "python3 " not in command:
+                    continue
+                if "|| python " not in command:
+                    missing.append((event, command[:90]))
+    assert not missing, (
+        f"{suite.name}: python3-only hook commands would not start on a Windows box "
+        f"that ships only `python`: {missing}"
+    )
+
+
 def test_every_registered_script_exists(suite, manifest):
     """A renamed or deleted script must fail here, not silently at runtime."""
     missing = []
