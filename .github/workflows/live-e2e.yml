@@ -24,12 +24,15 @@ jobs:
   live:
     name: live tier
     runs-on: ubuntu-latest
-    # Advisory until the tier has proven stable in CI. Flip this off once a few
-    # consecutive nightlies are green, otherwise a real regression stays quiet.
-    continue-on-error: true
-    # Every scenario runs against both integrations, so the tier is ~2x what it
-    # was when it covered claude-code alone (~15min locally with a seeded venv).
-    # A cache-miss run also pays the full plugin-venv build before any test.
+    # A failure here fails the run. The tier is deliberately not on pull_request,
+    # so this gates nothing — it only decides whether a nightly regression is
+    # visible or silent, and silent is the worse failure mode. The two known
+    # product gaps are strict xfails rather than allowed failures, so they are
+    # already green; anything that goes red here is genuinely new.
+    continue-on-error: false
+    # Every scenario runs against both integrations: ~24m30s locally with a
+    # seeded venv, and a cache-miss run also pays the full plugin-venv build
+    # before any test.
     timeout-minutes: 75
     steps:
       - name: Checkout
