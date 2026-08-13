@@ -211,3 +211,16 @@ def test_mock_github_repo_gets_its_own_dataset(tmp_path, monkeypatch):
     assert github.label == "GitHub"
     repo_prefix = str(tmp_path / "sources" / "github" / "meridian-search-platform")
     assert github.datasets == {repo_prefix: "github-meridian-search-platform"}
+
+
+def test_mock_mobile_device_connection(tmp_path, monkeypatch):
+    """Demo-only sources (no real connector class) declare label/icon inline."""
+    class DummyIndexer:
+        class _catalog:
+            roots = []
+
+    monkeypatch.setenv("COGNEE_DESKTOP_MOCK_SOURCES", "mobile")
+    manager = SourceManager.from_env(DummyIndexer(), tmp_path)
+    mobile = next(s for s in manager.sources if s.name == "mobile")
+    assert mobile.label == "Mobile" and mobile.icon == "smartphone"
+    assert mobile.scope == ["Pixel 8 Pro — quick captures"]

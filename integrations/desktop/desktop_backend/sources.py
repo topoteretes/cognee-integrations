@@ -414,6 +414,23 @@ MOCK_GITHUB_FILES = {
     ),
 }
 
+# "Mobile" is demo-only: quick captures from a phone, staged like any
+# connector so the panel shows the device as a live connection.
+MOCK_MOBILE_FILES = {
+    "voice-note-airport.md": (
+        "# Voice note (phone) — airport lounge\n\n"
+        "Overheard: Dell reps pitching a 20% fleet discount to one of our "
+        "shared enterprise customers. Flag to deal desk before the renewal "
+        "call on Thursday.\n"
+    ),
+    "photo-note-store-display.md": (
+        "# Phone note — retail walk-through\n\n"
+        "Asus creator line front-and-center at the mall electronics store; "
+        "our X1 demo unit was powered off. Retail team should audit demo "
+        "unit uptime.\n"
+    ),
+}
+
 MOCK_GDRIVE_FILES = {
     "gdrive-board-update-q3-draft.txt": (
         "Meridian Travel Group — Q3 Board Update (draft)\n\n"
@@ -472,26 +489,47 @@ class SourceManager:
         # Each mock borrows the real connector's label/icon (and, for GitHub,
         # its dataset-per-repo layout) so it renders identically in the app.
         mocks = {
-            "slack": (MOCK_SLACK_FILES, SlackSource, {}, ["#product", "#eng-incidents"]),
-            "gdrive": (MOCK_GDRIVE_FILES, GoogleDriveSource, {}, ["My Drive — shared docs"]),
+            "slack": (
+                MOCK_SLACK_FILES,
+                SlackSource.label,
+                SlackSource.icon,
+                {},
+                ["#product", "#eng-incidents"],
+            ),
+            "gdrive": (
+                MOCK_GDRIVE_FILES,
+                GoogleDriveSource.label,
+                GoogleDriveSource.icon,
+                {},
+                ["My Drive — shared docs"],
+            ),
             "github": (
                 MOCK_GITHUB_FILES,
-                GitHubSource,
+                GitHubSource.label,
+                GitHubSource.icon,
                 {_slug(MOCK_GITHUB_REPO): f"github-{_slug(MOCK_GITHUB_REPO)}"},
                 [MOCK_GITHUB_REPO],
+            ),
+            # demo-only device connection: no real connector class behind it
+            "mobile": (
+                MOCK_MOBILE_FILES,
+                "Mobile",
+                "smartphone",
+                {},
+                ["Pixel 8 Pro — quick captures"],
             ),
         }
         configured = {s.name for s in manager.sources}
         for name in (x.strip().lower() for x in env("MOCK_SOURCES").split(",")):
             if name in mocks and name not in configured:
-                files, real, datasets, scope = mocks[name]
+                files, label, icon, datasets, scope = mocks[name]
                 manager.sources.append(
                     MockConnectorSource(
                         name,
                         data_dir / "sources" / name,
                         files,
-                        label=real.label,
-                        icon=real.icon,
+                        label=label,
+                        icon=icon,
                         datasets=datasets,
                         scope=scope,
                     )
