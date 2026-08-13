@@ -1153,7 +1153,12 @@ async def _start(payload: dict | None = None) -> dict:
     # never claims ownership of its teardown.
     configured_url = _with_scheme(str(config.get("base_url", "") or "").strip())
     api_key = str(config.get("api_key", "") or "").strip()
-    target_url = configured_url or _LOCAL_SERVICE_URL
+    # Forced cloud (backend switch) with no URL configured: there is nothing to
+    # boot and nothing to fall back to — keep the target empty so no local
+    # server is spawned, let the connection attempt fail, and let the status
+    # line report the missing URL. Everything else keeps the localhost default.
+    forced_cloud_unconfigured = not configured_url and config.get("_forced_backend") == "cloud"
+    target_url = configured_url or ("" if forced_cloud_unconfigured else _LOCAL_SERVICE_URL)
     config["base_url"] = target_url
     os.environ["COGNEE_BASE_URL"] = target_url
     if api_key:
@@ -1209,8 +1214,10 @@ async def _start(payload: dict | None = None) -> dict:
     #   * down + remote URL -> can't boot a remote host; connect and degrade
     user_id = ""
     agent_api_key = ""
-    server_live = _health_ok(_health_url(target_url))
-    will_boot = (not server_live) and _is_local_url(target_url)
+    # An empty target (forced cloud, no URL) must never boot: _is_local_url("")
+    # parses to localhost, so gate on the URL being present at all.
+    server_live = bool(target_url) and _health_ok(_health_url(target_url))
+    will_boot = (not server_live) and bool(target_url) and _is_local_url(target_url)
     hook_log(
         "endpoint_mode_selected",
         {"base_url": target_url, "server_live": server_live, "will_boot": will_boot},
@@ -1230,7 +1237,7 @@ async def _start(payload: dict | None = None) -> dict:
             boot_timeout=_HEALTH_TIMEOUT_SECONDS,
         )
         if not ok:
-            if _LAZY_BOOTSTRAP and _is_local_url(target_url):
+            if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url):
                 # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:

@@ -108,7 +108,11 @@ A plain `export` in the launching shell also works and overrides the file. Re-pa
 the block with a new value is safe — the last value wins.
 
 To target Cognee Cloud or a remote server instead, set `COGNEE_BASE_URL` and
-`COGNEE_API_KEY` there. On startup you should see a **"Cognee Memory Connected"** message.
+`COGNEE_API_KEY` there. The file may hold **both modes' variables at once** — cloud
+wins by default, and `export COGNEE_BACKEND=local` (or `=cloud`) flips a single
+terminal without touching the file; see
+[Which mode wins, and how to switch](integrations/claude-code/README.md#which-mode-wins-and-how-to-switch).
+On startup you should see a **"Cognee Memory Connected"** message.
 
 **3. Use Claude Code as usual**
 
