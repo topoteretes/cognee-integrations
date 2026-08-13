@@ -62,7 +62,9 @@ def _is_refusal(text: str) -> bool:
         _REFUSAL = re.compile(
             r"(?i)\b(sorry|does not contain|doesn'?t contain|no information|"
             r"cannot be determined|not enough information|contains only|"
-            r"no relevant|unable to answer|I don'?t have)\b"
+            r"no relevant|unable to answer|I don'?t have|unable to find|"
+            r"contains? no |can'?t identify|cannot identify|no nodes or|"
+            r"if you can share)\b"
         )
     pattern = _REFUSAL
     assert pattern is not None
