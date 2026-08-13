@@ -10,6 +10,30 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0]
+
+### Added
+- **`COGNEE_BACKEND` per-terminal mode switch.** `~/.cognee/.env` may now hold
+  the cloud vars (`COGNEE_BASE_URL`, `COGNEE_API_KEY`) *and* the local vars
+  (`LLM_API_KEY`, …) together; with nothing exported, cloud wins as before.
+  `export COGNEE_BACKEND=local` (or `=cloud`) flips a single terminal — the
+  shared name switches both the Claude Code and Codex plugins at once, while
+  `COGNEE_CODEX_BACKEND` targets this plugin only and beats the shared name.
+- **Forced cloud is pinned, and misconfiguration is surfaced.** With
+  `COGNEE_BACKEND=cloud` but no `COGNEE_BASE_URL`, the plugin no longer
+  silently falls back to local (no local server boot, no venv build); the
+  status line shows `✕ (missing_cognee_base_url)` and `doctor`'s mode row
+  explains what forced the decision and what is missing.
+
+### Fixed
+- **`COGNEE_CODEX_BACKEND=local` now holds on the HTTP hot paths.** The switch
+  used to clear the cloud URL only in `load_config()`'s view, while
+  recall/remember read `COGNEE_BASE_URL` from the environment — where the env
+  file had already injected the cloud URL — so those calls still went to the
+  cloud. A forced-local switch now scrubs `COGNEE_BASE_URL`/`COGNEE_API_KEY`
+  from the process environment itself (with empty strings, so re-running the
+  loader in child processes cannot re-inject the file's values).
+
 ## [1.3.5]
 
 ### Changed

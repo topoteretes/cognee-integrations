@@ -56,7 +56,8 @@ def _resolve_local_cognee_version() -> str:
 def _resolve_mode() -> str:
     """Return the resolved operating mode: Local, Local Managed, or Cloud.
 
-    - No base_url configured → Local
+    - No base_url configured → Local (or Cloud when the backend switch forces
+      cloud — the mode is pinned even though there is nothing to connect to)
     - base_url pointing to localhost / 127.0.0.1 / ::1 → Local Managed
     - Remote base_url → Cloud
     """
@@ -68,7 +69,7 @@ def _resolve_mode() -> str:
     base_url = str(cfg.get("base_url") or "").strip()
 
     if not base_url:
-        return "Local"
+        return "Cloud" if cfg.get("_forced_backend") == "cloud" else "Local"
 
     hostname = urllib.parse.urlparse(base_url).hostname or ""
     if hostname in ("localhost", "127.0.0.1", "::1"):
@@ -77,16 +78,34 @@ def _resolve_mode() -> str:
     return "Cloud"
 
 
+def _mode_annotation() -> str:
+    """Suffix for the mode row when the backend switch forced the decision."""
+    from _env_file import forced_backend_with_source
+    from config import load_config
+
+    forced, var = forced_backend_with_source()
+    if not forced:
+        return ""
+    note = f" — forced by {var}={forced}"
+    if forced == "cloud" and not str(load_config().get("base_url") or "").strip():
+        note += " (missing COGNEE_BASE_URL — nothing to connect to)"
+    return note
+
+
 def _resolve_server_url() -> tuple:
     """Return (display_url, raw_url).
 
     In local mode the display value is "-", while the raw URL remains
-    available for the health probe.
+    available for the health probe. Forced cloud with no URL configured has
+    nothing to probe at all.
     """
     from _plugin_common import _local_api_url_with_source
+    from config import load_config
 
-    raw_url, _source = _local_api_url_with_source()
     mode = _resolve_mode()
+    if mode == "Cloud" and not str(load_config().get("base_url") or "").strip():
+        return "-", ""
+    raw_url, _source = _local_api_url_with_source()
     display = "-" if mode == "Local" else raw_url
     return display, raw_url
 
@@ -217,7 +236,7 @@ def collect_report() -> dict:
     embedding_model, embedding_dimensions = _resolve_embedding()
 
     return {
-        "mode": mode,
+        "mode": mode + _mode_annotation(),
         "env_file": _resolve_env_file(),
         "server_url": display_url if display_url != "-" else None,
         "api_key_source": api_key_source,

@@ -17,10 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from _env_file import load_env_file
+from _env_file import forced_backend, load_env_file
 
 # ~/.cognee/.env is pure-local too, so loading it here keeps the renderer's
 # no-network/no-_plugin_common contract while honoring one-time config.
+# load_env_file also applies the COGNEE_BACKEND switch (forced local scrubs the
+# cloud connection vars), so the mode shown below matches what the hooks use.
 load_env_file()
 
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
@@ -95,6 +97,13 @@ _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
 
 
 def _active_mode() -> str:
+    # 0. explicit backend switch: forced local always reads local (the env
+    # scrub in load_env_file guarantees it, this is just the direct answer);
+    # forced cloud with no URL to inspect reads cloud — the misconfig glyph
+    # (see _forced_cloud_unconfigured) reports what is missing.
+    forced = forced_backend()
+    if forced == "local":
+        return "local"
     # 1. env var
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
     # 2. config file
@@ -106,7 +115,7 @@ def _active_mode() -> str:
         except Exception:
             pass
     if not url:
-        return "local"
+        return "cloud" if forced == "cloud" else "local"
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
 
 
@@ -231,6 +240,7 @@ _RESET = "\033[0m"
 # records which of the two it was.
 _COGNEE_KEY_REASON = "incorrect_cognee_api_key"
 _LLM_KEY_REASON = "incorrect_llm_api_key"
+_MISSING_URL_REASON = "missing_cognee_base_url"
 _REASON_LABELS = {"auth_failed": _COGNEE_KEY_REASON}
 
 
@@ -687,17 +697,39 @@ def _credits_segment() -> str:
     return seg
 
 
+def _forced_cloud_unconfigured() -> bool:
+    """Forced cloud (backend switch) with no URL anywhere: nothing to connect
+    to — a definitive misconfiguration this renderer can see directly from
+    env + config.json, without waiting for a hook to record a failed attempt.
+    """
+    if forced_backend() != "cloud":
+        return False
+    if os.environ.get("COGNEE_BASE_URL", "").strip():
+        return False
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and str(data.get("base_url") or "").strip():
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _status_prefix(session_id: str = "") -> str:
     """The single left glyph slot shared by the server- and LLM-key signals.
 
     One slot, by precedence — showing a green ● next to an ✕ would read as
     contradictory:
+      0. forced cloud with no URL configured: a misconfiguration this renderer
+         can prove on its own — the precise reason beats any marker-derived one
       1. a server-connection failure wins: if we can't reach or authenticate
          against the server, its LLM key is not the actionable problem
       2. otherwise an LLM-key failure, which *replaces* the green ● (the
          ``llm_*`` reason already says the server side itself is fine)
       3. otherwise whatever the server signal is (``● `` or nothing).
     """
+    if _forced_cloud_unconfigured():
+        return _fail_glyph(_MISSING_URL_REASON)
     server = _health_prefix(session_id)
     # Membership, not startswith: the glyph is now preceded by its colour escape.
     if "✕" in server:
