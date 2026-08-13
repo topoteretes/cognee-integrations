@@ -52,11 +52,17 @@ ISOLATED_MODULES = (
 #:     raw.githubusercontent.com;
 #:   - COGNEE_LAZY_BOOTSTRAP=0 makes SessionStart bootstrap synchronously
 #:     instead of via a detached worker that can outlive the test.
+#:   - PYTHONIOENCODING=utf-8 pins the child's stdio encoding: on Windows the
+#:     default is the locale code page (cp1252), and while the renderers
+#:     reconfigure their own stdout to UTF-8, other hook scripts don't — this
+#:     keeps every child's output UTF-8 so run_hook can decode it as such.
+#:     Tests that probe encoding behavior override it via extra_env/build_env.
 DETERMINISTIC_ENV = {
     "COGNEE_PLUGIN_IN_VENV": "1",
     "COGNEE_IDLE_DISABLED": "1",
     "COGNEE_UPDATE_CHECK": "off",
     "COGNEE_LAZY_BOOTSTRAP": "0",
+    "PYTHONIOENCODING": "utf-8",
 }
 
 #: Env-var prefixes scrubbed from the inherited environment so a developer's
@@ -149,7 +155,14 @@ def run_hook(
         env=env,
         cwd=str(cwd if cwd is not None else home),
         capture_output=True,
-        text=True,
+        # Explicit UTF-8, not text=True: text mode decodes with the parent's
+        # locale encoding — cp1252 on Windows — which mangles the UTF-8 the
+        # hooks write (the bar's ·/✕ glyphs came back as mojibake and full-line
+        # assertions failed). PYTHONIOENCODING (DETERMINISTIC_ENV) pins the
+        # child's write side to match; errors="replace" keeps a stray
+        # non-UTF-8 byte from crashing the harness instead of the assertion.
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
 
