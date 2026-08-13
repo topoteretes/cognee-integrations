@@ -58,3 +58,16 @@ def test_best_text_skips_refusals_from_irrelevant_datasets():
     refusals = ["Sorry, no information available.", "The graph does not contain that."]
     assert best_text(refusals) in refusals
     assert best_text([]) == ""
+
+
+def test_refusals_cover_graph_shaped_apologies():
+    from cognee_backend_core.results import _is_refusal
+
+    for refusal in [
+        "I'm unable to find any information in the supplied knowledge graph.",
+        "The supplied knowledge graph contains no nodes or relationships that mention X.",
+        "I can't identify any blocker from the given data.",
+        "If you can share the relevant documents, I'll be able to help.",
+    ]:
+        assert _is_refusal(refusal), refusal
+    assert not _is_refusal("The hinge supplier decision (due September 20) blocks item four.")
