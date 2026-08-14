@@ -74,6 +74,15 @@ Memory apps and editor tooling that talk to a running **cognee server**
 | Second brain | `cognee-integration-second-brain` | cross-transport personal memory (Telegram + web), `/link` identity merge |
 | VS Code | `cognee-vscode` | remember/recall + "ask my project memory" with source-file citations |
 
+### Community integrations
+
+Maintained by the community in their own repos — tracked here in
+[`integrations/inventory.yml`](integrations/inventory.yml) so they're easy to find.
+
+| Integration | Package | Install |
+|---|---|---|
+| [Pi coding agent](https://github.com/kerryhatcher/pi-cognee) | `@kerryhatcher/pi-cognee` | `pi install npm:@kerryhatcher/pi-cognee` |
+
 ## Claude Code Quickstart
 
 The Claude Code integration is a **plugin** — it gives Claude Code persistent memory
