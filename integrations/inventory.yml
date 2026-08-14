@@ -258,6 +258,25 @@ integrations:
     migration_status: done
     notes: "Aider CLI memory tools – sessionized add/cognify/search with per-project isolation (CHUNKS-scoped recall)"
 
+  # ── Community integrations (maintained outside this monorepo) ──────
+
+  - slug: pi
+    name: "Cognee Extension for Pi Coding Agent"
+    owner: kerryhatcher
+    language: typescript
+    registry: npm
+    package_name: "@kerryhatcher/pi-cognee"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: skipped
+    source_repo: https://github.com/kerryhatcher/pi-cognee
+    notes: >-
+      Community-maintained Pi extension (MIT, Kerry Hatcher) — remember, recall,
+      forget, and knowledge-graph management from the Pi coding agent. Two backends:
+      in-process via @cognee/cognee-ts (default, zero infrastructure) or a remote
+      Cognee MCP server (/cognee-mode mcp). Install with
+      `pi install npm:@kerryhatcher/pi-cognee`. Code stays in the author's repo.
+
   # ── Pending migrations ─────────────────────────────────────────────
 
   - slug: claude
