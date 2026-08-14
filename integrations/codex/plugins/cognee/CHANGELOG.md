@@ -10,6 +10,23 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0]
+
+### Added
+- **`COGNEE_MANAGED_ENDPOINT` — never boot over a managed endpoint.** When
+  `COGNEE_BASE_URL` points at a self-hosted deployment that lives on a loopback
+  address (docker compose stack, systemd service, reverse proxy), an outage at
+  session start used to silently boot the embedded local server on the
+  deployment's own port. The shadow instance then squats the port, answers 401
+  to the deployment's API keys (which reads as a baffling auth failure on the
+  real stack), and captures memory into an embedded database nobody reads.
+  Setting `COGNEE_MANAGED_ENDPOINT=true` (env var, `~/.cognee/.env`, or config
+  key `managed_endpoint`) declares the endpoint externally managed: when it is
+  unreachable, `SessionStart` reports **Cognee Memory OFFLINE** loudly (system
+  message + agent context) and refuses to install or boot anything. This
+  extends 1.4.0's forced-cloud misconfiguration surfacing to configured-URL
+  deployments. Default behavior without the flag is unchanged.
+
 ## [1.4.0]
 
 ### Added

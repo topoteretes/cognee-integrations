@@ -105,6 +105,9 @@ _ENV_MAP = {
     "COGNEE_SESSION_PREFIX": "session_prefix",
     "COGNEE_BASE_URL": "base_url",
     "COGNEE_API_KEY": "api_key",
+    # base_url is an externally managed deployment: never boot a local fallback
+    # server on its port; fail loudly when it is unreachable.
+    "COGNEE_MANAGED_ENDPOINT": "managed_endpoint",
     "COGNEE_USER_EMAIL": "user_email",
     "COGNEE_USER_PASSWORD": "user_password",
     "LLM_API_KEY": "llm_api_key",
