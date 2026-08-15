@@ -1283,10 +1283,12 @@ async def _start(payload: dict | None = None) -> dict:
     )
 
     status_line = render_status_for_host(session_key)
+    context = status_line + _update_nudge_suffix()
     return {
+        "systemMessage": status_line,
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": status_line + _update_nudge_suffix(),
+            "additionalContext": context,
         },
     }
 

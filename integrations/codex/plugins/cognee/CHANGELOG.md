@@ -10,6 +10,13 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **SessionStart status envelope in Codex.** The startup status now also emits as
+  a top-level `systemMessage`, matching the Codex `UserPromptSubmit` envelope,
+  instead of living only in `additionalContext`.
+
 ## [1.4.0]
 
 ### Added
