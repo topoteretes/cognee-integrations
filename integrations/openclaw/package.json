@@ -36,7 +36,6 @@
       "^.+\\.ts$": [
         "ts-jest",
         {
-          "useESM": true,
           "tsconfig": {
             "module": "CommonJS"
           }
@@ -50,7 +49,8 @@
     "collectCoverageFrom": [
       "src/**/*.ts",
       "index.ts"
-    ]
+    ],
+    "coverageProvider": "v8"
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.5"
