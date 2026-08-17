@@ -6,10 +6,13 @@ they run on every user prompt / tool call.
 """
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
+import socket
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -1363,6 +1366,211 @@ def server_health_ok(service_url: str = "", timeout: float = 1.0) -> bool:
     (no verdict — keep prior state).
     """
     return probe_health(service_url, timeout=timeout) == "ready"
+
+
+# --- Server presence (boot-point evidence) -------------------------------------
+# probe_health cannot tell a BUSY server from an ABSENT one: both miss the HTTP
+# deadline, but only one of them may be installed/booted over. A server that is
+# busy (event loop saturated by a pipeline) misses a 2s probe exactly like a
+# dead one — and treating that as absence lets a boot point upgrade the venv
+# and run migrations UNDER a live server that still holds the graph store's
+# file lock. Presence is therefore judged from three evidence sources:
+#
+#   * HTTP probe    — probe_health; only a 200 is a self-sufficient verdict.
+#   * TCP listener  — a busy server still completes the TCP handshake in
+#     microseconds even when it cannot serve HTTP; a dead one refuses the
+#     connection. This is the busy-vs-dead discriminator.
+#   * server pidfile — written at uvicorn spawn; covers the window between
+#     spawn and port bind, when neither probe nor listener sees the server.
+#
+# The asymmetry is deliberate: extra evidence only ever ADDS presence (vetoing
+# a boot), and absence is only concluded from a positively refused port with no
+# live server pid — never from a timeout. A wrong "busy" delays a boot until
+# the next boot point; a wrong "absent" corrupts databases.
+
+PRESENCE_READY = "ready"  # HTTP 200: serving (lifespan migrations are done)
+PRESENCE_BUSY = "busy"  # evidence of a live server that is not serving
+PRESENCE_ABSENT = "absent"  # positively absent — the only install/boot license
+PRESENCE_UNKNOWN = "unknown"  # conflicting/insufficient evidence: treat as busy
+
+# Second-chance probe budget when confirming absence (see server_presence).
+_PRESENCE_REPROBE_TIMEOUT_SECONDS = 5.0
+
+
+def _presence_reprobe_delay() -> float:
+    """Pause before the absence-confirming re-probe. Read per call so tests
+    (and unusual deployments) can shrink it without re-importing the module."""
+    try:
+        return float(os.environ.get("COGNEE_PRESENCE_REPROBE_DELAY", "") or 3.0)
+    except ValueError:
+        return 3.0
+
+
+def _server_pidfile(port: int) -> Path:
+    # Shared root, not the per-integration dir: the server itself is
+    # machine-wide (one per port), whichever integration's boot point spawned it.
+    return _SHARED_PLUGIN_ROOT / f"server-{int(port)}.pid"
+
+
+def write_server_pidfile(port: int, pid: int, version: str = "") -> None:
+    """Record the uvicorn server spawned on ``port`` (presence evidence)."""
+    try:
+        _write_json_file(
+            _server_pidfile(port),
+            {
+                "pid": int(pid),
+                "port": int(port),
+                "version": version,
+                "created_at": datetime.now(timezone.utc).timestamp(),
+            },
+        )
+    except Exception as exc:
+        hook_log("server_pidfile_write_failed", {"error": str(exc)[:200]})
+
+
+def clear_server_pidfile(port: int) -> None:
+    try:
+        _server_pidfile(port).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        hook_log("server_pidfile_clear_failed", {"error": str(exc)[:200]})
+
+
+def _pid_looks_like_server(pid: int) -> bool:
+    """Best-effort check that ``pid``'s command line still looks like the
+    cognee server (guards against OS pid reuse). When the command line cannot
+    be inspected (no ``ps``, permission trouble) err toward presence: pidfile
+    evidence is veto-only, so the cost of a wrong True is a delayed boot, and
+    it self-heals when the reused pid exits (``pid_alive`` gates before this)."""
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        command = (out.stdout or "").strip().lower()
+        if not command:
+            return False
+        return "uvicorn" in command or "cognee" in command
+    except Exception:
+        return True
+
+
+def _live_server_pid(port: int) -> int:
+    """PID from the port's pidfile iff that process is alive and still looks
+    like the server; 0 otherwise. Stale records (dead or reused pid) are
+    reaped here so they can never veto boots forever."""
+    path = _server_pidfile(port)
+    try:
+        pid = int(json.loads(path.read_text(encoding="utf-8")).get("pid", 0) or 0)
+    except FileNotFoundError:
+        return 0
+    except Exception:
+        pid = 0
+    if pid > 0 and _proc.pid_alive(pid) and _pid_looks_like_server(pid):
+        return pid
+    try:
+        path.unlink()
+    except Exception:
+        pass
+    return 0
+
+
+def tcp_probe(host: str, port: int, timeout: float = 0.5) -> str:
+    """Classify the bare TCP handshake: 'listening' | 'refused' | 'no_verdict'.
+
+    'refused' is a positive signal from the OS that nothing holds the port —
+    the only transport answer that may contribute to an absence verdict.
+    Timeouts and filtered/odd socket states give no verdict, same as the HTTP
+    probe's rules.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return "listening"
+    except ConnectionRefusedError:
+        return "refused"
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.ECONNREFUSED:
+            return "refused"
+        return "no_verdict"
+    except Exception:
+        return "no_verdict"
+
+
+def _is_loopback_host(host: str) -> bool:
+    host = (host or "").lower()
+    return host in ("localhost", "::1") or host.startswith("127.")
+
+
+def server_presence(
+    service_url: str = "",
+    probe_timeout: float = 2.0,
+    confirm_absent: bool = True,
+) -> tuple[str, dict]:
+    """Classify whether a server exists at ``service_url`` from all local
+    evidence. Returns ``(verdict, evidence)``; the evidence dict is shaped for
+    hook_log so every boot decision records WHY it was made.
+
+    Only PRESENCE_ABSENT licenses installing or booting. ``confirm_absent``
+    adds one delayed, longer-budget re-probe before concluding absence — for
+    boot points about to install; pass False where a rigorous check follows
+    later anyway (e.g. mode selection, whose boot path re-verifies).
+
+    Local evidence (TCP, pidfile) only applies to loopback hosts: for remote
+    URLs the HTTP probe is all there is, and a non-ready remote is UNKNOWN —
+    never absent (nothing can boot a remote host anyway).
+    """
+    base = _normalize_service_url(service_url or _local_api_url())
+    evidence: dict = {"base_url": base}
+    if not base:
+        return PRESENCE_UNKNOWN, evidence
+    if "://" not in base:
+        base = f"http://{base}"
+
+    http_verdict = probe_health(base, timeout=probe_timeout)
+    evidence["http"] = http_verdict
+    if http_verdict == "ready":
+        return PRESENCE_READY, evidence
+
+    parsed = urllib.parse.urlsplit(base)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not _is_loopback_host(host):
+        return PRESENCE_UNKNOWN, evidence
+
+    tcp_verdict = tcp_probe(host, port)
+    evidence["tcp"] = tcp_verdict
+    if tcp_verdict == "listening":
+        # Alive but not serving HTTP within budget (busy, wedged, or answering
+        # non-200): a server exists. Never boot over it.
+        return PRESENCE_BUSY, evidence
+
+    pid = _live_server_pid(port)
+    if pid:
+        # Spawned but not (yet) bound to the port — starting up or tearing
+        # down. Either way a server process exists right now.
+        evidence["pid"] = pid
+        return PRESENCE_BUSY, evidence
+
+    if tcp_verdict != "refused":
+        return PRESENCE_UNKNOWN, evidence
+
+    if confirm_absent:
+        # Positively refused with no live pid. Give a recovering/just-starting
+        # server one more chance before licensing an install: the original
+        # incident had 37s between "live" and the probe that booted over it.
+        time.sleep(_presence_reprobe_delay())
+        retry_verdict = probe_health(base, timeout=_PRESENCE_REPROBE_TIMEOUT_SECONDS)
+        evidence["http_retry"] = retry_verdict
+        if retry_verdict == "ready":
+            return PRESENCE_READY, evidence
+        retry_tcp = tcp_probe(host, port)
+        if retry_tcp == "listening":
+            evidence["tcp_retry"] = retry_tcp
+            return PRESENCE_BUSY, evidence
+    return PRESENCE_ABSENT, evidence
 
 
 # Connection states recorded in the (shared) server-ready marker. "ready" means

@@ -176,7 +176,7 @@ def forced_backend_with_source() -> tuple[str, str]:
 
 
 def forced_backend() -> str:
-    """"local", "cloud", or "" — the exported backend switch, if any."""
+    """ "local", "cloud", or "" — the exported backend switch, if any."""
     return forced_backend_with_source()[0]
 
 

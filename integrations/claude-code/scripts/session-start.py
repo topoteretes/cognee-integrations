@@ -33,18 +33,23 @@ from _plugin_common import (
     _VENV_DIR,
     _VENV_PYTHON,
     _VENV_READY_MARKER,
+    PRESENCE_ABSENT,
+    PRESENCE_READY,
     _https_context,
     _reexec_into_venv,
     apply_cognee_env,
+    clear_server_pidfile,
     ensure_launch_record,
     hook_log,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
+    server_presence,
     server_ready_hint,
     set_session_key,
     touch_activity,
     write_connection_state,
+    write_server_pidfile,
 )
 from _proc import find_host_ancestor_windows
 from _proc import pid_alive as _pid_alive
@@ -181,9 +186,12 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
     """Ensure the plugin venv exists and holds the pinned cognee version.
 
     Called from the server-boot critical section (so it is already
-    single-flighted) and only at boot points — i.e. when no healthy server is
-    serving. Always installs the exact pinned version (_PINNED_COGNEE_VERSION) so the
-    server's FastAPI lifespan migrations run on a known-good release.
+    single-flighted) and only at boot points where the server is POSITIVELY
+    absent (see server_presence) — a merely unresponsive server may be busy and
+    still holding the graph store's file lock, and upgrading the venv under it
+    corrupts the databases. Always installs the exact pinned version
+    (_PINNED_COGNEE_VERSION) so the server's FastAPI lifespan migrations run on
+    a known-good release.
 
     Fails soft: if the install can't run (e.g. offline) but a usable cognee is
     already present, returns True with whatever version is there. Returns False
@@ -378,12 +386,46 @@ def _ensure_local_server_running(
         _ready()
         return
 
-    # No server is serving and we're at a boot point: ensure the venv holds the
-    # latest cognee BEFORE booting, so the server's lifespan migrations run on
-    # the upgraded code. Single-flighted on its own (long) lock, separate from
-    # the short boot lock below, since a cold install can take minutes.
+    # A missed probe is NOT absence: a server that is busy (cognifying, event
+    # loop saturated) misses the health deadline exactly like a dead one, but
+    # only a dead one may be installed/booted over — a busy server still holds
+    # the graph store's file lock, and upgrading + migrating under it corrupts
+    # the databases (2026-08-13 incident). Only a positively-absent verdict
+    # from the full-evidence presence check licenses going further.
+    def _require_absent(stage: str) -> bool:
+        """True when the server turned out to be serving (caller returns);
+        raises unless it is positively absent."""
+        verdict, evidence = server_presence(service_url, confirm_absent=(stage == "pre_install"))
+        if verdict == PRESENCE_READY:
+            return True
+        if verdict != PRESENCE_ABSENT:
+            hook_log(
+                "boot_refused_server_present",
+                {"stage": stage, "verdict": verdict, **evidence},
+            )
+            raise RuntimeError(
+                f"server at {service_url} is present but not serving "
+                f"(verdict={verdict}, stage={stage}); refusing to install or boot over it"
+            )
+        return False
+
+    if _require_absent("pre_install"):
+        _ready()
+        return
+
+    # The server is positively absent and we're at a boot point: ensure the
+    # venv holds the latest cognee BEFORE booting, so the server's lifespan
+    # migrations run on the upgraded code. Single-flighted on its own (long)
+    # lock, separate from the short boot lock below, since a cold install can
+    # take minutes.
     if not ensure_cognee_installed():
         raise RuntimeError("cognee runtime unavailable (install/upgrade failed)")
+
+    # A cold install can take minutes — long enough for the world to change.
+    # Re-verify the premise before proceeding to the boot lock.
+    if _require_absent("post_install"):
+        _ready()
+        return
 
     owner = f"session-start:{os.getpid()}"
     acquired = False
@@ -425,7 +467,9 @@ def _ensure_local_server_running(
                     raise RuntimeError("server bootstrap lock timeout")
                 time.sleep(_SERVER_BOOT_LOCK_POLL_SECONDS)
 
-        if _health_ok(health_url):
+        # Final re-check under the lock: waiting for it may have taken a while,
+        # and only a still-absent server may be spawned over the port.
+        if _require_absent("in_lock"):
             _ready()
             return
 
@@ -435,17 +479,33 @@ def _ensure_local_server_running(
         # Run in agent mode: the server tears itself down once all registered
         # agents disconnect.
         server_env["COGNEE_AGENT_MODE"] = "true"
-        subprocess.Popen(
+        server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
             start_new_session=True,
         )
+        # Presence evidence for future boot points: covers the spawn-to-bind
+        # window where neither the health probe nor the TCP listener sees it.
+        write_server_pidfile(port, server_proc.pid, version=_PINNED_COGNEE_VERSION)
 
         health_deadline = time.monotonic() + health_timeout
         while time.monotonic() < health_deadline:
             if _health_ok(health_url):
                 _ready()
                 return
+            exit_code = server_proc.poll()
+            if exit_code is not None:
+                clear_server_pidfile(port)
+                # An immediate exit is usually a failed port bind — something
+                # claimed the port between our absence check and the spawn. If
+                # that something is serving, connect to it instead of failing.
+                if _health_ok(health_url):
+                    _ready()
+                    return
+                raise RuntimeError(
+                    f"server process exited (rc={exit_code}) before becoming "
+                    f"healthy at {health_url}"
+                )
             time.sleep(_HEALTH_POLL_SECONDS)
 
         raise RuntimeError(
@@ -1408,11 +1468,32 @@ async def _start(payload: dict | None = None) -> dict:
     agent_api_key = ""
     # An empty target (forced cloud, no URL) must never boot: _is_local_url("")
     # parses to localhost, so gate on the URL being present at all.
-    server_live = bool(target_url) and _health_ok(_health_url(target_url))
+    # Local endpoints get the full-evidence presence check (quick form — the
+    # boot path re-verifies rigorously before any install), so the recorded
+    # decision distinguishes a busy server from an absent one. Remote endpoints
+    # keep the plain HTTP probe: there is no local evidence for them, and they
+    # are never booted. will_boot means "enter the local bootstrap path" — the
+    # actual install/boot license is enforced inside _ensure_local_server_running,
+    # so a busy server still gets a worker that waits for it instead of a boot.
+    presence_verdict, presence_evidence = "", {}
+    if target_url and _is_local_url(target_url):
+        presence_verdict, presence_evidence = server_presence(target_url, confirm_absent=False)
+        server_live = presence_verdict == PRESENCE_READY
+    else:
+        server_live = bool(target_url) and _health_ok(_health_url(target_url))
     will_boot = (not server_live) and bool(target_url) and _is_local_url(target_url)
     hook_log(
         "endpoint_mode_selected",
-        {"base_url": target_url, "server_live": server_live, "will_boot": will_boot},
+        {
+            "base_url": target_url,
+            "server_live": server_live,
+            "will_boot": will_boot,
+            **(
+                {"presence": presence_verdict, "evidence": presence_evidence}
+                if presence_verdict
+                else {}
+            ),
+        },
     )
     if will_boot and _LAZY_BOOTSTRAP:
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)

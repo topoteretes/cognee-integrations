@@ -10,6 +10,24 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.1]
+
+### Fixed
+- **Boot points no longer mistake a busy server for an absent one.** The boot
+  decision previously rested on a single 2s `/health` probe, so a server busy
+  cognifying could miss the deadline, be declared absent, and have the venv
+  upgraded and migrations run underneath it while it still held the graph
+  store's file lock (2026-08-13 incident). Server presence is now judged from
+  three evidence sources — the classified HTTP probe, the bare TCP handshake
+  (a busy server still accepts it; a dead one refuses), and a server pidfile
+  written at uvicorn spawn — and only a positively-absent verdict (refused
+  port, no live server pid, confirmed by a delayed re-probe) licenses
+  installing or booting. The verdict and its evidence are recorded on every
+  `endpoint_mode_selected` decision, the license is re-verified after the
+  (minutes-long) install and again under the boot lock, and a spawned server
+  that dies before becoming healthy (e.g. lost port-bind race) is detected
+  instead of being waited out.
+
 ## [1.4.0]
 
 ### Added
