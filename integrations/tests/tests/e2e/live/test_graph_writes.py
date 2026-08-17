@@ -33,6 +33,20 @@ def test_two_datasets_do_not_leak_into_each_other(
     other_dataset = f"{live_env['COGNEE_PLUGIN_DATASET']}_b"
     nonce_b = f"{nonce}-B"
 
+    # An open session held for the whole test, purely to keep the server alive.
+    #
+    # The plugin boots uvicorn in agent mode, which tears the server down once the
+    # last agent disconnects — and `end()` unregisters (`active_agents: 0`). So
+    # after the final session ends there is nothing holding the port open, and the
+    # graph assertions below get ECONNREFUSED even though `sync_bridge_done`
+    # reported `wrote: True`. The writes were never the problem; the verification
+    # was racing the shutdown, and it only passed before because ending session A
+    # happened to be followed by session B starting.
+    #
+    # A real user hitting this would have their own terminal still open, which is
+    # exactly what this session stands in for.
+    anchor = started_session("ds-anchor")
+
     # ── dataset A ─────────────────────────────────────────────────────────
     a = started_session("ds-a")
     a.prompt(f"Project {nonce} uses Paxos for leader election.", turn_id="t1")
@@ -70,6 +84,9 @@ def test_two_datasets_do_not_leak_into_each_other(
     assert "paxos" not in from_b.lower(), (
         f"dataset B leaked dataset A's Paxos decision:\n{from_b[:900]}"
     )
+
+    # Released only now that every graph assertion is done.
+    anchor.end()
 
 
 def test_a_session_runs_exactly_one_final_sync(

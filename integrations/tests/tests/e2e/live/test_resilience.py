@@ -8,6 +8,13 @@ buffered rather than dropped, and that a cold server's slow first query is
 classified honestly instead of tripping the breaker.
 
 No cognify here — nothing needs the graph — so these are cheap to run.
+
+**Local backend only.** Every scenario works by killing the server underneath a
+running session, which is only meaningful for a server this machine booted. Against
+a cloud tenant the kill is impossible (and the attempt would target whatever local
+process holds the tenant's port), so the whole module is marked ``local_only`` and
+deselected there. This is the one part of the tier that cloud genuinely cannot
+cover, which is worth stating plainly rather than discovering from a red run.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from utils.live import (
     server_health,
 )
 
-pytestmark = pytest.mark.live
+pytestmark = [pytest.mark.live, pytest.mark.local_only]
 
 
 def test_hooks_stay_successful_when_the_server_dies_mid_session(
