@@ -26,7 +26,8 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "jest"
+    "test": "jest",
+    "test:coverage": "jest --coverage"
   },
   "jest": {
     "preset": "ts-jest",
@@ -35,14 +36,21 @@
       "^.+\\.ts$": [
         "ts-jest",
         {
-          "useESM": true
+          "useESM": true,
+          "tsconfig": {
+            "module": "CommonJS"
+          }
         }
       ]
     },
     "moduleNameMapper": {
       "^openclaw/plugin-sdk/sandbox$": "<rootDir>/__mocks__/openclaw-sandbox.cjs",
       "^(\\.\\.?/.*)\\.js$": "$1"
-    }
+    },
+    "collectCoverageFrom": [
+      "src/**/*.ts",
+      "index.ts"
+    ]
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.5"

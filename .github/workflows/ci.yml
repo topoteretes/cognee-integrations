@@ -136,6 +136,19 @@ jobs:
         working-directory: integrations/${{ matrix.integration }}
         run: npm install
 
+      # Until this existed the TypeScript job type-checked and stopped, so every
+      # TS test in the repo was decorative — openclaw alone had 128 passing tests
+      # that no CI job ever ran.
+      #
+      # --if-present: n8n, opencode and vellum-assistant have no test script and
+      # must not fail for lacking one.
+      # --passWithNoTests: openclaw-skills HAS a jest script but no test files, and
+      # bare `jest` exits 1 on "no tests found". Both jest and vitest accept the
+      # flag, so it works across the matrix.
+      - name: Test
+        working-directory: integrations/${{ matrix.integration }}
+        run: npm test --if-present -- --passWithNoTests
+
       - name: Type check
         working-directory: integrations/${{ matrix.integration }}
         run: npx tsc --noEmit --skipLibCheck
