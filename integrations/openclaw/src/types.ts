@@ -34,6 +34,16 @@ export type ScopeRoute = {
 
 export type CogneeMode = "local" | "cloud";
 
+export type SessionCaptureMode = "off" | "qa-only" | "qa-and-traces";
+export type SessionPromotionMode = "off" | "all";
+
+export type SessionMemoryPolicy = {
+  /** What is retained in Cognee's session cache. Defaults to legacy captureSession behavior. */
+  capture?: SessionCaptureMode;
+  /** Whether the complete session cache is promoted on session end. */
+  promotion?: SessionPromotionMode;
+};
+
 export type CogneePluginConfig = {
   /** "local" for self-hosted Cognee, "cloud" for Cognee Cloud. Default: "local" */
   mode?: CogneeMode;
@@ -84,6 +94,9 @@ export type CogneePluginConfig = {
    * Requires enableSessions. Default: true.
    */
   captureSession?: boolean;
+  /** Explicit capture/promotion controls. This version supports off/all promotion;
+   * selective promotion requires a server-side candidate API. */
+  sessionMemoryPolicy?: SessionMemoryPolicy;
 
   // --- Search ---
   searchType?: CogneeSearchType;

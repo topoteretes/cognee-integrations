@@ -2,6 +2,17 @@
   "id": "cognee-openclaw",
   "name": "Memory (Cognee)",
   "kind": "memory",
+  "contracts": {
+    "tools": [
+      "memory_search",
+      "memory_get"
+    ]
+  },
+  "toolMetadata": {
+    "memory_get": {
+      "replaySafe": true
+    }
+  },
   "configContracts": {
     "secretInputs": {
       "paths": [
@@ -66,6 +77,10 @@
         "type": "string",
         "description": "Agent identifier for agent-scoped memory (or set OPENCLAW_AGENT_ID env var, default: 'default')"
       },
+      "perAgentMemory": {
+        "type": "boolean",
+        "description": "Keep agent-scoped files and recall isolated by runtime agent ID (default: false; requires multi-scope configuration)."
+      },
       "recallScopes": {
         "type": "array",
         "items": {
@@ -123,6 +138,26 @@
       "captureSession": {
         "type": "boolean",
         "description": "Capture each tool call as a trace entry and each prompt/answer pair as a QA entry in Cognee's session cache (default: true; requires enableSessions)"
+      },
+      "improveOnSessionEnd": {
+        "type": "boolean",
+        "description": "Promote the completed session cache into durable graph memory on session end (default: true; also requires enableSessions and persistSessionsAfterEnd)."
+      },
+      "sessionMemoryPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "capture": {
+            "type": "string",
+            "enum": ["off", "qa-only", "qa-and-traces"],
+            "description": "Session material retained before promotion. Defaults to qa-and-traces for compatibility."
+          },
+          "promotion": {
+            "type": "string",
+            "enum": ["off", "all"],
+            "description": "Whether the complete session cache is promoted. Selective candidate promotion requires a future Cognee server API."
+          }
+        }
       },
       "searchType": {
         "type": "string",
@@ -274,6 +309,18 @@
     },
     "captureSession": {
       "label": "Capture Session"
+    },
+    "improveOnSessionEnd": {
+      "label": "Promote Session on End"
+    },
+    "sessionMemoryPolicy.capture": {
+      "label": "Session Capture Mode"
+    },
+    "sessionMemoryPolicy.promotion": {
+      "label": "Session Promotion Mode"
+    },
+    "perAgentMemory": {
+      "label": "Per-Agent Memory"
     },
     "searchType": {
       "label": "Search Type",

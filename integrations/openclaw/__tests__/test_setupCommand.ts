@@ -53,6 +53,7 @@ function createApi(loadedConfig: Record<string, unknown>) {
       cb({ program: createFakeProgram(actions), workspaceDir: "/tmp/test-ws", logger: api.logger });
     }),
     registerService: jest.fn(),
+    registerTool: jest.fn(),
     on: jest.fn(),
   };
 
