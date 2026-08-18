@@ -334,3 +334,14 @@ async def test_forget_root_unwatches_and_keeps_graph(client, workspace):
     status = (await client.get("/index/status")).json()
     assert str(workspace) not in (status["roots"] or [])
     assert (await client.get("/files")).json()["total"] == 0
+
+
+async def test_forget_directly_indexed_file_takes_the_file_path(client, tmp_path):
+    lone = tmp_path / "lone-note.md"
+    lone.write_text("a note indexed on its own")
+    await index_and_wait(client, lone)
+    response = (await client.post("/files/forget", json={"path": str(lone)})).json()
+    # it was technically a root, but a single-file one: per-item semantics
+    assert response["ok"] is True and response["removed"] == 1
+    assert "root unwatched" not in response["detail"]
+    assert (await client.get("/files")).json()["total"] == 0
