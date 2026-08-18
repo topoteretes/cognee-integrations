@@ -252,7 +252,10 @@ final class SearchViewModel: ObservableObject {
                 self.results = response.results
                 self.selectedIndex = min(self.selectedIndex, max(response.results.count - 1, 0))
                 self.errorText = nil
-                if !response.results.isEmpty { self.nudgeIfRepeat(q) }
+                if !response.results.isEmpty {
+                    self.nudgeIfRepeat(q)
+                    StarNudge.recordUse()
+                }
             } else if response == nil, self.isCurrent(q), self.results.isEmpty {
                 self.errorText = "Backend unreachable — start it with scripts/run_backend.sh"
             }
@@ -293,6 +296,7 @@ final class SearchViewModel: ObservableObject {
                 if response.answer != nil {
                     self.nudgeIfRepeat(q)
                     self.suggestExpert(for: q)
+                    StarNudge.recordUse()
                 }
             } catch {
                 guard !Task.isCancelled else { return }
