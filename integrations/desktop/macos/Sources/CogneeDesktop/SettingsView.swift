@@ -10,8 +10,17 @@ final class SettingsModel: ObservableObject {
     @Published var health: Health?
     @Published var progress: IndexProgress?
     @Published var statusText: String = ""
+    /// The actual indexed files (newest first), filterable — the answer to
+    /// "which files do I have in here?"
+    @Published var indexedFiles: [IndexedFile] = []
+    @Published var filesTotal: Int = 0
+    @Published var filesMatched: Int = 0
+    @Published var filesFilter: String = "" {
+        didSet { scheduleFilesLoad() }
+    }
 
     private var pollTask: Task<Void, Never>?
+    private var filesTask: Task<Void, Never>?
 
     func refresh() {
         Task {
@@ -24,6 +33,26 @@ final class SettingsModel: ObservableObject {
                 statusText = "Backend unreachable at \(Preferences.backendURL.absoluteString)"
             }
         }
+        loadFiles()
+    }
+
+    func loadFiles() {
+        Task {
+            guard let response = try? await BackendClient().files(q: filesFilter, limit: 200)
+            else { return }
+            indexedFiles = response.files
+            filesTotal = response.total
+            filesMatched = response.matched
+        }
+    }
+
+    private func scheduleFilesLoad() {
+        filesTask?.cancel()
+        filesTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            self?.loadFiles()
+        }
     }
 
     func saveBackendURL() {
@@ -35,23 +64,24 @@ final class SettingsModel: ObservableObject {
         refresh()
     }
 
-    func addFolder() {
+    /// Pick anything: whole folders or individual files (mixed selections work).
+    func addPaths() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
         panel.prompt = "Index"
+        panel.message = "Choose files or folders to index into memory"
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK else { return }
-        let paths = panel.urls.map(\.path)
-        startIndex(paths: paths)
+        startIndex(paths: panel.urls.map(\.path))
     }
 
     func reindex() {
         startIndex(paths: [])  // empty list = re-run over the roots the backend knows
     }
 
-    private func startIndex(paths: [String]) {
+    func startIndex(paths: [String]) {
         Task {
             do {
                 try await BackendClient().startIndex(paths: paths)
@@ -134,7 +164,7 @@ struct SettingsView: View {
                         .font(.system(.body, design: .monospaced))
                 }
                 HStack {
-                    Button("Add Folder…") { model.addFolder() }
+                    Button("Add Files or Folders…") { model.addPaths() }
                     Button("Reindex") { model.reindex() }
                         .disabled(roots.isEmpty)
                     Spacer()
@@ -152,6 +182,59 @@ struct SettingsView: View {
                             .help(p.last_skip ?? "")
                     }
                 }
+                Text("Tip: you can also drop files or folders anywhere on this window.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section("Indexed files") {
+                HStack {
+                    TextField("Filter by name or path…", text: $model.filesFilter)
+                        .textFieldStyle(.roundedBorder)
+                    Text(
+                        model.filesFilter.isEmpty
+                            ? "\(model.filesTotal) files"
+                            : "\(model.filesMatched) of \(model.filesTotal)"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+                if model.indexedFiles.isEmpty {
+                    Text(model.filesFilter.isEmpty ? "No files indexed yet." : "No matches.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 3) {
+                            ForEach(model.indexedFiles) { file in
+                                HStack(spacing: 7) {
+                                    Image(
+                                        nsImage: NSWorkspace.shared.icon(forFile: file.path)
+                                    )
+                                    .resizable()
+                                    .frame(width: 14, height: 14)
+                                    Text(file.name)
+                                        .font(.system(size: 11.5))
+                                        .lineLimit(1)
+                                    Text(
+                                        (file.path as NSString).abbreviatingWithTildeInPath
+                                    )
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    Spacer(minLength: 0)
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture(count: 2) {
+                                    NSWorkspace.shared.activateFileViewerSelecting(
+                                        [URL(fileURLWithPath: file.path)])
+                                }
+                                .help("Double-click to reveal in Finder")
+                            }
+                        }
+                    }
+                    .frame(height: 150)
+                }
             }
 
             Section("Shortcut") {
@@ -159,7 +242,23 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 380)
+        .frame(width: 500, height: 600)
         .onAppear { model.refresh() }
+        // Drag files/folders from Finder anywhere onto the window to index them.
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            Task { @MainActor in
+                var paths: [String] = []
+                for provider in providers {
+                    if let data = try? await provider.loadItem(
+                        forTypeIdentifier: "public.file-url", options: nil) as? Data,
+                        let url = URL(dataRepresentation: data, relativeTo: nil)
+                    {
+                        paths.append(url.path)
+                    }
+                }
+                if !paths.isEmpty { model.startIndex(paths: paths) }
+            }
+            return true
+        }
     }
 }

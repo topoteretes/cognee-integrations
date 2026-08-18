@@ -118,6 +118,19 @@ def create_app(
             )
         return {"sources": described, "interval": source_manager.interval}
 
+    @app.get("/files")
+    async def files(limit: int = 500, q: str = "") -> dict:
+        """Every file in the index, newest first. ``q`` substring-filters by
+        path, so a large index stays browsable in the app's Settings."""
+        if q:
+            needle = q.lower()
+            matching = [
+                e for e in catalog.entries(limit=len(catalog)) if needle in e["path"].lower()
+            ]
+            return {"files": matching[:limit], "total": len(catalog), "matched": len(matching)}
+        entries = catalog.entries(limit=limit)
+        return {"files": entries, "total": len(catalog), "matched": len(catalog)}
+
     @app.get("/whisper")
     async def whisper(q: str) -> dict:
         """Memory talking back while a note is typed: the closest thing it

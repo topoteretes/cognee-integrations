@@ -56,6 +56,22 @@ class Catalog:
     def __len__(self) -> int:
         return len(self._entries)
 
+    def entries(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Indexed files, newest first — the receipts behind "N files indexed"."""
+        with self._lock:
+            items = sorted(
+                self._entries.items(), key=lambda kv: kv[1].get("mtime", 0), reverse=True
+            )
+        return [
+            {
+                "path": path,
+                "name": entry.get("name", ""),
+                "mtime": entry.get("mtime", 0),
+                "size": entry.get("size", 0),
+            }
+            for path, entry in items[:limit]
+        ]
+
     @property
     def roots(self) -> list[str]:
         return list(self._roots)
