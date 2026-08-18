@@ -147,10 +147,12 @@ def create_app(
         The file always leaves the catalog, so it stops appearing in
         results and counts either way.
         """
+        from pathlib import Path as _Path
+
         path = request.path.strip()
         if not path:
             return {"ok": False, "removed": 0, "graph": "kept", "detail": "empty path"}
-        if path in catalog.roots:
+        if path in catalog.roots and _Path(path).is_dir():
             removed = catalog.remove_root(path)
             catalog.save()
             return {
@@ -159,14 +161,19 @@ def create_app(
                 "graph": "kept",
                 "detail": "root unwatched; graph copies kept (bulk deletion is manual)",
             }
-        if not catalog.remove(path):
+        # a single file — possibly a root of its own, when it was indexed
+        # directly — gets the per-item treatment, graph deletion included
+        removed = (
+            catalog.remove_root(path)
+            if path in catalog.roots
+            else (1 if catalog.remove(path) else 0)
+        )
+        if not removed:
             return {"ok": False, "removed": 0, "graph": "kept", "detail": "not in the index"}
         catalog.save()
         graph, detail = "kept", "graph copy kept"
         if hasattr(adapter, "_request"):
             try:
-                from pathlib import Path as _Path
-
                 dataset_name = indexer.dataset_for(path) or settings.dataset
                 listing = await adapter._request("GET", "/api/v1/datasets")
                 datasets = listing.json() if isinstance(listing.json(), list) else []
