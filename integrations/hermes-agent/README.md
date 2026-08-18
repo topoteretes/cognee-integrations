@@ -263,6 +263,9 @@ LLM_API_KEY=sk-...
 | `server_boot_timeout` | `COGNEE_SERVER_BOOT_TIMEOUT` | `600` |
 | `data_root` | `COGNEE_DATA_ROOT` | `~/.cognee/data` |
 | `system_root` | `COGNEE_SYSTEM_ROOT` | `~/.cognee/system` |
+| `recall_timeout` | `COGNEE_RECALL_TIMEOUT` | `120` (seconds) |
+| `write_timeout` | `COGNEE_WRITE_TIMEOUT` | `120` (seconds) |
+| `improve_timeout` | `COGNEE_IMPROVE_TIMEOUT` | `300` (seconds) |
 
 > **Storage is shared, and a server is per port.** The roots above are the ones
 > every cognee agent plugin pins, so the store is the same no matter which plugin
@@ -293,6 +296,55 @@ LLM_API_KEY=sk-...
 > cloud/remote server nothing here can shut down; on a local server it
 > reintroduces the race above), `false` blocks Hermes' exit until the build
 > finishes.
+
+## Local models via Ollama: embedding settings
+
+Ollama embeddings need cognee's `ollama` extra — `pip install "cognee[ollama]"`
+— which brings the `transformers` package the token counting depends on; with
+plain `cognee` the embedding engine fails to construct at all.
+
+cognee reads these standard variables (put them in `$HERMES_HOME/.env` — Hermes
+loads it every session, so the spawned server inherits them; see
+[.env.example](./.env.example)):
+
+| Env var | Meaning |
+| --- | --- |
+| `EMBEDDING_PROVIDER` | `ollama` for a local embedder |
+| `EMBEDDING_MODEL` | e.g. `all-minilm`, `nomic-embed-text` |
+| `EMBEDDING_ENDPOINT` | usually `http://localhost:11434/api/embed` |
+| `EMBEDDING_DIMENSIONS` | the model's vector size (e.g. `384` for all-minilm) |
+| `EMBEDDING_MAX_COMPLETION_TOKENS` | **must be ≤ the model's context length** |
+| `HUGGINGFACE_TOKENIZER` | the HF tokenizer matching the model, used to count tokens |
+
+**Why the token ceiling matters.** cognee sizes its text chunks from
+`EMBEDDING_MAX_COMPLETION_TOKENS`, and its default (8191) is far above any local
+embedding model's real context. Every substantial document then overflows the
+model; cognee splits the text and **mean-pools the vectors while still reporting
+success**, so the pipeline completes but the search index quietly fills with
+lossy embeddings and retrieval degrades — the only trace is an
+`Ollama embedding error` line in `~/.cognee-plugin/hermes/server.log`. Worse,
+recent Ollama versions default to *silently truncating* oversized inputs, so
+depending on the Ollama version the index degrades with no log line at all —
+which is why a correct token ceiling matters even when the log is clean.
+
+The plugin therefore pins safe defaults at server spawn when
+`EMBEDDING_PROVIDER=ollama`: a context-matched
+`EMBEDDING_MAX_COMPLETION_TOKENS` (a conservative 512 for models it does not
+recognize) and, for recognized models, the matching `HUGGINGFACE_TOKENIZER`.
+Explicit values always win over the pins. When the plugin detects an overflow in
+the server log anyway, recall/remember results carry a `warning`/`error` naming
+these levers.
+
+> **Pins apply at server spawn.** A cognee server already running on the port
+> keeps the environment it was started with — after changing embedding settings,
+> stop that server (it is shared with the other cognee plugins) so the next
+> session respawns it. An index written with wrong settings stays wrong until
+> the dataset is rebuilt: follow [RUNBOOK.md](./RUNBOOK.md).
+
+**If recall is slow or times out**: the default `GRAPH_COMPLETION` search runs
+an LLM per query, which local models make slow. `search_type=CHUNKS` returns
+matching stored text directly with no LLM in the loop; `COGNEE_RECALL_TIMEOUT`
+raises the deadline.
 
 ## Hermes Commands
 

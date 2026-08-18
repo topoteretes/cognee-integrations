@@ -25,7 +25,7 @@ import os
 import threading
 from typing import Any, Optional
 
-from .config import str_to_bool
+from .config import ollama_embedding_pins, str_to_bool
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,17 @@ class MemoryBackend:
         """
         return None
 
+    def overflow_hint(self) -> Optional[str]:
+        """Evidence the server's embedder is truncating/pooling oversized inputs,
+        or None. Best-effort: never raises.
+
+        Only the HTTP transport against a *local* server can answer — it reads
+        the server log this plugin spawned. In-process transports keep the
+        default: an embedding failure there raises in this process and needs no
+        after-the-fact detection.
+        """
+        return None
+
 
 class _AsyncBridge:
     """Run cognee's async SDK from the provider's synchronous interface."""
@@ -219,6 +230,12 @@ class SdkBackend(MemoryBackend):
         # server gets the same flags in server_bootstrap._spawn. setdefault so an
         # explicit user value wins.
         for key, value in (("CACHING", "true"), ("AUTO_FEEDBACK", "true")):
+            os.environ.setdefault(key, value)
+        # Embedded mode builds cognee's (lru-cached) embedding config in this
+        # process, so the Ollama overflow protection has to land before the
+        # first cognee call — same pins the spawned server gets in
+        # server_bootstrap._spawn, see ollama_embedding_pins.
+        for key, value in ollama_embedding_pins(os.environ).items():
             os.environ.setdefault(key, value)
         try:
             import cognee

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,100 @@ def str_to_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+# Context-length ceilings for the Ollama embedding models we recognize, verified
+# against ``ollama show <model>`` ("context length"). Values may sit below a
+# model's true context (e.g. sfr-embedding-mistral takes 32k): a low ceiling only
+# makes chunks smaller, which is always safe — see ollama_embedding_pins.
+_OLLAMA_MODEL_CONTEXT = {
+    "all-minilm": 256,
+    "nomic-embed-text": 2048,
+    "mxbai-embed-large": 512,
+    "bge-m3": 8192,
+    "embeddinggemma": 2048,
+    "qwen3-embedding": 8192,
+    "snowflake-arctic-embed": 512,
+    "snowflake-arctic-embed2": 8192,
+    "sfr-embedding-mistral": 2048,
+}
+# What a model NOT in this table gets: cognee's own OllamaEmbeddingEngine default,
+# small enough for every embedding model Ollama distributes.
+_OLLAMA_UNKNOWN_MODEL_CONTEXT = 512
+
+# The HuggingFace tokenizer matching each recognized model, used by cognee to
+# count tokens when sizing chunks. Only models whose tokenizer repo is public and
+# unambiguous are listed — a wrong tokenizer miscounts tokens and can reintroduce
+# the very overflow these pins exist to prevent, so unknown models get
+# documentation, never a guess.
+_OLLAMA_MODEL_TOKENIZER = {
+    "all-minilm": "sentence-transformers/all-MiniLM-L6-v2",
+    "nomic-embed-text": "nomic-ai/nomic-embed-text-v1.5",
+    "mxbai-embed-large": "mixedbread-ai/mxbai-embed-large-v1",
+    "bge-m3": "BAAI/bge-m3",
+    "qwen3-embedding": "Qwen/Qwen3-Embedding-0.6B",
+    "sfr-embedding-mistral": "Salesforce/SFR-Embedding-Mistral",
+}
+
+
+def _normalize_ollama_model(model: str) -> str:
+    """``ollama/nomic-embed-text:latest`` -> ``nomic-embed-text``."""
+    name = str(model or "").strip().lower()
+    if name.startswith("ollama/"):
+        name = name[len("ollama/") :]
+    return name.rsplit(":", 1)[0]
+
+
+def _lookup_ollama_model(table: dict[str, Any], model: str) -> Any:
+    """Exact table hit, else the longest key contained in the model name.
+
+    Substring matching absorbs registry namespaces (``avr/sfr-embedding-mistral``)
+    and size suffixes (``nomic-embed-text-v1.5``); longest-first keeps
+    ``snowflake-arctic-embed2`` from resolving to ``snowflake-arctic-embed``.
+    """
+    if model in table:
+        return table[model]
+    for key in sorted(table, key=len, reverse=True):
+        if key in model:
+            return table[key]
+    return None
+
+
+def ollama_embedding_pins(env: Mapping[str, str]) -> dict[str, str]:
+    """Embedding env defaults that keep a local Ollama embedder from silently
+    corrupting the search index. Empty unless ``EMBEDDING_PROVIDER=ollama``.
+
+    Why these exist (live-diagnosed on a meeting-notes ingestion): with
+    ``EMBEDDING_PROVIDER=ollama`` and nothing else set, cognee sizes cognify
+    chunks from ``EMBEDDING_MAX_COMPLETION_TOKENS`` (default 8191) — far above
+    any local embedding model's real context — so every substantial document
+    overflows. Ollama answers "input exceeds context length"; cognee's
+    OllamaEmbeddingEngine then splits the text into overlapping thirds and
+    MEAN-POOLS the two vectors, returning success. The pipeline reports
+    completed while the vector index quietly fills with lossy embeddings, and
+    retrieval degrades with no error anywhere but the server log. Capping the
+    token ceiling at the model's true context (the tokenizer pin makes the
+    token *count* trustworthy) makes cognee chunk within the model's limits
+    instead. A ceiling below the model's context only makes chunks smaller —
+    safe — which is why unknown models get a conservative 512 rather than
+    nothing.
+
+    Keys the caller's ``env`` already has are omitted (callers also apply these
+    with ``setdefault``): an explicit user value always wins.
+    """
+    provider = str(env.get("EMBEDDING_PROVIDER") or "").strip().lower()
+    if provider != "ollama":
+        return {}
+    model = _normalize_ollama_model(env.get("EMBEDDING_MODEL") or "")
+    pins: dict[str, str] = {}
+    if "EMBEDDING_MAX_COMPLETION_TOKENS" not in env:
+        context = _lookup_ollama_model(_OLLAMA_MODEL_CONTEXT, model)
+        pins["EMBEDDING_MAX_COMPLETION_TOKENS"] = str(context or _OLLAMA_UNKNOWN_MODEL_CONTEXT)
+    if "HUGGINGFACE_TOKENIZER" not in env:
+        tokenizer = _lookup_ollama_model(_OLLAMA_MODEL_TOKENIZER, model)
+        if tokenizer:
+            pins["HUGGINGFACE_TOKENIZER"] = str(tokenizer)
+    return pins
 
 
 def resolve_hermes_home(hermes_home: str | Path | None = None) -> Path | None:

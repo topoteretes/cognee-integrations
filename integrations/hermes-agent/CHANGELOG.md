@@ -10,6 +10,40 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0]
+
+Hardens the plugin against silently corrupted search indexes with local Ollama
+embedding models (live-diagnosed on a meeting-notes ingestion: the pipeline
+reported success on every document while all retrieval timed out). cognee sizes
+its chunks from `EMBEDDING_MAX_COMPLETION_TOKENS`, whose 8191 default is far
+above any local embedding model's context; every substantial text overflowed
+Ollama, and cognee mean-pooled the pieces into lossy vectors while still
+reporting success — the only trace an `Ollama embedding error` line in the
+server log.
+
+### Added
+
+- **Safe embedding defaults at server spawn.** With `EMBEDDING_PROVIDER=ollama`,
+  the spawned server (and embedded mode) now gets a context-matched
+  `EMBEDDING_MAX_COMPLETION_TOKENS` for recognized models (`all-minilm`,
+  `nomic-embed-text`, `mxbai-embed-large`, `bge-m3`, and others — a conservative
+  512 for anything unrecognized) plus the matching `HUGGINGFACE_TOKENIZER`, so
+  cognee chunks within the model's real limits. Explicit values always win; no
+  effect on other providers.
+- **Overflow surfacing.** The HTTP transport tails the spawned server's log
+  between calls; a fresh embedding-context overflow now lands in the tool
+  envelope — a `warning` on results/successful writes, an `error` on an empty
+  recall — naming the env levers and the recovery runbook, instead of degrading
+  silently.
+- **Timeout advice.** A timed-out recall error now says why it is likely slow
+  (GRAPH_COMPLETION runs an LLM per query) and what to do (`search_type=CHUNKS`,
+  `scope=session`, or `COGNEE_RECALL_TIMEOUT`); the `search_type` tool schema
+  explains the CHUNKS/GRAPH_COMPLETION trade-off so the model can self-route.
+- **Docs.** `RUNBOOK.md` (pause ingestion → fix env → restart server → rebuild
+  dataset → verify → resume), `.env.example`, a README section on Ollama
+  embedding settings, and README rows for the previously undocumented
+  `COGNEE_RECALL_TIMEOUT` / `COGNEE_WRITE_TIMEOUT` / `COGNEE_IMPROVE_TIMEOUT`.
+
 ## [1.0.0]
 
 First stable release, published to PyPI. Moves the provider onto cognee's REST

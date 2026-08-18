@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -87,6 +88,26 @@ def _result_text(value: Any) -> str:
         if found:
             return str(found)
     return str(value)
+
+
+def _recall_failure_advice(exc: Exception) -> str:
+    """One actionable sentence appended to a timeout-shaped recall failure.
+
+    The default GRAPH_COMPLETION search runs an LLM per query, so on a local
+    model a timeout is usually the search strategy, not an outage — and the
+    model reading this error can fix it on the retry. Covers the HTTP
+    transport (CogneeUnreachable wraps urllib's "timed out") and the SDK
+    bridge (concurrent.futures.TimeoutError, empty message on 3.10).
+    """
+    if not isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
+        text = str(exc).lower()
+        if "timed out" not in text and "timeout" not in text:
+            return ""
+    return (
+        " The default GRAPH_COMPLETION search runs an LLM per query and can be "
+        "slow on local models — retry with search_type='CHUNKS' (fast raw-text "
+        "retrieval) or scope='session', or raise COGNEE_RECALL_TIMEOUT."
+    )
 
 
 class CogneeMemoryProvider(MemoryProvider):
@@ -827,6 +848,7 @@ class CogneeMemoryProvider(MemoryProvider):
             )
             self._record_success()
             items = [self._normalize_recall_item(item) for item in results]
+            overflow = self._backend.overflow_hint()
             if not items:
                 # Distinguish a genuine miss from a backend condition that makes
                 # recall structurally unable to match (e.g. an embedder change
@@ -835,11 +857,21 @@ class CogneeMemoryProvider(MemoryProvider):
                 dim_message = self._backend.empty_recall_hint()
                 if dim_message:
                     return json.dumps({"error": dim_message, "count": 0})
+                if overflow:
+                    return json.dumps({"error": overflow, "count": 0})
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
-            return json.dumps({"results": items, "count": len(items)})
+            envelope: dict[str, Any] = {"results": items, "count": len(items)}
+            if overflow:
+                # Non-empty results still warn: mean-pooled vectors match
+                # *something*, so plausible-but-wrong hits are the overflow's
+                # most misleading symptom.
+                envelope["warning"] = overflow
+            return json.dumps(envelope)
         except Exception as exc:
             self._record_failure()
-            return json.dumps({"error": f"Cognee recall failed: {exc}"})
+            return json.dumps(
+                {"error": f"Cognee recall failed: {exc}{_recall_failure_advice(exc)}"}
+            )
 
     def _handle_remember(self, args: dict[str, Any]) -> str:
         content = str(args.get("content") or "").strip()
@@ -851,7 +883,14 @@ class CogneeMemoryProvider(MemoryProvider):
             result = self._remember_permanent(content, dataset)
             self._record_success()
             status = getattr(result, "status", "completed")
-            return json.dumps({"result": "Content stored in Cognee.", "status": str(status)})
+            envelope = {"result": "Content stored in Cognee.", "status": str(status)}
+            # Embedding runs server-side after this write returns, so a hint here
+            # usually reports the *previous* write's overflow — still worth
+            # surfacing, since the index is already degrading either way.
+            overflow = self._backend.overflow_hint()
+            if overflow:
+                envelope["warning"] = overflow
+            return json.dumps(envelope)
         except Exception as exc:
             self._record_failure()
             return json.dumps({"error": f"Cognee remember failed: {exc}"})

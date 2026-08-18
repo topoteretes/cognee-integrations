@@ -69,6 +69,34 @@ DEFAULT_USER_EMAIL = "default_user@example.com"
 DEFAULT_USER_PASSWORD = "default_password"
 _API_KEY_NAME = "hermes-owner-bootstrap"
 
+# Log lines that betray an embedding-context overflow on the server. Grounded in
+# cognee's OllamaEmbeddingEngine: it logs "Ollama embedding error: <msg>" for the
+# raw Ollama refusal (whose msg says the input/context length was exceeded) and
+# raises "Text too long for embedding model" — then splits the text and
+# mean-pools the vectors, reporting success. The log line is the only trace.
+# Matched case-insensitively. Deliberately narrow: generic phrases like
+# "context window" would also match LLM-side errors this hint misdescribes.
+_OVERFLOW_MARKERS = (
+    "ollama embedding error",
+    "text too long for embedding model",
+    "exceeds context length",
+    "input length exceeds",
+)
+# At most this many appended bytes are scanned per call, so a log that exploded
+# between calls (uvicorn tracebacks, request logging) stays cheap to check.
+_OVERFLOW_SCAN_CAP = 512 * 1024
+
+_OVERFLOW_HINT = (
+    "The cognee server logged an embedding-context overflow: input sent to the "
+    "Ollama embedding model exceeded its context length. cognee splits and "
+    "mean-pools such texts into lossy vectors while the write still reports "
+    "success, so the search index degrades silently. Set "
+    "EMBEDDING_MAX_COMPLETION_TOKENS to at most the embedding model's context "
+    "length (and HUGGINGFACE_TOKENIZER to its matching tokenizer), restart the "
+    "cognee server so the new values apply, and rebuild affected datasets — see "
+    "RUNBOOK.md in the cognee-integration-hermes-agent package."
+)
+
 
 class CogneeHttpError(RuntimeError):
     """The server was reached and rejected the request.
@@ -147,6 +175,7 @@ class HttpBackend(MemoryBackend):
         cache_dir: Optional[str] = None,
         opener=None,
         agent_session_name: str = "hermes",
+        server_log_path: Optional[str] = None,
     ):
         self.url = ""
         self.api_key = ""
@@ -156,6 +185,10 @@ class HttpBackend(MemoryBackend):
         self._agent_session_name = agent_session_name
         self._ssl_context: Optional[ssl.SSLContext] = None
         self._warned: set[str] = set()
+        # Overflow scan state (see overflow_hint). The log path is injectable for
+        # tests; None means "resolve the spawned server's default at connect()".
+        self._server_log_path = server_log_path
+        self._log_offset: Optional[int] = None
 
     # -- transport ---------------------------------------------------------
 
@@ -242,6 +275,7 @@ class HttpBackend(MemoryBackend):
         """
         self.url = url.rstrip("/")
         self.api_key = ""
+        self._init_overflow_scan()
 
         health = self._request("GET", "/health", timeout=min(timeout, 10.0))
         del health  # any 2xx is healthy; body shape is not part of the contract
@@ -312,6 +346,62 @@ class HttpBackend(MemoryBackend):
             logger.debug("cognee agent unregistration failed: %s", exc)
         finally:
             self.registered = False
+
+    # -- diagnostics ---------------------------------------------------------
+
+    def _init_overflow_scan(self) -> None:
+        """Arm the overflow scan for a local server; disarm it for anything else.
+
+        The offset starts at the log's current end, so errors left behind by
+        earlier sessions can never fire a hint in this one — only what the
+        server logs from now on counts. Never raises.
+        """
+        self._log_offset = None
+        if not _is_local_url(self.url):
+            # A remote server's log is not on this filesystem — nothing to scan.
+            return
+        try:
+            if self._server_log_path is None:
+                from .server_bootstrap import default_server_log_path
+
+                self._server_log_path = default_server_log_path()
+            try:
+                self._log_offset = os.path.getsize(self._server_log_path)
+            except OSError:
+                self._log_offset = 0  # no log yet; scan from its first byte
+        except Exception:
+            self._log_offset = None
+
+    def overflow_hint(self) -> Optional[str]:
+        """An actionable warning when the server logged an embedding-context
+        overflow since the last check, else None.
+
+        cognee reports success for the write while the vector index quietly
+        degrades (see _OVERFLOW_MARKERS), so the server log is the only place
+        the failure is visible — and the provider surfaces this hint in the
+        tool envelope instead. The offset advances every call, so one batch of
+        errors produces exactly one hint. Best-effort: never raises.
+        """
+        if self._log_offset is None or not self._server_log_path:
+            return None
+        try:
+            size = os.path.getsize(self._server_log_path)
+            offset = self._log_offset
+            if size < offset:
+                offset = 0  # the log was truncated or rotated; rescan from the top
+            if size == offset:
+                return None
+            start = max(offset, size - _OVERFLOW_SCAN_CAP)
+            with open(self._server_log_path, "rb") as log:
+                log.seek(start)
+                appended = log.read(size - start)
+            self._log_offset = size
+            text = appended.decode("utf-8", errors="replace").lower()
+            if any(marker in text for marker in _OVERFLOW_MARKERS):
+                return _OVERFLOW_HINT
+            return None
+        except Exception:
+            return None
 
     # -- auth --------------------------------------------------------------
 

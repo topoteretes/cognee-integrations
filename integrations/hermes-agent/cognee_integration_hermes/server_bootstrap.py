@@ -22,7 +22,12 @@ import time
 import urllib.error
 import urllib.request
 
-from .config import DEFAULT_SERVER_BOOT_TIMEOUT, SHARED_COGNEE_HOME, SHARED_PLUGIN_STATE_DIR
+from .config import (
+    DEFAULT_SERVER_BOOT_TIMEOUT,
+    SHARED_COGNEE_HOME,
+    SHARED_PLUGIN_STATE_DIR,
+    ollama_embedding_pins,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +79,11 @@ def _spawn(port, data_root, system_root, log_path):
         ("COGNEE_IMPROVE_SUBMIT_TIMEOUT", "420"),
     ):
         env.setdefault(key, value)
+    # A local Ollama embedder inherits a token ceiling far above its real
+    # context and silently mean-pools every overflowing text into a lossy
+    # vector — see ollama_embedding_pins for the incident this pins away.
+    for key, value in ollama_embedding_pins(env).items():
+        env.setdefault(key, value)
     if data_root:
         env["DATA_ROOT_DIRECTORY"] = data_root
     if system_root:
@@ -106,6 +116,21 @@ def _spawn(port, data_root, system_root, log_path):
             log.close()
 
 
+def default_server_log_path() -> str:
+    """Where the spawned server's output lands when no log path is given.
+
+    Same state root as the other cognee plugins (they keep per-host logs in
+    ~/.cognee-plugin/<host>/), so diagnostics live in one predictable place.
+    Also read back by the HTTP transport's overflow scan.
+    """
+    log_dir = SHARED_PLUGIN_STATE_DIR / "hermes"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # _spawn falls back to DEVNULL if the file cannot be opened
+    return str(log_dir / "server.log")
+
+
 def ensure_local_server(
     port,
     *,
@@ -129,14 +154,7 @@ def ensure_local_server(
     if health_ok(url):
         return url
     if log_path is None:
-        # Same state root as the other cognee plugins (they keep per-host logs in
-        # ~/.cognee-plugin/<host>/), so diagnostics live in one predictable place.
-        log_dir = SHARED_PLUGIN_STATE_DIR / "hermes"
-        try:
-            log_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass  # _spawn falls back to DEVNULL if the file cannot be opened
-        log_path = str(log_dir / "server.log")
+        log_path = default_server_log_path()
     proc = None
     spawn_error = None
     try:

@@ -82,6 +82,93 @@ class TestRecallEnvelope(unittest.TestCase):
         self.assertIn("boom", out["error"])
 
 
+class TestOverflowHintEnvelope(unittest.TestCase):
+    """A backend that saw an embedding overflow gets it into the model's hands.
+
+    The scan itself lives in ``test_overflow_hint.py``; here the contract is
+    where the hint lands in the envelope: an ``error`` when recall came back
+    empty, a ``warning`` when there are results — mean-pooled vectors match
+    *something*, so plausible-but-wrong hits are the symptom worth flagging.
+    """
+
+    def test_non_empty_recall_carries_the_hint_as_a_warning(self):
+        with fake_backend() as fake:
+            fake.results["recall"] = [{"text": "alpha"}]
+            fake.overflow_hint_value = "index degrading"
+            provider = make_provider()
+            out = _call(provider, "cognee_recall", {"query": "q"})
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(out["warning"], "index degrading")
+
+    def test_empty_recall_with_a_hint_is_a_hard_error(self):
+        with fake_backend() as fake:
+            fake.results["recall"] = []
+            fake.overflow_hint_value = "index degrading"
+            provider = make_provider()
+            out = _call(provider, "cognee_recall", {"query": "q"})
+        self.assertEqual(out, {"error": "index degrading", "count": 0})
+
+    def test_the_dim_mismatch_hint_wins_on_an_empty_recall(self):
+        # A dimension mismatch means recall can never match — the more specific
+        # diagnosis, so it outranks the overflow hint.
+        with fake_backend() as fake:
+            fake.results["recall"] = []
+            fake.empty_recall_hint_value = "dim mismatch"
+            fake.overflow_hint_value = "index degrading"
+            provider = make_provider()
+            out = _call(provider, "cognee_recall", {"query": "q"})
+        self.assertEqual(out["error"], "dim mismatch")
+
+    def test_no_warning_key_without_a_hint(self):
+        with fake_backend() as fake:
+            fake.results["recall"] = [{"text": "alpha"}]
+            provider = make_provider()
+            out = _call(provider, "cognee_recall", {"query": "q"})
+        self.assertNotIn("warning", out)
+
+    def test_remember_success_carries_the_hint_as_a_warning(self):
+        with fake_backend() as fake:
+            fake.overflow_hint_value = "index degrading"
+            provider = make_provider()
+            out = _call(provider, "cognee_remember", {"content": "fact"})
+        self.assertEqual(out["result"], "Content stored in Cognee.")
+        self.assertEqual(out["warning"], "index degrading")
+
+    def test_remember_success_has_no_warning_without_a_hint(self):
+        with fake_backend():
+            provider = make_provider()
+            out = _call(provider, "cognee_remember", {"content": "fact"})
+        self.assertNotIn("warning", out)
+
+
+class TestRecallTimeoutAdvice(unittest.TestCase):
+    """A timed-out recall tells the model the fast way out, inline in the error."""
+
+    def test_a_timeout_error_names_the_faster_search_type(self):
+        with fake_backend() as fake:
+            fake.errors["recall"] = TimeoutError()
+            provider = make_provider()
+            out = _call(provider, "cognee_recall", {"query": "q"})
+        self.assertIn("CHUNKS", out["error"])
+        self.assertIn("COGNEE_RECALL_TIMEOUT", out["error"])
+
+    def test_a_timed_out_message_gets_the_advice_too(self):
+        # The HTTP transport wraps urllib timeouts in CogneeUnreachable, whose
+        # type says nothing — the message is the only timeout signal.
+        with fake_backend() as fake:
+            fake.errors["recall"] = RuntimeError("cognee unreachable at http://x: timed out")
+            provider = make_provider()
+            out = _call(provider, "cognee_recall", {"query": "q"})
+        self.assertIn("CHUNKS", out["error"])
+
+    def test_a_non_timeout_failure_stays_unadorned(self):
+        with fake_backend() as fake:
+            fake.errors["recall"] = RuntimeError("boom")
+            provider = make_provider()
+            out = _call(provider, "cognee_recall", {"query": "q"})
+        self.assertNotIn("CHUNKS", out["error"])
+
+
 class TestRememberEnvelope(unittest.TestCase):
     def test_success_envelope(self):
         with fake_backend() as fake:
