@@ -23,7 +23,11 @@ RECALL_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Optional Cognee SearchType override, for example GRAPH_COMPLETION, "
-                    "RAG_COMPLETION, CHUNKS, CHUNKS_LEXICAL, TEMPORAL, or FEELING_LUCKY."
+                    "RAG_COMPLETION, CHUNKS, CHUNKS_LEXICAL, TEMPORAL, or FEELING_LUCKY. "
+                    "CHUNKS returns matching stored text directly — fast, no LLM in the "
+                    "loop. GRAPH_COMPLETION (the default) synthesizes an answer with an "
+                    "LLM per query, which can be slow on local models; prefer CHUNKS "
+                    "when a query times out or raw excerpts are enough."
                 ),
             },
             "top_k": {

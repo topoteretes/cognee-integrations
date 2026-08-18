@@ -233,6 +233,7 @@ class FakeBackend(MemoryBackend):
             "resolve_identity": "USER",
         }
         self.empty_recall_hint_value = None
+        self.overflow_hint_value = None
 
     # Recorder passthrough ------------------------------------------------
 
@@ -302,6 +303,10 @@ class FakeBackend(MemoryBackend):
     def empty_recall_hint(self, **kwargs):
         self._recorder.record("empty_recall_hint", kwargs)
         return self.empty_recall_hint_value
+
+    def overflow_hint(self, **kwargs):
+        self._recorder.record("overflow_hint", kwargs)
+        return self.overflow_hint_value
 
 
 _CURRENT_FAKE_BACKEND = None

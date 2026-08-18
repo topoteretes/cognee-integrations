@@ -203,6 +203,80 @@ class TestSpawnEnvironment(unittest.TestCase):
         self.assertNotEqual(env.get("DATA_ROOT_DIRECTORY", "unset"), "")
 
 
+class TestOllamaEmbeddingPins(unittest.TestCase):
+    """The spawn env caps a local Ollama embedder at its real context length.
+
+    Without these, cognee sizes chunks from EMBEDDING_MAX_COMPLETION_TOKENS'
+    8191 default, every substantial document overflows the model, and cognee
+    mean-pools the pieces into lossy vectors while reporting success.
+
+    ``clear=True``: pins are ``setdefault``s, so ambient EMBEDDING_* values in
+    the developer's shell would otherwise leak in and flip the assertions.
+    """
+
+    def _spawn_env(self, **env_overrides):
+        captured = {}
+
+        def fake_popen(args, env=None, **kwargs):
+            captured.update(env or {})
+            return mock.MagicMock()
+
+        with (
+            mock.patch.dict("os.environ", env_overrides, clear=True),
+            mock.patch.object(sb.subprocess, "Popen", side_effect=fake_popen),
+        ):
+            sb._spawn(9999, "", "", "/dev/null")
+        return captured
+
+    def test_a_known_model_gets_its_context_and_tokenizer(self):
+        env = self._spawn_env(EMBEDDING_PROVIDER="ollama", EMBEDDING_MODEL="all-minilm")
+        self.assertEqual(env["EMBEDDING_MAX_COMPLETION_TOKENS"], "256")
+        self.assertEqual(env["HUGGINGFACE_TOKENIZER"], "sentence-transformers/all-MiniLM-L6-v2")
+
+    def test_model_names_are_normalized(self):
+        env = self._spawn_env(
+            EMBEDDING_PROVIDER="ollama", EMBEDDING_MODEL="ollama/nomic-embed-text:latest"
+        )
+        self.assertEqual(env["EMBEDDING_MAX_COMPLETION_TOKENS"], "2048")
+
+    def test_registry_namespaces_still_match(self):
+        # cognee's own Ollama default model ships under the avr/ namespace.
+        env = self._spawn_env(
+            EMBEDDING_PROVIDER="ollama", EMBEDDING_MODEL="avr/sfr-embedding-mistral:latest"
+        )
+        self.assertEqual(env["EMBEDDING_MAX_COMPLETION_TOKENS"], "2048")
+        self.assertEqual(env["HUGGINGFACE_TOKENIZER"], "Salesforce/SFR-Embedding-Mistral")
+
+    def test_the_longest_table_key_wins(self):
+        # snowflake-arctic-embed2 must not resolve to snowflake-arctic-embed's 512.
+        env = self._spawn_env(
+            EMBEDDING_PROVIDER="ollama", EMBEDDING_MODEL="snowflake-arctic-embed2"
+        )
+        self.assertEqual(env["EMBEDDING_MAX_COMPLETION_TOKENS"], "8192")
+
+    def test_an_unknown_model_gets_the_conservative_ceiling_and_no_tokenizer_guess(self):
+        env = self._spawn_env(EMBEDDING_PROVIDER="ollama", EMBEDDING_MODEL="mystery-embed")
+        self.assertEqual(env["EMBEDDING_MAX_COMPLETION_TOKENS"], "512")
+        # A wrong tokenizer miscounts tokens and can reintroduce the overflow.
+        self.assertNotIn("HUGGINGFACE_TOKENIZER", env)
+
+    def test_no_pins_without_the_ollama_provider(self):
+        for provider in ("", "openai", "openai_compatible"):
+            env = self._spawn_env(EMBEDDING_PROVIDER=provider, EMBEDDING_MODEL="all-minilm")
+            self.assertNotIn("EMBEDDING_MAX_COMPLETION_TOKENS", env)
+            self.assertNotIn("HUGGINGFACE_TOKENIZER", env)
+
+    def test_an_explicit_user_value_wins(self):
+        env = self._spawn_env(
+            EMBEDDING_PROVIDER="ollama",
+            EMBEDDING_MODEL="all-minilm",
+            EMBEDDING_MAX_COMPLETION_TOKENS="9000",
+            HUGGINGFACE_TOKENIZER="my/tokenizer",
+        )
+        self.assertEqual(env["EMBEDDING_MAX_COMPLETION_TOKENS"], "9000")
+        self.assertEqual(env["HUGGINGFACE_TOKENIZER"], "my/tokenizer")
+
+
 class _Recorder(dict):
     """Reads the mode-routing decisions off a fake backend.
 
