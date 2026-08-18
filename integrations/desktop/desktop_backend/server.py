@@ -59,6 +59,10 @@ class CaptureRequest(BaseModel):
     source: str = ""  # e.g. "quick-capture", "git:repo-name", "share-sheet"
 
 
+class ForgetRequest(BaseModel):
+    path: str  # an indexed file, or a whole watched root
+
+
 def create_app(
     settings: Optional[Settings] = None,
     adapter: Any = None,
@@ -136,6 +140,63 @@ def create_app(
             return {"files": matching[:limit], "total": len(catalog), "matched": len(matching)}
         entries = catalog.entries(limit=limit)
         return {"files": entries, "total": len(catalog), "matched": len(catalog)}
+
+    @app.post("/files/forget")
+    async def forget_file(request: ForgetRequest) -> dict:
+        """Remove a file (or a whole watched root) from the index.
+
+        Deliberately cautious about the graph side: a single file's data
+        item is deleted from its dataset when it can be identified
+        unambiguously; anything bulk — a root's many files, an ambiguous
+        name — leaves the graph copy alone (mass dataset deletion crashed
+        a cloud tenant once; that is a manual, eyes-open operation).
+        The file always leaves the catalog, so it stops appearing in
+        results and counts either way.
+        """
+        path = request.path.strip()
+        if not path:
+            return {"ok": False, "removed": 0, "graph": "kept", "detail": "empty path"}
+        if path in catalog.roots:
+            removed = catalog.remove_root(path)
+            catalog.save()
+            return {
+                "ok": True,
+                "removed": removed,
+                "graph": "kept",
+                "detail": "root unwatched; graph copies kept (bulk deletion is manual)",
+            }
+        if not catalog.remove(path):
+            return {"ok": False, "removed": 0, "graph": "kept", "detail": "not in the index"}
+        catalog.save()
+        graph, detail = "kept", "graph copy kept"
+        if hasattr(adapter, "_request"):
+            try:
+                from pathlib import Path as _Path
+
+                dataset_name = indexer.dataset_for(path) or settings.dataset
+                listing = await adapter._request("GET", "/api/v1/datasets")
+                datasets = listing.json() if isinstance(listing.json(), list) else []
+                ds = next((d for d in datasets if str(d.get("name")) == dataset_name), None)
+                if ds is not None:
+                    data = await adapter._request("GET", f"/api/v1/datasets/{ds['id']}/data")
+                    items = data.json() if isinstance(data.json(), list) else []
+                    matches = [i for i in items if str(i.get("name", "")) == _Path(path).name]
+                    if len(matches) == 1:
+                        response = await adapter._request(
+                            "DELETE",
+                            f"/api/v1/datasets/{ds['id']}/data/{matches[0]['id']}",
+                        )
+                        if response.status_code < 400:
+                            graph, detail = "deleted", "graph copy deleted"
+                        else:
+                            detail = f"graph delete failed (HTTP {response.status_code})"
+                    elif len(matches) > 1:
+                        detail = "graph copy kept (name is ambiguous in the dataset)"
+                    else:
+                        detail = "graph copy kept (no matching data item)"
+            except Exception as exc:
+                detail = f"graph copy kept ({type(exc).__name__})"
+        return {"ok": True, "removed": 1, "graph": graph, "detail": detail}
 
     @app.get("/whisper")
     async def whisper(q: str) -> dict:

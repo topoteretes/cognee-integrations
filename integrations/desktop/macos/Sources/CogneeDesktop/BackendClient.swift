@@ -126,6 +126,14 @@ struct FilesResponse: Decodable {
     let matched: Int
 }
 
+/// What happened when a file was forgotten — the graph side is best-effort.
+struct ForgetResponse: Decodable {
+    let ok: Bool
+    let removed: Int
+    let graph: String  // "deleted" | "kept"
+    let detail: String
+}
+
 struct Health: Decodable {
     let status: String
     let mode: String
@@ -243,6 +251,17 @@ struct BackendClient {
             URLQueryItem(name: "limit", value: String(limit)),
         ]
         return try await get(components.url!)
+    }
+
+    func forget(path: String) async throws -> ForgetResponse {
+        var request = URLRequest(url: baseURL.appendingPathComponent("files/forget"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["path": path])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.check(response)
+        return try JSONDecoder().decode(ForgetResponse.self, from: data)
     }
 
     func indexStatus() async throws -> IndexProgress {
