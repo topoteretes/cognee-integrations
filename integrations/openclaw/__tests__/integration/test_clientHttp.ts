@@ -150,18 +150,23 @@ describe("path prefix by mode", () => {
   });
 
   /**
-   * KNOWN BUG, not a design choice.
+   * Regression guard for a real bug: `memify()` used to hardcode `/api/v1/memify`
+   * with no `isCloud` ternary — the only one of twelve verbs to do so — so in cloud
+   * mode it kept the local prefix and would have missed the route entirely.
    *
-   * `memify()` hardcodes `/api/v1/memify` with no `isCloud` ternary, unlike
-   * `cognify()` three lines above it which has one. So in cloud mode memify is the
-   * only verb that keeps the local prefix, and it would miss the cloud route.
-   *
-   * `it.failing` is jest's strict-xfail: this passes while the bug exists and turns
-   * RED the moment memify learns the ternary — so the fix cannot land silently.
+   * It was caught by this test rather than by a user because nothing in the plugin
+   * calls `memify` (the `improve` alias is used instead), so the method could stay
+   * wrong indefinitely while looking fine. `CogneeHttpClient` is shared with the
+   * skills plugin, so a public method being quietly broken still matters.
    */
-  it.failing("memify honours cloud mode like every other verb", async () => {
+  it("memify honours cloud mode like every other verb", async () => {
     await cloudClient().memify({ datasetIds: ["ds-1"] });
     expect(mock.assertCalled("POST", "/memify").rawPath).toBe("/memify");
+  });
+
+  it("memify keeps the /api/v1 prefix in local mode", async () => {
+    await localClient().memify({ datasetIds: ["ds-1"] });
+    expect(mock.assertCalled("POST", "/memify").rawPath).toBe("/api/v1/memify");
   });
 });
 
