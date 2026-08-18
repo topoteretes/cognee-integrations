@@ -737,13 +737,22 @@ const memoryCogneePlugin = {
         .option("--everything", "Wipe all data owned by this user (requires --confirm)")
         .option("--confirm", "Required when using --everything")
         .action(async (opts: { dataset?: string; everything?: boolean; confirm?: boolean }) => {
+          // `return` after each exit is load-bearing, not decoration. This is the
+          // only destructive command, and without it the sole thing standing
+          // between a bare `cognee forget` and the delete below is process.exit
+          // never coming back. That holds in production, but it makes the guard
+          // depend on the runtime rather than on the control flow: anything that
+          // wraps, spies on, or stubs the action walks straight through into the
+          // deletion.
           if (!opts.dataset && !opts.everything) {
             console.log("Specify --dataset <name> or --everything --confirm.");
             process.exit(1);
+            return;
           }
           if (opts.everything && !opts.confirm) {
             console.log("Refusing to wipe everything without --confirm.");
             process.exit(1);
+            return;
           }
           const result = await client.forget({
             dataset: opts.dataset,
@@ -1318,11 +1327,18 @@ const memoryCogneePlugin = {
         }
       });
 
-      api.on("session_start", async (event) => {
-        if (cfg.enableSessions) sessionId = cogneeSessionId(event.sessionId);
-      });
-
     }
+
+    // Registered outside the `if (cfg.autoIndex)` block above, because adopting
+    // the host's session id has nothing to do with auto-indexing. It used to sit
+    // inside it while its body checked `cfg.enableSessions`, so the two flags read
+    // as independent when they were not: `enableSessions: true, autoIndex: false`
+    // never adopted the id from this event. Capture still worked (the always-on
+    // session_end handler resolves the session from its own ctx), which is exactly
+    // why the coupling could survive unnoticed.
+    api.on("session_start", async (event) => {
+      if (cfg.enableSessions) sessionId = cogneeSessionId(event.sessionId);
+    });
 
     // ------------------------------------------------------------------
     // Final session sync: one always-on session_end handler that kicks off a

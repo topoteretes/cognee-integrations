@@ -67,10 +67,12 @@ class Suite:
     #: it names a real contract that a future integration may not satisfy.
     has_background_remember: bool
     #: Capability: ``improve_session_via_http`` polls the cognify and memify
-    #: pipelines and reports ``cognify_status``/``memify_status``. Split out from
-    #: has_background_remember because the port that landed in main covered the
-    #: bridge, ``wait_for_cognify`` and the bounded ``do_remember`` wait, but NOT
-    #: the improve path — codex has no ``cognify_status`` anywhere.
+    #: pipelines and reports ``cognify_status``/``memify_status``.
+    #:
+    #: True for both suites now. It was split out from has_background_remember
+    #: because the port that landed in main covered the bridge, ``wait_for_cognify``
+    #: and the bounded ``do_remember`` wait but missed the improve path; kept as its
+    #: own flag because those parts demonstrably travel separately.
     has_improve_pipeline_polling: bool
     #: Capability: the host runs ``async`` hooks and emits ``StopFailure``, so
     #: credits can refresh at turn end without adding a prompt of lag. codex skips
@@ -95,11 +97,16 @@ class Suite:
     #: ``_pipeline_health_glyph`` as of the same port. Tests for individual segments
     #: probe for their own symbol, so they pick that up on their own.
     has_rich_statusline: bool
-    #: Capability: ``pre-compact.py`` branches on ``is_cloud_mode`` and recalls via
-    #: ``recall_via_http``. The one place codex is AHEAD: claude-code's pre-compact
-    #: is local-SDK only, so it produces no anchor at all in server mode. Since
-    #: ``is_cloud_mode`` is just ``bool(base_url)``, a loopback server counts, and
-    #: codex takes the HTTP path everywhere the live tier runs.
+    #: Capability: ``pre-compact.py`` produces an anchor against a server.
+    #:
+    #: Still False for claude-code. It now HAS the ``recall_via_http`` branch, but
+    #: that alone is not enough: the seed recall passes an empty query (there is no
+    #: user question at compact time) and the server matches nothing on an empty
+    #: string — verified directly, query="" returns 0 while a real term returns 1.
+    #: codex reaches an anchor only via the local session-manager fallback, which
+    #: works because the plugin boots the server under the same HOME; claude-code
+    #: does not get there. Closing this needs a server-side way to read recent
+    #: session entries without a query, not more client-side branching.
     has_precompact_http: bool
 
 
@@ -144,7 +151,7 @@ CODEX = Suite(
     session_suffix="_codex",
     host_stem="codex",
     has_background_remember=True,
-    has_improve_pipeline_polling=False,
+    has_improve_pipeline_polling=True,
     has_async_hooks=False,
     has_elapsed_ms_helper=True,
     has_recall_latency_metric=False,

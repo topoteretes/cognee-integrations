@@ -70,32 +70,25 @@ def test_hooks_stay_successful_when_the_server_dies_mid_session(
 
 
 def test_writes_during_an_outage_are_buffered_not_dropped(
-    started_session, live_suite, live_home, live_port, live_base_url, nonce, request
+    started_session, live_suite, live_home, live_port, live_base_url, nonce
 ):
     """A turn captured during an outage must survive it.
 
-    KNOWN GAP, not a design choice. ``store-to-session.py`` buffers to the warmup
-    spillway only when ``server_usable()`` is already False — a *stale* ready
-    marker plus a failed probe. The marker has a 30s TTL, so a server that dies
-    inside that window leaves ``server_usable()`` returning True: the hook
-    attempts a real write, the write raises, and the ``except`` branch only logs
-    ``stop_store_error``. The entry is buffered nowhere and the turn is lost,
-    which is precisely what the spillway exists to prevent.
+    The obvious guard is not enough on its own. ``store-to-session.py`` checks
+    ``server_usable()`` before writing, but the ready marker has a 30s TTL, so a
+    server that dies inside that window leaves it returning True: the hook attempts
+    a real write, the write raises, and for a long time the ``except`` branch only
+    logged ``stop_store_error``. The turn was buffered nowhere and lost — precisely
+    what the warmup spillway exists to prevent.
 
-    Strict xfail so this turns red the moment the failure path learns to buffer —
-    the fix is to call ``append_warmup_entry`` in that ``except`` branch, as the
-    not-usable path already does.
+    Both failure paths now buffer, and both discriminate: transport failures and
+    5xx are replayed, a 4xx is dropped loudly. That distinction is not fussiness —
+    ``drain_warmup_entries`` stops at the first entry it cannot send and only trims
+    what it drained, so an entry that can never succeed would sit at the head of the
+    queue and block everything behind it indefinitely.
+
+    Was a strict xfail; the fix made it XPASS on both suites.
     """
-    request.node.add_marker(
-        pytest.mark.xfail(
-            reason=(
-                "mid-outage Stop write is not buffered when the ready marker is "
-                "still fresh (store-to-session.py except branch only logs)"
-            ),
-            strict=True,
-        )
-    )
-
     session = started_session("buffer")
     session.prompt(f"Pre-outage note for {nonce}.", turn_id="t1")
     session.answer("Noted.", turn_id="t1")
@@ -118,7 +111,7 @@ def test_buffered_turns_are_replayed_once_the_server_returns(
 ):
     """The spillway, end to end: buffer while down, replay when back.
 
-    This is the path the mid-outage xfail above does *not* reach.
+    This is the path the mid-outage test above does *not* reach.
     ``server_usable()`` only reports False once the ready marker has gone stale
     (30s TTL, ``_SERVER_READY_TTL_SECONDS``) **and** a probe fails — so the test
     waits out the marker before capturing. That is exactly the real warmup case:

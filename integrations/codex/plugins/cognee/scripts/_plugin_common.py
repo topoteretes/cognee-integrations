@@ -3268,7 +3268,28 @@ def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = 
         # caller must retry once the lock frees.
         return {"ok": False, "busy": True}
 
-    return {"ok": True, "result": result if isinstance(result, dict) else {}}
+    outcome = {"ok": True, "result": result if isinstance(result, dict) else {}}
+    # Best-effort observability: the submit already succeeded, so a poll that
+    # times out or errors must never turn that into a failure. Reporting the
+    # pipeline states is what lets a caller (and the tests) distinguish "the
+    # bridge was accepted" from "the graph actually finished building" — without
+    # it, improve returns ok while the graph is still empty, which reads as a
+    # silent data-loss bug from the outside.
+    #
+    # Parity with claude-code, which gained this in the background-remember
+    # refactor; the rest of that work was ported here but the improve path was
+    # missed, so codex reported no cognify_status at all.
+    poll_deadline = _float_env("COGNEE_IMPROVE_POLL_DEADLINE", 600.0)
+    dataset_id = ""
+    if isinstance(result, dict):
+        dataset_id = str(result.get("dataset_id") or "")
+    if dataset_id and poll_deadline > 0:
+        half = poll_deadline / 2
+        outcome["cognify_status"] = wait_for_cognify(dataset_id, deadline_seconds=half)
+        outcome["memify_status"] = wait_for_cognify(
+            dataset_id, deadline_seconds=half, pipeline="memify_pipeline"
+        )
+    return outcome
 
 
 def ensure_dataset_via_http(dataset: str) -> None:

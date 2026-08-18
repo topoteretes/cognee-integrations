@@ -247,6 +247,20 @@ describe("cognee forget", () => {
     expect(printed()).toMatch(/--dataset <name> or --everything --confirm/);
   });
 
+  it("holds even when process.exit does not terminate", async () => {
+    // The point of the `return` after each `process.exit`: with the permissive
+    // stub (exit records the call and execution continues, as a wrapper or spy
+    // would) the guard must STILL prevent the delete. Before the return was
+    // added this fell through and called client.forget on a bare invocation.
+    exitSpy.mockImplementation((() => undefined) as never);
+
+    const harness = createPluginApi(plugin);
+    await harness.runCli("forget");
+
+    expect(stub.forget).not.toHaveBeenCalled();
+    expect(exitCodes()).toContain(1);
+  });
+
   it("refuses --everything without --confirm", async () => {
     const harness = createPluginApi(plugin);
     await expect(harness.runCli("forget", { everything: true })).rejects.toThrow(/process\.exit\(1\)/);

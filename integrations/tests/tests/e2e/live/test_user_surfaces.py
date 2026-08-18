@@ -111,26 +111,21 @@ def test_precompact_produces_an_anchor_carrying_the_session(
 ):
     """Compaction drops the transcript; the anchor is what carries memory across it.
 
-    **The two integrations diverge here, and codex is the one that is right.**
-    codex's ``pre-compact.py`` branches on ``is_cloud_mode`` and recalls via
-    ``recall_via_http``, so it produces an anchor against a server. claude-code's
-    recalls via ``cognee.recall`` with a ``get_session_manager()`` fallback — both
-    local-SDK only — while in server mode the session cache lives on the server. So
-    on claude-code the session and trace entries come back empty, the derived query
-    stays empty, the graph scopes are never queried, and the hook logs
-    ``precompact_empty`` and prints nothing.
+    Both suites now recall over HTTP, so both must produce an anchor against a real
+    server. That was not always true: claude-code's pre-compact was local-SDK only
+    — ``cognee.recall`` plus a ``get_session_manager()`` fallback — while in server
+    mode the session cache lives on the server. Session and trace entries came back
+    empty, the derived query stayed empty, the graph scopes were never queried, and
+    the hook logged ``precompact_empty`` and printed nothing. Anyone running against
+    a server lost their anchor at exactly the moment compaction discarded the
+    transcript, with nothing erroring to say so.
 
-    Since ``is_cloud_mode`` is just ``bool(base_url)``, a loopback server counts:
-    codex takes the HTTP path everywhere this tier runs.
+    This test is what caught it, and the fix was a port of the branch codex had all
+    along. It stays a live test because it is the only place the difference shows:
+    against a mock the local path looks fine.
 
-    The effect on claude-code is that anyone running against a server loses their
-    anchor at exactly the moment compaction throws the transcript away, and nothing
-    errors to say so. The fix does not need designing — it exists in codex and can
-    be ported.
-
-    Strict xfail on claude-code only, so it turns red the moment that port lands.
-    Driving this hook is trivial here and effectively untestable through the real
-    CLI, where triggering a compaction on demand is the hard part.
+    ``has_precompact_http`` is still a flag rather than an assumption — a future
+    integration could arrive without the branch, and this would then say so.
     """
     if not live_suite.has_precompact_http:
         request.node.add_marker(
