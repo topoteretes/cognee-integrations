@@ -172,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         let indexItem = NSMenuItem(
-            title: "Index a Folder…", action: #selector(indexFolder), keyEquivalent: ""
+            title: "Index Files or Folders…", action: #selector(indexFolder), keyEquivalent: ""
         )
         indexItem.target = self
         menu.addItem(indexItem)
@@ -221,7 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func indexFolder() {
-        settingsModel.addFolder()
+        settingsModel.addPaths()
     }
 
     @objc private func openSetupItem() {

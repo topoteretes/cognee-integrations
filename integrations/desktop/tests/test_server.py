@@ -292,3 +292,16 @@ async def test_digest_counts_new_agent_learnings(tmp_path):
         data = (await client.get("/digest", params={"since": 1785700000})).json()
     assert data["count"] == 1
     assert data["titles"] == ["fresh-learning"]
+
+
+async def test_files_lists_the_index_with_filtering(client, workspace):
+    await index_and_wait(client, workspace)
+    data = (await client.get("/files")).json()
+    assert data["total"] == 3
+    names = {f["name"] for f in data["files"]}
+    assert {"roadmap.md", "recipes.txt", "huge.md"} <= names
+    assert all(f["path"] and f["mtime"] for f in data["files"])
+
+    filtered = (await client.get("/files", params={"q": "recipes"})).json()
+    assert [f["name"] for f in filtered["files"]] == ["recipes.txt"]
+    assert filtered["matched"] == 1 and filtered["total"] == 3

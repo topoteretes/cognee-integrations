@@ -215,6 +215,7 @@ def test_mock_github_repo_gets_its_own_dataset(tmp_path, monkeypatch):
 
 def test_mock_mobile_device_connection(tmp_path, monkeypatch):
     """Demo-only sources (no real connector class) declare label/icon inline."""
+
     class DummyIndexer:
         class _catalog:
             roots = []

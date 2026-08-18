@@ -33,6 +33,8 @@ struct SearchView: View {
             } else if !model.query.isEmpty, !model.isLoading {
                 divider
                 statusLine(icon: "circle.dashed", text: emptyCoachText)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.ask() }  // the coach's own advice, one click away
             }
             if let hint = model.assistantHint {
                 divider
@@ -278,6 +280,7 @@ struct SearchView: View {
                                 _ = model.openSelected()
                             }
                     }
+                    askRow
                 }
                 .padding(10)
             }
@@ -288,6 +291,38 @@ struct SearchView: View {
                 }
             }
         }
+    }
+
+    /// The other search: a click target for the graph answer, so nobody has
+    /// to know the ⇧↩ chord to discover it. Sits under the file results.
+    private var askRow: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "sparkle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.cognee)
+                .frame(width: 30, height: 30)
+                .background(
+                    Color.cognee.opacity(0.1),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 1.5) {
+                Text("Ask your knowledge graph")
+                    .font(.system(size: 13, weight: .medium))
+                Text("An answer in words, not a list of files — “\(model.query)”")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Text("⇧↩")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+        .onTapGesture { model.ask() }
     }
 
     // MARK: answer — knowledge reads like a book

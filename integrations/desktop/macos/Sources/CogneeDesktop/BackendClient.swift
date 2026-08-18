@@ -110,6 +110,22 @@ struct DigestResponse: Decodable {
     let titles: [String]
 }
 
+/// One file the backend has indexed — the receipts behind "N files indexed".
+struct IndexedFile: Decodable, Identifiable, Equatable {
+    let path: String
+    let name: String
+    let mtime: Double
+    let size: Int
+
+    var id: String { path }
+}
+
+struct FilesResponse: Decodable {
+    let files: [IndexedFile]
+    let total: Int
+    let matched: Int
+}
+
 struct Health: Decodable {
     let status: String
     let mode: String
@@ -215,6 +231,17 @@ struct BackendClient {
             url: baseURL.appendingPathComponent("digest"), resolvingAgainstBaseURL: false
         )!
         components.queryItems = [URLQueryItem(name: "since", value: String(since))]
+        return try await get(components.url!)
+    }
+
+    func files(q: String = "", limit: Int = 500) async throws -> FilesResponse {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("files"), resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: q),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
         return try await get(components.url!)
     }
 
