@@ -86,6 +86,29 @@ final class SettingsModel: ObservableObject {
         startIndex(paths: [])  // empty list = re-run over the roots the backend knows
     }
 
+    /// Remove a file or a whole root from the index, after a confirmation
+    /// that says exactly what will and will not be deleted.
+    func forget(path: String, isRoot: Bool) {
+        let alert = NSAlert()
+        alert.messageText = isRoot ? "Stop watching this folder?" : "Remove from index?"
+        alert.informativeText = isRoot
+            ? "\((path as NSString).abbreviatingWithTildeInPath)\n\nIts files leave search results and counts. Copies already in the knowledge graph are kept (bulk graph deletion is a manual operation)."
+            : "\((path as NSString).abbreviatingWithTildeInPath)\n\nThe file leaves search results, and its knowledge-graph copy is deleted when it can be identified unambiguously. The file itself is not touched."
+        alert.addButton(withTitle: isRoot ? "Stop Watching" : "Remove")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            do {
+                let response = try await BackendClient().forget(path: path)
+                statusText = response.ok ? response.detail : "Not removed: \(response.detail)"
+                refresh()
+            } catch {
+                statusText = "Could not remove — is the backend running?"
+            }
+        }
+    }
+
     func startIndex(paths: [String]) {
         Task {
             do {
@@ -165,8 +188,19 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(roots, id: \.self) { root in
-                    Text((root as NSString).abbreviatingWithTildeInPath)
-                        .font(.system(.body, design: .monospaced))
+                    HStack {
+                        Text((root as NSString).abbreviatingWithTildeInPath)
+                            .font(.system(.body, design: .monospaced))
+                        Spacer()
+                        Button {
+                            model.forget(path: root, isRoot: true)
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Stop watching this folder")
+                    }
                 }
                 HStack {
                     Button("Add Files or Folders…") { model.addPaths() }
@@ -228,6 +262,15 @@ struct SettingsView: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     Spacer(minLength: 0)
+                                    Button {
+                                        model.forget(path: file.path, isRoot: false)
+                                    } label: {
+                                        Image(systemName: "xmark.circle")
+                                            .font(.system(size: 11))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.tertiary)
+                                    .help("Remove from index")
                                 }
                                 .contentShape(Rectangle())
                                 .onTapGesture(count: 2) {

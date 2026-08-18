@@ -56,6 +56,23 @@ class Catalog:
     def __len__(self) -> int:
         return len(self._entries)
 
+    def remove(self, path: str) -> bool:
+        """Drop one file from the catalog. True if it was there."""
+        with self._lock:
+            return self._entries.pop(path, None) is not None
+
+    def remove_root(self, root: str) -> int:
+        """Drop a watched root and every catalog entry beneath it.
+
+        Returns how many file entries went with it."""
+        prefix = root.rstrip("/") + "/"
+        with self._lock:
+            doomed = [p for p in self._entries if p.startswith(prefix) or p == root]
+            for p in doomed:
+                del self._entries[p]
+            self._roots = [r for r in self._roots if r != root]
+        return len(doomed)
+
     def entries(self, limit: int = 500) -> list[dict[str, Any]]:
         """Indexed files, newest first — the receipts behind "N files indexed"."""
         with self._lock:

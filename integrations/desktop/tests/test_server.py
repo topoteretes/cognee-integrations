@@ -271,3 +271,32 @@ async def test_files_lists_the_index_with_filtering(client, workspace):
     filtered = (await client.get("/files", params={"q": "recipes"})).json()
     assert [f["name"] for f in filtered["files"]] == ["recipes.txt"]
     assert filtered["matched"] == 1 and filtered["total"] == 3
+
+
+async def test_forget_removes_file_from_index(client, workspace):
+    await index_and_wait(client, workspace)
+    target = str(workspace / "recipes.txt")
+    response = (await client.post("/files/forget", json={"path": target})).json()
+    assert response["ok"] is True and response["removed"] == 1
+    # the fake adapter has no tenant, so the graph copy is honestly "kept"
+    assert response["graph"] == "kept"
+
+    data = (await client.get("/files")).json()
+    assert all(f["path"] != target for f in data["files"])
+    assert data["total"] == 2
+    # filename search no longer surfaces it
+    hits = (await client.get("/search", params={"q": "recipes", "semantic": "0"})).json()
+    assert all(r["path"] != target for r in hits["results"])
+    # forgetting again is a truthful no-op
+    again = (await client.post("/files/forget", json={"path": target})).json()
+    assert again["ok"] is False and "not in the index" in again["detail"]
+
+
+async def test_forget_root_unwatches_and_keeps_graph(client, workspace):
+    await index_and_wait(client, workspace)
+    response = (await client.post("/files/forget", json={"path": str(workspace)})).json()
+    assert response["ok"] is True and response["removed"] == 3
+    assert response["graph"] == "kept"  # bulk graph deletion stays manual
+    status = (await client.get("/index/status")).json()
+    assert str(workspace) not in (status["roots"] or [])
+    assert (await client.get("/files")).json()["total"] == 0
