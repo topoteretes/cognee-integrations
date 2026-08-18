@@ -1,5 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { buildMemoryFlushPlan } from "../src/flush-plan";
+import { buildMemoryFlushPlan } from "../../src/flush-plan";
 
 function createConfig(overrides?: Partial<OpenClawConfig>): OpenClawConfig {
   return {

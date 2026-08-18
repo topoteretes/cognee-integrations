@@ -1,4 +1,4 @@
-import { CogneeHttpClient } from "../src/client";
+import { CogneeHttpClient } from "../../src/client";
 
 // ---------------------------------------------------------------------------
 // Transport abort-timer hygiene.

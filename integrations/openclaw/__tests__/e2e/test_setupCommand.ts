@@ -1,4 +1,4 @@
-import plugin from "../src/plugin";
+import plugin from "../../src/plugin";
 
 type CliAction = (opts: Record<string, unknown>) => Promise<void> | void;
 

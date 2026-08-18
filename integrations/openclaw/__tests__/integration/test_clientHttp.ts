@@ -24,8 +24,8 @@
  * asserted below without any wait.
  */
 
-import { CogneeHttpClient } from "../src/client";
-import { MockCognee } from "../test-utils/mockCognee";
+import { CogneeHttpClient } from "../../src/client";
+import { MockCognee } from "../../test-utils/mockCognee";
 
 const CLOUD = "cloud" as const;
 const LOCAL = "local" as const;
@@ -263,7 +263,9 @@ describe("memory verbs send what the server expects", () => {
 
   it("rememberEntry posts the session-cache contract", async () => {
     await localClient().rememberEntry({
-      entry: { kind: "qa", question: "q", answer: "a" },
+      // `type` is a discriminator the server requires; `kind` is rejected with a
+      // 422 union_tag_not_found, so the fixture has to use the real field.
+      entry: { type: "qa", question: "q", answer: "a" },
       datasetName: "testds",
       sessionId: "s1",
     } as never);

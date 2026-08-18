@@ -19,6 +19,7 @@
  */
 
 export type HookHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
+export type CliAction = (opts: Record<string, unknown>) => Promise<void> | void;
 
 export interface FakePluginApi {
   /** The object handed to `plugin.register()`. */
@@ -29,10 +30,42 @@ export interface FakePluginApi {
   subscribed: () => string[];
   /** Handler count for one event — 0 proves the plugin opted out under this config. */
   handlerCount: (name: string) => number;
+  /** `cognee <name>` actions, keyed by subcommand. See `runCli`. */
+  actions: Map<string, CliAction>;
+  /** Invoke one subcommand's action. Throws if the plugin never registered it. */
+  runCli: (name: string, opts?: Record<string, unknown>) => Promise<void>;
   logger: { info: jest.Mock; warn: jest.Mock; debug: jest.Mock; error: jest.Mock };
   registerCli: jest.Mock;
   registerMemoryFlushPlan: jest.Mock;
   registerService: jest.Mock;
+  mutateConfigFile: jest.Mock;
+}
+
+/**
+ * Minimal commander stand-in that records each subcommand's action by name.
+ *
+ * The plugin builds its CLI as `program.command("cognee").command("<sub>")...
+ * .action(fn)`, so capturing `fn` per name is enough to invoke a command without
+ * commander, argv parsing, or a real terminal.
+ *
+ * Extracted from `__tests__/test_setupCommand.ts`, which needed it first; seven
+ * further subcommands need the same thing.
+ */
+export function createFakeProgram(actions: Map<string, CliAction>): { command: (name: string) => unknown } {
+  function makeCommand(name: string) {
+    const cmd: Record<string, unknown> = {
+      command: (sub: string) => makeCommand(sub),
+      description: () => cmd,
+      option: () => cmd,
+      argument: () => cmd,
+      action: (fn: CliAction) => {
+        actions.set(name, fn);
+        return cmd;
+      },
+    };
+    return cmd;
+  }
+  return { command: (name: string) => makeCommand(name) };
 }
 
 /**
@@ -60,8 +93,11 @@ export const DEFAULT_PLUGIN_CONFIG: Record<string, unknown> = {
 export function createPluginApi(
   plugin: { register: (api: never) => unknown },
   pluginConfig: Record<string, unknown> = {},
+  opts: { workspaceDir?: string; runtimeConfig?: Record<string, unknown> } = {},
 ): FakePluginApi {
   const handlers = new Map<string, HookHandler[]>();
+  const actions = new Map<string, CliAction>();
+  const loadedConfig = opts.runtimeConfig ?? {};
 
   const logger = {
     info: jest.fn(),
@@ -69,9 +105,29 @@ export function createPluginApi(
     debug: jest.fn(),
     error: jest.fn(),
   };
-  const registerCli = jest.fn();
   const registerMemoryFlushPlan = jest.fn();
   const registerService = jest.fn();
+
+  // The plugin mutates its own config through this when `setup` runs; applying
+  // the mutation to `loadedConfig` lets a test assert what it wrote.
+  const mutateConfigFile = jest.fn(
+    async (params: { mutate: (draft: Record<string, unknown>, ctx: unknown) => unknown }) => {
+      await params.mutate(loadedConfig, { snapshot: {}, previousHash: null });
+      return { result: undefined };
+    },
+  );
+
+  // Invoked eagerly rather than merely recorded: the plugin registers its
+  // subcommands inside this callback, so leaving it uncalled means no CLI exists
+  // to test. It also sets the plugin's `autoSyncStarted` flag, which suppresses
+  // the startup auto-sync a test never asked for.
+  const registerCli = jest.fn((cb: (ctx: unknown) => void) => {
+    cb({
+      program: createFakeProgram(actions),
+      workspaceDir: opts.workspaceDir ?? "/tmp/cognee-openclaw-ws",
+      logger,
+    });
+  });
 
   const api: Record<string, unknown> = {
     id: "cognee-openclaw",
@@ -79,7 +135,7 @@ export function createPluginApi(
     source: "test",
     config: {},
     pluginConfig: { ...DEFAULT_PLUGIN_CONFIG, ...pluginConfig },
-    runtime: {},
+    runtime: { config: { current: jest.fn(() => loadedConfig), mutateConfigFile } },
     logger,
     registerMemoryFlushPlan,
     registerCli,
@@ -100,10 +156,19 @@ export function createPluginApi(
     },
     subscribed: () => [...handlers.keys()],
     handlerCount: (name) => (handlers.get(name) ?? []).length,
+    actions,
+    runCli: async (name, cliOpts = {}) => {
+      const action = actions.get(name);
+      if (!action) {
+        throw new Error(`no cognee subcommand "${name}"; registered: ${[...actions.keys()].join(", ")}`);
+      }
+      await action(cliOpts);
+    },
     logger,
     registerCli,
     registerMemoryFlushPlan,
     registerService,
+    mutateConfigFile,
   };
 }
 

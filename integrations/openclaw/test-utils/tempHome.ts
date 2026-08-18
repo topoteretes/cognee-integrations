@@ -41,11 +41,19 @@ export interface TempHome {
 }
 
 /**
- * Point HOME (and USERPROFILE, which is what `homedir()` reads on Windows) at a
- * fresh directory.
+ * A fresh directory, with HOME/USERPROFILE pointed at it.
  *
- * Call this BEFORE importing any module that resolves `homedir()` at load time,
- * or the redirect is silently ignored — see the note above about `src/server.ts`.
+ * **This is NOT enough to redirect `os.homedir()` under jest.** Jest's `node`
+ * environment hands each test file its own `process.env` object, and mutating it
+ * never reaches the C-level `getenv` that libuv's `uv_os_homedir` reads — so
+ * `os.homedir()` keeps returning the developer's real home while
+ * `process.env.HOME` says otherwise. Verified the hard way: `persistence.ts`
+ * resolves `join(homedir(), ".openclaw", ...)` and wrote to the real home despite
+ * this being called first.
+ *
+ * Use this only for code that reads `process.env.HOME` directly. Anything going
+ * through `os.homedir()` — `persistence.ts`, `server.ts` — must mock the module
+ * instead; see `homedirMockFactory` below.
  */
 export async function useTempHome(): Promise<TempHome> {
   const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
@@ -62,6 +70,33 @@ export async function useTempHome(): Promise<TempHome> {
       else process.env.USERPROFILE = previous.USERPROFILE;
       await rm(path, { recursive: true, force: true });
     },
+  };
+}
+
+/** Just the directory, with no env fiddling — pair with `homedirMockFactory`. */
+export async function makeTempDir(): Promise<TempHome> {
+  const path = await mkdtemp(join(tmpdir(), "cognee-openclaw-home-"));
+  return { path, cleanup: async () => rm(path, { recursive: true, force: true }) };
+}
+
+/**
+ * Factory for `jest.mock("node:os", ...)` that redirects `homedir()`.
+ *
+ * The only reliable way to sandbox a module that calls `os.homedir()` under jest.
+ * `jest.mock` is hoisted per file, so this must be wired in the test file itself:
+ *
+ *     let tempHome = "";
+ *     jest.mock("node:os", () => require("../test-utils/tempHome").homedirMockFactory(() => tempHome));
+ *
+ * The getter is read lazily on each `homedir()` call, so a test can point it at a
+ * fresh directory per case. Returning "" falls back to the real home, which keeps
+ * unrelated `os` consumers (like `tmpdir()`) working.
+ */
+export function homedirMockFactory(current: () => string): Record<string, unknown> {
+  const actual = jest.requireActual<typeof import("node:os")>("node:os");
+  return {
+    ...actual,
+    homedir: () => current() || actual.homedir(),
   };
 }
 
