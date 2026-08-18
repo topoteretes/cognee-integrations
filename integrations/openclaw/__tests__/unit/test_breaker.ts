@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RecallBreaker, isBreakerError } from "../src/breaker";
+import { RecallBreaker, isBreakerError } from "../../src/breaker";
 
 describe("isBreakerError", () => {
   it("trips on 5xx", () => {

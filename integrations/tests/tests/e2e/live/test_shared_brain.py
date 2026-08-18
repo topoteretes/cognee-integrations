@@ -59,12 +59,19 @@ def test_either_agent_recalls_what_the_other_wrote(
     assert bridged is not None, f"{writer_suite.name}'s session was never bridged to the graph"
     assert bridged.get("wrote") is True, f"nothing was written: {bridged}"
 
+    # ── the other plugin connects ─────────────────────────────────────────
+    # Booted BEFORE the graph is polled, and not merely for tidiness: the plugin
+    # runs uvicorn in agent mode, so the server tears down once the last agent
+    # disconnects — and ``end()`` unregisters. With the writer finished and no
+    # reader yet, the poll below would race that shutdown and fail with
+    # ECONNREFUSED on a write that had already landed.
+    reader = session_for(reader_suite, f"{reader_suite.name}-reader")
+
     # The graph holds it before the other agent is asked — so a miss below is a
     # sharing failure, not a write that never landed.
     graph.wait_until_recalled(f"What did we standardise on for {nonce}?", "paxos", deadline=600.0)
 
     # ── the other plugin reads it ─────────────────────────────────────────
-    reader = session_for(reader_suite, f"{reader_suite.name}-reader")
     lookup = reader.recall(f"What does {nonce} use for leader election?", turn_id="t1")
     assert lookup.ok, (
         f"{reader_suite.name} recall failed (rc={lookup.returncode}): {lookup.stderr[:600]}"

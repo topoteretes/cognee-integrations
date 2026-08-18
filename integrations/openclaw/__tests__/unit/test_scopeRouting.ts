@@ -1,11 +1,11 @@
-import { DEFAULT_SCOPE_ROUTING } from "../src/config";
+import { DEFAULT_SCOPE_ROUTING } from "../../src/config";
 import {
   cogneeSessionId,
   datasetNameForScope,
   matchGlob,
   routeFileToScope,
-} from "../src/scope";
-import type { CogneePluginConfig, MemoryScope, ScopeRoute } from "../src/types";
+} from "../../src/scope";
+import type { CogneePluginConfig, MemoryScope, ScopeRoute } from "../../src/types";
 
 function baseCfg(overrides: Partial<CogneePluginConfig> = {}): Required<CogneePluginConfig> {
   return {

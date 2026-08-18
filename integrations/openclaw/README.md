@@ -460,5 +460,54 @@ After each build, restart the OpenClaw gateway to pick up the new code.
 ## Testing
 
 ```bash
-npm test
+npm test              # everything hermetic — no server, no network, no cost
+npm run test:unit         # pure logic + real-fs, no server
+npm run test:integration   # the real HTTP client against a mock Cognee
+npm run test:e2e           # the plugin's own lifecycle + CLI, via register()
+npm run test:coverage
 ```
+
+`npm test` is the whole contract for day-to-day work: it never reaches the
+network and never spends anything.
+
+### Tiers
+
+| Tier | What it drives |
+| --- | --- |
+| `unit` | pure functions plus the filesystem modules (`files`, `persistence`) over real temp directories |
+| `integration` | `CogneeHttpClient` against `MockCognee`, a real `node:http` server — the client calls global `fetch` with no injectable transport, so only a real socket exercises header assembly, the 401 re-login and timeouts |
+| `e2e` | `register()` against a fake plugin API, then the nine lifecycle events and eight `cognee` subcommands fired at the collected handlers |
+| `live` | a real Cognee server, real LLM calls, a real graph — **excluded from every default run** |
+
+Shared helpers live in `test-utils/` rather than `__tests__/`, because jest's
+default `testMatch` treats every file under `__tests__/` as a suite.
+
+### The live tier
+
+Opt in with a server you name explicitly:
+
+```bash
+COGNEE_RUN_LIVE=1 \
+COGNEE_LIVE_BASE_URL=http://127.0.0.1:9100 \
+COGNEE_LIVE_API_KEY=... \
+npm run test:live
+```
+
+There is deliberately **no default URL**. A developer running this normally has a
+real Cognee on the conventional port holding real data, and a tier that defaulted
+to it would write into that graph. Naming the server is the consent. Each run
+invents a `live_<uuid>` dataset and deletes only that namespace afterwards — never
+delete-everything, because the target may hold real data.
+
+Two things that cost time to learn, both worth knowing before adding tests:
+
+- **`os.homedir()` ignores `process.env.HOME` under jest.** Each test file gets its
+  own `process.env`, and mutating it never reaches the C-level `getenv` libuv
+  reads. `jest.setup.ts` therefore mocks `node:os` suite-wide so no test can write
+  to the real `~/.openclaw` or `~/.cognee-plugin`. This exists because a CLI test
+  overwrote a real `~/.openclaw/memory/cognee/` — per-file discipline had already
+  failed once, so the default had to change.
+- **Event field names are not interchangeable.** `after_tool_call` reads `toolName`
+  (not `name`) and `llm_output` reads `assistantTexts` (not `text`). Get them wrong
+  and the handlers simply find nothing to capture and return — the run goes green
+  while storing nothing.

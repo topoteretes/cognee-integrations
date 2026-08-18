@@ -261,6 +261,60 @@ Cross-suite tests use `session_for(suite, name)` rather than `started_session`:
 the latter rides the parametrization, so a writer/reader pair built from it would
 be the same integration on both sides.
 
+### Two backends, one suite
+
+`COGNEE_LIVE_BASE_URL` selects the backend for the whole tier. Set it and the same
+scenarios run against a cloud tenant instead of a server this machine booted —
+there is no second copy of the tests.
+
+```bash
+# local: the plugin boots its own server on an ephemeral port
+COGNEE_RUN_LIVE=1 LLM_API_KEY=sk-... uv run pytest tests/e2e/live -m live
+
+# cloud: point at a tenant; no LLM key, cognify runs server-side
+COGNEE_RUN_LIVE=1 COGNEE_LIVE_BASE_URL=https://... COGNEE_LIVE_API_KEY=... \
+  uv run pytest tests/e2e/live -m live
+```
+
+The plugin needs no help telling them apart:
+`will_boot = (not server_live) and _is_local_url(target_url)` — a remote URL makes
+it connect rather than boot. What changes on the harness side:
+
+| | local | cloud |
+|---|---|---|
+| `live_base_url` | `127.0.0.1:<ephemeral>` | the tenant |
+| `live_port` | the boot port | **0** — sentinel, see below |
+| `live_api_key` | empty; the plugin mints one | the tenant key, via `COGNEE_API_KEY` |
+| plugin venv | seeded into the temp HOME | **not seeded** |
+| `local_only` scenarios | run | auto-deselected |
+| dataset cleanup | none needed | wiped either side of the run |
+
+Four things worth knowing, each of which would bite:
+
+- **`live_port` is 0 on cloud as a safety sentinel.** Teardown calls `reap_port`,
+  which is `lsof -ti tcp:<port>` piped into `kill`. Run against a remote backend it
+  would kill whatever *local* process holds the tenant URL's port — 443, typically
+  something of yours. Both teardowns are guarded with `if live_port:`.
+- **`local_only` is deselected automatically**, in `pytest_collection_modifyitems`,
+  not by a `-m` expression in CI. Those 8 scenarios kill the server; relying on the
+  caller to pass the right marker means one forgotten flag points them at a real
+  tenant.
+- **The cloud backend needs no venv.** `ensure_cognee_ready` returns after an HTTP
+  `/health` check when a base_url is set — the `import cognee` is in the local-SDK
+  branch below it — so the hooks are stdlib HTTP throughout. That is why the cloud
+  CI job has no cache step and a shorter timeout.
+- **Cleanup is `DELETE /api/v1/datasets`**, the delete-everything route, run at both
+  ends of the session. Each test invents a `live_<uuid>` dataset; locally they die
+  with the temp HOME, on cloud they persist forever. Wiping on the way *in* covers
+  a previous run that was cancelled before teardown. It is session-scoped, not
+  per-test, because the final sync happens in a detached worker and deleting
+  between tests would race a write still in flight. A failed wipe warns loudly but
+  never fails the run — a red tier should mean the product broke.
+
+**The blunt delete route is only safe against a dedicated tenant that owns nothing
+else.** That precondition is the entire safety argument; do not point
+`COGNEE_LIVE_BASE_URL` at a tenant with real data.
+
 Whole tier: **32 passed, 1 skipped, 3 xfailed in ~24m30s** (the skip is codex's
 counts segment; the xfails are the gaps below). Roughly 3x the single-suite time
 rather than 2x, because each suite boots its own server per test.

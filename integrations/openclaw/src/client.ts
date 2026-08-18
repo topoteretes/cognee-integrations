@@ -465,7 +465,8 @@ export class CogneeHttpClient {
 
   async memify(params: { datasetIds?: string[] } = {}): Promise<{ status?: string }> {
     const datasetId = params.datasetIds?.[0];
-    return this.fetchAPI<{ status?: string }>("/api/v1/memify", {
+    const path = this.isCloud ? "/memify" : "/api/v1/memify";
+    return this.fetchAPI<{ status?: string }>(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dataset_id: datasetId }),

@@ -26,7 +26,12 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "jest"
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:unit": "jest __tests__/unit",
+    "test:integration": "jest __tests__/integration",
+    "test:e2e": "jest __tests__/e2e",
+    "test:live": "jest __tests__/live --testPathIgnorePatterns=/node_modules/ --runInBand"
   },
   "jest": {
     "preset": "ts-jest",
@@ -35,14 +40,27 @@
       "^.+\\.ts$": [
         "ts-jest",
         {
-          "useESM": true
+          "tsconfig": {
+            "module": "CommonJS"
+          }
         }
       ]
     },
     "moduleNameMapper": {
       "^openclaw/plugin-sdk/sandbox$": "<rootDir>/__mocks__/openclaw-sandbox.cjs",
       "^(\\.\\.?/.*)\\.js$": "$1"
-    }
+    },
+    "collectCoverageFrom": [
+      "src/**/*.ts"
+    ],
+    "coverageProvider": "v8",
+    "setupFilesAfterEnv": [
+      "<rootDir>/jest.setup.ts"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/__tests__/live/"
+    ]
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.5"

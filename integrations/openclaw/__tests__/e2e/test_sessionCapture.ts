@@ -1,9 +1,9 @@
-import plugin from "../src/plugin";
-import { CogneeHttpClient } from "../src/client";
-import { spawnExitWatcher } from "../src/server";
+import plugin from "../../src/plugin";
+import { CogneeHttpClient } from "../../src/client";
+import { spawnExitWatcher } from "../../src/server";
 
-jest.mock("../src/client");
-jest.mock("../src/server", () => ({
+jest.mock("../../src/client");
+jest.mock("../../src/server", () => ({
   bootServerIfNeeded: jest.fn(async () => {}),
   waitForServerHealth: jest.fn(async () => {}),
   isLocalUrl: jest.fn(() => true),
@@ -257,7 +257,7 @@ describe("session_end final chain", () => {
   });
 
   it("resolves the API key lazily when gateway_start never fired", async () => {
-    const { resolveOrMintApiKey } = jest.requireMock("../src/server") as { resolveOrMintApiKey: jest.Mock };
+    const { resolveOrMintApiKey } = jest.requireMock("../../src/server") as { resolveOrMintApiKey: jest.Mock };
     const { emit } = createApi();
 
     // NO gateway_start — resolvedApiKey is unset in this instance.

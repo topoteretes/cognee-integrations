@@ -30,6 +30,11 @@ def test_two_concurrent_sessions_both_land(started_session, graph, nonce):
     b = started_session("conc-b")
     assert a.session_id != b.session_id
 
+    # Held open past both ends, so the graph assertions have a server to talk to:
+    # uvicorn runs in agent mode and tears down once the last agent disconnects,
+    # and ``end()`` unregisters. Without this the polls below race that shutdown.
+    anchor = started_session("conc-anchor")
+
     def drive(session, tag: str) -> None:
         session.prompt(f"Project {tag} uses a {tag} quorum.", turn_id="t1")
         session.tool("Bash", {"command": f"echo {tag}"}, tag, turn_id="t1")
@@ -58,6 +63,8 @@ def test_two_concurrent_sessions_both_land(started_session, graph, nonce):
     # Both sessions' content must be in the shared dataset.
     graph.wait_until_recalled(f"What quorum does {nonce_a} use?", nonce_a, deadline=900.0)
     graph.wait_until_recalled(f"What quorum does {nonce_b} use?", nonce_b, deadline=900.0)
+
+    anchor.end()
 
 
 def test_each_session_claims_its_own_final_sync(started_session, live_suite, live_home, nonce):

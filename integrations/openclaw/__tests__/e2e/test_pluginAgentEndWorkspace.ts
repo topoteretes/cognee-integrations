@@ -1,4 +1,4 @@
-import plugin from "../src/plugin";
+import plugin from "../../src/plugin";
 
 const mockRegisterMemoryFlushPlan = jest.fn();
 

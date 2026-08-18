@@ -113,6 +113,87 @@ def seed_plugin_venv(home: Path) -> bool:
     return True
 
 
+def cloud_base_url() -> str:
+    """The cloud tenant's base URL, or "" for the default local-server backend."""
+    return os.environ.get("COGNEE_LIVE_BASE_URL", "").strip().rstrip("/")
+
+
+def cloud_api_key() -> str:
+    """The cloud tenant's API key. Only meaningful alongside cloud_base_url()."""
+    return os.environ.get("COGNEE_LIVE_API_KEY", "").strip()
+
+
+#: Every dataset this tier creates is named ``live_<uuid12>``. Cleanup deletes
+#: exactly the datasets matching this prefix and nothing else, so the tier is safe
+#: to point at a tenant that also holds real data.
+TEST_DATASET_PREFIX = "live_"
+
+
+def _api_request(
+    base_url: str, path: str, api_key: str, *, method: str = "GET", timeout: float = 60.0
+):
+    """One authenticated call; returns ``(status, body_text)`` or ``(None, error)``."""
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        headers={"X-Api-Key": api_key},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.reason or ""
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return None, str(exc)[:200]
+
+
+def list_test_datasets(base_url: str, api_key: str) -> list[tuple[str, str]]:
+    """``[(id, name)]`` for this principal's datasets whose name is ours.
+
+    Filtering by name is what keeps the tier usable against a tenant holding real
+    data: nothing outside the ``live_`` namespace is ever looked at, let alone
+    deleted.
+    """
+    status, body = _api_request(base_url, "/api/v1/datasets", api_key)
+    if status is None or not (200 <= status < 300):
+        return []
+    try:
+        rows = json.loads(body) or []
+    except (ValueError, TypeError):
+        return []
+    return [
+        (str(r.get("id") or ""), str(r.get("name") or ""))
+        for r in rows
+        if isinstance(r, dict) and str(r.get("name") or "").startswith(TEST_DATASET_PREFIX)
+    ]
+
+
+def delete_test_datasets(base_url: str, api_key: str) -> tuple[int, list[str]]:
+    """Delete only this tier's own datasets. Returns ``(deleted, failures)``.
+
+    Deliberately NOT ``DELETE /api/v1/datasets`` (delete_all) nor
+    ``POST /api/v1/forget {everything: true}``: both destroy every dataset the
+    principal owns, which would take a tenant's real data with it. The whole point
+    of the name prefix is that this stays safe on a shared tenant, so cleanup must
+    never be broader than the thing it is cleaning up.
+
+    N+1 calls (one list, one delete each) is the price of that, and N is small.
+    """
+    failures: list[str] = []
+    deleted = 0
+    for dataset_id, name in list_test_datasets(base_url, api_key):
+        if not dataset_id:
+            continue
+        status, detail = _api_request(
+            base_url, f"/api/v1/datasets/{dataset_id}", api_key, method="DELETE"
+        )
+        if status is not None and 200 <= status < 300:
+            deleted += 1
+        else:
+            failures.append(f"{name} ({status}: {detail})")
+    return deleted, failures
+
+
 def build_live_env(
     *,
     home: Path,
@@ -121,6 +202,7 @@ def build_live_env(
     dataset: str,
     llm_api_key: str,
     suite: Suite,
+    api_key: str = "",
     extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """The environment a live hook subprocess runs in.
@@ -128,6 +210,10 @@ def build_live_env(
     Inherited COGNEE_*/LLM_*/CLAUDE_*/CODEX_* are scrubbed so a developer's shell
     (or the parent agent's own session vars) cannot leak in and redirect the run
     at a real server.
+
+    ``api_key`` is for the cloud backend: ``_resolve_single_principal_key`` reads
+    ``COGNEE_API_KEY`` first, so supplying it skips minting. Left empty for a local
+    server, where the plugin mints its own key against the server it just booted.
     """
     env = {
         k: v
@@ -170,6 +256,8 @@ def build_live_env(
         }
     )
     env.pop("VIRTUAL_ENV", None)
+    if api_key:
+        env["COGNEE_API_KEY"] = api_key
     if extra:
         env.update(extra)
     return env

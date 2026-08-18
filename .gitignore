@@ -95,3 +95,6 @@ node_modules/
 dify-plugin
 *.difypkg
 .aider*
+
+# Jest/vitest coverage output (integrations/*/coverage)
+coverage/

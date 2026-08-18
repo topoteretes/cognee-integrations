@@ -1,9 +1,9 @@
-import plugin from "../src/plugin";
-import { CogneeHttpClient } from "../src/client";
-import { loadDatasetState, saveDatasetState } from "../src/persistence";
+import plugin from "../../src/plugin";
+import { CogneeHttpClient } from "../../src/client";
+import { loadDatasetState, saveDatasetState } from "../../src/persistence";
 
-jest.mock("../src/client");
-jest.mock("../src/server", () => ({
+jest.mock("../../src/client");
+jest.mock("../../src/server", () => ({
   bootServerIfNeeded: jest.fn(async () => {}),
   waitForServerHealth: jest.fn(async () => {}),
   isLocalUrl: jest.fn(() => true),
@@ -18,7 +18,7 @@ const mockBreaker = {
   recordFailure: jest.fn(async (_msg: string) => {}),
   recordSuccess: jest.fn(async () => {}),
 };
-jest.mock("../src/breaker", () => ({
+jest.mock("../../src/breaker", () => ({
   RecallBreaker: jest.fn(() => mockBreaker),
   isBreakerError: (e: unknown) => {
     const status = /\((\d{3})\)/.exec(String(e))?.[1];
@@ -28,7 +28,7 @@ jest.mock("../src/breaker", () => ({
 
 // In-memory dataset state so healing tests never touch ~/.openclaw on disk.
 let datasetState: Record<string, string> = {};
-jest.mock("../src/persistence", () => ({
+jest.mock("../../src/persistence", () => ({
   loadDatasetState: jest.fn(async () => ({ ...datasetState })),
   saveDatasetState: jest.fn(async (s: Record<string, string>) => { datasetState = { ...s }; }),
   loadSyncIndex: jest.fn(async () => ({ entries: {} })),

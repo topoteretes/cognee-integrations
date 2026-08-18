@@ -1,4 +1,4 @@
-import { CogneeHttpClient } from "../src/client";
+import { CogneeHttpClient } from "../../src/client";
 
 // ---------------------------------------------------------------------------
 // fetchAPI success-path responseParser (gh #195 / SDK-242).

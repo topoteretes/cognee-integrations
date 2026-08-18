@@ -1,7 +1,7 @@
-import { CogneeHttpClient } from "../src/client";
-import { syncFiles, syncFilesScoped } from "../src/sync";
-import { matchGlob, routeFileToScope, datasetNameForScope, isMultiScopeEnabled } from "../src/scope";
-import type { MemoryFile, SyncIndex, CogneePluginConfig, ScopedSyncIndexes, MemoryScope, ScopeRoute } from "../src/types";
+import { CogneeHttpClient } from "../../src/client";
+import { syncFiles, syncFilesScoped } from "../../src/sync";
+import { matchGlob, routeFileToScope, datasetNameForScope, isMultiScopeEnabled } from "../../src/scope";
+import type { MemoryFile, SyncIndex, CogneePluginConfig, ScopedSyncIndexes, MemoryScope, ScopeRoute } from "../../src/types";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promises as fs } from "node:fs";
@@ -20,7 +20,7 @@ const STATE_PATH = join(homedir(), ".openclaw", "memory", "cognee", "datasets.js
 const SCOPED_SYNC_INDEX_PATH = join(homedir(), ".openclaw", "memory", "cognee", "scoped-sync-indexes.json");
 
 // Mock CogneeHttpClient
-jest.mock("../src/client", () => ({
+jest.mock("../../src/client", () => ({
   CogneeHttpClient: jest.fn(),
 }));
 

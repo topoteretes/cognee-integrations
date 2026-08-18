@@ -29,4 +29,5 @@ testpaths = ["tests"]
 addopts = "--import-mode=importlib -m 'not live'"
 markers = [
     "live: needs a real cognee server + real LLM calls (COGNEE_RUN_LIVE=1, LLM_API_KEY)",
+    "local_only: kills/boots the server, so it is meaningful only against a server this machine booted; auto-deselected when COGNEE_LIVE_BASE_URL points at a remote tenant",
 ]
