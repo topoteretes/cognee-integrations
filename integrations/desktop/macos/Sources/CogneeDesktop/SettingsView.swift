@@ -18,6 +18,8 @@ final class SettingsModel: ObservableObject {
     @Published var filesFilter: String = "" {
         didSet { scheduleFilesLoad() }
     }
+    /// Every configured data source, as the backend describes it.
+    @Published var connections: [SourceConnection] = []
 
     private var pollTask: Task<Void, Never>?
     private var filesTask: Task<Void, Never>?
@@ -31,6 +33,9 @@ final class SettingsModel: ObservableObject {
             } catch {
                 health = nil
                 statusText = "Backend unreachable at \(Preferences.backendURL.absoluteString)"
+            }
+            if let sources = try? await BackendClient().sources() {
+                connections = sources.sources
             }
         }
         loadFiles()
@@ -237,12 +242,60 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Connections") {
+                if model.connections.isEmpty {
+                    Text("No data sources configured.").foregroundStyle(.secondary)
+                }
+                ForEach(model.connections) { connection in
+                    HStack(spacing: 9) {
+                        Image(systemName: connection.icon)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.cognee)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                Text(connection.label)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                Circle()
+                                    .fill(connection.ok == true ? Color.green : Color.orange)
+                                    .frame(width: 6, height: 6)
+                            }
+                            Text(
+                                (connection.scope ?? []).map {
+                                    ($0 as NSString).abbreviatingWithTildeInPath
+                                }.joined(separator: " · ")
+                            )
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 1) {
+                            if let count = connection.count {
+                                Text("\(count) item\(count == 1 ? "" : "s")")
+                                    .font(.system(size: 11))
+                            }
+                            Text(connection.lastSyncText)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+                Text(
+                    "Sources are configured in the backend's env file for now — Slack (SLACK_TOKEN), Google Drive (GDRIVE_ACCESS_TOKEN), GitHub (GITHUB_REPOS)."
+                )
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            }
+
             Section("Shortcut") {
                 LabeledContent("Open search") { Text("⌥ Space") }
             }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 600)
+        .frame(width: 500, height: 700)
         .onAppear { model.refresh() }
         // Drag files/folders from Finder anywhere onto the window to index them.
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
