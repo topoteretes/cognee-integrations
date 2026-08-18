@@ -181,7 +181,9 @@ def create_app(
                 if ds is not None:
                     data = await adapter._request("GET", f"/api/v1/datasets/{ds['id']}/data")
                     items = data.json() if isinstance(data.json(), list) else []
-                    matches = [i for i in items if str(i.get("name", "")) == _Path(path).name]
+                    # the tenant names data items without the extension
+                    wanted = {_Path(path).name, _Path(path).stem}
+                    matches = [i for i in items if str(i.get("name", "")) in wanted]
                     if len(matches) == 1:
                         response = await adapter._request(
                             "DELETE",
