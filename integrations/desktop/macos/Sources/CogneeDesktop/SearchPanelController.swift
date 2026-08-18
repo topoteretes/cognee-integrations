@@ -64,6 +64,7 @@ final class SearchPanelController: NSObject, NSWindowDelegate {
     }
 
     func hide() {
+        StarNudge.maybePrompt()
         removeKeyMonitor()
         panel.orderOut(nil)
     }
