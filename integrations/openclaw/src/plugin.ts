@@ -1,4 +1,4 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -361,7 +361,7 @@ const memoryCogneePlugin = {
       defaultWorkspace: string,
       logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
     ): Promise<void> {
-      const config = api.runtime?.config?.loadConfig?.();
+      const config = api.runtime?.config?.current?.();
       const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
       const defWs = expandHome(config?.agents?.defaults?.workspace) || defaultWorkspace;
       const agents = Array.isArray(list) && list.length > 0
@@ -388,7 +388,7 @@ const memoryCogneePlugin = {
     function resolveAgentWorkspace(rawAgentId: string | undefined): string | undefined {
       const target = normalizeAgentId(rawAgentId, cfg);
       try {
-        const config = api.runtime?.config?.loadConfig?.();
+        const config = api.runtime?.config?.current?.();
         const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
         const match = list?.find((a) => normalizeAgentId(a.id, cfg) === target);
         return expandHome(match?.workspace) || expandHome(config?.agents?.defaults?.workspace) || resolvedWorkspaceDir;
@@ -509,7 +509,7 @@ const memoryCogneePlugin = {
           if (perAgentMemory) {
             if (opts.agent) {
               // Resolve this agent's workspace from config; fall back to cwd.
-              const config = api.runtime?.config?.loadConfig?.();
+              const config = api.runtime?.config?.current?.();
               const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
               const match = list?.find((a) => normalizeAgentId(a.id, cfg) === normalizeAgentId(opts.agent, cfg));
               const ws = expandHome(match?.workspace) || cliWorkspaceDir;
@@ -564,7 +564,7 @@ const memoryCogneePlugin = {
 
             if (perAgentMemory) {
               agentIndexes = await loadAgentSyncIndexes();
-              const config = api.runtime?.config?.loadConfig?.();
+              const config = api.runtime?.config?.current?.();
               const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
               const agentKeys = new Set<string>(Object.keys(agentIndexes));
               for (const a of list ?? []) agentKeys.add(normalizeAgentId(a.id, cfg));
@@ -640,41 +640,61 @@ const memoryCogneePlugin = {
         .description("Configure OpenClaw to use Cognee for memory (default: disables built-ins, --hybrid: keep built-ins enabled in config)")
         .option("--hybrid", "Keep built-in memory providers enabled in config (slot exclusivity may still prevent co-loading)")
         .action(async (opts: { hybrid?: boolean }) => {
-          const { loadConfig, writeConfigFile } = api.runtime.config;
-          const config = loadConfig();
+          // loadConfig/writeConfigFile are removed from the plugin runtime in
+          // OpenClaw 2026.7.2+. Their replacements — current() for reads and
+          // mutateConfigFile() for writes — are both declared on
+          // PluginRuntime.config as far back as openclaw 2026.6.5 (verified
+          // against its published typings), so the >=2026.6.5 peer range holds.
+          await api.runtime.config.mutateConfigFile({
+            afterWrite: { mode: "auto" },
+            mutate: (config) => {
+              // Set Cognee as the memory slot
+              config.plugins ??= {} as typeof config.plugins;
+              config.plugins.slots ??= {} as typeof config.plugins.slots;
+              (config.plugins.slots as Record<string, string>).memory = "cognee-openclaw";
 
-          // Set Cognee as the memory slot
-          config.plugins ??= {} as typeof config.plugins;
-          config.plugins.slots ??= {} as typeof config.plugins.slots;
-          (config.plugins.slots as Record<string, string>).memory = "cognee-openclaw";
+              config.plugins.entries ??= {} as typeof config.plugins.entries;
+              const entries = config.plugins.entries as Record<
+                string,
+                { enabled: boolean; hooks?: Record<string, unknown> }
+              >;
 
-          config.plugins.entries ??= {} as typeof config.plugins.entries;
-          const entries = config.plugins.entries as Record<string, { enabled: boolean }>;
+              if (opts.hybrid) {
+                // Hybrid mode: keep built-in memory enabled
+                entries["memory-core"] ??= { enabled: true } as typeof entries[string];
+                entries["memory-core"].enabled = true;
+              } else {
+                // Exclusive mode: disable built-in memory providers
+                entries["memory-core"] = { enabled: false };
+                entries["memory-lancedb"] = { enabled: false };
+              }
 
-          if (opts.hybrid) {
-            // Hybrid mode: keep built-in memory enabled
-            entries["memory-core"] ??= { enabled: true } as typeof entries[string];
-            entries["memory-core"].enabled = true;
-          } else {
-            // Exclusive mode: disable built-in memory providers
-            entries["memory-core"] = { enabled: false };
-            entries["memory-lancedb"] = { enabled: false };
-          }
-
-          // Ensure cognee-openclaw is enabled
-          entries["cognee-openclaw"] ??= { enabled: true } as typeof entries[string];
-          entries["cognee-openclaw"].enabled = true;
-
-          await writeConfigFile(config);
+              // Ensure cognee-openclaw is enabled with both hook permissions:
+              // allowConversationAccess is mandatory for installed (non-bundled)
+              // plugins to receive conversation hooks (llm_output, agent_end) —
+              // without it Q&A capture and post-agent sync are silently skipped.
+              // allowPromptInjection defaults to allowed, but setting it
+              // explicitly also signals hook runtime startup intent to OpenClaw.
+              const cogneeEntry = (entries["cognee-openclaw"] ??= { enabled: true });
+              cogneeEntry.enabled = true;
+              cogneeEntry.hooks = {
+                ...cogneeEntry.hooks,
+                allowPromptInjection: true,
+                allowConversationAccess: true,
+              };
+            },
+          });
 
           if (opts.hybrid) {
             console.log("Cognee memory setup complete (hybrid mode):");
             console.log("  - Memory slot set to cognee-openclaw");
+            console.log("  - Hook permissions set (allowPromptInjection, allowConversationAccess)");
             console.log("  - memory-core enabled in config");
             console.log("\nNote: if your OpenClaw version enforces exclusive memory slots, only the slot winner loads at runtime.");
           } else {
             console.log("Cognee memory setup complete:");
             console.log("  - Memory slot set to cognee-openclaw");
+            console.log("  - Hook permissions set (allowPromptInjection, allowConversationAccess)");
             console.log("  - memory-core disabled");
             console.log("  - memory-lancedb disabled");
           }
@@ -717,13 +737,22 @@ const memoryCogneePlugin = {
         .option("--everything", "Wipe all data owned by this user (requires --confirm)")
         .option("--confirm", "Required when using --everything")
         .action(async (opts: { dataset?: string; everything?: boolean; confirm?: boolean }) => {
+          // `return` after each exit is load-bearing, not decoration. This is the
+          // only destructive command, and without it the sole thing standing
+          // between a bare `cognee forget` and the delete below is process.exit
+          // never coming back. That holds in production, but it makes the guard
+          // depend on the runtime rather than on the control flow: anything that
+          // wraps, spies on, or stubs the action walks straight through into the
+          // deletion.
           if (!opts.dataset && !opts.everything) {
             console.log("Specify --dataset <name> or --everything --confirm.");
             process.exit(1);
+            return;
           }
           if (opts.everything && !opts.confirm) {
             console.log("Refusing to wipe everything without --confirm.");
             process.exit(1);
+            return;
           }
           const result = await client.forget({
             dataset: opts.dataset,
@@ -813,7 +842,7 @@ const memoryCogneePlugin = {
       }
 
       if (!resolvedApiKey) {
-        resolvedApiKey = await resolveOrMintApiKey(client, logger).catch(() => "");
+        resolvedApiKey = await resolveOrMintApiKey(client, logger, cfg.apiKey).catch(() => "");
       }
       // Inject the resolved/minted key so every subsequent client call
       // authenticates via X-Api-Key instead of the JWT login fallback.
@@ -1010,7 +1039,7 @@ const memoryCogneePlugin = {
             // it's an env/file read — so the exit-watcher below always gets
             // a usable key instead of silently spawning keyless (401s).
             if (!resolvedApiKey) {
-              resolvedApiKey = await resolveOrMintApiKey(client, api.logger).catch(() => "");
+              resolvedApiKey = await resolveOrMintApiKey(client, api.logger, cfg.apiKey).catch(() => "");
             }
             // Inject into THIS instance's client — each plugin instance owns
             // its own client, and only key-authenticated calls work on servers
@@ -1298,11 +1327,18 @@ const memoryCogneePlugin = {
         }
       });
 
-      api.on("session_start", async (event) => {
-        if (cfg.enableSessions) sessionId = cogneeSessionId(event.sessionId);
-      });
-
     }
+
+    // Registered outside the `if (cfg.autoIndex)` block above, because adopting
+    // the host's session id has nothing to do with auto-indexing. It used to sit
+    // inside it while its body checked `cfg.enableSessions`, so the two flags read
+    // as independent when they were not: `enableSessions: true, autoIndex: false`
+    // never adopted the id from this event. Capture still worked (the always-on
+    // session_end handler resolves the session from its own ctx), which is exactly
+    // why the coupling could survive unnoticed.
+    api.on("session_start", async (event) => {
+      if (cfg.enableSessions) sessionId = cogneeSessionId(event.sessionId);
+    });
 
     // ------------------------------------------------------------------
     // Final session sync: one always-on session_end handler that kicks off a

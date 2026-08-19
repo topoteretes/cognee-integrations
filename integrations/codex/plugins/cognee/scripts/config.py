@@ -7,6 +7,15 @@ Loads settings from (in priority order):
   3. Config file (~/.cognee-plugin/config.json)
   4. Defaults
 
+The env file may hold both modes' variables at once; cloud wins when both are
+configured. `export COGNEE_BACKEND=local` (or `=cloud`) flips one terminal —
+COGNEE_CODEX_BACKEND does the same for this plugin only, beating the shared
+name. A forced mode is pinned: forced local scrubs the cloud connection vars
+from the process environment (see _env_file), and forced cloud keeps
+is_cloud_mode() true even when connection vars are missing, so the plugin
+attempts the cloud connection and the status line reports what is wrong
+instead of silently falling back to local.
+
 Config file is created on first SessionStart if it doesn't exist.
 
 Supports three modes:
@@ -73,6 +82,11 @@ def _config_log(event: str, detail: dict | None = None) -> None:
 
 # Env var overrides (env var name → config key)
 _ENV_MAP = {
+    # Backend switch: the shared name is scanned first so the plugin-specific
+    # one, applied later, wins when both are exported. COGNEE_CLAUDE_BACKEND is
+    # deliberately absent — an export targeting the Claude Code plugin must not
+    # flip this one.
+    "COGNEE_BACKEND": "backend",
     "COGNEE_CODEX_BACKEND": "backend",
     "COGNEE_AGENT_NAME": "agent_name",
     "COGNEE_PLUGIN_DATASET": "dataset",
@@ -84,6 +98,13 @@ _ENV_MAP = {
     "COGNEE_USER_PASSWORD": "user_password",
     "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
+    # Background remember + cognify polling (read at the call sites via _float_env;
+    # registered here for config-file support and discoverability).
+    "COGNEE_COGNIFY_POLL_INTERVAL": "cognify_poll_interval",
+    "COGNEE_BRIDGE_POLL_DEADLINE": "bridge_poll_deadline",
+    "COGNEE_BRIDGE_SUBMIT_TIMEOUT": "bridge_submit_timeout",
+    "COGNEE_REMEMBER_WAIT_SECONDS": "remember_wait_seconds",
+    "COGNEE_STATUS_REQUEST_TIMEOUT": "status_request_timeout",
     # Legacy compat
     "COGNEE_SESSION_ID": "_static_session_id",
 }
@@ -124,8 +145,14 @@ def load_config() -> dict:
     if backend in ("native", "local", "sdk"):
         config["base_url"] = ""
         config["api_key"] = ""
-        config["base_url"] = ""
-    elif backend not in ("http", "api", "cloud", "server"):
+        config["_forced_backend"] = "local"
+    elif backend in ("http", "api", "cloud", "server"):
+        # Forced cloud is pinned even when connection vars are missing:
+        # is_cloud_mode() honors this flag, so the plugin attempts the cloud
+        # connection (and the status line reports the failure) instead of
+        # silently falling back to local.
+        config["_forced_backend"] = "cloud"
+    else:
         # The service URL is the sole router: a URL alone is a complete
         # instruction (connect to it, or boot it if local; auth falls back to
         # the default user when no key is given). A key with no URL has nothing
@@ -182,8 +209,8 @@ def get_dataset(config: dict) -> str:
 
 
 def is_cloud_mode(config: dict) -> bool:
-    """Check if cloud/remote mode is configured."""
-    return bool(config.get("base_url"))
+    """Check if cloud/remote mode is configured (or forced by the backend switch)."""
+    return bool(config.get("base_url")) or config.get("_forced_backend") == "cloud"
 
 
 def is_local_mode(config: dict) -> bool:

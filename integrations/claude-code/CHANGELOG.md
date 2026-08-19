@@ -10,6 +10,174 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2]
+
+### Fixed
+- **A turn captured while the server is down is no longer lost.** Writes were
+  buffered to the warmup spillway only when `server_usable()` already reported
+  False. That check relies on a ready marker with a 30s TTL, so a server dying
+  inside that window left it returning True: the write was attempted for real,
+  it raised, and the `except` branch only logged `stop_store_error` — the entry
+  was buffered nowhere and the turn was gone. Both the Stop (QA) and PostToolUse
+  (trace) paths now buffer on failure and replay when the server returns.
+
+  Failures that cannot succeed on replay are *not* buffered. A 4xx is dropped
+  with `"buffered": false` in the log, because the drain stops at the first entry
+  it cannot send and only removes what it drained — a permanently rejected entry
+  would sit at the head of the queue and block everything behind it. Transport
+  failures and 5xx are retried; new events: `store_buffered_after_error`,
+  `trace_buffered_after_error`.
+
+### Known issues
+- **The PreCompact anchor is empty in server mode.** `pre-compact.py` now recalls
+  over HTTP, but its seed recall deliberately sends an empty query (there is no
+  user question at compaction time) and the server matches nothing on one, so no
+  session or trace entries come back and no anchor is printed. Per-prompt recall
+  is unaffected — this costs the summary carried across a compaction, not memory
+  itself. Tracked as SDK-424; the fix is server-side.
+
+## [1.3.1]
+
+### Fixed
+- **Boot points no longer mistake a busy server for an absent one.** The boot
+  decision previously rested on a single 2s `/health` probe, so a server busy
+  cognifying could miss the deadline, be declared absent, and have the venv
+  upgraded and migrations run underneath it while it still held the graph
+  store's file lock (2026-08-13 incident). Server presence is now judged from
+  three evidence sources — the classified HTTP probe, the bare TCP handshake
+  (a busy server still accepts it; a dead one refuses), and a server pidfile
+  written at uvicorn spawn — and only a positively-absent verdict (refused
+  port, no live server pid, confirmed by a delayed re-probe) licenses
+  installing or booting. The verdict and its evidence are recorded on every
+  `endpoint_mode_selected` decision, the license is re-verified after the
+  (minutes-long) install and again under the boot lock, and a spawned server
+  that dies before becoming healthy (e.g. lost port-bind race) is detected
+  instead of being waited out.
+
+## [1.3.0]
+
+### Added
+- **`COGNEE_BACKEND` per-terminal mode switch.** `~/.cognee/.env` may now hold
+  the cloud vars (`COGNEE_BASE_URL`, `COGNEE_API_KEY`) *and* the local vars
+  (`LLM_API_KEY`, …) together; with nothing exported, cloud wins as before.
+  `export COGNEE_BACKEND=local` (or `=cloud`) flips a single terminal — the
+  shared name switches both the Claude Code and Codex plugins at once, while
+  `COGNEE_CLAUDE_BACKEND` targets this plugin only and beats the shared name.
+- **Forced cloud is pinned, and misconfiguration is surfaced.** With
+  `COGNEE_BACKEND=cloud` but no `COGNEE_BASE_URL`, the plugin no longer
+  silently falls back to local (no local server boot, no venv build); the
+  status line shows `✕ (missing_cognee_base_url)` and `cognee doctor`'s mode
+  row explains what forced the decision and what is missing.
+
+### Fixed
+- **`COGNEE_CLAUDE_BACKEND=local` now holds on the HTTP hot paths.** The
+  switch used to clear the cloud URL only in `load_config()`'s view, while
+  recall/remember read `COGNEE_BASE_URL` from the environment — where the env
+  file had already injected the cloud URL — so those calls still went to the
+  cloud. A forced-local switch now scrubs `COGNEE_BASE_URL`/`COGNEE_API_KEY`
+  from the process environment itself (with empty strings, so re-running the
+  loader in child processes cannot re-inject the file's values).
+- `COGNEE_CODEX_BACKEND` no longer flips this plugin: an export targeting the
+  Codex plugin used to switch Claude Code's backend too.
+
+## [1.2.6]
+
+### Changed
+- **Pinned cognee version is now `1.4.2`** (was `1.4.0`). The plugin installs
+  this into its own managed venv on session start, so existing installs pick it
+  up on the next session. No plugin-side behavior changes: cognee 1.4.1+ resolves
+  an *omitted* session id to a per-dataset default (`default_session_<dataset_id>`),
+  but the plugin always sends its explicit per-conversation session id, which
+  passes through unchanged.
+
+## [1.2.5]
+
+### Added
+- **Cloud credits in the status bar.** Cloud sessions now show the
+  connected tenant's balance right after the mode — `credits: $14.23` in
+  green, red once negative (a negative balance is real unfunded spend, the
+  one state that must not hide) — followed by the approximate cost of the
+  last memory operation, e.g. `· last turn ~$0.04`. Motivated by an incident
+  where a tenant overshot its budget by ~$159 through the integration path
+  with no client-side visibility at any point.
+  - **Costs appear when the turn finishes, not one prompt later.** A dedicated
+    hook (`credits-refresh.py`, async on `Stop` AND `StopFailure` — errored
+    turns spend real money too) diffs the tenant's spend counter against the
+    turn-start baseline and attributes the delta as `turn`; explicit
+    `remember` and `improve` operations are attributed at their own
+    completion points. Costs carry a `~` on purpose: the cloud aggregates
+    spend asynchronously and concurrent operations overlap, so the delta is
+    an attribution, not an invoice. Most conversational turns genuinely cost
+    ~$0 — recall runs with `only_context=true` (no LLM completion) — so the
+    label typically moves on improve/remember, while the balance refreshes
+    every turn.
+  - **Multi-tenant correct.** The balance comes from the platform API's
+    per-tenant spend records (`/api/v1/billing/credits/overview` on
+    `COGNEE_PLATFORM_API_URL`, default `https://api.aws.cognee.ai` — the
+    tenant data plane has no billing routes), selected by the tenant id the
+    `connections/me` lookup already returns (zero extra calls). The marker
+    (`credits.json`) is a map keyed by tenant id, so several terminals
+    connected to different tenants each display their own balance, and one
+    tenant's spend can never be misattributed to another's turn. Entries are
+    written atomically under a lock (per-pid staging files), so concurrent
+    refreshes can't tear the file or drop each other's tenants.
+  - The status-line renderer stays pure-local (reads only the marker, 15-min
+    staleness TTL). Strictly the connected tenant's budget or nothing: the
+    segment hides entirely for local servers (no credits concept) and
+    whenever the connected tenant cannot be determined — never another
+    workspace's number, never the all-tenants aggregate. Refresh cadence: per turn (prompt + turn end)
+    plus a session-long background poll (`COGNEE_CREDITS_CHECK_INTERVAL`,
+    300s), so the balance stays fresh through long idle stretches. Opt
+    out with `COGNEE_STATUSLINE_CREDITS=off`.
+
+## [1.2.4]
+
+### Fixed
+- **The "update available" nudge now clears in the same session the update is
+  applied in.** The v1.1.1 fix compared the marker against the *running* plugin
+  version, but installs are version-pinned directories: after `/plugin update`
+  the old copy keeps rendering the status line until a restart re-points it, so
+  the running version never moved and the nudge survived the whole session.
+  Both surfaces (status-line segment and SessionStart message) now also consult
+  Claude Code's install registry (`~/.claude/plugins/installed_plugins.json`),
+  which is rewritten the moment an update lands: once it records a version at or
+  past the marker's `latest_version`, the nudge is suppressed — the status line
+  clears on its next refresh (~2s), no restart needed. A missing or malformed
+  registry changes nothing (previous behaviour). The Codex plugin is unaffected:
+  it updates in place, so its existing running-version guard already clears
+  mid-session.
+
+## [1.2.3]
+
+### Fixed
+- **False `✕ (unreachable)` in the status line.** Probe and recall
+  timeouts were classified as "unreachable" and persisted into the shared
+  connection state, so a busy-but-healthy server randomly turned the bar red
+  and skipped recall — in both local and cloud mode. Timeouts are now a
+  no-verdict: transport failures are classified (connection refused / DNS →
+  `unreachable`; timeout → keep prior state), and `unreachable` is only ever
+  written on positive absence.
+  - The recall attempt itself is now the health probe: a successful scope call
+    marks ready, a refused connection marks `unreachable`, a 401/403 marks
+    `auth_failed` (detected from the real request, remaining scopes skipped),
+    and all-5xx marks `server_error`. The synthetic pre-recall probe survives
+    only as a re-entry check while the marker holds a failure state.
+  - The recall circuit breaker is keyed by `base_url` (cloud failures no
+    longer red a local bar, and vice versa), counts failures in a sliding
+    window instead of forever, re-arms half-open after cooldown, never counts
+    timeouts, and the status line renders its real trip reason.
+  - The renderer shows a red ✕ only for fresh, definitive failures (30 min
+    TTL); stale or ambiguous state renders no glyph.
+  - Breaker state writes use tmp + atomic replace so readers never see a torn
+    file.
+
+### Added
+- **`✕ (not_responding)` status** — distinct from `unreachable`: the server
+  accepts connections but hasn't answered for N consecutive timeout-only
+  prompts (default 3, `COGNEE_SLOW_STREAK_THRESHOLD`; streak window
+  `COGNEE_SLOW_STREAK_WINDOW`, 600s). A single slow response never triggers
+  it. Lifted back to `●` by the next successful probe or recall.
+
 ## [1.2.2]
 
 ### Fixed

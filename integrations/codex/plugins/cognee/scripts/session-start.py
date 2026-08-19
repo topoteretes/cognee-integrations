@@ -32,17 +32,22 @@ from _plugin_common import (
     _VENV_DIR,
     _VENV_PYTHON,
     _VENV_READY_MARKER,
+    PRESENCE_ABSENT,
+    PRESENCE_READY,
     _https_context,
     _reexec_into_venv,
     apply_cognee_env,
+    clear_server_pidfile,
     ensure_launch_record,
     hook_log,
+    probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
-    server_health_ok,
+    server_presence,
     set_session_key,
     touch_activity,
     write_connection_state,
+    write_server_pidfile,
 )
 from _proc import find_host_ancestor_windows
 from _proc import pid_alive as _pid_alive
@@ -97,7 +102,7 @@ _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.4.0"
+_PINNED_COGNEE_VERSION = "1.4.2"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Install single-flight. Distinct from the server boot lock (which is short): a
@@ -180,9 +185,12 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
     """Ensure the shared plugin venv exists and holds the pinned cognee version.
 
     Called from the server-boot critical section (so it is already
-    single-flighted) and only at boot points — i.e. when no healthy server is
-    serving. Always installs the exact pinned version (_PINNED_COGNEE_VERSION) so the
-    server's FastAPI lifespan migrations run on a known-good release.
+    single-flighted) and only at boot points where the server is POSITIVELY
+    absent (see server_presence) — a merely unresponsive server may be busy and
+    still holding the graph store's file lock, and upgrading the venv under it
+    corrupts the databases. Always installs the exact pinned version
+    (_PINNED_COGNEE_VERSION) so the server's FastAPI lifespan migrations run on
+    a known-good release.
 
     Fails soft: if the install can't run (e.g. offline) but a usable cognee is
     already present, returns True with whatever version is there. Returns False
@@ -377,13 +385,46 @@ def _ensure_local_server_running(
         _ready()
         return
 
-    # No server is serving and we're at a boot point: ensure the shared venv
-    # holds the latest cognee BEFORE booting, so the server's lifespan
-    # migrations run on the upgraded code. Single-flighted on its own (long)
-    # lock, separate from the short boot lock below, since a cold install can
-    # take minutes.
+    # A missed probe is NOT absence: a server that is busy (cognifying, event
+    # loop saturated) misses the health deadline exactly like a dead one, but
+    # only a dead one may be installed/booted over — a busy server still holds
+    # the graph store's file lock, and upgrading + migrating under it corrupts
+    # the databases (2026-08-13 incident). Only a positively-absent verdict
+    # from the full-evidence presence check licenses going further.
+    def _require_absent(stage: str) -> bool:
+        """True when the server turned out to be serving (caller returns);
+        raises unless it is positively absent."""
+        verdict, evidence = server_presence(service_url, confirm_absent=(stage == "pre_install"))
+        if verdict == PRESENCE_READY:
+            return True
+        if verdict != PRESENCE_ABSENT:
+            hook_log(
+                "boot_refused_server_present",
+                {"stage": stage, "verdict": verdict, **evidence},
+            )
+            raise RuntimeError(
+                f"server at {service_url} is present but not serving "
+                f"(verdict={verdict}, stage={stage}); refusing to install or boot over it"
+            )
+        return False
+
+    if _require_absent("pre_install"):
+        _ready()
+        return
+
+    # The server is positively absent and we're at a boot point: ensure the
+    # shared venv holds the latest cognee BEFORE booting, so the server's
+    # lifespan migrations run on the upgraded code. Single-flighted on its own
+    # (long) lock, separate from the short boot lock below, since a cold
+    # install can take minutes.
     if not ensure_cognee_installed():
         raise RuntimeError("cognee runtime unavailable (install/upgrade failed)")
+
+    # A cold install can take minutes — long enough for the world to change.
+    # Re-verify the premise before proceeding to the boot lock.
+    if _require_absent("post_install"):
+        _ready()
+        return
 
     owner = f"session-start:{os.getpid()}"
     acquired = False
@@ -425,7 +466,9 @@ def _ensure_local_server_running(
                     raise RuntimeError("server bootstrap lock timeout")
                 time.sleep(_SERVER_BOOT_LOCK_POLL_SECONDS)
 
-        if _health_ok(health_url):
+        # Final re-check under the lock: waiting for it may have taken a while,
+        # and only a still-absent server may be spawned over the port.
+        if _require_absent("in_lock"):
             _ready()
             return
 
@@ -435,17 +478,33 @@ def _ensure_local_server_running(
         # We are spawning the server, so run it in agent mode: it tears itself
         # down once all registered agents disconnect.
         server_env["COGNEE_AGENT_MODE"] = "true"
-        subprocess.Popen(
+        server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
             start_new_session=True,
         )
+        # Presence evidence for future boot points: covers the spawn-to-bind
+        # window where neither the health probe nor the TCP listener sees it.
+        write_server_pidfile(port, server_proc.pid, version=_PINNED_COGNEE_VERSION)
 
         health_deadline = time.monotonic() + health_timeout
         while time.monotonic() < health_deadline:
             if _health_ok(health_url):
                 _ready()
                 return
+            exit_code = server_proc.poll()
+            if exit_code is not None:
+                clear_server_pidfile(port)
+                # An immediate exit is usually a failed port bind — something
+                # claimed the port between our absence check and the spawn. If
+                # that something is serving, connect to it instead of failing.
+                if _health_ok(health_url):
+                    _ready()
+                    return
+                raise RuntimeError(
+                    f"server process exited (rc={exit_code}) before becoming "
+                    f"healthy at {health_url}"
+                )
             time.sleep(_HEALTH_POLL_SECONDS)
 
         raise RuntimeError(
@@ -987,19 +1046,29 @@ async def _run_heavy(
             print(f"cognee-plugin: agent lifecycle failed ({message})", file=sys.stderr)
             # Classify for the status line. Preserve an earlier health-derived
             # state; otherwise a reachable server rejecting registration is almost
-            # always auth, while an unreachable one is a connection failure.
+            # always auth, while a positively-absent one is a connection failure.
+            # A timed-out probe is NO verdict (busy != down): keep the prior
+            # recorded state rather than stamp a false "unreachable".
             if _conn_state is None:
                 try:
-                    healthy = server_health_ok(
+                    health = probe_health(
                         _normalize_service_url(str(config.get("base_url", "") or "")), timeout=1.5
                     )
                 except Exception:
-                    healthy = False
-                _conn_state = "auth_failed" if healthy else "unreachable"
-                _conn_detail = message
-            write_connection_state(
-                _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
-            )
+                    health = "unknown"
+                if health == "ready":
+                    _conn_state, _conn_detail = "auth_failed", message
+                elif health == "down":
+                    _conn_state, _conn_detail = "unreachable", message
+            if _conn_state:
+                write_connection_state(
+                    _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
+                )
+            else:
+                hook_log(
+                    "conn_state_unverified",
+                    {"reason": "probe returned no verdict after registration failure"},
+                )
             return "", "", False
     else:
         # Local SDK fallback path.
@@ -1052,11 +1121,19 @@ async def _run_heavy(
             write_connection_state(
                 _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
             )
-        elif service_url and server_health_ok(service_url, timeout=1.5):
-            write_connection_state("ready", service_url)
-        else:
-            write_connection_state("unreachable", str(config.get("base_url", "") or ""))
-    elif service_url and server_health_ok(service_url, timeout=1.5):
+        elif service_url:
+            health = probe_health(service_url, timeout=1.5)
+            if health == "ready":
+                write_connection_state("ready", service_url)
+            elif health == "down":
+                write_connection_state(
+                    "unreachable", str(config.get("base_url", "") or service_url)
+                )
+            else:
+                # "slow"/"unknown": no verdict — keep whatever state is already
+                # recorded instead of branding a busy server unreachable.
+                hook_log("conn_state_unverified", {"base_url": service_url, "health": health})
+    elif service_url and probe_health(service_url, timeout=1.5) == "ready":
         write_connection_state("ready", service_url)
 
     return user_id, agent_api_key, True
@@ -1135,7 +1212,12 @@ async def _start(payload: dict | None = None) -> dict:
     # never claims ownership of its teardown.
     configured_url = _with_scheme(str(config.get("base_url", "") or "").strip())
     api_key = str(config.get("api_key", "") or "").strip()
-    target_url = configured_url or _LOCAL_SERVICE_URL
+    # Forced cloud (backend switch) with no URL configured: there is nothing to
+    # boot and nothing to fall back to — keep the target empty so no local
+    # server is spawned, let the connection attempt fail, and let the status
+    # line report the missing URL. Everything else keeps the localhost default.
+    forced_cloud_unconfigured = not configured_url and config.get("_forced_backend") == "cloud"
+    target_url = configured_url or ("" if forced_cloud_unconfigured else _LOCAL_SERVICE_URL)
     config["base_url"] = target_url
     os.environ["COGNEE_BASE_URL"] = target_url
     if api_key:
@@ -1191,11 +1273,34 @@ async def _start(payload: dict | None = None) -> dict:
     #   * down + remote URL -> can't boot a remote host; connect and degrade
     user_id = ""
     agent_api_key = ""
-    server_live = _health_ok(_health_url(target_url))
-    will_boot = (not server_live) and _is_local_url(target_url)
+    # An empty target (forced cloud, no URL) must never boot: _is_local_url("")
+    # parses to localhost, so gate on the URL being present at all.
+    # Local endpoints get the full-evidence presence check (quick form — the
+    # boot path re-verifies rigorously before any install), so the recorded
+    # decision distinguishes a busy server from an absent one. Remote endpoints
+    # keep the plain HTTP probe: there is no local evidence for them, and they
+    # are never booted. will_boot means "enter the local bootstrap path" — the
+    # actual install/boot license is enforced inside _ensure_local_server_running,
+    # so a busy server still gets a worker that waits for it instead of a boot.
+    presence_verdict, presence_evidence = "", {}
+    if target_url and _is_local_url(target_url):
+        presence_verdict, presence_evidence = server_presence(target_url, confirm_absent=False)
+        server_live = presence_verdict == PRESENCE_READY
+    else:
+        server_live = bool(target_url) and _health_ok(_health_url(target_url))
+    will_boot = (not server_live) and bool(target_url) and _is_local_url(target_url)
     hook_log(
         "endpoint_mode_selected",
-        {"base_url": target_url, "server_live": server_live, "will_boot": will_boot},
+        {
+            "base_url": target_url,
+            "server_live": server_live,
+            "will_boot": will_boot,
+            **(
+                {"presence": presence_verdict, "evidence": presence_evidence}
+                if presence_verdict
+                else {}
+            ),
+        },
     )
     if will_boot and _LAZY_BOOTSTRAP:
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
@@ -1212,7 +1317,7 @@ async def _start(payload: dict | None = None) -> dict:
             boot_timeout=_HEALTH_TIMEOUT_SECONDS,
         )
         if not ok:
-            if _LAZY_BOOTSTRAP and _is_local_url(target_url):
+            if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url):
                 # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:

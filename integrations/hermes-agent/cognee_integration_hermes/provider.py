@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
+import concurrent.futures
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
+from . import exit_watcher
+from .backend import MemoryBackend, build_backend, default_backend, has_cognee
 from .config import (
     DEFAULT_DATASET,
+    DEFAULT_IDENTITY_EMAIL,
+    DEFAULT_IDENTITY_PASSWORD,
+    DEFAULT_LOCAL_PORT,
+    DEFAULT_SERVER_BOOT_TIMEOUT,
+    SHARED_PLUGIN_STATE_DIR,
     load_config,
+    resolve_hermes_home,
+    resolve_local_roots,
     str_to_bool,
     write_env_vars,
 )
@@ -37,46 +46,6 @@ logger = logging.getLogger(__name__)
 
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
-
-
-class _AsyncBridge:
-    """Run Cognee async SDK calls from Hermes' sync MemoryProvider interface."""
-
-    def __init__(self) -> None:
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._lock = threading.Lock()
-
-    def _ensure_loop(self) -> None:
-        with self._lock:
-            if self._loop is not None and self._loop.is_running():
-                return
-            self._loop = asyncio.new_event_loop()
-            self._thread = threading.Thread(
-                target=self._loop.run_forever,
-                daemon=True,
-                name="cognee-hermes-event-loop",
-            )
-            self._thread.start()
-
-    def run(self, coro, timeout: float):
-        self._ensure_loop()
-        assert self._loop is not None
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
-
-    def shutdown(self) -> None:
-        with self._lock:
-            if self._loop and self._loop.is_running():
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=5.0)
-            self._loop = None
-            self._thread = None
-
-
-def _has_cognee() -> bool:
-    return importlib.util.find_spec("cognee") is not None
 
 
 def _safe_session_component(value: str) -> str:
@@ -121,15 +90,40 @@ def _result_text(value: Any) -> str:
     return str(value)
 
 
+def _recall_failure_advice(exc: Exception) -> str:
+    """One actionable sentence appended to a timeout-shaped recall failure.
+
+    The default GRAPH_COMPLETION search runs an LLM per query, so on a local
+    model a timeout is usually the search strategy, not an outage — and the
+    model reading this error can fix it on the retry. Covers the HTTP
+    transport (CogneeUnreachable wraps urllib's "timed out") and the SDK
+    bridge (concurrent.futures.TimeoutError, empty message on 3.10).
+    """
+    if not isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
+        text = str(exc).lower()
+        if "timed out" not in text and "timeout" not in text:
+            return ""
+    return (
+        " The default GRAPH_COMPLETION search runs an LLM per query and can be "
+        "slow on local models — retry with search_type='CHUNKS' (fast raw-text "
+        "retrieval) or scope='session', or raise COGNEE_RECALL_TIMEOUT."
+    )
+
+
 class CogneeMemoryProvider(MemoryProvider):
     """Cognee V2/V1.1 knowledge graph memory for Hermes Agent."""
 
-    def __init__(self) -> None:
+    def __init__(self, backend: Optional[MemoryBackend] = None) -> None:
         self._config: dict[str, Any] = {}
-        self._bridge = _AsyncBridge()
+        # How we reach cognee. An explicitly injected transport always wins;
+        # otherwise initialize() picks one from config (see backend.build_backend).
+        self._injected_backend = backend
+        self._backend: MemoryBackend = backend or default_backend()
         self._initialized = False
         self._remote_mode = False
-        self._user = None
+        # Set once a detached worker has taken this session's improve-then-
+        # unregister; from then on this process must not touch either.
+        self._close_handed_off = False
         self._session_id = ""
         self._session_cognee_id = ""
         self._dataset = DEFAULT_DATASET
@@ -141,16 +135,27 @@ class CogneeMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
+        # Bumped on a reset session switch to invalidate prefetches still in
+        # flight — see queue_prefetch / on_session_switch.
+        self._prefetch_generation = 0
         self._sync_thread: Optional[threading.Thread] = None
+        # The breaker is touched from the main thread and every worker thread
+        # (prefetch, sync, memory-write); the lock keeps the failure counter's
+        # read-modify-writes from losing updates under that concurrency.
+        self._breaker_lock = threading.Lock()
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
+        # Set when a crash-safe exit watcher is armed (server modes only).
+        self._watcher_state_path: Optional[Path] = None
 
     @property
     def name(self) -> str:
         return "cognee"
 
     def is_available(self) -> bool:
-        if not _has_cognee():
+        # Must stay network-free: Hermes calls this for every provider during
+        # discovery, before anything is started.
+        if not has_cognee():
             return False
         cfg = load_config()
         return bool(cfg.get("service_url") or cfg.get("llm_api_key"))
@@ -185,9 +190,9 @@ class CogneeMemoryProvider(MemoryProvider):
             },
             {
                 "key": "dataset",
-                "description": "Default Cognee dataset",
+                "description": "Default Cognee dataset (shared with the other cognee plugins)",
                 "default": DEFAULT_DATASET,
-                "env_var": "COGNEE_DATASET",
+                "env_var": "COGNEE_PLUGIN_DATASET",
             },
             {
                 "key": "auto_route",
@@ -289,7 +294,14 @@ class CogneeMemoryProvider(MemoryProvider):
         self._writes_enabled = kwargs.get("agent_context", "primary") in {"", "primary", None}
         self._session_cognee_id = self._build_cognee_session_id(session_id, **kwargs)
 
-        self._configure_cognee_models()
+        # Now that config is loaded, choose the transport (unless one was injected).
+        if self._injected_backend is None:
+            self._backend = build_backend(self._config)
+
+        self._backend.configure_models(
+            llm_api_key=str(self._config.get("llm_api_key") or ""),
+            llm_model=str(self._config.get("llm_model") or ""),
+        )
 
         # Connection mode (see README "Modes"):
         #   remote        — service_url set: thin client to a managed/cloud cognee.
@@ -310,7 +322,7 @@ class CogneeMemoryProvider(MemoryProvider):
         if service_url:
             try:
                 api_key = str(self._config.get("api_key") or "")
-                self._bridge.run(self._do_serve(service_url, api_key), timeout=30)
+                self._backend.connect(url=service_url, api_key=api_key, timeout=30)
                 self._remote_mode = True
             except Exception as exc:
                 raise RuntimeError(
@@ -318,23 +330,30 @@ class CogneeMemoryProvider(MemoryProvider):
                     "Fix the URL/network/credentials, or unset it to use local mode."
                 ) from exc
         elif embedded:
-            self._configure_cognee_local_roots()
+            self._configure_local_roots()
             self._remote_mode = False
         else:
             try:
+                # Pin the roots the other cognee plugins pin (~/.cognee by default),
+                # so the store is the same no matter which plugin spawned the server
+                # on this port first.
+                data_root, system_root = self._local_roots()
                 local_url = ensure_local_server(
-                    int(self._config.get("local_port") or 8000),
-                    data_root=str(self._config.get("data_root") or ""),
-                    system_root=str(self._config.get("system_root") or ""),
-                    boot_timeout=float(self._config.get("server_boot_timeout", 30)),
+                    int(self._config.get("local_port") or DEFAULT_LOCAL_PORT),
+                    data_root=data_root,
+                    system_root=system_root,
+                    boot_timeout=float(
+                        self._config.get("server_boot_timeout", DEFAULT_SERVER_BOOT_TIMEOUT)
+                    ),
                 )
-                self._bridge.run(self._do_serve(local_url, ""), timeout=30)
+                self._backend.connect(url=local_url, api_key="", timeout=30)
                 self._remote_mode = True
             except Exception as exc:
                 raise RuntimeError(
                     "cognee local server failed to start, which is required for safe "
                     "concurrent DB access. Check for a port conflict on "
-                    f"{self._config.get('local_port') or 8000}, missing dependencies "
+                    f"{self._config.get('local_port') or DEFAULT_LOCAL_PORT}, "
+                    "missing dependencies "
                     "(uvicorn/cognee), or permissions. To run single-process in-process "
                     "instead (no concurrency safety), set COGNEE_EMBEDDED=true."
                 ) from exc
@@ -342,20 +361,99 @@ class CogneeMemoryProvider(MemoryProvider):
         # Identity only matters in embedded mode (a local relational DB exists to
         # hold the user). In server/remote mode the server owns identity via the
         # api-key principal, and touching the local DB here would be meaningless.
-        if self._remote_mode:
-            self._user = None
-        else:
+        # The backend owns whatever principal it resolves; the provider never
+        # handles it.
+        if not self._remote_mode:
             try:
-                self._user = self._bridge.run(self._ensure_identity(), timeout=30)
+                self._backend.resolve_identity(
+                    email=str(self._config.get("identity_email") or DEFAULT_IDENTITY_EMAIL),
+                    password=str(
+                        self._config.get("identity_password") or DEFAULT_IDENTITY_PASSWORD
+                    ),
+                    timeout=30,
+                )
             except Exception as exc:
-                self._user = None
                 logger.warning(
-                    "Cognee identity initialization failed; using SDK default user: %s", exc
+                    "Cognee identity initialization failed; using backend default user: %s", exc
                 )
 
+        self._ensure_dataset()
+        self._arm_exit_watcher()
         self._initialized = True
 
+    def _ensure_dataset(self) -> None:
+        """Create-or-return the dataset up front, like the other plugins do.
+
+        A fresh server or cloud tenant has no datasets, so a session that opens
+        with a recall would otherwise hit a missing dataset. Best-effort: a write
+        creates the dataset implicitly anyway, so failing here only costs the
+        recall-first case — not the session.
+        """
+        try:
+            self._backend.ensure_dataset(dataset=self._dataset, timeout=30)
+        except Exception as exc:
+            logger.warning("Cognee dataset ensure failed (continuing): %s", exc)
+
+    def _arm_exit_watcher(self) -> None:
+        """Crash insurance: a detached process that closes the session if we can't.
+
+        Only meaningful when a server outlives this process (the transport says so
+        via ``connection_info``); embedded mode has nothing to unregister from and
+        nobody left to run an improve. Best-effort: a session must not fail to
+        start because its insurance did.
+        """
+        try:
+            info = self._backend.connection_info()
+        except Exception:
+            info = None
+        if not info or not info.get("url"):
+            return
+        state_dir = SHARED_PLUGIN_STATE_DIR / "hermes"
+        state_path = state_dir / "exit-watchers" / f"{os.getpid()}.json"
+        try:
+            exit_watcher.arm(
+                state_path=state_path,
+                log_path=state_dir / "exit-watcher.log",
+                parent_pid=os.getpid(),
+                url=str(info.get("url") or ""),
+                api_key=str(info.get("api_key") or ""),
+                agent_session_name=str(info.get("agent_session_name") or "hermes"),
+                dataset=self._dataset,
+                session_id=self._session_cognee_id,
+                improve=bool(self._writes_enabled and self._improve_on_end),
+                improve_timeout=self._timeout("improve_timeout", 300),
+            )
+            self._watcher_state_path = state_path
+        except Exception as exc:
+            logger.debug("could not arm the cognee exit watcher: %s", exc)
+
+    def _is_usable(self) -> bool:
+        """False when initialization never completed, so nothing may touch cognee.
+
+        ``MemoryManager.initialize_all`` catches and logs whatever ``initialize()``
+        raises, then carries on — Hermes starts either way and the tool schemas
+        stay registered. Without this gate the provider would keep serving calls
+        against an unconnected transport: for the SDK that means falling back to
+        in-process cognee, which is exactly the single-writer DB risk local-server
+        mode exists to avoid. Fail closed and say so instead.
+        """
+        return self._initialized
+
+    def _unavailable_envelope(self) -> str:
+        return json.dumps(
+            {
+                "error": (
+                    "Cognee memory is unavailable: initialization did not complete. "
+                    "Check the Hermes logs for the cause and `hermes cognee status` "
+                    "for the current configuration."
+                )
+            }
+        )
+
     def system_prompt_block(self) -> str:
+        # Never advertise memory the model cannot actually use.
+        if not self._is_usable():
+            return ""
         mode = "remote" if self._remote_mode else "local"
         return (
             "# Cognee Memory\n"
@@ -365,6 +463,8 @@ class CogneeMemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        if not self._is_usable():
+            return ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
@@ -375,21 +475,33 @@ class CogneeMemoryProvider(MemoryProvider):
         return f"## Cognee Memory\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if not query or self._is_breaker_open():
+        if not self._is_usable() or not query or self._is_breaker_open():
             return
 
         cognee_session_id = self._session_cognee_id_for(session_id)
+        # Snapshot the generation this prefetch belongs to. A reset session
+        # switch bumps it, so a recall that was already in flight for the
+        # previous conversation discards its result instead of landing in the
+        # fresh one. Joining the worker on switch is not enough: a recall slower
+        # than any bounded join would still write after the clear.
+        generation = self._prefetch_generation
 
         def _run() -> None:
             try:
-                results = self._bridge.run(
-                    self._do_recall(query, None, min(self._top_k, 5), "auto", cognee_session_id),
-                    timeout=float(self._config.get("recall_timeout", 120)),
+                results = self._recall(
+                    query,
+                    scope="auto",
+                    search_type=None,
+                    top_k=min(self._top_k, 5),
+                    session_id=cognee_session_id,
                 )
                 lines = self._format_recall_lines(results, limit=5)
                 if lines:
                     with self._prefetch_lock:
-                        self._prefetch_result = "\n".join(lines)
+                        # Drop the result if a reset invalidated it mid-recall.
+                        if generation == self._prefetch_generation:
+                            self._prefetch_result = "\n".join(lines)
+                # The backend answered, so this is a success either way.
                 self._record_success()
             except Exception as exc:
                 self._record_failure()
@@ -403,7 +515,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        if not self._writes_enabled or self._is_breaker_open():
+        if not self._is_usable() or not self._writes_enabled or self._is_breaker_open():
             return
 
         cognee_session_id = self._session_cognee_id_for(session_id)
@@ -411,9 +523,11 @@ class CogneeMemoryProvider(MemoryProvider):
 
         def _sync() -> None:
             try:
-                self._bridge.run(
-                    self._do_remember_session(content, cognee_session_id),
-                    timeout=float(self._config.get("write_timeout", 120)),
+                self._backend.remember_session(
+                    text=content,
+                    session_id=cognee_session_id,
+                    dataset=self._dataset,
+                    timeout=self._timeout("write_timeout", 120),
                 )
                 self._record_success()
             except Exception as exc:
@@ -434,6 +548,8 @@ class CogneeMemoryProvider(MemoryProvider):
         return [RECALL_SCHEMA, REMEMBER_SCHEMA, FORGET_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        if not self._is_usable():
+            return self._unavailable_envelope()
         if self._is_breaker_open():
             return json.dumps(
                 {
@@ -454,20 +570,70 @@ class CogneeMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
-        if not self._writes_enabled or not self._improve_on_end or self._is_breaker_open():
+        if (
+            not self._is_usable()
+            or not self._writes_enabled
+            or not self._improve_on_end
+            or self._is_breaker_open()
+        ):
             return
-        # When to background the graph-build: only when a server will outlive this
-        # process and finish the job. In embedded mode the work runs in-process, so
-        # it must complete synchronously before shutdown or it is lost. Override via
-        # COGNEE_IMPROVE_BACKGROUND.
-        raw_bg = str(self._config.get("improve_background") or "").strip()
-        background = str_to_bool(raw_bg, self._remote_mode) if raw_bg else self._remote_mode
+        if self._hand_off_session_close():
+            return
+        self._improve_inline()
+
+    def _hand_off_session_close(self) -> bool:
+        """Give improve-then-unregister to a detached worker. True when it took them.
+
+        Two requirements that cannot both hold in this process: the user's exit
+        must not wait on a graph build, and the improve must finish *before* the
+        agent unregisters — the local server runs with COGNEE_AGENT_MODE=true and
+        its watchdog SIGTERMs the server within 60s of the agent count reaching
+        zero, running pipelines or not. Outside this process both hold at once:
+        the worker blocks on the improve, and its blocking costs nobody anything.
+        This is how the claude-code, codex and openclaw plugins close a session.
+        """
+        if self._watcher_state_path is None:
+            return False  # embedded mode, or arming failed — nobody to hand to
+        if str(self._config.get("improve_background") or "").strip():
+            return False  # an explicit override asked for the in-process path
         try:
-            self._bridge.run(
-                self._do_improve(run_in_background=background),
-                timeout=float(self._config.get("improve_timeout", 300)),
+            info = self._backend.connection_info() or {}
+            handed = exit_watcher.finalize(
+                self._watcher_state_path,
+                api_key=str(info.get("api_key") or ""),
+                session_id=self._session_cognee_id,
+                dataset=self._dataset,
+                improve=True,
+                improve_timeout=self._timeout("improve_timeout", 300),
+            )
+        except Exception as exc:
+            logger.debug("could not hand off the cognee session close: %s", exc)
+            return False
+        self._close_handed_off = handed
+        return handed
+
+    def _improve_inline(self) -> None:
+        """Bridge the session here, because no detached worker will.
+
+        Synchronous by default: this is either embedded mode, where the work runs
+        in this process and dies with it, or a failed handoff, where shutdown() is
+        about to unregister and take the server with it.
+        ``COGNEE_IMPROVE_BACKGROUND=true`` opts out for a server nothing here can
+        shut down.
+        """
+        background = str_to_bool(self._config.get("improve_background"), False)
+        try:
+            self._backend.improve(
+                dataset=self._dataset,
+                session_ids=[self._session_cognee_id],
+                background=background,
+                timeout=self._timeout("improve_timeout", 300),
             )
             self._record_success()
+            # The bridge ran; a crash after this point should not improve again.
+            # The watcher stays armed for the unregister half.
+            if self._watcher_state_path is not None:
+                exit_watcher.update(self._watcher_state_path, improve=False)
         except Exception as exc:
             self._record_failure()
             logger.warning("Cognee session-end improve failed: %s", exc)
@@ -484,9 +650,23 @@ class CogneeMemoryProvider(MemoryProvider):
             self._sync_thread.join(timeout=5.0)
         self._session_id = new_session_id
         self._session_cognee_id = self._build_cognee_session_id(new_session_id, **kwargs)
+        if self._watcher_state_path is not None and not self._close_handed_off:
+            # Re-point the crash insurance at the new session (and re-enable the
+            # improve half in case a previous session end disabled it). Skipped
+            # after a handoff: that state file describes the session a detached
+            # worker is still closing, and is its to delete.
+            exit_watcher.update(
+                self._watcher_state_path,
+                session_id=self._session_cognee_id,
+                improve=bool(self._writes_enabled and self._improve_on_end),
+            )
         if reset:
             with self._prefetch_lock:
                 self._prefetch_result = ""
+                # Invalidate any recall still in flight for the old conversation.
+                # Only on reset: /resume, /branch and compression continue the same
+                # logical conversation, so a prefetch issued for it stays valid.
+                self._prefetch_generation += 1
 
     def on_memory_write(
         self,
@@ -495,7 +675,17 @@ class CogneeMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
-        if action not in {"add", "replace"} or not content or self._is_breaker_open():
+        # ``_writes_enabled`` is checked here for the same reason sync_turn checks
+        # it: a non-primary agent_context (a subagent) must not write to memory.
+        # Without it a subagent's built-in memory write still reached the graph
+        # while its conversation turns were correctly suppressed.
+        if (
+            not self._is_usable()
+            or not self._writes_enabled
+            or action not in {"add", "replace"}
+            or not content
+            or self._is_breaker_open()
+        ):
             return
         metadata = dict(metadata or {})
         source = metadata.get("write_origin") or "hermes_memory_tool"
@@ -503,10 +693,7 @@ class CogneeMemoryProvider(MemoryProvider):
 
         def _sync() -> None:
             try:
-                self._bridge.run(
-                    self._do_remember_permanent(payload, self._dataset),
-                    timeout=float(self._config.get("write_timeout", 120)),
-                )
+                self._remember_permanent(payload, self._dataset)
                 self._record_success()
             except Exception as exc:
                 self._record_failure()
@@ -531,12 +718,21 @@ class CogneeMemoryProvider(MemoryProvider):
         for thread in (self._prefetch_thread, self._sync_thread):
             if thread and thread.is_alive():
                 thread.join(timeout=5.0)
-        if self._remote_mode:
-            try:
-                self._bridge.run(self._do_disconnect(), timeout=5)
-            except Exception:
-                pass
-        self._bridge.shutdown()
+        if self._close_handed_off:
+            # A detached worker owns improve-then-unregister for this session.
+            # Unregistering here would drop the agent count to zero while that
+            # improve is still running, and COGNEE_AGENT_MODE's watchdog would
+            # retire the server mid-promotion — the exact race the handoff
+            # removes. The worker owns the state file too, so nothing to disarm.
+            self._backend.close(timeout=5, unregister=False)
+            return
+        if self._watcher_state_path is not None:
+            # No handoff, so this is the orderly path — stand the insurance down
+            # BEFORE closing the backend, so the watcher can never race the
+            # unregister that is about to happen.
+            exit_watcher.disarm(self._watcher_state_path)
+            self._watcher_state_path = None
+        self._backend.close(timeout=5)
 
     def _build_cognee_session_id(self, session_id: str, **kwargs) -> str:
         # Convention across integrations: "{agent}_{native_session_id}" —
@@ -550,170 +746,89 @@ class CogneeMemoryProvider(MemoryProvider):
             return self._session_cognee_id
         return self._build_cognee_session_id(session_id)
 
-    def _configure_cognee_local_roots(self) -> None:
-        if not self._hermes_home:
-            return
-        try:
-            import cognee
+    def _local_roots(self) -> tuple[str, str]:
+        return resolve_local_roots(self._config)
 
-            data_root = self._config.get("data_root") or str(
-                Path(self._hermes_home) / "cognee" / "data"
-            )
-            system_root = self._config.get("system_root") or str(
-                Path(self._hermes_home) / "cognee" / "system"
-            )
-            cognee.config.data_root_directory(str(data_root))
-            cognee.config.system_root_directory(str(system_root))
-        except Exception as exc:
-            logger.debug("Cognee root configuration failed: %s", exc)
+    def _configure_local_roots(self) -> None:
+        """Point the backend at local storage (in-process transports only)."""
+        data_root, system_root = self._local_roots()
+        self._backend.configure_local_roots(data_root=data_root, system_root=system_root)
 
-    def _configure_cognee_models(self) -> None:
-        try:
-            import cognee
+    def backup_paths(self) -> list[str]:
+        """Cognee storage that ``hermes backup`` would otherwise miss.
 
-            if self._config.get("llm_api_key"):
-                cognee.config.set_llm_api_key(str(self._config["llm_api_key"]))
-            if self._config.get("llm_model"):
-                cognee.config.set_llm_model(str(self._config["llm_model"]))
-        except Exception as exc:
-            logger.debug("Cognee model configuration failed: %s", exc)
-
-    async def _ensure_identity(self):
-        email = str(self._config.get("identity_email") or "hermes-agent@cognee.local")
-        password = str(self._config.get("identity_password") or "hermes-agent-plugin")
-        try:
-            from cognee.modules.users.methods import (
-                create_user,
-                get_default_user,
-                get_user_by_email,
-            )
-        except Exception:
-            return None
-
-        user = await get_user_by_email(email)
-        if user:
-            return user
-        try:
-            return await create_user(
-                email=email,
-                password=password,
-                is_verified=True,
-                is_active=True,
-            )
-        except Exception:
-            user = await get_user_by_email(email)
-            if user:
-                return user
-            return await get_default_user()
-
-    async def _do_serve(self, url: str, api_key: str):
-        import cognee
-
-        kwargs = {"url": url}
-        if api_key:
-            kwargs["api_key"] = api_key
-        return await cognee.serve(**kwargs)
-
-    async def _do_disconnect(self):
-        import cognee
-
-        return await cognee.disconnect()
-
-    def _add_user_kwarg(self, kwargs: dict[str, Any]) -> None:
-        """Inject the local user only in embedded mode.
-
-        In server/remote mode the server owns identity (api-key principal) and
-        ``self._user`` is None. Passing ``user=None`` is not the same as omitting
-        the key — the SDK may treat an explicit None differently (overriding a
-        default, affecting tenant scoping) — so we omit it entirely instead.
+        ``hermes backup`` walks ``HERMES_HOME`` on its own, so only roots living
+        elsewhere need declaring. By default that is all of them: local storage
+        sits in the shared ``~/.cognee`` (see ``resolve_local_roots``), so a
+        backup deliberately includes the machine's shared memory store. Must work
+        without ``initialize()`` and without network, so it reads config directly.
         """
-        if not self._remote_mode and self._user is not None:
-            kwargs["user"] = self._user
+        config = load_config()
+        home = resolve_hermes_home()
+        external: list[str] = []
+        for root in resolve_local_roots(config):
+            path = Path(root).expanduser()
+            if home is not None and path.is_relative_to(home):
+                continue
+            external.append(str(path))
+        return external
 
-    async def _do_recall(
+    def _timeout(self, key: str, default: float) -> float:
+        """A named, bounded timeout read from config at call time."""
+        return float(self._config.get(key, default))
+
+    def _recall_scope_params(
+        self, scope: str, search_type: Any, session_id: str
+    ) -> tuple[Optional[str], Optional[list[str]], Optional[str], str]:
+        """Map the tool's ``scope`` onto the backend's explicit targets.
+
+        ``session`` searches only this conversation's cache, ``graph`` only the
+        permanent dataset, ``auto`` both. A ``search_type`` override is
+        meaningless for a pure session lookup, so it is dropped there.
+
+        The normalized scope name is returned alongside the targets so a
+        transport can pass the decision on rather than re-derive it. An
+        unrecognized name resolves to ``auto`` here rather than travelling
+        onward, so the backend is never handed a scope the server would reject.
+        """
+        normalized = (scope or "auto").lower()
+        if normalized == "session":
+            return session_id, None, None, normalized
+        query_type = search_type or None
+        if normalized == "graph":
+            return None, [self._dataset], query_type, normalized
+        return session_id, [self._dataset], query_type, "auto"
+
+    def _recall(
         self,
         query: str,
-        search_type: Optional[str],
-        top_k: int,
+        *,
         scope: str,
+        search_type: Any,
+        top_k: int,
         session_id: str,
     ) -> list[Any]:
-        import cognee
+        target_session, datasets, query_type, resolved_scope = self._recall_scope_params(
+            scope, search_type, session_id
+        )
+        return self._backend.recall(
+            query=query,
+            session_id=target_session,
+            datasets=datasets,
+            top_k=top_k,
+            auto_route=self._auto_route,
+            query_type=query_type,
+            scope=resolved_scope,
+            timeout=self._timeout("recall_timeout", 120),
+        )
 
-        kwargs: dict[str, Any] = {
-            "top_k": top_k,
-            "auto_route": self._auto_route,
-        }
-        self._add_user_kwarg(kwargs)
-
-        normalized_scope = (scope or "auto").lower()
-        if normalized_scope == "session":
-            kwargs["session_id"] = session_id
-        elif normalized_scope == "graph":
-            kwargs["datasets"] = [self._dataset]
-        else:
-            kwargs["session_id"] = session_id
-            kwargs["datasets"] = [self._dataset]
-
-        if search_type and normalized_scope != "session":
-            kwargs["query_type"] = _resolve_search_type(search_type)
-
-        return await cognee.recall(query_text=query, **kwargs)
-
-    async def _do_remember_session(self, content: str, session_id: str):
-        import cognee
-
-        kwargs: dict[str, Any] = {
-            "data": content,
-            "dataset_name": self._dataset,
-            "session_id": session_id,
-            "self_improvement": False,
-        }
-        self._add_user_kwarg(kwargs)
-        return await cognee.remember(**kwargs)
-
-    async def _do_remember_permanent(self, content: str, dataset: str):
-        import cognee
-
-        kwargs: dict[str, Any] = {
-            "data": content,
-            "dataset_name": dataset,
-            "self_improvement": True,
-            "session_ids": [self._session_cognee_id],
-        }
-        self._add_user_kwarg(kwargs)
-        return await cognee.remember(**kwargs)
-
-    async def _do_forget(
-        self,
-        dataset: Optional[str],
-        *,
-        everything: bool = False,
-        memory_only: bool = False,
-    ) -> dict[str, Any]:
-        import cognee
-
-        kwargs: dict[str, Any] = {
-            "everything": everything,
-            "memory_only": memory_only,
-        }
-        if dataset and not everything:
-            kwargs["dataset"] = dataset
-        self._add_user_kwarg(kwargs)
-        return await cognee.forget(**kwargs)
-
-    async def _do_improve(self, run_in_background: bool = False):
-        # Default stays False (synchronous) so the method contract is unchanged for
-        # any caller that relies on completion. on_session_end() chooses the flag.
-        import cognee
-
-        kwargs: dict[str, Any] = {
-            "dataset": self._dataset,
-            "session_ids": [self._session_cognee_id],
-            "run_in_background": run_in_background,
-        }
-        self._add_user_kwarg(kwargs)
-        return await cognee.improve(**kwargs)
+    def _remember_permanent(self, content: str, dataset: str) -> Any:
+        return self._backend.remember_permanent(
+            text=content,
+            dataset=dataset,
+            session_ids=[self._session_cognee_id],
+            timeout=self._timeout("write_timeout", 120),
+        )
 
     def _handle_recall(self, args: dict[str, Any]) -> str:
         query = str(args.get("query") or "").strip()
@@ -724,25 +839,39 @@ class CogneeMemoryProvider(MemoryProvider):
         search_type = args.get("search_type")
 
         try:
-            results = self._bridge.run(
-                self._do_recall(query, search_type, top_k, scope, self._session_cognee_id),
-                timeout=float(self._config.get("recall_timeout", 120)),
+            results = self._recall(
+                query,
+                scope=scope,
+                search_type=search_type,
+                top_k=top_k,
+                session_id=self._session_cognee_id,
             )
             self._record_success()
             items = [self._normalize_recall_item(item) for item in results]
+            overflow = self._backend.overflow_hint()
             if not items:
-                # Distinguish a genuine miss from an embedding-model change that
-                # makes recall structurally unable to match (stored vs query
-                # vectors differ in size). Embedded mode only; a confirmed
-                # mismatch is a hard error.
-                dim_message = self._embedding_dimension_mismatch_hint()
+                # Distinguish a genuine miss from a backend condition that makes
+                # recall structurally unable to match (e.g. an embedder change
+                # leaving stored and query vectors different sizes). A confirmed
+                # cause is a hard error rather than a silent empty result.
+                dim_message = self._backend.empty_recall_hint()
                 if dim_message:
                     return json.dumps({"error": dim_message, "count": 0})
+                if overflow:
+                    return json.dumps({"error": overflow, "count": 0})
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
-            return json.dumps({"results": items, "count": len(items)})
+            envelope: dict[str, Any] = {"results": items, "count": len(items)}
+            if overflow:
+                # Non-empty results still warn: mean-pooled vectors match
+                # *something*, so plausible-but-wrong hits are the overflow's
+                # most misleading symptom.
+                envelope["warning"] = overflow
+            return json.dumps(envelope)
         except Exception as exc:
             self._record_failure()
-            return json.dumps({"error": f"Cognee recall failed: {exc}"})
+            return json.dumps(
+                {"error": f"Cognee recall failed: {exc}{_recall_failure_advice(exc)}"}
+            )
 
     def _handle_remember(self, args: dict[str, Any]) -> str:
         content = str(args.get("content") or "").strip()
@@ -751,13 +880,17 @@ class CogneeMemoryProvider(MemoryProvider):
         dataset = str(args.get("dataset") or self._dataset)
 
         try:
-            result = self._bridge.run(
-                self._do_remember_permanent(content, dataset),
-                timeout=float(self._config.get("write_timeout", 120)),
-            )
+            result = self._remember_permanent(content, dataset)
             self._record_success()
             status = getattr(result, "status", "completed")
-            return json.dumps({"result": "Content stored in Cognee.", "status": str(status)})
+            envelope = {"result": "Content stored in Cognee.", "status": str(status)}
+            # Embedding runs server-side after this write returns, so a hint here
+            # usually reports the *previous* write's overflow — still worth
+            # surfacing, since the index is already degrading either way.
+            overflow = self._backend.overflow_hint()
+            if overflow:
+                envelope["warning"] = overflow
+            return json.dumps(envelope)
         except Exception as exc:
             self._record_failure()
             return json.dumps({"error": f"Cognee remember failed: {exc}"})
@@ -770,9 +903,11 @@ class CogneeMemoryProvider(MemoryProvider):
             return json.dumps({"error": "Specify dataset or set everything=true."})
 
         try:
-            result = self._bridge.run(
-                self._do_forget(dataset, everything=everything, memory_only=memory_only),
-                timeout=float(self._config.get("write_timeout", 120)),
+            result = self._backend.forget(
+                dataset=dataset,
+                everything=everything,
+                memory_only=memory_only,
+                timeout=self._timeout("write_timeout", 120),
             )
             self._record_success()
             return json.dumps({"result": "Cognee memory deleted.", "details": result})
@@ -802,123 +937,32 @@ class CogneeMemoryProvider(MemoryProvider):
             lines.append(f"- [{source}] {text[:500]}")
         return lines
 
-    def _embedding_dimension_mismatch_hint(self) -> Optional[str]:
-        """Confirmed embedding-dimension mismatch diagnostic (embedded mode only), or None.
-
-        In server/remote mode the server owns the vector store, so introspecting
-        the local in-process engine would be meaningless — skip. Best-effort;
-        never raises.
-        """
-        if self._remote_mode:
-            return None
-        try:
-            return self._bridge.run(_dimension_mismatch_hint(), timeout=5.0)
-        except Exception:
-            return None
-
     def _is_breaker_open(self) -> bool:
-        if self._consecutive_failures < _BREAKER_THRESHOLD:
-            return False
-        if time.monotonic() >= self._breaker_open_until:
-            self._consecutive_failures = 0
-            return False
-        return True
+        with self._breaker_lock:
+            if self._consecutive_failures < _BREAKER_THRESHOLD:
+                return False
+            if time.monotonic() >= self._breaker_open_until:
+                self._consecutive_failures = 0
+                return False
+            return True
 
     def _record_success(self) -> None:
-        self._consecutive_failures = 0
+        with self._breaker_lock:
+            self._consecutive_failures = 0
 
     def _record_failure(self) -> None:
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= _BREAKER_THRESHOLD:
-            self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+        with self._breaker_lock:
+            self._consecutive_failures += 1
+            tripped = self._consecutive_failures >= _BREAKER_THRESHOLD
+            if tripped:
+                self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+                failures = self._consecutive_failures
+        if tripped:
             logger.warning(
                 "Cognee circuit breaker tripped after %d consecutive failures; pausing for %ds.",
-                self._consecutive_failures,
+                failures,
                 _BREAKER_COOLDOWN_SECS,
             )
-
-
-# --- Embedding-dimension mismatch detection ---------------------------------
-# When the embedding model changes between writing and reading, stored vectors
-# and query vectors differ in size, so recall silently matches nothing. These
-# helpers turn that silent miss into a one-line actionable error naming both
-# dimensions and the active embedder. Best-effort and fail-safe (any uncertainty
-# returns None). Only valid in embedded mode, where this process owns the vector
-# store; in server/remote mode the server owns it and the in-process engine here
-# would not reflect it.
-
-
-async def _sample_stored_vector_dim(engine) -> Optional[int]:
-    """Sample the dimension of a stored vector from any populated collection, or None.
-
-    Enumerates the store's actual collections via the vector interface's
-    ``get_connection().table_names()`` (the same path cognee's own ``has_collection``
-    uses) rather than assuming fixed collection names, so it also covers custom
-    pipelines. Never raises: each collection is probed independently and any
-    unreadable one is skipped. Covers cognee's default local backend (LanceDB); other
-    backends whose connection can't enumerate return None and fall back to the normal
-    empty-recall path.
-    """
-    try:
-        connection = await engine.get_connection()
-        names = await connection.table_names()
-    except Exception:
-        return None
-    for name in names:
-        try:
-            collection = await engine.get_collection(name)
-            rows = await collection.query().limit(1).to_list()
-            if rows:
-                vector = rows[0].get("vector")
-                if vector is not None:
-                    return len(vector)
-        except Exception:
-            continue
-    return None
-
-
-async def _dimension_mismatch_hint(engine=None) -> Optional[str]:
-    """One-line diagnostic when the stored vectors differ in size from the active
-    embedder's query vectors (so recall can never match), else None.
-
-    ``engine`` is injectable for testing. Best-effort and fail-safe: any error, or
-    an indeterminate/matching dimension, returns None so the caller keeps the
-    normal empty-recall behavior.
-    """
-    try:
-        if engine is None:
-            from cognee.infrastructure.databases.vector import get_vector_engine
-
-            engine = get_vector_engine()
-        embed = getattr(engine, "embedding_engine", None)
-        if embed is None:
-            return None
-        query_dim = int(embed.get_vector_size())
-        stored_dim = await _sample_stored_vector_dim(engine)
-        if not stored_dim or not query_dim or stored_dim == query_dim:
-            return None
-        model = getattr(embed, "model", None) or "unknown-model"
-        provider = getattr(embed, "provider", None) or "unknown-provider"
-        return (
-            "Cognee recall found nothing because the embedder changed: stored vectors are "
-            f"{stored_dim}-d but the active embedder '{model}' (provider '{provider}') produces "
-            f"{query_dim}-d queries. Re-index this data with the current embedder, or set "
-            f"EMBEDDING_MODEL/EMBEDDING_DIMENSIONS back to the {stored_dim}-d model that wrote it."
-        )
-    except Exception:
-        return None
-
-
-def _resolve_search_type(search_type: str):
-    try:
-        from cognee.modules.search.types import SearchType
-
-        key = str(search_type).upper().strip()
-        return getattr(SearchType, key)
-    except Exception:
-        from cognee.modules.search.types import SearchType
-
-        return SearchType.GRAPH_COMPLETION
 
 
 def _prompt(label: str, default: str | None = None) -> str:

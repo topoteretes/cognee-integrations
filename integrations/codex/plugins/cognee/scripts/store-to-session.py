@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import urllib.error
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -89,13 +90,19 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
 
 
 def _truncate_str(value, cap: int) -> str:
-    """Coerce to string and cap at ``cap`` bytes (utf-8), appending ``...`` if truncated."""
+    """Coerce to string and cap at ``cap`` bytes (utf-8), appending ``...`` if truncated.
+
+    Always round-trips through utf-8 with errors="replace": hook payloads can
+    carry lone surrogates (binary tool output rendered into the transcript),
+    and one stored surrogate 500s the session-detail endpoint and wedges the
+    improve pipeline server-side.
+    """
     if value is None:
         return ""
     text = value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
     encoded = text.encode("utf-8", errors="replace")
     if len(encoded) <= cap:
-        return text
+        return encoded.decode("utf-8")
     return encoded[: cap - 3].decode("utf-8", errors="ignore") + "..."
 
 
@@ -214,8 +221,39 @@ async def _store_tool_call(payload: dict) -> None:
                 user=user,
             )
     except Exception as exc:
-        hook_log("trace_store_error", {"tool": tool_name, "error": str(exc)[:200]})
-        notify(f"trace store failed ({exc})")
+        # Same reasoning as the Stop path: the server_usable() guard above only
+        # catches an outage already known about, so a server that dies inside the
+        # ready marker's 30s TTL lands here with a real, failed write. Buffer the
+        # retryable cases so the trace survives; drop a 4xx loudly, because the
+        # drain stops at the first entry it cannot send and a permanently
+        # rejected one would block every entry behind it.
+        status_code = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+        retryable = status_code is None or status_code >= 500
+        if retryable:
+            append_warmup_entry(dataset, session_id, entry)
+            trace_text = (
+                f"{tool_name} [{status}]\n"
+                f"Params: {json.dumps(params, ensure_ascii=False)}\n"
+                f"Return: {return_value}"
+            )
+            append_http_bridge_entry(dataset, session_id, trace=trace_text)
+            bump_save_counter(session_id, "trace")
+            hook_log(
+                "trace_buffered_after_error",
+                {"tool": tool_name, "status": status_code, "error": str(exc)[:200]},
+            )
+            notify(f"trace store failed, buffered for replay ({exc})")
+        else:
+            hook_log(
+                "trace_store_error",
+                {
+                    "tool": tool_name,
+                    "error": str(exc)[:200],
+                    "status": status_code,
+                    "buffered": False,
+                },
+            )
+            notify(f"trace store failed ({exc})")
         return
 
     if result:
@@ -317,8 +355,41 @@ async def _store_assistant_stop(payload: dict) -> None:
                 user=user,
             )
     except Exception as exc:
-        hook_log("stop_store_error", {"error": str(exc)[:200]})
-        notify(f"stop store failed ({exc})")
+        # A write that FAILED must still be buffered, or the turn is simply lost.
+        # The `server_usable()` guard above only catches an outage the plugin
+        # already knows about: the ready marker has a 30s TTL, so a server that
+        # dies inside that window leaves server_usable() returning True, the write
+        # is attempted for real, and this is where it lands. Logging alone here is
+        # what the warmup spillway exists to prevent.
+        #
+        # Not every failure is worth replaying, though. The drain stops at the
+        # first entry it cannot send and only trims what it drained, so an entry
+        # that can never succeed would sit at the head of the queue and block
+        # everything behind it forever. A 4xx is exactly that: the same bytes will
+        # be rejected the same way next time. Transport failures and 5xx are
+        # retryable, so those are buffered and anything else is dropped loudly.
+        status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+        retryable = status is None or status >= 500
+        if retryable:
+            append_warmup_entry(dataset, session_id, entry)
+            append_http_bridge_entry(
+                dataset,
+                session_id,
+                question=pending.get("prompt", ""),
+                answer=msg,
+            )
+            bump_save_counter(session_id, "answer")
+            hook_log(
+                "store_buffered_after_error",
+                {"hook": "stop", "status": status, "error": str(exc)[:200]},
+            )
+            notify(f"stop store failed, buffered for replay ({exc})")
+        else:
+            hook_log(
+                "stop_store_error",
+                {"error": str(exc)[:200], "status": status, "buffered": False},
+            )
+            notify(f"stop store failed ({exc})")
         return
 
     if result:

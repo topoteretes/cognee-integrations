@@ -13,19 +13,27 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from _env_file import load_env_file
+from _env_file import forced_backend, load_env_file
 
 # ~/.cognee/.env is pure-local too, so loading it here keeps the renderer's
 # no-network/no-_plugin_common contract while honoring one-time config.
+# load_env_file also applies the COGNEE_BACKEND switch (forced local scrubs the
+# cloud connection vars), so the mode shown below matches what the hooks use.
 load_env_file()
 
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
 _CONFIG_PATH = _SHARED_ROOT / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
+# Written by the external pipeline-health sweep (see the claude-code renderer's
+# `_pipeline_health_glyph` and docs/KB/pipeline-monitor-notify-policy.md in the
+# total_recall/thessary repo). Machine-wide and integration-neutral — deliberately
+# in the shared root, NOT under codex/ — so both integrations read the same file.
+_PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "codex" / "update-check.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "codex" / "llm-state.json"
 # Per-session copies (see _plugin_common._write_session_marker): the shared files
@@ -38,6 +46,20 @@ _CONN_STATE_DIR = _SHARED_ROOT / "codex" / "conn-state"
 # there is no periodic re-check — so a verdict this old came from a session that is
 # gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
 _LLM_STATE_STALE_SECONDS = 30 * 60
+_CREDITS_PATH = _SHARED_ROOT / "codex" / "credits.json"
+
+# TTL for the credits balance. Written per turn (prompt + Stop hooks) and by
+# the idle watcher every ~5 minutes — older than this means every writer has
+# stopped (session over, watcher dead); hide the balance rather than show a
+# number that no longer reflects spend.
+_CREDITS_STALE_SECONDS = 15 * 60
+
+# TTL for the pipeline-health sweep's finding, matching the claude-code renderer.
+# The sweep runs every 2-5 minutes, so anything older means the sweep itself has
+# stopped — its own separate (unmonitored-by-this-glyph) problem, not something
+# to imply here; treat the file as stale/unknown rather than showing a possibly-
+# outdated warning.
+_PIPELINE_HEALTH_STALE_SECONDS = 30 * 60
 _DEFAULT_DATASET = "agent_sessions"
 # Must match _plugin_common._DEFAULT_LOCAL_SERVICE_URL: the hooks stamp this URL into
 # the markers this renderer compares against.
@@ -57,6 +79,13 @@ _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
 
 
 def _active_mode() -> str:
+    # 0. explicit backend switch: forced local always reads local (the env
+    # scrub in load_env_file guarantees it, this is just the direct answer);
+    # forced cloud with no URL to inspect reads cloud — the misconfig glyph
+    # (see _forced_cloud_unconfigured) reports what is missing.
+    forced = forced_backend()
+    if forced == "local":
+        return "local"
     # 1. env var
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
     # 2. config file
@@ -68,18 +97,26 @@ def _active_mode() -> str:
         except Exception:
             pass
     if not url:
-        return "local"
+        return "cloud" if forced == "cloud" else "local"
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
 
 
-_FAIL_STATES = ("auth_failed", "unreachable", "server_error")
+_FAIL_STATES = ("auth_failed", "unreachable", "server_error", "not_responding")
 # Of those, the ones that are a property of the SERVER rather than of the credential
 # the observing session happened to use. Only these may cross session boundaries: if
 # one terminal can't reach the server, neither can the others — but one terminal's
 # rejected API key says nothing about anyone else's. Letting auth_failed cross put a
 # red ✕ (incorrect_cognee_api_key) on a healthy local terminal for a few seconds
 # whenever a keyless cloud terminal started up.
-_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error")
+# "not_responding" (N consecutive recall timeouts) is server-wide too: a server
+# that isn't answering one terminal isn't answering the others either.
+_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error", "not_responding")
+
+# A failure verdict is only worth a ✕ while it is FRESH. The hooks refresh a
+# genuine outage on every prompt (probe or recall attempt), so a failure marker
+# older than this means no session has re-confirmed it — ambiguous, and ambiguity
+# renders no glyph (same as the warming case) rather than a stale accusation.
+_FAIL_STATE_STALE_SECONDS = 30 * 60
 
 
 def _active_base_url() -> str:
@@ -165,6 +202,7 @@ def _connection_marker(session_id: str) -> dict:
 # `llm-state.json` still records which of the two it was.
 _COGNEE_KEY_REASON = "incorrect_cognee_api_key"
 _LLM_KEY_REASON = "incorrect_llm_api_key"
+_MISSING_URL_REASON = "missing_cognee_base_url"
 _REASON_LABELS = {"auth_failed": _COGNEE_KEY_REASON}
 
 
@@ -179,14 +217,44 @@ def _url_mismatch(active_url: str, marked_url: str) -> bool:
     return bool(active_url and marked_url and active_url != marked_url)
 
 
+def _breaker_glyph(active_url: str) -> str:
+    """ "✕ (<trip reason>) " when THIS server's breaker is open, else "".
+
+    The breaker file is keyed by base_url (SDK-356): an entry for a different
+    server — a cloud tenant while this terminal is local, or Claude Code's
+    target — must not red this bar. A legacy flat file (machine-wide,
+    target-blind) is ignored for the same reason. The reason travels from the
+    trip site, so a breaker opened by 5xx reads ``server_error``, not a false
+    ``unreachable``.
+    """
+    try:
+        raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    servers = raw.get("servers") if isinstance(raw, dict) else None
+    if not isinstance(servers, dict):
+        return ""
+    entry = servers.get(active_url.rstrip("/"))
+    if not isinstance(entry, dict):
+        return ""
+    try:
+        if float(entry.get("cooldown_until", 0) or 0) <= time.time():
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    reason = str(entry.get("reason") or "unreachable")
+    return f"✕ ({_REASON_LABELS.get(reason, reason)}) "
+
+
 def _health_prefix(session_id: str = "") -> str:
     """Server-connection glyph for THIS session, from local markers (no network).
 
-    Precedence — we keep it green until we actually know it is red:
-      1. a recorded failure state in the marker → ``✕ (<reason>)``
-      2. an open recall breaker (repeated recall failure) → ``✕ (unreachable)``
+    Precedence — the ✕ is reserved for CONFIRMED, FRESH, DEFINITIVE failures:
+      1. a fresh recorded failure state in the marker → ``✕ (<reason>)``
+         (older than _FAIL_STATE_STALE_SECONDS → ambiguous → no glyph)
+      2. an open recall breaker for THIS base_url → ``✕ (<trip reason>)``
       3. a "ready" marker → ``● ``
-      4. otherwise (no marker / warming / different target) → no glyph
+      4. otherwise (no marker / warming / stale / different target) → no glyph
     The marker (``server-ready.json``) carries {state, base_url, ...}; a state is
     trusted only when its base_url matches this session's, so a local-ready marker
     never greens a cloud session (or vice versa).
@@ -200,23 +268,15 @@ def _health_prefix(session_id: str = "") -> str:
     if marker and not url_mismatch:
         state = str(marker.get("state") or ("ready" if marker.get("ready_at") else ""))
         if state in _FAIL_STATES:
-            return f"✕ ({_REASON_LABELS.get(state, state)}) "
+            if time.time() - _checked_at(marker) <= _FAIL_STATE_STALE_SECONDS:
+                return f"✕ ({_REASON_LABELS.get(state, state)}) "
+            # Stale verdict: nobody has re-confirmed the failure — treat as
+            # unknown rather than keep accusing a server that may be fine.
+            return _breaker_glyph(active_url)
         if state == "ready":
-            try:
-                raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-                if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
-                    return "✕ (unreachable) "
-            except Exception:
-                pass
-            return "● "
+            return _breaker_glyph(active_url) or "● "
 
-    try:
-        raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
-            return "✕ (unreachable) "
-    except Exception:
-        pass
-    return ""
+    return _breaker_glyph(active_url)
 
 
 def _update_segment() -> str:
@@ -269,6 +329,55 @@ def _running_plugin_version() -> str:
     return ""
 
 
+def _pipeline_health_glyph() -> str:
+    """ "⚠ N pipeline(s) stuck " / "⚠ server-down " when the pipeline sweep has a
+    fresh, non-stale finding; "" otherwise (no file yet, stale, or everything's
+    clean). Codex copy of the claude-code renderer's glyph (kept in sync by hand —
+    this module is deliberately standalone); plain text since the status is
+    injected into model context, not a terminal bar. Passive and app-closed-safe:
+    it surfaces a stuck-pipeline finding the instant the user next prompts any
+    Codex session running the plugin. See docs/KB/pipeline-monitor-notify-policy.md
+    (total_recall/thessary repo) for the full monitoring design this is one small
+    piece of.
+    """
+    try:
+        raw = json.loads(_PIPELINE_HEALTH_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    try:
+        generated_at = datetime.fromisoformat(str(raw.get("generated_at", "")))
+        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
+        if age_seconds > _PIPELINE_HEALTH_STALE_SECONDS:
+            return ""
+    except (ValueError, TypeError):
+        return ""
+    # isinstance, not `or {}`: a truthy non-dict ("yes", 5) would flow through
+    # an `or` fallback and raise AttributeError on .get() — and this module must
+    # never raise (see the sum() guard below).
+    server = raw.get("server") if isinstance(raw.get("server"), dict) else {}
+    if server.get("up") is False:
+        return "⚠ server-down "
+    summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else {}
+    worst = str(summary.get("worst_classification") or "ok")
+    # The isinstance guard only vets the container; a non-numeric VALUE
+    # ("many", None, a nested dict) would make sum() raise — and this module
+    # must never raise (a crash here aborts the whole context-injection hook,
+    # silently dropping the turn's recalled memory, not just this glyph).
+    try:
+        flagged = (
+            sum((summary.get("by_classification") or {}).values())
+            if isinstance(summary.get("by_classification"), dict)
+            else 0
+        )
+    except (TypeError, ValueError):
+        flagged = 0
+    if worst in ("alert", "critical") and flagged > 0:
+        return f"⚠ {flagged} pipeline(s) stuck "
+    return ""
+
+
 def _llm_prefix(session_id: str = "") -> str:
     """Plain-text 'LLM key' failure glyph, or '' — local mode only.
 
@@ -316,29 +425,103 @@ def _llm_prefix(session_id: str = "") -> str:
     return ""
 
 
+def _forced_cloud_unconfigured() -> bool:
+    """Forced cloud (backend switch) with no URL anywhere: nothing to connect
+    to — a definitive misconfiguration this renderer can see directly from
+    env + config.json, without waiting for a hook to record a failed attempt.
+    """
+    if forced_backend() != "cloud":
+        return False
+    if os.environ.get("COGNEE_BASE_URL", "").strip():
+        return False
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and str(data.get("base_url") or "").strip():
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _status_prefix(session_id: str = "") -> str:
     """The single leading glyph slot shared by the server- and LLM-key signals.
 
     One slot, by precedence — showing a ● next to an ✕ would read as
     contradictory:
+      0. forced cloud with no URL configured: a misconfiguration this renderer
+         can prove on its own — the precise reason beats any marker-derived one
       1. a server-connection failure wins: if we can't reach or authenticate
          against the server, its LLM key is not the actionable problem
       2. otherwise an LLM-key failure, which *replaces* the ● (the ``llm_*``
          reason already says the server side itself is fine)
       3. otherwise whatever the server signal is (``● `` or nothing).
     """
+    if _forced_cloud_unconfigured():
+        return f"✕ ({_MISSING_URL_REASON}) "
     server = _health_prefix(session_id)
     if server.startswith("✕"):
         return server
     return _llm_prefix(session_id) or server
 
 
+def _credits_segment() -> str:
+    """Cloud credits balance + approximate cost of the last memory operation.
+
+    Pure-local like everything here: reads only ``credits.json`` — a MAP keyed
+    by tenant id (several terminals can be on different tenants at once), each
+    entry carrying the service base_url it was observed under. Select OUR
+    tenant's entry by that binding. Plain text (the Codex line carries no ANSI
+    styling). Renders nothing unless ALL of: cloud mode, matching fresh entry
+    with a numeric balance, not opted out (``COGNEE_STATUSLINE_CREDITS=off``).
+    """
+    if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return ""
+    if _active_mode() != "cloud":
+        return ""
+    marker = _read_json(_CREDITS_PATH)
+    active = _active_base_url().rstrip("/")
+    entry = None
+    for candidate in marker.values():
+        if (
+            isinstance(candidate, dict)
+            and str(candidate.get("base_url") or "").rstrip("/") == active
+        ):
+            entry = candidate
+            break
+    if entry is None:
+        return ""
+    remaining = entry.get("remaining_usd")
+    if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+        return ""
+    try:
+        checked_at = float(entry.get("checked_at", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if time.time() - checked_at > _CREDITS_STALE_SECONDS:
+        return ""
+    sign = "-" if remaining < 0 else ""
+    seg = f" · credits: {sign}${abs(remaining):,.2f}"
+    last_op = entry.get("last_op")
+    if isinstance(last_op, dict):
+        label = str(last_op.get("label") or "").strip()
+        cost = last_op.get("cost_usd")
+        if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            seg += f" · last {label} ~${cost:,.2f}"
+    return seg
+
+
 def render_status_for_host(host_id: str) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
     return (
-        f"{_status_prefix(str(host_id or ''))}cognee: {_active_dataset()} · {_active_mode()}"
-        f"{_update_segment()}"
+        f"{_pipeline_health_glyph()}{_status_prefix(str(host_id or ''))}"
+        f"cognee: {_active_dataset()} · {_active_mode()}"
+        f"{_credits_segment()}{_update_segment()}"
     )
 
 
@@ -362,7 +545,9 @@ def main() -> None:
     except Exception:
         pass
     sys.stdout.write(
-        f"{_status_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
+        f"{_pipeline_health_glyph()}{_status_prefix()}"
+        f"cognee: {_active_dataset()} · {_active_mode()}"
+        f"{_credits_segment()}{_update_segment()}"
     )
 
 
