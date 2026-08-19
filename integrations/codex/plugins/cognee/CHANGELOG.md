@@ -10,6 +10,28 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.3]
+
+### Fixed
+- **A replayed write can no longer duplicate a turn the server already holds.**
+  The v1.4.2 failure buffering treated every retryable error the same, but a
+  write that *times out* (or dies on a gateway 500/502/504) may still have
+  committed server-side — and `/remember/entry` has no idempotency: every
+  accepted write creates and embeds a fresh entry, so replaying a committed
+  write stored the same content twice and fed the duplicate to the next
+  improve. Failures are now classified at the buffering point
+  (`write_outcome_ambiguous`): connection-refused/DNS failures and 503s
+  provably never reached the cache and replay blind as before, while
+  ambiguous outcomes are marked in the buffer and verified by the drain —
+  one `GET /api/v1/sessions/{id}` per drain (only when an ambiguous entry is
+  actually pending) supplies the server's recent QA/trace tails, and an entry
+  whose content is already there is consumed without being re-sent (reported
+  as `deduped` in the `warmup_drained` event). A failed verification read
+  degrades to the old replay-everything behavior: a rare duplicate beats a
+  lost turn. Also corrected two comments that claimed `/remember/entry`
+  writes are "deduped server-side" — they never were; the single-drainer
+  lock and this verify pass are the real guards.
+
 ## [1.4.2]
 
 ### Fixed
