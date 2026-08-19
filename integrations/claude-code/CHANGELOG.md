@@ -10,6 +10,17 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.3]
+
+### Changed
+- **Pinned cognee version is now `1.5.0`** (was `1.4.2`). The plugin installs
+  this into its own managed venv on session start, so existing installs pick it
+  up on the next session; the local server's lifespan migrations handle any
+  database upgrades on first start. Cognee 1.5.0 is a minor release with no
+  user-facing breaking changes — it hardens large-scale dataset migrations,
+  improves Ladybug graph-adapter reliability and performance, and adds
+  `LLM_TEMPERATURE`/`LLM_SEED` plumbing. No plugin-side behavior changes.
+
 ## [1.3.2]
 
 ### Fixed
