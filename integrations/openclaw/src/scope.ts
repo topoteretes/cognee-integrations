@@ -134,6 +134,25 @@ function sanitizeSessionKey(value: string): string {
 }
 
 /**
+ * Sanitize a Cognee dataset name using the same character rules as sanitizeSessionKey.
+ *
+ * Keeps ASCII alphanumerics plus `-` `_` `.`; replaces everything else with `_`;
+ * strips leading/trailing `.` and `_`; caps at 120 characters.
+ * Falls back to *fallback* when the result is empty (e.g. input was "###").
+ *
+ * All branches of datasetNameForScope() pass their composite name through here so
+ * that the same invalid input normalises identically regardless of which memory
+ * scope is active, and identically to the Python integrations.
+ */
+export function sanitizeDatasetName(name: string, fallback: string): string {
+  let safe = "";
+  for (const ch of String(name ?? ""))
+    safe += /[A-Za-z0-9\-_.]/.test(ch) ? ch : "_";
+  const sanitized = safe.replace(/^[._]+/, "").replace(/[._]+$/, "").slice(0, 120);
+  return sanitized || fallback;
+}
+
+/**
  * Build the Cognee session id from the host (OpenClaw) session id, following the
  * cross-integration convention `{agent}_{native_session_id}` —
  * e.g. `open_claw_<openclaw-session-id>`. Keeps the session self-describing in the
@@ -160,11 +179,16 @@ export function datasetNameForScope(
 ): string {
   switch (scope) {
     case "company":
-      return cfg.companyDataset || `${cfg.datasetName}-company`;
-    case "user":
-      return cfg.userDatasetPrefix
+      return sanitizeDatasetName(
+        cfg.companyDataset || `${cfg.datasetName}-company`,
+        "openclaw-company",
+      );
+    case "user": {
+      const name = cfg.userDatasetPrefix
         ? `${cfg.userDatasetPrefix}-${cfg.userId || "default"}`
         : `${cfg.datasetName}-user-${cfg.userId || "default"}`;
+      return sanitizeDatasetName(name, "openclaw-user-default");
+    }
     case "agent": {
       const rawId = runtimeAgentId?.trim() || cfg.agentId || "default";
       // Lowercase ONLY in per-agent mode, so existing single-agent / non-per-agent
@@ -172,12 +196,15 @@ export function datasetNameForScope(
       // OpenClaw already lowercases the runtime ctx.agentId, so per-agent mode
       // stays internally consistent across startup-seed and runtime hooks.
       const id = cfg.perAgentMemory ? rawId.toLowerCase() : rawId;
+      let name: string;
       if (cfg.agentDatasetTemplate) {
-        return cfg.agentDatasetTemplate.replace(/\{agentId\}/g, id);
+        name = cfg.agentDatasetTemplate.replace(/\{agentId\}/g, id);
+      } else {
+        name = cfg.agentDatasetPrefix
+          ? `${cfg.agentDatasetPrefix}-${id}`
+          : `${cfg.datasetName}-agent-${id}`;
       }
-      return cfg.agentDatasetPrefix
-        ? `${cfg.agentDatasetPrefix}-${id}`
-        : `${cfg.datasetName}-agent-${id}`;
+      return sanitizeDatasetName(name, "openclaw-agent-default");
     }
   }
 }
