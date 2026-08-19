@@ -4,7 +4,7 @@ This extension adds automatic Cognee memory to
 [Qwen Code](https://github.com/QwenLM/qwen-code):
 
 - session bootstrap on `SessionStart`
-- recall and prompt capture on `UserPromptSubmit`
+- provenance-safe recall and prompt capture on `UserPromptSubmit`
 - tool and assistant-response capture
 - a pre-compaction memory anchor
 - final session-to-graph sync
@@ -12,6 +12,18 @@ This extension adds automatic Cognee memory to
 Qwen uses Gemini-style extension manifests but Claude-style hook event names.
 Its command-hook timeouts are milliseconds, so this package deliberately uses
 `120000` for a 120-second hook window.
+
+## UserPromptSubmit coverage
+
+Qwen command hooks provide real-user provenance only through optional
+`submitted_prompt`. Cognee intentionally skips `UserPromptSubmit` events without
+it, so `ToolResult`/`Hook` continuations cannot overwrite a pending question or
+query memory as a user prompt. ACP, headless, `serve`, SDK, remote-input,
+restored, and Vim-mode inputs therefore do not receive prompt capture or recall
+until [Qwen issue #9511](https://github.com/QwenLM/qwen-code/issues/9511) adds a
+send-level discriminator. This is a Qwen hook-payload limitation, not an API-key
+or configuration problem. Tool trace, assistant-response, `PreCompact`, and
+session-sync hooks remain active.
 
 ## Install
 
