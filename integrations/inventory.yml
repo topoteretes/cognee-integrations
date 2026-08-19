@@ -60,6 +60,17 @@ integrations:
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
 
+  - slug: qwen
+    name: "Cognee Memory Extension for Qwen Code"
+    owner: cognee
+    language: python
+    registry: qwen-extension
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "1.4.4"
+    migration_status: done
+    notes: "Qwen Code extension with automatic session capture, recall, graph sync, and bundled Cognee skills"
+
   - slug: hermes-agent
     name: "Cognee Memory Plugin for Hermes Agent"
     owner: cognee

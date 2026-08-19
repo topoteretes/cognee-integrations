@@ -1,6 +1,6 @@
 name: Plugin Windows Tests
 
-# The claude-code and codex plugins carry genuinely platform-specific paths:
+# The claude-code, codex, and qwen plugins carry genuinely platform-specific paths:
 # _proc.py (Windows liveness via OpenProcess/WaitForSingleObject, process
 # ancestry via CreateToolhelp32Snapshot), a status-line renderer whose stdio
 # encoding is Windows-sensitive (cp1252 cannot encode the health glyphs), and
@@ -20,6 +20,7 @@ on:
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'
+      - 'integrations/qwen/**'
       - 'integrations/tests/**'
       - '.github/workflows/plugin-windows-tests.yml'
   push:
@@ -27,6 +28,7 @@ on:
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'
+      - 'integrations/qwen/**'
       - 'integrations/tests/**'
       - '.github/workflows/plugin-windows-tests.yml'
 
@@ -44,11 +46,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # integrations/tests holds the shared suite; the other two hold the
+          # integrations/tests holds the shared suite; the other trees hold the
           # hook scripts it imports and runs as subprocesses.
           sparse-checkout: |
             integrations/claude-code
             integrations/codex
+            integrations/qwen
             integrations/tests
 
       - name: Set up Python

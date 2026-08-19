@@ -111,7 +111,7 @@ def test_precompact_produces_an_anchor_carrying_the_session(
 ):
     """Compaction drops the transcript; the anchor is what carries memory across it.
 
-    Both suites now recall over HTTP, so both must produce an anchor against a real
+    Every suite now recalls over HTTP, so each must produce an anchor against a real
     server. That was not always true: claude-code's pre-compact was local-SDK only
     — ``cognee.recall`` plus a ``get_session_manager()`` fallback — while in server
     mode the session cache lives on the server. Session and trace entries came back

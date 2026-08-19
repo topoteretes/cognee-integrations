@@ -1,0 +1,7 @@
+{
+  "name": "cognee",
+  "description": "Persistent Cognee knowledge-graph memory for Qwen Code.",
+  "version": "1.4.4",
+  "contextFileName": "QWEN.md",
+  "hooks": "hooks/hooks.json"
+}

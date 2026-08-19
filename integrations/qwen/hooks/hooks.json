@@ -1,0 +1,89 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py\"",
+            "timeout": 120000,
+            "statusMessage": "Initializing Cognee memory..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py\"",
+            "timeout": 120000,
+            "statusMessage": "Searching session memory..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py\"",
+            "timeout": 120000,
+            "statusMessage": "Saving user prompt..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\"",
+            "timeout": 120000,
+            "statusMessage": "Saving tool trace..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" --stop || python \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
+            "timeout": 120000,
+            "statusMessage": "Saving assistant response..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py\"",
+            "timeout": 120000,
+            "statusMessage": "Building memory anchor..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end || python \"${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end",
+            "timeout": 30000,
+            "statusMessage": "Syncing session memory..."
+          }
+        ]
+      }
+    ]
+  }
+}

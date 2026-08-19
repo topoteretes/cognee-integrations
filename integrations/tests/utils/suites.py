@@ -1,13 +1,16 @@
-"""Suite descriptors for the two near-identical Python integrations.
+"""Suite descriptors for the near-identical Python hook integrations.
 
-claude-code and codex are the same hook code differing only in constants. A Suite
-captures those differences so one parametrized test set runs against both.
+Claude Code, Codex, and Qwen share the same hook runtime with host-specific
+constants. A Suite captures those differences so one parametrized test set runs
+against all three.
 
 Constants are verified against each suite's ``config.py`` / ``_plugin_common.py``:
   - claude-code: config AND state both live in ``~/.cognee-plugin/claude-code/``
   - codex:       config.json lives at the shared root ``~/.cognee-plugin/``,
                  state nests under ``~/.cognee-plugin/codex/``
-  - both:        default dataset ``agent_sessions``; the shared server-ready
+  - qwen:        config.json lives at the shared root ``~/.cognee-plugin/``,
+                 state nests under ``~/.cognee-plugin/qwen/``
+  - all:         default dataset ``agent_sessions``; the shared server-ready
                  marker sits at the ``~/.cognee-plugin/`` root; local-SDK data
                  dirs live under ``~/.cognee/``
 """
@@ -20,7 +23,7 @@ from pathlib import Path
 # .../integrations/tests/utils/suites.py -> parents[2] == .../integrations
 _INTEGRATIONS = Path(__file__).resolve().parents[2]
 
-#: Name of the shared plugin root under HOME, used by both suites.
+#: Name of the shared plugin root under HOME, used by every suite.
 PLUGIN_DIR_NAME = ".cognee-plugin"
 
 #: Local-SDK home (data/system/cache dirs and the .env file) under HOME.
@@ -29,7 +32,7 @@ COGNEE_HOME_DIR_NAME = ".cognee"
 
 @dataclass(frozen=True)
 class Suite:
-    """A single integration suite (claude-code or codex)."""
+    """A single host integration suite."""
 
     name: str
     scripts_dir: Path
@@ -40,7 +43,7 @@ class Suite:
     default_dataset: str
     agent_name: str
     session_prefix: str
-    #: The suite's hooks.json manifest (claude: <root>/hooks/, codex: plugin root).
+    #: The suite's hooks.json manifest (claude/qwen: <root>/hooks/, codex: plugin root).
     hooks_json: Path
     #: The plugin manifest whose "version" the runtime reports as its own.
     plugin_manifest: Path
@@ -159,7 +162,29 @@ CODEX = Suite(
     has_precompact_http=True,
 )
 
-ALL_SUITES = [CLAUDE, CODEX]
+QWEN = Suite(
+    name="qwen",
+    scripts_dir=_INTEGRATIONS / "qwen" / "scripts",
+    hooks_json=_INTEGRATIONS / "qwen" / "hooks" / "hooks.json",
+    plugin_manifest=_INTEGRATIONS / "qwen" / "gemini-extension.json",
+    config_subdir="",
+    state_subdir="qwen",
+    default_dataset="agent_sessions",
+    agent_name="qwen-agent",
+    session_prefix="qwen",
+    cwd_env="QWEN_CWD",
+    session_suffix="_qwen",
+    host_stem="qwen",
+    has_background_remember=True,
+    has_improve_pipeline_polling=True,
+    has_async_hooks=False,
+    has_elapsed_ms_helper=True,
+    has_recall_latency_metric=False,
+    has_rich_statusline=False,
+    has_precompact_http=True,
+)
+
+ALL_SUITES = [CLAUDE, CODEX, QWEN]
 
 
 def plugin_root(home: Path | str) -> Path:

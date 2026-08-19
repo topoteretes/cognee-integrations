@@ -1,6 +1,6 @@
 """Suite-aware expectations for the status-line renderer.
 
-The two renderers are the same logic with one deliberate difference: claude-code
+The renderers share the same logic with one deliberate difference: claude-code
 styles the bar with ANSI escapes for a terminal, while codex's string is injected
 into the model's context and must stay plain text. Tests that care about *which*
 glyph or segment appears are shared and go through these helpers; tests that care
