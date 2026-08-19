@@ -111,7 +111,7 @@ def test_precompact_produces_an_anchor_carrying_the_session(
 ):
     """Compaction drops the transcript; the anchor is what carries memory across it.
 
-    Both suites now recall over HTTP, so both must produce an anchor against a real
+    Every suite now recalls over HTTP, so each must produce an anchor against a real
     server. That was not always true: claude-code's pre-compact was local-SDK only
     — ``cognee.recall`` plus a ``get_session_manager()`` fallback — while in server
     mode the session cache lives on the server. Session and trace entries came back
@@ -148,7 +148,13 @@ def test_precompact_produces_an_anchor_carrying_the_session(
     )
     assert run.ok, f"pre-compact failed (rc={run.returncode}): {run.stderr[:600]}"
 
-    anchor = run.stdout.strip()
+    output = run.stdout.strip()
+    if live_suite.name == "qwen":
+        hook_output = json.loads(output)
+        assert hook_output["hookSpecificOutput"]["hookEventName"] == "PreCompact"
+        anchor = hook_output["hookSpecificOutput"]["additionalContext"]
+    else:
+        anchor = output
     assert anchor, "pre-compact produced no anchor at all — nothing would survive compaction"
     assert nonce.lower() in anchor.lower(), (
         f"the anchor does not mention the session's subject ({nonce}):\n{anchor[:1200]}"

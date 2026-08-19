@@ -1,9 +1,9 @@
-# Shared test infrastructure — Claude Code + Codex
+# Shared test infrastructure — Claude Code + Codex + Qwen
 
-Reusable pytest harness for the two Python hook suites, `claude-code` and
-`codex`, which are the same code differing only in constants. One parametrized
-test set runs against both. openclaw (TypeScript) and hermes-agent (SDK-based)
-are out of scope here.
+Reusable pytest harness for the three Python hook suites, `claude-code`,
+`codex`, and `qwen`. Their memory runtimes differ mainly in host constants,
+so one parametrized test set runs against all three. OpenClaw (TypeScript) and
+Hermes Agent (SDK-based) are out of scope here.
 
 ## Layout
 
@@ -32,36 +32,41 @@ uv run pytest tests/ -v
 ```
 
 CI runs the same via `.github/workflows/ci.yml`; changes under
-`integrations/claude-code/`, `integrations/codex/`, or `integrations/tests/`
-all trigger this suite.
+`integrations/claude-code/`, `integrations/codex/`, `integrations/qwen/`,
+or `integrations/tests/` all trigger this suite.
 
 ## Ground truth (verified against the scripts)
 
-| | `claude-code` | `codex` |
-|---|---|---|
-| Scripts dir | `claude-code/scripts/` | `codex/plugins/cognee/scripts/` |
-| config.json | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/` (shared root) |
-| State dir | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/codex/` |
-| Default dataset | `agent_sessions` | `agent_sessions` |
-| `agent_name` default | `claude-code-agent` | `codex-agent` |
-| `session_prefix` | `claude` | `codex` |
-| cwd env var | `CLAUDE_CWD` | `CODEX_CWD` |
-| Agent-session suffix | `_claude` | `_codex` |
+| | `claude-code` | `codex` | `qwen` |
+|---|---|---|---|
+| Scripts dir | `claude-code/scripts/` | `codex/plugins/cognee/scripts/` | `qwen/scripts/` |
+| config.json | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/` (shared root) | `~/.cognee-plugin/` (shared root) |
+| State dir | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/codex/` | `~/.cognee-plugin/qwen/` |
+| Default dataset | `agent_sessions` | `agent_sessions` | `agent_sessions` |
+| `agent_name` default | `claude-code-agent` | `codex-agent` | `qwen-agent` |
+| `session_prefix` | `claude` | `codex` | `qwen` |
+| cwd env var | `CLAUDE_CWD` | `CODEX_CWD` | `QWEN_CWD` |
+| Agent-session suffix | `_claude` | `_codex` | `_qwen` |
 ### Capability flags
 
 Divergences are named by a declared flag on `Suite`, never inferred from
 `suite.name` and never from another flag that happens to correlate:
 
-| Flag | `claude-code` | `codex` | Gates |
-|---|---|---|---|
-| `has_background_remember` | `True` | `True` | background bridge, `{"ok": ...}` envelope, `wait_for_cognify`, bounded `do_remember` wait |
-| `has_improve_pipeline_polling` | `True` | `False` | `improve_session_via_http` reports `cognify_status`/`memify_status` |
-| `has_async_hooks` | `True` | `False` | `async` hook entries + `StopFailure` in `hooks.json` |
-| `has_elapsed_ms_helper` | `True` | `True` | `_plugin_common.elapsed_ms`, and `elapsed_ms` on the bridge events |
-| `has_recall_latency_metric` | `True` | `False` | aggregate `elapsed_ms` on `context_lookup_*` |
-| `has_rich_statusline` | `True` | `False` | health glyphs, recall-counts strip, mode word, install registry |
-| `has_precompact_http` | `False` | `True` | `pre-compact.py` recalls over HTTP — the one place codex is ahead |
-| `host_stem` | `claude` | `codex` | `_proc`'s Windows ancestry match |
+| Flag | `claude-code` | `codex` | `qwen` | Gates |
+|---|---|---|---|---|
+| `has_background_remember` | `True` | `True` | `True` | background bridge, `{"ok": ...}` envelope, `wait_for_cognify`, bounded `do_remember` wait |
+| `has_improve_pipeline_polling` | `True` | `True` | `True` | `improve_session_via_http` reports `cognify_status`/`memify_status` |
+| `has_async_hooks` | `True` | `False` | `False` | `async` hook entries + `StopFailure` in `hooks.json` |
+| `has_elapsed_ms_helper` | `True` | `True` | `True` | `_plugin_common.elapsed_ms`, and `elapsed_ms` on the bridge events |
+| `has_recall_latency_metric` | `True` | `False` | `False` | aggregate `elapsed_ms` on `context_lookup_*` |
+| `has_rich_statusline` | `True` | `False` | `False` | health glyphs, recall-counts strip, mode word, install registry |
+| `has_precompact_http` | `False` | `True` | `True` | `pre-compact.py` recalls over HTTP |
+| `host_stem` | `claude` | `codex` | `qwen` | `_proc`'s Windows ancestry match |
+
+Qwen's runtime matches Codex, but its package seam does not: it has
+`qwen-extension.json` plus `gemini-extension.json`, external hooks at
+`hooks/hooks.json`, `${CLAUDE_PLUGIN_ROOT}` command roots, and millisecond
+timeouts. `test_qwen_gemini_packaging.py` guards those differences.
 
 `has_background_remember` was `False` for codex until the refactor was ported in
 main; **39 codex tests started passing the moment the flag flipped**, with no test
@@ -228,21 +233,19 @@ Failures dump `hook.log`, the recall-related events, `recall-audit.log` and
 |---|---|---|
 | `test_cross_session_recall.py` | the core promise: two turns in session A are recalled by a fresh session B on the same dataset | yes |
 | `test_session_capture.py` | within-session recall of prompts, answers and tool traces, plus the save counters behind the status line | no — the session cache answers directly, so these are the cheap ones |
-| `test_user_surfaces.py` | the three places a user meets memory: the status line (rendering for both, counts for claude-code), the pre-compact anchor (**strict xfail on claude-code only**, see below), and `cognee-search.sh` | no |
+| `test_user_surfaces.py` | the three places a user meets memory: the status line (rendering for every host, counts for claude-code), the pre-compact anchor (**strict xfail on claude-code only**, see below), and `cognee-search.sh` | no |
 | `test_resilience.py` | hooks stay successful when the server dies; a mid-outage write should be buffered (**strict xfail**, see below); buffered turns replay once the server returns; a slow cold query is judged `slow`, not `down`, and never trips the breaker | one |
 | `test_concurrency.py` | two sessions' interleaved turns both reach the graph, and each session claims its own final sync | one |
 | `test_graph_writes.py` | two populated datasets do not leak into each other; a repeated SessionEnd starts exactly one final-sync worker | two |
-| `test_shared_brain.py` | either integration recalls what the other wrote to the shared graph, **in both directions** — only testable live, and cheap now that no CLI is involved | yes |
+| `test_shared_brain.py` | Claude Code and Codex recall what the other wrote to the shared graph, **in both directions** — only testable live, and cheap now that no CLI is involved | yes |
 
-### Both integrations, every scenario
+### Every host integration, every scenario
 
-`live_suite` is parametrized over `ALL_SUITES`, so all 17 scenarios run twice —
-34 suite-parametrized tests plus the 2 shared-brain directions. That doubles
-wall-clock and LLM spend deliberately: the plugins still diverge in ways a mock
-cannot show. The write paths largely converged when the background bridge was
-ported to codex, but the improve path did not travel with it
-(`has_improve_pipeline_polling`), and a real graph is the only place you can see
-whether a write actually arrives by either route.
+`live_suite` is parametrized over `ALL_SUITES`, so every scenario runs once
+for Claude Code, Codex, and Qwen. That increases wall-clock and LLM spend
+deliberately: the hosts still diverge in ways a mock cannot show, and a real
+graph is the only place to prove a write arrives by each route. The dedicated
+shared-brain directions remain Claude↔Codex.
 
 Three fixtures are deliberately **suite-agnostic**, which is what makes the
 cross-suite direction possible:
@@ -255,7 +258,7 @@ cross-suite direction possible:
 - `live_artifacts` — as an **autouse** fixture, depending on `live_suite` would
   force the parametrization onto every test in the directory, including the
   cross-suite ones. It iterates the suites instead, which also means a cross-suite
-  failure dumps both sides.
+  failure dumps every host's artifacts.
 
 Cross-suite tests use `session_for(suite, name)` rather than `started_session`:
 the latter rides the parametrization, so a writer/reader pair built from it would
@@ -315,9 +318,8 @@ Four things worth knowing, each of which would bite:
 else.** That precondition is the entire safety argument; do not point
 `COGNEE_LIVE_BASE_URL` at a tenant with real data.
 
-Whole tier: **32 passed, 1 skipped, 3 xfailed in ~24m30s** (the skip is codex's
-counts segment; the xfails are the gaps below). Roughly 3x the single-suite time
-rather than 2x, because each suite boots its own server per test.
+Each suite boots its own server per test, so the live tier scales roughly with
+the number of hosts. Exact duration and LLM spend depend on the selected backend.
 
 Two behaviours worth knowing before writing more of these, both learned by
 getting them wrong:

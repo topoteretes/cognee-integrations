@@ -46,6 +46,9 @@ def user_prompt(
         "session_id": session_id,
         "cwd": cwd,
         "prompt": prompt,
+        # Qwen captures this before model-bound expansion and uses its absence
+        # to distinguish ToolResult/Hook continuations from real user turns.
+        "submitted_prompt": prompt,
     }
     if model is not None:
         payload["model"] = model

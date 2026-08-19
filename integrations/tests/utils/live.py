@@ -207,7 +207,7 @@ def build_live_env(
 ) -> dict[str, str]:
     """The environment a live hook subprocess runs in.
 
-    Inherited COGNEE_*/LLM_*/CLAUDE_*/CODEX_* are scrubbed so a developer's shell
+    Inherited Cognee and host-specific variables are scrubbed so a developer's shell
     (or the parent agent's own session vars) cannot leak in and redirect the run
     at a real server.
 
@@ -218,7 +218,7 @@ def build_live_env(
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith(("COGNEE_", "LLM_", "CLAUDE", "CODEX"))
+        if not k.startswith(("COGNEE_", "LLM_", "CLAUDE", "CODEX", "QWEN"))
     }
     env.update(
         {

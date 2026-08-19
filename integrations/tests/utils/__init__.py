@@ -1,4 +1,4 @@
-"""Shared test infrastructure for the Claude Code and Codex Cognee integrations.
+"""Shared test infrastructure for the Claude Code, Codex, and Qwen integrations.
 
 Building blocks (see README.md):
   - suites        : Suite descriptors that parametrize tests over claude-code / codex
@@ -16,6 +16,7 @@ from .suites import (
     ALL_SUITES,
     CLAUDE,
     CODEX,
+    QWEN,
     Suite,
     cognee_home,
     config_dir,
@@ -27,6 +28,7 @@ __all__ = [
     "ALL_SUITES",
     "CLAUDE",
     "CODEX",
+    "QWEN",
     "Suite",
     "cognee_home",
     "config_dir",

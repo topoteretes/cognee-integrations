@@ -260,4 +260,7 @@ def test_hooks_json_wires_credits_refresh_at_turn_end(suite):
     else:
         for hook in entries:
             assert "async" not in hook, f"{suite.name} skips async hooks entirely"
-            assert isinstance(hook.get("timeout"), (int, float)) and hook["timeout"] <= 15
+            timeout = hook.get("timeout")
+            assert isinstance(timeout, (int, float))
+            seconds = timeout / 1000 if suite.name == "qwen" else timeout
+            assert seconds <= 15

@@ -150,12 +150,11 @@ def cloud_tenant_is_clean(live_backend: str, live_prereqs: str):
 
 @pytest.fixture(params=ALL_SUITES, ids=lambda s: s.name)
 def live_suite(request) -> Suite:
-    """Every scenario runs against both integrations.
+    """Every scenario runs against every host integration.
 
-    This doubles the tier's wall-clock and LLM spend, which is the point: the two
-    plugins diverge in exactly the places a mock cannot show (codex's bridge is
-    synchronous and has no cognify poll), so a shared graph is the only place that
-    divergence becomes visible.
+    This multiplies the tier's wall-clock and LLM spend, which is the point:
+    host seams can diverge in ways a mock cannot show, so a real graph is the
+    only place those differences become visible.
     """
     return request.param
 

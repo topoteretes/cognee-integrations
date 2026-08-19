@@ -22,8 +22,16 @@ import os
 import pytest
 
 #: Each suite's own switch, and the OTHER plugin's switch — which it must ignore.
-OWN_BACKEND_VAR = {"claude-code": "COGNEE_CLAUDE_BACKEND", "codex": "COGNEE_CODEX_BACKEND"}
-OTHER_BACKEND_VAR = {"claude-code": "COGNEE_CODEX_BACKEND", "codex": "COGNEE_CLAUDE_BACKEND"}
+OWN_BACKEND_VAR = {
+    "claude-code": "COGNEE_CLAUDE_BACKEND",
+    "codex": "COGNEE_CODEX_BACKEND",
+    "qwen": "COGNEE_QWEN_BACKEND",
+}
+OTHER_BACKEND_VAR = {
+    "claude-code": "COGNEE_CODEX_BACKEND",
+    "codex": "COGNEE_CLAUDE_BACKEND",
+    "qwen": "COGNEE_CLAUDE_BACKEND",
+}
 
 CLOUD_URL = "https://tenant.cognee.ai"
 CLOUD_ENV_FILE = "\n".join(

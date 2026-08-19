@@ -102,7 +102,7 @@ Run these slash commands directly in the Claude Code chat:
 
 In local mode (the default), the plugin bootstraps a local Cognee API on
 `http://localhost:8011`. Cognee extracts knowledge with an LLM, so set `LLM_API_KEY`
-**once** in `~/.cognee/.env` (shared by the Claude Code and Codex plugins) — one
+**once** in `~/.cognee/.env` (shared by the Claude Code, Codex, and Qwen plugins) — one
 paste, no editor needed:
 
 ```bash
@@ -136,6 +136,20 @@ skills explicitly:
 
 For full configuration (datasets, sessions, sync watchers, cloud mode), see
 [`integrations/claude-code/README.md`](integrations/claude-code/README.md).
+
+## Qwen Code Quickstart
+
+Install the Qwen extension from this repository:
+
+```bash
+qwen extensions install /path/to/cognee-integrations/integrations/qwen
+```
+
+It uses Qwen's native extension loader and does not edit
+`~/.qwen/settings.json`. Configure `~/.cognee/.env` as above; use
+`COGNEE_QWEN_BACKEND=local|cloud` when Qwen needs a different backend from
+the other Cognee plugins. See
+[`integrations/qwen/README.md`](integrations/qwen/README.md) for details.
 
 > **Using an agent framework instead?** The Python SDK integrations (Strands, CrewAI,
 > LangGraph, Google ADK, Claude Agent SDK) follow a `pip install` →
@@ -215,6 +229,7 @@ integrations/
   openclaw/           -> @openclaw/memory-cognee (npm)
   claude-code/        -> Cognee plugin for Claude Code
   codex/              -> Cognee plugin marketplace for Codex
+  qwen/               -> Cognee extension for Qwen Code
 ```
 
 ## Adding a New Integration
