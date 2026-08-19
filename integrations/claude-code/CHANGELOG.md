@@ -10,6 +10,32 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2]
+
+### Fixed
+- **A turn captured while the server is down is no longer lost.** Writes were
+  buffered to the warmup spillway only when `server_usable()` already reported
+  False. That check relies on a ready marker with a 30s TTL, so a server dying
+  inside that window left it returning True: the write was attempted for real,
+  it raised, and the `except` branch only logged `stop_store_error` — the entry
+  was buffered nowhere and the turn was gone. Both the Stop (QA) and PostToolUse
+  (trace) paths now buffer on failure and replay when the server returns.
+
+  Failures that cannot succeed on replay are *not* buffered. A 4xx is dropped
+  with `"buffered": false` in the log, because the drain stops at the first entry
+  it cannot send and only removes what it drained — a permanently rejected entry
+  would sit at the head of the queue and block everything behind it. Transport
+  failures and 5xx are retried; new events: `store_buffered_after_error`,
+  `trace_buffered_after_error`.
+
+### Known issues
+- **The PreCompact anchor is empty in server mode.** `pre-compact.py` now recalls
+  over HTTP, but its seed recall deliberately sends an empty query (there is no
+  user question at compaction time) and the server matches nothing on one, so no
+  session or trace entries come back and no anchor is printed. Per-prompt recall
+  is unaffected — this costs the summary carried across a compaction, not memory
+  itself. Tracked as SDK-424; the fix is server-side.
+
 ## [1.3.1]
 
 ### Fixed

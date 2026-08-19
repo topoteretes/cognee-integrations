@@ -14,9 +14,9 @@ Contract:
   * an empty {} body means the per-session improve lock skipped the run — busy,
     never success;
   * a dataset_id in the response triggers best-effort cognify+memify polling
-    (gated on ``has_improve_pipeline_polling`` — claude-code only: the port that
-    gave codex the background bridge did NOT cover its improve path, which still
-    reports no cognify_status).
+    (gated on ``has_improve_pipeline_polling``, now true for both suites — codex's
+    improve path was the one piece the background-remember port missed, and it
+    reported no cognify_status until that was fixed).
 
 Migrated from {claude-code,codex}/tests/test_improve_sync.py; the
 run_session_improve orchestration lives in unit/test_improve_orchestration.py.

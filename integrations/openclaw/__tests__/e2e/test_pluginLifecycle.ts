@@ -72,7 +72,11 @@ describe("session_start", () => {
     expect(harness.handlerCount("session_start")).toBe(1);
 
     await harness.emit("session_start", { sessionId: "host-session-9" }, {});
-    await harness.emit("llm_output", { text: "an answer" }, { agentId: "will", sessionId: "host-session-9" });
+    await harness.emit(
+      "llm_output",
+      { assistantTexts: ["an answer"] },
+      { agentId: "will", sessionId: "host-session-9" },
+    );
     await flush();
 
     // The adopted id has to reach the server, or the turn lands under a different
@@ -85,23 +89,56 @@ describe("session_start", () => {
   });
 
   /**
-   * Surprising coupling, pinned deliberately rather than worked around.
+   * Regression guard for a coupling that has been removed.
    *
-   * `session_start` is registered inside `if (cfg.autoIndex)` — the same block as
-   * `agent_end` — even though its body independently checks `cfg.enableSessions`.
-   * So a user running `enableSessions: true, autoIndex: false` never adopts the
-   * host's session id from this event.
+   * `session_start` used to be registered inside `if (cfg.autoIndex)` — the same
+   * block as `agent_end` — even though its body independently checks
+   * `cfg.enableSessions`. So `enableSessions: true, autoIndex: false` never adopted
+   * the host session id from this event.
    *
-   * Not filed as a bug: `session_end` is always-on and resolves the session from
-   * its own ctx, so capture still works. But the two flags read as independent and
-   * are not, which is exactly the kind of thing that gets "fixed" by accident —
-   * this test makes that a decision instead.
+   * It was never a visible bug, because the always-on `session_end` handler
+   * resolves the session from its own ctx and capture kept working. That is
+   * precisely why it survived: two flags that read as independent were not, with
+   * no symptom to give it away.
    */
-  it("is NOT registered when autoIndex is off, even with sessions enabled", () => {
-    const harness = createPluginApi(plugin, { autoIndex: false, enableSessions: true });
-    expect(harness.handlerCount("session_start")).toBe(0);
-    // The always-on final-sync handler is what keeps capture working regardless.
-    expect(harness.handlerCount("session_end")).toBeGreaterThan(0);
+  it("is registered whenever sessions are enabled, regardless of autoIndex", () => {
+    const withoutIndex = createPluginApi(plugin, { autoIndex: false, enableSessions: true });
+    expect(withoutIndex.handlerCount("session_start")).toBe(1);
+
+    const withIndex = createPluginApi(plugin, { autoIndex: true, enableSessions: true });
+    expect(withIndex.handlerCount("session_start")).toBe(1);
+  });
+
+  it("adopts the host session id with autoIndex off — what the fix enables", async () => {
+    // Registration alone is not the point; this is the configuration that
+    // previously never saw a session_start at all.
+    const harness = createPluginApi(plugin, {
+      autoIndex: false,
+      enableSessions: true,
+      captureSession: true,
+    });
+
+    const ctx = { agentId: "will", sessionId: "host-session-42" };
+    await harness.emit("session_start", { sessionId: "host-session-42" }, {});
+    // A QA entry pairs an answer with a pending prompt (`if (!question) return`),
+    // so the prompt has to come first or llm_output captures nothing.
+    await harness.emit("before_prompt_build", { prompt: "what did we decide?" }, ctx);
+    await harness.emit("llm_output", { assistantTexts: ["recorded"] }, ctx);
+    await flush();
+
+    const calls = stub.rememberEntry.mock.calls as unknown[][];
+    expect(calls.length).toBeGreaterThan(0);
+    expect(String((calls[0][0] as { sessionId?: string }).sessionId ?? "")).toContain(
+      "host-session-42",
+    );
+  });
+
+  it("registers exactly one handler, not one per flag combination", () => {
+    // Moving the registration out of the autoIndex block risks registering it
+    // twice if the old call site is ever restored alongside the new one; a
+    // duplicate would adopt the id twice and is invisible except here.
+    const harness = createPluginApi(plugin, { autoIndex: true, enableSessions: true });
+    expect(harness.handlerCount("session_start")).toBe(1);
   });
 });
 
