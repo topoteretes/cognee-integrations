@@ -7,6 +7,8 @@ This community node lets you:
 - Add text data to a Cognee dataset
 - Turn data into AI memory with cognify to build knowledge-graph-based memory
 - Run search over your AI memory datasets
+- Recall from memory: a search alias with session, node-set filtering and auto-routing
+- Remember text: one-shot add + cognify with session attribution and node-set tagging
 - Delete datasets or individual data items
 - Run the self-improving skill loop: ingest a SKILL.md, review a task with the skill loaded, propose an improvement, review the before/after diff, and apply it
 
@@ -50,9 +52,9 @@ Create credentials of type `Cognee API` in n8n. The node uses these values to au
 
 ## Operations
 
-The node exposes five resources. Each operation maps to a Cognee API endpoint.
+The node exposes seven resources. Each operation maps to a Cognee API endpoint.
 
-> **Two API surfaces.** The **Add Data / Cognify / Search / Delete** resources call Cognee Cloud's `/api/*` endpoints. The **Skill** resource (self-improving loop) calls the `/api/v1/*` endpoints — available on a self-hosted cognee server today, and on Cognee Cloud as its `/api/v1` surface rolls out. Point the credential **Base URL** at whichever backend exposes the routes you need (e.g. `http://localhost:8000` for a self-hosted server). The connection test hits `GET /health`.
+> **Two API surfaces.** The **Add Data / Cognify / Search / Delete** resources call Cognee Cloud's `/api/*` endpoints. The **Recall**, **Remember** and **Skill** resources call the `/api/v1/*` endpoints (available on a self-hosted cognee server today, and on Cognee Cloud as its `/api/v1` surface rolls out). Point the credential **Base URL** at whichever backend exposes the routes you need (e.g. `http://localhost:8000` for a self-hosted server). The connection test hits `GET /health`.
 
 ### Resource: Add Data
 
@@ -109,6 +111,53 @@ Example body sent by the node:
   "topK": 5
 }
 ```
+
+### Resource: Recall (`/api/v1`)
+
+Search wearing a memory hat. Same response as **Search**, plus session, node-set filtering, and an **Auto** search type that lets cognee route the query for you.
+
+- **Operation**: Recall
+- **Endpoint**: `POST /api/v1/recall`
+- **Fields**:
+  - Search Type (`search_type`): `Auto` (default; sends `null` for auto-routing), `GRAPH_COMPLETION`, `GRAPH_COMPLETION_COT`, or `RAG_COMPLETION`
+  - Query (`query`, required)
+  - Datasets (`datasets`, optional, multiple): omit to search every dataset you can read
+  - Session ID (`session_id`, optional): recall from a session's cached QA/trace entries
+  - Node Names (`node_name`, optional, multiple): restrict to node sets tagged via Remember/Add
+  - Scope (`scope`): `auto`, `graph`, `session`, `trace`, `graph_context`, or `all`
+  - Top K (`top_k`, optional number): defaults to 15
+
+**vs Search**: Recall hits `/api/v1/recall` (search's memory alias) and adds `session_id`, `node_name` and `scope`, plus an Auto type that sends `search_type: null`. The response shape matches Search (raw body passthrough).
+
+Example body sent by the node:
+
+```json
+{
+  "search_type": null,
+  "query": "How do I export my data?",
+  "datasets": ["support_docs"],
+  "session_id": "claude-code-1718000000",
+  "node_name": ["support"],
+  "scope": "auto",
+  "top_k": 15
+}
+```
+
+### Resource: Remember (`/api/v1`)
+
+One-shot add + cognify: ingest text and build the knowledge graph in a single call, with session attribution and node-set tagging.
+
+- **Operation**: Remember
+- **Endpoint**: `POST /api/v1/remember` (multipart form)
+- **Fields**:
+  - Dataset Name (`datasetName`, required): created if it does not exist
+  - Dataset ID (`datasetId`, optional): UUID of an existing dataset, used instead of resolving by name
+  - Text (`rememberText`, required): sent as an uploaded `.txt` file part
+  - Session ID (`session_id`, optional): attribute the memory to a session (tracked in the sessions dashboard)
+  - Node Sets (`node_set`, optional, multiple): tag the data so Recall/Search can later filter to it
+  - Run in Background (`run_in_background`, default on): the request returns as soon as the work is enqueued. Disable to wait synchronously; note the Cognee Cloud gateway closes long-running connections around the 4-minute mark, so non-trivial texts fail with ECONNRESET in sync mode.
+
+**vs Add + Cognify**: Remember does add and cognify in one request. What it buys you over two nodes is `session_id` attribution and `node_set` tagging. If you only need plain-text ingest without those, **Add Data** + **Cognify** does the same job.
 
 ### Resource: Delete
 
@@ -188,6 +237,8 @@ The node depends on `n8n-workflow` at runtime (peer dependency). It should work 
 
 ## Version history
 
+- **0.6.0**: Add the **Recall** and **Remember** resources targeting the `/api/v1` API. Recall (`POST /api/v1/recall`) is a memory-oriented search alias with `session_id`, `node_name`, `scope` and an Auto (`search_type: null`) routing option. Remember (`POST /api/v1/remember`) does one-shot add + cognify of text with session attribution and node-set tagging. Existing operations are unchanged.
+- **0.5.1**: Review Skill now returns a parsed score item (`score`, `score_parse_ok`, `dimensions`, `review`) instead of the raw search body, and the credential connection test hits `GET /health` instead of `GET /api/health`.
 - **0.5.0**: Add the **Skill** resource (self-improving skill loop) targeting the `/api/v1` API: Ingest Skill, Review Skill (agentic), Propose Improvement, Apply Improvement, Get Skill, Get Proposal. Existing Add/Cognify/Search/Delete operations are unchanged.
 
  - **0.4.0**: Prefix `/api` to all endpoint URLs and update Base URL format to `https://tenant-xxx.aws.cognee.ai` (breaking change — re-enter
