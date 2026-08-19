@@ -30,8 +30,8 @@ EXPECTED = [
     ("SessionEnd", "sync-session-to-graph.py", "--session-end"),
 ]
 
-#: ${CLAUDE_PLUGIN_ROOT} / ${PLUGIN_ROOT} / ${extensionPath}, quoted or bare.
-_PLUGIN_ROOT = re.compile(r'"?\$\{(?:(?:CLAUDE_)?PLUGIN_ROOT|extensionPath)\}"?')
+#: ${CLAUDE_PLUGIN_ROOT} / ${PLUGIN_ROOT}, quoted or bare.
+_PLUGIN_ROOT = re.compile(r'"?\$\{(?:CLAUDE_)?PLUGIN_ROOT\}"?')
 
 
 @pytest.fixture

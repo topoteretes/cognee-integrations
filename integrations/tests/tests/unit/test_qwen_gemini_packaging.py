@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 _INTEGRATIONS = Path(__file__).resolve().parents[3]
@@ -19,7 +20,7 @@ _CLAUDE_EVENTS = (
     "SessionEnd",
 )
 _GEMINI_ONLY_EVENTS = ("BeforeAgent", "AfterAgent", "BeforeTool", "AfterTool", "PreCompress")
-_PLUGIN_ROOT = re.compile(r"\$\{(?:extensionPath|CLAUDE_PLUGIN_ROOT)\}")
+_PLUGIN_ROOT = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}")
 
 
 def _manifest(name: str) -> dict:
@@ -73,6 +74,23 @@ def test_qwen_ships_memory_setup_and_codebase_skills():
         assert (QWEN / "skills" / skill / "SKILL.md").is_file()
 
 
+def test_installed_memory_skill_resolves_extension_scripts_from_injected_base(tmp_path):
+    """Qwen injects the installed skill base, not a plugin-root environment variable."""
+    installed_extension = tmp_path / "installed-extensions" / "cognee"
+    shutil.copytree(QWEN, installed_extension)
+    installed_skill = installed_extension / "skills" / "memory" / "SKILL.md"
+    skill = installed_skill.read_text(encoding="utf-8")
+
+    assert "${CLAUDE_PLUGIN_ROOT}" not in skill
+    assert "two levels above" in skill
+    assert 'EXTENSION_ROOT="$(cd "<qwen-injected-skill-base>/../.." && pwd)"' in skill
+
+    extension_root = installed_skill.parent.parent.parent
+    scripts = re.findall(r"\$EXTENSION_ROOT/scripts/([\w.-]+)", skill)
+    assert scripts, "memory skill does not name any extension-root script commands"
+    assert not [script for script in scripts if not (extension_root / "scripts" / script).is_file()]
+
+
 def test_hooks_use_qwen_extension_layout():
     assert (QWEN / "hooks" / "hooks.json").is_file()
     assert not (QWEN / "hooks.json").exists()
@@ -103,15 +121,19 @@ def test_command_timeouts_are_milliseconds():
     assert not too_small, f"Qwen command timeouts must be milliseconds (>=1000): {too_small}"
 
 
-def test_commands_expand_qwen_extension_root():
+def test_commands_expand_qwen_claude_plugin_root():
     missing = []
     for event, hook in _command_hooks():
         command = str(hook.get("command", ""))
         if "python" in command and not _PLUGIN_ROOT.search(command):
             missing.append((event, command[:80]))
     assert not missing, (
-        f"Qwen hooks must use ${{extensionPath}} or ${{CLAUDE_PLUGIN_ROOT}}: {missing}"
+        f"Qwen hooks must use ${{CLAUDE_PLUGIN_ROOT}}: {missing}"
     )
+
+
+def test_qwen_hook_root_contract_rejects_extension_path():
+    assert _PLUGIN_ROOT.search("${extensionPath}/scripts/session-start.py") is None
 
 
 def test_python3_commands_fall_back_to_python():

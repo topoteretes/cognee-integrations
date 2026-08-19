@@ -294,7 +294,16 @@ def main():
     except Exception as exc:
         hook_log("precompact_run_exception", {"error": str(exc)[:200]})
     if anchor:
-        print(anchor)
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreCompact",
+                        "additionalContext": anchor,
+                    }
+                }
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -649,8 +649,11 @@ def main():
         hook_log("context_lookup_missing_session_key")
         return
 
-    prompt = payload.get("prompt", "")
-    if not prompt or len(prompt) < 5:
+    # Qwen fires this event for internal ToolResult/Hook sends as well. The
+    # pre-expansion provenance field exists only for an actual interactive
+    # user submission, and keeps recalled context out of tool continuations.
+    prompt = payload.get("submitted_prompt")
+    if not isinstance(prompt, str) or len(prompt.strip()) < 5:
         return
 
     output = None

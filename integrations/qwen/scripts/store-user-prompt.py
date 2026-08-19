@@ -207,8 +207,12 @@ def main():
         hook_log("prompt_missing_session_key")
         return
 
-    prompt = payload.get("prompt", "")
-    if not prompt or len(prompt) < 5:
+    # Qwen also fires UserPromptSubmit for internal ToolResult/Hook sends. Only
+    # an ordinary interactive user turn carries the pre-expansion provenance
+    # field, so using ``prompt`` here can replace the pending question with a
+    # function-response payload before Stop pairs it with the answer.
+    prompt = payload.get("submitted_prompt")
+    if not isinstance(prompt, str) or len(prompt.strip()) < 5:
         return
 
     try:

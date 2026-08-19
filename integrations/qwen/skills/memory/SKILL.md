@@ -17,12 +17,24 @@ memory.
 - Do not ingest secrets, credentials, `.env` files, private keys, token dumps, or unrelated generated artifacts.
 - Before destructive commands such as `forget`, `delete`, or `--everything`, get explicit user confirmation.
 
+## Extension Script Paths
+
+Qwen injects `Base directory for this skill: <qwen-injected-skill-base>` before
+this skill. That base is `<extension-root>/skills/memory`. For every extension
+script below, resolve the extension root **two levels above** that injected base,
+then append `scripts/<script-name>`:
+
+```bash
+# Replace <qwen-injected-skill-base> with the exact absolute path Qwen injected.
+EXTENSION_ROOT="$(cd "<qwen-injected-skill-base>/../.." && pwd)"
+```
+
 ## Add And Build
 
 **Server-first (one-step ingestion):**
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh "<text>" --node-set user_context
+"$EXTENSION_ROOT/scripts/cognee-remember.sh" "<text>" --node-set user_context
 ```
 
 Use `--node-set project_docs` for project/code content, `--node-set agent_actions` for agent notes. The script POSTs directly to `/api/v1/remember`. A `{"ok": true}` response means the server accepted the data. An error response means the server rejected or failed the request — check `COGNEE_API_KEY` and server logs; do **not** re-run or conclude the data wasn't stored without confirming against the server.
@@ -90,7 +102,7 @@ uv run cognee-cli search "<code question>" -d <dataset-name> -t CODE -k 10 -f pr
 **Server-first (session → graph sync):**
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"
+python3 "$EXTENSION_ROOT/scripts/sync-session-to-graph.py"
 ```
 
 **Fallback only — server unreachable:**

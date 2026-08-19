@@ -148,7 +148,13 @@ def test_precompact_produces_an_anchor_carrying_the_session(
     )
     assert run.ok, f"pre-compact failed (rc={run.returncode}): {run.stderr[:600]}"
 
-    anchor = run.stdout.strip()
+    output = run.stdout.strip()
+    if live_suite.name == "qwen":
+        hook_output = json.loads(output)
+        assert hook_output["hookSpecificOutput"]["hookEventName"] == "PreCompact"
+        anchor = hook_output["hookSpecificOutput"]["additionalContext"]
+    else:
+        anchor = output
     assert anchor, "pre-compact produced no anchor at all — nothing would survive compaction"
     assert nonce.lower() in anchor.lower(), (
         f"the anchor does not mention the session's subject ({nonce}):\n{anchor[:1200]}"
