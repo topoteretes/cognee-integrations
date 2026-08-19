@@ -3127,6 +3127,7 @@ def _entry_fingerprint(entry: dict) -> tuple | None:
                 "qa",
                 str(entry.get("question") or ""),
                 str(entry.get("answer") or ""),
+                str(entry.get("context") or ""),
             )
     except Exception:
         return None

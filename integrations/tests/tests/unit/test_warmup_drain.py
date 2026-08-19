@@ -381,3 +381,29 @@ def test_write_outcome_ambiguous_classification(pc):
     assert pc.write_outcome_ambiguous(TimeoutError("timed out")) is True
     assert pc.write_outcome_ambiguous(server_err) is True
     assert pc.write_outcome_ambiguous(gateway) is True
+
+
+def test_qa_with_same_text_but_different_context_is_not_deduped(pc, monkeypatch):
+    # Same question/answer as a committed turn but a different context is a
+    # DIFFERENT turn: deduping it would silently lose data. The fingerprint
+    # must include context (the server stores and echoes it verbatim).
+    qa = {"type": "qa", "question": "what?", "answer": "this", "context": "ctx1"}
+    pc.append_warmup_entry("ds", "sid", dict(qa), ambiguous=True)
+    committed_other_turn = {
+        "time": "2026-08-19T09:00:00",
+        "qa_id": "q-9",
+        "question": "what?",
+        "answer": "this",
+        "context": "ctx2",
+    }
+    monkeypatch.setattr(
+        pc,
+        "get_session_detail_via_http",
+        lambda sid, **k: _detail_with(qas=[committed_other_turn]),
+    )
+    sent: list = []
+    _replay_into(pc, monkeypatch, sent)
+
+    assert pc.drain_warmup_entries("ds", "sid") == (1, 0)
+    assert len(sent) == 1, "a distinct turn must replay, not be deduped"
+    assert sent[0] == qa
