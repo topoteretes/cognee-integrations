@@ -13,9 +13,7 @@ def _set_stdin(monkeypatch, payload: dict) -> None:
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
 
 
-def test_precompact_anchor_uses_qwen_additional_context_envelope(
-    hook_module, monkeypatch, capsys
-):
+def test_precompact_anchor_uses_qwen_additional_context_envelope(hook_module, monkeypatch, capsys):
     """Qwen ignores raw PreCompact stdout; the anchor must be structured context."""
     module = hook_module(QWEN, "pre-compact.py")
     anchor = "## Cognee Memory Anchor\nkeep this context"
@@ -114,9 +112,7 @@ def test_qwen_recall_uses_submitted_prompt_provenance(hook_module, monkeypatch):
     assert queries == ["original user question"]
 
 
-def test_qwen_recall_skips_internal_continuations_without_provenance(
-    hook_module, monkeypatch
-):
+def test_qwen_recall_skips_internal_continuations_without_provenance(hook_module, monkeypatch):
     """ToolResult/Hook sends are not user questions and must not trigger recall."""
     module = hook_module(QWEN, "session-context-lookup.py")
     queries = []

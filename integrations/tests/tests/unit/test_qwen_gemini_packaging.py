@@ -127,9 +127,7 @@ def test_commands_expand_qwen_claude_plugin_root():
         command = str(hook.get("command", ""))
         if "python" in command and not _PLUGIN_ROOT.search(command):
             missing.append((event, command[:80]))
-    assert not missing, (
-        f"Qwen hooks must use ${{CLAUDE_PLUGIN_ROOT}}: {missing}"
-    )
+    assert not missing, f"Qwen hooks must use ${{CLAUDE_PLUGIN_ROOT}}: {missing}"
 
 
 def test_qwen_hook_root_contract_rejects_extension_path():
