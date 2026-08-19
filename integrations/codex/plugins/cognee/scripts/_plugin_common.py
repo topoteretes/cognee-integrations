@@ -2592,59 +2592,6 @@ def remember_entry_via_http(
     )
 
 
-def get_session_detail_via_http(session_id: str, *, timeout: float = 8.0) -> dict | None:
-    """Fetch the server's view of a session: recent QA and trace tails.
-
-    GET /api/v1/sessions/{id} returns the session row plus the last ~20 QA and
-    trace entries. The drain's verify-before-replay pass uses it to check
-    whether an ambiguous write (timed out / gateway error after the request
-    was sent) actually committed. Returns None on any failure — callers must
-    fail open (replay anyway) rather than block the drain on a read.
-    """
-    if not session_id:
-        return None
-    try:
-        result = _json_http_request(
-            f"/api/v1/sessions/{urllib.parse.quote(session_id, safe='')}",
-            None,
-            method="GET",
-            timeout=timeout,
-        )
-        return result if isinstance(result, dict) else None
-    except Exception as exc:
-        hook_log("session_detail_error", {"error": str(exc)[:200]})
-        return None
-
-
-def write_outcome_ambiguous(exc: Exception) -> bool:
-    """True if a failed /remember/entry write may still have been committed.
-
-    The server has no idempotency on the entry path — every accepted write
-    creates and embeds a fresh entry — so replaying a write that actually
-    landed duplicates session content and inflates the next improve. Only
-    failures where the request provably never reached the application are
-    unambiguous:
-      - connection refused / DNS failure: nothing was sent;
-      - HTTP 503: the endpoint returns it before touching the cache
-        ("session cache unavailable"), and a proxy 503 means it never routed.
-    Everything else — timeouts, resets, SSL errors mid-exchange, 500/502/504 —
-    may have committed server-side, so the buffered copy must be verified
-    against the server before replay.
-    """
-    if isinstance(exc, urllib.error.HTTPError):
-        return exc.code != 503
-    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-    if isinstance(reason, (socket.gaierror, ConnectionRefusedError)):
-        return False
-    if isinstance(reason, OSError) and getattr(reason, "errno", None) in (
-        errno.ECONNREFUSED,
-        errno.EHOSTUNREACH,
-        errno.ENETUNREACH,
-    ):
-        return False
-    return True
-
-
 def register_agent_via_http(
     *,
     agent_session_name: str,
@@ -3066,87 +3013,23 @@ def improve_unsupported(base_url: str) -> bool:
     return datetime.now(timezone.utc).timestamp() - marked_at < _IMPROVE_UNSUPPORTED_TTL_SECONDS
 
 
-# Buffer-internal marker on a pending entry whose original send may have
-# committed server-side (see write_outcome_ambiguous). Stripped before replay;
-# never sent, never read outside this module.
-_AMBIGUOUS_KEY = "_replay_ambiguous"
-
-
-def append_warmup_entry(
-    dataset: str, session_id: str, entry: dict, *, ambiguous: bool = False
-) -> None:
+def append_warmup_entry(dataset: str, session_id: str, entry: dict) -> None:
     """Buffer a typed QA/trace entry while the server is still warming.
 
     Per-turn stores go to the server session cache via /remember/entry; before
     the server serves, those writes would be lost — and improve() bridges only
     what the server cache holds. Buffered entries are replayed in order by
     ``drain_warmup_entries`` once the server is ready.
-
-    ``ambiguous=True`` marks an entry whose original send may have committed
-    (a timeout or gateway error after the request went out). The server has no
-    idempotency on /remember/entry, so the drain verifies such entries against
-    the server's session detail before replaying — a blind replay of a
-    committed write stores, embeds, and improve()-processes the text twice.
     """
     if not dataset or not session_id or not isinstance(entry, dict):
         return
     entry = _sanitize_value(entry)
-    if ambiguous:
-        entry = dict(entry)
-        entry[_AMBIGUOUS_KEY] = True
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
         key = _bridge_cache_key(dataset, session_id)
         session_cache = cache.setdefault(key, {"qa": [], "trace": []})
         session_cache.setdefault("pending_entries", []).append(entry)
         _write_json_file(_bridge_file(session_id), cache)
-
-
-def _entry_fingerprint(entry: dict) -> tuple | None:
-    """Content identity of a QA/trace entry, as the server would echo it back.
-
-    Built from the fields the server stores verbatim and returns through
-    GET /api/v1/sessions/{id} (server-generated fields — ids, time,
-    session_feedback — are deliberately excluded). None for entry types the
-    session detail does not expose (feedback, skill_run): those cannot be
-    verified and are replayed unconditionally.
-    """
-    try:
-        etype = str(entry.get("type") or "")
-        if etype == "trace":
-            return (
-                "trace",
-                str(entry.get("origin_function") or ""),
-                str(entry.get("status") or ""),
-                json.dumps(entry.get("method_params") or {}, sort_keys=True, default=str),
-                json.dumps(entry.get("method_return_value"), sort_keys=True, default=str),
-                str(entry.get("error_message") or ""),
-            )
-        if etype == "qa":
-            return (
-                "qa",
-                str(entry.get("question") or ""),
-                str(entry.get("answer") or ""),
-            )
-    except Exception:
-        return None
-    return None
-
-
-def _server_session_fingerprints(detail: dict) -> set:
-    """Fingerprints of every QA/trace entry in a session-detail response."""
-    prints: set = set()
-    for row in detail.get("traces") or []:
-        if isinstance(row, dict):
-            fp = _entry_fingerprint({**row, "type": "trace"})
-            if fp:
-                prints.add(fp)
-    for row in detail.get("qas") or []:
-        if isinstance(row, dict):
-            fp = _entry_fingerprint({**row, "type": "qa"})
-            if fp:
-                prints.add(fp)
-    return prints
 
 
 _DRAIN_LOCK = _PLUGIN_DIR / "drain.lock"
@@ -3173,11 +3056,8 @@ def _try_acquire_drain_lock() -> bool:
     except FileExistsError:
         return False
     except Exception as exc:
-        # Fail open: lock bookkeeping must never be why a buffer can't drain.
-        # The cost is real — /remember/entry has NO server-side idempotency,
-        # so a concurrent double replay stores duplicates — but it needs two
-        # drains inside the same window on a broken lock, and losing the
-        # buffer forever is worse.
+        # Fail open: a rare double replay (deduped server-side per entry write)
+        # is better than a buffer that can never drain.
         hook_log("drain_lock_error", {"error": str(exc)[:200]})
         return True
 
@@ -3226,16 +3106,6 @@ def drain_warmup_entries(
     clamped to the remaining budget so one hung call cannot eat it all. A
     session whose replay failed with an HTTP status recently is skipped
     entirely until its backoff window passes (see ``_DRAIN_BACKOFF_*``).
-
-    Verify-before-replay: entries buffered from an ambiguous send (marked by
-    ``append_warmup_entry(..., ambiguous=True)``) may already exist server-side
-    — /remember/entry has no idempotency, so replaying one blind would store
-    and embed the content twice and feed the duplicate to the next improve.
-    When any are pending, one GET of the session detail supplies the server's
-    recent entries; an ambiguous entry whose content is already there is
-    consumed without being re-sent (logged in ``warmup_drained`` as
-    ``deduped``). If the detail read fails, everything replays as before: a
-    rare duplicate beats a lost turn.
     """
     if not dataset or not session_id:
         return 0, 0
@@ -3270,23 +3140,7 @@ def drain_warmup_entries(
         if budget_seconds is None:
             budget_seconds = _drain_budget_default()
         deadline = time.monotonic() + max(0.0, float(budget_seconds))
-        # One session-detail read serves the whole drain, and only when an
-        # ambiguous entry is actually pending. A failed read degrades to the
-        # pre-verify behavior (replay everything), never to a blocked drain.
-        server_prints: set = set()
-        verified = False
-        if any(isinstance(e, dict) and e.get(_AMBIGUOUS_KEY) for e in snapshot):
-            budget_left = deadline - time.monotonic()
-            detail = get_session_detail_via_http(
-                session_id, timeout=min(8.0, max(1.0, budget_left))
-            )
-            if detail is not None:
-                server_prints = _server_session_fingerprints(detail)
-                verified = True
-            else:
-                hook_log("warmup_verify_unavailable", {"session": session_id})
         drained = 0
-        deduped = 0
         http_failure = False
         for entry in snapshot:
             budget_left = deadline - time.monotonic()
@@ -3296,25 +3150,15 @@ def drain_warmup_entries(
                     {
                         "session": session_id,
                         "drained": drained,
-                        "left": len(snapshot) - drained - deduped,
+                        "left": len(snapshot) - drained,
                     },
                 )
                 break
-            send_entry = entry
-            ambiguous = False
-            if isinstance(entry, dict) and _AMBIGUOUS_KEY in entry:
-                send_entry = {k: v for k, v in entry.items() if k != _AMBIGUOUS_KEY}
-                ambiguous = True
-            if ambiguous and verified and _entry_fingerprint(send_entry) in server_prints:
-                # The original send committed after all — consume the buffered
-                # copy without re-sending it.
-                deduped += 1
-                continue
             try:
                 remember_entry_via_http(
                     dataset,
                     session_id,
-                    send_entry,
+                    entry,
                     timeout=min(30.0, max(1.0, budget_left)),
                 )
                 drained += 1
@@ -3328,9 +3172,6 @@ def drain_warmup_entries(
             except Exception as exc:
                 hook_log("warmup_drain_error", {"error": str(exc)[:200], "drained": drained})
                 break
-        # Both sent and dedup-consumed entries leave the buffer; they form a
-        # contiguous head prefix because the loop only ever breaks.
-        drained += deduped
         remaining = len(snapshot) - drained
         if drained:
             # Re-read before trimming, under the buffer mutex: hooks may append
@@ -3355,12 +3196,7 @@ def drain_warmup_entries(
             remaining = len(fresh)
             hook_log(
                 "warmup_drained",
-                {
-                    "session": session_id,
-                    "count": drained,
-                    "deduped": deduped,
-                    "left": remaining,
-                },
+                {"session": session_id, "count": drained, "left": remaining},
             )
         # Backoff bookkeeping. An HTTP-status failure arms (or re-arms) the
         # backoff; any progress first resets it — the entry now at the head is
@@ -3583,8 +3419,7 @@ def _run_session_improve_locked(dataset: str, session_id: str) -> bool:
         # Buffered entries never reached the server cache, so the improve above
         # persisted an incomplete session. Partial persist beats none (hence the
         # improve still ran), but report not-synced so the caller's retry loop
-        # re-drives the whole drain+improve — the drained head is already
-        # trimmed from the buffer, so the re-run replays only the tail.
+        # re-drives the whole drain+improve — dedup makes the re-run cheap.
         hook_log(
             "improve_incomplete_drain",
             {
