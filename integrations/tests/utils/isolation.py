@@ -32,6 +32,7 @@ from .suites import Suite
 ISOLATED_MODULES = (
     "config",
     "_plugin_common",
+    "_project_dataset",
     "_cognee_client",
     "_env_file",
     "_proc",
