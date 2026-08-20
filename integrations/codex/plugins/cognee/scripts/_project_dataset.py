@@ -25,7 +25,10 @@ def normalize_git_remote(remote: str) -> str | None:
         return None
     if "://" not in value:
         match = _SCP_REMOTE.fullmatch(value)
-        if not match or (len(match["host"]) == 1 and match["path"].startswith(("\\", "/"))):
+        if not match or (
+            len(match["host"]) == 1
+            and (match["host"].isascii() and match["host"].isalpha() or match["path"].startswith(("\\", "/")))
+        ):
             return None
         host = match["host"].strip("[]").lower()
         path = _repository_path(match["path"])

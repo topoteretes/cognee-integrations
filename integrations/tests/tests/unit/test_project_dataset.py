@@ -42,7 +42,7 @@ def test_dataset_name_is_bounded_and_contains_no_credentials(suite, isolated_mod
 
 @pytest.mark.parametrize(
     "remote",
-    ["/tmp/local/repo.git", "file:///tmp/local/repo.git", "not a remote"],
+    ["/tmp/local/repo.git", "file:///tmp/local/repo.git", "not a remote", "C:repo"],
 )
 def test_unsupported_or_malformed_remote_returns_none(suite, isolated_modules, remote):
     resolver = isolated_modules(suite, "_project_dataset")
