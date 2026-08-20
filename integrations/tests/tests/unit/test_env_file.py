@@ -192,6 +192,14 @@ def test_template_never_overwrites(env_file_env, temp_home):
     assert ef._DEFAULT_ENV_FILE.read_text(encoding="utf-8") == "USER_EDIT=kept\n"
 
 
+def test_template_documents_project_dataset_opt_in(env_file_env):
+    ef, _ = env_file_env
+    assert "# Derive one shared dataset per Git repository/workspace:" in ef._TEMPLATE
+    assert '# COGNEE_DATASET_SCOPE="project"' in ef._TEMPLATE
+    assert "# An explicit COGNEE_PLUGIN_DATASET always wins:" in ef._TEMPLATE
+    assert '# COGNEE_PLUGIN_DATASET="agent_sessions"' in ef._TEMPLATE
+
+
 def test_status_reports_names_not_values(env_file_env, monkeypatch):
     ef, fresh = env_file_env
     fresh("COGNEE_TEST_SECRET=super-secret\nPATH=/evil\nCOGNEE_TEST_SHADOWED=file-value\n")

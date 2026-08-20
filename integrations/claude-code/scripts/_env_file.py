@@ -74,6 +74,9 @@ _TEMPLATE = """\
 # LLM_MODEL="openai/gpt-4o-mini"
 
 ## Optional:
+# Derive one shared dataset per Git repository/workspace:
+# COGNEE_DATASET_SCOPE="project"
+# An explicit COGNEE_PLUGIN_DATASET always wins:
 # COGNEE_PLUGIN_DATASET="agent_sessions"
 """
 
