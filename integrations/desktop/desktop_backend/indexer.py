@@ -28,12 +28,17 @@ _FRESH_STATUS: dict[str, Any] = {
 }
 
 
-def discover_files(roots: list[str], settings: Settings) -> list[Path]:
+def discover_files(
+    roots: list[str], settings: Settings, filters: dict[str, list[str]] | None = None
+) -> list[Path]:
     """All indexable files under ``roots``: allowed extension, size cap,
-    hidden files and throwaway directories (node_modules, .git, ...) skipped."""
+    hidden files and throwaway directories (node_modules, .git, ...) skipped.
+    A root with an entry in ``filters`` indexes only those extensions —
+    "everything .pdf and .docx from this folder" is a filter, not a chore."""
     found: list[Path] = []
     seen: set[Path] = set()
     for root in roots:
+        allowed = set((filters or {}).get(root) or []) or settings.extensions
         base = Path(root).expanduser()
         if base.is_file():
             candidates = [base]
@@ -45,7 +50,7 @@ def discover_files(roots: list[str], settings: Settings) -> list[Path]:
             if path in seen:
                 continue
             seen.add(path)
-            if path.suffix.lower() not in settings.extensions:
+            if path.suffix.lower() not in allowed:
                 continue
             try:
                 if path.stat().st_size > settings.max_file_size:
@@ -107,11 +112,14 @@ class Indexer:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def start(self, roots: list[str]) -> bool:
-        """Kick off a background indexing run. Returns False if one is running."""
+    def start(self, roots: list[str], extensions: list[str] | None = None) -> bool:
+        """Kick off a background indexing run. Returns False if one is running.
+
+        ``extensions`` restricts what indexes under these new roots — the
+        filter sticks to the root and applies to every future re-sync too."""
         if self.running:
             return False
-        self._catalog.add_roots(roots)
+        self._catalog.add_roots(roots, extensions=extensions)
         # status flips before the task is scheduled, so a poll right after the
         # 202 never sees a stale "idle" from the previous run
         self.status = {**_FRESH_STATUS, "state": "scanning"}
@@ -120,7 +128,7 @@ class Indexer:
 
     async def _run(self, roots: list[str]) -> None:
         try:
-            files = discover_files(roots, self._settings)
+            files = discover_files(roots, self._settings, self._catalog.root_filters)
             stats = {p: p.stat() for p in files}
             todo = [p for p in files if self._catalog.needs_index(str(p), stats[p].st_mtime)]
             self.status.update(state="adding", total=len(todo))

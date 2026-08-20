@@ -345,3 +345,33 @@ async def test_forget_directly_indexed_file_takes_the_file_path(client, tmp_path
     assert response["ok"] is True and response["removed"] == 1
     assert "root unwatched" not in response["detail"]
     assert (await client.get("/files")).json()["total"] == 0
+
+
+async def test_index_with_extension_filter_sticks_to_the_root(client, tmp_path):
+    docs = tmp_path / "mixed"
+    docs.mkdir()
+    (docs / "contract.pdf").write_bytes(b"%PDF-1.4 fake")
+    (docs / "notes.md").write_text("markdown that should stay out")
+    (docs / "report.docx").write_bytes(b"PK fake docx")
+
+    response = await client.post(
+        "/index", json={"paths": [str(docs)], "extensions": ["pdf", ".docx"]}
+    )
+    assert response.status_code == 202
+    for _ in range(100):
+        status = (await client.get("/index/status")).json()
+        if status["state"] in ("idle", "error"):
+            break
+        await asyncio.sleep(0.01)
+    assert status["state"] == "idle"
+
+    names = {f["name"] for f in (await client.get("/files")).json()["files"]}
+    assert names == {"contract.pdf", "report.docx"}  # .md filtered out
+    assert status["root_filters"][str(docs)] == [".pdf", ".docx"]
+
+    # a later plain reindex keeps honoring the root's filter
+    (docs / "later.md").write_text("still filtered")
+    (docs / "later.pdf").write_bytes(b"%PDF later")
+    await index_and_wait(client, docs)
+    names = {f["name"] for f in (await client.get("/files")).json()["files"]}
+    assert "later.pdf" in names and "later.md" not in names

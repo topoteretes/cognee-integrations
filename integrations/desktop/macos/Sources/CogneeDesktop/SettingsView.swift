@@ -20,6 +20,24 @@ final class SettingsModel: ObservableObject {
     }
     /// Every configured data source, as the backend describes it.
     @Published var connections: [SourceConnection] = []
+    /// Mirrors whether the "Index in Cognee" Finder Quick Action is installed.
+    @Published var finderIntegration: Bool = FinderIntegration.isInstalled
+
+    func setFinderIntegration(_ enabled: Bool) {
+        do {
+            if enabled {
+                try FinderIntegration.install()
+                statusText = "Installed — select files in Finder, right-click → Quick Actions → Index in Cognee."
+            } else {
+                try FinderIntegration.uninstall()
+                statusText = ""
+            }
+            finderIntegration = FinderIntegration.isInstalled
+        } catch {
+            statusText = "Could not update the Finder Quick Action: \(error.localizedDescription)"
+            finderIntegration = FinderIntegration.isInstalled
+        }
+    }
 
     private var pollTask: Task<Void, Never>?
     private var filesTask: Task<Void, Never>?
@@ -69,7 +87,9 @@ final class SettingsModel: ObservableObject {
         refresh()
     }
 
-    /// Pick anything: whole folders or individual files (mixed selections work).
+    /// Pick anything: whole folders or individual files (mixed selections
+    /// work), optionally restricted to certain types — "all .pdf and .docx
+    /// from this folder" is one picker visit.
     func addPaths() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -77,9 +97,27 @@ final class SettingsModel: ObservableObject {
         panel.allowsMultipleSelection = true
         panel.prompt = "Index"
         panel.message = "Choose files or folders to index into memory"
+
+        let filterField = NSTextField(string: "")
+        filterField.placeholderString = "pdf, docx"
+        filterField.frame = NSRect(x: 0, y: 0, width: 180, height: 22)
+        let label = NSTextField(labelWithString: "Only these types (optional):")
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        let row = NSStackView(views: [label, filterField])
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        panel.accessoryView = row
+        panel.isAccessoryViewDisclosed = true
+
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK else { return }
-        startIndex(paths: panel.urls.map(\.path))
+        let extensions = filterField.stringValue
+            .split(whereSeparator: { ", ".contains($0) })
+            .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: ". ")) }
+            .filter { !$0.isEmpty }
+        startIndex(paths: panel.urls.map(\.path), extensions: extensions)
     }
 
     func reindex() {
@@ -109,10 +147,10 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    func startIndex(paths: [String]) {
+    func startIndex(paths: [String], extensions: [String] = []) {
         Task {
             do {
-                try await BackendClient().startIndex(paths: paths)
+                try await BackendClient().startIndex(paths: paths, extensions: extensions)
                 pollProgress()
             } catch {
                 statusText = "Could not start indexing — is the backend running?"
@@ -191,6 +229,15 @@ struct SettingsView: View {
                     HStack {
                         Text((root as NSString).abbreviatingWithTildeInPath)
                             .font(.system(.body, design: .monospaced))
+                        if let filter = model.progress?.root_filters?[root], !filter.isEmpty {
+                            Text(filter.joined(separator: " "))
+                                .font(.system(size: 10, weight: .semibold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Color.cognee.opacity(0.12), in: Capsule())
+                                .foregroundStyle(Color.cognee)
+                                .help("Only these types index under this folder")
+                        }
                         Spacer()
                         Button {
                             model.forget(path: root, isRoot: true)
@@ -328,6 +375,21 @@ struct SettingsView: View {
                 }
                 Text(
                     "Sources are configured in the backend's env file for now — Slack (SLACK_TOKEN), Google Drive (GDRIVE_ACCESS_TOKEN), GitHub (GITHUB_REPOS)."
+                )
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            }
+
+            Section("Finder") {
+                Toggle(
+                    "Right-click files → “Index in Cognee”",
+                    isOn: Binding(
+                        get: { model.finderIntegration },
+                        set: { model.setFinderIntegration($0) }
+                    )
+                )
+                Text(
+                    "Select any files or folders in Finder, right-click → Quick Actions → Index in Cognee — they index without opening this window. Re-toggle after changing the backend URL."
                 )
                 .font(.caption)
                 .foregroundStyle(.tertiary)
