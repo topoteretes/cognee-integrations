@@ -1486,7 +1486,14 @@ def _live_server_pid(port: int) -> int:
     return 0
 
 
-def tcp_probe(host: str, port: int, timeout: float = 0.5) -> str:
+# Windows delivers ECONNREFUSED only after winsock's internal SYN retries —
+# ~1s even on loopback — so a 0.5s budget times out before the refusal
+# arrives and the positive "refused" signal (the only absence license) can
+# never be observed there. POSIX refuses in microseconds; keep it tight.
+_TCP_PROBE_TIMEOUT_SECONDS = 1.5 if os.name == "nt" else 0.5
+
+
+def tcp_probe(host: str, port: int, timeout: float = _TCP_PROBE_TIMEOUT_SECONDS) -> str:
     """Classify the bare TCP handshake: 'listening' | 'refused' | 'no_verdict'.
 
     'refused' is a positive signal from the OS that nothing holds the port —
