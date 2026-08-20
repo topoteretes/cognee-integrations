@@ -21,17 +21,13 @@ import os
 
 import pytest
 
-#: Each suite's own switch, and the OTHER plugin's switch — which it must ignore.
+#: Each suite's own switch. Every other switch must be ignored.
 OWN_BACKEND_VAR = {
     "claude-code": "COGNEE_CLAUDE_BACKEND",
     "codex": "COGNEE_CODEX_BACKEND",
     "antigravity": "COGNEE_ANTIGRAVITY_BACKEND",
 }
-OTHER_BACKEND_VAR = {
-    "claude-code": "COGNEE_CODEX_BACKEND",
-    "codex": "COGNEE_CLAUDE_BACKEND",
-    "antigravity": "COGNEE_CLAUDE_BACKEND",
-}
+BACKEND_VARS = tuple(OWN_BACKEND_VAR.values())
 
 CLOUD_URL = "https://tenant.cognee.ai"
 CLOUD_ENV_FILE = "\n".join(
@@ -118,9 +114,13 @@ def test_plugin_var_beats_the_shared_var(env_file, suite, monkeypatch):
     assert ef.forced_backend() == "cloud"
 
 
-def test_the_other_plugins_var_is_ignored(env_file, suite, monkeypatch):
+@pytest.mark.parametrize("other_backend_var", BACKEND_VARS)
+def test_the_other_plugins_var_is_ignored(env_file, suite, monkeypatch, other_backend_var):
+    if other_backend_var == OWN_BACKEND_VAR[suite.name]:
+        pytest.skip("the suite's own switch is covered by the precedence test")
+
     ef, _load = env_file
-    monkeypatch.setenv(OTHER_BACKEND_VAR[suite.name], "local")
+    monkeypatch.setenv(other_backend_var, "local")
     assert ef.forced_backend() == ""
 
 
@@ -196,8 +196,12 @@ def test_config_plugin_var_beats_shared(config_mod, suite, monkeypatch):
     assert not config_mod.is_cloud_mode(cfg)
 
 
-def test_config_ignores_the_other_plugins_var(config_mod, suite, monkeypatch):
-    monkeypatch.setenv(OTHER_BACKEND_VAR[suite.name], "local")
+@pytest.mark.parametrize("other_backend_var", BACKEND_VARS)
+def test_config_ignores_the_other_plugins_var(config_mod, suite, monkeypatch, other_backend_var):
+    if other_backend_var == OWN_BACKEND_VAR[suite.name]:
+        pytest.skip("the suite's own switch is covered by the precedence test")
+
+    monkeypatch.setenv(other_backend_var, "local")
     monkeypatch.setenv("COGNEE_BASE_URL", CLOUD_URL)
     cfg = config_mod.load_config()
     assert config_mod.is_cloud_mode(cfg)
