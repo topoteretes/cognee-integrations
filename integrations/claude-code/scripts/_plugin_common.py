@@ -255,27 +255,22 @@ def get_launch_dataset(host_key: str = "") -> tuple[str, str]:
 def _create_map_record_if_absent(host_key: str, record: dict) -> dict:
     """Atomically create the launch record, first-writer-wins.
 
-    Uses O_CREAT|O_EXCL so exactly one concurrent creator wins; losers read back
-    the winner's record instead of clobbering it. This is what makes concurrent
-    launches/hooks for the same host_key converge on a single session id rather
-    than diverge. Returns the record now on disk.
+    Serializes creation with the existing host-keyed lock, then publishes through
+    ``_write_map_record``'s atomic replace. The destination therefore appears only
+    after the complete JSON is durable; contenders retry the lock and read the
+    winner instead of observing an empty/partial file. Returns the record on disk.
     """
     if not host_key:
         return record
-    path = _session_map_path(host_key)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(record, fh, indent=2, sort_keys=True)
-        return record
-    except FileExistsError:
-        return _read_map_record(host_key) or record
-    except Exception as exc:
-        hook_log("map_create_failed", {"error": str(exc)[:200]})
-        # Best-effort fallback: plain write, then read back whatever landed.
-        _write_map_record(host_key, record)
-        return _read_map_record(host_key) or record
+    while True:
+        with improve_session_lock(host_key, "launch_record") as acquired:
+            if acquired:
+                current = _read_map_record(host_key)
+                if current:
+                    return current
+                _write_map_record(host_key, record)
+                return _read_map_record(host_key) or record
+        time.sleep(0.02)
 
 
 def resolve_cognee_session_id(host_key: str = "", cwd: str = "") -> str:

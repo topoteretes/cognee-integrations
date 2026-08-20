@@ -992,6 +992,8 @@ async def _run_heavy(
     Returns ``(user_id, agent_api_key, ok)``. ``ok`` is False only on a hard
     cloud-registration failure (mirrors the legacy early-abort).
     """
+    config = dict(config)
+    config["dataset"] = dataset
     if not managed_endpoint:
         try:
             _ensure_local_server_running(config, health_timeout=boot_timeout)

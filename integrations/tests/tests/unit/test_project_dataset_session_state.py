@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import threading
+import time
 
 
 def test_launch_record_pins_dataset_and_source(suite, isolated_modules, monkeypatch):
@@ -48,6 +49,54 @@ def test_new_dataset_record_persists_session_and_connection_ids(suite, isolated_
     assert record["conn_uuid"] == conn_uuid
     assert record["session_id"]
     assert record["conn_uuid"]
+
+
+def test_concurrent_new_record_publication_returns_only_the_complete_winner(
+    suite, isolated_modules, monkeypatch
+):
+    common = isolated_modules(suite, "_plugin_common")
+    publication_started = threading.Event()
+    release_publication = threading.Event()
+    real_dump = common.json.dump
+
+    def delayed_record_dump(record, file_handle, *args, **kwargs):
+        if isinstance(record, dict) and record.get("dataset"):
+            publication_started.set()
+            assert release_publication.wait(timeout=2), "timed out releasing first publication"
+        return real_dump(record, file_handle, *args, **kwargs)
+
+    monkeypatch.setattr(common.json, "dump", delayed_record_dump)
+
+    candidates = (
+        ("/repo-a", "project_a_111111111111"),
+        ("/repo-b", "project_b_222222222222"),
+    )
+
+    def create(candidate):
+        cwd, dataset = candidate
+        ids = common.ensure_launch_record(
+            "new-host", cwd, dataset=dataset, dataset_source="project"
+        )
+        return ids, common.get_launch_dataset("new-host")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(create, candidates[0])
+        # The vulnerable implementation exposes the destination before JSON is
+        # complete and therefore enters the delayed dump. An atomic implementation
+        # may finish without entering that seam; either way, launch the contender
+        # only after the first has had a chance to publish or block.
+        publication_started.wait(timeout=0.2)
+        second = executor.submit(create, candidates[1])
+        time.sleep(0.05)
+        release_publication.set()
+        observed = [first.result(timeout=2), second.result(timeout=2)]
+
+    record = common._read_map_record("new-host")
+    assert record["session_id"] and record["conn_uuid"]
+    assert record["dataset"] == candidates[0][1]
+    assert record["dataset_source"] == "project"
+    assert {ids for ids, _dataset in observed} == {(record["session_id"], record["conn_uuid"])}
+    assert {dataset for _ids, dataset in observed} == {(record["dataset"], "project")}
 
 
 def test_concurrent_legacy_pins_keep_the_first_dataset(suite, isolated_modules, monkeypatch):

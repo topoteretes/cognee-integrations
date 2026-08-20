@@ -333,6 +333,7 @@ async def _run(prompt: str, workspace: str = "") -> dict | None:
                     cognee.recall(
                         prompt,
                         session_id=session_id,
+                        datasets=[dataset] if "graph" in scope_list else None,
                         top_k=TOP_K,
                         scope=scope_list,
                         only_context=True,
