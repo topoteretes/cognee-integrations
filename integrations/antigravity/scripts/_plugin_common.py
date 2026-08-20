@@ -2672,6 +2672,11 @@ def register_agent_via_http(
         if isinstance(result, dict):
             return True, result
         return True, {}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return True, {"lifecycle_supported": False}
+        hook_log("agent_register_failed", {"error": str(exc)[:200]})
+        return False, {}
     except Exception as exc:
         hook_log("agent_register_failed", {"error": str(exc)[:200]})
         return False, {}
@@ -2691,6 +2696,11 @@ def unregister_agent_via_http(
             count = int(result.get("activeAgents", 0) or result.get("active_agents", 0) or 0)
             return True, count
         return True, 0
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return True, 0
+        hook_log("agent_unregister_failed", {"error": str(exc)[:200]})
+        return False, 0
     except Exception as exc:
         hook_log("agent_unregister_failed", {"error": str(exc)[:200]})
         return False, 0
@@ -2734,7 +2744,7 @@ def recall_via_http(
 def _backend_reachable(base_url: str, timeout: float = 1.5) -> bool:
     try:
         with urllib.request.urlopen(
-            f"{base_url.rstrip('/')}/docs", timeout=timeout, context=_https_context()
+            f"{base_url.rstrip('/')}/health", timeout=timeout, context=_https_context()
         ) as resp:
             return 200 <= resp.status < 500
     except (urllib.error.URLError, TimeoutError, OSError):
