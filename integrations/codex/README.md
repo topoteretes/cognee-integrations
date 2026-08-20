@@ -272,7 +272,10 @@ them during startup — and a stale value can misroute identity or session resol
 Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to pin a dataset.
 
 The renderer reads only local state — no network calls on every refresh:
-1. Dataset: `COGNEE_PLUGIN_DATASET` env var, otherwise `agent_sessions`
+1. Dataset: the dataset pinned in this conversation's launch map, otherwise
+   `COGNEE_PLUGIN_DATASET`, then a project-derived dataset when
+   `COGNEE_DATASET_SCOPE=project` and Codex provides a working directory,
+   otherwise `agent_sessions`
 2. Mode: `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` switch, then `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/config.json` (`base_url`)
 3. Default mode: `local`
 
