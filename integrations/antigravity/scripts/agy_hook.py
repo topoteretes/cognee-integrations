@@ -425,9 +425,10 @@ def _run_script(payload: dict[str, Any], script: str) -> str:
         process_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
     timeout = _script_timeout(script)
-    with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(
-        mode="w+b"
-    ) as stderr_file:
+    with (
+        tempfile.TemporaryFile(mode="w+b") as stdout_file,
+        tempfile.TemporaryFile(mode="w+b") as stderr_file,
+    ):
         process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
