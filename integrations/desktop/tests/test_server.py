@@ -341,3 +341,33 @@ async def test_index_with_extension_filter_sticks_to_the_root(client, tmp_path):
     await index_and_wait(client, docs)
     names = {f["name"] for f in (await client.get("/files")).json()["files"]}
     assert "later.pdf" in names and "later.md" not in names
+
+
+async def test_forgotten_file_stays_forgotten_across_resyncs(client, workspace):
+    await index_and_wait(client, workspace)
+    target = str(workspace / "recipes.txt")
+    assert (await client.post("/files/forget", json={"path": target})).json()["ok"]
+
+    # the watched-folder re-sync must NOT resurrect it
+    await index_and_wait(client, workspace)
+    names = {f["name"] for f in (await client.get("/files")).json()["files"]}
+    assert "recipes.txt" not in names
+
+    # explicitly indexing that exact file again is consent — tombstone clears
+    await index_and_wait(client, target)
+    names = {f["name"] for f in (await client.get("/files")).json()["files"]}
+    assert "recipes.txt" in names
+
+
+async def test_root_labels_persist_and_report(client, tmp_path):
+    work = tmp_path / "work-docs"
+    work.mkdir()
+    (work / "q3.md").write_text("work things")
+    response = await client.post("/index", json={"paths": [str(work)], "label": "work"})
+    assert response.status_code == 202
+    for _ in range(100):
+        status = (await client.get("/index/status")).json()
+        if status["state"] in ("idle", "error"):
+            break
+        await asyncio.sleep(0.01)
+    assert status["root_labels"][str(work)] == "work"

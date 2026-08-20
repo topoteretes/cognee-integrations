@@ -100,11 +100,16 @@ final class SettingsModel: ObservableObject {
 
         let filterField = NSTextField(string: "")
         filterField.placeholderString = "pdf, docx"
-        filterField.frame = NSRect(x: 0, y: 0, width: 180, height: 22)
-        let label = NSTextField(labelWithString: "Only these types (optional):")
-        label.font = .systemFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
-        let row = NSStackView(views: [label, filterField])
+        filterField.frame = NSRect(x: 0, y: 0, width: 160, height: 22)
+        let filterLabel = NSTextField(labelWithString: "Only these types (optional):")
+        filterLabel.font = .systemFont(ofSize: 11)
+        filterLabel.textColor = .secondaryLabelColor
+        let scopeLabel = NSTextField(labelWithString: "Label:")
+        scopeLabel.font = .systemFont(ofSize: 11)
+        scopeLabel.textColor = .secondaryLabelColor
+        let scopePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        scopePopup.addItems(withTitles: ["No label", "Personal", "Work"])
+        let row = NSStackView(views: [filterLabel, filterField, scopeLabel, scopePopup])
         row.orientation = .horizontal
         row.spacing = 6
         row.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
@@ -117,7 +122,8 @@ final class SettingsModel: ObservableObject {
             .split(whereSeparator: { ", ".contains($0) })
             .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: ". ")) }
             .filter { !$0.isEmpty }
-        startIndex(paths: panel.urls.map(\.path), extensions: extensions)
+        let scope = ["", "personal", "work"][max(scopePopup.indexOfSelectedItem, 0)]
+        startIndex(paths: panel.urls.map(\.path), extensions: extensions, label: scope)
     }
 
     func reindex() {
@@ -147,10 +153,11 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    func startIndex(paths: [String], extensions: [String] = []) {
+    func startIndex(paths: [String], extensions: [String] = [], label: String = "") {
         Task {
             do {
-                try await BackendClient().startIndex(paths: paths, extensions: extensions)
+                try await BackendClient().startIndex(
+                    paths: paths, extensions: extensions, label: label)
                 pollProgress()
             } catch {
                 statusText = "Could not start indexing — is the backend running?"
@@ -229,6 +236,17 @@ struct SettingsView: View {
                     HStack {
                         Text((root as NSString).abbreviatingWithTildeInPath)
                             .font(.system(.body, design: .monospaced))
+                        if let scope = model.progress?.root_labels?[root], !scope.isEmpty {
+                            Text(scope)
+                                .font(.system(size: 10, weight: .semibold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(
+                                    (scope == "work" ? Color.blue : Color.green).opacity(0.15),
+                                    in: Capsule()
+                                )
+                                .foregroundStyle(scope == "work" ? Color.blue : Color.green)
+                        }
                         if let filter = model.progress?.root_filters?[root], !filter.isEmpty {
                             Text(filter.joined(separator: " "))
                                 .font(.system(size: 10, weight: .semibold))

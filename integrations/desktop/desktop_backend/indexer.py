@@ -112,14 +112,14 @@ class Indexer:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def start(self, roots: list[str], extensions: list[str] | None = None) -> bool:
+    def start(self, roots: list[str], extensions: list[str] | None = None, label: str = "") -> bool:
         """Kick off a background indexing run. Returns False if one is running.
 
         ``extensions`` restricts what indexes under these new roots — the
         filter sticks to the root and applies to every future re-sync too."""
         if self.running:
             return False
-        self._catalog.add_roots(roots, extensions=extensions)
+        self._catalog.add_roots(roots, extensions=extensions, label=label)
         # status flips before the task is scheduled, so a poll right after the
         # 202 never sees a stale "idle" from the previous run
         self.status = {**_FRESH_STATUS, "state": "scanning"}
@@ -130,7 +130,12 @@ class Indexer:
         try:
             files = discover_files(roots, self._settings, self._catalog.root_filters)
             stats = {p: p.stat() for p in files}
-            todo = [p for p in files if self._catalog.needs_index(str(p), stats[p].st_mtime)]
+            todo = [
+                p
+                for p in files
+                if not self._catalog.is_ignored(str(p))
+                and self._catalog.needs_index(str(p), stats[p].st_mtime)
+            ]
             self.status.update(state="adding", total=len(todo))
             added_any = False
             done = 0
