@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import shlex
+import stat
 import sys
 from pathlib import Path
 
@@ -14,6 +15,8 @@ INTEGRATIONS_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_ROOT = INTEGRATIONS_ROOT / "antigravity"
 PLUGIN_JSON = PLUGIN_ROOT / "plugin.json"
 HOOKS_JSON = PLUGIN_ROOT / "hooks.json"
+POSIX_HOOK_RUNNER = PLUGIN_ROOT / "scripts" / "run-agy-hook"
+WINDOWS_HOOK_RUNNER = PLUGIN_ROOT / "scripts" / "run-agy-hook.cmd"
 EXPECTED_EVENTS = {"PreInvocation", "PostToolUse", "Stop"}
 NAMED_HOOKS = ("cognee-bootstrap", "cognee-recall", "cognee-capture", "cognee-stop")
 
@@ -57,14 +60,10 @@ def _commands(manifest: dict, name: str, event: str) -> list[str]:
 
 def _command_tokens(command: str) -> tuple[str, tuple[str, ...]]:
     assert not any(token in command for token in ("$", "`", "$(", "~", "..")), command
-    halves = command.split("||")
-    assert len(halves) == 2, f"command must have python3/python fallback: {command!r}"
-    first, second = (shlex.split(half.strip()) for half in halves)
-    assert first[0] == "python3", first
-    assert second[0] == "python", second
-    assert first[1:] == second[1:], command
-    assert first[1] == "scripts/agy_hook.py", first
-    return first[0], tuple(first[2:])
+    tokens = shlex.split(command)
+    assert tokens[0] == "scripts/run-agy-hook", tokens
+    assert "||" not in command, command
+    return tokens[0], tuple(tokens[1:])
 
 
 EXPECTED_HANDLER_ARGS = {
@@ -139,7 +138,7 @@ def test_stop_stores_assistant_message_then_syncs_session_end(manifest):
     ]
 
 
-def test_all_hook_commands_are_relative_agy_wrapper_commands_with_safe_second_timeouts(manifest):
+def test_all_hook_commands_are_relative_runner_commands_with_safe_second_timeouts(manifest):
     failures: list[str] = []
     for name in NAMED_HOOKS:
         for event in manifest[name]:
@@ -162,6 +161,64 @@ def test_all_hook_commands_are_relative_agy_wrapper_commands_with_safe_second_ti
                     )
 
     assert not failures, "\n".join(failures)
+
+
+def test_hook_runner_selects_an_interpreter_before_running_the_adapter(plugin_root):
+    assert POSIX_HOOK_RUNNER.is_file(), f"missing POSIX hook runner: {POSIX_HOOK_RUNNER}"
+    assert WINDOWS_HOOK_RUNNER.is_file(), f"missing Windows hook runner: {WINDOWS_HOOK_RUNNER}"
+    assert POSIX_HOOK_RUNNER.stat().st_mode & stat.S_IXUSR
+
+    posix = POSIX_HOOK_RUNNER.read_text(encoding="utf-8")
+    windows = WINDOWS_HOOK_RUNNER.read_text(encoding="utf-8")
+
+    assert "command -v python3" in posix
+    assert 'exec python3 "$(dirname "$0")/agy_hook.py" "$@"' in posix
+    assert 'exec python "$(dirname "$0")/agy_hook.py" "$@"' in posix
+    assert "||" not in posix
+
+    assert "where python3 >nul 2>nul" in windows
+    assert "if errorlevel 1 goto use_python" in windows
+    assert 'python3 "%~dp0agy_hook.py" %*' in windows
+    assert 'python "%~dp0agy_hook.py" %*' in windows
+    assert "||" not in windows
+
+
+def test_high_risk_host_adaptations_keep_private_and_shared_roots_separate(plugin_root):
+    scripts = plugin_root / "scripts"
+    common = (scripts / "_plugin_common.py").read_text(encoding="utf-8")
+    config = (scripts / "config.py").read_text(encoding="utf-8")
+    session_start = (scripts / "session-start.py").read_text(encoding="utf-8")
+    proc = (scripts / "_proc.py").read_text(encoding="utf-8")
+    statusline = (scripts / "cognee_statusline_render.py").read_text(encoding="utf-8")
+    remember = (scripts / "cognee-remember.sh").read_text(encoding="utf-8")
+    search = (scripts / "cognee-search.sh").read_text(encoding="utf-8")
+
+    assert '_PLUGIN_DIR = Path.home() / ".cognee-plugin" / "antigravity"' in common
+    assert '_SHARED_PLUGIN_ROOT = Path.home() / ".cognee-plugin"' in common
+    assert '_VENV_DIR = _SHARED_PLUGIN_ROOT / "venv"' in common
+    assert '_API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"' in common
+    assert '_SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"' in common
+    assert 'os.environ.get("AGY_CWD")' in common
+    assert 'or "antigravity"' in common
+    assert 'suffix = "_agy"' in common
+    assert 'return _normalize("antigravity-agent")' in common
+
+    assert '"session_prefix": "antigravity"' in config
+    assert '"agent_name": "antigravity-agent"' in config
+    assert 'os.environ.get("AGY_CWD", os.getcwd())' in config
+    assert "def _find_agy_parent_pid()" in session_start
+    assert 'find_host_ancestor_windows(fallback, "agy")' in session_start
+    assert 're.compile(r"(?:^|/)agy(?:-[\\w.]+)?(?:\\s|$)")' in session_start
+    assert "base}/api/v1/auth/api-keys" in session_start
+    assert '"name": "antigravity-owner-bootstrap"' in session_start
+    assert '(e.g. "claude" / "agy")' in proc
+
+    assert "COGNEE_ANTIGRAVITY_PLUGIN_ROOT" in common
+    assert 'Path(__file__).resolve().parent.parent / "plugin.json"' in common
+    assert "integrations/antigravity/plugin.json" in common
+    assert 'Path(__file__).resolve().parent.parent / "plugin.json"' in statusline
+    assert 'PLUGIN_DIR="${HOME}/.cognee-plugin/antigravity"' in remember
+    assert 'PLUGIN_DIR="${HOME}/.cognee-plugin/antigravity"' in search
 
 
 def test_operator_brief_and_four_skills_are_shipped(plugin_root):

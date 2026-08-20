@@ -2,7 +2,7 @@
   "cognee-bootstrap": {
     "PreInvocation": [
       {
-        "command": "python3 scripts/agy_hook.py session-start.py || python scripts/agy_hook.py session-start.py",
+        "command": "scripts/run-agy-hook session-start.py",
         "timeout": 120
       }
     ]
@@ -10,7 +10,7 @@
   "cognee-recall": {
     "PreInvocation": [
       {
-        "command": "python3 scripts/agy_hook.py session-context-lookup.py || python scripts/agy_hook.py session-context-lookup.py",
+        "command": "scripts/run-agy-hook session-context-lookup.py",
         "timeout": 120
       }
     ]
@@ -18,7 +18,7 @@
   "cognee-capture": {
     "PreInvocation": [
       {
-        "command": "python3 scripts/agy_hook.py store-user-prompt.py || python scripts/agy_hook.py store-user-prompt.py",
+        "command": "scripts/run-agy-hook store-user-prompt.py",
         "timeout": 120
       }
     ],
@@ -27,7 +27,7 @@
         "matcher": "*",
         "hooks": [
           {
-            "command": "python3 scripts/agy_hook.py store-to-session.py || python scripts/agy_hook.py store-to-session.py",
+            "command": "scripts/run-agy-hook store-to-session.py",
             "timeout": 120
           }
         ]
@@ -37,11 +37,11 @@
   "cognee-stop": {
     "Stop": [
       {
-        "command": "python3 scripts/agy_hook.py store-to-session.py --stop || python scripts/agy_hook.py store-to-session.py --stop",
+        "command": "scripts/run-agy-hook store-to-session.py --stop",
         "timeout": 120
       },
       {
-        "command": "python3 scripts/agy_hook.py sync-session-to-graph.py --session-end || python scripts/agy_hook.py sync-session-to-graph.py --session-end",
+        "command": "scripts/run-agy-hook sync-session-to-graph.py --session-end",
         "timeout": 30
       }
     ]
