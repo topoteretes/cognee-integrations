@@ -27,9 +27,15 @@ struct SearchView: View {
             } else if let answer = model.answer {
                 divider
                 answerView(answer)
+                if !model.results.isEmpty {
+                    divider
+                    // the related passages, right under the answer — both
+                    // halves of the search visible at once, answer first
+                    resultsList(maxHeight: 168)
+                }
             } else if !model.results.isEmpty {
                 divider
-                resultsList
+                resultsList(maxHeight: 372)
             } else if !model.query.isEmpty, !model.isLoading {
                 divider
                 statusLine(icon: "circle.dashed", text: emptyCoachText)
@@ -264,7 +270,7 @@ struct SearchView: View {
 
     // MARK: results
 
-    private var resultsList: some View {
+    private func resultsList(maxHeight: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 1) {
@@ -272,7 +278,8 @@ struct SearchView: View {
                         ResultRow(
                             result: result, isSelected: index == model.selectedIndex,
                             query: model.query,
-                            originLabel: model.originLabel(for: result.path)
+                            originLabel: model.originLabel(for: result.path),
+                            memoryLabel: model.memoryLabel(for: result.path)
                         )
                             .id(index)
                             .onTapGesture {
@@ -284,7 +291,7 @@ struct SearchView: View {
                 }
                 .padding(10)
             }
-            .frame(maxHeight: 372)
+            .frame(maxHeight: maxHeight)
             .onChange(of: model.selectedIndex) { index in
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.1)) {
                     proxy.scrollTo(index)
@@ -386,7 +393,7 @@ struct SearchView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        .frame(maxHeight: 320)
+        .frame(maxHeight: model.results.isEmpty ? 320 : 250)
     }
 
     // MARK: chrome
@@ -567,6 +574,8 @@ private struct ResultRow: View {
     let query: String
     /// Which connection this memory arrived through (named by the backend).
     let originLabel: String?
+    /// The personal/work scope inherited from the watched root, if labeled.
+    var memoryLabel: String? = nil
 
     var body: some View {
         HStack(spacing: 11) {
@@ -591,6 +600,17 @@ private struct ResultRow: View {
                             .padding(.vertical, 1.5)
                             .background(Color.cognee.opacity(0.12), in: Capsule())
                             .foregroundStyle(Color.cognee)
+                    }
+                    if let scope = memoryLabel {
+                        Text(scope)
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(
+                                (scope == "work" ? Color.blue : Color.green).opacity(0.14),
+                                in: Capsule()
+                            )
+                            .foregroundStyle(scope == "work" ? Color.blue : Color.green)
                     }
                 }
                 if !result.snippet.isEmpty {

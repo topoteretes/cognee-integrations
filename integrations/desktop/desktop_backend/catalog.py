@@ -28,6 +28,11 @@ class Catalog:
         self._roots: list[str] = []
         # root -> [".pdf", ".docx"] — only these types index under that root
         self._root_filters: dict[str, list[str]] = {}
+        # root -> "personal" | "work" — memory scoping label
+        self._root_labels: dict[str, str] = {}
+        # explicitly forgotten paths: a re-sync of a still-watched folder
+        # must not resurrect them
+        self._ignored: set[str] = set()
         self._load()
 
     # -- persistence ---------------------------------------------------
@@ -37,8 +42,11 @@ class Catalog:
             self._entries = data.get("entries", {})
             self._roots = data.get("roots", [])
             self._root_filters = data.get("root_filters", {})
+            self._root_labels = data.get("root_labels", {})
+            self._ignored = set(data.get("ignored", []))
         except (OSError, ValueError):
             self._entries, self._roots, self._root_filters = {}, [], {}
+            self._root_labels, self._ignored = {}, set()
 
     def save(self) -> None:
         with self._lock:
@@ -50,6 +58,8 @@ class Catalog:
                         "entries": self._entries,
                         "roots": self._roots,
                         "root_filters": self._root_filters,
+                        "root_labels": self._root_labels,
+                        "ignored": sorted(self._ignored),
                     }
                 )
             )
@@ -83,6 +93,9 @@ class Catalog:
                 del self._entries[p]
             self._roots = [r for r in self._roots if r != root]
             self._root_filters.pop(root, None)
+            self._root_labels.pop(root, None)
+            # a re-added root starts fresh: old tombstones go with it
+            self._ignored = {p for p in self._ignored if not (p == root or p.startswith(prefix))}
         return len(doomed)
 
     def entries(self, limit: int = 500) -> list[dict[str, Any]]:
@@ -101,6 +114,24 @@ class Catalog:
             for path, entry in items[:limit]
         ]
 
+    def ignore(self, path: str) -> None:
+        """Tombstone: keep this path out of every future re-sync."""
+        with self._lock:
+            self._ignored.add(path)
+
+    def is_ignored(self, path: str) -> bool:
+        return path in self._ignored
+
+    def unignore_exact(self, paths: list[str]) -> None:
+        """Clear tombstones for exactly these paths (not their contents)."""
+        with self._lock:
+            self._ignored -= set(paths)
+
+    @property
+    def root_labels(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._root_labels)
+
     @property
     def root_filters(self) -> dict[str, list[str]]:
         with self._lock:
@@ -110,9 +141,15 @@ class Catalog:
     def roots(self) -> list[str]:
         return list(self._roots)
 
-    def add_roots(self, roots: list[str], extensions: list[str] | None = None) -> None:
+    def add_roots(
+        self,
+        roots: list[str],
+        extensions: list[str] | None = None,
+        label: str = "",
+    ) -> None:
         """Register roots; ``extensions`` (e.g. [".pdf", ".docx"]) restricts
-        what indexes under these roots, now and on every future re-sync."""
+        what indexes under these roots, now and on every future re-sync;
+        ``label`` tags everything under them (personal / work)."""
         normalized = [
             e.lower() if e.startswith(".") else f".{e.lower()}" for e in (extensions or []) if e
         ]
@@ -122,6 +159,12 @@ class Catalog:
                     self._roots.append(root)
                 if normalized:
                     self._root_filters[root] = normalized
+                if label:
+                    self._root_labels[root] = label
+        # picking a path explicitly is consent to index THAT path again —
+        # but only that exact path: re-indexing a parent folder must never
+        # resurrect files the user forgot individually
+        self.unignore_exact(roots)
 
     # -- lookups -----------------------------------------------------------
     def find_by_basename(self, basename: str) -> Optional[str]:

@@ -34,6 +34,23 @@ final class SearchViewModel: ObservableObject {
     /// The data sources feeding memory (folders, Slack, Drive, …), shown as
     /// chips in the panel so it's visible what a search draws from.
     @Published var connections: [SourceConnection] = []
+    /// Root -> "personal" | "work", for scoping badges on results.
+    private var rootLabels: [String: String] = [:]
+
+    /// The personal/work label a result inherits from its watched root.
+    func memoryLabel(for path: String) -> String? {
+        guard !path.isEmpty else { return nil }
+        var best: (prefix: String, label: String)?
+        for (root, label) in rootLabels where !label.isEmpty {
+            let prefix = root.hasSuffix("/") ? root : root + "/"
+            if (path == root || path.hasPrefix(prefix)),
+                prefix.count > (best?.prefix.count ?? 0)
+            {
+                best = (prefix, label)
+            }
+        }
+        return best?.label
+    }
     /// Chip that was clicked open: its indexed items + last sync show in a
     /// detail row under the search field.
     @Published var connectionDetail: SourceConnection?
@@ -164,6 +181,9 @@ final class SearchViewModel: ObservableObject {
             }
             if let sources = try? await BackendClient().sources() {
                 self?.connections = sources.sources
+            }
+            if let progress = try? await BackendClient().indexStatus() {
+                self?.rootLabels = progress.root_labels ?? [:]
             }
         }
     }

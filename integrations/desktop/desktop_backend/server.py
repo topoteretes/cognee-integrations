@@ -35,6 +35,7 @@ SEMANTIC_TIMEOUT_SECONDS = 12.0
 class IndexRequest(BaseModel):
     paths: list[str]
     extensions: list[str] = []  # optional: only index these types under paths
+    label: str = ""  # optional memory scope for these paths: personal | work
 
 
 class ShareRequest(BaseModel):
@@ -177,6 +178,9 @@ def create_app(
         )
         if not removed:
             return {"ok": False, "removed": 0, "graph": "kept", "detail": "not in the index"}
+        # tombstone: a still-watched parent folder must not resurrect it on
+        # the next re-sync — forgetting means forgotten
+        catalog.ignore(path)
         catalog.save()
         graph, detail = "kept", "graph copy kept"
         if hasattr(adapter, "_request"):
@@ -355,7 +359,7 @@ def create_app(
 
     @app.post("/index", status_code=202)
     async def index(request: IndexRequest) -> dict:
-        started = indexer.start(request.paths, extensions=request.extensions)
+        started = indexer.start(request.paths, extensions=request.extensions, label=request.label)
         return {"started": started, "roots": catalog.roots}
 
     @app.get("/index/status")
@@ -364,6 +368,7 @@ def create_app(
             **indexer.status,
             "roots": catalog.roots,
             "root_filters": catalog.root_filters,
+            "root_labels": catalog.root_labels,
             "indexed_files": len(catalog),
         }
 

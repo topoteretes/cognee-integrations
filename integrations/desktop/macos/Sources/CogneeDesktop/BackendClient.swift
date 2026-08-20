@@ -53,6 +53,7 @@ struct IndexProgress: Decodable {
     let last_skip: String?
     let roots: [String]?
     let root_filters: [String: [String]]?
+    let root_labels: [String: String]?
     let indexed_files: Int?
 }
 
@@ -269,8 +270,9 @@ struct BackendClient {
         try await get(baseURL.appendingPathComponent("index/status"))
     }
 
-    func startIndex(paths: [String], extensions: [String] = []) async throws {
-        try await post("index", body: ["paths": paths, "extensions": extensions])
+    func startIndex(paths: [String], extensions: [String] = [], label: String = "") async throws {
+        try await post(
+            "index", body: ["paths": paths, "extensions": extensions, "label": label])
     }
 
     func share(to: String, title: String, body: String, source: String = "") async throws {
