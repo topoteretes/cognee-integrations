@@ -28,6 +28,19 @@ export const DEFAULT_RECALL_BUDGET_MS = 4_000;
 export const DEFAULT_RECALL_BREAKER_THRESHOLD = 5;
 export const DEFAULT_RECALL_BREAKER_COOLDOWN_MS = 120_000;
 
+// Harness-noise filter (see noise.ts). Triggers match ctx.trigger verbatim;
+// patterns are regex sources matched against the prompt (leading whitespace
+// stripped). Overriding either with [] disables that layer.
+export const DEFAULT_NOISE_TRIGGERS: string[] = ["heartbeat", "cron"];
+export const DEFAULT_NOISE_PATTERNS: string[] = [
+  // OpenClaw's default heartbeat prompt: "Read HEARTBEAT.md if it exists …"
+  String.raw`^Read HEARTBEAT\.md`,
+  // Cron system events / exec notices are injected as "System: …" lines.
+  String.raw`^System:\s`,
+  // Cron-tagged payloads ("[cron:job-id] …").
+  String.raw`^\[cron\b`,
+];
+
 export const DEFAULT_RECALL_SCOPES: MemoryScope[] = ["agent", "user", "company"];
 export const DEFAULT_WRITE_SCOPE: MemoryScope = "agent";
 export const DEFAULT_SCOPE_ROUTING: ScopeRoute[] = [
@@ -120,6 +133,10 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     ? raw.recallInjectionPosition
     : DEFAULT_RECALL_INJECTION_POSITION;
 
+  // Harness-noise filter
+  const noiseTriggers = Array.isArray(raw.noiseTriggers) ? raw.noiseTriggers : DEFAULT_NOISE_TRIGGERS;
+  const noisePatterns = Array.isArray(raw.noisePatterns) ? raw.noisePatterns : DEFAULT_NOISE_PATTERNS;
+
   // Session
   const enableSessions = typeof raw.enableSessions === "boolean" ? raw.enableSessions : true;
   const persistSessionsAfterEnd = typeof raw.persistSessionsAfterEnd === "boolean" ? raw.persistSessionsAfterEnd : true;
@@ -129,7 +146,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition,
+    recallInjectionPosition, noiseTriggers, noisePatterns,
     enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,
