@@ -19,7 +19,7 @@ Contract, per branch: which state is written, whether the remaining scopes run,
 and whether the breaker is fed. Timeouts must never feed the breaker — a slow
 server tripping it would turn latency into a hard outage.
 
-Both suites carry these seams identically, so both are exercised.
+All registered suites carry these seams identically, so all are exercised.
 
 Migrated from claude-code/tests/test_recall_health_accounting.py, which ran in no
 CI job on any platform.

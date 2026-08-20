@@ -15,12 +15,13 @@ Contract:
 
 Gated by capability rather than by probe, and the two halves now differ:
 
-* the **helper** and the **bridge** halves run on both suites — codex gained
-  ``elapsed_ms`` and the cognify poll in the port that landed in main, and its
-  ``http_bridge_poll`` times the submit and the confirm together;
-* the **recall** half stays claude-code only: codex logs no aggregate per-prompt
-  total, timing each scope inline instead. That per-scope breakdown is asserted
-  for both suites in test_recall_per_scope.py.
+* the **helper** and the **bridge** halves run on all registered suites — Codex
+  gained ``elapsed_ms`` and the cognify poll in the port that landed in main,
+  Antigravity inherits that current core, and ``http_bridge_poll`` times the
+  submit and the confirm together;
+* the **recall** half stays Claude Code only: Codex and Antigravity log no
+  aggregate per-prompt total, timing each scope inline instead. That per-scope
+  breakdown is asserted for all registered suites in test_recall_per_scope.py.
 
 Migrated from claude-code/tests/test_hook_timing.py, which ran in no CI job on any
 platform.

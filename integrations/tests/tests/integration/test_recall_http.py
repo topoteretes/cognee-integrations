@@ -14,8 +14,9 @@ Contract under test (from the PR reviews):
   does NOT fall back to a possibly-different local backend.
 
 Migrated from claude-code/tests/test_recall_http.py (the module is identical in
-both suites, so codex gains this coverage). Transport-exception classification
-lives in unit/test_recall_http_transport.py — no server can raise those.
+all registered suites, so Codex and Antigravity gain this coverage).
+Transport-exception classification lives in unit/test_recall_http_transport.py
+— no server can raise those.
 """
 
 from __future__ import annotations

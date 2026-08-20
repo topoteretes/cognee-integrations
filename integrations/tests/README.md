@@ -1,9 +1,9 @@
-# Shared test infrastructure — Claude Code + Codex
+# Shared test infrastructure — Cognee host hooks
 
-Reusable pytest harness for the two Python hook suites, `claude-code` and
-`codex`, which are the same code differing only in constants. One parametrized
-test set runs against both. openclaw (TypeScript) and hermes-agent (SDK-based)
-are out of scope here.
+Reusable pytest harness for the near-identical Python hook suites: Claude Code,
+Codex, Qwen where that integration is present, and Antigravity. One parametrized
+test set runs against every suite available in the checkout. openclaw
+(TypeScript) and hermes-agent (SDK-based) are out of scope here.
 
 ## Layout
 
@@ -32,36 +32,37 @@ uv run pytest tests/ -v
 ```
 
 CI runs the same via `.github/workflows/ci.yml`; changes under
-`integrations/claude-code/`, `integrations/codex/`, or `integrations/tests/`
-all trigger this suite.
+`integrations/claude-code/`, `integrations/codex/`, `integrations/qwen/`,
+`integrations/antigravity/`, or `integrations/tests/` all trigger this suite when
+the integration exists in the checkout.
 
 ## Ground truth (verified against the scripts)
 
-| | `claude-code` | `codex` |
-|---|---|---|
-| Scripts dir | `claude-code/scripts/` | `codex/plugins/cognee/scripts/` |
-| config.json | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/` (shared root) |
-| State dir | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/codex/` |
-| Default dataset | `agent_sessions` | `agent_sessions` |
-| `agent_name` default | `claude-code-agent` | `codex-agent` |
-| `session_prefix` | `claude` | `codex` |
-| cwd env var | `CLAUDE_CWD` | `CODEX_CWD` |
-| Agent-session suffix | `_claude` | `_codex` |
+| | `claude-code` | `codex` | `antigravity` |
+|---|---|---|---|
+| Scripts dir | `claude-code/scripts/` | `codex/plugins/cognee/scripts/` | `antigravity/scripts/` |
+| config.json | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/` (shared root) | `~/.cognee-plugin/` (shared root) |
+| State dir | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/codex/` | `~/.cognee-plugin/antigravity/` |
+| Default dataset | `agent_sessions` | `agent_sessions` | `agent_sessions` |
+| `agent_name` default | `claude-code-agent` | `codex-agent` | `antigravity-agent` |
+| `session_prefix` | `claude` | `codex` | `antigravity` |
+| cwd env var | `CLAUDE_CWD` | `CODEX_CWD` | `AGY_CWD` |
+| Agent-session suffix | `_claude` | `_codex` | `_agy` |
 ### Capability flags
 
 Divergences are named by a declared flag on `Suite`, never inferred from
 `suite.name` and never from another flag that happens to correlate:
 
-| Flag | `claude-code` | `codex` | Gates |
-|---|---|---|---|
-| `has_background_remember` | `True` | `True` | background bridge, `{"ok": ...}` envelope, `wait_for_cognify`, bounded `do_remember` wait |
-| `has_improve_pipeline_polling` | `True` | `False` | `improve_session_via_http` reports `cognify_status`/`memify_status` |
-| `has_async_hooks` | `True` | `False` | `async` hook entries + `StopFailure` in `hooks.json` |
-| `has_elapsed_ms_helper` | `True` | `True` | `_plugin_common.elapsed_ms`, and `elapsed_ms` on the bridge events |
-| `has_recall_latency_metric` | `True` | `False` | aggregate `elapsed_ms` on `context_lookup_*` |
-| `has_rich_statusline` | `True` | `False` | health glyphs, recall-counts strip, mode word, install registry |
-| `has_precompact_http` | `False` | `True` | `pre-compact.py` recalls over HTTP — the one place codex is ahead |
-| `host_stem` | `claude` | `codex` | `_proc`'s Windows ancestry match |
+| Flag | `claude-code` | `codex` | `antigravity` | Gates |
+|---|---|---|---|---|
+| `has_background_remember` | `True` | `True` | `True` | background bridge, `{"ok": ...}` envelope, `wait_for_cognify`, bounded `do_remember` wait |
+| `has_improve_pipeline_polling` | `True` | `True` | `True` | `improve_session_via_http` reports `cognify_status`/`memify_status` |
+| `has_async_hooks` | `True` | `False` | `False` | `async` hook entries + `StopFailure` in `hooks.json` |
+| `has_elapsed_ms_helper` | `True` | `True` | `True` | `_plugin_common.elapsed_ms`, and `elapsed_ms` on the bridge events |
+| `has_recall_latency_metric` | `True` | `False` | `False` | aggregate `elapsed_ms` on `context_lookup_*` |
+| `has_rich_statusline` | `True` | `False` | `False` | health glyphs, recall-counts strip, mode word, install registry |
+| `has_precompact_http` | `False` | `True` | `True` | `pre-compact.py` recalls over HTTP |
+| `host_stem` | `claude` | `codex` | `agy` | `_proc`'s Windows ancestry match |
 
 `has_background_remember` was `False` for codex until the refactor was ported in
 main; **39 codex tests started passing the moment the flag flipped**, with no test
@@ -234,15 +235,12 @@ Failures dump `hook.log`, the recall-related events, `recall-audit.log` and
 | `test_graph_writes.py` | two populated datasets do not leak into each other; a repeated SessionEnd starts exactly one final-sync worker | two |
 | `test_shared_brain.py` | either integration recalls what the other wrote to the shared graph, **in both directions** — only testable live, and cheap now that no CLI is involved | yes |
 
-### Both integrations, every scenario
+### Every integration, every scenario
 
-`live_suite` is parametrized over `ALL_SUITES`, so all 17 scenarios run twice —
-34 suite-parametrized tests plus the 2 shared-brain directions. That doubles
-wall-clock and LLM spend deliberately: the plugins still diverge in ways a mock
-cannot show. The write paths largely converged when the background bridge was
-ported to codex, but the improve path did not travel with it
-(`has_improve_pipeline_polling`), and a real graph is the only place you can see
-whether a write actually arrives by either route.
+`live_suite` is parametrized over `ALL_SUITES`, so each scenario runs once per
+available host. That multiplies wall-clock and LLM spend deliberately: the
+plugins still diverge in ways a mock cannot show, and a real graph is the only
+place you can see whether a write actually arrives by every route.
 
 Three fixtures are deliberately **suite-agnostic**, which is what makes the
 cross-suite direction possible:
@@ -344,7 +342,7 @@ each turns red the moment it is fixed. They share a shape: the plugin is careful
 never to break the agent, and the cost is that these failures are *silent* — a log
 line and carry on.
 
-**1. A mid-session outage can lose a turn — both integrations.**
+**1. A mid-session outage can lose a turn — every registered suite.**
 `test_writes_during_an_outage_are_buffered_not_dropped`. `store-to-session.py`
 buffers to the warmup spillway only when `server_usable()` is already False (a
 *stale* ready marker plus a failed probe). The marker has a 30s TTL, so a server
@@ -352,12 +350,12 @@ that dies inside that window leaves `server_usable()` returning True: the hook
 attempts a real write, it raises, and the `except` branch only logs
 `stop_store_error` — the entry is buffered nowhere and that turn is lost, which is
 exactly what the spillway exists to prevent. Fix: call `append_warmup_entry` in
-that `except` branch, as the not-usable path already does. The two suites are
-structurally identical here, so this xfails on both.
+that `except` branch, as the not-usable path already does. The registered suites
+are structurally identical here, so this xfails across all of them.
 
 **2. PreCompact produces no anchor in server mode — claude-code only.**
-`test_precompact_produces_an_anchor_carrying_the_session`. Running this against
-both integrations changed the diagnosis: this is not a missing feature, it is a
+`test_precompact_produces_an_anchor_carrying_the_session`. Running this across
+the shared suites changed the diagnosis: this is not a missing feature, it is a
 **port that never happened**. codex's `pre-compact.py` branches on
 `is_cloud_mode` and recalls via `recall_via_http`; claude-code's recalls via
 `cognee.recall` with a `get_session_manager()` fallback, both local-SDK only, while
@@ -402,8 +400,8 @@ Where each landed:
 | `{claude-code,codex}/tests/test_proc.py` | `unit/test_proc_helpers.py` | `_proc.py` is byte-identical across suites, so parametrizing it is a drift guard; the Toolhelp path is a real `skipif`, not a silent early `return` |
 | `{claude-code,codex}/tests/test_statusline_render.py` | `e2e/test_statusline_encoding.py` | cp1252 regression; asserts **bytes**, since decoding in the parent would hide what the child actually wrote |
 | `claude-code/tests/test_hook_timing.py` | `unit/test_timing_metrics.py` | claude-only via `has_timing_metrics` |
-| `claude-code/tests/test_per_scope_timing.py` | `unit/test_recall_per_scope.py` | applies to **both** suites — codex has the same `per_scope`/budget machinery |
-| `claude-code/tests/test_recall_health_accounting.py` | `unit/test_recall_health_accounting.py` | both suites; seams are seam-for-seam identical |
+| `claude-code/tests/test_per_scope_timing.py` | `unit/test_recall_per_scope.py` | applies to all registered suites; the `per_scope`/budget machinery is shared |
+| `claude-code/tests/test_recall_health_accounting.py` | `unit/test_recall_health_accounting.py` | all registered suites; seams are seam-for-seam identical |
 | `codex/plugins/cognee/tests/test_doctor.py` | already covered | every one of its 25 cases has a counterpart in `unit/test_doctor_resolution.py` or `integration/test_doctor.py` |
 
 The two recall files share `utils/recall.py`, which drives
