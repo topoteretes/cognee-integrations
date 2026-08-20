@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shlex
 import stat
+import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,7 @@ PLUGIN_JSON = PLUGIN_ROOT / "plugin.json"
 HOOKS_JSON = PLUGIN_ROOT / "hooks.json"
 POSIX_HOOK_RUNNER = PLUGIN_ROOT / "scripts" / "run-agy-hook"
 WINDOWS_HOOK_RUNNER = PLUGIN_ROOT / "scripts" / "run-agy-hook.cmd"
+SCRIPTS_DIR = PLUGIN_ROOT / "scripts"
 EXPECTED_EVENTS = {"PreInvocation", "PostToolUse", "Stop"}
 NAMED_HOOKS = ("cognee-bootstrap", "cognee-recall", "cognee-capture", "cognee-stop")
 
@@ -64,6 +68,55 @@ def _command_tokens(command: str) -> tuple[str, tuple[str, ...]]:
     assert tokens[0] == "scripts/run-agy-hook", tokens
     assert "||" not in command, command
     return tokens[0], tuple(tokens[1:])
+
+
+@contextmanager
+def _isolated_plugin_scripts(monkeypatch, tmp_path):
+    """Load plugin modules against an empty, temporary home directory."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    for key in (
+        "COGNEE_ENV_FILE",
+        "COGNEE_AGENT_NAME",
+        "COGNEE_SESSION_PREFIX",
+        "COGNEE_SESSION_KEY",
+        "COGNEE_ANTIGRAVITY_PLUGIN_ROOT",
+        "AGY_CWD",
+        "SYSTEM_ROOT_DIRECTORY",
+        "DATA_ROOT_DIRECTORY",
+        "CACHE_ROOT_DIRECTORY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    names = (
+        "_env_file",
+        "_proc",
+        "_recall_http",
+        "_plugin_common",
+        "config",
+        "cognee_statusline_render",
+    )
+    saved_modules = {name: sys.modules.pop(name, None) for name in names}
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    try:
+        yield home
+    finally:
+        sys.path.remove(str(SCRIPTS_DIR))
+        for name, module in saved_modules.items():
+            sys.modules.pop(name, None)
+            if module is not None:
+                sys.modules[name] = module
+
+
+def _load_script_module(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / filename)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 EXPECTED_HANDLER_ARGS = {
@@ -183,42 +236,167 @@ def test_hook_runner_selects_an_interpreter_before_running_the_adapter(plugin_ro
     assert "||" not in windows
 
 
-def test_high_risk_host_adaptations_keep_private_and_shared_roots_separate(plugin_root):
-    scripts = plugin_root / "scripts"
-    common = (scripts / "_plugin_common.py").read_text(encoding="utf-8")
-    config = (scripts / "config.py").read_text(encoding="utf-8")
-    session_start = (scripts / "session-start.py").read_text(encoding="utf-8")
-    proc = (scripts / "_proc.py").read_text(encoding="utf-8")
-    statusline = (scripts / "cognee_statusline_render.py").read_text(encoding="utf-8")
-    remember = (scripts / "cognee-remember.sh").read_text(encoding="utf-8")
-    search = (scripts / "cognee-search.sh").read_text(encoding="utf-8")
+def test_session_identity_uses_agy_cwd_and_antigravity_agent_suffix(monkeypatch, tmp_path):
+    """Catches a regression to CODEX_CWD, a Codex prefix, or a non-_agy agent."""
+    workspace = tmp_path / "workspace-from-agy"
+    workspace.mkdir()
 
-    assert '_PLUGIN_DIR = Path.home() / ".cognee-plugin" / "antigravity"' in common
-    assert '_SHARED_PLUGIN_ROOT = Path.home() / ".cognee-plugin"' in common
-    assert '_VENV_DIR = _SHARED_PLUGIN_ROOT / "venv"' in common
-    assert '_API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"' in common
-    assert '_SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"' in common
-    assert 'os.environ.get("AGY_CWD")' in common
-    assert 'or "antigravity"' in common
-    assert 'suffix = "_agy"' in common
-    assert 'return _normalize("antigravity-agent")' in common
+    with _isolated_plugin_scripts(monkeypatch, tmp_path):
+        monkeypatch.setenv("AGY_CWD", str(workspace))
+        common = _load_script_module("_plugin_common", "_plugin_common.py")
 
-    assert '"session_prefix": "antigravity"' in config
-    assert '"agent_name": "antigravity-agent"' in config
-    assert 'os.environ.get("AGY_CWD", os.getcwd())' in config
-    assert "def _find_agy_parent_pid()" in session_start
-    assert 'find_host_ancestor_windows(fallback, "agy")' in session_start
-    assert 're.compile(r"(?:^|/)agy(?:-[\\w.]+)?(?:\\s|$)")' in session_start
-    assert "base}/api/v1/auth/api-keys" in session_start
-    assert '"name": "antigravity-owner-bootstrap"' in session_start
-    assert '(e.g. "claude" / "agy")' in proc
+        assert (
+            common._generate_session_id(host_key="conversation-17") == "antigravity_conversation-17"
+        )
+        assert common._generate_session_id().startswith("antigravity_workspace-from-agy_")
+        assert common._resolve_agent_name() == "antigravity-agent_agy"
 
-    assert "COGNEE_ANTIGRAVITY_PLUGIN_ROOT" in common
-    assert 'Path(__file__).resolve().parent.parent / "plugin.json"' in common
-    assert "integrations/antigravity/plugin.json" in common
-    assert 'Path(__file__).resolve().parent.parent / "plugin.json"' in statusline
-    assert 'PLUGIN_DIR="${HOME}/.cognee-plugin/antigravity"' in remember
-    assert 'PLUGIN_DIR="${HOME}/.cognee-plugin/antigravity"' in search
+
+def test_private_hook_state_and_shared_runtime_roots_are_used(monkeypatch, tmp_path):
+    """Catches moving logs into shared root or moving server/key state into private root."""
+    with _isolated_plugin_scripts(monkeypatch, tmp_path) as home:
+        common = _load_script_module("_plugin_common", "_plugin_common.py")
+
+        common.hook_log("behavioral-root-check")
+        common.save_cached_api_key("http://cognee.test", "cached-key")
+        common.write_server_pidfile(8123, 4242, version="1.5.0")
+
+        private_root = home / ".cognee-plugin" / "antigravity"
+        shared_root = home / ".cognee-plugin"
+        assert json.loads((private_root / "hook.log").read_text(encoding="utf-8"))["event"] == (
+            "behavioral-root-check"
+        )
+        assert common.load_cached_api_key("http://cognee.test") == "cached-key"
+        assert json.loads((shared_root / "api_key.json").read_text(encoding="utf-8"))[
+            "api_key"
+        ] == ("cached-key")
+        assert (
+            json.loads((shared_root / "server-8123.pid").read_text(encoding="utf-8"))["pid"] == 4242
+        )
+        assert not (private_root / "api_key.json").exists()
+        assert not (private_root / "server-8123.pid").exists()
+
+
+def test_search_shell_exports_the_private_antigravity_state_dir(monkeypatch, tmp_path):
+    """Catches cognee-search.sh regressing its exported breaker state to another host."""
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    capture = tmp_path / "state-dir.txt"
+    fake_cli = bin_dir / "cognee-cli"
+    fake_cli.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\' "$COGNEE_PLUGIN_STATE_DIR" > "$COGNEE_CAPTURE"\n'
+        "printf '[]\\n'\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+            "COGNEE_CAPTURE": str(capture),
+            "COGNEE_BASE_URL": "http://127.0.0.1:1",
+            "COGNEE_API_KEY": "",
+            "COGNEE_LOCAL_API_URL": "",
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "cognee-search.sh"), "question", "--session"],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.stdout.strip() == "[]"
+    assert capture.read_text(encoding="utf-8") == str(home / ".cognee-plugin" / "antigravity")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process ancestry fixture")
+def test_parent_discovery_finds_a_real_agy_ancestor(tmp_path):
+    """Catches changing the POSIX host matcher from agy to another executable stem."""
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    agy = bin_dir / "agy"
+    agy.write_text(
+        '#!/bin/sh\n"$PYTHON_EXECUTABLE" -c "$1"\nstatus=$?\nexit $status\n',
+        encoding="utf-8",
+    )
+    agy.chmod(0o755)
+
+    session_start = str(SCRIPTS_DIR / "session-start.py")
+    child = f"""\
+import importlib.util
+import json
+import os
+import sys
+sys.path.insert(0, {str(SCRIPTS_DIR)!r})
+spec = importlib.util.spec_from_file_location(
+    "session_start_under_agy", {session_start!r}
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+payload = {{
+    "parent": os.getppid(),
+    "found": module._find_agy_parent_pid(),
+    "agy": int(os.environ["AGY_FIXTURE_PID"]),
+}}
+print(json.dumps(payload))
+"""
+    wrapper = (
+        "import subprocess, sys; "
+        f"print(subprocess.check_output([sys.executable, '-c', {child!r}], text=True), end='')"
+    )
+    launcher = f"""\
+import os
+import subprocess
+import sys
+env = os.environ.copy()
+env["AGY_FIXTURE_PID"] = str(os.getppid())
+result = subprocess.check_output([sys.executable, "-c", {wrapper!r}], env=env, text=True)
+print(result, end="")
+"""
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "USERPROFILE": str(home), "PYTHON_EXECUTABLE": sys.executable})
+    result = subprocess.run(
+        [str(agy), launcher],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert payload["found"] == payload["agy"]
+    assert payload["found"] != payload["parent"]
+
+
+def test_manifest_version_lookup_reads_the_override_plugin_root(monkeypatch, tmp_path):
+    """Catches version lookup regressing to .codex-plugin or another host root."""
+    override_root = tmp_path / "override-plugin"
+    override_root.mkdir()
+    (override_root / "plugin.json").write_text('{"version":"9.9.9"}', encoding="utf-8")
+    legacy = override_root / ".codex-plugin"
+    legacy.mkdir()
+    (legacy / "plugin.json").write_text('{"version":"0.0.1"}', encoding="utf-8")
+
+    with _isolated_plugin_scripts(monkeypatch, tmp_path):
+        monkeypatch.setenv("COGNEE_ANTIGRAVITY_PLUGIN_ROOT", str(override_root))
+        common = _load_script_module("_plugin_common", "_plugin_common.py")
+        statusline = _load_script_module("cognee_statusline_render", "cognee_statusline_render.py")
+
+        assert common._installed_plugin_version() == "9.9.9"
+        assert statusline._running_plugin_version() == "9.9.9"
 
 
 def test_operator_brief_and_four_skills_are_shipped(plugin_root):
