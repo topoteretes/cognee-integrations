@@ -22,10 +22,11 @@ EVENT_FOR_SCRIPT = {
     "session-context-lookup.py": "UserPromptSubmit",
     "store-user-prompt.py": "UserPromptSubmit",
     "store-to-session.py": "PostToolUse",
-    "sync-session-to-graph.py": "SessionEnd",
+    "sync-session-to-graph.py": "Stop",
 }
 
 _PROMPT_SCRIPTS = frozenset({"session-context-lookup.py", "store-user-prompt.py"})
+_STOP_SCRIPTS = frozenset({"store-to-session.py", "sync-session-to-graph.py"})
 SCRIPT_TIMEOUT_SECONDS = {
     "session-start.py": 110.0,
     "session-context-lookup.py": 110.0,
@@ -62,7 +63,11 @@ def read_transcript_tail(transcript_path: object) -> list[dict[str, Any]]:
         start = max(0, file_stat.st_size - MAX_TRANSCRIPT_TAIL_BYTES)
         with os.fdopen(descriptor, "rb") as transcript:
             descriptor = -1
-            transcript.seek(start)
+            if start:
+                transcript.seek(start - 1)
+                previous_byte = transcript.read(1)
+            else:
+                previous_byte = b"\n"
             raw = transcript.read(MAX_TRANSCRIPT_TAIL_BYTES)
     except (OSError, TypeError, ValueError):
         return []
@@ -70,7 +75,7 @@ def read_transcript_tail(transcript_path: object) -> list[dict[str, Any]]:
         if descriptor >= 0:
             os.close(descriptor)
 
-    if start:
+    if start and previous_byte != b"\n":
         newline = raw.find(b"\n")
         if newline < 0:
             return []
@@ -153,12 +158,15 @@ def _extract_tool_event(
 
     tool_call_id = result.get("tool_call_id")
     call = next((item for item in candidates if item.get("id") == tool_call_id), candidates[0])
-    normalized["tool_name"] = call.get("name", "")
-    normalized["tool_input"] = call.get("args", {})
-    normalized["tool_response"] = result.get("content", "")
-    if "exit_code" in result:
+    if "tool_name" not in normalized:
+        normalized["tool_name"] = call.get("name", "")
+    if "tool_input" not in normalized:
+        normalized["tool_input"] = call.get("args", {})
+    if "tool_response" not in normalized:
+        normalized["tool_response"] = result.get("content", "")
+    if "exit_code" in result and "exit_code" not in normalized:
         normalized["exit_code"] = result["exit_code"]
-    if "error" in result:
+    if "error" in result and "error" not in normalized:
         normalized["error"] = result["error"]
 
 
@@ -180,6 +188,20 @@ def normalize_payload(
         elif antigravity in payload:
             normalized[canonical] = payload[antigravity]
 
+    execution_id = payload.get("execution_id", payload.get("executionId"))
+    if execution_id not in (None, ""):
+        normalized["execution_id"] = execution_id
+
+    if payload.get("turn_id") not in (None, ""):
+        normalized["turn_id"] = str(payload["turn_id"])
+    elif execution_id not in (None, ""):
+        normalized["turn_id"] = str(execution_id)
+
+    if isinstance(payload.get("prompt"), str):
+        normalized["prompt"] = payload["prompt"]
+    elif isinstance(payload.get("lastUserInput"), str):
+        normalized["prompt"] = payload["lastUserInput"]
+
     if "cwd" in payload:
         normalized["cwd"] = payload["cwd"]
     else:
@@ -190,20 +212,45 @@ def normalize_payload(
     if "fullyIdle" in payload:
         normalized["fullyIdle"] = payload["fullyIdle"]
 
+    if event == "PostToolUse":
+        tool_call = payload.get("toolCall")
+        if isinstance(tool_call, dict):
+            if "name" in tool_call:
+                normalized["tool_name"] = tool_call["name"]
+            if "args" in tool_call:
+                normalized["tool_input"] = tool_call["args"]
+        if "result" in payload:
+            normalized["tool_response"] = payload["result"]
+        if "error" in payload:
+            normalized["error"] = payload["error"]
+
+    if event == "Stop":
+        native_output = payload.get(
+            "assistant_message",
+            payload.get("last_assistant_message", payload.get("finalModelOutput")),
+        )
+        if isinstance(native_output, str) and native_output:
+            normalized["assistant_message"] = native_output
+            normalized["last_assistant_message"] = native_output
+
     records = read_transcript_tail(normalized.get("transcript_path"))
     latest_user = _latest_user(records)
     if latest_user is not None:
         user_index, user_record = latest_user
-        if "step_index" in user_record:
+        if "turn_id" not in normalized and "step_index" in user_record:
             normalized["turn_id"] = str(user_record["step_index"])
-        if script in _PROMPT_SCRIPTS and isinstance(user_record.get("content"), str):
+        if (
+            script in _PROMPT_SCRIPTS
+            and "prompt" not in normalized
+            and isinstance(user_record.get("content"), str)
+        ):
             normalized["prompt"] = user_record["content"]
     else:
         user_index = -1
 
     if event == "PostToolUse":
         _extract_tool_event(normalized, records, payload.get("stepIdx"))
-    elif event == "Stop" and latest_user is not None:
+    elif event == "Stop" and "assistant_message" not in normalized and latest_user is not None:
         assistant = next(
             (
                 record
@@ -254,6 +301,17 @@ def _marker_path(payload: dict[str, Any], script: str, root: Path) -> Path | Non
             "turn",
             str(conversation),
             str(turn_id),
+            script,
+        )
+    elif payload.get("hook_event_name") == "Stop" and script in _STOP_SCRIPTS:
+        execution_id = payload.get("execution_id")
+        if execution_id in (None, ""):
+            return None
+        identity = (
+            "antigravity-adapter-v1",
+            "execution-stop",
+            str(conversation),
+            str(execution_id),
             script,
         )
     else:
@@ -413,10 +471,10 @@ def _run_script(payload: dict[str, Any], script: str) -> str:
         raise ValueError(f"unsupported inner hook: {script}")
 
     command = [sys.executable, str(Path(__file__).with_name(script))]
-    if payload.get("hook_event_name") == "Stop":
+    if script == "store-to-session.py" and payload.get("hook_event_name") == "Stop":
         command.append("--stop")
-    elif payload.get("hook_event_name") == "SessionEnd":
-        command.append("--session-end")
+    elif script == "sync-session-to-graph.py" and payload.get("hook_event_name") == "Stop":
+        command.append("--execution-stop")
 
     process_kwargs: dict[str, Any] = {}
     if os.name == "posix":
@@ -471,11 +529,14 @@ def run_inner_hook(
     *,
     runner: Runner = _run_script,
     marker_dir: Path | None = None,
-    session_end: bool = False,
     claim_stale_after: float | None = None,
 ) -> Any:
-    """Run an inner hook, enforcing final-idle and scoped once semantics."""
-    if session_end and payload.get("fullyIdle") is not True:
+    """Run an inner hook with conversation-, turn-, or execution-scoped once semantics."""
+    if (
+        script == "sync-session-to-graph.py"
+        and payload.get("hook_event_name") == "Stop"
+        and payload.get("fullyIdle") is not True
+    ):
         return {}
 
     marker_root = Path(marker_dir) if marker_dir is not None else default_marker_root()
@@ -505,14 +566,13 @@ def main(argv: list[str] | None = None) -> int:
 
     script = args[0]
     stop = "--stop" in args[1:]
-    session_end = "--session-end" in args[1:]
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
         if not isinstance(payload, dict):
             payload = {}
         normalized = normalize_payload(payload, script, stop=stop)
-        output = run_inner_hook(normalized, script, session_end=session_end)
+        output = run_inner_hook(normalized, script)
         content = output if isinstance(output, str) else json.dumps(output)
         translated = translate_stdout(content)
     except Exception:

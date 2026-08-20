@@ -4,6 +4,9 @@ This plugin gives Antigravity sessions durable Cognee memory. It recalls
 relevant session context before invocations and captures prompts, tool results,
 and completed responses for later retrieval.
 
+Each native `Stop` stores and syncs one `executionId`; it does not end the host
+session. The exit watcher performs final teardown only after Antigravity exits.
+
 Plugin-specific runtime state is stored in `~/.cognee-plugin/antigravity`.
 Cognee configuration, its managed virtual environment, API-key cache, local
 server markers, and `~/.cognee` data are shared with other Cognee plugins.

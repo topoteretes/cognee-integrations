@@ -1,13 +1,16 @@
-"""Suite descriptors for the two near-identical Python integrations.
+"""Suite descriptors for the near-identical Python hook integrations.
 
-claude-code and codex are the same hook code differing only in constants. A Suite
-captures those differences so one parametrized test set runs against both.
+Claude Code, Codex, Qwen (when present), and Antigravity share the same hook
+runtime with host-specific constants. A Suite captures those differences so one
+parametrized test set runs against every integration available in this checkout.
 
 Constants are verified against each suite's ``config.py`` / ``_plugin_common.py``:
   - claude-code: config AND state both live in ``~/.cognee-plugin/claude-code/``
   - codex:       config.json lives at the shared root ``~/.cognee-plugin/``,
                  state nests under ``~/.cognee-plugin/codex/``
-  - both:        default dataset ``agent_sessions``; the shared server-ready
+  - antigravity: config.json lives at the shared root ``~/.cognee-plugin/``,
+                 state nests under ``~/.cognee-plugin/antigravity/``
+  - all:         default dataset ``agent_sessions``; the shared server-ready
                  marker sits at the ``~/.cognee-plugin/`` root; local-SDK data
                  dirs live under ``~/.cognee/``
 """
@@ -20,7 +23,7 @@ from pathlib import Path
 # .../integrations/tests/utils/suites.py -> parents[2] == .../integrations
 _INTEGRATIONS = Path(__file__).resolve().parents[2]
 
-#: Name of the shared plugin root under HOME, used by both suites.
+#: Name of the shared plugin root under HOME, used by every suite.
 PLUGIN_DIR_NAME = ".cognee-plugin"
 
 #: Local-SDK home (data/system/cache dirs and the .env file) under HOME.
@@ -29,7 +32,7 @@ COGNEE_HOME_DIR_NAME = ".cognee"
 
 @dataclass(frozen=True)
 class Suite:
-    """A single integration suite (claude-code or codex)."""
+    """A single host integration suite."""
 
     name: str
     scripts_dir: Path
@@ -40,7 +43,7 @@ class Suite:
     default_dataset: str
     agent_name: str
     session_prefix: str
-    #: The suite's hooks.json manifest (claude: <root>/hooks/, codex: plugin root).
+    #: The suite's hooks.json manifest (host hooks directory or plugin root).
     hooks_json: Path
     #: The plugin manifest whose "version" the runtime reports as its own.
     plugin_manifest: Path
@@ -63,7 +66,7 @@ class Suite:
     #: _remember_http. The improve path has its own flag below — that part of the
     #: refactor did not travel with the rest.
     #:
-    #: True for BOTH suites as of the port that landed in main: codex previously
+    #: True for every current suite: codex previously
     #: had the older synchronous, raise-on-error path, which meant one document's
     #: HTTP error aborted its sibling. Kept as a flag rather than deleted because
     #: it names a real contract that a future integration may not satisfy.
@@ -71,7 +74,7 @@ class Suite:
     #: Capability: ``improve_session_via_http`` polls the cognify and memify
     #: pipelines and reports ``cognify_status``/``memify_status``.
     #:
-    #: True for both suites now. It was split out from has_background_remember
+    #: True for every current suite. It was split out from has_background_remember
     #: because the port that landed in main covered the bridge, ``wait_for_cognify``
     #: and the bounded ``do_remember`` wait but missed the improve path; kept as its
     #: own flag because those parts demonstrably travel separately.
@@ -87,7 +90,7 @@ class Suite:
     #: Capability: logs an *aggregate* ``elapsed_ms`` on the ``context_lookup_*``
     #: events. Split from the helper flag because codex now has the helper but
     #: still times only each recall scope inline — so ``per_scope[*]["elapsed_ms"]``
-    #: is present on both suites while the per-prompt total is claude-code only.
+    #: is present on the shared suites while the per-prompt total is claude-code only.
     has_recall_latency_metric: bool
     #: Capability: renders a rich terminal status bar — the health glyphs, the
     #: recall-counts diagnostics strip, the mode word and the plugin-install
@@ -177,7 +180,7 @@ ANTIGRAVITY = Suite(
     session_suffix="_agy",
     host_stem="agy",
     has_background_remember=True,
-    has_improve_pipeline_polling=False,
+    has_improve_pipeline_polling=True,
     has_async_hooks=False,
     has_elapsed_ms_helper=True,
     has_recall_latency_metric=False,

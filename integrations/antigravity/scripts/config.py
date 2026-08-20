@@ -83,9 +83,9 @@ def _config_log(event: str, detail: dict | None = None) -> None:
 # Env var overrides (env var name → config key)
 _ENV_MAP = {
     # Backend switch: the shared name is scanned first so the plugin-specific
-    # one, applied later, wins when both are exported. COGNEE_CLAUDE_BACKEND is
-    # deliberately absent — an export targeting the Claude Code plugin must not
-    # flip this one.
+    # one, applied later, wins when both are exported. The Claude Code, Codex,
+    # and Qwen plugin switches are deliberately absent — an export targeting a
+    # different host plugin must not flip this one.
     "COGNEE_BACKEND": "backend",
     "COGNEE_ANTIGRAVITY_BACKEND": "backend",
     "COGNEE_AGENT_NAME": "agent_name",

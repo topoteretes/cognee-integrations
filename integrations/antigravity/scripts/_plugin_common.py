@@ -77,7 +77,7 @@ _DEFAULT_LOCAL_SERVICE_URL = "http://localhost:8011"
 # --- Self-managed cognee runtime (shared with existing Cognee plugins) -------
 # Deliberately NOT namespaced under ~/.cognee-plugin/antigravity: the venv, the
 # local cognee server, and the data store are shared with existing plugins so
-# cognee is installed once and a single server serves both. Only per-plugin
+# cognee is installed once and a single server serves every host. Only per-plugin
 # state (logs, buffers) stays under _PLUGIN_DIR; the runtime lives at the root.
 _VENV_DIR = _SHARED_PLUGIN_ROOT / "venv"
 _VENV_PYTHON = _VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")

@@ -41,7 +41,7 @@
         "timeout": 120
       },
       {
-        "command": "scripts/run-agy-hook sync-session-to-graph.py --session-end",
+        "command": "scripts/run-agy-hook sync-session-to-graph.py",
         "timeout": 30
       }
     ]

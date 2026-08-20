@@ -3,7 +3,7 @@
 Registered as a plugin by ``integrations/tests/conftest.py``.
 
 Key fixtures:
-  - ``suite``            : parametrized over claude-code and codex
+  - ``suite``            : parametrized over every available host integration
   - ``temp_home``        : isolated HOME dir for the test (nothing hits real ~)
   - ``project_dir``      : isolated working dir (the hook ``cwd``)
   - ``mock_server``      : running MockCogneeServer (ephemeral port)
@@ -38,7 +38,7 @@ DEFAULT_TEST_API_KEY = "test-api-key"
 
 @pytest.fixture(params=ALL_SUITES, ids=lambda s: s.name)
 def suite(request) -> Suite:
-    """Run the test once per integration suite (claude-code, codex)."""
+    """Run the test once per available host integration suite."""
     return request.param
 
 

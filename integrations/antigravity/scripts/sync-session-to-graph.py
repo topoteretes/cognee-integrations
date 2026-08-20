@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge session cache entries into the permanent knowledge graph on session end.
+"""Bridge session cache entries into the permanent knowledge graph.
 
 Runs the integration's explicit session bridge:
   1. Persist session Q&A/trace cache into the permanent graph
@@ -47,7 +47,9 @@ from config import (
 _STATE_DIR = Path.home() / ".cognee-plugin" / "antigravity"
 _WATCHER_PID = _STATE_DIR / "watcher.pid"
 _WATCHER_STOP = _STATE_DIR / "watcher.stop"
-_DETACHED_ARG = "--detached-final"
+_DETACHED_FINAL_ARG = "--detached-final"
+_DETACHED_EXECUTION_ARG = "--detached-execution"
+_EXECUTION_STOP_ARG = "--execution-stop"
 _SESSION_END_ARG = "--session-end"
 _FINAL_SYNC_ONCE_DIR = _STATE_DIR / "final-sync-once"
 _FINAL_SYNC_ONCE_TTL_SECONDS = 3600
@@ -76,14 +78,20 @@ def _stop_idle_watcher() -> None:
             hook_log("watcher_sigterm_failed", {"error": str(exc)[:200]})
 
 
-def _spawn_detached_sync() -> bool:
-    """Run the expensive sync outside a short hook window."""
+def _spawn_detached_sync(*, final: bool) -> bool:
+    """Run sync outside a hook window, reserving teardown for final workers."""
     try:
         env = os.environ.copy()
-        env.setdefault("COGNEE_SYNC_START_DELAY", str(_SESSION_END_START_DELAY_DEFAULT))
-        env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
+        if final:
+            env.setdefault("COGNEE_SYNC_START_DELAY", str(_SESSION_END_START_DELAY_DEFAULT))
+            env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
+            worker_arg = _DETACHED_FINAL_ARG
+        else:
+            env.pop("COGNEE_SYNC_START_DELAY", None)
+            env.pop("COGNEE_UNREGISTER_ON_FINISH", None)
+            worker_arg = _DETACHED_EXECUTION_ARG
         subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],
+            [sys.executable, str(Path(__file__).resolve()), worker_arg],
             cwd=os.getcwd(),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -91,6 +99,7 @@ def _spawn_detached_sync() -> bool:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        hook_log("sync_worker_detached", {"final": final})
         return True
     except Exception as exc:
         hook_log("sync_detach_failed", {"error": str(exc)[:300]})
@@ -360,10 +369,14 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
 
 
 def main():
-    detached_final = _DETACHED_ARG in sys.argv
+    detached_final = _DETACHED_FINAL_ARG in sys.argv
+    detached_execution = _DETACHED_EXECUTION_ARG in sys.argv
+    execution_stop = _EXECUTION_STOP_ARG in sys.argv
     forced_session_end = _SESSION_END_ARG in sys.argv
-    payload_raw = "" if detached_final else sys.stdin.read()
-    if not detached_final and payload_raw.strip():
+    detached_worker = detached_final or detached_execution
+    payload_raw = "" if detached_worker else sys.stdin.read()
+    payload = {}
+    if not detached_worker and payload_raw.strip():
         try:
             payload = json.loads(payload_raw)
         except json.JSONDecodeError:
@@ -378,10 +391,20 @@ def main():
         {
             "is_session_end": is_session_end,
             "detached_final": detached_final,
+            "detached_execution": detached_execution,
+            "execution_stop": execution_stop,
             "forced_session_end": forced_session_end,
             "payload_preview": payload_raw[:200],
         },
     )
+
+    if execution_stop:
+        if payload.get("fullyIdle") is not True:
+            hook_log("sync_execution_skipped_not_idle")
+            return
+        spawned = _spawn_detached_sync(final=False)
+        hook_log("sync_deferred_to_execution_worker", {"spawned": spawned})
+        return
 
     if detached_final:
         delay_raw = os.environ.get("COGNEE_SYNC_START_DELAY", "")
@@ -405,7 +428,7 @@ def main():
     # there prevents later idle persistence.
     if is_session_end:
         _stop_idle_watcher()
-        spawned = _spawn_detached_sync()
+        spawned = _spawn_detached_sync(final=True)
         hook_log("sync_deferred_to_shutdown_worker", {"spawned": spawned})
         return
 

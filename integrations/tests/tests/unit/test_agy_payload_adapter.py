@@ -1,9 +1,9 @@
 """Contracts for the Antigravity hook payload adapter.
 
-Antigravity hook stdin deliberately carries less context than the Cognee hook
-scripts consume.  ``agy_hook.py`` is the small, fail-open boundary that fills
-that gap from an explicitly supplied transcript path; these tests use only
-temporary JSONL files so they can never inspect a developer's real transcript.
+``agy_hook.py`` is the small, fail-open boundary that prefers Antigravity's
+native hook fields and uses an explicitly supplied transcript only for
+enrichment and fallback.  These tests use only temporary JSONL files so they
+can never inspect a developer's real transcript.
 """
 
 from __future__ import annotations
@@ -108,6 +108,37 @@ def test_normalize_payload_keeps_explicit_snake_case_fields(adapter, tmp_path):
 
 
 @pytest.mark.parametrize(
+    "transcript_state",
+    ["absent", "unreadable", "truncated", "malformed-utf8"],
+)
+def test_native_prompt_fields_survive_unavailable_transcripts(adapter, tmp_path, transcript_state):
+    """Catches treating the transcript as the primary prompt/turn source."""
+    payload = {
+        "conversationId": "conversation-native-prompt",
+        "executionId": "execution-native-prompt",
+        "lastUserInput": "native prompt without transcript support",
+    }
+    if transcript_state == "unreadable":
+        transcript = tmp_path / "transcript-directory"
+        transcript.mkdir()
+        payload["transcriptPath"] = str(transcript)
+    elif transcript_state == "truncated":
+        transcript = tmp_path / "truncated.jsonl"
+        transcript.write_bytes(b'{"source":"USER_EXPLICIT"')
+        payload["transcriptPath"] = str(transcript)
+    elif transcript_state == "malformed-utf8":
+        transcript = tmp_path / "malformed-utf8.jsonl"
+        transcript.write_bytes(b'{"source":"USER_EXPLICIT","content":"\xff"}\n')
+        payload["transcriptPath"] = str(transcript)
+
+    normalized = adapter.normalize_payload(payload, "session-context-lookup.py")
+
+    assert normalized["execution_id"] == "execution-native-prompt"
+    assert normalized["turn_id"] == "execution-native-prompt"
+    assert normalized["prompt"] == "native prompt without transcript support"
+
+
+@pytest.mark.parametrize(
     ("script", "stop", "event"),
     [
         ("session-start.py", False, "SessionStart"),
@@ -115,7 +146,7 @@ def test_normalize_payload_keeps_explicit_snake_case_fields(adapter, tmp_path):
         ("store-user-prompt.py", False, "UserPromptSubmit"),
         ("store-to-session.py", False, "PostToolUse"),
         ("store-to-session.py", True, "Stop"),
-        ("sync-session-to-graph.py", False, "SessionEnd"),
+        ("sync-session-to-graph.py", False, "Stop"),
     ],
 )
 def test_normalize_payload_maps_target_script_to_cognee_event(adapter, script, stop, event):
@@ -165,7 +196,14 @@ def test_post_tool_use_selects_result_and_nearest_matching_model_tool_call(adapt
             "source": "MODEL",
             "status": "DONE",
             "step_index": 21,
-            "tool_calls": [{"id": "call-17", "name": "shell", "args": {"command": "git status"}}],
+            "tool_calls": [
+                {"id": "call-unrelated", "name": "ignored-neighbor", "args": {}},
+                {
+                    "id": "call-17",
+                    "name": "shell",
+                    "args": {"command": "git status"},
+                },
+            ],
         },
         {
             "source": "MODEL",
@@ -192,7 +230,7 @@ def test_post_tool_use_selects_result_and_nearest_matching_model_tool_call(adapt
         {
             "conversationId": "c-tools",
             "transcriptPath": str(transcript),
-            "stepIdx": 23,
+            "stepIdx": "23",
         },
         "store-to-session.py",
     )
@@ -204,6 +242,60 @@ def test_post_tool_use_selects_result_and_nearest_matching_model_tool_call(adapt
     assert normalized["tool_response"] != "first command result"
     assert normalized["error"] == "command failed"
     assert normalized["exit_code"] == 128
+
+
+def test_native_post_tool_fields_win_while_transcript_enriches_string_step(adapter, tmp_path):
+    """Catches transcript data overriding native toolCall/result/error fields."""
+    transcript = _write_transcript(
+        tmp_path / "native-tool.jsonl",
+        {
+            "source": "MODEL",
+            "status": "DONE",
+            "step_index": 40,
+            "tool_calls": [
+                {"id": "call-first", "name": "first-transcript-tool", "args": {"n": 1}},
+                {
+                    "id": "call-second",
+                    "name": "second-transcript-tool",
+                    "args": {"n": 2},
+                },
+            ],
+        },
+        {
+            "source": "MODEL",
+            "type": "RUN_COMMAND",
+            "status": "DONE",
+            "step_index": 41,
+            "tool_call_id": "call-second",
+            "content": "transcript result",
+            "exit_code": 23,
+            "error": "transcript error",
+        },
+    )
+
+    normalized = adapter.normalize_payload(
+        {
+            "conversationId": "c-native-tool",
+            "executionId": "execution-native-tool",
+            "transcriptPath": str(transcript),
+            "stepIdx": "41",
+            "toolCall": {
+                "name": "native-tool",
+                "args": {"command": "native command"},
+            },
+            "result": {"stdout": "native result"},
+            "error": "native error",
+        },
+        "store-to-session.py",
+    )
+
+    assert normalized["execution_id"] == "execution-native-tool"
+    assert normalized["turn_id"] == "execution-native-tool"
+    assert normalized["tool_name"] == "native-tool"
+    assert normalized["tool_input"] == {"command": "native command"}
+    assert normalized["tool_response"] == {"stdout": "native result"}
+    assert normalized["error"] == "native error"
+    assert normalized["exit_code"] == 23
 
 
 def test_stop_uses_latest_visible_assistant_message_after_user_record(adapter, tmp_path):
@@ -265,6 +357,45 @@ def test_stop_uses_latest_visible_assistant_message_after_user_record(adapter, t
     assert normalized["last_assistant_message"] == "Later visible response after the user."
     assert "Visible answer from the previous turn." not in str(normalized)
     assert "private chain of thought" not in str(normalized)
+
+
+def test_stop_prefers_native_final_output_and_correlates_native_execution(adapter, tmp_path):
+    """Catches replacing native Stop fields with stale transcript-derived values."""
+    transcript = _write_transcript(
+        tmp_path / "native-stop.jsonl",
+        {
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "status": "DONE",
+            "content": "transcript prompt",
+            "step_index": 50,
+        },
+        {
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "status": "DONE",
+            "content": "transcript final output",
+            "step_index": 51,
+        },
+    )
+
+    normalized = adapter.normalize_payload(
+        {
+            "conversationId": "same-conversation",
+            "executionId": "execution-stop-2",
+            "lastUserInput": "native prompt",
+            "finalModelOutput": "native final output",
+            "transcriptPath": str(transcript),
+        },
+        "store-to-session.py",
+        stop=True,
+    )
+
+    assert normalized["execution_id"] == "execution-stop-2"
+    assert normalized["turn_id"] == "execution-stop-2"
+    assert normalized["prompt"] == "native prompt"
+    assert normalized["assistant_message"] == "native final output"
+    assert normalized["last_assistant_message"] == "native final output"
 
 
 @pytest.mark.parametrize(
@@ -416,6 +547,40 @@ def test_bounded_transcript_tail_does_not_recover_early_prompt_outside_read_wind
     )
 
     assert "prompt" not in normalized
+
+
+def test_bounded_transcript_tail_keeps_complete_record_at_exact_window_boundary(adapter, tmp_path):
+    """Catches discarding a complete first record when the prior byte is a newline."""
+    transcript = tmp_path / "exact-boundary.jsonl"
+    prompt = {
+        "source": "USER_EXPLICIT",
+        "type": "USER_INPUT",
+        "status": "DONE",
+        "content": "complete prompt at exact boundary",
+        "step_index": 77,
+    }
+    prompt_line = json.dumps(prompt).encode() + b"\n"
+    padding_prefix = b'{"padding":"'
+    padding_suffix = b'"}\n'
+    padding_size = (
+        adapter.MAX_TRANSCRIPT_TAIL_BYTES
+        - len(prompt_line)
+        - len(padding_prefix)
+        - len(padding_suffix)
+    )
+    bounded_tail = prompt_line + padding_prefix + b"x" * padding_size + padding_suffix
+    prefix = b"{}\n"
+    transcript.write_bytes(prefix + bounded_tail)
+
+    assert len(bounded_tail) == adapter.MAX_TRANSCRIPT_TAIL_BYTES
+    assert transcript.stat().st_size - adapter.MAX_TRANSCRIPT_TAIL_BYTES == len(prefix)
+    normalized = adapter.normalize_payload(
+        {"conversationId": "c-exact-boundary", "transcriptPath": str(transcript)},
+        "session-context-lookup.py",
+    )
+
+    assert normalized["prompt"] == "complete prompt at exact boundary"
+    assert normalized["turn_id"] == "77"
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFO support")
@@ -941,14 +1106,63 @@ module.run_inner_hook(
     assert not list(marker_root.glob("*.claim"))
 
 
-def test_sync_session_end_runs_only_after_fully_idle(adapter, tmp_path):
-    busy = {"conversationId": "conversation-sync", "fullyIdle": False}
-    idle = {"conversationId": "conversation-sync", "fullyIdle": True}
+def test_same_conversation_stop_work_runs_once_for_each_native_execution(adapter, tmp_path):
+    """Catches Stop teardown or deduplication scoped to the whole conversation."""
+    calls = []
+
+    def runner(inner_payload, script):
+        calls.append((inner_payload["execution_id"], inner_payload["hook_event_name"], script))
+        return {"stored": True}
+
+    for execution_id in ("execution-1", "execution-1", "execution-2", "execution-2"):
+        native = {
+            "conversationId": "same-conversation",
+            "executionId": execution_id,
+            "lastUserInput": f"prompt for {execution_id}",
+            "finalModelOutput": f"answer for {execution_id}",
+            "fullyIdle": True,
+        }
+        stop_payload = adapter.normalize_payload(native, "store-to-session.py", stop=True)
+        sync_payload = adapter.normalize_payload(native, "sync-session-to-graph.py")
+        adapter.run_inner_hook(
+            stop_payload,
+            "store-to-session.py",
+            runner=runner,
+            marker_dir=tmp_path,
+        )
+        adapter.run_inner_hook(
+            sync_payload,
+            "sync-session-to-graph.py",
+            runner=runner,
+            marker_dir=tmp_path,
+        )
+
+    assert calls == [
+        ("execution-1", "Stop", "store-to-session.py"),
+        ("execution-1", "Stop", "sync-session-to-graph.py"),
+        ("execution-2", "Stop", "store-to-session.py"),
+        ("execution-2", "Stop", "sync-session-to-graph.py"),
+    ]
+    assert len(list(tmp_path.glob("*.done"))) == 4
+
+
+def test_stop_sync_waits_for_fully_idle_without_claiming_the_execution(adapter, tmp_path):
+    """Catches syncing or deduplicating an execution before background work is idle."""
     calls = []
 
     def runner(inner_payload, script):
         calls.append((inner_payload, script))
         return {"synced": True}
+
+    busy = adapter.normalize_payload(
+        {
+            "conversationId": "conversation-idle-gate",
+            "executionId": "execution-idle-gate",
+            "fullyIdle": False,
+        },
+        "sync-session-to-graph.py",
+    )
+    idle = {**busy, "fullyIdle": True}
 
     assert (
         adapter.run_inner_hook(
@@ -956,18 +1170,18 @@ def test_sync_session_end_runs_only_after_fully_idle(adapter, tmp_path):
             "sync-session-to-graph.py",
             runner=runner,
             marker_dir=tmp_path,
-            session_end=True,
         )
         == {}
     )
     assert calls == []
-    adapter.run_inner_hook(
+    assert not list(tmp_path.glob("*.done"))
+
+    assert adapter.run_inner_hook(
         idle,
         "sync-session-to-graph.py",
         runner=runner,
         marker_dir=tmp_path,
-        session_end=True,
-    )
+    ) == {"synced": True}
     assert calls == [(idle, "sync-session-to-graph.py")]
 
 
@@ -1094,3 +1308,53 @@ def test_adapter_subprocess_normalizes_payload_and_translates_inner_stdout(adapt
         "prompt": "smoke prompt",
         "turn_id": "7",
     }
+
+
+def test_stop_sync_subprocess_does_not_request_session_end_teardown(tmp_path):
+    """Catches the adapter converting execution Stop into lifecycle SessionEnd."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    adapter_copy = scripts / "agy_hook.py"
+    shutil.copy2(ADAPTER_PATH, adapter_copy)
+    observed = tmp_path / "observed-sync.json"
+    (scripts / "sync-session-to-graph.py").write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['OBSERVED_SYNC']).write_text(\n"
+        "    json.dumps({'argv': sys.argv[1:], 'payload': json.loads(sys.stdin.read())}),\n"
+        "    encoding='utf-8',\n"
+        ")\n"
+        "print('{}')\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = subprocess.run(
+        [sys.executable, str(adapter_copy), "sync-session-to-graph.py"],
+        input=json.dumps(
+            {
+                "conversationId": "same-conversation",
+                "executionId": "execution-sync-1",
+                "fullyIdle": True,
+            }
+        ),
+        text=True,
+        capture_output=True,
+        cwd=scripts,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "OBSERVED_SYNC": str(observed),
+        },
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {}
+    observation = json.loads(observed.read_text(encoding="utf-8"))
+    assert observation["argv"] == ["--execution-stop"]
+    assert observation["payload"]["hook_event_name"] == "Stop"
+    assert observation["payload"]["execution_id"] == "execution-sync-1"

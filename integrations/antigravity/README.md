@@ -59,11 +59,11 @@ and status markers—lives under `~/.cognee-plugin/antigravity/`. Cognee's share
 runtime and data remain in their existing shared locations (`~/.cognee-plugin/`
 and `~/.cognee/`), so this plugin does not create a competing runtime.
 
-The adapter reads at most the final 1 MiB of an Antigravity JSONL transcript. If a
-read begins mid-line, it discards that partial record; malformed or non-object
-records are ignored. It derives the latest explicit user prompt, a matching tool
-result, or the completed assistant response only from that bounded tail—never by
-loading the full transcript.
+The adapter maps Antigravity's native `executionId`, `lastUserInput`, `toolCall`,
+`result`, `error`, and `finalModelOutput` fields first. It reads at most the final
+1 MiB of the JSONL transcript only for enrichment, correlation, and fallback. If
+a read begins mid-line, it discards that partial record; malformed or non-object
+records are ignored, and the full transcript is never loaded.
 
 ## Native hook mapping
 
@@ -74,12 +74,14 @@ loading the full transcript.
 | `cognee-bootstrap` | `PreInvocation` | Start or connect Cognee for the session |
 | `cognee-recall` | `PreInvocation` | Recall relevant context and return it as `injectSteps` |
 | `cognee-capture` | `PreInvocation`, `PostToolUse` | Capture the user prompt and matched tool output |
-| `cognee-stop` | `Stop` | Store the completed turn and request session-to-graph sync |
+| `cognee-stop` | `Stop` | Store and sync one completed execution without ending the session |
 
 The adapter maps those host events to Cognee's internal `SessionStart`,
-`UserPromptSubmit`, `PostToolUse`, `Stop`, and `SessionEnd` contracts. Hooks are
-best-effort: absent or unreadable transcripts produce no captured records rather
-than blocking Antigravity.
+`UserPromptSubmit`, `PostToolUse`, and `Stop` contracts. Stop work is deduplicated
+per native `executionId`, so multiple turns in one conversation remain distinct.
+The exit watcher remains the sole process/session teardown authority and performs
+the final sync and unregister only after Antigravity exits. Hooks are best-effort:
+absent or unreadable transcripts do not block native-field capture or Antigravity.
 
 ## Verify
 

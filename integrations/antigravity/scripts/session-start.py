@@ -93,10 +93,10 @@ _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() n
     "no",
 )
 
-# --- Self-managed cognee install (SHARED with the Claude Code plugin) --------
+# --- Self-managed cognee install (SHARED with other host plugins) ------------
 # uv + a uv-managed Python guarantee a cognee-compatible runtime (3.10-3.14)
 # regardless of what's on the machine. All paths sit under the shared
-# ~/.cognee-plugin root so the two plugins install once and reuse one venv.
+# ~/.cognee-plugin root so every host plugin installs once and reuses one venv.
 _UV_DIR = _GLOBAL_STATE_DIR / "uv"
 _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"

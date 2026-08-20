@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import shlex
@@ -14,6 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from utils.suites import ANTIGRAVITY
 
 INTEGRATIONS_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_ROOT = INTEGRATIONS_ROOT / "antigravity"
@@ -131,7 +133,7 @@ EXPECTED_HANDLER_ARGS = {
     ("cognee-capture", "PostToolUse"): [("store-to-session.py",)],
     ("cognee-stop", "Stop"): [
         ("store-to-session.py", "--stop"),
-        ("sync-session-to-graph.py", "--session-end"),
+        ("sync-session-to-graph.py",),
     ],
 }
 
@@ -189,11 +191,66 @@ def test_post_tool_use_matches_all_tools_and_wraps_non_stop_storage(manifest):
     ]
 
 
-def test_stop_stores_assistant_message_then_syncs_session_end(manifest):
+def test_stop_stores_assistant_message_then_syncs_without_session_teardown(manifest):
+    """Catches treating a normal execution-loop Stop as host/session exit."""
     commands = _commands(manifest, "cognee-stop", "Stop")
     assert [_command_tokens(command)[1] for command in commands] == EXPECTED_HANDLER_ARGS[
         ("cognee-stop", "Stop")
     ]
+
+
+def test_execution_stop_defers_to_a_nonfinal_worker(hook_module, monkeypatch):
+    """Catches running the expensive improve pipeline in the synchronous Stop window."""
+    sync = hook_module(ANTIGRAVITY, "sync-session-to-graph.py")
+    spawned = []
+    direct_syncs = []
+
+    async def direct_sync(*args, **kwargs):
+        direct_syncs.append((args, kwargs))
+
+    monkeypatch.setattr(
+        sync, "_spawn_detached_sync", lambda *, final: spawned.append(final) or True
+    )
+    monkeypatch.setattr(sync, "_sync", direct_sync)
+    monkeypatch.setattr(
+        sync, "resolve_session_key_from_payload", lambda _payload: ("host-1", "test")
+    )
+    monkeypatch.setattr(sync, "set_session_key", lambda value: value)
+    monkeypatch.setattr(sync, "hook_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sync.sys, "argv", ["sync-session-to-graph.py", "--execution-stop"])
+    monkeypatch.setattr(
+        sync.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps({"hook_event_name": "Stop", "session_id": "host-1", "fullyIdle": True})
+        ),
+    )
+
+    sync.main()
+
+    assert spawned == [False]
+    assert direct_syncs == []
+
+
+def test_nonfinal_worker_cannot_inherit_unregister_authority(hook_module, monkeypatch):
+    """Catches granting execution Stop the exit watcher's lifecycle authority."""
+    sync = hook_module(ANTIGRAVITY, "sync-session-to-graph.py")
+    launches = []
+
+    def fake_popen(command, **kwargs):
+        launches.append((command, kwargs))
+        return object()
+
+    monkeypatch.setattr(sync.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("COGNEE_UNREGISTER_ON_FINISH", "1")
+
+    assert sync._spawn_detached_sync(final=False) is True
+    assert launches[0][0][-1] == "--detached-execution"
+    assert "COGNEE_UNREGISTER_ON_FINISH" not in launches[0][1]["env"]
+
+    assert sync._spawn_detached_sync(final=True) is True
+    assert launches[1][0][-1] == "--detached-final"
+    assert launches[1][1]["env"]["COGNEE_UNREGISTER_ON_FINISH"] == "1"
 
 
 def test_all_hook_commands_are_relative_runner_commands_with_safe_second_timeouts(manifest):
