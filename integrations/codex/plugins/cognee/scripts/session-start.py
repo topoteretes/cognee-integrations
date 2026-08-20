@@ -1153,11 +1153,13 @@ async def _run_bootstrap(bootstrap: dict) -> None:
          booted, because registration is per-agent (and concurrency-safe via
          the agent-keys / agent-lifecycle locks inside _run_heavy).
     """
-    config = load_config()
     cwd = str(bootstrap.get("cwd") or os.getcwd())
     session_id = str(bootstrap.get("session_id", "") or "")
     session_key = str(bootstrap.get("session_key", "") or "")
-    dataset = str(bootstrap.get("dataset", "") or get_dataset(config))
+    pinned_dataset = str(bootstrap.get("dataset", "") or "")
+    config = load_config(cwd, derive_project=not bool(pinned_dataset))
+    dataset = pinned_dataset or get_dataset(config)
+    config["dataset"] = dataset
     agent_session_name = str(bootstrap.get("agent_session_name", "") or session_id)
     if session_key:
         os.environ["COGNEE_SESSION_KEY"] = session_key

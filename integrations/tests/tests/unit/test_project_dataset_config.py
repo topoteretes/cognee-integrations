@@ -40,6 +40,41 @@ def test_explicit_dataset_wins_over_project_scope(
     assert (loaded["dataset"], loaded["_dataset_source"]) == ("explicit", "env")
 
 
+def test_whitespace_explicit_dataset_is_absent_and_project_scope_still_derives(
+    suite, isolated_modules, project_dir, monkeypatch
+):
+    config = isolated_modules(suite, "config")
+    monkeypatch.setenv("COGNEE_DATASET_SCOPE", "project")
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", " \t ")
+    monkeypatch.setattr(
+        config, "derive_project_dataset", lambda workspace: "project_repo_abc123def456"
+    )
+
+    loaded = config.load_config(str(project_dir))
+
+    assert (loaded["dataset"], loaded["_dataset_source"]) == (
+        "project_repo_abc123def456",
+        "project",
+    )
+
+
+def test_no_derivation_config_path_preserves_trimmed_explicit_dataset(
+    suite, isolated_modules, project_dir, monkeypatch
+):
+    config = isolated_modules(suite, "config")
+    monkeypatch.setenv("COGNEE_DATASET_SCOPE", "project")
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", " explicit ")
+    monkeypatch.setattr(
+        config,
+        "derive_project_dataset",
+        lambda _workspace: (_ for _ in ()).throw(AssertionError("resolver invoked")),
+    )
+
+    loaded = config.load_config(str(project_dir), derive_project=False)
+
+    assert (loaded["dataset"], loaded["_dataset_source"]) == ("explicit", "env")
+
+
 def test_picker_marker_wins_over_project_scope(suite, isolated_modules, project_dir, monkeypatch):
     config = isolated_modules(suite, "config")
     monkeypatch.setenv("COGNEE_DATASET_SCOPE", "project")

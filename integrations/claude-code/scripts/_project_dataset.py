@@ -19,6 +19,14 @@ def _repository_path(value: str) -> str:
     return path.strip("/")
 
 
+def _format_host(value: str, port: int | None = None) -> str:
+    host = str(value or "").strip().strip("[]").lower()
+    if not host:
+        return ""
+    formatted = f"[{host}]" if ":" in host else host
+    return f"{formatted}:{port}" if port is not None else formatted
+
+
 def normalize_git_remote(remote: str) -> str | None:
     value = str(remote or "").strip()
     if not value:
@@ -34,7 +42,7 @@ def normalize_git_remote(remote: str) -> str | None:
             )
         ):
             return None
-        host = match["host"].strip("[]").lower()
+        host = _format_host(match["host"])
         path = _repository_path(match["path"])
         return f"git:{host}/{path}" if host and path else None
     try:
@@ -48,9 +56,7 @@ def normalize_git_remote(remote: str) -> str | None:
         return None
     if scheme == "ssh" and port == 22:
         port = None
-    host_part = f"[{host}]" if ":" in host else host
-    if port is not None:
-        host_part = f"{host_part}:{port}"
+    host_part = _format_host(host, port)
     path = _repository_path(parsed.path)
     return f"git:{host_part}/{path}" if path else None
 
@@ -80,12 +86,12 @@ def _run_git(workspace: Path, *args: str) -> str:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
+            errors="strict",
             timeout=GIT_TIMEOUT_SECONDS,
             check=False,
             shell=False,
         )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+    except (FileNotFoundError, OSError, UnicodeError, subprocess.SubprocessError):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
 

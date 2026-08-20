@@ -132,8 +132,8 @@ def _apply_project_dataset(config: dict, workspace: str | None = None) -> dict:
     return config
 
 
-def load_config(workspace: str | None = None) -> dict:
-    """Load merged config: defaults → file → env vars."""
+def load_config(workspace: str | None = None, *, derive_project: bool = True) -> dict:
+    """Load merged config, optionally skipping workspace dataset derivation."""
     config = dict(_DEFAULTS)
     config["_dataset_source"] = "default"
 
@@ -164,6 +164,8 @@ def load_config(workspace: str | None = None) -> dict:
     # Layer 3: env vars (highest priority)
     for env_key, config_key in _ENV_MAP.items():
         val = os.environ.get(env_key, "")
+        if env_key == "COGNEE_PLUGIN_DATASET":
+            val = val.strip()
         if val:
             config[config_key] = val
             if env_key == "COGNEE_PLUGIN_DATASET":
@@ -189,7 +191,7 @@ def load_config(workspace: str | None = None) -> dict:
             config["api_key"] = ""
             config["base_url"] = ""
 
-    return _apply_project_dataset(config, workspace)
+    return _apply_project_dataset(config, workspace) if derive_project else config
 
 
 def save_config(config: dict) -> None:

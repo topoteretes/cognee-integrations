@@ -133,7 +133,7 @@ The hooks emit `mode_decision` logs with `mode`, `service_url`, `url_source`, `k
 Each terminal launch maintains a small map file:
 
 ```
-~/.cognee-plugin/sessions/<host_session_id>.json
+~/.cognee-plugin/codex/sessions/<host_session_id>.json
   → {
        "conn_uuid": "...",
        "session_id": "...",
@@ -206,8 +206,8 @@ dataset. Existing installations continue to use `agent_sessions` until enabled.
 but runtime dataset selection does not read it.
 
 The dataset is fixed for the lifetime of a launch. Recall searches only the active dataset. If you want to
-change the active dataset, you have to exit Claude, change the dataset via env, and then start Claude again.
-Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
+change the active dataset, you have to exit Codex, change the dataset via env, and then start Codex again.
+Data added outside of Codex to the dataset (via SDK or the server for example) is visible in Codex via the Cognee plugin.
 
 ## Hooks
 
@@ -447,7 +447,10 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `agent_sessions`).
+- Recall is scoped to the active dataset: a non-empty explicit
+  `COGNEE_PLUGIN_DATASET` wins; otherwise `COGNEE_DATASET_SCOPE=project` uses
+  the conversation's pinned project-derived dataset; otherwise it uses
+  `agent_sessions`.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 

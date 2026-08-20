@@ -29,6 +29,18 @@ def test_non_default_port_is_part_of_identity(suite, isolated_modules):
     )
 
 
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "git@[2001:db8::1]:Org/Repo.git",
+        "ssh://git@[2001:db8::1]/Org/Repo.git",
+    ],
+)
+def test_ipv6_scp_and_url_remotes_normalize_identically(suite, isolated_modules, remote):
+    resolver = isolated_modules(suite, "_project_dataset")
+    assert resolver.normalize_git_remote(remote) == "git:[2001:db8::1]/Org/Repo"
+
+
 def test_dataset_name_is_bounded_and_contains_no_credentials(suite, isolated_modules):
     resolver = isolated_modules(suite, "_project_dataset")
     name = resolver.dataset_name(
@@ -105,6 +117,24 @@ def test_git_timeout_falls_back_to_workspace(suite, isolated_modules, tmp_path, 
         lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd=["git"], timeout=1)),
     )
     assert resolver.derive_project_dataset(str(workspace)).startswith("project_plain_")
+
+
+def test_git_decoding_failure_falls_back_without_replacement_text(
+    suite, isolated_modules, tmp_path, monkeypatch
+):
+    resolver = isolated_modules(suite, "_project_dataset")
+    workspace = tmp_path / "plain"
+    workspace.mkdir()
+    invocation = {}
+
+    def decoding_failure(*args, **kwargs):
+        invocation.update(kwargs)
+        raise UnicodeDecodeError("utf-8", b"\xffsecret", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(resolver.subprocess, "run", decoding_failure)
+
+    assert resolver.derive_project_dataset(str(workspace)).startswith("project_plain_")
+    assert invocation["errors"] == "strict"
 
 
 def test_invalid_workspace_returns_none(suite, isolated_modules, tmp_path):

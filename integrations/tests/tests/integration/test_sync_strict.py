@@ -36,7 +36,7 @@ def sync_mod(suite, hook_module, mock_server, monkeypatch):
     module = hook_module(suite, "sync-session-to-graph.py")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     monkeypatch.setenv("COGNEE_API_KEY", "principal-key")
-    monkeypatch.setattr(module, "load_config", lambda: {})
+    monkeypatch.setattr(module, "load_config", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(module, "http_api_ready", lambda: True)
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
     return module

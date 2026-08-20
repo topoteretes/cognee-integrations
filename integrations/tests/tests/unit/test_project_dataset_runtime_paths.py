@@ -3,8 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import sys
 import types
+
+
+def _track_project_derivation(monkeypatch):
+    config = sys.modules.get("config") or importlib.import_module("config")
+    calls = []
+    monkeypatch.setenv("COGNEE_DATASET_SCOPE", "project")
+    monkeypatch.setattr(
+        config,
+        "derive_project_dataset",
+        lambda workspace: calls.append(workspace) or "project_wrong_999999999999",
+    )
+    return calls
 
 
 def test_session_start_winner_reaches_ready_and_agent_registration(suite, hook_module, monkeypatch):
@@ -80,6 +93,7 @@ def test_session_start_winner_reaches_ready_and_agent_registration(suite, hook_m
 def test_local_graph_recall_receives_pinned_dataset(suite, hook_module, monkeypatch):
     lookup = hook_module(suite, "session-context-lookup.py")
     calls = []
+    derivations = _track_project_derivation(monkeypatch)
 
     async def recall(_prompt, **kwargs):
         calls.append(kwargs)
@@ -95,7 +109,6 @@ def test_local_graph_recall_receives_pinned_dataset(suite, hook_module, monkeypa
         sys.modules, "cognee.modules.search", types.ModuleType("cognee.modules.search")
     )
     monkeypatch.setitem(sys.modules, "cognee.modules.search.types", fake_types)
-    monkeypatch.setattr(lookup, "load_config", lambda *_a, **_k: {"dataset": "candidate"})
     monkeypatch.setattr(lookup, "resolve_runtime_mode", lambda: {"mode": "local", "base_url": ""})
     monkeypatch.setattr(lookup, "read_connection_state", lambda: {})
     monkeypatch.setattr(lookup, "ensure_cognee_ready", lambda _config: asyncio.sleep(0))
@@ -116,6 +129,132 @@ def test_local_graph_recall_receives_pinned_dataset(suite, hook_module, monkeypa
 
     graph = next(call for call in calls if call["scope"] == ["graph"])
     assert graph["datasets"] == ["pinned"]
+    assert derivations == []
+
+
+def test_prompt_hook_does_not_derive_after_loading_pinned_state(suite, hook_module, monkeypatch):
+    prompt_hook = hook_module(suite, "store-user-prompt.py")
+    derivations = _track_project_derivation(monkeypatch)
+    monkeypatch.setattr(
+        prompt_hook,
+        "load_resolved",
+        lambda: {
+            "session_id": "session-id",
+            "dataset": "project_pinned_111111111111",
+            "user_id": "user-id",
+            "tenant_id": "tenant-id",
+        },
+    )
+    monkeypatch.setattr(
+        prompt_hook,
+        "resolve_runtime_mode",
+        lambda: {"mode": "http", "base_url": "https://memory.example"},
+    )
+    monkeypatch.setattr(prompt_hook, "_ensure_idle_watcher", lambda *_a, **_k: None)
+    monkeypatch.setattr(prompt_hook, "server_usable", lambda _url: False)
+
+    asyncio.run(prompt_hook._store("remember the pinned decision", {}))
+
+    assert derivations == []
+
+
+def test_tool_and_answer_hooks_do_not_derive_after_loading_pinned_state(
+    suite, hook_module, monkeypatch
+):
+    store_hook = hook_module(suite, "store-to-session.py")
+    derivations = _track_project_derivation(monkeypatch)
+    monkeypatch.setattr(
+        store_hook,
+        "_load_session",
+        lambda: ("session-id", "project_pinned_111111111111", "user-id"),
+    )
+    monkeypatch.setattr(
+        store_hook,
+        "resolve_runtime_mode",
+        lambda: {"mode": "http", "base_url": "https://memory.example"},
+    )
+    monkeypatch.setattr(store_hook, "server_usable", lambda _url: False)
+    monkeypatch.setattr(store_hook, "append_warmup_entry", lambda *_a, **_k: None)
+    monkeypatch.setattr(store_hook, "append_http_bridge_entry", lambda *_a, **_k: None)
+    monkeypatch.setattr(store_hook, "bump_save_counter", lambda *_a, **_k: None)
+    monkeypatch.setattr(store_hook, "hook_log", lambda *_a, **_k: None)
+
+    asyncio.run(
+        store_hook._store_tool_call(
+            {"tool_name": "Read", "tool_input": {"path": "README.md"}, "tool_output": "ok"}
+        )
+    )
+    asyncio.run(
+        store_hook._store_assistant_stop(
+            {"assistant_message": "The pinned answer is stable", "turn_id": "turn-one"}
+        )
+    )
+
+    assert derivations == []
+
+
+def test_precompact_does_not_derive_after_loading_pinned_state(suite, hook_module, monkeypatch):
+    precompact = hook_module(suite, "pre-compact.py")
+    derivations = _track_project_derivation(monkeypatch)
+    if suite.name == "claude-code":
+        monkeypatch.setattr(
+            precompact,
+            "_load_resolved_fields",
+            lambda: ("session-id", "project_pinned_111111111111"),
+        )
+    else:
+        monkeypatch.setattr(
+            precompact,
+            "_load_resolved_fields",
+            lambda: ("session-id", "project_pinned_111111111111", "user-id"),
+        )
+        monkeypatch.setattr(precompact, "_spawn_background_sync", lambda *_a, **_k: None)
+    monkeypatch.setattr(precompact, "ensure_cognee_ready", lambda _config: asyncio.sleep(0))
+    monkeypatch.setattr(precompact, "is_cloud_mode", lambda _config: True)
+    monkeypatch.setattr(precompact, "_recall", lambda *_a, **_k: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(precompact, "load_resolved", lambda: {})
+
+    asyncio.run(precompact._run())
+
+    assert derivations == []
+
+
+def test_final_sync_does_not_derive_after_loading_pinned_state(suite, hook_module, monkeypatch):
+    sync = hook_module(suite, "sync-session-to-graph.py")
+    derivations = _track_project_derivation(monkeypatch)
+    monkeypatch.setattr(
+        sync,
+        "_load_resolved",
+        lambda: (
+            "session-id",
+            "project_pinned_111111111111",
+            "user-id",
+            "connection-id",
+            True,
+            True,
+            "host-id",
+        ),
+    )
+    monkeypatch.setattr(sync, "http_api_ready", lambda: True)
+    monkeypatch.setattr(sync, "run_session_improve", lambda *_a, **_k: True)
+    monkeypatch.setattr(sync, "hook_log", lambda *_a, **_k: None)
+
+    asyncio.run(sync._sync(stop_watcher=False))
+
+    assert derivations == []
+
+
+def test_common_runtime_config_reads_do_not_derive_project_dataset(
+    suite, isolated_modules, monkeypatch
+):
+    common = isolated_modules(suite, "_plugin_common")
+    derivations = _track_project_derivation(monkeypatch)
+
+    assert common._resolve_agent_name()
+    if suite.name == "codex":
+        common._local_api_url_with_source()
+
+    assert derivations == []
 
 
 def test_precompact_http_recall_uses_resolved_dataset(suite, hook_module, monkeypatch):

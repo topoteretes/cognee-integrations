@@ -370,8 +370,9 @@ def main():
     try:
         from config import load_config  # type: ignore
 
-        config = load_config()
+        config = load_config(derive_project=False)
         config.update({k: v for k, v in bootstrap.get("config", {}).items() if v})
+        config["dataset"] = dataset
     except Exception as exc:
         _log("config_load_failed", error=str(exc)[:200])
         config = bootstrap.get("config", {})

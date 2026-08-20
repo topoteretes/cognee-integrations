@@ -39,7 +39,9 @@ def _load_resolved_fields() -> tuple[str, str]:
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     if not session_id or not dataset:
-        config = load_config()
+        config = load_config(derive_project=not bool(dataset))
+        if dataset:
+            config["dataset"] = dataset
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
     return session_id, dataset
@@ -196,7 +198,8 @@ async def _run():
         hook_log("no_session_id", {"event": "precompact"})
         return
 
-    config = load_config()
+    config = load_config(derive_project=False)
+    config["dataset"] = dataset
     await ensure_cognee_ready(config)
 
     # Short queries: use the session's recent activity as the seed

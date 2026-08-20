@@ -21,6 +21,7 @@ import json
 import subprocess
 import time
 
+import pytest
 from utils.statusline import mode_label, write_json
 
 _LOCAL_URL = "http://127.0.0.1:8000"
@@ -119,6 +120,21 @@ def test_bar_derives_before_launch_record_exists(suite, run_hook, temp_home, pro
     assert "cognee: project_statusrepo_" in result.stdout
 
 
+@pytest.mark.parametrize("workspace", ["malformed", ["malformed"]])
+def test_bar_tolerates_non_object_workspace(suite, run_hook, temp_home, workspace):
+    _enable_plugin(suite, temp_home)
+    result = run_hook(
+        suite,
+        "cognee_statusline_render.py",
+        stdin={"session_id": "host-one", "workspace": workspace},
+        service_url=_CLOUD_URL,
+        api_key=None,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cognee: agent_sessions" in result.stdout
+
+
 def test_llm_failure_glyph_renders_left_of_the_label(suite, run_hook, statusline, temp_home):
     """A broken LLM key with a healthy server: the sign sits before "cognee:"."""
     _enable_plugin(suite, temp_home)
@@ -146,8 +162,6 @@ def test_llm_failure_glyph_renders_left_of_the_label(suite, run_hook, statusline
 def test_codex_bar_carries_no_ansi_escapes(suite, run_hook, statusline, temp_home):
     """codex's line is injected into the model's context, so it must stay plain."""
     if hasattr(statusline, "_mode_label"):
-        import pytest
-
         pytest.skip(f"{suite.name}: the bar is deliberately styled for a terminal")
 
     write_json(statusline._LLM_STATE_PATH, {"llm_state": "not_set", "checked_at": time.time()})

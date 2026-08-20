@@ -71,7 +71,9 @@ def _load_session(workspace: str = "") -> tuple[str, str]:
     session_id = str(resolved.get("session_id") or "")
     dataset = str(resolved.get("dataset") or "")
     if not session_id or not dataset:
-        config = load_config(workspace or None)
+        config = load_config(workspace or None, derive_project=not bool(dataset))
+        if dataset:
+            config["dataset"] = dataset
         session_id = session_id or get_session_id(config, workspace or None)
         dataset = dataset or get_dataset(config)
     return session_id, dataset
@@ -173,7 +175,7 @@ async def _recent_trace_fallback(session_id: str, user_id: str, top_k: int) -> l
 
 
 async def _run(prompt: str, workspace: str = "") -> dict | None:
-    config = load_config(workspace or None)
+    config = load_config(workspace or None, derive_project=False)
     runtime = resolve_runtime_mode()
     cloud_mode = runtime["mode"] == "http"
     hook_log(
@@ -233,13 +235,14 @@ async def _run(prompt: str, workspace: str = "") -> dict | None:
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             return None
 
-    if not cloud_mode:
-        await ensure_cognee_ready(config)
-
     session_id, dataset = _load_session(workspace)
     if not session_id:
         hook_log("no_session_id", {"event": "context_lookup"})
         return None
+    config["dataset"] = dataset
+
+    if not cloud_mode:
+        await ensure_cognee_ready(config)
 
     # NOTE: the warmup-buffer drain deliberately does NOT run here. This hook
     # is synchronous on the keystroke->answer path, and replaying N buffered

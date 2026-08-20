@@ -53,7 +53,9 @@ def _load_session() -> tuple[str, str, str, str]:
     user_id = resolved.get("user_id", "")
     tenant_id = resolved.get("tenant_id", "")
     if not session_id or not dataset:
-        config = load_config()
+        config = load_config(derive_project=not bool(dataset))
+        if dataset:
+            config["dataset"] = dataset
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
     return session_id, dataset, user_id, tenant_id
@@ -135,7 +137,8 @@ async def _store(prompt: str, payload: dict):
         hook_log("no_session_id", {"event": "prompt"})
         return
 
-    config = load_config()
+    config = load_config(derive_project=False)
+    config["dataset"] = dataset
     touch_activity()
     _ensure_idle_watcher(session_id, dataset, user_id, config)
 

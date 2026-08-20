@@ -569,12 +569,10 @@ def main() -> None:
         ctx = {}
     if not isinstance(ctx, dict):
         ctx = {}
-    cwd = str(
-        ctx.get("cwd")
-        or (ctx.get("workspace") or {}).get("current_dir")
-        or (ctx.get("workspace") or {}).get("project_dir")
-        or ""
-    )
+    workspace = ctx.get("workspace")
+    if not isinstance(workspace, dict):
+        workspace = {}
+    cwd = str(ctx.get("cwd") or workspace.get("current_dir") or workspace.get("project_dir") or "")
     sys.stdout.write(render_status_for_host(str(ctx.get("session_id") or ""), cwd))
 
 

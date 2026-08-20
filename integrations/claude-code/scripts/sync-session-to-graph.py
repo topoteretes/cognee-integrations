@@ -262,7 +262,8 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
             _stop_idle_watcher()
             hook_log("sync_stopped_watcher", {"session": session_id, "dataset": dataset})
 
-        config = load_config()
+        config = load_config(derive_project=False)
+        config["dataset"] = dataset
         api_mode = http_api_ready()
         lock = nullcontext(True) if api_mode else sync_lock("sync-session-to-graph")
         with lock as acquired:

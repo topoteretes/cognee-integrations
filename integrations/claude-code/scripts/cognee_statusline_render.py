@@ -784,12 +784,10 @@ def main() -> None:
     if not isinstance(ctx, dict):
         ctx = {}
 
-    cwd = str(
-        ctx.get("cwd")
-        or (ctx.get("workspace") or {}).get("current_dir")
-        or (ctx.get("workspace") or {}).get("project_dir")
-        or ""
-    )
+    workspace = ctx.get("workspace")
+    if not isinstance(workspace, dict):
+        workspace = {}
+    cwd = str(ctx.get("cwd") or workspace.get("current_dir") or workspace.get("project_dir") or "")
     if not _plugin_enabled(cwd):
         # Plugin uninstalled/disabled but files linger: drop our own statusLine
         # entry and render nothing so the line disappears.
