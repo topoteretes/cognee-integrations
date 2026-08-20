@@ -66,9 +66,20 @@ _DEFAULT_DATASET = "agent_sessions"
 _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 
 
+def _sanitize_session_key(value: str) -> str:
+    safe = []
+    for ch in str(value or ""):
+        if ch.isalnum() or ch in ("-", "_", "."):
+            safe.append(ch)
+        else:
+            safe.append("_")
+    return "".join(safe).strip("._")[:120]
+
+
 def _active_dataset(host_id: str = "", cwd: str = "") -> str:
-    if _path_safe(host_id):
-        record = _read_json(_SESSIONS_MAP_DIR / f"{host_id}.json")
+    session_key = _sanitize_session_key(host_id)
+    if session_key:
+        record = _read_json(_SESSIONS_MAP_DIR / f"{session_key}.json")
         pinned = str(record.get("dataset") or "").strip()
         if pinned:
             return pinned

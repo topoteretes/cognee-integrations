@@ -78,6 +78,29 @@ def test_bar_prefers_pinned_dataset(suite, run_hook, temp_home):
     assert "cognee: project_repo_111111111111" in result.stdout
 
 
+def test_bar_normalizes_host_id_before_reading_pinned_dataset(
+    suite, run_hook, temp_home
+):
+    _enable_plugin(suite, temp_home)
+    host_id = "._host/id with spaces?" + "x" * 140 + "..."
+    normalized_host_id = "host_id_with_spaces_" + "x" * 100
+    sessions = temp_home / ".cognee-plugin" / suite.state_subdir / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    (sessions / f"{normalized_host_id}.json").write_text(
+        json.dumps({"session_id": "sid", "dataset": "project_normalized_222222222222"}),
+        encoding="utf-8",
+    )
+    result = run_hook(
+        suite,
+        "cognee_statusline_render.py",
+        stdin={"session_id": host_id, "cwd": "/wrong/project"},
+        service_url="https://api.example-cognee.ai",
+        api_key=None,
+        env={"COGNEE_PLUGIN_DATASET": "explicit-env"},
+    )
+    assert "cognee: project_normalized_222222222222" in result.stdout
+
+
 def test_bar_derives_before_launch_record_exists(
     suite, run_hook, temp_home, project_dir
 ):
