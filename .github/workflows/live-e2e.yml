@@ -41,6 +41,8 @@ jobs:
     # seeded venv, and a cache-miss run also pays the full plugin-venv build
     # before any test.
     timeout-minutes: 75
+    outputs:
+      failed_tests: ${{ steps.failures.outputs.list }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,7 +87,24 @@ jobs:
             echo "::error::LIVE_E2E_LLM_API_KEY is not set — the local live tier cannot run."
             exit 1
           fi
-          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }}
+          # tee keeps the log visible in the run while giving the Slack report
+          # step a file to pull failed-test names from; pipefail keeps pytest's
+          # exit code as the step's.
+          set -o pipefail
+          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }} 2>&1 | tee pytest-live.log
+
+      # Feeds the notify job. Only the short-summary FAILED/ERROR lines — the
+      # full context belongs in the run log, the DM just names what broke.
+      - name: Record failed tests for the Slack report
+        id: failures
+        if: failure()
+        working-directory: integrations/tests
+        run: |
+          {
+            echo 'list<<GITHUB_OUTPUT_EOF'
+            grep -E '^(FAILED|ERROR) ' pytest-live.log 2>/dev/null | cut -c1-200 | head -20 || true
+            echo 'GITHUB_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       # A live failure is only actionable with the plugin's own logs, and the
       # temp HOMEs are gone by the time anyone looks at the run.
@@ -107,6 +126,8 @@ jobs:
     timeout-minutes: 45
     # Independent of the local job on purpose: a cloud outage should not hide a
     # local regression, and vice versa. Both still serialise via `concurrency`.
+    outputs:
+      failed_tests: ${{ steps.failures.outputs.list }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -143,7 +164,19 @@ jobs:
           fi
           # No LLM_API_KEY: cognify runs server-side on the tenant, so the run
           # never uses one. The 8 server-killing scenarios are auto-deselected.
-          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }}
+          set -o pipefail
+          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }} 2>&1 | tee pytest-live.log
+
+      - name: Record failed tests for the Slack report
+        id: failures
+        if: failure()
+        working-directory: integrations/tests
+        run: |
+          {
+            echo 'list<<GITHUB_OUTPUT_EOF'
+            grep -E '^(FAILED|ERROR) ' pytest-live.log 2>/dev/null | cut -c1-200 | head -20 || true
+            echo 'GITHUB_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Collect plugin logs on failure
         if: failure()
@@ -173,3 +206,85 @@ jobs:
               deleted, failures = delete_test_datasets(url, cloud_api_key())
               print(f'cleanup: deleted {deleted} test dataset(s); failures={failures[:5]}')
           "
+
+  notify:
+    name: Slack failure report
+    runs-on: ubuntu-latest
+    needs: [local, cloud]
+    # Failure-only by design: silence means green. `always()` is required for
+    # the condition to be evaluated at all — without it a failed dependency
+    # skips this job before the contains() is ever read.
+    if: always() && contains(needs.*.result, 'failure')
+    steps:
+      # Secrets, both already-or-easily provisioned:
+      #   SLACK_BOT_TOKEN     — the same bot ci.yml uses for PR-review DMs.
+      #   SLACK_NIGHTLY_NOTIFY — where the DM goes: an email address (resolved
+      #     via users.lookupByEmail, needs the users:read.email scope) or a
+      #     Slack member ID (U…/W…, no extra scope). A channel ID (C…) also
+      #     works if a channel is ever preferred. Kept in a secret rather than
+      #     in this public file so the address is not scrapable.
+      - name: DM the nightly failure summary
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_NIGHTLY_NOTIFY: ${{ secrets.SLACK_NIGHTLY_NOTIFY }}
+          LOCAL_RESULT: ${{ needs.local.result }}
+          CLOUD_RESULT: ${{ needs.cloud.result }}
+          LOCAL_FAILED: ${{ needs.local.outputs.failed_tests }}
+          CLOUD_FAILED: ${{ needs.cloud.outputs.failed_tests }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TRIGGER: ${{ github.event_name }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+          target = os.environ.get("SLACK_NIGHTLY_NOTIFY", "").strip()
+          if not token or not target:
+              print("::error::SLACK_BOT_TOKEN / SLACK_NIGHTLY_NOTIFY are not set — cannot send the failure DM.")
+              sys.exit(1)
+
+          def slack(method: str, params: dict) -> dict:
+              req = urllib.request.Request(
+                  f"https://slack.com/api/{method}",
+                  data=urllib.parse.urlencode(params).encode(),
+                  headers={"Authorization": f"Bearer {token}"},
+              )
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  out = json.load(resp)
+              if not out.get("ok"):
+                  print(f"::error::Slack {method} failed: {out.get('error')}")
+                  sys.exit(1)
+              return out
+
+          if "@" in target:
+              target = slack("users.lookupByEmail", {"email": target})["user"]["id"]
+          if target.startswith(("U", "W")):
+              channel = slack("conversations.open", {"users": target})["channel"]["id"]
+          else:
+              channel = target  # a channel ID — post straight to it
+
+          def tier(name: str, result: str, failed: str) -> str:
+              icon = {"success": ":white_check_mark:", "failure": ":red_circle:"}.get(result, ":white_circle:")
+              lines = [f"{icon} *{name}*: {result}"]
+              if result == "failure":
+                  tests = [t for t in failed.splitlines() if t.strip()]
+                  lines += [f"> `{t}`" for t in tests]
+                  if not tests:
+                      lines.append("> no per-test summary — the job likely crashed or timed out; see the run log")
+              return "\n".join(lines)
+
+          text = "\n".join(
+              [
+                  f":rotating_light: *Nightly live e2e failed* ({os.environ.get('TRIGGER', '?')})",
+                  tier("local tier", os.environ.get("LOCAL_RESULT", ""), os.environ.get("LOCAL_FAILED", "")),
+                  tier("cloud tier", os.environ.get("CLOUD_RESULT", ""), os.environ.get("CLOUD_FAILED", "")),
+                  f"<{os.environ.get('RUN_URL', '')}|Open the run>",
+              ]
+          )
+          slack("chat.postMessage", {"channel": channel, "text": text, "unfurl_links": "false"})
+          print("failure DM sent")
+          PYEOF

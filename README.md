@@ -190,11 +190,11 @@ source documents yourself with `cognee.add(...)` + `cognee.cognify()` before sea
 
 ```python
 import cognee
-from cognee_integration_crewai import add_tool, search_tool   # CrewAI / Google ADK
+from cognee_integration_crewai import add_tool, search_tool  # CrewAI / Google ADK
 from crewai import Agent
 
 await cognee.add("Meditech Solutions — healthcare industry, contract worth £1.2M.")
-await cognee.cognify()                                        # build the knowledge graph
+await cognee.cognify()  # build the knowledge graph
 
 agent = Agent(role="Analyst", goal="…", backstory="…", tools=[add_tool, search_tool])
 print(agent.kickoff("Which contracts are in the healthcare industry?"))

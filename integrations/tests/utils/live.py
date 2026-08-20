@@ -70,16 +70,18 @@ def host_python() -> str:
     the ``python3`` a *user* has, not this test venv's.
 
     Why it matters: on import, ``_plugin_common`` re-execs into the plugin venv so
-    cognee is importable, and it skips that when
-    ``os.path.samefile(venv_python, sys.executable)``. The test venv and the plugin
-    venv are both pinned to 3.12, and a venv's ``bin/python`` is a symlink to its
-    base interpreter — so both resolve to the same file, ``samefile`` is True, the
-    re-exec is skipped, and any local-SDK path (pre-compact's ``cognee.recall``,
-    for one) dies with "No module named 'cognee'".
+    cognee is importable. It once skipped that on
+    ``os.path.samefile(venv_python, sys.executable)`` — a trap, since a venv's
+    ``bin/python`` is a symlink to its base interpreter, so the check was also
+    true when hooks ran under that base directly (guaranteed in CI, where
+    setup-python's 3.12 is both the ``python3`` on PATH and the base uv built
+    the plugin venv from), and any local-SDK path (pre-compact's direct session
+    fetch, for one) died with "No module named 'cognee'". The skip now keys on
+    ``sys.prefix``, which only matches when actually launched through the venv.
 
-    Resolving through :func:`deactivated_path` avoids that and exercises the
-    re-exec for real. Production is unaffected: a user's ``python3`` is a
-    different interpreter from the plugin's pinned one.
+    Resolving through :func:`deactivated_path` still matters: it launches hooks
+    with the ``python3`` a *user* has — no test venv on PATH, no VIRTUAL_ENV —
+    and exercises the re-exec for real.
     """
     return shutil.which("python3", path=deactivated_path()) or sys.executable
 
