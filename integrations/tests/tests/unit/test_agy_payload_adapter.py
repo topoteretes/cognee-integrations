@@ -13,8 +13,13 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from types import ModuleType
 
@@ -413,6 +418,132 @@ def test_bounded_transcript_tail_does_not_recover_early_prompt_outside_read_wind
     assert "prompt" not in normalized
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFO support")
+def test_transcript_replacement_with_a_non_writing_fifo_cannot_block_the_reader(tmp_path):
+    transcript = _write_transcript(
+        tmp_path / "replaceable.jsonl",
+        {
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "status": "DONE",
+            "content": "descriptor validation",
+            "step_index": 1,
+        },
+    )
+    child = f"""\
+import importlib.util
+import json
+import os
+from pathlib import Path
+
+adapter_path = Path({str(ADAPTER_PATH)!r})
+transcript = Path({str(transcript)!r})
+spec = importlib.util.spec_from_file_location("agy_fifo_race", adapter_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+original_stat = Path.stat
+original_open = os.open
+replaced = False
+
+def replace_target():
+    global replaced
+    if not replaced:
+        replaced = True
+        transcript.unlink()
+        os.mkfifo(transcript)
+
+def replace_after_stat(path, *args, **kwargs):
+    result = original_stat(path, *args, **kwargs)
+    if path == transcript:
+        replace_target()
+    return result
+
+def replace_before_open(path, flags, *args, **kwargs):
+    if Path(path) == transcript:
+        replace_target()
+    return original_open(path, flags, *args, **kwargs)
+
+Path.stat = replace_after_stat
+os.open = replace_before_open
+print(json.dumps(module.read_transcript_tail(transcript)))
+"""
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-c", child],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=1.0,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert time.monotonic() - started < 1.0
+    assert json.loads(result.stdout) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-liveness assertion")
+def test_sleeping_inner_child_is_killed_by_adapter_owned_timeout_without_done_marker(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    adapter_copy = scripts / "agy_hook.py"
+    shutil.copy2(ADAPTER_PATH, adapter_copy)
+    child_pid_path = tmp_path / "child.pid"
+    (scripts / "session-start.py").write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['CHILD_PID_PATH']).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "CHILD_PID_PATH": str(child_pid_path),
+        "COGNEE_AGY_HOOK_TIMEOUT_SECONDS": "0.2",
+    }
+    process = subprocess.Popen(
+        [sys.executable, str(adapter_copy), "session-start.py"],
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    started = time.monotonic()
+    timed_out = False
+    child_alive_after_adapter = False
+    try:
+        stdout, stderr = process.communicate(
+            json.dumps({"conversationId": "timeout-conversation"}), timeout=3.0
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        stdout, stderr = process.communicate()
+    finally:
+        if child_pid_path.exists():
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                child_alive_after_adapter = True
+                os.kill(child_pid, signal.SIGKILL)
+
+    assert not timed_out, "adapter did not enforce its shorter child timeout"
+    assert process.returncode == 0, stderr
+    assert time.monotonic() - started < 3.0
+    assert json.loads(stdout) == {}
+    assert child_pid_path.is_file()
+    assert not child_alive_after_adapter, "adapter returned while its child was still alive"
+    assert not list((home / ".cognee-plugin").rglob("*.done"))
+
+
 def test_session_start_runs_once_per_conversation(adapter, tmp_path):
     payload = {"conversationId": "conversation-once"}
     calls = []
@@ -482,6 +613,92 @@ def test_failed_inner_execution_does_not_write_once_marker_and_is_retried(adapte
     adapter.run_inner_hook(payload, "session-start.py", runner=runner, marker_dir=tmp_path)
     assert attempts == 2
     assert any(tmp_path.iterdir())
+
+
+def test_concurrent_identical_hooks_allow_exactly_one_durable_inner_run(adapter, tmp_path):
+    payload = {"conversationId": "conversation-concurrent"}
+    first_runner_started = threading.Event()
+    release_runner = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def runner(_payload, _script):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        first_runner_started.set()
+        assert release_runner.wait(timeout=3.0)
+        return {"stored": True}
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(
+            adapter.run_inner_hook,
+            payload,
+            "session-start.py",
+            runner=runner,
+            marker_dir=tmp_path,
+        )
+        assert first_runner_started.wait(timeout=1.0)
+        try:
+            claims = list(tmp_path.glob("*.claim"))
+            assert len(claims) == 1
+            assert re.fullmatch(r"[0-9a-f]{64}\.claim", claims[0].name)
+            assert claims[0].read_text(encoding="utf-8") == ""
+
+            second = pool.submit(
+                adapter.run_inner_hook,
+                payload,
+                "session-start.py",
+                runner=runner,
+                marker_dir=tmp_path,
+            )
+            try:
+                assert second.result(timeout=1.0) == {}
+            except FutureTimeoutError:
+                pytest.fail("concurrent duplicate entered the durable runner")
+        finally:
+            release_runner.set()
+        assert first.result(timeout=1.0) == {"stored": True}
+
+    assert calls == 1
+    assert not list(tmp_path.glob("*.claim"))
+    assert len(list(tmp_path.glob("*.done"))) == 1
+
+
+def test_fresh_claim_skips_duplicate_but_stale_claim_is_recoverable(adapter, tmp_path):
+    payload = {"conversationId": "conversation-crashed-claim"}
+    marker = adapter._marker_path(payload, "session-start.py", tmp_path)
+    assert marker is not None
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    claim = marker.with_suffix(".claim")
+    claim.touch()
+    calls = []
+
+    assert (
+        adapter.run_inner_hook(
+            payload,
+            "session-start.py",
+            runner=lambda *_: calls.append("ran") or {},
+            marker_dir=tmp_path,
+            claim_stale_after=60.0,
+        )
+        == {}
+    )
+    assert calls == []
+
+    old = time.time() - 120
+    os.utime(claim, (old, old))
+    adapter.run_inner_hook(
+        payload,
+        "session-start.py",
+        runner=lambda *_: calls.append("ran") or {},
+        marker_dir=tmp_path,
+        claim_stale_after=60.0,
+    )
+
+    assert calls == ["ran"]
+    assert marker.is_file()
+    assert not claim.exists()
 
 
 def test_sync_session_end_runs_only_after_fully_idle(adapter, tmp_path):

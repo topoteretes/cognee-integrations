@@ -6,9 +6,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -23,6 +25,14 @@ EVENT_FOR_SCRIPT = {
 }
 
 _PROMPT_SCRIPTS = frozenset({"session-context-lookup.py", "store-user-prompt.py"})
+SCRIPT_TIMEOUT_SECONDS = {
+    "session-start.py": 110.0,
+    "session-context-lookup.py": 110.0,
+    "store-user-prompt.py": 110.0,
+    "store-to-session.py": 110.0,
+    "sync-session-to-graph.py": 25.0,
+}
+CLAIM_STALE_SECONDS = 150.0
 
 
 def default_marker_root() -> Path:
@@ -38,18 +48,26 @@ def read_transcript_tail(transcript_path: object) -> list[dict[str, Any]]:
     if not transcript_path:
         return []
 
+    descriptor = -1
     try:
         path = Path(os.fspath(transcript_path))
-        file_stat = path.stat()
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_BINARY", 0)
+        descriptor = os.open(path, flags)
+        file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size == 0:
             return []
 
         start = max(0, file_stat.st_size - MAX_TRANSCRIPT_TAIL_BYTES)
-        with path.open("rb") as transcript:
+        with os.fdopen(descriptor, "rb") as transcript:
+            descriptor = -1
             transcript.seek(start)
             raw = transcript.read(MAX_TRANSCRIPT_TAIL_BYTES)
     except (OSError, TypeError, ValueError):
         return []
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
     if start:
         newline = raw.find(b"\n")
@@ -244,7 +262,74 @@ def _marker_path(payload: dict[str, Any], script: str, root: Path) -> Path | Non
     return root / f"{digest}.done"
 
 
+def _acquire_claim(marker: Path, stale_after: float) -> Path | None:
+    """Atomically claim unfinished marker work, recovering abandoned claims."""
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    claim = marker.with_suffix(".claim")
+    for _attempt in range(3):
+        if marker.is_file():
+            return None
+        try:
+            descriptor = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if marker.is_file():
+                return None
+            try:
+                age = time.time() - claim.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age <= stale_after:
+                return None
+            try:
+                claim.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        else:
+            os.close(descriptor)
+            if marker.is_file():
+                claim.unlink(missing_ok=True)
+                return None
+            return claim
+    return None
+
+
 Runner = Callable[[dict[str, Any], str], Any]
+
+
+def _script_timeout(script: str) -> float:
+    limit = SCRIPT_TIMEOUT_SECONDS[script]
+    raw_override = os.environ.get("COGNEE_AGY_HOOK_TIMEOUT_SECONDS", "")
+    try:
+        override = float(raw_override)
+    except ValueError:
+        return limit
+    return min(limit, override) if override > 0 else limit
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    elif os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if process.poll() is None:
+        process.kill()
 
 
 def _run_script(payload: dict[str, Any], script: str) -> str:
@@ -257,23 +342,40 @@ def _run_script(payload: dict[str, Any], script: str) -> str:
     elif payload.get("hook_event_name") == "SessionEnd":
         command.append("--session-end")
 
-    completed = subprocess.run(
+    process_kwargs: dict[str, Any] = {}
+    if os.name == "posix":
+        process_kwargs["start_new_session"] = True
+    elif os.name == "nt":
+        process_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    process = subprocess.Popen(
         command,
-        input=json.dumps(payload),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        capture_output=True,
-        check=False,
+        **process_kwargs,
     )
-    if completed.stderr:
-        sys.stderr.write(completed.stderr)
-    if completed.returncode != 0:
+    timeout = _script_timeout(script)
+    try:
+        stdout, stderr = process.communicate(json.dumps(payload), timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        _terminate_process_tree(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command, timeout, output=stdout, stderr=stderr
+        ) from error
+
+    if stderr:
+        sys.stderr.write(stderr)
+    if process.returncode != 0:
         raise subprocess.CalledProcessError(
-            completed.returncode,
+            process.returncode,
             command,
-            output=completed.stdout,
-            stderr=completed.stderr,
+            output=stdout,
+            stderr=stderr,
         )
-    return completed.stdout
+    return stdout
 
 
 def run_inner_hook(
@@ -283,6 +385,7 @@ def run_inner_hook(
     runner: Runner = _run_script,
     marker_dir: Path | None = None,
     session_end: bool = False,
+    claim_stale_after: float = CLAIM_STALE_SECONDS,
 ) -> Any:
     """Run an inner hook, enforcing final-idle and scoped once semantics."""
     if session_end and payload.get("fullyIdle") is not True:
@@ -290,14 +393,20 @@ def run_inner_hook(
 
     marker_root = Path(marker_dir) if marker_dir is not None else default_marker_root()
     marker = _marker_path(payload, script, marker_root)
-    if marker is not None and marker.is_file():
-        return {}
-
-    output = runner(payload, script)
+    claim = None
     if marker is not None:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch(exist_ok=True)
-    return output
+        claim = _acquire_claim(marker, claim_stale_after)
+        if claim is None:
+            return {}
+
+    try:
+        output = runner(payload, script)
+        if marker is not None:
+            marker.touch(exist_ok=True)
+        return output
+    finally:
+        if claim is not None:
+            claim.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
