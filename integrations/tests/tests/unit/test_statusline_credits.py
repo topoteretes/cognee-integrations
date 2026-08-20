@@ -1,7 +1,7 @@
 """Tests for `_credits_segment` (cognee_statusline_render.py) — the cloud credits
 balance + last-operation cost in the status line (SDK-355).
 
-Rendering contract (shared by both suites):
+Rendering contract (shared by all registered suites):
 
   * shape: ` · credits: $<n>.<nn>` (`-$3.50` when negative), optionally followed
     by ` · last <op> ~$<n>.<nn>`;
@@ -9,11 +9,11 @@ Rendering contract (shared by both suites):
     matching base_url only, `COGNEE_STATUSLINE_CREDITS=off` hides it;
   * a missing/malformed/balance-less marker renders nothing and never raises.
 
-Shared assertions read the segment through ``strip_ansi``. claude-code colours
+Shared assertions read the segment through ``strip_ansi``. Claude Code colours
 the balance (green, red when negative) and must not make the cost faint — the
-cost is a first-class signal, unlike the recall/saved diagnostics; codex's bar
-goes into the model's context and stays plain. Those live in the per-suite
-sections, as does the genuinely different hooks.json wiring.
+cost is a first-class signal, unlike the recall/saved diagnostics; Codex and
+Antigravity stay plain. Those live in the per-suite sections, as does the
+genuinely different hooks.json wiring.
 
 Migrated from {claude-code,codex}/tests/test_statusline_credits.py. Four cases
 (balance-less marker, boolean balance, last_op without cost, thousands

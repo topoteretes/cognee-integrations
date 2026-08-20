@@ -7,9 +7,9 @@ came from the environment or the cached file, the embedding settings, and the
 circuit-breaker state.
 
 The endpoint-resolution precedence (env > config file > localhost default) is
-asserted for both suites here. The config-file layer is only wired into codex's
-`config.py`, so those cases skip on claude-code — and codex's `doctor.py` keeps
-its own `_API_KEY_CACHE` constant, which the fixture accounts for.
+asserted for all registered suites here. The config-file layer is wired into the
+Codex-derived cores, so those cases skip on Claude Code; the doctor modules keep
+their own `_API_KEY_CACHE` constant, which the fixture accounts for.
 
 The `/health` probe and the full report live in integration/test_doctor.py.
 Migrated from claude-code/tests/test_doctor.py and

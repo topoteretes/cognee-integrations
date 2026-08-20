@@ -400,8 +400,8 @@ Where each landed:
 | `{claude-code,codex}/tests/test_proc.py` | `unit/test_proc_helpers.py` | `_proc.py` is byte-identical across suites, so parametrizing it is a drift guard; the Toolhelp path is a real `skipif`, not a silent early `return` |
 | `{claude-code,codex}/tests/test_statusline_render.py` | `e2e/test_statusline_encoding.py` | cp1252 regression; asserts **bytes**, since decoding in the parent would hide what the child actually wrote |
 | `claude-code/tests/test_hook_timing.py` | `unit/test_timing_metrics.py` | claude-only via `has_timing_metrics` |
-| `claude-code/tests/test_per_scope_timing.py` | `unit/test_recall_per_scope.py` | applies to **both** suites — codex has the same `per_scope`/budget machinery |
-| `claude-code/tests/test_recall_health_accounting.py` | `unit/test_recall_health_accounting.py` | both suites; seams are seam-for-seam identical |
+| `claude-code/tests/test_per_scope_timing.py` | `unit/test_recall_per_scope.py` | applies to all registered suites; the `per_scope`/budget machinery is shared |
+| `claude-code/tests/test_recall_health_accounting.py` | `unit/test_recall_health_accounting.py` | all registered suites; seams are seam-for-seam identical |
 | `codex/plugins/cognee/tests/test_doctor.py` | already covered | every one of its 25 cases has a counterpart in `unit/test_doctor_resolution.py` or `integration/test_doctor.py` |
 
 The two recall files share `utils/recall.py`, which drives
