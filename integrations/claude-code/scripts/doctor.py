@@ -214,6 +214,13 @@ def _resolve_env_file() -> str:
     return desc
 
 
+def _resolve_dataset() -> tuple[str, str]:
+    from config import get_dataset, load_config
+
+    cfg = load_config(os.getcwd())
+    return get_dataset(cfg), str(cfg.get("_dataset_source") or "default")
+
+
 def collect_report() -> dict:
     """Gather all diagnostic fields into an ordered dict."""
     mode = _resolve_mode()
@@ -224,9 +231,12 @@ def collect_report() -> dict:
     cognee_local = _resolve_local_cognee_version()
     circuit_breaker = _resolve_circuit_breaker()
     embedding_model, embedding_dimensions = _resolve_embedding()
+    dataset, dataset_source = _resolve_dataset()
 
     return {
         "mode": mode + _mode_annotation(),
+        "dataset": dataset,
+        "dataset_source": dataset_source,
         "env_file": _resolve_env_file(),
         "server_url": display_url if display_url != "-" else None,
         "api_key_source": api_key_source,
@@ -242,6 +252,8 @@ def collect_report() -> dict:
 
 _DISPLAY_ORDER = [
     ("Mode", "mode"),
+    ("Dataset", "dataset"),
+    ("Dataset Source", "dataset_source"),
     ("Env File", "env_file"),
     ("Server URL", "server_url"),
     ("API Key Source", "api_key_source"),

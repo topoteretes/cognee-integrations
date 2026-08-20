@@ -2,9 +2,8 @@
 """Render the Cognee status line (Codex).
 
 Invoked via ``cognee-statusline.sh``, which pipes a JSON context on stdin.
-Deliberately standalone and pure-local: reads only env vars and
-``~/.cognee-plugin/config.json`` — no network calls, no ``_plugin_common``
-import.
+Deliberately standalone and pure-local: reads only env vars, local launch state,
+and workspace metadata — no network calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
 """
@@ -40,6 +39,7 @@ _LLM_STATE_PATH = _SHARED_ROOT / "codex" / "llm-state.json"
 # above are coordination state, these are what THIS terminal observed.
 _LLM_STATE_DIR = _SHARED_ROOT / "codex" / "llm-state"
 _CONN_STATE_DIR = _SHARED_ROOT / "codex" / "conn-state"
+_SESSIONS_MAP_DIR = _SHARED_ROOT / "codex" / "sessions"
 
 # TTL for an LLM-key verdict. The marker is machine-wide and refreshed only when an
 # idle watcher LAUNCHES (session start, or a prompt that finds no live watcher) —
@@ -66,12 +66,24 @@ _DEFAULT_DATASET = "agent_sessions"
 _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 
 
-def _active_dataset() -> str:
-    # 1. env var (inherited from the shell that launched Codex)
-    v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
-    if v:
-        return v
-    # 2. default
+def _active_dataset(host_id: str = "", cwd: str = "") -> str:
+    if _path_safe(host_id):
+        record = _read_json(_SESSIONS_MAP_DIR / f"{host_id}.json")
+        pinned = str(record.get("dataset") or "").strip()
+        if pinned:
+            return pinned
+    explicit = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
+    if explicit:
+        return explicit
+    if os.environ.get("COGNEE_DATASET_SCOPE", "").strip().lower() == "project" and cwd:
+        try:
+            from _project_dataset import derive_project_dataset
+
+            derived = derive_project_dataset(cwd)
+            if derived:
+                return derived
+        except Exception:
+            pass
     return _DEFAULT_DATASET
 
 
@@ -515,12 +527,12 @@ def _credits_segment() -> str:
     return seg
 
 
-def render_status_for_host(host_id: str) -> str:
+def render_status_for_host(host_id: str, cwd: str = "") -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
     return (
         f"{_pipeline_health_glyph()}{_status_prefix(str(host_id or ''))}"
-        f"cognee: {_active_dataset()} · {_active_mode()}"
+        f"cognee: {_active_dataset(host_id, cwd)} · {_active_mode()}"
         f"{_credits_segment()}{_update_segment()}"
     )
 
@@ -541,14 +553,18 @@ def main() -> None:
             pass
 
     try:
-        json.load(sys.stdin)  # consume stdin as required by the host
+        ctx = json.load(sys.stdin)  # consume stdin as required by the host
     except Exception:
-        pass
-    sys.stdout.write(
-        f"{_pipeline_health_glyph()}{_status_prefix()}"
-        f"cognee: {_active_dataset()} · {_active_mode()}"
-        f"{_credits_segment()}{_update_segment()}"
+        ctx = {}
+    if not isinstance(ctx, dict):
+        ctx = {}
+    cwd = str(
+        ctx.get("cwd")
+        or (ctx.get("workspace") or {}).get("current_dir")
+        or (ctx.get("workspace") or {}).get("project_dir")
+        or ""
     )
+    sys.stdout.write(render_status_for_host(str(ctx.get("session_id") or ""), cwd))
 
 
 if __name__ == "__main__":

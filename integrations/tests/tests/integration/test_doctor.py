@@ -32,6 +32,8 @@ _REPORT_KEYS = {
     "embedding_model",
     "embedding_dimensions",
     "circuit_breaker",
+    "dataset",
+    "dataset_source",
 }
 
 
@@ -80,9 +82,22 @@ def test_report_marks_an_absent_server_unreachable(doctor, monkeypatch, closed_p
     assert report["reachable"] is False
 
 
+def test_report_includes_effective_project_dataset(
+    doctor, project_dir, monkeypatch
+):
+    monkeypatch.chdir(project_dir)
+    monkeypatch.setenv("COGNEE_DATASET_SCOPE", "project")
+    report = doctor.collect_report()
+    assert report["dataset"].startswith("project_project_")
+    assert report["dataset_source"] == "project"
+    assert str(project_dir) not in report["dataset"]
+
+
 def test_human_output_contains_header(doctor, mock_server):
     text = doctor.format_human(doctor.collect_report())
     assert "Cognee Doctor" in text
     assert "Mode:" in text
+    assert "Dataset:" in text
+    assert "Dataset Source:" in text
     assert "Cognee (local):" in text
     assert "Circuit Breaker:" in text
