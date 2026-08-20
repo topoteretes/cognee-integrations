@@ -23,7 +23,7 @@ Knowledge is organized into three categories via `node_set`:
 
 ## Instructions
 
-Search goes through the **running Cognee server** (`POST /api/v1/recall`) — the source of truth. Use the wrapper below: it queries the server first, searches **all your authorized datasets** (so a hit isn't missed because it lives in another dataset), and falls back to `cognee-cli` only if the server is unreachable.
+Search goes through the **running Cognee server** (`POST /api/v1/recall`) — the source of truth. Use the wrapper below: it queries the server first, scoped to the **plugin's dataset** (`$COGNEE_PLUGIN_DATASET`, default `agent_sessions` — the same dataset all plugin writes target, so unrelated datasets don't bleed in), and falls back to `cognee-cli` only if the server is unreachable.
 
 **One broad search is usually enough** — the `UserPromptSubmit` hook already injects session/trace/graph context every turn, so avoid running many targeted searches (each is an extra permission prompt for the user).
 
@@ -48,7 +48,7 @@ Categories (`user_context` / `project_docs` / `agent_actions`) filter by node se
 curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY:-}" \
-  -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"]}'
+  -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"], "datasets": ["'"${COGNEE_PLUGIN_DATASET:-agent_sessions}"'"]}'
 ```
 
 ### Ground-truth a suspicious result (debugging)
@@ -59,7 +59,7 @@ The server is authoritative. If a search returns empty but you expect content, c
 curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY:-}" \
-  -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"]}'
+  -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "datasets": ["'"${COGNEE_PLUGIN_DATASET:-agent_sessions}"'"]}'
 ```
 
 (An authed/cloud server needs `COGNEE_API_KEY`; a local single-user server ignores an empty key. If the response is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results".)

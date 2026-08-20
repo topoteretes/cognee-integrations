@@ -10,6 +10,39 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0]
+
+### Added
+- **`cognee-forget` skill — user-directed deletion of memory.** "Forget what we
+  talked about tennis" now has a first-class flow: the agent syncs the live
+  session (so unsynced content becomes a deletable document), lists the plugin
+  dataset, judges candidate documents by their raw content, confirms with the
+  user, and deletes each match via `POST /api/v1/forget`. Documents from the
+  same session are treated as a group — deleting one while keeping its siblings
+  would leave the topic recallable.
+- **`scripts/cognee-forget.sh`** — the skill's server access. Subcommands
+  (`sync`, `datasets`, `data`, `raw`, `forget`, `env`) each resolve credentials
+  per invocation the same way the other wrappers do (shell env →
+  `~/.cognee/.env` → the auto-minted local `api_key.json`), because exported
+  variables don't survive across the agent's separate Bash calls. Every API
+  command appends a final `HTTP <status>` line; with no key resolvable the
+  helper exits 2 with guidance instead of sending a request that can only 401.
+  The helper deliberately supports single-document deletion only — dataset-wide
+  and `everything` scopes stay behind an explicit-user-request warning in the
+  skill.
+- **Mock-server forget surface + e2e tests.** `MockCogneeServer` now serves
+  `GET /api/v1/datasets`, `GET /datasets/<id>/data`, `GET .../raw`, and
+  `POST /api/v1/forget`; `tests/e2e/test_forget_script.py` runs the wrapper as
+  a subprocess against it (credential resolution incl. the `api_key.json`
+  fallback and the exit-2 path, payload shape, status trailer, 404 pass-through).
+
+### Fixed
+- **cognee-search SKILL.md no longer claims searches span all authorized
+  datasets.** The wrapper has always scoped recall to the plugin dataset
+  (`COGNEE_PLUGIN_DATASET`, default `agent_sessions`); the doc now says so, and
+  the raw `curl` examples pass `datasets` explicitly so following them doesn't
+  search every readable dataset.
+
 ## [1.3.2]
 
 ### Fixed

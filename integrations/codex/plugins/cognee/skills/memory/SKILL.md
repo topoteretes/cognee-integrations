@@ -113,11 +113,28 @@ uv run cognee-cli improve -d <dataset-name> --node-name <entity-name>
 
 ## Forget
 
-Use the narrowest deletion command possible and confirm first:
+When the user asks to forget or delete something from memory, follow the
+**cognee-forget** skill — it walks the full guided flow: sync the live session,
+find the dataset id, judge candidate documents by raw content (grouped by
+session), confirm, then delete each match through the wrapper:
 
 ```bash
-uv run cognee-cli forget --dataset <dataset-name>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh sync
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh datasets
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh data <dataset_id>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh raw <dataset_id> <data_id>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh forget <dataset_id> <data_id>
+```
+
+The wrapper always authenticates (env → `~/.cognee/.env` → the auto-minted
+local `api_key.json`) and prints an `HTTP <status>` trailer per call. Deletion
+is irreversible — use the narrowest scope possible and confirm first.
+
+**Fallback only — server unreachable:**
+
+```bash
 uv run cognee-cli forget --dataset <dataset-name> --data-id <data-uuid>
+uv run cognee-cli forget --dataset <dataset-name>
 ```
 
 Avoid `uv run cognee-cli forget --everything` unless the user explicitly asks

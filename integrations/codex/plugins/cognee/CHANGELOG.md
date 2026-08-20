@@ -10,6 +10,31 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0]
+
+### Added
+- **`cognee-forget` skill — user-directed deletion of memory.** "Forget what we
+  talked about tennis" now has a first-class guided flow (ported from the
+  Claude Code plugin): the agent syncs the live session (so unsynced content
+  becomes a deletable document), lists the plugin dataset, judges candidate
+  documents by their raw content, confirms with the user, and deletes each
+  match via `POST /api/v1/forget`. Documents from the same session are treated
+  as a group — deleting one while keeping its siblings would leave the topic
+  recallable. The `memory` skill's Forget section now routes to this flow; the
+  bare `cognee-cli forget` commands remain as the server-unreachable fallback.
+- **`scripts/cognee-forget.sh`** — the skill's server access. Subcommands
+  (`sync`, `datasets`, `data`, `raw`, `forget`, `env`) each resolve credentials
+  per invocation the same way the other wrappers do (shell env →
+  `~/.cognee/.env` → the auto-minted `api_key.json` at the shared plugin root).
+  Every API command appends a final `HTTP <status>` line; with no key
+  resolvable the helper exits 2 with guidance instead of sending a request that
+  can only 401. Single-document deletion only — dataset-wide and `everything`
+  scopes stay behind an explicit-user-request warning in the skill.
+- **E2e coverage in the shared suite.** `tests/e2e/test_forget_script.py` runs
+  the wrapper as a subprocess against the mock server for BOTH suites
+  (credential resolution incl. the `api_key.json` fallback and the exit-2 path,
+  payload shape, status trailer, 404 pass-through).
+
 ## [1.4.2]
 
 ### Fixed

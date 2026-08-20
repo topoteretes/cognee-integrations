@@ -27,7 +27,7 @@ Every helper API command prints the JSON response followed by a final `HTTP <sta
 Content from the current session that hasn't been persisted yet exists only in the session cache, where the listing below cannot see it. Flush it into documents first so it becomes findable and deletable:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh sync
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh sync
 ```
 
 ### 2. Find the dataset id of the currently used dataset
@@ -35,7 +35,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh sync
 The plugin's dataset is `$COGNEE_PLUGIN_DATASET` if set, otherwise `agent_sessions`. Resolve its UUID:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh datasets
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh datasets
 ```
 
 Pick the dataset whose `name` matches `${COGNEE_PLUGIN_DATASET:-agent_sessions}` and note its `id`.
@@ -43,13 +43,13 @@ Pick the dataset whose `name` matches `${COGNEE_PLUGIN_DATASET:-agent_sessions}`
 ### 3. List the data in the dataset and read candidates' raw content
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh data <dataset_id>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh data <dataset_id>
 ```
 
 Each item has an `id` (the data id) and metadata. **Don't raw-fetch every document in a large dataset** — narrow first: a `cognee-search.sh "<topic>"` recall confirms the topic exists in memory and its hits hint at which sessions/documents hold it, and the listing's metadata (`name`, `createdAt`, and a session id field when present) lets you prioritize. Then download the raw content of the candidates (the original stored text, e.g. the session transcript) and check whether it mentions what the user wants forgotten:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh raw <dataset_id> <data_id>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh raw <dataset_id> <data_id>
 ```
 
 **Judge by meaning, not just keywords.** "Forget what we talked about tennis" should match a document discussing rackets and Wimbledon even if the word "tennis" never appears. When a document only mentions the topic in passing amid unrelated content, prefer keeping it and tell the user why.
@@ -63,7 +63,7 @@ Deletion is irreversible. Before deleting, show the user the list of matching do
 Then forget each matching document by its data id:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh forget <dataset_id> <data_id>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh forget <dataset_id> <data_id>
 ```
 
 Repeat for every matching data id. A final `HTTP 2xx` line means that document and its derived knowledge are removed.
@@ -74,7 +74,7 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 
 ## Error handling
 
-- **Helper exits 2 ("no API key resolved")**: no key in `COGNEE_API_KEY`, `~/.cognee/.env`, or the local `api_key.json` cache. Cloud mode: add `COGNEE_API_KEY` to `~/.cognee/.env`. Local mode: the key is minted at session start — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
+- **Helper exits 2 ("no API key resolved")**: no key in `COGNEE_API_KEY`, `~/.cognee/.env`, or the local `api_key.json` cache. Cloud mode: add `COGNEE_API_KEY` to `~/.cognee/.env`. Local mode: the key is minted at session start — start a new session or run `doctor.py`. Never fall back to unauthenticated requests.
 - **HTTP 401**: a key was sent but rejected — it doesn't match this server. Check `COGNEE_API_KEY` against the target `COGNEE_BASE_URL`.
 - **HTTP 404 on a data id**: it was already deleted (possibly by an earlier step of this same run) — not an error, move on.
 - An `{"error": ...}` response body means the server was reachable but the request failed — surface it; do **not** conclude the data was deleted.
@@ -84,7 +84,7 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 The `/api/v1/forget` endpoint can also delete more than a single document (see `$COGNEE_BASE_URL/docs`). The helper deliberately supports only single-document deletion; for a broader scope, resolve credentials with the helper's `env` command and call the endpoint directly **in the same shell invocation** (exports do not persist across separate Bash calls):
 
 ```bash
-eval "$(${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh env)" && \
+eval "$(${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh env)" && \
 curl -sS -X POST "${COGNEE_BASE_URL}/api/v1/forget" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY}" \

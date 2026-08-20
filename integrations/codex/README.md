@@ -6,6 +6,7 @@ The integration:
 - captures prompts, tool traces, and assistant responses into session memory
 - injects relevant context on prompt submit
 - syncs session memory into graph memory on session end/final exit
+- deletes memory on request via the `cognee-forget` skill ("forget what we talked about X")
 
 ## Install
 
