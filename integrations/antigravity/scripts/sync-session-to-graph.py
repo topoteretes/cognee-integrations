@@ -306,13 +306,10 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
                         file=sys.stderr,
                     )
                 if strict and incomplete:
-                    # The detached final worker retries on exceptions only. This
-                    # is the session's LAST sync — an incomplete one (failed
-                    # improve or undelivered warmup entries) must re-drive the
-                    # whole drain+improve, not silently report success.
-                    raise RuntimeError(
-                        f"final session sync incomplete for: {', '.join(incomplete)}"
-                    )
+                    # Detached workers retry on exceptions only. An incomplete
+                    # improve must re-drive the whole drain+improve rather than
+                    # silently report success.
+                    raise RuntimeError(f"session sync incomplete for: {', '.join(incomplete)}")
                 return
 
             await ensure_cognee_ready(config)
@@ -338,7 +335,7 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
                     file=sys.stderr,
                 )
             if strict and incomplete:
-                raise RuntimeError(f"final session sync incomplete for: {', '.join(incomplete)}")
+                raise RuntimeError(f"session sync incomplete for: {', '.join(incomplete)}")
     finally:
         if unregister_on_finish:
             if not (was_registered or has_api_key):
@@ -368,7 +365,7 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
                     )
 
 
-def main():
+def main() -> int:
     detached_final = _DETACHED_FINAL_ARG in sys.argv
     detached_execution = _DETACHED_EXECUTION_ARG in sys.argv
     execution_stop = _EXECUTION_STOP_ARG in sys.argv
@@ -401,10 +398,10 @@ def main():
     if execution_stop:
         if payload.get("fullyIdle") is not True:
             hook_log("sync_execution_skipped_not_idle")
-            return
+            return 0
         spawned = _spawn_detached_sync(final=False)
         hook_log("sync_deferred_to_execution_worker", {"spawned": spawned})
-        return
+        return 0 if spawned else 1
 
     if detached_final:
         delay_raw = os.environ.get("COGNEE_SYNC_START_DELAY", "")
@@ -417,7 +414,7 @@ def main():
             time.sleep(delay)
         if not _claim_final_sync_once():
             hook_log("sync_detached_skipped_duplicate")
-            return
+            return 0
 
     unregister_on_finish = detached_final and os.environ.get(
         "COGNEE_UNREGISTER_ON_FINISH", ""
@@ -430,11 +427,11 @@ def main():
         _stop_idle_watcher()
         spawned = _spawn_detached_sync(final=True)
         hook_log("sync_deferred_to_shutdown_worker", {"spawned": spawned})
-        return
+        return 0
 
     attempts = 1
     retry_delay = 0.0
-    if detached_final:
+    if detached_worker:
         attempts = int(os.environ.get("COGNEE_SYNC_RETRIES", str(_DETACHED_RETRIES_DEFAULT)))
         retry_delay = float(
             os.environ.get("COGNEE_SYNC_RETRY_DELAY", str(_DETACHED_RETRY_DELAY_DEFAULT))
@@ -446,12 +443,12 @@ def main():
                 _sync(
                     stop_watcher=False,
                     unregister_on_finish=unregister_on_finish,
-                    # The detached-final run is the session's last sync: an
-                    # incomplete result raises so this loop retries it.
-                    strict=detached_final,
+                    # Detached workers must retry incomplete results instead of
+                    # accepting an ambiguous improve as successful.
+                    strict=detached_worker,
                 )
             )
-            return
+            return 0
         except Exception as exc:
             # Non-fatal: session sync failure should not crash Antigravity.
             hook_log(
@@ -463,6 +460,8 @@ def main():
                 hook_log("sync_retry_scheduled", {"attempt": attempt + 1, "delay": retry_delay})
                 time.sleep(retry_delay)
 
+    return 1 if detached_worker else 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

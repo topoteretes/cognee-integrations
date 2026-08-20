@@ -68,10 +68,10 @@ def recalled_session(captured_session, live_suite, live_home, nonce):
 def test_the_status_line_renders_against_a_real_server(recalled_session, live_suite):
     """Whatever shape the bar takes, it must render and name the dataset.
 
-    Both integrations have a bar; only its form differs (claude-code styles a
-    terminal line, codex emits plain text for the model's context). This is the
-    part that must hold for both — a renderer that crashes or self-evicts against a
-    live server costs the user their only signal that memory is alive.
+    Every registered integration has a bar; only its form differs (Claude Code
+    styles a terminal line, while Codex and Antigravity emit plain text). A renderer
+    that crashes or self-evicts against a live server costs the user their only
+    signal that memory is alive.
     """
     session, _recalled = recalled_session
 
@@ -87,8 +87,8 @@ def test_the_status_line_shows_the_counts_from_a_real_recall(recalled_session, l
     The counts are the user's only quantitative signal that memory is working; a
     silent regression here looks exactly like a quiet session.
 
-    claude-code only: codex's bar is a short plain-text string for the model's
-    context and carries no diagnostics strip.
+    Claude Code only: Codex and Antigravity use short plain-text bars with no
+    diagnostics strip.
     """
     if not live_suite.has_rich_statusline:
         pytest.skip(f"{live_suite.name}: the bar is plain text and has no counts segment")
@@ -111,18 +111,17 @@ def test_precompact_produces_an_anchor_carrying_the_session(
 ):
     """Compaction drops the transcript; the anchor is what carries memory across it.
 
-    Both suites now recall over HTTP, so both must produce an anchor against a real
-    server. That was not always true: claude-code's pre-compact was local-SDK only
-    — ``cognee.recall`` plus a ``get_session_manager()`` fallback — while in server
-    mode the session cache lives on the server. Session and trace entries came back
-    empty, the derived query stayed empty, the graph scopes were never queried, and
-    the hook logged ``precompact_empty`` and printed nothing. Anyone running against
-    a server lost their anchor at exactly the moment compaction discarded the
+    Codex and Antigravity recall over HTTP and must produce an anchor against a real
+    server. Claude Code's pre-compact remains local-SDK only — ``cognee.recall``
+    plus a ``get_session_manager()`` fallback — while in server mode the session
+    cache lives on the server. Session and trace entries come back empty, the
+    derived query stays empty, the graph scopes are never queried, and the hook
+    logs ``precompact_empty`` and prints nothing. Anyone using that path against a
+    server loses their anchor at exactly the moment compaction discards the
     transcript, with nothing erroring to say so.
 
-    This test is what caught it, and the fix was a port of the branch codex had all
-    along. It stays a live test because it is the only place the difference shows:
-    against a mock the local path looks fine.
+    This test caught the difference. It stays live because a mock makes the local
+    path look healthy while only the real server exposes the missing HTTP branch.
 
     ``has_precompact_http`` is still a flag rather than an assumption — a future
     integration could arrive without the branch, and this would then say so.

@@ -1,7 +1,7 @@
 [project]
 name = "cognee-integrations-shared-tests"
 version = "0.1.0"
-description = "Shared test harness for the claude-code and codex Cognee integrations"
+description = "Shared test harness for Claude Code, Codex, Qwen, and Antigravity Cognee integrations"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []

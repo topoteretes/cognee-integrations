@@ -342,7 +342,7 @@ each turns red the moment it is fixed. They share a shape: the plugin is careful
 never to break the agent, and the cost is that these failures are *silent* — a log
 line and carry on.
 
-**1. A mid-session outage can lose a turn — both integrations.**
+**1. A mid-session outage can lose a turn — every registered suite.**
 `test_writes_during_an_outage_are_buffered_not_dropped`. `store-to-session.py`
 buffers to the warmup spillway only when `server_usable()` is already False (a
 *stale* ready marker plus a failed probe). The marker has a 30s TTL, so a server
@@ -350,12 +350,12 @@ that dies inside that window leaves `server_usable()` returning True: the hook
 attempts a real write, it raises, and the `except` branch only logs
 `stop_store_error` — the entry is buffered nowhere and that turn is lost, which is
 exactly what the spillway exists to prevent. Fix: call `append_warmup_entry` in
-that `except` branch, as the not-usable path already does. The two suites are
-structurally identical here, so this xfails on both.
+that `except` branch, as the not-usable path already does. The registered suites
+are structurally identical here, so this xfails across all of them.
 
 **2. PreCompact produces no anchor in server mode — claude-code only.**
-`test_precompact_produces_an_anchor_carrying_the_session`. Running this against
-both integrations changed the diagnosis: this is not a missing feature, it is a
+`test_precompact_produces_an_anchor_carrying_the_session`. Running this across
+the shared suites changed the diagnosis: this is not a missing feature, it is a
 **port that never happened**. codex's `pre-compact.py` branches on
 `is_cloud_mode` and recalls via `recall_via_http`; claude-code's recalls via
 `cognee.recall` with a `get_session_manager()` fallback, both local-SDK only, while

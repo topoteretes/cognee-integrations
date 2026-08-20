@@ -253,6 +253,115 @@ def test_nonfinal_worker_cannot_inherit_unregister_authority(hook_module, monkey
     assert launches[1][1]["env"]["COGNEE_UNREGISTER_ON_FINISH"] == "1"
 
 
+def test_failed_execution_dispatch_is_retryable_without_adapter_done_marker(
+    hook_module, monkeypatch, tmp_path
+):
+    """Catches a failed worker spawn being acknowledged as completed Stop work."""
+    adapter_spec = importlib.util.spec_from_file_location(
+        "antigravity_dispatch_retry_adapter", SCRIPTS_DIR / "agy_hook.py"
+    )
+    assert adapter_spec and adapter_spec.loader
+    adapter = importlib.util.module_from_spec(adapter_spec)
+    monkeypatch.setitem(sys.modules, adapter_spec.name, adapter)
+    adapter_spec.loader.exec_module(adapter)
+    sync = hook_module(ANTIGRAVITY, "sync-session-to-graph.py")
+    dispatches = iter([False, True])
+    monkeypatch.setattr(sync, "_spawn_detached_sync", lambda *, final: next(dispatches))
+    monkeypatch.setattr(
+        sync, "resolve_session_key_from_payload", lambda _payload: ("host-1", "test")
+    )
+    monkeypatch.setattr(sync, "set_session_key", lambda value: value)
+    monkeypatch.setattr(sync, "hook_log", lambda *_args, **_kwargs: None)
+    payload = adapter.normalize_payload(
+        {
+            "conversationId": "conversation-retry-dispatch",
+            "executionId": "execution-retry-dispatch",
+            "fullyIdle": True,
+        },
+        "sync-session-to-graph.py",
+    )
+
+    def runner(inner_payload, _script):
+        monkeypatch.setattr(sync.sys, "argv", ["sync-session-to-graph.py", "--execution-stop"])
+        monkeypatch.setattr(sync.sys, "stdin", io.StringIO(json.dumps(inner_payload)))
+        return_code = sync.main()
+        if return_code:
+            raise subprocess.CalledProcessError(return_code, sync.sys.argv)
+        return {}
+
+    with pytest.raises(subprocess.CalledProcessError):
+        adapter.run_inner_hook(
+            payload,
+            "sync-session-to-graph.py",
+            runner=runner,
+            marker_dir=tmp_path,
+        )
+    assert not list(tmp_path.glob("*.done"))
+
+    assert (
+        adapter.run_inner_hook(
+            payload,
+            "sync-session-to-graph.py",
+            runner=runner,
+            marker_dir=tmp_path,
+        )
+        == {}
+    )
+    assert len(list(tmp_path.glob("*.done"))) == 1
+
+
+def test_detached_execution_worker_retries_strictly_without_final_authority(
+    hook_module, monkeypatch
+):
+    """Catches a busy/incomplete execution sync being treated as one-shot success."""
+    sync = hook_module(ANTIGRAVITY, "sync-session-to-graph.py")
+    attempts = []
+    sleeps = []
+
+    async def flaky_sync(*, stop_watcher, unregister_on_finish, strict):
+        attempts.append((stop_watcher, unregister_on_finish, strict))
+        if len(attempts) < 3:
+            raise RuntimeError("busy or ambiguous improve")
+
+    monkeypatch.setattr(sync, "_sync", flaky_sync)
+    monkeypatch.setattr(
+        sync,
+        "_claim_final_sync_once",
+        lambda: pytest.fail("execution worker claimed final-sync authority"),
+    )
+    monkeypatch.setattr(sync, "_stop_idle_watcher", lambda: pytest.fail("watcher stopped"))
+    monkeypatch.setattr(sync.time, "sleep", sleeps.append)
+    monkeypatch.setattr(sync, "hook_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sync.sys, "argv", ["sync-session-to-graph.py", "--detached-execution"])
+    monkeypatch.setenv("COGNEE_SYNC_RETRIES", "3")
+    monkeypatch.setenv("COGNEE_SYNC_RETRY_DELAY", "0.25")
+    monkeypatch.setenv("COGNEE_UNREGISTER_ON_FINISH", "1")
+
+    assert sync.main() == 0
+    assert attempts == [(False, False, True)] * 3
+    assert sleeps == [0.25, 0.25]
+
+
+def test_detached_execution_worker_returns_nonzero_after_retry_exhaustion(hook_module, monkeypatch):
+    """Catches an exhausted execution worker being reported as successful."""
+    sync = hook_module(ANTIGRAVITY, "sync-session-to-graph.py")
+    attempts = []
+
+    async def failed_sync(*, stop_watcher, unregister_on_finish, strict):
+        attempts.append((stop_watcher, unregister_on_finish, strict))
+        raise RuntimeError("busy")
+
+    monkeypatch.setattr(sync, "_sync", failed_sync)
+    monkeypatch.setattr(sync.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(sync, "hook_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sync.sys, "argv", ["sync-session-to-graph.py", "--detached-execution"])
+    monkeypatch.setenv("COGNEE_SYNC_RETRIES", "2")
+    monkeypatch.setenv("COGNEE_SYNC_RETRY_DELAY", "0")
+
+    assert sync.main() == 1
+    assert attempts == [(False, False, True)] * 2
+
+
 def test_all_hook_commands_are_relative_runner_commands_with_safe_second_timeouts(manifest):
     failures: list[str] = []
     for name in NAMED_HOOKS:

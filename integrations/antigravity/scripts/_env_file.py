@@ -61,7 +61,8 @@ _TEMPLATE = """\
 # To pick a mode for a single terminal, export the switch before launching:
 #   export COGNEE_BACKEND=local    # this terminal: local mode
 #   export COGNEE_BACKEND=cloud    # this terminal: cloud mode
-# (COGNEE_CLAUDE_BACKEND / COGNEE_ANTIGRAVITY_BACKEND target one plugin only.)
+# (COGNEE_CLAUDE_BACKEND / COGNEE_CODEX_BACKEND / COGNEE_QWEN_BACKEND /
+#  COGNEE_ANTIGRAVITY_BACKEND target one plugin only.)
 
 ## Cloud / remote mode — point the plugins at a Cognee instance:
 # COGNEE_BASE_URL="https://your-instance.cognee.ai"
