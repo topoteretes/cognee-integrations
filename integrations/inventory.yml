@@ -23,7 +23,7 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.6.11"
+    current_version: "2026.8.20"
     migration_status: done
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
