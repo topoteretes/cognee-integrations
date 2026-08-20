@@ -134,8 +134,18 @@ Each terminal launch maintains a small map file:
 
 ```
 ~/.cognee-plugin/sessions/<host_session_id>.json
-  → { "conn_uuid": "...", "session_id": "...", "host_key": "..." }
+  → {
+       "conn_uuid": "...",
+       "session_id": "...",
+       "host_key": "...",
+       "dataset": "project_example_0123456789ab",
+       "dataset_source": "project"
+     }
 ```
+
+`dataset` and `dataset_source` are runtime launch state: they show the dataset
+selected for this conversation and why it was selected. They are not user
+configuration and are not fields sent to Cognee.
 
 - **`session_id`** — which Cognee session this terminal writes to and recalls from. Fixed at launch.
 - **`conn_uuid`** — per-launch liveness handle used for agent registration and server shutdown counting.
@@ -159,6 +169,38 @@ Set a custom dataset at launch:
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 codex
 ```
+
+### Project dataset isolation
+
+Project isolation is opt-in. To move future conversations for a repository into
+one derived dataset, first remove or comment any fixed global dataset, then set
+the scope in `~/.cognee/.env` (or export it before launching Codex):
+
+```bash
+# Remove/comment a global fixed dataset first:
+# COGNEE_PLUGIN_DATASET="agent_sessions"
+
+# Then enable automatic project isolation:
+COGNEE_DATASET_SCOPE="project"
+```
+
+Dataset selection is: **explicit env > #285 picker when present > derived
+project > `agent_sessions`**. A non-empty `COGNEE_PLUGIN_DATASET` therefore
+always wins over project isolation. With `COGNEE_DATASET_SCOPE="project"`, the
+derived name is `project_<slug>_<hash12>`. Git repositories use their normalized
+`origin` remote as the identity, so separate clones and Git worktrees of the
+same remote resolve to the same dataset. A repository without a usable remote
+uses its shared Git worktree identity instead.
+
+The dataset is pinned when a conversation starts; changing the setting affects
+the next session only, so exit and start a new Codex conversation after editing
+it. Conversations in the same project dataset still receive distinct Cognee
+`session_id` values (unless you explicitly set the same `COGNEE_SESSION_ID`).
+The status line displays the active dataset, and `cognee doctor` reports both
+`Dataset` and `Dataset Source` so you can confirm the resolved choice.
+
+This opt-in does not migrate existing memories and does not delete any existing
+dataset. Existing installations continue to use `agent_sessions` until enabled.
 
 `~/.cognee-plugin/config.json` may still show a `dataset` value for visibility,
 but runtime dataset selection does not read it.
