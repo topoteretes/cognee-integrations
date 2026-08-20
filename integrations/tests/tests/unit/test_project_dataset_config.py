@@ -22,13 +22,17 @@ def test_unknown_scope_keeps_default(suite, isolated_modules, project_dir, monke
 def test_project_scope_derives_dataset(suite, isolated_modules, project_dir, monkeypatch):
     config = isolated_modules(suite, "config")
     monkeypatch.setenv("COGNEE_DATASET_SCOPE", " Project ")
-    monkeypatch.setattr(config, "derive_project_dataset", lambda workspace: "project_repo_abc123def456")
+    monkeypatch.setattr(
+        config, "derive_project_dataset", lambda workspace: "project_repo_abc123def456"
+    )
     loaded = config.load_config(str(project_dir))
     assert loaded["dataset"] == "project_repo_abc123def456"
     assert loaded["_dataset_source"] == "project"
 
 
-def test_explicit_dataset_wins_over_project_scope(suite, isolated_modules, project_dir, monkeypatch):
+def test_explicit_dataset_wins_over_project_scope(
+    suite, isolated_modules, project_dir, monkeypatch
+):
     config = isolated_modules(suite, "config")
     monkeypatch.setenv("COGNEE_DATASET_SCOPE", "project")
     monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "explicit")
@@ -46,10 +50,14 @@ def test_picker_marker_wins_over_project_scope(suite, isolated_modules, project_
     assert (selected["dataset"], selected["_dataset_source"]) == ("picked", "picker")
 
 
-def test_derived_dataset_is_not_persisted_globally(suite, isolated_modules, project_dir, monkeypatch):
+def test_derived_dataset_is_not_persisted_globally(
+    suite, isolated_modules, project_dir, monkeypatch
+):
     config = isolated_modules(suite, "config")
     monkeypatch.setenv("COGNEE_DATASET_SCOPE", "project")
-    monkeypatch.setattr(config, "derive_project_dataset", lambda workspace: "project_repo_abc123def456")
+    monkeypatch.setattr(
+        config, "derive_project_dataset", lambda workspace: "project_repo_abc123def456"
+    )
     loaded = config.load_config(str(project_dir))
     config.save_config(loaded)
     saved = json.loads(config._CONFIG_FILE.read_text(encoding="utf-8"))

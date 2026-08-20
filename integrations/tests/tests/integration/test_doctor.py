@@ -82,9 +82,7 @@ def test_report_marks_an_absent_server_unreachable(doctor, monkeypatch, closed_p
     assert report["reachable"] is False
 
 
-def test_report_includes_effective_project_dataset(
-    doctor, project_dir, monkeypatch
-):
+def test_report_includes_effective_project_dataset(doctor, project_dir, monkeypatch):
     monkeypatch.chdir(project_dir)
     monkeypatch.setenv("COGNEE_DATASET_SCOPE", "project")
     report = doctor.collect_report()

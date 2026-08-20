@@ -142,8 +142,12 @@ def test_concurrent_legacy_pins_keep_the_first_dataset(suite, isolated_modules, 
 def test_conversations_keep_distinct_sessions_in_one_dataset(suite, isolated_modules):
     common = isolated_modules(suite, "_plugin_common")
     dataset = "project_repo_111111111111"
-    first = common.ensure_launch_record("host-one", "/repo", dataset=dataset, dataset_source="project")
-    second = common.ensure_launch_record("host-two", "/repo", dataset=dataset, dataset_source="project")
+    first = common.ensure_launch_record(
+        "host-one", "/repo", dataset=dataset, dataset_source="project"
+    )
+    second = common.ensure_launch_record(
+        "host-two", "/repo", dataset=dataset, dataset_source="project"
+    )
     assert first[0] != second[0]
     assert common.get_launch_dataset("host-one")[0] == common.get_launch_dataset("host-two")[0]
 

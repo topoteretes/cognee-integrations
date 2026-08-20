@@ -50,9 +50,7 @@ def test_unsupported_or_malformed_remote_returns_none(suite, isolated_modules, r
 
 
 def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
     return result.stdout.strip()
 
 
@@ -67,7 +65,9 @@ def test_remote_linked_worktrees_share_complete_name(suite, isolated_modules, tm
     _git(repo, "add", "seed")
     _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed")
     _git(repo, "worktree", "add", str(linked))
-    assert resolver.derive_project_dataset(str(repo)) == resolver.derive_project_dataset(str(linked))
+    assert resolver.derive_project_dataset(str(repo)) == resolver.derive_project_dataset(
+        str(linked)
+    )
 
 
 def test_remote_less_worktrees_share_complete_name(suite, isolated_modules, tmp_path):
@@ -80,14 +80,18 @@ def test_remote_less_worktrees_share_complete_name(suite, isolated_modules, tmp_
     _git(repo, "add", "seed")
     _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed")
     _git(repo, "worktree", "add", str(linked))
-    assert resolver.derive_project_dataset(str(repo)) == resolver.derive_project_dataset(str(linked))
+    assert resolver.derive_project_dataset(str(repo)) == resolver.derive_project_dataset(
+        str(linked)
+    )
 
 
 def test_git_failure_falls_back_to_workspace(suite, isolated_modules, tmp_path, monkeypatch):
     resolver = isolated_modules(suite, "_project_dataset")
     workspace = tmp_path / "plain"
     workspace.mkdir()
-    monkeypatch.setattr(resolver.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    monkeypatch.setattr(
+        resolver.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError())
+    )
     assert resolver.derive_project_dataset(str(workspace)).startswith("project_plain_")
 
 
@@ -98,9 +102,7 @@ def test_git_timeout_falls_back_to_workspace(suite, isolated_modules, tmp_path, 
     monkeypatch.setattr(
         resolver.subprocess,
         "run",
-        lambda *a, **k: (_ for _ in ()).throw(
-            subprocess.TimeoutExpired(cmd=["git"], timeout=1)
-        ),
+        lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd=["git"], timeout=1)),
     )
     assert resolver.derive_project_dataset(str(workspace)).startswith("project_plain_")
 

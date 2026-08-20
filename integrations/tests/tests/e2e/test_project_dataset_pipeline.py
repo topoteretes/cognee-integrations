@@ -77,9 +77,7 @@ def test_pipeline_uses_session_start_dataset(
         env=env,
     )
     assert stopped.returncode == 0, stopped.stderr
-    writes = [
-        call for call in mock_server.calls if call["path"] == "/api/v1/remember/entry"
-    ]
+    writes = [call for call in mock_server.calls if call["path"] == "/api/v1/remember/entry"]
     assert writes
     assert {call["json"]["dataset_name"] for call in writes} == {only[0]}
 

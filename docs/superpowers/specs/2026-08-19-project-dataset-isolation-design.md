@@ -1,7 +1,7 @@
 # Opt-in Per-Project Dataset Isolation Design
 
-**Date:** 2026-08-19  
-**Issue:** [topoteretes/cognee-integrations#356](https://github.com/topoteretes/cognee-integrations/issues/356)  
+**Date:** 2026-08-19
+**Issue:** [topoteretes/cognee-integrations#356](https://github.com/topoteretes/cognee-integrations/issues/356)
 **Status:** Approved for implementation planning
 
 ## Goal

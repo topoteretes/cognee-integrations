@@ -7,9 +7,7 @@ import sys
 import types
 
 
-def test_session_start_winner_reaches_ready_and_agent_registration(
-    suite, hook_module, monkeypatch
-):
+def test_session_start_winner_reaches_ready_and_agent_registration(suite, hook_module, monkeypatch):
     session_start = hook_module(suite, "session-start.py")
     common = sys.modules["_plugin_common"]
     common.ensure_launch_record(
@@ -93,7 +91,9 @@ def test_local_graph_recall_receives_pinned_dataset(suite, hook_module, monkeypa
     fake_types.SearchType = types.SimpleNamespace(HYBRID_COMPLETION="HYBRID_COMPLETION")
     monkeypatch.setitem(sys.modules, "cognee", fake_cognee)
     monkeypatch.setitem(sys.modules, "cognee.modules", types.ModuleType("cognee.modules"))
-    monkeypatch.setitem(sys.modules, "cognee.modules.search", types.ModuleType("cognee.modules.search"))
+    monkeypatch.setitem(
+        sys.modules, "cognee.modules.search", types.ModuleType("cognee.modules.search")
+    )
     monkeypatch.setitem(sys.modules, "cognee.modules.search.types", fake_types)
     monkeypatch.setattr(lookup, "load_config", lambda *_a, **_k: {"dataset": "candidate"})
     monkeypatch.setattr(lookup, "resolve_runtime_mode", lambda: {"mode": "local", "base_url": ""})

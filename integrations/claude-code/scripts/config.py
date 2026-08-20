@@ -162,7 +162,10 @@ def load_config(workspace: str | None = None) -> dict:
                 {
                     k: v
                     for k, v in file_cfg.items()
-                    if v is not None and v != "" and k not in _file_excluded and not k.startswith("_")
+                    if v is not None
+                    and v != ""
+                    and k not in _file_excluded
+                    and not k.startswith("_")
                 }
             )
         except Exception as exc:

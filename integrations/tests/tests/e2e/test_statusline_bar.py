@@ -78,9 +78,7 @@ def test_bar_prefers_pinned_dataset(suite, run_hook, temp_home):
     assert "cognee: project_repo_111111111111" in result.stdout
 
 
-def test_bar_normalizes_host_id_before_reading_pinned_dataset(
-    suite, run_hook, temp_home
-):
+def test_bar_normalizes_host_id_before_reading_pinned_dataset(suite, run_hook, temp_home):
     _enable_plugin(suite, temp_home)
     host_id = "._host/id with spaces?" + "x" * 140 + "..."
     normalized_host_id = "host_id_with_spaces_" + "x" * 100
@@ -101,9 +99,7 @@ def test_bar_normalizes_host_id_before_reading_pinned_dataset(
     assert "cognee: project_normalized_222222222222" in result.stdout
 
 
-def test_bar_derives_before_launch_record_exists(
-    suite, run_hook, temp_home, project_dir
-):
+def test_bar_derives_before_launch_record_exists(suite, run_hook, temp_home, project_dir):
     _enable_plugin(suite, temp_home)
     subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True)
     subprocess.run(

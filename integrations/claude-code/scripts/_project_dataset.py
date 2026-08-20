@@ -27,7 +27,11 @@ def normalize_git_remote(remote: str) -> str | None:
         match = _SCP_REMOTE.fullmatch(value)
         if not match or (
             len(match["host"]) == 1
-            and (match["host"].isascii() and match["host"].isalpha() or match["path"].startswith(("\\", "/")))
+            and (
+                match["host"].isascii()
+                and match["host"].isalpha()
+                or match["path"].startswith(("\\", "/"))
+            )
         ):
             return None
         host = match["host"].strip("[]").lower()
@@ -110,6 +114,8 @@ def derive_project_dataset(workspace: str) -> str | None:
         common_raw = _run_git(root, "rev-parse", "--git-common-dir")
         common = _canonical_dir(common_raw, relative_to=root) if common_raw else None
         if common is not None:
-            slug_source = common.parent.name if common.name == ".git" else common.name.removesuffix(".git")
+            slug_source = (
+                common.parent.name if common.name == ".git" else common.name.removesuffix(".git")
+            )
             return dataset_name(f"gitdir:{common}", slug_source)
     return dataset_name(f"workspace:{root}", root.name)

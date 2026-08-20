@@ -89,8 +89,9 @@ def run_bridge(pc, suite, tmp_path, monkeypatch):
         monkeypatch.setattr(
             pc,
             "_post_remember_document",
-            lambda *a, **k: post_result
-            or {"ok": True, "dataset_id": "d1", "pipeline_run_id": "p1"},
+            lambda *a, **k: (
+                post_result or {"ok": True, "dataset_id": "d1", "pipeline_run_id": "p1"}
+            ),
         )
         monkeypatch.setattr(pc, "wait_for_cognify", lambda *a, **k: outcome)
         monkeypatch.setattr(
