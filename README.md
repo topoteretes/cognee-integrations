@@ -215,6 +215,7 @@ integrations/
   openclaw/           -> @openclaw/memory-cognee (npm)
   claude-code/        -> Cognee plugin for Claude Code
   codex/              -> Cognee plugin marketplace for Codex
+  antigravity/        -> Cognee plugin for Antigravity
 ```
 
 ## Adding a New Integration
