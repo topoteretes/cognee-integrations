@@ -879,6 +879,14 @@ def _reexec_into_venv() -> None:
     lives in ``~/.cognee-plugin/venv``. Once that venv exists, re-exec into it
     so every import resolves there. No-op before the venv exists (cold start,
     pre-install) or when already running inside it.
+
+    "Already inside" is judged by ``sys.prefix``, never by comparing
+    interpreter files: a venv's ``bin/python`` is a symlink to its base
+    interpreter, so ``os.path.samefile(venv_python, sys.executable)`` is also
+    true when running under that base directly (e.g. CI, where setup-python's
+    3.12 is both the ``python3`` that launches hooks and the base uv built the
+    venv from) — which has no cognee. ``sys.prefix`` only equals the venv dir
+    when the process was launched through the venv's own path.
     """
     if os.environ.get("COGNEE_PLUGIN_IN_VENV") == "1":
         return  # loop guard: this process already re-execed (or opted out)
@@ -887,12 +895,12 @@ def _reexec_into_venv() -> None:
     vpy = _VENV_PYTHON
     if not vpy.exists():
         return  # cold start — install hasn't built the venv yet
-    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
     try:
-        if os.path.samefile(str(vpy), sys.executable):
-            return  # the host python3 already *is* the venv interpreter
+        if Path(sys.prefix).resolve() == _VENV_DIR.resolve():
+            return  # already running inside the plugin venv
     except OSError:
         pass
+    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
     try:
         # execv inherits os.environ (incl. the loop guard just set above).
         os.execv(str(vpy), [str(vpy), *sys.argv])
