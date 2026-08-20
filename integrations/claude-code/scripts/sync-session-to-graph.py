@@ -215,9 +215,8 @@ def _load_resolved() -> tuple:
             os.environ["COGNEE_USER_ID"] = str(data.get("user_id"))
         return (
             env_session_id or data.get("session_id", ""),
-            # load_resolved() carries no dataset key, so without the env
-            # override (only the exit watcher sets it) this must fall back to
-            # config, or the SessionEnd worker syncs with an empty dataset.
+            # Detached exit workers keep their explicit override; direct syncs
+            # consume the dataset pinned in the SessionStart launch record.
             env_dataset or data.get("dataset", "") or get_dataset(load_config()),
             data.get("user_id", ""),
             env_agent_session_name or data.get("agent_session_name", ""),

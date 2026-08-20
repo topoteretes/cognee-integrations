@@ -66,13 +66,15 @@ RECENT_TRACE_FALLBACK_TOP_K = 5
 MIN_SCOPE_TIMEOUT = 0.2
 
 
-def _load_session_id() -> str:
+def _load_session(workspace: str = "") -> tuple[str, str]:
     resolved = load_resolved()
-    session_id = resolved.get("session_id", "")
-    if not session_id:
-        config = load_config()
-        session_id = get_session_id(config)
-    return session_id
+    session_id = str(resolved.get("session_id") or "")
+    dataset = str(resolved.get("dataset") or "")
+    if not session_id or not dataset:
+        config = load_config(workspace or None)
+        session_id = session_id or get_session_id(config, workspace or None)
+        dataset = dataset or get_dataset(config)
+    return session_id, dataset
 
 
 def _load_user_id() -> str:
@@ -170,8 +172,8 @@ async def _recent_trace_fallback(session_id: str, user_id: str, top_k: int) -> l
     return normalized
 
 
-async def _run(prompt: str) -> dict | None:
-    config = load_config()
+async def _run(prompt: str, workspace: str = "") -> dict | None:
+    config = load_config(workspace or None)
     runtime = resolve_runtime_mode()
     cloud_mode = runtime["mode"] == "http"
     # Readiness gate, redesigned (SDK-356): the recall attempt itself is the
@@ -223,7 +225,7 @@ async def _run(prompt: str) -> dict | None:
     if not cloud_mode:
         await ensure_cognee_ready(config)
 
-    session_id = _load_session_id()
+    session_id, dataset = _load_session(workspace)
     if not session_id:
         hook_log("no_session_id", {"event": "context_lookup"})
         return None
@@ -322,7 +324,7 @@ async def _run(prompt: str) -> dict | None:
                     only_context=True,
                     search_type=qtype,
                     context_profile=context_profile,
-                    dataset=get_dataset(config),
+                    dataset=dataset,
                     timeout=scope_timeout,
                 )
             else:
@@ -654,9 +656,10 @@ def main():
         return
 
     output = None
+    workspace = str(payload.get("cwd") or os.environ.get("CODEX_CWD") or os.getcwd())
     try:
         with quiet_hook_output("session-context-lookup"):
-            output = asyncio.run(_run(prompt))
+            output = asyncio.run(_run(prompt, workspace))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
     return output

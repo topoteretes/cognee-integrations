@@ -39,6 +39,7 @@ from _plugin_common import (
     apply_cognee_env,
     clear_server_pidfile,
     ensure_launch_record,
+    get_launch_dataset,
     hook_log,
     probe_health,
     quiet_hook_output,
@@ -1202,9 +1203,9 @@ async def _run_bootstrap(bootstrap: dict) -> None:
 
 
 async def _start(payload: dict | None = None) -> dict:
-    config = load_config()
     payload = payload or {}
     cwd = str(payload.get("cwd") or os.environ.get("CODEX_CWD") or os.getcwd())
+    config = load_config(cwd)
     # The service URL is the sole router (api_key is optional auth, with a
     # default-user fallback in registration). COGNEE_AGENT_MODE is NOT decided
     # here: it's set only when we actually boot a server (in
@@ -1252,7 +1253,17 @@ async def _start(payload: dict | None = None) -> dict:
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
     # synchronously here so prompt hooks read back the identical ids before any run.
-    session_id, conn_uuid = ensure_launch_record(session_key, cwd)
+    candidate_dataset = get_dataset(config)
+    candidate_source = str(config.get("_dataset_source") or "default")
+    session_id, conn_uuid = ensure_launch_record(
+        session_key,
+        cwd,
+        dataset=candidate_dataset,
+        dataset_source=candidate_source,
+    )
+    dataset, dataset_source = get_launch_dataset(session_key)
+    dataset = dataset or candidate_dataset
+    dataset_source = dataset_source or candidate_source
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
     hook_log(
@@ -1262,9 +1273,10 @@ async def _start(payload: dict | None = None) -> dict:
             "session_key": session_key,
             "session_id": session_id,
             "conn_uuid": conn_uuid,
+            "dataset": dataset,
+            "dataset_source": dataset_source,
         },
     )
-    dataset = get_dataset(config)
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)

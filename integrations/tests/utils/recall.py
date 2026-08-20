@@ -105,7 +105,7 @@ def drive_recall(
     seams = {
         "hook_log": lambda event, detail=None: run.events.append((event, detail or {})),
         "notify": lambda *a, **k: None,
-        "load_config": lambda: {},
+        "load_config": lambda *a, **k: {},
         "resolve_runtime_mode": lambda: {"mode": "http", "base_url": URL},
         "read_connection_state": lambda: dict(prior_state or {}),
         "server_ready_hint": lambda url: ready_hint,
@@ -116,7 +116,7 @@ def drive_recall(
         "clear_slow_streak": lambda url: None,
         "record_slow_probe": lambda url: slow_streak,
         "slow_streak_threshold": lambda: slow_threshold,
-        "_load_session_id": lambda: "sid",
+        "_load_session": lambda workspace="": ("sid", "agent_sessions"),
         "read_and_reset_save_counter": lambda sid: {"prompt": 0, "trace": 0, "answer": 0},
         "recall_via_http": _recall,
     }
