@@ -544,6 +544,78 @@ def test_sleeping_inner_child_is_killed_by_adapter_owned_timeout_without_done_ma
     assert not list((home / ".cognee-plugin").rglob("*.done"))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-liveness assertion")
+def test_successful_leader_with_stdio_holding_descendant_returns_without_killing_descendant(
+    tmp_path,
+):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    adapter_copy = scripts / "agy_hook.py"
+    shutil.copy2(ADAPTER_PATH, adapter_copy)
+    descendant_pid_path = tmp_path / "descendant.pid"
+    (scripts / "session-start.py").write_text(
+        "import os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "Path(os.environ['DESCENDANT_PID_PATH']).write_text(\n"
+        "    str(child.pid), encoding='utf-8'\n"
+        ")\n"
+        "print('{}')\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "DESCENDANT_PID_PATH": str(descendant_pid_path),
+        "COGNEE_AGY_HOOK_TIMEOUT_SECONDS": "0.2",
+    }
+    process = subprocess.Popen(
+        [sys.executable, str(adapter_copy), "session-start.py"],
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    started = time.monotonic()
+    adapter_timed_out = False
+    descendant_alive = False
+    try:
+        try:
+            stdout, stderr = process.communicate(
+                json.dumps({"conversationId": "detached-conversation"}), timeout=3.0
+            )
+        except subprocess.TimeoutExpired:
+            adapter_timed_out = True
+            process.kill()
+            stdout, stderr = process.communicate()
+
+        assert descendant_pid_path.is_file()
+        descendant_pid = int(descendant_pid_path.read_text(encoding="utf-8"))
+        try:
+            os.kill(descendant_pid, 0)
+        except ProcessLookupError:
+            descendant_alive = False
+        else:
+            descendant_alive = True
+    finally:
+        if descendant_pid_path.exists():
+            descendant_pid = int(descendant_pid_path.read_text(encoding="utf-8"))
+            try:
+                os.kill(descendant_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    assert not adapter_timed_out, "descendant-held stdio blocked adapter completion"
+    assert process.returncode == 0, stderr
+    assert time.monotonic() - started < 3.0
+    assert json.loads(stdout) == {}
+    assert descendant_alive, "successful adapter cleanup killed an intentional detached worker"
+
+
 def test_session_start_runs_once_per_conversation(adapter, tmp_path):
     payload = {"conversationId": "conversation-once"}
     calls = []
@@ -643,7 +715,9 @@ def test_concurrent_identical_hooks_allow_exactly_one_durable_inner_run(adapter,
             claims = list(tmp_path.glob("*.claim"))
             assert len(claims) == 1
             assert re.fullmatch(r"[0-9a-f]{64}\.claim", claims[0].name)
-            assert claims[0].read_text(encoding="utf-8") == ""
+            claim_bytes = claims[0].read_bytes()
+            for sensitive in ("conversation-concurrent", "session-start.py"):
+                assert sensitive.encode() not in claim_bytes
 
             second = pool.submit(
                 adapter.run_inner_hook,
@@ -665,40 +739,113 @@ def test_concurrent_identical_hooks_allow_exactly_one_durable_inner_run(adapter,
     assert len(list(tmp_path.glob("*.done"))) == 1
 
 
-def test_fresh_claim_skips_duplicate_but_stale_claim_is_recoverable(adapter, tmp_path):
-    payload = {"conversationId": "conversation-crashed-claim"}
-    marker = adapter._marker_path(payload, "session-start.py", tmp_path)
-    assert marker is not None
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    claim = marker.with_suffix(".claim")
-    claim.touch()
-    calls = []
+def test_crashed_claim_owner_retries_without_aba_duplicate(adapter, tmp_path):
+    marker_root = tmp_path / "markers"
+    runner_log = tmp_path / "runner.log"
+    child = f"""\
+import importlib.util
+import os
+import sys
+import time
+from pathlib import Path
 
-    assert (
-        adapter.run_inner_hook(
-            payload,
-            "session-start.py",
-            runner=lambda *_: calls.append("ran") or {},
-            marker_dir=tmp_path,
-            claim_stale_after=60.0,
+adapter_path = Path({str(ADAPTER_PATH)!r})
+marker_root = Path({str(marker_root)!r})
+runner_log = Path({str(runner_log)!r})
+label = sys.argv[1]
+hold = sys.argv[2] == "hold"
+spec = importlib.util.spec_from_file_location("agy_claim_owner_" + label, adapter_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+def runner(_payload, _script):
+    descriptor = os.open(runner_log, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    try:
+        os.write(descriptor, (label + "\\n").encode())
+    finally:
+        os.close(descriptor)
+    if hold:
+        time.sleep(60)
+    return {{}}
+
+module.run_inner_hook(
+    {{"conversationId": "conversation-crash-aba"}},
+    "session-start.py",
+    runner=runner,
+    marker_dir=marker_root,
+    claim_stale_after=0.0,
+)
+"""
+
+    def start(label, *, hold):
+        return subprocess.Popen(
+            [sys.executable, "-c", child, label, "hold" if hold else "return"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-        == {}
-    )
-    assert calls == []
 
-    old = time.time() - 120
-    os.utime(claim, (old, old))
-    adapter.run_inner_hook(
-        payload,
-        "session-start.py",
-        runner=lambda *_: calls.append("ran") or {},
-        marker_dir=tmp_path,
-        claim_stale_after=60.0,
-    )
+    def lines():
+        if not runner_log.exists():
+            return []
+        return runner_log.read_text(encoding="utf-8").splitlines()
 
-    assert calls == ["ran"]
-    assert marker.is_file()
-    assert not claim.exists()
+    def wait_for_line(label):
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if label in lines():
+                return
+            time.sleep(0.01)
+        pytest.fail(f"runner {label!r} did not start; observed {lines()!r}")
+
+    processes = []
+    try:
+        crashed_owner = start("crashed-owner", hold=True)
+        processes.append(crashed_owner)
+        wait_for_line("crashed-owner")
+        crashed_owner.kill()
+        crashed_owner.wait(timeout=2.0)
+
+        retry_a = start("retry-a", hold=True)
+        processes.append(retry_a)
+        wait_for_line("retry-a")
+        claims = list(marker_root.glob("*.claim"))
+        assert len(claims) == 1
+        assert re.fullmatch(r"[0-9a-f]{64}\.claim", claims[0].name)
+        claim_bytes = claims[0].read_bytes()
+        for sensitive in (
+            "conversation-crash-aba",
+            "session-start.py",
+            "crashed-owner",
+            "retry-a",
+        ):
+            assert sensitive.encode() not in claim_bytes
+
+        retry_b = start("retry-b", hold=False)
+        processes.append(retry_b)
+        _, retry_b_stderr = retry_b.communicate(timeout=2.0)
+        assert retry_b.returncode == 0, retry_b_stderr
+
+        retry_a.kill()
+        retry_a.wait(timeout=2.0)
+
+        retry_c = start("retry-c", hold=False)
+        processes.append(retry_c)
+        _, retry_c_stderr = retry_c.communicate(timeout=2.0)
+        assert retry_c.returncode == 0, retry_c_stderr
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+
+    assert lines() == ["crashed-owner", "retry-a", "retry-c"]
+    assert len(list(marker_root.glob("*.done"))) == 1
+    assert not list(marker_root.glob("*.claim"))
 
 
 def test_sync_session_end_runs_only_after_fully_idle(adapter, tmp_path):

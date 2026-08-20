@@ -10,11 +10,12 @@ import signal
 import stat
 import subprocess
 import sys
-import time
+import tempfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
 
 MAX_TRANSCRIPT_TAIL_BYTES = 1_048_576
+MAX_INNER_OUTPUT_BYTES = 1_048_576
 
 EVENT_FOR_SCRIPT = {
     "session-start.py": "SessionStart",
@@ -32,7 +33,7 @@ SCRIPT_TIMEOUT_SECONDS = {
     "store-to-session.py": 110.0,
     "sync-session-to-graph.py": 25.0,
 }
-CLAIM_STALE_SECONDS = 150.0
+PROCESS_CLEANUP_SECONDS = 2.0
 
 
 def default_marker_root() -> Path:
@@ -262,36 +263,81 @@ def _marker_path(payload: dict[str, Any], script: str, root: Path) -> Path | Non
     return root / f"{digest}.done"
 
 
-def _acquire_claim(marker: Path, stale_after: float) -> Path | None:
-    """Atomically claim unfinished marker work, recovering abandoned claims."""
+Claim = tuple[Path, BinaryIO]
+
+
+def _lock_claim(handle: BinaryIO) -> bool:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+    else:
+        import fcntl
+
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+    return True
+
+
+def _unlock_claim(handle: BinaryIO) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _release_claim(claim: Claim) -> None:
+    path, handle = claim
+    if os.name != "nt":
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:
+        _unlock_claim(handle)
+    except OSError:
+        pass
+    finally:
+        handle.close()
+    if os.name == "nt":
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # A new owner opened the stable claim between unlock and unlink.
+            pass
+
+
+def _acquire_claim(marker: Path) -> Claim | None:
+    """Acquire crash-released ownership of a stable, hash-only claim file."""
     marker.parent.mkdir(parents=True, exist_ok=True)
     claim = marker.with_suffix(".claim")
-    for _attempt in range(3):
-        if marker.is_file():
-            return None
-        try:
-            descriptor = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            if marker.is_file():
-                return None
-            try:
-                age = time.time() - claim.stat().st_mtime
-            except FileNotFoundError:
-                continue
-            if age <= stale_after:
-                return None
-            try:
-                claim.unlink()
-            except FileNotFoundError:
-                pass
-            continue
-        else:
-            os.close(descriptor)
-            if marker.is_file():
-                claim.unlink(missing_ok=True)
-                return None
-            return claim
-    return None
+    if marker.is_file():
+        return None
+
+    descriptor = os.open(claim, os.O_CREAT | os.O_RDWR, 0o600)
+    handle = os.fdopen(descriptor, "r+b", buffering=0)
+    if os.fstat(descriptor).st_size == 0:
+        handle.write(b"0")
+    if not _lock_claim(handle):
+        handle.close()
+        return None
+
+    ownership = (claim, handle)
+    if marker.is_file():
+        _release_claim(ownership)
+        return None
+    return ownership
 
 
 Runner = Callable[[dict[str, Any], str], Any]
@@ -307,9 +353,7 @@ def _script_timeout(script: str) -> float:
     return min(limit, override) if override > 0 else limit
 
 
-def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     if os.name == "posix":
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -323,13 +367,31 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=2.0,
+                timeout=PROCESS_CLEANUP_SECONDS,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
     if process.poll() is None:
         process.kill()
+
+
+def _bounded_wait(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.wait(timeout=PROCESS_CLEANUP_SECONDS)
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=PROCESS_CLEANUP_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _read_inner_output(output: BinaryIO) -> str:
+    output.flush()
+    output.seek(0)
+    return output.read(MAX_INNER_OUTPUT_BYTES).decode("utf-8", errors="replace")
 
 
 def _run_script(payload: dict[str, Any], script: str) -> str:
@@ -348,23 +410,33 @@ def _run_script(payload: dict[str, Any], script: str) -> str:
     elif os.name == "nt":
         process_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        **process_kwargs,
-    )
     timeout = _script_timeout(script)
-    try:
-        stdout, stderr = process.communicate(json.dumps(payload), timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        _terminate_process_tree(process)
-        stdout, stderr = process.communicate()
-        raise subprocess.TimeoutExpired(
-            command, timeout, output=stdout, stderr=stderr
-        ) from error
+    with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(
+        mode="w+b"
+    ) as stderr_file:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            **process_kwargs,
+        )
+        timed_out = False
+        try:
+            process.communicate(json.dumps(payload).encode(), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _terminate_process_tree(process)
+            _bounded_wait(process)
+        finally:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+
+        stdout = _read_inner_output(stdout_file)
+        stderr = _read_inner_output(stderr_file)
+
+    if timed_out:
+        raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
 
     if stderr:
         sys.stderr.write(stderr)
@@ -385,7 +457,7 @@ def run_inner_hook(
     runner: Runner = _run_script,
     marker_dir: Path | None = None,
     session_end: bool = False,
-    claim_stale_after: float = CLAIM_STALE_SECONDS,
+    claim_stale_after: float | None = None,
 ) -> Any:
     """Run an inner hook, enforcing final-idle and scoped once semantics."""
     if session_end and payload.get("fullyIdle") is not True:
@@ -393,9 +465,10 @@ def run_inner_hook(
 
     marker_root = Path(marker_dir) if marker_dir is not None else default_marker_root()
     marker = _marker_path(payload, script, marker_root)
+    del claim_stale_after  # Kept for compatibility; OS ownership replaces time-based leases.
     claim = None
     if marker is not None:
-        claim = _acquire_claim(marker, claim_stale_after)
+        claim = _acquire_claim(marker)
         if claim is None:
             return {}
 
@@ -406,7 +479,7 @@ def run_inner_hook(
         return output
     finally:
         if claim is not None:
-            claim.unlink(missing_ok=True)
+            _release_claim(claim)
 
 
 def main(argv: list[str] | None = None) -> int:
