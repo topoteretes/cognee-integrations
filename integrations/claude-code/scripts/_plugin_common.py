@@ -1504,20 +1504,48 @@ def _live_server_pid(port: int) -> int:
     return 0
 
 
-# Windows delivers ECONNREFUSED only after winsock's internal SYN retries —
-# ~1s even on loopback — so a 0.5s budget times out before the refusal
-# arrives and the positive "refused" signal (the only absence license) can
-# never be observed there. POSIX refuses in microseconds; keep it tight.
-_TCP_PROBE_TIMEOUT_SECONDS = 1.5 if os.name == "nt" else 0.5
+def _windows_listening_verdict(port: int) -> str:
+    """'listening' | 'refused' | 'no_verdict' from the OS TCP table (Windows).
+
+    Windows Firewall stealth mode drops the SYN to a closed port instead of
+    answering RST — loopback included — so a refused connect there just times
+    out and the positive "refused" signal can never be observed from a connect
+    attempt, at any budget. The listening table is the authority instead: a
+    port with no LISTEN row is positively free.
+
+    Rows are matched structurally — local address ends in ``:port`` and the
+    remote is the unconnected ``0.0.0.0:0`` / ``[::]:0`` placeholder that only
+    LISTEN rows carry — because netstat localizes the state word ("LISTENING",
+    "ABHÖREN", …) but never the addresses.
+    """
+    try:
+        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return "no_verdict"
+    if out.returncode != 0:
+        return "no_verdict"
+    suffix = f":{port}"
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[0].upper() != "TCP":
+            continue
+        if parts[1].endswith(suffix) and parts[2] in ("0.0.0.0:0", "[::]:0"):
+            return "listening"
+    return "refused"
 
 
-def tcp_probe(host: str, port: int, timeout: float = _TCP_PROBE_TIMEOUT_SECONDS) -> str:
+def tcp_probe(host: str, port: int, timeout: float = 0.5) -> str:
     """Classify the bare TCP handshake: 'listening' | 'refused' | 'no_verdict'.
 
     'refused' is a positive signal from the OS that nothing holds the port —
     the only transport answer that may contribute to an absence verdict.
     Timeouts and filtered/odd socket states give no verdict, same as the HTTP
     probe's rules.
+
+    On Windows a connect cannot yield that positive signal (see
+    ``_windows_listening_verdict``), so a no-verdict connect falls back to the
+    OS listening table there. A live listener still answers the handshake in
+    microseconds on every platform, so the connect attempt stays first.
     """
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -1527,6 +1555,8 @@ def tcp_probe(host: str, port: int, timeout: float = _TCP_PROBE_TIMEOUT_SECONDS)
     except OSError as exc:
         if getattr(exc, "errno", None) == errno.ECONNREFUSED:
             return "refused"
+        if os.name == "nt":
+            return _windows_listening_verdict(port)
         return "no_verdict"
     except Exception:
         return "no_verdict"
