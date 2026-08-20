@@ -40,6 +40,7 @@ from _plugin_common import (
     server_usable,
     set_session_key,
     touch_activity,
+    write_outcome_ambiguous,
 )
 from config import (
     ensure_cognee_ready,
@@ -230,7 +231,11 @@ async def _store_tool_call(payload: dict) -> None:
         status_code = exc.code if isinstance(exc, urllib.error.HTTPError) else None
         retryable = status_code is None or status_code >= 500
         if retryable:
-            append_warmup_entry(dataset, session_id, entry)
+            # A timeout or gateway error may have landed server-side; mark the
+            # buffered copy so the drain verifies before re-sending —
+            # /remember/entry has no idempotency, and a blind replay of a
+            # committed write duplicates the trace into the next improve.
+            append_warmup_entry(dataset, session_id, entry, ambiguous=write_outcome_ambiguous(exc))
             trace_text = (
                 f"{tool_name} [{status}]\n"
                 f"Params: {json.dumps(params, ensure_ascii=False)}\n"
@@ -371,7 +376,10 @@ async def _store_assistant_stop(payload: dict) -> None:
         status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
         retryable = status is None or status >= 500
         if retryable:
-            append_warmup_entry(dataset, session_id, entry)
+            # Ambiguous outcomes (timeout / gateway error after the request
+            # went out) are verified against the server before replay — see
+            # write_outcome_ambiguous.
+            append_warmup_entry(dataset, session_id, entry, ambiguous=write_outcome_ambiguous(exc))
             append_http_bridge_entry(
                 dataset,
                 session_id,
