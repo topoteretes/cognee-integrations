@@ -297,6 +297,15 @@ def _unlock_claim(handle: BinaryIO) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _close_locked_claim(handle: BinaryIO) -> None:
+    try:
+        _unlock_claim(handle)
+    except OSError:
+        pass
+    finally:
+        handle.close()
+
+
 def _release_claim(claim: Claim) -> None:
     path, handle = claim
     if os.name != "nt":
@@ -304,12 +313,7 @@ def _release_claim(claim: Claim) -> None:
             path.unlink(missing_ok=True)
         except OSError:
             pass
-    try:
-        _unlock_claim(handle)
-    except OSError:
-        pass
-    finally:
-        handle.close()
+    _close_locked_claim(handle)
     if os.name == "nt":
         try:
             path.unlink(missing_ok=True)
@@ -325,19 +329,29 @@ def _acquire_claim(marker: Path) -> Claim | None:
     if marker.is_file():
         return None
 
-    descriptor = os.open(claim, os.O_CREAT | os.O_RDWR, 0o600)
-    handle = os.fdopen(descriptor, "r+b", buffering=0)
-    if os.fstat(descriptor).st_size == 0:
-        handle.write(b"0")
-    if not _lock_claim(handle):
-        handle.close()
-        return None
+    for _attempt in range(3):
+        descriptor = os.open(claim, os.O_CREAT | os.O_RDWR, 0o600)
+        handle = os.fdopen(descriptor, "r+b", buffering=0)
+        if os.fstat(descriptor).st_size == 0:
+            handle.write(b"0")
+        if not _lock_claim(handle):
+            handle.close()
+            return None
 
-    ownership = (claim, handle)
-    if marker.is_file():
-        _release_claim(ownership)
-        return None
-    return ownership
+        try:
+            same_generation = os.path.samestat(os.fstat(descriptor), claim.stat())
+        except (FileNotFoundError, OSError):
+            same_generation = False
+        if not same_generation:
+            _close_locked_claim(handle)
+            continue
+
+        ownership = (claim, handle)
+        if marker.is_file():
+            _release_claim(ownership)
+            return None
+        return ownership
+    return None
 
 
 Runner = Callable[[dict[str, Any], str], Any]

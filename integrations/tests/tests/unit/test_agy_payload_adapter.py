@@ -687,6 +687,99 @@ def test_failed_inner_execution_does_not_write_once_marker_and_is_retried(adapte
     assert any(tmp_path.iterdir())
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX unlink-while-open inode semantics")
+def test_failure_release_cannot_split_open_contender_from_replacement_claim(
+    adapter, tmp_path, monkeypatch
+):
+    payload = {"conversationId": "conversation-inode-split"}
+    owner_started = threading.Event()
+    fail_owner = threading.Event()
+    contender_opened = threading.Event()
+    allow_contender_lock = threading.Event()
+    replacement_started = threading.Event()
+    release_replacement = threading.Event()
+    thread_role = threading.local()
+    durable_retries = []
+    durable_retries_lock = threading.Lock()
+    original_lock_claim = adapter._lock_claim
+
+    def controlled_lock_claim(handle):
+        if getattr(thread_role, "pause_before_lock", False) and not getattr(
+            thread_role, "paused_once", False
+        ):
+            thread_role.paused_once = True
+            contender_opened.set()
+            assert allow_contender_lock.wait(timeout=3.0)
+        return original_lock_claim(handle)
+
+    monkeypatch.setattr(adapter, "_lock_claim", controlled_lock_claim)
+
+    def owner_runner(_payload, _script):
+        owner_started.set()
+        assert fail_owner.wait(timeout=3.0)
+        raise RuntimeError("owner failed")
+
+    def paused_contender_runner(_payload, _script):
+        with durable_retries_lock:
+            durable_retries.append("paused-contender")
+        return {"stored": "paused-contender"}
+
+    def replacement_runner(_payload, _script):
+        with durable_retries_lock:
+            durable_retries.append("replacement")
+        replacement_started.set()
+        assert release_replacement.wait(timeout=3.0)
+        return {"stored": "replacement"}
+
+    def run_paused_contender():
+        thread_role.pause_before_lock = True
+        return adapter.run_inner_hook(
+            payload,
+            "session-start.py",
+            runner=paused_contender_runner,
+            marker_dir=tmp_path,
+        )
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        owner = pool.submit(
+            adapter.run_inner_hook,
+            payload,
+            "session-start.py",
+            runner=owner_runner,
+            marker_dir=tmp_path,
+        )
+        assert owner_started.wait(timeout=1.0)
+        paused_contender = pool.submit(run_paused_contender)
+        assert contender_opened.wait(timeout=1.0)
+
+        try:
+            fail_owner.set()
+            with pytest.raises(RuntimeError, match="owner failed"):
+                owner.result(timeout=1.0)
+
+            replacement = pool.submit(
+                adapter.run_inner_hook,
+                payload,
+                "session-start.py",
+                runner=replacement_runner,
+                marker_dir=tmp_path,
+            )
+            assert replacement_started.wait(timeout=1.0)
+
+            allow_contender_lock.set()
+            assert paused_contender.result(timeout=1.0) == {}
+            release_replacement.set()
+            assert replacement.result(timeout=1.0) == {"stored": "replacement"}
+        finally:
+            fail_owner.set()
+            allow_contender_lock.set()
+            release_replacement.set()
+
+    assert durable_retries == ["replacement"]
+    assert len(list(tmp_path.glob("*.done"))) == 1
+    assert not list(tmp_path.glob("*.claim"))
+
+
 def test_concurrent_identical_hooks_allow_exactly_one_durable_inner_run(adapter, tmp_path):
     payload = {"conversationId": "conversation-concurrent"}
     first_runner_started = threading.Event()
