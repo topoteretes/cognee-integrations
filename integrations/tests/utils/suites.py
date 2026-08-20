@@ -44,6 +44,8 @@ class Suite:
     hooks_json: Path
     #: The plugin manifest whose "version" the runtime reports as its own.
     plugin_manifest: Path
+    #: How hooks.json groups its registrations: host events or named hooks.
+    hook_manifest_style: str
     #: Env var the scripts read for the working directory.
     cwd_env: str
     #: Suffix _resolve_agent_name appends to the agent session name.
@@ -115,6 +117,7 @@ CLAUDE = Suite(
     scripts_dir=_INTEGRATIONS / "claude-code" / "scripts",
     hooks_json=_INTEGRATIONS / "claude-code" / "hooks" / "hooks.json",
     plugin_manifest=_INTEGRATIONS / "claude-code" / ".claude-plugin" / "plugin.json",
+    hook_manifest_style="event-map",
     config_subdir="claude-code",
     state_subdir="claude-code",
     default_dataset="agent_sessions",
@@ -142,6 +145,7 @@ CODEX = Suite(
     / "cognee"
     / ".codex-plugin"
     / "plugin.json",
+    hook_manifest_style="event-map",
     config_subdir="",
     state_subdir="codex",
     default_dataset="agent_sessions",
@@ -159,7 +163,30 @@ CODEX = Suite(
     has_precompact_http=True,
 )
 
-ALL_SUITES = [CLAUDE, CODEX]
+ANTIGRAVITY = Suite(
+    name="antigravity",
+    scripts_dir=_INTEGRATIONS / "antigravity" / "scripts",
+    hooks_json=_INTEGRATIONS / "antigravity" / "hooks.json",
+    plugin_manifest=_INTEGRATIONS / "antigravity" / "plugin.json",
+    config_subdir="",
+    state_subdir="antigravity",
+    default_dataset="agent_sessions",
+    agent_name="antigravity-agent",
+    session_prefix="antigravity",
+    cwd_env="AGY_CWD",
+    session_suffix="_agy",
+    host_stem="agy",
+    has_background_remember=True,
+    has_improve_pipeline_polling=False,
+    has_async_hooks=False,
+    has_elapsed_ms_helper=True,
+    has_recall_latency_metric=False,
+    has_rich_statusline=False,
+    has_precompact_http=True,
+    hook_manifest_style="named",
+)
+
+ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY]
 
 
 def plugin_root(home: Path | str) -> Path:

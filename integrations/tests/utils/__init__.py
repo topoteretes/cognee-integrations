@@ -14,6 +14,7 @@ redirected into a per-test temporary HOME.
 
 from .suites import (
     ALL_SUITES,
+    ANTIGRAVITY,
     CLAUDE,
     CODEX,
     Suite,
@@ -25,6 +26,7 @@ from .suites import (
 
 __all__ = [
     "ALL_SUITES",
+    "ANTIGRAVITY",
     "CLAUDE",
     "CODEX",
     "Suite",

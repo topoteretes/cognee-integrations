@@ -247,6 +247,10 @@ def test_hooks_json_wires_credits_refresh_at_turn_end(suite):
     reintroduces the one-prompt lag (or hides errored turns). codex skips async
     hooks entirely and has no StopFailure, so its entry must be a plain sync
     Stop hook with a tight timeout."""
+    if suite.hook_manifest_style == "named":
+        pytest.skip(
+            f"{suite.name}: named hook manifests are covered by the dedicated contract test"
+        )
     entries = _credits_entries(suite, "Stop")
     assert entries, "credits-refresh.py not registered on Stop"
 
