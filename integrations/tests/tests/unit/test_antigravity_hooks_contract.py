@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -117,6 +118,10 @@ def _load_script_module(name: str, filename: str):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _has_posix_bash() -> bool:
+    return sys.platform != "win32" and shutil.which("bash") is not None
 
 
 EXPECTED_HANDLER_ARGS = {
@@ -277,6 +282,54 @@ def test_private_hook_state_and_shared_runtime_roots_are_used(monkeypatch, tmp_p
         assert not (private_root / "server-8123.pid").exists()
 
 
+def test_shared_config_file_is_resolved_outside_private_state(monkeypatch, tmp_path):
+    """Catches config.json moving into the Antigravity-private state directory."""
+    with _isolated_plugin_scripts(monkeypatch, tmp_path) as home:
+        config = _load_script_module("config", "config.py")
+        settings = dict(config._DEFAULTS)
+        settings["agent_name"] = "configured-agent"
+        config.save_config(settings)
+
+        shared_config = home / ".cognee-plugin" / "config.json"
+        private_config = home / ".cognee-plugin" / "antigravity" / "config.json"
+        assert (
+            json.loads(shared_config.read_text(encoding="utf-8"))["agent_name"]
+            == "configured-agent"
+        )
+        assert config.load_config()["agent_name"] == "configured-agent"
+        assert not private_config.exists()
+
+
+def test_shared_venv_path_is_resolved_outside_private_state(monkeypatch, tmp_path):
+    """Catches the managed venv moving into the Antigravity-private state directory."""
+    with _isolated_plugin_scripts(monkeypatch, tmp_path) as home:
+        common = _load_script_module("_plugin_common", "_plugin_common.py")
+
+        expected_venv = home / ".cognee-plugin" / "venv"
+        assert common.venv_python().parent.parent == expected_venv
+        assert not str(common.venv_python()).startswith(
+            str(home / ".cognee-plugin" / "antigravity")
+        )
+
+
+def test_shared_cognee_database_dirs_are_resolved_outside_private_state(monkeypatch, tmp_path):
+    """Catches Cognee system/data/cache roots moving under plugin-private state."""
+    with _isolated_plugin_scripts(monkeypatch, tmp_path) as home:
+        _load_script_module("_plugin_common", "_plugin_common.py")
+
+        expected = home / ".cognee"
+        assert Path(os.environ["SYSTEM_ROOT_DIRECTORY"]) == expected / "system"
+        assert Path(os.environ["DATA_ROOT_DIRECTORY"]) == expected / "data"
+        assert Path(os.environ["CACHE_ROOT_DIRECTORY"]) == expected / "cache"
+
+
+def test_posix_shell_guard_disables_bash_fixture_on_windows(monkeypatch):
+    """Catches removing the Windows guard before the POSIX shell subprocess runs."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert not _has_posix_bash()
+
+
+@pytest.mark.skipif(not _has_posix_bash(), reason="requires POSIX bash; Windows uses cmd /c")
 def test_search_shell_exports_the_private_antigravity_state_dir(monkeypatch, tmp_path):
     """Catches cognee-search.sh regressing its exported breaker state to another host."""
     home = tmp_path / "home"
