@@ -197,13 +197,20 @@ def _write_map_record(host_key: str, record: dict) -> None:
 
 
 def _pin_launch_dataset(host_key: str, record: dict, dataset: str, source: str) -> dict:
-    if not host_key or not dataset or record.get("dataset"):
+    if not host_key or not dataset or not record or record.get("dataset"):
         return record
-    updated = dict(record)
-    updated["dataset"] = dataset
-    updated["dataset_source"] = source or "default"
-    _write_map_record(host_key, updated)
-    return _read_map_record(host_key) or updated
+    while True:
+        with improve_session_lock(host_key, "dataset_pin") as acquired:
+            if acquired:
+                current = _read_map_record(host_key)
+                if not current or current.get("dataset"):
+                    return current or record
+                updated = dict(current)
+                updated["dataset"] = dataset
+                updated["dataset_source"] = source or "default"
+                _write_map_record(host_key, updated)
+                return _read_map_record(host_key) or updated
+        time.sleep(0.02)
 
 
 def get_launch_dataset(host_key: str = "") -> tuple[str, str]:
