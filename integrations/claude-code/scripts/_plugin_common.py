@@ -203,7 +203,8 @@ def _session_map_path(host_key: str) -> Path:
 def _read_map_record(host_key: str) -> dict:
     """Return the launch record for a host session id, or {}.
 
-    Record shape: ``{conn_uuid, session_id, host_key, created_at, touched: [...]}``.
+    Record shape: ``{conn_uuid, session_id, host_key, created_at, touched: [...],
+    dataset, dataset_source}``.
     ``session_id`` = current Cognee session (switchable); ``conn_uuid`` = the
     per-launch liveness handle used for registration/counting (never switched).
     """
@@ -224,6 +225,24 @@ def _write_map_record(host_key: str, record: dict) -> None:
     if not host_key or not isinstance(record, dict):
         return
     _write_json_file(_session_map_path(host_key), record)
+
+
+def _pin_launch_dataset(host_key: str, record: dict, dataset: str, source: str) -> dict:
+    if not host_key or not dataset or record.get("dataset"):
+        return record
+    updated = dict(record)
+    updated["dataset"] = dataset
+    updated["dataset_source"] = source or "default"
+    _write_map_record(host_key, updated)
+    return _read_map_record(host_key) or updated
+
+
+def get_launch_dataset(host_key: str = "") -> tuple[str, str]:
+    record = _read_map_record(_sanitize_session_key(host_key) or get_session_key())
+    return (
+        str(record.get("dataset") or ""),
+        str(record.get("dataset_source") or ""),
+    )
 
 
 def _create_map_record_if_absent(host_key: str, record: dict) -> dict:
@@ -285,7 +304,9 @@ def resolve_cognee_session_id(host_key: str = "", cwd: str = "") -> str:
     return str(winner.get("session_id") or new_id)
 
 
-def ensure_launch_record(host_key: str = "", cwd: str = "") -> tuple[str, str]:
+def ensure_launch_record(
+    host_key: str = "", cwd: str = "", *, dataset: str = "", dataset_source: str = ""
+) -> tuple[str, str]:
     """Create (first-writer-wins) and return this launch's (session_id, conn_uuid).
 
     Called by SessionStart. The session id honors an explicit ``COGNEE_SESSION_ID``
@@ -293,6 +314,7 @@ def ensure_launch_record(host_key: str = "", cwd: str = "") -> tuple[str, str]:
     """
     host_key = _sanitize_session_key(host_key) or get_session_key()
     rec = _read_map_record(host_key)
+    rec = _pin_launch_dataset(host_key, rec, dataset, dataset_source)
     if rec.get("session_id") and rec.get("conn_uuid"):
         return str(rec["session_id"]), str(rec["conn_uuid"])
 
@@ -307,6 +329,9 @@ def ensure_launch_record(host_key: str = "", cwd: str = "") -> tuple[str, str]:
         or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "touched": rec.get("touched") or [session_id],
     }
+    if dataset:
+        record["dataset"] = dataset
+        record["dataset_source"] = dataset_source or "default"
     if not host_key:
         return session_id, conn_uuid
     winner = _create_map_record_if_absent(host_key, record)
@@ -409,6 +434,10 @@ def load_resolved(session_key: str = "") -> dict:
     active_session_key = _sanitize_session_key(session_key) or get_session_key()
     if active_session_key:
         resolved["session_key"] = active_session_key
+    launch_record = _read_map_record(active_session_key)
+    if launch_record.get("dataset"):
+        resolved["dataset"] = str(launch_record["dataset"])
+        resolved["dataset_source"] = str(launch_record.get("dataset_source") or "")
 
     # session_id = data scoping key (switchable); conn_uuid = registration handle.
     cognee_session_id = resolve_cognee_session_id(active_session_key)
