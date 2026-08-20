@@ -34,6 +34,7 @@ SEMANTIC_TIMEOUT_SECONDS = 12.0
 
 class IndexRequest(BaseModel):
     paths: list[str]
+    extensions: list[str] = []  # optional: only index these types under paths
 
 
 class ShareRequest(BaseModel):
@@ -348,12 +349,17 @@ def create_app(
 
     @app.post("/index", status_code=202)
     async def index(request: IndexRequest) -> dict:
-        started = indexer.start(request.paths)
+        started = indexer.start(request.paths, extensions=request.extensions)
         return {"started": started, "roots": catalog.roots}
 
     @app.get("/index/status")
     async def index_status() -> dict:
-        return {**indexer.status, "roots": catalog.roots, "indexed_files": len(catalog)}
+        return {
+            **indexer.status,
+            "roots": catalog.roots,
+            "root_filters": catalog.root_filters,
+            "indexed_files": len(catalog),
+        }
 
     # cognee spawns a DB worker per query; concurrent queries contend on the
     # store's single-writer lock. Two in flight keeps typing bursts sane.

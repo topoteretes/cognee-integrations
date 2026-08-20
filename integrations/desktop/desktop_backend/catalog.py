@@ -26,6 +26,8 @@ class Catalog:
         # path -> {"name", "mtime", "size"}
         self._entries: dict[str, dict[str, Any]] = {}
         self._roots: list[str] = []
+        # root -> [".pdf", ".docx"] — only these types index under that root
+        self._root_filters: dict[str, list[str]] = {}
         self._load()
 
     # -- persistence ---------------------------------------------------
@@ -34,14 +36,23 @@ class Catalog:
             data = json.loads(self._path.read_text())
             self._entries = data.get("entries", {})
             self._roots = data.get("roots", [])
+            self._root_filters = data.get("root_filters", {})
         except (OSError, ValueError):
-            self._entries, self._roots = {}, []
+            self._entries, self._roots, self._root_filters = {}, [], {}
 
     def save(self) -> None:
         with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"entries": self._entries, "roots": self._roots}))
+            tmp.write_text(
+                json.dumps(
+                    {
+                        "entries": self._entries,
+                        "roots": self._roots,
+                        "root_filters": self._root_filters,
+                    }
+                )
+            )
             tmp.replace(self._path)
 
     # -- entries ---------------------------------------------------------
@@ -71,6 +82,7 @@ class Catalog:
             for p in doomed:
                 del self._entries[p]
             self._roots = [r for r in self._roots if r != root]
+            self._root_filters.pop(root, None)
         return len(doomed)
 
     def entries(self, limit: int = 500) -> list[dict[str, Any]]:
@@ -90,14 +102,26 @@ class Catalog:
         ]
 
     @property
+    def root_filters(self) -> dict[str, list[str]]:
+        with self._lock:
+            return dict(self._root_filters)
+
+    @property
     def roots(self) -> list[str]:
         return list(self._roots)
 
-    def add_roots(self, roots: list[str]) -> None:
+    def add_roots(self, roots: list[str], extensions: list[str] | None = None) -> None:
+        """Register roots; ``extensions`` (e.g. [".pdf", ".docx"]) restricts
+        what indexes under these roots, now and on every future re-sync."""
+        normalized = [
+            e.lower() if e.startswith(".") else f".{e.lower()}" for e in (extensions or []) if e
+        ]
         with self._lock:
             for root in roots:
                 if root not in self._roots:
                     self._roots.append(root)
+                if normalized:
+                    self._root_filters[root] = normalized
 
     # -- lookups -----------------------------------------------------------
     def find_by_basename(self, basename: str) -> Optional[str]:
