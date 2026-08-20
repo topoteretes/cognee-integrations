@@ -1179,13 +1179,25 @@ def improve_session_lock(session_id: str, owner: str):
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).timestamp()
         if lock_path.exists():
+            metadata_complete = True
             try:
                 current = json.loads(lock_path.read_text(encoding="utf-8"))
                 created_at = float(current.get("created_at", 0))
                 pid = int(current.get("pid", 0))
             except Exception:
-                created_at, pid = 0.0, 0
-            if not (pid > 0 and _proc.pid_alive(pid)) or now - created_at > SYNC_LOCK_STALE_SECONDS:
+                metadata_complete = False
+                try:
+                    created_at = lock_path.stat().st_mtime
+                except FileNotFoundError:
+                    created_at = now
+                pid = 0
+            stale = (
+                now - created_at > SYNC_LOCK_STALE_SECONDS
+                if not metadata_complete
+                else not (pid > 0 and _proc.pid_alive(pid))
+                or now - created_at > SYNC_LOCK_STALE_SECONDS
+            )
+            if stale:
                 try:
                     lock_path.unlink()
                     hook_log(
