@@ -24,6 +24,7 @@ import {
   SYNC_INDEX_PATH,
 } from "./persistence.js";
 import { RecallBreaker, isBreakerError } from "./breaker.js";
+import { compileNoisePatterns, isHarnessNoise } from "./noise.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
 import { bootServerIfNeeded, waitForServerHealth, isLocalUrl, resolveOrMintApiKey, spawnExitWatcher, exitWatcherPidfilePath } from "./server.js";
@@ -181,6 +182,17 @@ const memoryCogneePlugin = {
     // Recall circuit breaker — file-backed and shared with the claude-code
     // and codex integrations, so all plugins on this server back off together.
     const recallBreaker = new RecallBreaker(cfg.recallBreakerThreshold, cfg.recallBreakerCooldownMs);
+
+    // Harness-noise filter: heartbeat/cron/system template prompts are host
+    // instructions, not user queries. They must never reach recall (LLM-backed
+    // search per scope, per heartbeat) or QA capture (templates would be
+    // bridged into the permanent graph by improve). ctx.trigger is optional in
+    // the SDK type and absent on older hosts, hence the defensive read.
+    const noiseRegexes = compileNoisePatterns(cfg.noisePatterns, (msg) => api.logger.warn?.(msg));
+    function isNoisePrompt(prompt: string, ctx: unknown): boolean {
+      const trigger = (ctx as { trigger?: string } | null | undefined)?.trigger;
+      return isHarnessNoise(prompt, trigger, noiseRegexes, cfg.noiseTriggers);
+    }
 
     // Prompt-hot-path recall: short per-call timeout (no retries) + breaker
     // bookkeeping. Only unavailability signals (network/timeout/5xx) count as
@@ -1023,7 +1035,14 @@ const memoryCogneePlugin = {
     api.on("before_prompt_build", async (event, ctx) => {
       if (cfg.enableSessions && ctx.sessionId) sessionId = ctx.sessionId;
       if (captureEnabled && ctx.sessionId && event.prompt && event.prompt.length >= 5) {
-        pendingPrompts.set(ctx.sessionId, truncateForCapture(event.prompt, MAX_QA_CHARS));
+        if (isNoisePrompt(event.prompt, ctx)) {
+          // Also drop any unanswered earlier prompt: this turn's llm_output
+          // must not pair a stale user question with a harness turn's answer.
+          pendingPrompts.delete(ctx.sessionId);
+          api.logger.debug?.("cognee-openclaw: skipping QA capture (harness noise: heartbeat/cron/system template)");
+        } else {
+          pendingPrompts.set(ctx.sessionId, truncateForCapture(event.prompt, MAX_QA_CHARS));
+        }
       }
       if (cfg.enableSessions && ctx.sessionId) {
         const regKey = `${normalizeAgentId(ctx.agentId, cfg)}::${ctx.sessionId}`;
@@ -1082,6 +1101,11 @@ const memoryCogneePlugin = {
 
         if (!event.prompt || event.prompt.length < 5) {
           api.logger.debug?.("cognee-openclaw: skipping recall (prompt too short)");
+          return;
+        }
+
+        if (isNoisePrompt(event.prompt, ctx)) {
+          api.logger.debug?.("cognee-openclaw: skipping recall (harness noise: heartbeat/cron/system template)");
           return;
         }
 
