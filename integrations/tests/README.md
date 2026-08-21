@@ -149,8 +149,8 @@ Shared facts that shape the harness:
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/health` | configurable via `set_health_status` |
-| GET | `/docs` | reachability probe (`_backend_reachable`) |
+| GET | `/health` | reachability probe (`_backend_reachable`); configurable via `set_health_status` |
+| GET | `/docs` | optional API docs surface; compatibility tests may return 404 |
 | POST | `/api/v1/auth/login` | form `{username,password}` → `{access_token: <jwt>}` |
 | GET/POST | `/api/v1/auth/api-keys` | cookie `auth_token`; list `[{key}]` / mint `{key}` |
 | GET | `/api/v1/users/me` | `X-Api-Key` probe → `{id}` or 401 |

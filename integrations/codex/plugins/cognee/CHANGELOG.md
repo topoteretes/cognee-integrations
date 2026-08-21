@@ -10,6 +10,17 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.4]
+
+### Fixed
+- **Data-plane-only Cognee HTTP servers no longer look like authentication
+  failures.** Backend reachability now uses the public `/health` contract
+  instead of the optional `/docs` page. A missing agent lifecycle surface
+  (`POST /api/v1/agents/register` or `/unregister` returning 404) is treated as
+  unsupported and best-effort, while credential, transport, and server errors
+  remain failures. This lets compatible servers such as `cognee-http-server`
+  run the memory loop without producing a misleading API-key error.
+
 ## [1.4.3]
 
 ### Fixed
