@@ -1,0 +1,16 @@
+[project]
+name = "cognee-integration-obsidian"
+version = "0.1.0"
+description = "Export an Obsidian vault into cognee's knowledge graph, preserving frontmatter, wikilinks, and tags."
+requires-python = ">=3.10"
+dependencies = [
+    "cognee>=0.5.1,<0.6.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+cognee-obsidian-export = "cognee_integration_obsidian.traversal:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
