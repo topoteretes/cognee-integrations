@@ -215,9 +215,8 @@ def _load_resolved() -> tuple:
             os.environ["COGNEE_USER_ID"] = str(data.get("user_id"))
         return (
             env_session_id or data.get("session_id", ""),
-            # load_resolved() carries no dataset key, so without the env
-            # override (only the exit watcher sets it) this must fall back to
-            # config, or the SessionEnd worker syncs with an empty dataset.
+            # Detached exit workers keep their explicit override; direct syncs
+            # consume the dataset pinned in the SessionStart launch record.
             env_dataset or data.get("dataset", "") or get_dataset(load_config()),
             data.get("user_id", ""),
             env_agent_session_name or data.get("agent_session_name", ""),
@@ -263,7 +262,8 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False, strict: 
             _stop_idle_watcher()
             hook_log("sync_stopped_watcher", {"session": session_id, "dataset": dataset})
 
-        config = load_config()
+        config = load_config(derive_project=False)
+        config["dataset"] = dataset
         api_mode = http_api_ready()
         lock = nullcontext(True) if api_mode else sync_lock("sync-session-to-graph")
         with lock as acquired:

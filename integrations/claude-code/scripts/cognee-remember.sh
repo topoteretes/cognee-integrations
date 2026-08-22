@@ -6,11 +6,11 @@
 #
 # --node-set: node set for categorization (default: user_context)
 #             user_context | project_docs | agent_actions
-# --dataset:  dataset name (default: COGNEE_PLUGIN_DATASET or agent_sessions)
+# --dataset:  dataset name (overrides shared config resolution)
 #
 # Configuration:
 #   Resolves auth from env/api_key.json.
-#   Dataset is env-driven: COGNEE_PLUGIN_DATASET, then agent_sessions.
+#   Dataset follows shared config resolution from the invoking shell cwd.
 #   Falls back to cognee-cli only if the server is unreachable.
 
 set -euo pipefail
@@ -31,6 +31,7 @@ try:
     load_env_file()
 except Exception:
     pass
+from config import get_dataset, load_config
 service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
@@ -47,7 +48,7 @@ if not api_key:
         except Exception:
             pass
 
-dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+dataset = get_dataset(load_config(os.getcwd()))
 
 print(json.dumps({"service_url": service_url, "api_key": api_key, "dataset": dataset}))
 PY

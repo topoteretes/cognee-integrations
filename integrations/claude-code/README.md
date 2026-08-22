@@ -125,8 +125,18 @@ Each terminal launch maintains a small map file:
 
 ```
 ~/.cognee-plugin/claude-code/sessions/<host_session_id>.json
-  → { "conn_uuid": "...", "session_id": "...", "host_key": "..." }
+  → {
+       "conn_uuid": "...",
+       "session_id": "...",
+       "host_key": "...",
+       "dataset": "project_example_0123456789ab",
+       "dataset_source": "project"
+     }
 ```
+
+`dataset` and `dataset_source` are runtime launch state: they show the dataset
+selected for this conversation and why it was selected. They are not user
+configuration and are not fields sent to Cognee.
 
 - **`session_id`** — which Cognee session this terminal writes to and recalls from. Fixed at launch.
 - **`conn_uuid`** — per-launch liveness handle used for agent registration and server shutdown counting.
@@ -148,6 +158,39 @@ Set a custom dataset at launch:
 ```bash
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
+
+### Project dataset isolation
+
+Project isolation is opt-in. To move future conversations for a repository into
+one derived dataset, first remove or comment any fixed global dataset, then set
+the scope in `~/.cognee/.env` (or export it before launching Claude Code):
+
+```bash
+# Remove/comment a global fixed dataset first:
+# COGNEE_PLUGIN_DATASET="agent_sessions"
+
+# Then enable automatic project isolation:
+COGNEE_DATASET_SCOPE="project"
+```
+
+Dataset selection is: **explicit env > #285 picker when present > derived
+project > `agent_sessions`**. A non-empty `COGNEE_PLUGIN_DATASET` therefore
+always wins over project isolation. With `COGNEE_DATASET_SCOPE="project"`, the
+derived name is `project_<slug>_<hash12>`. Git repositories use their normalized
+`origin` remote as the identity, so separate clones and Git worktrees of the
+same remote resolve to the same dataset. A repository without a usable remote
+uses its shared Git worktree identity instead.
+
+The dataset is pinned when a conversation starts; changing the setting affects
+the next session only, so exit and start a new Claude Code conversation after
+editing it. Conversations in the same project dataset still receive distinct
+Cognee `session_id` values (unless you explicitly set the same
+`COGNEE_SESSION_ID`). The status line displays the active dataset, and `cognee
+doctor` reports both `Dataset` and `Dataset Source` so you can confirm the
+resolved choice.
+
+This opt-in does not migrate existing memories and does not delete any existing
+dataset. Existing installations continue to use `agent_sessions` until enabled.
 
 `~/.cognee-plugin/claude-code/config.json` may still show a `dataset` value for
 visibility, but runtime dataset selection does not read it.
@@ -315,7 +358,10 @@ It is configured automatically on first launch when no custom status line is alr
 The entry sets `refreshInterval: 2`, so Claude re-runs the (network-free, local-only) renderer every 2 seconds in addition to its event-driven updates. Without it, Claude only refreshes the status line on events (a new message, `/compact`, etc.), which go quiet while the session is idle — so a connection change detected right after launch (e.g. a rejected API key) wouldn't show until your next prompt. Tune it with `COGNEE_STATUSLINE_REFRESH_INTERVAL` (seconds; a value below `1`, e.g. `0`, disables idle polling and reverts to event-only refresh).
 
 The status line reads only local state — no network calls on every refresh:
-1. Dataset: `COGNEE_PLUGIN_DATASET` env var, otherwise `agent_sessions`
+1. Dataset: the dataset pinned in this conversation's launch map, otherwise
+   `COGNEE_PLUGIN_DATASET`, then a project-derived dataset when
+   `COGNEE_DATASET_SCOPE=project` and Claude Code provides a working directory,
+   otherwise `agent_sessions`
 2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/claude-code/config.json` (`base_url`)
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
@@ -440,7 +486,10 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `agent_sessions`).
+- Recall is scoped to the active dataset: a non-empty explicit
+  `COGNEE_PLUGIN_DATASET` wins; otherwise `COGNEE_DATASET_SCOPE=project` uses
+  the conversation's pinned project-derived dataset; otherwise it uses
+  `agent_sessions`.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 

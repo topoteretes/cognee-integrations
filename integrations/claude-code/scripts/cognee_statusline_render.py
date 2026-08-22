@@ -3,8 +3,8 @@
 
 Invoked by Claude Code's ``statusLine`` (via ``cognee-statusline.sh``), which
 pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
-only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
-``_plugin_common`` import.
+only env vars, local launch state, and workspace metadata — no network calls,
+no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
 """
@@ -43,6 +43,7 @@ _CREDITS_PATH = _SHARED_ROOT / "claude-code" / "credits.json"
 # above are coordination state, these are what THIS terminal observed.
 _LLM_STATE_DIR = _SHARED_ROOT / "claude-code" / "llm-state"
 _CONN_STATE_DIR = _SHARED_ROOT / "claude-code" / "conn-state"
+_SESSIONS_MAP_DIR = _SHARED_ROOT / "claude-code" / "sessions"
 _DEFAULT_DATASET = "agent_sessions"
 # Must match _plugin_common._DEFAULT_LOCAL_SERVICE_URL: the hooks stamp this URL into
 # the markers this renderer compares against.
@@ -84,12 +85,35 @@ _USER_SETTINGS = Path.home() / ".claude" / "settings.json"
 _OWNED_STATUSLINE_MARKER = "cognee-statusline"
 
 
-def _active_dataset() -> str:
-    # 1. env var (inherited from the shell that launched Claude Code)
-    v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
-    if v:
-        return v
-    # 2. default
+def _sanitize_session_key(value: str) -> str:
+    safe = []
+    for ch in str(value or ""):
+        if ch.isalnum() or ch in ("-", "_", "."):
+            safe.append(ch)
+        else:
+            safe.append("_")
+    return "".join(safe).strip("._")[:120]
+
+
+def _active_dataset(host_id: str = "", cwd: str = "") -> str:
+    session_key = _sanitize_session_key(host_id)
+    if session_key:
+        record = _read_json(_SESSIONS_MAP_DIR / f"{session_key}.json")
+        pinned = str(record.get("dataset") or "").strip()
+        if pinned:
+            return pinned
+    explicit = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
+    if explicit:
+        return explicit
+    if os.environ.get("COGNEE_DATASET_SCOPE", "").strip().lower() == "project" and cwd:
+        try:
+            from _project_dataset import derive_project_dataset
+
+            derived = derive_project_dataset(cwd)
+            if derived:
+                return derived
+        except Exception:
+            pass
     return _DEFAULT_DATASET
 
 
@@ -760,12 +784,10 @@ def main() -> None:
     if not isinstance(ctx, dict):
         ctx = {}
 
-    cwd = str(
-        ctx.get("cwd")
-        or (ctx.get("workspace") or {}).get("current_dir")
-        or (ctx.get("workspace") or {}).get("project_dir")
-        or ""
-    )
+    workspace = ctx.get("workspace")
+    if not isinstance(workspace, dict):
+        workspace = {}
+    cwd = str(ctx.get("cwd") or workspace.get("current_dir") or workspace.get("project_dir") or "")
     if not _plugin_enabled(cwd):
         # Plugin uninstalled/disabled but files linger: drop our own statusLine
         # entry and render nothing so the line disappears.
@@ -780,7 +802,7 @@ def main() -> None:
     # of the steady-state line.
     sys.stdout.write(
         f"{_pipeline_health_glyph()}{_status_prefix(_session_id)}"
-        f"cognee: {_active_dataset()} · {_mode_label()}"
+        f"cognee: {_active_dataset(_session_id, cwd)} · {_mode_label()}"
         f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
     )
 

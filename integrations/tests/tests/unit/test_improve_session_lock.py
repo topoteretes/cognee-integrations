@@ -17,9 +17,12 @@ Migrated from {claude-code,codex}/tests/test_improve_session_lock.py.
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as dt
 import hashlib
 import json
+import os
+import threading
 
 import pytest
 
@@ -90,6 +93,46 @@ def test_live_holder_lock_is_not_stolen(pc, monkeypatch):
     monkeypatch.setattr(pc._proc, "pid_alive", lambda pid: True)
     with pc.improve_session_lock("sess-A", "intruder") as claimed:
         assert claimed is False, "a live holder's lock must be respected"
+
+
+def test_fresh_partial_lock_metadata_is_not_unlinked_or_bypassed(pc, monkeypatch):
+    """A contender must respect the inode while its owner is still publishing metadata."""
+    publication_started = threading.Event()
+    release_publication = threading.Event()
+    real_dump = pc.json.dump
+
+    def delayed_first_dump(data, file_handle, *args, **kwargs):
+        if isinstance(data, dict) and data.get("owner") == "first":
+            publication_started.set()
+            assert release_publication.wait(timeout=2), "timed out releasing lock publication"
+        return real_dump(data, file_handle, *args, **kwargs)
+
+    monkeypatch.setattr(pc.json, "dump", delayed_first_dump)
+
+    def claim(owner):
+        with pc.improve_session_lock("sess-partial", owner) as acquired:
+            return acquired
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(claim, "first")
+        assert publication_started.wait(timeout=2), "first lock path never became visible"
+        second = executor.submit(claim, "second")
+        second_acquired = second.result(timeout=2)
+        release_publication.set()
+        first_acquired = first.result(timeout=2)
+
+    assert first_acquired is True
+    assert second_acquired is False, "contender bypassed a live lock with partial metadata"
+
+
+def test_old_unreadable_lock_is_reclaimed_after_the_existing_timeout(pc):
+    lock_path = _lock_file(pc, "sess-unreadable-stale")
+    lock_path.write_text("{", encoding="utf-8")
+    old = dt.datetime.now(dt.timezone.utc).timestamp() - pc.SYNC_LOCK_STALE_SECONDS - 1
+    os.utime(lock_path, (old, old))
+
+    with pc.improve_session_lock("sess-unreadable-stale", "reclaimer") as claimed:
+        assert claimed is True, "expired unreadable lock must remain recoverable"
 
 
 def test_missing_session_id_never_blocks(pc):

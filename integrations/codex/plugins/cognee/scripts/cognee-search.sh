@@ -10,7 +10,7 @@
 #
 # Configuration:
 #   Resolves session ID from Cognee endpoints using API auth.
-#   Dataset is env-driven: COGNEE_PLUGIN_DATASET, then agent_sessions.
+#   Dataset follows shared config resolution from the invoking shell cwd.
 
 set -euo pipefail
 
@@ -33,6 +33,7 @@ try:
     load_env_file()
 except Exception:
     pass
+from config import get_dataset, load_config
 service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 if not api_key:
@@ -49,7 +50,7 @@ if not api_key:
             pass
 
 session_id = ""
-dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+dataset = get_dataset(load_config(os.getcwd()))
 if service_url and api_key:
     try:
         import ssl
@@ -152,7 +153,7 @@ esac
 # Only a 2xx response is authoritative (an empty list = genuinely no hits).
 # Any non-2xx / error / unreachable returns the UNREACHABLE sentinel so we fall
 # back to cognee-cli and warn — never reporting a server failure as "not found".
-# $DATASET is resolved above (COGNEE_PLUGIN_DATASET → default)
+# $DATASET is resolved above through shared config.
 # and scopes the search to the plugin's dataset so unrelated datasets don't bleed in.
 # Logic lives in _recall_http.py (stdlib-only, unit-tested); stderr is surfaced.
 export COGNEE_PLUGIN_STATE_DIR="$PLUGIN_DIR"

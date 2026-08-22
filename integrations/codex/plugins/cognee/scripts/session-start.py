@@ -39,6 +39,7 @@ from _plugin_common import (
     apply_cognee_env,
     clear_server_pidfile,
     ensure_launch_record,
+    get_launch_dataset,
     hook_log,
     probe_health,
     quiet_hook_output,
@@ -990,6 +991,8 @@ async def _run_heavy(
     Returns ``(user_id, agent_api_key, ok)``. ``ok`` is False only on a hard
     cloud-registration failure (mirrors the legacy early-abort).
     """
+    config = dict(config)
+    config["dataset"] = dataset
     if not managed_endpoint:
         try:
             _ensure_local_server_running(config, health_timeout=boot_timeout)
@@ -1150,11 +1153,13 @@ async def _run_bootstrap(bootstrap: dict) -> None:
          booted, because registration is per-agent (and concurrency-safe via
          the agent-keys / agent-lifecycle locks inside _run_heavy).
     """
-    config = load_config()
     cwd = str(bootstrap.get("cwd") or os.getcwd())
     session_id = str(bootstrap.get("session_id", "") or "")
     session_key = str(bootstrap.get("session_key", "") or "")
-    dataset = str(bootstrap.get("dataset", "") or get_dataset(config))
+    pinned_dataset = str(bootstrap.get("dataset", "") or "")
+    config = load_config(cwd, derive_project=not bool(pinned_dataset))
+    dataset = pinned_dataset or get_dataset(config)
+    config["dataset"] = dataset
     agent_session_name = str(bootstrap.get("agent_session_name", "") or session_id)
     if session_key:
         os.environ["COGNEE_SESSION_KEY"] = session_key
@@ -1202,9 +1207,9 @@ async def _run_bootstrap(bootstrap: dict) -> None:
 
 
 async def _start(payload: dict | None = None) -> dict:
-    config = load_config()
     payload = payload or {}
     cwd = str(payload.get("cwd") or os.environ.get("CODEX_CWD") or os.getcwd())
+    config = load_config(cwd)
     # The service URL is the sole router (api_key is optional auth, with a
     # default-user fallback in registration). COGNEE_AGENT_MODE is NOT decided
     # here: it's set only when we actually boot a server (in
@@ -1252,7 +1257,17 @@ async def _start(payload: dict | None = None) -> dict:
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
     # synchronously here so prompt hooks read back the identical ids before any run.
-    session_id, conn_uuid = ensure_launch_record(session_key, cwd)
+    candidate_dataset = get_dataset(config)
+    candidate_source = str(config.get("_dataset_source") or "default")
+    session_id, conn_uuid = ensure_launch_record(
+        session_key,
+        cwd,
+        dataset=candidate_dataset,
+        dataset_source=candidate_source,
+    )
+    dataset, dataset_source = get_launch_dataset(session_key)
+    dataset = dataset or candidate_dataset
+    dataset_source = dataset_source or candidate_source
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
     hook_log(
@@ -1262,9 +1277,10 @@ async def _start(payload: dict | None = None) -> dict:
             "session_key": session_key,
             "session_id": session_id,
             "conn_uuid": conn_uuid,
+            "dataset": dataset,
+            "dataset_source": dataset_source,
         },
     )
-    dataset = get_dataset(config)
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)

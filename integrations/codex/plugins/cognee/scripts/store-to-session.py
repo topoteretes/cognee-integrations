@@ -128,7 +128,9 @@ def _load_session() -> tuple[str, str, str]:
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
     if not session_id or not dataset:
-        config = load_config()
+        config = load_config(derive_project=not bool(dataset))
+        if dataset:
+            config["dataset"] = dataset
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
     return session_id, dataset, user_id
@@ -168,7 +170,8 @@ async def _store_tool_call(payload: dict) -> None:
         hook_log("no_session_id", {"tool": tool_name})
         return
 
-    config = load_config()
+    config = load_config(derive_project=False)
+    config["dataset"] = dataset
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
     entry = {
@@ -310,7 +313,8 @@ async def _store_assistant_stop(payload: dict) -> None:
         hook_log("no_session_id", {"event": "stop"})
         return
 
-    config = load_config()
+    config = load_config(derive_project=False)
+    config["dataset"] = dataset
     runtime = resolve_runtime_mode()
     use_http = runtime["mode"] == "http"
     pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 from _env_file import load_env_file
+from _project_dataset import derive_project_dataset
 
 # Must run before the _ENV_MAP scan in load_config() and before any importer's
 # module-level os.environ reads.
@@ -43,6 +44,7 @@ _STATE_DIR = _CONFIG_DIR / "codex"
 _CONFIG_FILE = _CONFIG_DIR / "config.json"
 _BRIDGE_STATE_FILE = _STATE_DIR / "bridge_state.json"
 _HOOK_LOG = _STATE_DIR / "hook.log"
+_HOST_CWD_ENV = "CODEX_CWD"
 
 _DEFAULTS = {
     "dataset": "agent_sessions",
@@ -90,6 +92,7 @@ _ENV_MAP = {
     "COGNEE_CODEX_BACKEND": "backend",
     "COGNEE_AGENT_NAME": "agent_name",
     "COGNEE_PLUGIN_DATASET": "dataset",
+    "COGNEE_DATASET_SCOPE": "_dataset_scope",
     "COGNEE_SESSION_STRATEGY": "session_strategy",
     "COGNEE_SESSION_PREFIX": "session_prefix",
     "COGNEE_BASE_URL": "base_url",
@@ -110,9 +113,29 @@ _ENV_MAP = {
 }
 
 
-def load_config() -> dict:
-    """Load merged config: defaults → file → env vars."""
+def _workspace(workspace: str | None) -> str:
+    return str(workspace or os.environ.get(_HOST_CWD_ENV) or os.getcwd())
+
+
+def _apply_project_dataset(config: dict, workspace: str | None = None) -> dict:
+    source = str(config.get("_dataset_source") or "default")
+    config["_dataset_source"] = source
+    if source != "default":
+        return config
+    scope = str(config.get("_dataset_scope") or "").strip().lower()
+    if scope != "project":
+        return config
+    derived = derive_project_dataset(_workspace(workspace))
+    if derived:
+        config["dataset"] = derived
+        config["_dataset_source"] = "project"
+    return config
+
+
+def load_config(workspace: str | None = None, *, derive_project: bool = True) -> dict:
+    """Load merged config, optionally skipping workspace dataset derivation."""
     config = dict(_DEFAULTS)
+    config["_dataset_source"] = "default"
 
     # Layer 2: config file
     # dataset is intentionally excluded here: it is always driven by the default
@@ -127,7 +150,10 @@ def load_config() -> dict:
                 {
                     k: v
                     for k, v in file_cfg.items()
-                    if v is not None and v != "" and k not in _file_excluded
+                    if v is not None
+                    and v != ""
+                    and k not in _file_excluded
+                    and not k.startswith("_")
                 }
             )
         except Exception as exc:
@@ -138,8 +164,12 @@ def load_config() -> dict:
     # Layer 3: env vars (highest priority)
     for env_key, config_key in _ENV_MAP.items():
         val = os.environ.get(env_key, "")
+        if env_key == "COGNEE_PLUGIN_DATASET":
+            val = val.strip()
         if val:
             config[config_key] = val
+            if env_key == "COGNEE_PLUGIN_DATASET":
+                config["_dataset_source"] = "env"
 
     backend = str(config.get("backend") or "auto").lower()
     if backend in ("native", "local", "sdk"):
@@ -161,12 +191,15 @@ def load_config() -> dict:
             config["api_key"] = ""
             config["base_url"] = ""
 
-    return config
+    return _apply_project_dataset(config, workspace) if derive_project else config
 
 
 def save_config(config: dict) -> None:
     """Write config to disk. Creates directory if needed."""
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if config.get("_dataset_source") in {"picker", "project"}:
+        config = dict(config)
+        config["dataset"] = _DEFAULTS["dataset"]
     # Only save non-secret, non-default values.
     # dataset is always written even when it equals the default so that users
     # who open the file can see which dataset the plugin is using.

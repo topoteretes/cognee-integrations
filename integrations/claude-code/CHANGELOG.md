@@ -10,6 +10,15 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.4]
+
+### Added
+- **Opt-in project dataset isolation ([#356](https://github.com/topoteretes/cognee-integrations/issues/356)).**
+  Set `COGNEE_DATASET_SCOPE=project` after removing any fixed
+  `COGNEE_PLUGIN_DATASET` to derive one stable dataset per Git project. The
+  plugin keeps distinct conversation sessions inside that dataset; existing
+  datasets are neither migrated nor deleted.
+
 ## [1.3.3]
 
 ### Fixed

@@ -25,7 +25,7 @@ import pytest
 def lookup(suite, hook_module, monkeypatch):
     """session-context-lookup.py with every resolution seam stubbed."""
     module = hook_module(suite, "session-context-lookup.py")
-    monkeypatch.setattr(module, "load_config", lambda: {})
+    monkeypatch.setattr(module, "load_config", lambda *a, **k: {})
     monkeypatch.setattr(module, "resolve_runtime_mode", lambda: {"mode": "http", "base_url": ""})
     monkeypatch.setattr(module, "server_ready_hint", lambda _url: True)
     monkeypatch.setattr(module, "get_session_key", lambda: "session")

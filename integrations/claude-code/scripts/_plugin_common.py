@@ -62,6 +62,12 @@ _API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"
 # as an identity. A genuinely new launch gets a new host id -> new Cognee session;
 # a `resume` reuses the host id -> continues the same Cognee session.
 _SESSIONS_MAP_DIR = _PLUGIN_DIR / "sessions"
+# Launch-record publication is mandatory state, unlike best-effort improve
+# admission. Keep a stable lock inode per host conversation so kernel advisory
+# locking provides crash recovery without stale-file deletion races.
+_LAUNCH_PUBLICATION_LOCK_DIR = _PLUGIN_DIR / "launch-publication-locks"
+_LAUNCH_PUBLICATION_LOCK_TIMEOUT_SECONDS = 1.0
+_LAUNCH_PUBLICATION_LOCK_POLL_SECONDS = 0.02
 
 # Save-kinds tracked per turn. Keep this tuple in sync with bump_save_counter callers.
 SAVE_KINDS = ("prompt", "trace", "answer")
@@ -200,10 +206,133 @@ def _session_map_path(host_key: str) -> Path:
     return _SESSIONS_MAP_DIR / f"{_sanitize_session_key(host_key)}.json"
 
 
+def _launch_publication_lock_path(host_key: str) -> Path:
+    normalized = _sanitize_session_key(host_key)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return _LAUNCH_PUBLICATION_LOCK_DIR / f"{digest}.lock"
+
+
+def _open_launch_lock_file(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name != "nt":
+            os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "r+b", buffering=0)
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _try_acquire_launch_file_lock(file_handle) -> bool:
+    if os.name == "nt":
+        import msvcrt
+
+        file_handle.seek(0)
+        try:
+            msvcrt.locking(file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK} or getattr(
+                exc, "winerror", None
+            ) in {33, 36}:
+                return False
+            raise
+
+    import fcntl
+
+    try:
+        fcntl.flock(file_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return False
+        raise
+
+
+def _release_launch_file_lock(file_handle) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        file_handle.seek(0)
+        msvcrt.locking(file_handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(file_handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _launch_publication_lock(
+    host_key: str, *, timeout: float = _LAUNCH_PUBLICATION_LOCK_TIMEOUT_SECONDS
+):
+    """Bounded, fail-closed lock for first-writer launch-record publication.
+
+    The lock path is persistent by design. Kernel ownership, not file presence,
+    determines admission, so process death releases the lock and an old owner
+    can never unlink a successor's lock inode.
+    """
+    normalized = _sanitize_session_key(host_key)
+    if not normalized:
+        raise RuntimeError("launch record publication requires a host key")
+
+    lock_path = _launch_publication_lock_path(normalized)
+    try:
+        file_handle = _open_launch_lock_file(lock_path)
+    except Exception as exc:
+        hook_log("launch_publication_lock_open_failed", {"error": str(exc)[:200]})
+        raise RuntimeError("launch record publication lock could not be opened") from exc
+
+    acquired = False
+    try:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            try:
+                acquired = _try_acquire_launch_file_lock(file_handle)
+            except Exception as exc:
+                hook_log("launch_publication_lock_failed", {"error": str(exc)[:200]})
+                raise RuntimeError("launch record publication lock failed") from exc
+            if acquired:
+                break
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(_LAUNCH_PUBLICATION_LOCK_POLL_SECONDS)
+
+        token = uuid.uuid4().hex
+        metadata = json.dumps(
+            {
+                "token": token,
+                "pid": os.getpid(),
+                "created_at": datetime.now(timezone.utc).timestamp(),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        try:
+            file_handle.seek(0)
+            file_handle.truncate()
+            file_handle.write(metadata)
+            os.fsync(file_handle.fileno())
+        except Exception as exc:
+            hook_log("launch_publication_metadata_failed", {"error": str(exc)[:200]})
+            raise RuntimeError("launch record publication metadata failed") from exc
+
+        yield token
+    finally:
+        if acquired:
+            try:
+                _release_launch_file_lock(file_handle)
+            except Exception as exc:
+                hook_log("launch_publication_lock_release_failed", {"error": str(exc)[:200]})
+        file_handle.close()
+
+
 def _read_map_record(host_key: str) -> dict:
     """Return the launch record for a host session id, or {}.
 
-    Record shape: ``{conn_uuid, session_id, host_key, created_at, touched: [...]}``.
+    Record shape: ``{conn_uuid, session_id, host_key, created_at, touched: [...],
+    dataset, dataset_source}``.
     ``session_id`` = current Cognee session (switchable); ``conn_uuid`` = the
     per-launch liveness handle used for registration/counting (never switched).
     """
@@ -220,36 +349,44 @@ def _read_map_record(host_key: str) -> dict:
     return {}
 
 
-def _write_map_record(host_key: str, record: dict) -> None:
+def _write_map_record(host_key: str, record: dict) -> bool:
     if not host_key or not isinstance(record, dict):
-        return
-    _write_json_file(_session_map_path(host_key), record)
+        return False
+    return _write_json_file(_session_map_path(host_key), record)
+
+
+def get_launch_dataset(host_key: str = "") -> tuple[str, str]:
+    record = _read_map_record(_sanitize_session_key(host_key) or get_session_key())
+    return (
+        str(record.get("dataset") or ""),
+        str(record.get("dataset_source") or ""),
+    )
 
 
 def _create_map_record_if_absent(host_key: str, record: dict) -> dict:
     """Atomically create the launch record, first-writer-wins.
 
-    Uses O_CREAT|O_EXCL so exactly one concurrent creator wins; losers read back
-    the winner's record instead of clobbering it. This is what makes concurrent
-    launches/hooks for the same host_key converge on a single session id rather
-    than diverge. Returns the record now on disk.
+    Serializes creation with the dedicated host-keyed lock, then publishes through
+    ``_write_map_record``'s atomic replace. The destination therefore appears only
+    after the complete JSON is durable; contenders wait for the lock and read the
+    winner instead of observing an empty/partial file. Returns the record on disk.
     """
     if not host_key:
         return record
-    path = _session_map_path(host_key)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(record, fh, indent=2, sort_keys=True)
-        return record
-    except FileExistsError:
-        return _read_map_record(host_key) or record
-    except Exception as exc:
-        hook_log("map_create_failed", {"error": str(exc)[:200]})
-        # Best-effort fallback: plain write, then read back whatever landed.
-        _write_map_record(host_key, record)
-        return _read_map_record(host_key) or record
+    with _launch_publication_lock(host_key) as acquired:
+        if not acquired:
+            raise RuntimeError("launch record publication lock timed out")
+        current = _read_map_record(host_key)
+        if current:
+            return current
+        if _session_map_path(host_key).exists():
+            raise RuntimeError("launch record publication found unreadable state")
+        if not _write_map_record(host_key, record):
+            raise RuntimeError("launch record publication failed")
+        published = _read_map_record(host_key)
+        if not published:
+            raise RuntimeError("launch record publication could not be verified")
+        return published
 
 
 def resolve_cognee_session_id(host_key: str = "", cwd: str = "") -> str:
@@ -285,41 +422,62 @@ def resolve_cognee_session_id(host_key: str = "", cwd: str = "") -> str:
     return str(winner.get("session_id") or new_id)
 
 
-def ensure_launch_record(host_key: str = "", cwd: str = "") -> tuple[str, str]:
+def ensure_launch_record(
+    host_key: str = "", cwd: str = "", *, dataset: str = "", dataset_source: str = ""
+) -> tuple[str, str]:
     """Create (first-writer-wins) and return this launch's (session_id, conn_uuid).
 
     Called by SessionStart. The session id honors an explicit ``COGNEE_SESSION_ID``
     override, else the existing/generated id; the conn_uuid is minted once.
     """
     host_key = _sanitize_session_key(host_key) or get_session_key()
-    rec = _read_map_record(host_key)
-    if rec.get("session_id") and rec.get("conn_uuid"):
-        return str(rec["session_id"]), str(rec["conn_uuid"])
-
-    explicit = _sanitize_session_key(str(os.environ.get("COGNEE_SESSION_ID", "") or "").strip())
-    session_id = explicit or str(rec.get("session_id") or "") or _generate_session_id(cwd, host_key)
-    conn_uuid = str(rec.get("conn_uuid") or "") or _new_conn_uuid()
-    record = {
-        "session_id": session_id,
-        "conn_uuid": conn_uuid,
-        "host_key": host_key,
-        "created_at": rec.get("created_at")
-        or datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "touched": rec.get("touched") or [session_id],
-    }
     if not host_key:
+        explicit = _sanitize_session_key(str(os.environ.get("COGNEE_SESSION_ID", "") or "").strip())
+        session_id = explicit or _generate_session_id(cwd)
+        conn_uuid = _new_conn_uuid()
         return session_id, conn_uuid
-    winner = _create_map_record_if_absent(host_key, record)
-    # If a prior resolve() created a session-only record (no handle), graft our
-    # conn_uuid onto it. SessionStart is the sole writer of conn_uuid, so this
-    # merge isn't contended in practice.
-    if not winner.get("conn_uuid"):
-        merged = dict(winner)
-        merged["conn_uuid"] = conn_uuid
-        merged.setdefault("host_key", host_key)
-        _write_map_record(host_key, merged)
-        winner = _read_map_record(host_key) or merged
-    return str(winner.get("session_id") or session_id), str(winner.get("conn_uuid") or conn_uuid)
+
+    with _launch_publication_lock(host_key) as acquired:
+        if not acquired:
+            raise RuntimeError("launch record publication lock timed out")
+        current = _read_map_record(host_key)
+        if not current and _session_map_path(host_key).exists():
+            raise RuntimeError("launch record publication found unreadable state")
+
+        record = dict(current)
+        session_id = str(record.get("session_id") or "")
+        if not session_id:
+            explicit = _sanitize_session_key(
+                str(os.environ.get("COGNEE_SESSION_ID", "") or "").strip()
+            )
+            session_id = explicit or _generate_session_id(cwd, host_key)
+            record["session_id"] = session_id
+
+        conn_uuid = str(record.get("conn_uuid") or "")
+        if not conn_uuid:
+            conn_uuid = _new_conn_uuid()
+            record["conn_uuid"] = conn_uuid
+
+        record.setdefault("host_key", host_key)
+        record.setdefault("created_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        record.setdefault("touched", [session_id])
+        if dataset and not record.get("dataset"):
+            record["dataset"] = dataset
+            record["dataset_source"] = dataset_source or "default"
+        elif record.get("dataset") and not record.get("dataset_source"):
+            same_candidate = dataset and str(record["dataset"]) == dataset
+            record["dataset_source"] = (
+                dataset_source if same_candidate and dataset_source else "default"
+            )
+
+        if record != current:
+            if not _write_map_record(host_key, record):
+                raise RuntimeError("launch record publication failed")
+            record = _read_map_record(host_key)
+            if not record:
+                raise RuntimeError("launch record publication could not be verified")
+
+        return str(record["session_id"]), str(record["conn_uuid"])
 
 
 def resolve_conn_uuid(host_key: str = "") -> str:
@@ -331,12 +489,22 @@ def resolve_conn_uuid(host_key: str = "") -> str:
         return cu
     cu = _new_conn_uuid()
     if host_key:
-        rec = _read_map_record(host_key)
-        if not rec.get("conn_uuid"):
+        with _launch_publication_lock(host_key) as acquired:
+            if not acquired:
+                raise RuntimeError("launch record publication lock timed out")
+            rec = _read_map_record(host_key)
+            if not rec and _session_map_path(host_key).exists():
+                raise RuntimeError("launch record publication found unreadable state")
+            if rec.get("conn_uuid"):
+                return str(rec["conn_uuid"])
             rec["conn_uuid"] = cu
             rec.setdefault("host_key", host_key)
-            _write_map_record(host_key, rec)
-        return str(_read_map_record(host_key).get("conn_uuid") or cu)
+            if not _write_map_record(host_key, rec):
+                raise RuntimeError("launch record publication failed")
+            published = _read_map_record(host_key)
+            if not published.get("conn_uuid"):
+                raise RuntimeError("launch record publication could not be verified")
+            return str(published["conn_uuid"])
     return cu
 
 
@@ -392,7 +560,7 @@ def _resolve_agent_name() -> str:
     try:
         from config import load_config  # type: ignore
 
-        configured = str(load_config().get("agent_name") or "").strip()
+        configured = str(load_config(derive_project=False).get("agent_name") or "").strip()
         if configured:
             normalized = _normalize(configured)
             os.environ["COGNEE_AGENT_NAME"] = normalized
@@ -409,6 +577,10 @@ def load_resolved(session_key: str = "") -> dict:
     active_session_key = _sanitize_session_key(session_key) or get_session_key()
     if active_session_key:
         resolved["session_key"] = active_session_key
+    launch_record = _read_map_record(active_session_key)
+    if launch_record.get("dataset"):
+        resolved["dataset"] = str(launch_record["dataset"])
+        resolved["dataset_source"] = str(launch_record.get("dataset_source") or "")
 
     # session_id = data scoping key (switchable); conn_uuid = registration handle.
     cognee_session_id = resolve_cognee_session_id(active_session_key)
@@ -494,16 +666,31 @@ def _load_json_file(path: Path) -> dict:
     return {}
 
 
-def _write_json_file(path: Path, data: dict) -> None:
+def _write_json_file(path: Path, data: dict) -> bool:
+    tmp: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: a concurrent reader never sees a half-written file.
-        # Per-pid tmp name so two writers can't collide on the tmp path.
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        # Unique, private temp file: concurrent threads in one process cannot
+        # collide, and replacement never inherits a destination's wider mode.
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as file_handle:
+            json.dump(data, file_handle, indent=2, sort_keys=True)
         os.replace(tmp, path)
+        if os.name != "nt":
+            os.chmod(path, 0o600)
+        return True
     except Exception as exc:
         hook_log("json_write_failed", {"path": str(path), "error": str(exc)[:200]})
+        return False
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                hook_log("json_temp_cleanup_failed", {"path": str(tmp), "error": str(exc)[:200]})
 
 
 def _strip_surrogates(text: str) -> str:
@@ -1187,13 +1374,25 @@ def improve_session_lock(session_id: str, owner: str):
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).timestamp()
         if lock_path.exists():
+            metadata_complete = True
             try:
                 current = json.loads(lock_path.read_text(encoding="utf-8"))
                 created_at = float(current.get("created_at", 0))
                 pid = int(current.get("pid", 0))
             except Exception:
-                created_at, pid = 0.0, 0
-            if not (pid > 0 and _proc.pid_alive(pid)) or now - created_at > SYNC_LOCK_STALE_SECONDS:
+                metadata_complete = False
+                try:
+                    created_at = lock_path.stat().st_mtime
+                except FileNotFoundError:
+                    created_at = now
+                pid = 0
+            stale = (
+                now - created_at > SYNC_LOCK_STALE_SECONDS
+                if not metadata_complete
+                else not (pid > 0 and _proc.pid_alive(pid))
+                or now - created_at > SYNC_LOCK_STALE_SECONDS
+            )
+            if stale:
                 try:
                     lock_path.unlink()
                     hook_log(

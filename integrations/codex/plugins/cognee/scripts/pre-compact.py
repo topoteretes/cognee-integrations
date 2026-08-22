@@ -55,7 +55,9 @@ def _load_resolved_fields() -> tuple[str, str, str]:
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
     if not session_id or not dataset:
-        config = load_config()
+        config = load_config(derive_project=not bool(dataset))
+        if dataset:
+            config["dataset"] = dataset
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
     return session_id, dataset, user_id
@@ -122,7 +124,7 @@ async def _recall(
                 scope=scope,
                 only_context=True,
                 search_type=qtype,
-                dataset=get_dataset(config),
+                dataset=dataset,
             )
         else:
             import cognee
@@ -185,7 +187,8 @@ async def _run():
         return ""
     hook_log("precompact_start", {"session": session_id, "dataset": dataset, "user_id": user_id})
 
-    config = load_config()
+    config = load_config(derive_project=False)
+    config["dataset"] = dataset
     await ensure_cognee_ready(config)
     user = None
     if not is_cloud_mode(config):
