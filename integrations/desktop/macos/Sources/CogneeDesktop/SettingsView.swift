@@ -20,6 +20,8 @@ final class SettingsModel: ObservableObject {
     }
     /// Every configured data source, as the backend describes it.
     @Published var connections: [SourceConnection] = []
+    /// Coding agents connected to the same memory (cloud tenant).
+    @Published var agents: [AgentConnection] = []
     /// Mirrors whether the "Index in Cognee" Finder Quick Action is installed.
     @Published var finderIntegration: Bool = FinderIntegration.isInstalled
 
@@ -54,6 +56,9 @@ final class SettingsModel: ObservableObject {
             }
             if let sources = try? await BackendClient().sources() {
                 connections = sources.sources
+            }
+            if let response = try? await BackendClient().agents() {
+                agents = response.agents
             }
         }
         loadFiles()
@@ -396,6 +401,48 @@ struct SettingsView: View {
                 )
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+            }
+
+            Section("Connected agents") {
+                if model.agents.isEmpty {
+                    Text("No coding agents connected. Claude Code and Codex sessions using the cognee plugin appear here.")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                }
+                ForEach(model.agents.prefix(6)) { agent in
+                    HStack(spacing: 9) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.cognee)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                Text(agent.label)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                Circle()
+                                    .fill(agent.status == "active" ? Color.green : Color.gray)
+                                    .frame(width: 6, height: 6)
+                            }
+                            Text(agent.datasets.isEmpty
+                                ? agent.session
+                                : "writes to " + agent.datasets.joined(separator: ", "))
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        Text(agent.lastActiveText)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 1)
+                }
+                if model.agents.count > 6 {
+                    Text("… and \(model.agents.count - 6) more sessions")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             Section("Finder") {
