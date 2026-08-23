@@ -325,7 +325,9 @@ class MockConnectorSource:
         self.name = name
         self.staging = staging
         self.files = files  # keys may contain subdirs, e.g. "repo/issue-1.md"
-        self.label = label or name.title()
+        # honesty over demo polish: a mock must never be mistakable for a
+        # real connection in the UI
+        self.label = f"{label or name.title()} (demo)"
         self.icon = icon or "puzzlepiece.extension"
         self.scope = list(scope or [])  # what "connected" means for the demo
         # relative subdir -> dataset, resolved against staging like the real

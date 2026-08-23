@@ -208,7 +208,7 @@ def test_mock_github_repo_gets_its_own_dataset(tmp_path, monkeypatch):
     manager = SourceManager.from_env(DummyIndexer(), tmp_path)
     github = next(s for s in manager.sources if s.name == "github")
     assert isinstance(github, MockConnectorSource)
-    assert github.label == "GitHub"
+    assert github.label == "GitHub (demo)"
     repo_prefix = str(tmp_path / "sources" / "github" / "meridian-search-platform")
     assert github.datasets == {repo_prefix: "github-meridian-search-platform"}
 
@@ -223,5 +223,5 @@ def test_mock_mobile_device_connection(tmp_path, monkeypatch):
     monkeypatch.setenv("COGNEE_DESKTOP_MOCK_SOURCES", "mobile")
     manager = SourceManager.from_env(DummyIndexer(), tmp_path)
     mobile = next(s for s in manager.sources if s.name == "mobile")
-    assert mobile.label == "Mobile" and mobile.icon == "smartphone"
+    assert mobile.label == "Mobile (demo)" and mobile.icon == "smartphone"
     assert mobile.scope == ["Pixel 8 Pro — quick captures"]

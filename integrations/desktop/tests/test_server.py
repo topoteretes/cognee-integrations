@@ -237,7 +237,7 @@ async def test_sources_describe_themselves(tmp_path, monkeypatch):
     # every source describes its own rendering — nothing for the app to hardcode
     for source in data["sources"]:
         assert source["label"] and source["icon"]
-    assert by_name["slack"]["label"] == "Slack"
+    assert by_name["slack"]["label"] == "Slack (demo)"
     assert by_name["gdrive"]["icon"] == "externaldrive"
     assert by_name["folders"]["ok"] is None  # no sync has run yet
     # sources report what they indexed: folder roots / staged documents
