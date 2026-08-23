@@ -423,6 +423,20 @@ async def test_agents_relays_and_labels_connections(tmp_path):
             return []
 
         async def _request(self, method, path, **kwargs):
+            if path == "/api/v1/integrations/status":
+                return self._Response(
+                    {
+                        "plugins": [
+                            {
+                                "key": "desktop",
+                                "connected": True,
+                                "lastActiveAt": "2026-08-23T10:16:00Z",
+                                "source": "identity",
+                            },
+                            {"key": "codex", "connected": False},
+                        ]
+                    }
+                )
             assert path == "/api/v1/agents/connections"
             return self._Response(
                 {
@@ -454,6 +468,14 @@ async def test_agents_relays_and_labels_connections(tmp_path):
     assert [a["label"] for a in data["agents"]] == ["Claude Code", "Codex"]
     assert data["agents"][0]["status"] == "active"
     assert data["agents"][0]["datasets"] == ["agent_sessions"]
+    # provisioned identities (cognee >= 1.5.1) ride along, connected first
+    assert data["plugins"][0] == {
+        "key": "desktop",
+        "label": "Cognee Desktop",
+        "connected": True,
+        "last_active_at": "2026-08-23T10:16:00Z",
+        "source": "identity",
+    }
 
 
 async def test_agents_empty_without_a_tenant(client):
