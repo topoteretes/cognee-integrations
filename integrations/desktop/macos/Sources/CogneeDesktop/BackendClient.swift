@@ -124,8 +124,21 @@ struct AgentConnection: Decodable, Identifiable, Equatable {
     }
 }
 
+/// A provisioned plugin identity (cognee >= 1.5.1): connected because it
+/// holds its own labeled API key, not because a session happens to be open.
+struct PluginStatus: Decodable, Identifiable, Equatable {
+    let key: String
+    let label: String
+    let connected: Bool
+    let last_active_at: String
+    let source: String
+
+    var id: String { key }
+}
+
 struct AgentsResponse: Decodable {
     let agents: [AgentConnection]
+    let plugins: [PluginStatus]?
 }
 
 /// Memory's reaction to a note being typed: closest known facts + conflicts.

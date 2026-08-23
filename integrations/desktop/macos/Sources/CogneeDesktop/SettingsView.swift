@@ -22,6 +22,8 @@ final class SettingsModel: ObservableObject {
     @Published var connections: [SourceConnection] = []
     /// Coding agents connected to the same memory (cloud tenant).
     @Published var agents: [AgentConnection] = []
+    /// Provisioned plugin identities (servers on cognee >= 1.5.1).
+    @Published var plugins: [PluginStatus] = []
     /// Mirrors whether the "Index in Cognee" Finder Quick Action is installed.
     @Published var finderIntegration: Bool = FinderIntegration.isInstalled
 
@@ -59,6 +61,7 @@ final class SettingsModel: ObservableObject {
             }
             if let response = try? await BackendClient().agents() {
                 agents = response.agents
+                plugins = (response.plugins ?? []).filter(\.connected)
             }
         }
         loadFiles()
@@ -404,7 +407,27 @@ struct SettingsView: View {
             }
 
             Section("Connected agents") {
-                if model.agents.isEmpty {
+                ForEach(model.plugins) { plugin in
+                    HStack(spacing: 9) {
+                        Image(systemName: "key.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.cognee)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                Text(plugin.label)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                Circle().fill(Color.green).frame(width: 6, height: 6)
+                            }
+                            Text("own identity (\(plugin.source))")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 1)
+                }
+                if model.agents.isEmpty, model.plugins.isEmpty {
                     Text("No coding agents connected. Claude Code and Codex sessions using the cognee plugin appear here.")
                         .foregroundStyle(.secondary)
                         .font(.callout)

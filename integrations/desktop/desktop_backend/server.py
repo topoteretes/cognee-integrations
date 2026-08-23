@@ -254,7 +254,45 @@ def create_app(
         out.sort(key=lambda a: (a["status"] != "active", a["last_active_at"]), reverse=False)
         out.sort(key=lambda a: a["last_active_at"], reverse=True)
         out.sort(key=lambda a: a["status"] != "active")
-        return {"agents": out}
+        return {"agents": out, "plugins": await _plugin_statuses()}
+
+    async def _plugin_statuses() -> list[dict]:
+        """Provisioned plugin identities from cognee's /integrations/status
+        (cognee >= 1.5.1). Richer than live sessions: a plugin is "connected"
+        because it holds its own labeled API key, not because a session
+        happens to be open. Older servers without the route yield []."""
+        labels = {
+            "claude-code": "Claude Code",
+            "codex": "Codex",
+            "opencode": "OpenCode",
+            "openclaw": "Openclaw",
+            "mcp": "MCP",
+            "api": "API / SDK",
+            "desktop": "Cognee Desktop",
+        }
+        try:
+            response = await adapter._request("GET", "/api/v1/integrations/status")
+            if response.status_code >= 400:
+                return []
+            payload = response.json()
+            rows = payload.get("plugins", []) if isinstance(payload, dict) else []
+        except Exception:
+            return []
+        out = []
+        for row in rows:
+            key = str(row.get("key", ""))
+            out.append(
+                {
+                    "key": key,
+                    "label": labels.get(key, key.replace("-", " ").title()),
+                    "connected": bool(row.get("connected")),
+                    "last_active_at": str(row.get("lastActiveAt") or ""),
+                    "source": str(row.get("source") or ""),
+                }
+            )
+        # connected identities first
+        out.sort(key=lambda r: not r["connected"])
+        return out
 
     @app.get("/whisper")
     async def whisper(q: str) -> dict:
