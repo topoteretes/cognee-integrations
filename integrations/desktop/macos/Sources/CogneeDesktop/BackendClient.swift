@@ -100,6 +100,34 @@ struct SourcesResponse: Decodable {
     let interval: Double
 }
 
+/// A coding agent (Claude Code, Codex, …) connected to the same memory,
+/// as reported by the cognee tenant's agent-connections API.
+struct AgentConnection: Decodable, Identifiable, Equatable {
+    let label: String
+    let session: String
+    let status: String
+    let last_active_at: String
+    let datasets: [String]
+
+    var id: String { session }
+
+    /// "active 3m ago" — humanized last activity.
+    var lastActiveText: String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        guard let date = iso.date(from: last_active_at) ?? plain.date(from: last_active_at)
+        else { return "" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+struct AgentsResponse: Decodable {
+    let agents: [AgentConnection]
+}
+
 /// Memory's reaction to a note being typed: closest known facts + conflicts.
 struct WhisperResponse: Decodable {
     let related: [String]
@@ -222,6 +250,10 @@ struct BackendClient {
 
     func sources() async throws -> SourcesResponse {
         try await get(baseURL.appendingPathComponent("sources"))
+    }
+
+    func agents() async throws -> AgentsResponse {
+        try await get(baseURL.appendingPathComponent("agents"))
     }
 
     func whisper(_ text: String) async throws -> WhisperResponse {

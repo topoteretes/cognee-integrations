@@ -206,6 +206,56 @@ def create_app(
                 detail = f"graph copy kept ({type(exc).__name__})"
         return {"ok": True, "removed": 1, "graph": graph, "detail": detail}
 
+    @app.get("/agents")
+    async def agents() -> dict:
+        """The coding agents connected to the same memory (cloud mode):
+        cognee's /agents/connections, mapped to display shape. The desktop
+        app shows these beside the data sources — sources feed memory,
+        agents consume and write it, one connected system.
+        """
+        if not hasattr(adapter, "_request"):
+            return {"agents": []}
+        # session-prefix heuristics mirror cognee's KNOWN_PLUGINS registry
+        prefixes = [
+            ("claude", "Claude Code"),
+            ("cc_", "Claude Code"),
+            ("codex", "Codex"),
+            ("opencode", "OpenCode"),
+        ]
+        try:
+            response = await adapter._request("GET", "/api/v1/agents/connections")
+            if response.status_code >= 400:
+                return {"agents": []}
+            payload = response.json()
+            rows = payload.get("agents", []) if isinstance(payload, dict) else []
+        except Exception:
+            return {"agents": []}
+        out = []
+        for row in rows:
+            session = str(row.get("session_id", ""))
+            label = next(
+                (name for prefix, name in prefixes if session.lower().startswith(prefix)),
+                str(row.get("type", "agent")).upper(),
+            )
+            out.append(
+                {
+                    "label": label,
+                    "session": session,
+                    "status": str(row.get("status", "")),
+                    "last_active_at": str(row.get("last_active_at", "")),
+                    "datasets": [
+                        str(d.get("name", ""))
+                        for d in row.get("datasets", [])
+                        if isinstance(d, dict)
+                    ],
+                }
+            )
+        # active first, then most recently seen
+        out.sort(key=lambda a: (a["status"] != "active", a["last_active_at"]), reverse=False)
+        out.sort(key=lambda a: a["last_active_at"], reverse=True)
+        out.sort(key=lambda a: a["status"] != "active")
+        return {"agents": out}
+
     @app.get("/whisper")
     async def whisper(q: str) -> dict:
         """Memory talking back while a note is typed: the closest thing it

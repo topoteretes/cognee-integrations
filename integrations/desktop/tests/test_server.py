@@ -371,3 +371,56 @@ async def test_root_labels_persist_and_report(client, tmp_path):
             break
         await asyncio.sleep(0.01)
     assert status["root_labels"][str(work)] == "work"
+
+
+async def test_agents_relays_and_labels_connections(tmp_path):
+    class TenantDouble:
+        class _Response:
+            def __init__(self, payload):
+                self.status_code = 200
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        dataset = "main"
+
+        async def chunks(self, query, top_k=8):
+            return []
+
+        async def _request(self, method, path, **kwargs):
+            assert path == "/api/v1/agents/connections"
+            return self._Response(
+                {
+                    "agents": [
+                        {
+                            "session_id": "claude_abc",
+                            "type": "api",
+                            "status": "active",
+                            "last_active_at": "2026-08-23T09:30:00Z",
+                            "datasets": [{"name": "agent_sessions"}],
+                        },
+                        {
+                            "session_id": "codex_xyz",
+                            "type": "api",
+                            "status": "inactive",
+                            "last_active_at": "2026-08-20T00:00:00Z",
+                            "datasets": [],
+                        },
+                    ]
+                }
+            )
+
+    settings = Settings()
+    settings.data_dir = tmp_path / "state"
+    app = create_app(settings, adapter=TenantDouble())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        data = (await client.get("/agents")).json()
+    assert [a["label"] for a in data["agents"]] == ["Claude Code", "Codex"]
+    assert data["agents"][0]["status"] == "active"
+    assert data["agents"][0]["datasets"] == ["agent_sessions"]
+
+
+async def test_agents_empty_without_a_tenant(client):
+    assert (await client.get("/agents")).json() == {"agents": []}
