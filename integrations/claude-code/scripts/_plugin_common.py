@@ -910,6 +910,14 @@ def _reexec_into_venv() -> None:
     lives in ``~/.cognee-plugin/venv``. Once that venv exists, re-exec into it
     so every import resolves there. No-op before the venv exists (cold start,
     pre-install) or when already running inside it.
+
+    "Already inside" is judged by ``sys.prefix``, never by comparing
+    interpreter files: a venv's ``bin/python`` is a symlink to its base
+    interpreter, so ``os.path.samefile(venv_python, sys.executable)`` is also
+    true when running under that base directly (e.g. CI, where setup-python's
+    3.12 is both the ``python3`` that launches hooks and the base uv built the
+    venv from) — which has no cognee. ``sys.prefix`` only equals the venv dir
+    when the process was launched through the venv's own path.
     """
     if os.environ.get("COGNEE_PLUGIN_IN_VENV") == "1":
         return  # loop guard: this process already re-execed (or opted out)
@@ -918,12 +926,12 @@ def _reexec_into_venv() -> None:
     vpy = _VENV_PYTHON
     if not vpy.exists():
         return  # cold start — install hasn't built the venv yet
-    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
     try:
-        if os.path.samefile(str(vpy), sys.executable):
-            return  # the host python3 already *is* the venv interpreter
+        if Path(sys.prefix).resolve() == _VENV_DIR.resolve():
+            return  # already running inside the plugin venv
     except OSError:
         pass
+    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
     try:
         # execv inherits os.environ (incl. the loop guard just set above).
         os.execv(str(vpy), [str(vpy), *sys.argv])
@@ -1496,6 +1504,36 @@ def _live_server_pid(port: int) -> int:
     return 0
 
 
+def _windows_listening_verdict(port: int) -> str:
+    """'listening' | 'refused' | 'no_verdict' from the OS TCP table (Windows).
+
+    Windows Firewall stealth mode drops the SYN to a closed port instead of
+    answering RST — loopback included — so a refused connect there just times
+    out and the positive "refused" signal can never be observed from a connect
+    attempt, at any budget. The listening table is the authority instead: a
+    port with no LISTEN row is positively free.
+
+    Rows are matched structurally — local address ends in ``:port`` and the
+    remote is the unconnected ``0.0.0.0:0`` / ``[::]:0`` placeholder that only
+    LISTEN rows carry — because netstat localizes the state word ("LISTENING",
+    "ABHÖREN", …) but never the addresses.
+    """
+    try:
+        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return "no_verdict"
+    if out.returncode != 0:
+        return "no_verdict"
+    suffix = f":{port}"
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[0].upper() != "TCP":
+            continue
+        if parts[1].endswith(suffix) and parts[2] in ("0.0.0.0:0", "[::]:0"):
+            return "listening"
+    return "refused"
+
+
 def tcp_probe(host: str, port: int, timeout: float = 0.5) -> str:
     """Classify the bare TCP handshake: 'listening' | 'refused' | 'no_verdict'.
 
@@ -1503,6 +1541,11 @@ def tcp_probe(host: str, port: int, timeout: float = 0.5) -> str:
     the only transport answer that may contribute to an absence verdict.
     Timeouts and filtered/odd socket states give no verdict, same as the HTTP
     probe's rules.
+
+    On Windows a connect cannot yield that positive signal (see
+    ``_windows_listening_verdict``), so a no-verdict connect falls back to the
+    OS listening table there. A live listener still answers the handshake in
+    microseconds on every platform, so the connect attempt stays first.
     """
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -1512,6 +1555,8 @@ def tcp_probe(host: str, port: int, timeout: float = 0.5) -> str:
     except OSError as exc:
         if getattr(exc, "errno", None) == errno.ECONNREFUSED:
             return "refused"
+        if os.name == "nt":
+            return _windows_listening_verdict(port)
         return "no_verdict"
     except Exception:
         return "no_verdict"

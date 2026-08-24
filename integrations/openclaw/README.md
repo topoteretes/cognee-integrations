@@ -361,6 +361,15 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `searchPrompt` | string | `""` | System prompt to guide search |
 | `recallInjectionPosition` | string | `prependContext` | Where recalled memories are injected: `prependSystemContext`, `appendSystemContext`, or `prependContext` |
 
+### Harness-noise filter
+
+OpenClaw drives agents with synthetic prompts the user never typed: heartbeat probes (`Read HEARTBEAT.md if it exists…`), cron payloads, and `System: …` event lines. Those are host instructions, not memory queries, so the plugin excludes them from auto-recall (which would otherwise run an LLM-backed search per scope, per heartbeat) and from QA capture (which would bridge the templates into the permanent graph via `/improve`). Filtering is two-layered: runs whose hook context carries a matching `trigger` are always filtered; prompts matching a shape pattern are filtered even without a trigger. Session registration and tool-call trace capture are unaffected.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `noiseTriggers` | string[] | `["heartbeat","cron"]` | `ctx.trigger` values treated as harness turns. `[]` disables this layer |
+| `noisePatterns` | string[] | `["^Read HEARTBEAT\\.md", "^System:\\s", "^\\[cron\\b"]` | Regexes matched against the prompt (leading whitespace stripped). Replaces the defaults when set; `[]` disables this layer |
+
 ### Search Types
 
 | Type | Description |
