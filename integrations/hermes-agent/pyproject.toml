@@ -36,6 +36,20 @@ cognee_integration_hermes = ["_plugin_root/*"]
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-timeout>=2.3",
     "ruff>=0.14.6",
 ]
 
+[tool.pytest.ini_options]
+# Without a pytest section here, rootdir resolution walks up to the monorepo
+# root's pyproject.toml and this suite adopts its `asyncio_mode = "auto"` — an
+# option pytest-asyncio owns and hermes does not install, so every run, local
+# and CI alike, printed a PytestConfigWarning about it.
+testpaths = ["tests"]
+
+# A hung run is the failure mode this suite was reported for (SDK-454), and a
+# hang has no natural bound: a socket that never answers or a child that is
+# never reaped just sits there until CI's 6h default gives up. The slowest
+# honest test here is the exit-watcher's ~2s poll, so 60s only ever fires on a
+# genuine hang — and fires as a named, stack-dumping failure instead of silence.
+timeout = 60
