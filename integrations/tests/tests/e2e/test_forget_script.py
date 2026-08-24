@@ -172,3 +172,75 @@ def test_forget_without_data_id_exits_1(suite, temp_home, mock_server, assert_cl
     assert result.returncode == 1
     assert "forget requires" in result.stderr
     assert mock_server.assert_not_called("POST", "/api/v1/forget") is None
+
+
+def test_crafted_id_cannot_inject_json_fields(
+    suite, temp_home, mock_server, assert_clean_real_home
+):
+    # The payload was once built by string interpolation, so an id containing a
+    # quote could close the JSON string and append fields — `everything: true`
+    # is checked first by the server and deletes every dataset the user owns,
+    # defeating this helper's single-document-only guarantee.
+    result = run_forget(
+        suite,
+        "forget",
+        'x", "everything": true, "z": "y',
+        DEFAULT_DATA_ID,
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    assert result.returncode == 1
+    assert "invalid id (expected a UUID)" in result.stderr
+    mock_server.assert_not_called("POST", "/api/v1/forget")
+
+
+def test_forget_payload_has_exactly_the_two_expected_fields(
+    suite, temp_home, mock_server, assert_clean_real_home
+):
+    result = run_forget(
+        suite,
+        "forget",
+        DEFAULT_DATASET_ID,
+        DEFAULT_DATA_ID,
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    assert result.returncode == 0, result.stderr
+    call = mock_server.assert_called("POST", "/api/v1/forget")
+    assert call["json"] == {"datasetId": DEFAULT_DATASET_ID, "dataId": DEFAULT_DATA_ID}
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../../../etc/passwd",  # would resolve to another endpoint after curl normalizes it
+        "agent_sessions",  # a dataset name where an id is required
+        "",  # empty (caught by the arity check)
+        "11111111-1111-5111-8111-11111111111",  # one hex digit short
+    ],
+)
+def test_non_uuid_ids_are_refused_before_any_request(
+    suite, temp_home, mock_server, bad_id, assert_clean_real_home
+):
+    result = run_forget(
+        suite, "data", bad_id, home=temp_home, service_url=mock_server.url, api_key="k"
+    )
+    assert result.returncode == 1
+    assert mock_server.calls == []
+
+
+def test_uppercase_uuid_is_accepted(suite, temp_home, mock_server, assert_clean_real_home):
+    # str(UUID) is lowercase, but a hand-typed or upstream-uppercased id is
+    # still a valid UUID and must not be rejected.
+    result = run_forget(
+        suite,
+        "data",
+        DEFAULT_DATASET_ID.upper(),
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    assert result.returncode == 0, result.stderr
+    mock_server.assert_called("GET", f"/api/v1/datasets/{DEFAULT_DATASET_ID.upper()}/data")

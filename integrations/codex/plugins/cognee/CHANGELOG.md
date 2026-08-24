@@ -29,7 +29,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   Every API command appends a final `HTTP <status>` line; with no key
   resolvable the helper exits 2 with guidance instead of sending a request that
   can only 401. Single-document deletion only — dataset-wide and `everything`
-  scopes stay behind an explicit-user-request warning in the skill.
+  scopes stay behind an explicit-user-request warning in the skill. Ids are validated as UUIDs and the request body is built with `json.dumps` rather than string interpolation, so a crafted id cannot redirect the request to another endpoint or append body fields — an injected `everything: true` would have deleted every dataset the user owns.
 - **E2e coverage in the shared suite.** `tests/e2e/test_forget_script.py` runs
   the wrapper as a subprocess against the mock server for BOTH suites
   (credential resolution incl. the `api_key.json` fallback and the exit-2 path,

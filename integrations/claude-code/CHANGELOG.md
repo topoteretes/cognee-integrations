@@ -29,7 +29,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   helper exits 2 with guidance instead of sending a request that can only 401.
   The helper deliberately supports single-document deletion only — dataset-wide
   and `everything` scopes stay behind an explicit-user-request warning in the
-  skill.
+  skill. Ids are validated as UUIDs and the request body is built with `json.dumps` rather than string interpolation, so a crafted id cannot redirect the request to another endpoint or append body fields — an injected `everything: true` would have deleted every dataset the user owns.
 - **Mock-server forget surface + e2e tests.** `MockCogneeServer` now serves
   `GET /api/v1/datasets`, `GET /datasets/<id>/data`, `GET .../raw`, and
   `POST /api/v1/forget`; `tests/e2e/test_forget_script.py` runs the wrapper as

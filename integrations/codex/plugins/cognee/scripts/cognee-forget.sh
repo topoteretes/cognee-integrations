@@ -102,6 +102,17 @@ Usage:
 EOF
 }
 
+# Ids reach both the request URL and the JSON body, so anything that is not a
+# canonical UUID is refused before it is used: a crafted value could otherwise
+# redirect the request to a different endpoint, or close the JSON string and
+# append fields (`{"everything": true}` deletes every dataset the user owns).
+validate_uuid() {
+    if ! [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+        echo "Error: invalid id (expected a UUID): $1" >&2
+        exit 1
+    fi
+}
+
 if [ -z "$API_KEY" ]; then
     echo "Error: no API key resolved (checked COGNEE_API_KEY, ~/.cognee/.env, ${PLUGIN_DIR%/*}/api_key.json)." >&2
     echo "Cloud mode: set COGNEE_API_KEY in ~/.cognee/.env. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
@@ -119,18 +130,28 @@ case "$CMD" in
         ;;
     data)
         [ -n "${2:-}" ] || { echo "Error: data requires <dataset_id>" >&2; usage; exit 1; }
+        validate_uuid "$2"
         api_get "${SERVICE_URL}/api/v1/datasets/$2/data"
         ;;
     raw)
         [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "Error: raw requires <dataset_id> <data_id>" >&2; usage; exit 1; }
+        validate_uuid "$2"
+        validate_uuid "$3"
         api_get "${SERVICE_URL}/api/v1/datasets/$2/data/$3/raw"
         ;;
     forget)
         [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "Error: forget requires <dataset_id> <data_id>" >&2; usage; exit 1; }
+        validate_uuid "$2"
+        validate_uuid "$3"
+        # Body built with json.dumps, not string interpolation, and the values
+        # passed through the environment so they never touch argv or the
+        # Python source. Belt and braces with validate_uuid above: this helper
+        # must only ever be able to express a single-document delete.
+        payload="$(FORGET_DATASET_ID="$2" FORGET_DATA_ID="$3" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "dataId": os.environ["FORGET_DATA_ID"]}))')"
         curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
             -H "Content-Type: application/json" \
             -H "X-Api-Key: ${API_KEY}" \
-            -d "{\"datasetId\": \"$2\", \"dataId\": \"$3\"}" \
+            -d "$payload" \
             -w '\nHTTP %{http_code}\n'
         ;;
     env)
