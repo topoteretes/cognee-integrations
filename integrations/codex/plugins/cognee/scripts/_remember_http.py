@@ -170,12 +170,29 @@ def do_remember(
     dataset,
     node_set,
     *,
+    file_path=None,
     opener=urllib.request.urlopen,
     timeout=120.0,
 ):
-    """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE."""
+    """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.
+
+    With ``file_path``, the file's bytes are uploaded under its REAL basename
+    instead of the synthetic ``{node_set}.txt``. The filename extension is the
+    server's loader-routing signal: a ``.py``/``.ts``/... upload rides the
+    zero-LLM code-graph route (cognify CODE route, cognee >= 1.5.x), while the
+    ``.txt`` rename would silently ingest code as prose through the LLM
+    pipeline. Reading the file here (not in the shell) also avoids ARG_MAX
+    limits on large sources.
+    """
     url = service_url.rstrip("/") + "/api/v1/remember"
     filename = f"{node_set or 'content'}.txt"
+    if file_path:
+        try:
+            with open(file_path, "rb") as fh:
+                content = fh.read()
+        except OSError as e:
+            return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
+        filename = os.path.basename(str(file_path).rstrip("/")) or filename
     body, boundary = _multipart_body(
         {
             "datasetName": dataset,
@@ -264,9 +281,11 @@ def do_remember(
 
 
 def main(argv):
-    # argv: service_url, api_key, content, dataset, node_set
-    a = list(argv) + [""] * 5
-    result = do_remember(a[0], a[1], a[2], a[3], a[4])
+    # argv: service_url, api_key, content, dataset, node_set[, file_path]
+    # With file_path set (arg 6), content (arg 3) is ignored: the file's bytes
+    # are uploaded under their real basename so code files route as code.
+    a = list(argv) + [""] * 6
+    result = do_remember(a[0], a[1], a[2], a[3], a[4], file_path=a[5] or None)
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
     if result != UNREACHABLE:
         # Refresh the status-line credits marker, attributing the spend delta

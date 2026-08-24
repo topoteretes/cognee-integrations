@@ -38,7 +38,16 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "$ARGUMENTS" 10 --graph
 
 # current session only
 ${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "$ARGUMENTS" 10 --session
+
+# deterministic code graph (indexed repos only — see the cognee-code skill)
+${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "MyClass" 10 --code
 ```
+
+**Structural code questions belong to `--code`, not here.** "What calls X",
+"what breaks if I change X", "list all endpoints" are answered exactly and
+token-free by the code graph — see the **cognee-code** skill for the
+operations and for indexing a repository. Use this skill's semantic search for
+conceptual questions that name no symbol ("how does auth work here?").
 
 ### Filter by category (optional)
 
@@ -77,6 +86,7 @@ cognee-cli recall "$ARGUMENTS" -k 5 -f json
 Results include a `_source` field:
 - `"session"` — from the session cache (current conversation)
 - `"graph"` — from the permanent knowledge graph
+- `"code"` — deterministic facts from an indexed repository's code graph
 
 Session entries tagged with `[category:agent]` are automatic tool call logs.
 

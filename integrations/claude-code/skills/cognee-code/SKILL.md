@@ -1,53 +1,44 @@
 ---
-name: codebase
-description: Use when indexing a code repository into Cognee's code graph or querying it (callers, impact analysis, paths, endpoints) from Codex.
+name: cognee-code
+description: Index a code repository into Cognee's code graph and query it deterministically (callers, impact analysis, paths, endpoints). Use for structural code questions, "index this repo", and checking what a re-index changed.
 ---
 
 # Cognee Code Graph
 
-Use this skill when the user asks Codex to build a Cognee memory of a
-repository, index code, or answer structural code questions (who calls X,
-what breaks if X changes, how does A reach B) from memory.
-
-Requires a Cognee server >= 1.5.3. Indexing runs the enola code-graph
-pipeline server-side and makes **no LLM or embedding calls** — it is fast,
+Build and query an architectural graph of a codebase (symbols, calls, imports,
+endpoints, dependencies) via Cognee's enola-backed pipeline. Requires a Cognee
+server >= 1.5.3. Indexing makes **no LLM or embedding calls** — it is fast,
 deterministic, and token-free.
-
-## Rules
-
-- Server-first: the scripts below POST to the running Cognee server. There is
-  deliberately no CLI fallback for code indexing/search — an unreachable
-  server means "not done", never "index some other way".
-- One narrow dataset per repository (default
-  `codebase-<repo-name>-<digest>`); do not mix repositories into one dataset.
-  The digest is the indexed path, so two checkouts sharing a basename stay in
-  separate graphs. `--code` searches resolve the name from the current
-  checkout, so it rarely needs to be typed.
-- Never index directories holding secrets you would not ingest as documents;
-  the pipeline skips `.env`/dotfiles/binaries itself, but a git URL to a
-  private repo still lands its code in the target dataset.
 
 ## Index a repository
 
 ```bash
-${CODEX_PLUGIN_ROOT}/scripts/cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
 ```
 
-- **Local path** (e.g. `.`): works when the Cognee server shares this
-  filesystem — the default local plugin server does. Cloud servers reject
-  local paths; pass a git URL instead.
-- **Git URL**: the server shallow-clones it; freshness follows *pushed*
-  commits (local edits are invisible to it).
+- **Local path** (e.g. `.` or `/path/to/repo`): works when the Cognee server
+  shares this filesystem — the default local plugin server does. Cloud servers
+  reject local paths; pass a git URL instead.
+- **Git URL** (`https://github.com/org/repo`): the server shallow-clones it.
+  Freshness follows *pushed* commits — local edits are invisible to it.
+- Default dataset is `codebase-<repo-name>-<digest>`, one per indexed repo —
+  narrow datasets keep code searches fast, and the path digest keeps two
+  checkouts that share a basename (`~/work/a/service`, `~/work/b/service`) from
+  landing in one graph. The name is printed on success; you rarely need it,
+  because `--code` searches resolve it from the current checkout.
 - `--index-vectors`: also embeds the code facts so semantic/hybrid search can
   see them (needs an embedding provider). Without it, code knowledge is
-  reachable ONLY through code search below.
-- The submit returns quickly (background pipeline); `--wait 60` polls
-  `pipeline=code_graph_pipeline` until queryable.
+  reachable ONLY through code search below — conceptual questions about the
+  code then rely on ingested docs/READMEs.
+- The submit returns quickly (background pipeline). `--wait 60` polls until
+  the graph is queryable. Poll manually via
+  `GET /api/v1/datasets/status?dataset=<id>&pipeline=code_graph_pipeline`.
 
 **Indexing is also the freshness opt-in**: for local-path repos the plugin
 records a git fingerprint and automatically re-submits the repo in the
-background when a turn changed the working tree. Re-running the command on an
-unchanged repo is skipped server-side (content hashes), so it is always safe.
+background when a turn changed the working tree, so the graph tracks your
+edits. Re-indexing an unchanged repo is skipped server-side (content hashes),
+so re-running the command is always safe.
 
 ## Automatic indexing
 
@@ -88,8 +79,11 @@ servers reject local paths and need a git URL.
 ## Query the code graph
 
 ```bash
-${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh "<seed>" 10 --code [--code-query '<json>']
+${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "<seed>" 10 --code [--code-query '<json>']
 ```
+
+The repository's code dataset is resolved from the current directory, so
+`--dataset` is only needed to query a repo you are not standing in.
 
 Without `--code-query`, the query text is a seed name (exact/suffix/substring
 match). With it, pick one exact operation:
@@ -103,25 +97,24 @@ match). With it, pick one exact operation:
 | `impact_analysis` | what breaks if X changes | `{"operation":"impact_analysis","targets":["process_payment"]}` |
 | `delta` | what the last index changed | `{"operation":"delta"}` |
 
-An ambiguous seed returns an error **listing the candidates** — retry with an
-exact id or a `repo` filter. A seed that doesn't resolve returns empty (not
-an error): the graph has no such symbol.
+An ambiguous seed returns an error **listing the candidates** — pick one and
+retry with its exact id or a `repo` filter. A seed that doesn't resolve
+returns empty (not an error): the graph simply has no such symbol.
 
 ## When to use which search
 
-- **Structural question naming a symbol/file** → `--code`. Exact, instant,
-  no tokens.
+- **Structural question naming a symbol/file** ("what calls X", "what breaks
+  if I change X", "list all endpoints") → `--code`. Exact, instant, no tokens.
 - **Conceptual question naming nothing** ("how does auth work here?") →
-  regular `cognee-search.sh` (hybrid/graph). Graph-only code is invisible
-  there unless indexed with `--index-vectors` or the repo's docs were
-  ingested as documents.
-- **Chain them**: hybrid discovers the name, `--code` gives the exact
-  structure around it.
+  regular `cognee-search.sh` (hybrid/graph). Remember: graph-only code is
+  invisible there unless indexed with `--index-vectors` or docs were ingested.
+- **Chain them**: hybrid discovers the name ("the payment flow" →
+  `PaymentProcessor`), then `--code` gives the exact structure around it.
 - **Verify freshness**: after edits, `{"operation":"delta"}` shows what the
-  last re-index added/updated/removed.
+  last re-index added/updated/removed. Use it when facts look stale.
 
 Treat results as a map, not ground truth — verify important claims against
-the actual files before editing code.
+the actual files before editing.
 
 ## Per-file ingestion (no repo index)
 
@@ -129,13 +122,14 @@ To store a single code file in normal memory under its real filename (routes
 down the zero-LLM code path server-side, no cross-file edges):
 
 ```bash
-${CODEX_PLUGIN_ROOT}/scripts/cognee-remember.sh --file src/payments.py --node-set project_docs
+${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh --file src/payments.py --node-set project_docs
 ```
 
-Prefer the repo index above when callers/imports across files matter.
+Prefer the repo index above when you care about callers/imports across files.
 
 ## Automatic recall
 
 Once a repo is indexed from its checkout, the per-prompt memory recall adds a
-code lane automatically when the prompt mentions an identifier-shaped token —
-the facts appear in the injected context as `=== Code graph facts ===`.
+code lane automatically when your prompt mentions an identifier-shaped token
+(`process_payment`, `UserService`, `billing/api.py`) — the facts appear in the
+injected context as `=== Code graph facts ===`. No action needed.

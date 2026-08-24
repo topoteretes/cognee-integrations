@@ -234,6 +234,66 @@ A write that *times out* is reported as "submitted; timed out waiting for confir
 and does **not** fall back to `cognee-cli` (the write likely landed — a fallback would
 risk a duplicate). Only a genuine connection failure falls back.
 
+## Code graph
+
+Repositories can be indexed into a deterministic **code graph** (symbols, calls,
+imports, endpoints, dependencies) via cognee's enola-backed pipeline. Indexing makes
+**no LLM or embedding calls** — it is fast and costs no tokens. Requires a cognee
+server >= 1.5.3.
+
+Opening the agent inside a git repository indexes it automatically at session start
+(background, never blocking the first prompt), and re-indexes it after any turn that
+changed the working tree. Index one explicitly — a different repo, a git URL, or one
+automation declined — with:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+```
+
+Query it with `cognee-search.sh ... --code` (see the `cognee-code` skill for the
+operations: `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
+`delta`). Prompts that mention an identifier-shaped token inside an indexed repo also
+get code facts injected automatically by the per-prompt recall hook.
+
+Each indexed repository gets its own dataset, named
+`codebase-<repo-name>-<digest>` where the digest identifies the indexed path.
+Narrow datasets keep code searches fast, and the digest matters for
+correctness: with cognee's default backend every dataset is a separate graph
+database, and two checkouts sharing a basename (`~/work/a/service`,
+`~/work/b/service`) landing in one database would let each re-index's
+stale-node sweep delete the other's nodes. `--code` searches resolve the
+dataset from the current checkout, so the generated name rarely needs typing.
+
+### What the graph reflects: working tree vs. pushed commits
+
+**The freshness model differs by where the server runs.** This is a property of the
+architecture, not a limitation to work around — but it is worth knowing which one you
+are using, because the output looks identical either way.
+
+| Server | Indexed from | Graph reflects | Updated by |
+|---|---|---|---|
+| **Local** (default) | The repository path on this machine | Your working tree, **including uncommitted and untracked changes** | Every turn that changes a file |
+| **Cloud / remote** | A git URL the server clones | The **last pushed commit** on the cloned branch | Pushing, then re-indexing |
+
+A remote server cannot read your disk. It only ever sees code you have pushed, so a
+local edit — however recent — is invisible to it until it lands on the remote. The
+plugin therefore does not re-submit URL-indexed repositories after local edits: doing
+so would re-pull the same commits and change nothing.
+
+The practical consequence on cloud: if you refactor locally and ask about the old
+symbol, the graph answers from the pushed state and the answer *looks* authoritative.
+**Push before relying on code answers about work in progress**, or use a local server
+for branches you are actively editing. `{"operation": "delta"}` reports what the last
+index actually changed, which is the quickest way to confirm what the graph currently
+knows.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_CODE_AUTOINDEX` | `auto` | `auto`: auto-index new repositories only when the server is local (code never leaves the machine) · `always`: also auto-index against a remote server · `off`: never auto-index new repositories (explicitly indexed ones still refresh) |
+
+Automatic indexing skips directories that are not git repositories, hold no source
+files, or exceed 3000 source files. Explicit indexing has no size cap.
+
 ## Status line
 
 The status line displays `cognee: <dataset> · <mode>`, for example:
