@@ -14,7 +14,9 @@ Delete documents from Cognee memory based on what the user asks to forget. You d
 
 ## How it works
 
-Forgetting is a four-step process against the **running Cognee server**: sync the live session, find the current dataset's id, inspect the raw data of candidate documents, then forget the documents whose content matches what the user wants deleted. Deleting a document removes its raw data, its derived graph knowledge, **and clears the live session memory it came from** (Q&A entries, traces, and guidance of that session) — say so when asking for confirmation.
+Forgetting is a four-step process against the **running Cognee server**: sync the live session, find the current dataset's id, inspect the raw data of candidate documents, then forget the documents whose content matches what the user wants deleted.
+
+Deleting a document removes its raw data, its derived graph knowledge, and — best-effort — the session memory *contaminated* by it: Q&A turns whose answers actually cited the deleted graph elements, plus the feedback and distilled guidance that descend from those turns. This is **targeted, not whole-session**: a turn that merely discussed the topic without citing the deleted elements survives, and agent **trace** entries are not matched at all. So deleting the documents is what makes forgetting durable — say that plainly when confirming, and don't promise the session cache is now free of the topic.
 
 All server access goes through the `cognee-forget.sh` helper. It resolves the base URL and API key the same way the other skills do (shell env → `~/.cognee/.env` → the auto-minted local key in `api_key.json`) and **always** sends `X-Api-Key` — in cloud and local mode alike, since the server enforces auth even on localhost. Do not bypass it with raw `curl`: in local mode the key is never exported to your shell, so raw requests 401.
 
@@ -58,7 +60,7 @@ ${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh raw <dataset_id> <data_id>
 
 ### 4. Confirm, then forget each matching document
 
-Deletion is irreversible. Before deleting, show the user the list of matching documents (data id + a one-line summary of each), note that the originating session's live memory is cleared along with each document, and get their confirmation — unless the user's request was already specific and unambiguous.
+Deletion is irreversible. Before deleting, show the user the list of matching documents (data id + a one-line summary of each), note that session turns which relied on each document are cleared along with it, and get their confirmation — unless the user's request was already specific and unambiguous.
 
 Then forget each matching document by its data id:
 
@@ -70,7 +72,7 @@ Repeat for every matching data id. A final `HTTP 2xx` line means that document a
 
 ### 5. Report the outcome
 
-Tell the user exactly what was deleted (and what was checked but kept, if the match was fuzzy). If nothing matched, say so — do not delete "closest" documents on a miss. Note that content already injected into the current conversation's context stays visible until the conversation ends — forgetting governs what memory returns from now on, not what was already said.
+Tell the user exactly what was deleted (and what was checked but kept, if the match was fuzzy). If nothing matched, say so — do not delete "closest" documents on a miss. Note two limits honestly if they apply: content already injected into the current conversation's context stays visible until the conversation ends (forgetting governs what memory returns from now on, not what was already said), and tool-call **trace** entries still in the session cache are not invalidated by a document delete — if traces of the topic were captured this session, a later sync can re-persist them as new trace documents, which would need forgetting again.
 
 ## Error handling
 

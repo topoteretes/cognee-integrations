@@ -43,6 +43,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the raw `curl` examples pass `datasets` explicitly so following them doesn't
   search every readable dataset.
 
+### Changed
+- **Pinned cognee bumped to 1.5.3** (`_PINNED_COGNEE_VERSION` in
+  `session-start.py`). 1.5.3 carries the session-invalidation work the forget
+  skill depends on (COG-5947/COG-5835): deleting a document now also removes
+  the session Q&A turns whose answers cited the deleted graph elements, the
+  feedback and distilled guidance descending from them, and clamps the persist
+  watermark to the surviving entry count so post-delete turns are not silently
+  skipped by the next sync. Dataset-level deletes drop every session attributed
+  to the dataset. The plugin always installs the exact pin so the server's
+  lifespan migrations run on a known-good release.
+
+  Documented core limit, reflected in the skill: agent **trace** entries carry
+  no graph-element ids and are not matched, so trace content is not invalidated
+  by a document delete and a later sync can re-persist it as new trace
+  documents. The skill states this rather than promising the session cache is
+  clean.
+
 ## [1.3.3]
 
 ### Fixed
