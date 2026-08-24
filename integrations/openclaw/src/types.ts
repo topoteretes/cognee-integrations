@@ -97,6 +97,21 @@ export type CogneePluginConfig = {
   /** Where recalled memories are injected in the prompt. Default: prependSystemContext */
   recallInjectionPosition?: "prependSystemContext" | "appendSystemContext" | "prependContext";
 
+  // --- Harness-noise filter ---
+  /**
+   * ctx.trigger values treated as harness-generated turns: their prompts are
+   * excluded from auto-recall and QA capture (host instructions, not user
+   * queries). Default: ["heartbeat", "cron"]. Set [] to disable this layer.
+   */
+  noiseTriggers?: string[];
+  /**
+   * Regex sources matched against the prompt (leading whitespace stripped) to
+   * catch harness templates on hosts that don't stamp ctx.trigger — e.g.
+   * "Read HEARTBEAT.md…", "System: …", "[cron:…]". Matching prompts are
+   * excluded from auto-recall and QA capture. Set [] to disable this layer.
+   */
+  noisePatterns?: string[];
+
   // --- Automation ---
   autoRecall?: boolean;
   autoIndex?: boolean;

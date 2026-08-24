@@ -5,11 +5,22 @@ name: Live E2E (real backends, no mocks)
 # Nightly plus on-demand is enough to catch regressions in the memory chain that
 # the hermetic suite cannot see.
 #
-# Two jobs, ONE test suite. The same 36 scenarios run against a locally booted
-# server and against a cloud tenant; the backend is chosen by a single env var
-# (COGNEE_LIVE_BASE_URL). Separate jobs rather than one, so a cloud outage cannot
-# discredit the local signal — and because they need different setup: the local
-# job builds/caches the plugin venv, the cloud job needs no venv at all.
+# Three jobs, two test suites. `local` and `cloud` run ONE suite — the same 36
+# claude-code/codex scenarios — against a locally booted server and against a
+# cloud tenant; the backend is chosen by a single env var (COGNEE_LIVE_BASE_URL).
+# Separate jobs rather than one, so a cloud outage cannot discredit the local
+# signal — and because they need different setup: the local job builds/caches
+# the plugin venv, the cloud job needs no venv at all.
+#
+# `hermes` and `openclaw` each run a different suite entirely — one SDK-based
+# Python plugin, one TypeScript plugin, both out of scope for the shared harness
+# in integrations/tests (see its README) and both carrying their own live tests
+# inside their own package. Same tier, same nightly, their own jobs.
+#
+# Neither of those two shares the cloud tenant. Both name their datasets
+# `live_<uuid>` and wipe every `live_` dataset either side of a run, exactly as
+# the shared harness does, so pointing two of these jobs at one tenant in
+# parallel would have each one's cleanup delete the other's in-flight data.
 on:
   workflow_dispatch:
     inputs:
@@ -207,22 +218,228 @@ jobs:
               print(f'cleanup: deleted {deleted} test dataset(s); failures={failures[:5]}')
           "
 
+  # hermes-agent boots its own cognee server and drives the plugin's provider
+  # API directly — no hooks, no temp HOME, no plugin venv to seed. So this job
+  # shares the tier's shape (nightly, real LLM, Slack on failure) but none of the
+  # other two's setup: its own package dir, its own pytest invocation, and the
+  # opt-in gate its tests already ship with (COGNEE_RUN_INTEGRATION).
+  hermes:
+    name: live tier (hermes-agent)
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    # Seven tests, but LLM-bound ones: the suite budgets 120s for a cold server
+    # boot, 600s for a graph write and 900s for an improve. Its own per-test
+    # ceiling is 30m (tests/conftest.py), so this is the outer bound on a run
+    # where several tests stall rather than fail.
+    timeout-minutes: 60
+    outputs:
+      failed_tests: ${{ steps.failures.outputs.list }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: integrations/hermes-agent/.python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # cognee is a direct dependency of the plugin, so this single sync gives
+      # the job both the test runner and the server it boots. Nothing to cache
+      # beyond uv's own wheel cache.
+      - name: Install dependencies
+        working-directory: integrations/hermes-agent
+        run: uv sync --locked --dev
+
+      - name: Run the live round trip against a self-booted server
+        working-directory: integrations/hermes-agent
+        env:
+          # The gate the tests read at import time. Without it all seven skip and
+          # the job would pass while proving nothing.
+          COGNEE_RUN_INTEGRATION: '1'
+          LLM_API_KEY: ${{ secrets.LIVE_E2E_LLM_API_KEY }}
+          # Same model the local tier pins, for the same reason: graph extraction
+          # is the only model spend here. The spawned server inherits this env.
+          LLM_MODEL: openai/gpt-4o-mini
+        run: |
+          if [ -z "${LLM_API_KEY}" ]; then
+            echo "::error::LIVE_E2E_LLM_API_KEY is not set — the hermes live tier cannot run."
+            exit 1
+          fi
+          set -o pipefail
+          uv run pytest \
+            tests/test_integration_roundtrip.py \
+            tests/test_integration_concurrency.py \
+            -v ${{ inputs.pytest_args }} 2>&1 | tee pytest-live.log
+
+      - name: Record failed tests for the Slack report
+        id: failures
+        if: failure()
+        working-directory: integrations/hermes-agent
+        run: |
+          {
+            echo 'list<<GITHUB_OUTPUT_EOF'
+            grep -E '^(FAILED|ERROR) ' pytest-live.log 2>/dev/null | cut -c1-200 | head -20 || true
+            echo 'GITHUB_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # The server the tests spawn is detached and logs to the shared plugin
+      # state dir (server_bootstrap.default_server_log_path), so unlike the hook
+      # tiers its output survives the run — but only on the runner.
+      - name: Collect server logs on failure
+        if: failure()
+        run: |
+          {
+            echo "### hermes server log"
+            tail -200 "$HOME/.cognee-plugin/hermes/server.log" 2>/dev/null \
+              || echo "(no server log — the boot never got that far)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # openclaw's live tier will not boot anything: it requires a *named* server that
+  # already answers /health, deliberately, because there is no safe default (the
+  # conventional port usually holds a developer's real data). So this job boots one
+  # for it and hands over the URL.
+  #
+  # Loopback, not the cloud tenant, and not by preference: `liveConfig()` derives
+  # its mode from the URL, and its cloud branch drops the `/api/v1` prefix that the
+  # Python tiers use against that same tenant (`isCloud ? "/remember" : "/api/v1/
+  # remember"` in src/client.ts). Verified against a real server: with the prefix
+  # /datasets answers 200, without it 404. Loopback is the shape this tier is
+  # written for, and the one its own docstring documents.
+  openclaw:
+    name: live tier (openclaw)
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    # Three scenarios, each allowed 15m by the suite itself, and a graph write is
+    # polled for up to 10m before it gives up.
+    timeout-minutes: 60
+    outputs:
+      failed_tests: ${{ steps.failures.outputs.list }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # The server side of this job. hermes-agent is used purely as a packaged,
+      # version-pinned cognee plus a boot path this repo already tests
+      # (tests/test_integration_concurrency.py asserts exactly this spawn) — the
+      # alternative is a second, untested uvicorn incantation living in YAML.
+      - name: Set up Python for the server
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: integrations/hermes-agent/.python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install the cognee server
+        working-directory: integrations/hermes-agent
+        run: uv sync --locked
+
+      - name: Boot a cognee server and mint a key for it
+        working-directory: integrations/hermes-agent
+        env:
+          LLM_API_KEY: ${{ secrets.LIVE_E2E_LLM_API_KEY }}
+          # Graph extraction is the only model spend here; the server inherits this.
+          LLM_MODEL: openai/gpt-4o-mini
+        run: |
+          if [ -z "${LLM_API_KEY}" ]; then
+            echo "::error::LIVE_E2E_LLM_API_KEY is not set — the openclaw live tier cannot run."
+            exit 1
+          fi
+          # 9100, not cognee's conventional 8011: the same port the tier's own
+          # docstring uses, and nothing else on the runner will be near it.
+          #
+          # `_resolve_api_key` is private, and reused on purpose: the server rejects
+          # an unauthenticated /api/v1/datasets with 401, so the tier needs a real
+          # key, and this is the login-then-mint flow the plugin already ships and
+          # tests. Reimplementing it in shell would be a second copy to keep true.
+          key="$(uv run python -c '
+          from cognee_integration_hermes.http_backend import HttpBackend
+          from cognee_integration_hermes.server_bootstrap import ensure_local_server
+
+          backend = HttpBackend()
+          backend.url = ensure_local_server(9100, boot_timeout=600.0)
+          print(backend._resolve_api_key("", timeout=60.0))
+          ' | tail -1)"
+          if [ -z "$key" ]; then
+            echo "::error::could not mint an API key against the booted server."
+            exit 1
+          fi
+          echo "::add-mask::$key"
+          echo "COGNEE_LIVE_API_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Install openclaw dependencies
+        working-directory: integrations/openclaw
+        run: npm install
+
+      - name: Run the live tier against the booted server
+        working-directory: integrations/openclaw
+        env:
+          COGNEE_RUN_LIVE: '1'
+          COGNEE_LIVE_BASE_URL: http://127.0.0.1:9100
+          # COGNEE_LIVE_API_KEY comes from the boot step via GITHUB_ENV.
+        run: |
+          set -o pipefail
+          npm run test:live 2>&1 | tee jest-live.log
+          # The tier is `describe.skip` when its two variables are not both set, and
+          # a skipped suite exits 0. Without this the job's green would mean
+          # "nothing ran" just as readily as "everything passed".
+          if grep -q '\[live\] skipped' jest-live.log; then
+            echo "::error::the live suite skipped itself — it ran nothing."
+            exit 1
+          fi
+
+      - name: Record failed tests for the Slack report
+        id: failures
+        if: failure()
+        working-directory: integrations/openclaw
+        run: |
+          {
+            echo 'list<<GITHUB_OUTPUT_EOF'
+            grep -E '^(FAIL |  ● )' jest-live.log 2>/dev/null | cut -c1-200 | head -20 || true
+            echo 'GITHUB_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Collect server logs on failure
+        if: failure()
+        run: |
+          {
+            echo "### cognee server log (openclaw tier)"
+            tail -200 "$HOME/.cognee-plugin/hermes/server.log" 2>/dev/null \
+              || echo "(no server log — the boot never got that far)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   notify:
     name: Slack failure report
     runs-on: ubuntu-latest
-    needs: [local, cloud]
+    needs: [local, cloud, hermes, openclaw]
     # Failure-only by design: silence means green. `always()` is required for
     # the condition to be evaluated at all — without it a failed dependency
     # skips this job before the contains() is ever read.
     if: always() && contains(needs.*.result, 'failure')
     steps:
       # Secrets, both already-or-easily provisioned:
-      #   SLACK_BOT_TOKEN     — the same bot ci.yml uses for PR-review DMs.
+      #   SLACK_BOT_TOKEN     — the same bot ci.yml uses for PR-review DMs,
+      #     and deliberately the same delivery pattern: the target ID goes
+      #     straight into chat.postMessage (a U…/W… id DMs the user), so the
+      #     only scopes needed are chat:write, plus users:read.email when the
+      #     target is an email address. No conversations.open, no im:write.
       #   SLACK_NIGHTLY_NOTIFY — where the DM goes: an email address (resolved
-      #     via users.lookupByEmail, needs the users:read.email scope) or a
-      #     Slack member ID (U…/W…, no extra scope). A channel ID (C…) also
-      #     works if a channel is ever preferred. Kept in a secret rather than
-      #     in this public file so the address is not scrapable.
+      #     via users.lookupByEmail), a Slack member ID (U…/W…), or a channel
+      #     ID (C…) if a channel is ever preferred (invite the bot to it).
+      #     Kept in a secret rather than in this public file so the address is
+      #     not scrapable.
       - name: DM the nightly failure summary
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -231,6 +448,10 @@ jobs:
           CLOUD_RESULT: ${{ needs.cloud.result }}
           LOCAL_FAILED: ${{ needs.local.outputs.failed_tests }}
           CLOUD_FAILED: ${{ needs.cloud.outputs.failed_tests }}
+          HERMES_RESULT: ${{ needs.hermes.result }}
+          HERMES_FAILED: ${{ needs.hermes.outputs.failed_tests }}
+          OPENCLAW_RESULT: ${{ needs.openclaw.result }}
+          OPENCLAW_FAILED: ${{ needs.openclaw.outputs.failed_tests }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TRIGGER: ${{ github.event_name }}
         run: |
@@ -256,16 +477,29 @@ jobs:
               with urllib.request.urlopen(req, timeout=15) as resp:
                   out = json.load(resp)
               if not out.get("ok"):
-                  print(f"::error::Slack {method} failed: {out.get('error')}")
+                  err = out.get("error")
+                  hint = ""
+                  if err == "missing_scope":
+                      needed = {
+                          "users.lookupByEmail": "users:read.email",
+                          "chat.postMessage": "chat:write",
+                      }.get(method, "")
+                      if needed:
+                          hint = (
+                              f" — add the `{needed}` bot scope at api.slack.com"
+                              " (OAuth & Permissions) and reinstall the app"
+                          )
+                  print(f"::error::Slack {method} failed: {err}{hint}")
                   sys.exit(1)
               return out
 
           if "@" in target:
               target = slack("users.lookupByEmail", {"email": target})["user"]["id"]
-          if target.startswith(("U", "W")):
-              channel = slack("conversations.open", {"users": target})["channel"]["id"]
-          else:
-              channel = target  # a channel ID — post straight to it
+          # chat.postMessage accepts a user ID (U…/W…) directly as `channel` and
+          # delivers to the bot's DM with that user — same pattern as the
+          # PR-review notifier, and it needs only chat:write (conversations.open
+          # would additionally require im:write). Channel IDs post as-is.
+          channel = target
 
           def tier(name: str, result: str, failed: str) -> str:
               icon = {"success": ":white_check_mark:", "failure": ":red_circle:"}.get(result, ":white_circle:")
@@ -282,6 +516,8 @@ jobs:
                   f":rotating_light: *Nightly live e2e failed* ({os.environ.get('TRIGGER', '?')})",
                   tier("local tier", os.environ.get("LOCAL_RESULT", ""), os.environ.get("LOCAL_FAILED", "")),
                   tier("cloud tier", os.environ.get("CLOUD_RESULT", ""), os.environ.get("CLOUD_FAILED", "")),
+                  tier("hermes tier", os.environ.get("HERMES_RESULT", ""), os.environ.get("HERMES_FAILED", "")),
+                  tier("openclaw tier", os.environ.get("OPENCLAW_RESULT", ""), os.environ.get("OPENCLAW_FAILED", "")),
                   f"<{os.environ.get('RUN_URL', '')}|Open the run>",
               ]
           )

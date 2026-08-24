@@ -40,6 +40,7 @@ from _plugin_common import (
     apply_cognee_env,
     clear_server_pidfile,
     ensure_launch_record,
+    get_session_key,
     hook_log,
     probe_health,
     quiet_hook_output,
@@ -1447,6 +1448,13 @@ async def _start(payload: dict | None = None) -> dict:
     # host-keyed map). It is never sent to Cognee as an identity.
     session_candidate, session_source = resolve_session_key_from_payload(payload)
     session_key = set_session_key(session_candidate)
+    if not session_key:
+        # The mid-bootstrap venv re-exec (_run_heavy) replays this script after
+        # stdin was already consumed, so the payload is gone — but the pre-exec
+        # run exported COGNEE_SESSION_KEY, which execv preserves.
+        session_key = get_session_key()
+        if session_key:
+            session_source = "env_session_key"
     if not session_key:
         hook_log("missing_payload_session_id", {"cwd": cwd, "payload": payload})
         print(
