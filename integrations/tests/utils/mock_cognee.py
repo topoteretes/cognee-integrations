@@ -195,6 +195,15 @@ class MockCogneeServer:
         route("/api/v1/agents/unregister", "POST", self._agents_unregister)
         route("/api/v1/agents/connections/me", "GET", self._agents_connections_me)
 
+        # plugin identity provisioning (per-plugin agent sub-user + key).
+        # Exact-path routing, so each known plugin key gets its own route.
+        for plugin_key in ("claude-code", "codex"):
+            route(
+                f"/api/v1/integrations/plugins/{plugin_key}/provision",
+                "POST",
+                self._plugins_provision,
+            )
+
         # memory
         route("/api/v1/remember", "POST", self._remember)
         route("/api/v1/remember/entry", "POST", self._remember_entry)
@@ -251,6 +260,13 @@ class MockCogneeServer:
     def _agents_connections_me(self, req: Request) -> Response:
         self._record(req)
         status, body = self.identity.agents_connections_me(req.args.get("agent_session_name"))
+        return _json(status, body)
+
+    def _plugins_provision(self, req: Request) -> Response:
+        self._record(req)
+        # /api/v1/integrations/plugins/{plugin_key}/provision
+        plugin_key = req.path.rstrip("/").split("/")[-2]
+        status, body = self.identity.plugins_provision(plugin_key, req.headers.get("X-Api-Key"))
         return _json(status, body)
 
     def _remember(self, req: Request) -> Response:

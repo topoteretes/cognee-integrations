@@ -592,14 +592,26 @@ def _resolve_agent_name(config: dict, cwd: str) -> str:
 
 
 async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
-    """Resolve the one API key for this deployment.
+    """Resolve the PRINCIPAL key for this deployment.
 
     Order: env ``COGNEE_API_KEY`` -> single cached key -> mint once from the
-    default user (and cache it). No per-agent users or keys.
-    """
-    from _plugin_common import load_cached_api_key, save_cached_api_key
+    default user (and cache it).
 
+    The provisioned plugin-agent key is explicitly NOT a principal: earlier
+    steps in this same process may have stamped it into the env / config (see
+    ``_api_key_with_source``), and provisioning authenticated as the agent
+    would nest a new agent under the agent. Skip it wherever it leaked in.
+    """
+    from _plugin_common import (
+        load_cached_agent_key,
+        load_cached_api_key,
+        save_cached_api_key,
+    )
+
+    agent_key = load_cached_agent_key(service_url)
     api_key = str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
+    if agent_key and api_key == agent_key:
+        api_key = ""
     if not api_key:
         api_key = load_cached_api_key(service_url)
     if not api_key:
@@ -609,6 +621,63 @@ async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
     return api_key
 
 
+async def _ensure_plugin_identity(service_url: str, config: dict, principal_key: str) -> str:
+    """Resolve the plugin's dedicated agent key, provisioning when appropriate.
+
+    Provisioning policy (data-continuity over attribution):
+      - A cached agent key for this service_url wins outright. Never re-provision
+        while one exists — the server ROTATES on every provision call, which
+        would revoke the key any other machine of this user still holds.
+      - No agent key + fresh install (no principal existed before this
+        bootstrap) -> provision: all data lives under the plugin identity from
+        day one, auto-shared to the parent user.
+      - No agent key + existing install -> stay on the principal unless the
+        user opts in (``plugin_identity: true`` / COGNEE_PLUGIN_IDENTITY).
+        Switching silently would strand datasets the principal already owns:
+        the parent->agent share is one-directional (agent-created datasets are
+        shared up; parent-owned ones are NOT shared down).
+
+    Returns the agent key, or "" when the plugin runs as the principal.
+    """
+    from _plugin_common import (
+        hook_log,
+        load_cached_agent_key,
+        provision_plugin_agent_via_http,
+        save_cached_agent_key,
+    )
+
+    agent_key = load_cached_agent_key(service_url)
+    if agent_key:
+        return agent_key
+
+    fresh_install = bool(config.get("_fresh_install"))
+    opted_in = str(config.get("plugin_identity", "") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if not (fresh_install or opted_in):
+        return ""
+
+    status, body = provision_plugin_agent_via_http(principal_key=principal_key)
+    if status == "provisioned":
+        agent_key = str(body.get("api_key") or "").strip()
+        save_cached_agent_key(service_url, agent_key, str(body.get("agent_id") or ""))
+        hook_log(
+            "plugin_agent_provisioned",
+            {
+                "agent_id": str(body.get("agent_id") or ""),
+                "created": bool(body.get("created")),
+                "reason": "fresh_install" if fresh_install else "opt_in",
+            },
+        )
+        return agent_key
+
+    hook_log("plugin_provision_skipped", {"status": status})
+    return ""
+
+
 async def _ensure_agent_credentials_and_register(
     config: dict, cwd: str, session_id: str, agent_session_name: str, session_key: str
 ) -> tuple[str, str, str, bool]:
@@ -616,25 +685,70 @@ async def _ensure_agent_credentials_and_register(
     if not service_url:
         return "", "", "", False
 
-    api_key = await _resolve_single_principal_key(service_url, config)
-    if not api_key:
+    from _plugin_common import (
+        clear_cached_agent_key,
+        load_cached_agent_key,
+        load_cached_api_key,
+        provision_plugin_agent_via_http,
+        register_agent_via_http,
+        save_cached_agent_key,
+    )
+
+    # Fresh install = no identity of any kind existed before this bootstrap.
+    # Recorded BEFORE the principal chain below mints one.
+    config["_fresh_install"] = not (
+        str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
+        or load_cached_api_key(service_url)
+        or load_cached_agent_key(service_url)
+    )
+
+    principal_key = await _resolve_single_principal_key(service_url, config)
+    if not principal_key:
         return "", "", "", False
+
+    agent_key = await _ensure_plugin_identity(service_url, config, principal_key)
+    api_key = agent_key or principal_key
 
     os.environ["COGNEE_API_KEY"] = api_key
     config["api_key"] = api_key
 
-    # The principal user id (best-effort) — used for dataset readiness + watchers.
+    # The effective identity's user id (best-effort) — used for dataset
+    # readiness + watchers. Under a plugin identity this is the agent
+    # sub-user, which is exactly the user the data plane operates as.
     user_id = await _user_id_via_api(service_url, api_key)
 
-    from _plugin_common import register_agent_via_http
-
-    # Registration is now purely a lifecycle counter + connection registry under
-    # the single principal. The connection handle IS the Cognee session id.
+    # Registration is a lifecycle counter + connection registry under the
+    # effective identity. The connection handle IS the Cognee session id.
     registered, registration = register_agent_via_http(
         agent_session_name=agent_session_name,
         session_id=session_id,
         dataset_names=[str(config.get("dataset", "") or "").strip()],
     )
+    if not registered and registration.get("auth_failed") and agent_key:
+        # The provisioned key was revoked out-of-band (dashboard disconnect or
+        # a re-provision elsewhere rotated it). Re-provision once as the
+        # principal; if the server refuses, fall back to the principal key.
+        clear_cached_agent_key()
+        status, body = provision_plugin_agent_via_http(principal_key=principal_key)
+        if status == "provisioned":
+            agent_key = str(body.get("api_key") or "").strip()
+            save_cached_agent_key(service_url, agent_key, str(body.get("agent_id") or ""))
+            api_key = agent_key
+        else:
+            agent_key = ""
+            api_key = principal_key
+        hook_log(
+            "plugin_agent_rekeyed",
+            {"recovered": bool(agent_key), "provision_status": status},
+        )
+        os.environ["COGNEE_API_KEY"] = api_key
+        config["api_key"] = api_key
+        user_id = await _user_id_via_api(service_url, api_key)
+        registered, registration = register_agent_via_http(
+            agent_session_name=agent_session_name,
+            session_id=session_id,
+            dataset_names=[str(config.get("dataset", "") or "").strip()],
+        )
     if not registered:
         raise RuntimeError(f"Failed to register session '{session_id}' on {service_url}.")
 

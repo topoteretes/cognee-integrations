@@ -105,12 +105,27 @@ On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to 
 
 ## Auth
 
-The integration uses a **single auth principal** — one API key, one user. No per-agent credentials.
+The integration authenticates with **one principal** (one API key, one user), and —
+on servers that support it — a **plugin identity** derived from that principal: a
+dedicated agent sub-user with its own labeled API key, provisioned via
+`POST /api/v1/integrations/plugins/codex/provision`. Running under a plugin identity
+lets the cognee dashboard attribute sessions, traces and datasets to this plugin;
+datasets the plugin creates are automatically shared with your user.
 
-Key resolution order:
-1. `COGNEE_API_KEY` env var
-2. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
-3. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
+Key resolution order for data-plane traffic:
+1. `~/.cognee-plugin/codex/agent_key.json` (the provisioned plugin identity)
+2. `COGNEE_API_KEY` env var
+3. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
+4. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
+
+Provisioning policy:
+- **Fresh installs** (no key of any kind yet) provision a plugin identity automatically.
+- **Existing installs** keep the principal key — your datasets are owned by it, and
+  switching identities would hide them from the plugin. Opt in explicitly with
+  `"plugin_identity": true` in `config.json` or `COGNEE_PLUGIN_IDENTITY=true`.
+- A key revoked from the dashboard (disconnect / re-provision elsewhere) is detected
+  at the next session start and re-provisioned once; servers without the endpoint
+  fall back to the principal silently.
 
 ## Mode selection rules
 

@@ -110,37 +110,28 @@ def _resolve_server_url() -> tuple:
     return display, raw_url
 
 
-_SHARED_PLUGIN_ROOT = pathlib.Path.home() / ".cognee-plugin"
-_API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"
+_KEY_SOURCE_LABELS = {
+    "plugin_agent_key": "Plugin identity",
+    "env_api_key": "ENV",
+    "cache_single_key": "Config",
+    "missing": "Default",
+}
 
 
 def _resolve_api_key_source() -> str:
-    """Return a human-friendly label for where the API key came from.
+    """Return a human-friendly label for where the API key came from."""
+    from _env_file import env_file_path, parse_env_file
+    from _plugin_common import _api_key_with_source
 
-    Codex's _plugin_common._api_key does not return the source, so we
-    inline the same precedence logic here without modifying the module.
-    """
-    env_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
-    if env_key:
+    key, source = _api_key_with_source()
+    label = _KEY_SOURCE_LABELS.get(source, source)
+    if source == "env_api_key" and key:
         # The env layer is fed by both real exports and ~/.cognee/.env
         # (setdefault); tell them apart for debuggability.
-        from _env_file import env_file_path, parse_env_file
-
         file_key = parse_env_file(env_file_path()).get("COGNEE_API_KEY", "")
-        if file_key and file_key == env_key:
-            return "Env file"
-        return "ENV"
-
-    # Check the single cached key file.
-    try:
-        if _API_KEY_CACHE.exists():
-            data = json.loads(_API_KEY_CACHE.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and (data.get("api_key") or "").strip():
-                return "Config"
-    except Exception:
-        pass
-
-    return "Default"
+        if file_key and file_key == key:
+            label = "Env file"
+    return label
 
 
 def _check_health(server_url: str, timeout: float = 5.0) -> dict:

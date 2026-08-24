@@ -62,6 +62,12 @@ _DEFAULTS = {
     # Memory steering: assert Cognee as the preferred memory over Claude Code's
     # built-in auto memory (MEMORY.md). Opt out with COGNEE_PREFER_MEMORY=false.
     "prefer_cognee_memory": True,
+    # Plugin identity: provision a dedicated agent sub-user + API key for this
+    # plugin (POST /api/v1/integrations/plugins/claude-code/provision) so cognee
+    # attributes its traffic per plugin. Fresh installs do this automatically;
+    # existing installs keep the principal key (their datasets are owned by it)
+    # unless this opt-in is set.
+    "plugin_identity": False,
     # Background remember + cognify status polling. Remember runs in the background
     # (so a large cognify never holds one request open past the cloud's ~10-min
     # request ceiling); these tune how completion is polled afterwards.
@@ -110,6 +116,7 @@ _ENV_MAP = {
     "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",
+    "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
     # Background remember + cognify polling (read at the call sites via _float_env;
     # registered here for config-file support and discoverability).
     "COGNEE_COGNIFY_POLL_INTERVAL": "cognify_poll_interval",

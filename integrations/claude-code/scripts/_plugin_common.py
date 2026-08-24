@@ -56,6 +56,14 @@ _SUBPROCESS_LOG = _PLUGIN_DIR / "subprocess.log"
 # Single-principal model: one API key (user-provided COGNEE_API_KEY or one minted
 # from the default user) is cached here. Replaces the old per-agent agent_keys.json.
 _API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"
+# Plugin identity (server-side agent sub-user). Servers that expose
+# POST /api/v1/integrations/plugins/{key}/provision mint a dedicated agent
+# sub-user + API key per plugin, so cognee can attribute traffic to this
+# plugin instead of the shared principal. The key is per-plugin state (the
+# Codex plugin has its own identity), hence _PLUGIN_DIR, not the shared root.
+PLUGIN_KEY = "claude-code"
+CONNECTION_TYPE = "claude_code"
+_AGENT_KEY_CACHE = _PLUGIN_DIR / "agent_key.json"
 # Host-session-id -> generated Cognee session-id map. The host (Claude/Codex)
 # session id is used ONLY as a local correlation key so every hook process of a
 # single launch resolves the SAME Cognee session id; it is never sent to Cognee
@@ -1313,20 +1321,72 @@ def save_cached_api_key(service_url: str, key: str) -> None:
     )
 
 
-def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
-    """Resolve the single principal API key.
+def load_cached_agent_key(service_url: str = "") -> str:
+    """Return the provisioned plugin-agent key (matching service_url if recorded).
 
-    Single-principal model: one key for everything. Order:
-      1. ``COGNEE_API_KEY`` env (user-provided, or set in-process after minting).
-      2. The single cached key (``api_key.json``), minted once from the default
-         user by SessionStart when no key was provided.
-    No per-agent keys, no agent-name keying.
+    Empty string when the plugin has no provisioned identity — callers fall
+    back to the principal-key chain.
     """
+    data = _load_json_file(_AGENT_KEY_CACHE)
+    if not isinstance(data, dict):
+        return ""
+    key = str(data.get("api_key") or "").strip()
+    if not key:
+        return ""
+    cached_url = _normalize_service_url(str(data.get("base_url") or ""))
+    wanted = _normalize_service_url(service_url)
+    if wanted and cached_url and cached_url != wanted:
+        return ""
+    return key
+
+
+def save_cached_agent_key(service_url: str, key: str, agent_id: str = "") -> None:
+    if not str(key or "").strip():
+        return
+    _write_json_file(
+        _AGENT_KEY_CACHE,
+        {
+            "base_url": _normalize_service_url(service_url),
+            "api_key": str(key).strip(),
+            "agent_id": str(agent_id or ""),
+            "plugin_key": PLUGIN_KEY,
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
+
+
+def clear_cached_agent_key() -> None:
+    """Drop the provisioned identity (revoked key / dashboard disconnect)."""
+    try:
+        _AGENT_KEY_CACHE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
+    """Resolve the API key for data-plane traffic.
+
+    Order:
+      1. The provisioned plugin-agent key (``agent_key.json``), when SessionStart
+         provisioned a dedicated identity for this plugin. It outranks the env
+         key on purpose: it was minted VIA that principal (same tenant, same
+         authority) and is what keeps this plugin's traffic attributed to its
+         own agent sub-user. A revoked one 401s; SessionStart clears it and
+         falls back on the next bootstrap.
+      2. ``COGNEE_API_KEY`` env (user-provided, or set in-process after minting).
+      3. The single cached principal key (``api_key.json``), minted once from
+         the default user by SessionStart when no key was provided.
+    """
+    service_url = _normalize_service_url(service_url or _local_api_url())
+    agent_key = load_cached_agent_key(service_url)
+    if agent_key:
+        os.environ["COGNEE_API_KEY"] = agent_key
+        return agent_key, "plugin_agent_key"
+
     env_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
     if env_key:
         return env_key, "env_api_key"
 
-    service_url = _normalize_service_url(service_url or _local_api_url())
     cached = load_cached_api_key(service_url)
     if cached:
         os.environ["COGNEE_API_KEY"] = cached
@@ -2589,12 +2649,15 @@ def _json_http_request(
     method: str = "POST",
     timeout: float = 30.0,
     base_url: str | None = None,
+    api_key: str | None = None,
 ):
     # base_url overrides the resolved service URL for calls that target a
     # different host than the memory data plane (e.g. the cloud platform API's
-    # billing routes); the same principal X-Api-Key is attached either way.
+    # billing routes). api_key overrides the resolved key for calls that must
+    # authenticate as a specific identity (e.g. plugin provisioning runs as
+    # the principal, never as the provisioned agent).
     base_url = (base_url or _local_api_url()).rstrip("/")
-    api_key = _api_key()
+    api_key = api_key if api_key is not None else _api_key()
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-Api-Key"] = api_key
@@ -2776,6 +2839,60 @@ def write_outcome_ambiguous(exc: Exception) -> bool:
     return True
 
 
+def provision_plugin_agent_via_http(
+    *,
+    principal_key: str,
+    timeout: float = 20.0,
+) -> tuple[str, dict]:
+    """Provision (or re-key) this plugin's dedicated agent identity.
+
+    POST /api/v1/integrations/plugins/{PLUGIN_KEY}/provision, authenticated as
+    the PRINCIPAL (the human user's key — never the agent's own key: the server
+    would nest a new agent under the agent). The endpoint is idempotent
+    get-or-create; a repeat call ROTATES the key and revokes old ones, so call
+    it only when no usable agent key is cached.
+
+    Returns (status, body): status is "provisioned" (body has api_key/agent_id,
+    normalized to snake_case — the server's OutDTO answers camelCase),
+    "unsupported" (older server without the endpoint — caller stays on the
+    principal key), or "failed" (transport/server error — same fallback, but
+    worth retrying on a later bootstrap).
+    """
+    if not str(principal_key or "").strip():
+        return "failed", {}
+    try:
+        result = _json_http_request(
+            f"/api/v1/integrations/plugins/{PLUGIN_KEY}/provision",
+            {},
+            method="POST",
+            timeout=timeout,
+            api_key=principal_key,
+        )
+        if isinstance(result, dict):
+            body = {
+                "api_key": str(result.get("api_key") or result.get("apiKey") or "").strip(),
+                "agent_id": str(result.get("agent_id") or result.get("agentId") or ""),
+                "created": bool(result.get("created")),
+            }
+            if body["api_key"]:
+                return "provisioned", body
+        hook_log(
+            "plugin_provision_bad_response",
+            {"keys": sorted(result) if isinstance(result, dict) else str(type(result))},
+        )
+        return "failed", {}
+    except urllib.error.HTTPError as exc:
+        # 404/405: the server predates plugin provisioning (or the route set
+        # differs) — a capability verdict, not a fault.
+        if exc.code in (404, 405):
+            return "unsupported", {}
+        hook_log("plugin_provision_failed", {"status": exc.code, "error": str(exc)[:200]})
+        return "failed", {}
+    except Exception as exc:
+        hook_log("plugin_provision_failed", {"error": str(exc)[:200]})
+        return "failed", {}
+
+
 def register_agent_via_http(
     *,
     agent_session_name: str,
@@ -2785,7 +2902,9 @@ def register_agent_via_http(
 ) -> tuple[bool, dict]:
     payload = {
         "agent_session_name": agent_session_name,
-        "type": "api",
+        # Self-declared connection type (the server keeps a free-form registry;
+        # "claude_code" is one of its documented KNOWN_AGENT_CONNECTION_TYPES).
+        "type": CONNECTION_TYPE,
         "memory_mode": "hybrid",
         "source": "api",
     }
@@ -2801,6 +2920,11 @@ def register_agent_via_http(
         if isinstance(result, dict):
             return True, result
         return True, {}
+    except urllib.error.HTTPError as exc:
+        hook_log("agent_register_failed", {"status": exc.code, "error": str(exc)[:200]})
+        # Surface auth rejection so SessionStart can drop a revoked plugin-agent
+        # key and re-provision instead of failing the whole bootstrap.
+        return False, {"auth_failed": exc.code in (401, 403)}
     except Exception as exc:
         hook_log("agent_register_failed", {"error": str(exc)[:200]})
         return False, {}

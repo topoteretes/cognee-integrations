@@ -10,6 +10,34 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0]
+
+### Added
+- **Plugin identity: the plugin can now run as its own cognee agent sub-user.**
+  Cognee servers that expose `POST /api/v1/integrations/plugins/codex/provision`
+  mint a dedicated agent identity (sub-user + labeled API key) per plugin, so the
+  dashboard attributes sessions, traces, and datasets to *this plugin* instead of
+  the shared principal key. The provisioned key is cached per service URL at
+  `~/.cognee-plugin/codex/agent_key.json` and outranks the env/cached principal
+  for data-plane traffic; datasets the agent creates are auto-shared to the
+  parent user.
+  - **Fresh installs provision automatically.** Existing installs deliberately
+    stay on the principal key — their datasets are owned by it, and the
+    parent→agent share is one-directional — unless opted in with
+    `"plugin_identity": true` in config.json or `COGNEE_PLUGIN_IDENTITY=true`.
+  - **Rotation-aware:** the server rotates (and revokes) the key on every
+    provision call, so a cached key is never re-provisioned; a key revoked
+    out-of-band (dashboard disconnect) is detected via the auth-rejected
+    registration, dropped, and re-provisioned once. Servers without the
+    endpoint (404) fall back to the principal silently.
+  - The doctor reports the new key source as **Plugin identity**.
+
+### Changed
+- **Agent connections now self-declare `type: "codex"`** at
+  `POST /api/v1/agents/register` (previously the generic `"api"`), matching the
+  server's connection-type registry so the integrations page recognizes the
+  plugin without session-id-prefix heuristics.
+
 ## [1.4.3]
 
 ### Fixed

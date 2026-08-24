@@ -70,10 +70,16 @@ class IdentityFake:
         # agent_session_name -> {"status": "active", ...}; last registered wins
         self.registered_agents: dict[str, dict[str, Any]] = {}
         self.current_agent: str = ""
+        # plugin_key -> {"agent_email", "agent_id", "keys": [k, ...]}
+        # (POST /integrations/plugins/{key}/provision — get-or-create + rotate)
+        self.plugin_agents: dict[str, dict[str, Any]] = {}
 
         # knobs
         self.reject_login = False
         self.tenant_id = "tenant-test"
+        # False -> provision answers 404, like a server that predates plugin
+        # provisioning; the client must stay on the principal key.
+        self.plugin_provisioning = True
 
     # -- id helpers --------------------------------------------------------
     def _new_id(self, prefix: str) -> str:
@@ -152,6 +158,45 @@ class IdentityFake:
         if self.current_agent == name:
             self.current_agent = ""
         return 200, {"activeAgents": len(self.registered_agents)}
+
+    def plugins_provision(self, plugin_key: str, api_key: str | None) -> tuple[int, dict[str, Any]]:
+        """POST /api/v1/integrations/plugins/{plugin_key}/provision.
+
+        Mirrors the real endpoint: idempotent get-or-create of an agent
+        sub-user for the calling principal, ROTATING the key on every call
+        (old keys are revoked). Response is an OutDTO -> camelCase fields.
+        """
+        if not self.plugin_provisioning:
+            return 404, {"detail": "Not Found"}
+        entry = self.valid_keys.get(api_key or "")
+        if not entry or not entry["valid"]:
+            return 401, {"detail": "invalid api key"}
+
+        record = self.plugin_agents.get(plugin_key)
+        created = record is None
+        if record is None:
+            owner_id = self.users.get(entry["owner"], {}).get("id", "user")
+            agent_email = f"{plugin_key}+{owner_id}@cognee.agent"
+            self.seed_user(agent_email)
+            record = {
+                "agent_email": agent_email,
+                "agent_id": self.users[agent_email]["id"],
+                "keys": [],
+            }
+            self.plugin_agents[plugin_key] = record
+
+        new_key = self._new_id("agentkey")
+        self.valid_keys[new_key] = {"owner": record["agent_email"], "valid": True}
+        for old_key in record["keys"]:
+            self.invalidate_key(old_key)
+        record["keys"] = [new_key]
+
+        return 201, {
+            "pluginKey": plugin_key,
+            "agentId": record["agent_id"],
+            "apiKey": new_key,
+            "created": created,
+        }
 
     def agents_connections_me(
         self, agent_session_name: str | None = None

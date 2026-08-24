@@ -59,6 +59,12 @@ _DEFAULTS = {
     # Local mode
     "llm_api_key": "",
     "llm_model": "",
+    # Plugin identity: provision a dedicated agent sub-user + API key for this
+    # plugin (POST /api/v1/integrations/plugins/codex/provision) so cognee
+    # attributes its traffic per plugin. Fresh installs do this automatically;
+    # existing installs keep the principal key (their datasets are owned by it)
+    # unless this opt-in is set.
+    "plugin_identity": False,
 }
 
 
@@ -94,6 +100,7 @@ _ENV_MAP = {
     "COGNEE_SESSION_PREFIX": "session_prefix",
     "COGNEE_BASE_URL": "base_url",
     "COGNEE_API_KEY": "api_key",
+    "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
     "COGNEE_USER_EMAIL": "user_email",
     "COGNEE_USER_PASSWORD": "user_password",
     "LLM_API_KEY": "llm_api_key",
