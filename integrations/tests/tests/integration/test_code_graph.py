@@ -117,6 +117,49 @@ def test_http_error_is_not_unreachable(cg, mock_server, code):
     assert res["status"] == code
 
 
+def test_unparseable_body_is_not_success(cg, mock_server):
+    """A 2xx we cannot parse must not read as a confirmed write.
+
+    Unlike the fire-and-forget remember path, callers here advance the repo's
+    stored fingerprint on "ok" — so reporting success for a body that proves
+    nothing would mark edits as indexed that may never have been.
+    """
+    mock_server.force_response("POST", REMEMBER, 200, b"<html>502 Bad Gateway</html>")
+    res = cg.do_index_repo(mock_server.url, "", "/path/to/proj", "ds")
+    assert res != cg.UNREACHABLE  # reachable server: no CLI-fallback semantics
+    assert isinstance(res, dict) and "error" in res
+    assert res.get("ok") is not True
+
+
+def test_unparseable_body_does_not_advance_the_fingerprint(cg, mock_server, git_repo):
+    """The consequence that actually matters: the turn's edits stay pending.
+
+    If the fingerprint advanced here, the next turn would see an unchanged
+    tree, skip the re-index, and leave the code graph silently stale with no
+    error anywhere. Keeping the old fingerprint costs one re-submission, which
+    the server's content hash skips when the write did land.
+    """
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    before = cg.load_repo_states()[0]["fingerprint"]
+
+    (git_repo / "app.py").write_text("def start():\n    return 99\n", encoding="utf-8")
+    mock_server.force_response("POST", REMEMBER, 200, b"not json at all")
+
+    outcome = cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    assert outcome["changed"] is True and outcome["submitted"] is False
+    assert cg.load_repo_states()[0]["fingerprint"] == before
+
+
+def test_unparseable_body_leaves_the_repo_unregistered(cg, mock_server, git_repo):
+    """An explicit index that could not be confirmed must not look indexed:
+    a state file would enable the recall lane and the freshness loop for a
+    graph we have no evidence exists."""
+    mock_server.force_response("POST", REMEMBER, 200, b"<html>oops</html>")
+    res = cg.index_repo(mock_server.url, "", str(git_repo))
+    assert "error" in res
+    assert cg.load_repo_states() == []
+
+
 def test_unreachable_server_is_the_sentinel(cg):
     res = cg.do_index_repo("http://127.0.0.1:1", "", "/path/to/proj", "ds")
     assert res == cg.UNREACHABLE
@@ -191,6 +234,132 @@ def test_failed_resubmit_keeps_the_old_fingerprint(cg, mock_server, git_repo):
     outcome = cg.reingest_if_changed(str(git_repo), mock_server.url, "")
     assert outcome["changed"] is True and outcome["submitted"] is False
     assert cg.load_repo_states()[0]["fingerprint"] == before
+
+
+# ── retry backoff on repeated failures ─────────────────────────────────────
+
+
+def _fail(mock_server, status=401):
+    mock_server.force_response("POST", REMEMBER, status, {"detail": "nope"})
+
+
+def test_repeated_failures_stop_hitting_the_network(cg, mock_server, git_repo):
+    """A failed submission leaves the fingerprint alone, so the tree stays
+    'changed' on every later turn — conversation-only turns included. Without a
+    throttle one unresolved failure re-submits once per turn forever and
+    appends to a hook log that never rotates."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    (git_repo / "app.py").write_text("def start():\n    return 2\n", encoding="utf-8")
+    _fail(mock_server)
+    mock_server.calls.clear()
+
+    for _ in range(6):
+        cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+
+    posts = [c for c in mock_server.calls if c["method"] == "POST" and c["path"] == REMEMBER]
+    assert len(posts) == 1, f"expected one attempt inside the window, got {len(posts)}"
+
+
+def test_backoff_never_advances_the_fingerprint(cg, mock_server, git_repo):
+    """Throttling must not be implemented by marking the edits done: the
+    pending work has to survive the quiet period, or the graph goes silently
+    stale the moment the underlying problem is fixed."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    before = cg.load_repo_states()[0]["fingerprint"]
+    (git_repo / "app.py").write_text("def start():\n    return 3\n", encoding="utf-8")
+    _fail(mock_server)
+
+    for _ in range(4):
+        cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+
+    assert cg.load_repo_states()[0]["fingerprint"] == before
+
+
+def test_throttled_turns_report_nothing_to_log(cg, mock_server, git_repo):
+    """The suppressed turn returns the 'nothing to do' shape, which the Stop
+    hook does not log — that is what actually stops the log noise."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    (git_repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    _fail(mock_server)
+
+    first = cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    second = cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    assert first["submitted"] is False and "retry_in" in first
+    assert second == {}
+
+
+def test_attempt_resumes_once_the_window_expires(cg, mock_server, git_repo):
+    """Backoff delays recovery, it must not prevent it."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    (git_repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    _fail(mock_server)
+    cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+
+    state = cg.load_repo_states()[0]
+    state["last_error_at"] = 0.1  # window long past
+    cg.save_repo_state(state)
+    mock_server.clear_forced()
+
+    outcome = cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    assert outcome["submitted"] is True
+
+
+def test_success_clears_the_backoff(cg, mock_server, git_repo):
+    """A recovered repo must not carry a stale penalty into its next failure."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    (git_repo / "app.py").write_text("x = 3\n", encoding="utf-8")
+    _fail(mock_server)
+    cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    assert cg.load_repo_states()[0]["error_count"] == 1
+
+    state = cg.load_repo_states()[0]
+    state["last_error_at"] = 0.1
+    cg.save_repo_state(state)
+    mock_server.clear_forced()
+    cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+
+    assert "error_count" not in cg.load_repo_states()[0]
+
+
+def test_backoff_escalates_and_is_capped(cg):
+    """Escalating keeps a long outage quiet; the cap bounds how late a fixed
+    credential is noticed."""
+    schedule = [cg.retry_backoff_seconds(n) for n in range(1, 8)]
+    assert schedule[0] == 30
+    assert schedule == sorted(schedule)
+    assert max(schedule) == cg._RETRY_BACKOFF_MAX_SECONDS
+    assert cg.retry_backoff_seconds(0) == 0
+
+
+def test_backwards_clock_does_not_park_a_repo_in_backoff(cg, mock_server, git_repo):
+    """A system clock moved backwards must not strand a repo forever."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    (git_repo / "app.py").write_text("x = 4\n", encoding="utf-8")
+    _fail(mock_server)
+    cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+
+    state = cg.load_repo_states()[0]
+    state["last_error_at"] = 9_999_999_999.0  # far future
+    cg.save_repo_state(state)
+    mock_server.calls.clear()
+
+    cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    assert any(c["path"] == REMEMBER for c in mock_server.calls)
+
+
+def test_explicit_index_ignores_the_backoff(cg, mock_server, git_repo):
+    """An explicit request is the user asking directly — it must never be
+    silently swallowed by a throttle they cannot see."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    (git_repo / "app.py").write_text("x = 5\n", encoding="utf-8")
+    _fail(mock_server)
+    cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    mock_server.clear_forced()
+    mock_server.calls.clear()
+
+    res = cg.index_repo(mock_server.url, "", str(git_repo))
+    assert res["ok"] is True
+    assert any(c["path"] == REMEMBER for c in mock_server.calls)
 
 
 def test_unindexed_repo_is_left_alone(cg, mock_server, git_repo):

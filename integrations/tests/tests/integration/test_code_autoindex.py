@@ -166,6 +166,28 @@ def test_remote_indexed_repo_is_still_refreshed(cg, mock_server, git_repo, monke
     assert outcome["submitted"] is True
 
 
+def test_session_start_retries_despite_an_active_backoff(cg, mock_server, git_repo):
+    """Restarting the agent is the gesture a user makes after fixing what broke
+    indexing (a corrected key, a restarted server), so a session start gets an
+    attempt instead of waiting out a window earned by the previous session.
+    Bounded by launches rather than turns, which is what the per-turn backoff
+    exists to limit."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    (git_repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    mock_server.force_response("POST", REMEMBER, 401, {"detail": "nope"})
+    cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    assert cg.load_repo_states()[0]["error_count"] == 1
+
+    # The user fixes the credential and relaunches; no window has elapsed.
+    mock_server.clear_forced()
+    mock_server.calls.clear()
+    outcome = cg.autoindex_on_session_start(
+        str(git_repo), mock_server.url, "", is_local_server=True
+    )
+    assert outcome["submitted"] is True
+    assert "error_count" not in cg.load_repo_states()[0]
+
+
 # ── directories that must be left alone ────────────────────────────────────
 
 
