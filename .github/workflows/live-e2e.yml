@@ -217,12 +217,16 @@ jobs:
     if: always() && contains(needs.*.result, 'failure')
     steps:
       # Secrets, both already-or-easily provisioned:
-      #   SLACK_BOT_TOKEN     — the same bot ci.yml uses for PR-review DMs.
+      #   SLACK_BOT_TOKEN     — the same bot ci.yml uses for PR-review DMs,
+      #     and deliberately the same delivery pattern: the target ID goes
+      #     straight into chat.postMessage (a U…/W… id DMs the user), so the
+      #     only scopes needed are chat:write, plus users:read.email when the
+      #     target is an email address. No conversations.open, no im:write.
       #   SLACK_NIGHTLY_NOTIFY — where the DM goes: an email address (resolved
-      #     via users.lookupByEmail, needs the users:read.email scope) or a
-      #     Slack member ID (U…/W…, no extra scope). A channel ID (C…) also
-      #     works if a channel is ever preferred. Kept in a secret rather than
-      #     in this public file so the address is not scrapable.
+      #     via users.lookupByEmail), a Slack member ID (U…/W…), or a channel
+      #     ID (C…) if a channel is ever preferred (invite the bot to it).
+      #     Kept in a secret rather than in this public file so the address is
+      #     not scrapable.
       - name: DM the nightly failure summary
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -256,16 +260,29 @@ jobs:
               with urllib.request.urlopen(req, timeout=15) as resp:
                   out = json.load(resp)
               if not out.get("ok"):
-                  print(f"::error::Slack {method} failed: {out.get('error')}")
+                  err = out.get("error")
+                  hint = ""
+                  if err == "missing_scope":
+                      needed = {
+                          "users.lookupByEmail": "users:read.email",
+                          "chat.postMessage": "chat:write",
+                      }.get(method, "")
+                      if needed:
+                          hint = (
+                              f" — add the `{needed}` bot scope at api.slack.com"
+                              " (OAuth & Permissions) and reinstall the app"
+                          )
+                  print(f"::error::Slack {method} failed: {err}{hint}")
                   sys.exit(1)
               return out
 
           if "@" in target:
               target = slack("users.lookupByEmail", {"email": target})["user"]["id"]
-          if target.startswith(("U", "W")):
-              channel = slack("conversations.open", {"users": target})["channel"]["id"]
-          else:
-              channel = target  # a channel ID — post straight to it
+          # chat.postMessage accepts a user ID (U…/W…) directly as `channel` and
+          # delivers to the bot's DM with that user — same pattern as the
+          # PR-review notifier, and it needs only chat:write (conversations.open
+          # would additionally require im:write). Channel IDs post as-is.
+          channel = target
 
           def tier(name: str, result: str, failed: str) -> str:
               icon = {"success": ":white_check_mark:", "failure": ":red_circle:"}.get(result, ":white_circle:")
