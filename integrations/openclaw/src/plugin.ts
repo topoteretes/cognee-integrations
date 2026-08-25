@@ -972,16 +972,44 @@ const memoryCogneePlugin = {
       return multiScope ? datasetNameForScope("agent", cfg, rawAgentId) : cfg.datasetName;
     }
 
+    // In-flight capture writes, keyed by Cognee session id. Writes are
+    // fire-and-forget from the hook's point of view, but session_end's improve
+    // bridges whatever is in the session cache *at that moment*: if the final
+    // QA's POST is still in flight when /improve arrives, improve bridges an
+    // empty session, reports success, and the turn is stranded in the cache
+    // for good. The live tier hit exactly this on a cold server. session_end
+    // awaits this set (per session) before calling improve.
+    const pendingStores = new Map<string, Set<Promise<void>>>();
+
+    function awaitPendingStores(cogneeSid: string): Promise<void> {
+      const set = pendingStores.get(cogneeSid);
+      if (!set || set.size === 0) return Promise.resolve();
+      return Promise.allSettled([...set]).then(() => {
+        // A store may have been added while we waited (late llm_output).
+        return awaitPendingStores(cogneeSid);
+      });
+    }
+
     function storeEntry(entry: Record<string, unknown>, rawAgentId: string | undefined, hostSessionId: string, kind: string): void {
-      client.rememberEntry({
+      const cogneeSid = cogneeSessionId(hostSessionId);
+      const p: Promise<void> = client.rememberEntry({
         datasetName: captureDatasetName(rawAgentId),
-        sessionId: cogneeSessionId(hostSessionId),
+        sessionId: cogneeSid,
         entry,
       }).then(({ entryId }) => {
         api.logger.debug?.(`cognee-openclaw: ${kind} stored${entryId ? ` (${entryId})` : ""}`);
       }).catch((e: unknown) => {
         api.logger.warn?.(`cognee-openclaw: ${kind} store failed: ${String(e)}`);
+      }).finally(() => {
+        const set = pendingStores.get(cogneeSid);
+        if (set) {
+          set.delete(p);
+          if (set.size === 0) pendingStores.delete(cogneeSid);
+        }
       });
+      let set = pendingStores.get(cogneeSid);
+      if (!set) { set = new Set(); pendingStores.set(cogneeSid, set); }
+      set.add(p);
     }
 
     if (captureEnabled) {
@@ -1456,6 +1484,9 @@ const memoryCogneePlugin = {
         // unregister can drop activeAgents to 0 and, in COGNEE_AGENT_MODE,
         // shut the server down mid-pipeline.
         if (cfg.improveOnSessionEnd && endSessionId) {
+          // Let this session's in-flight capture writes land first; improve
+          // only bridges what is already in the session cache.
+          await awaitPendingStores(endSessionId);
           const dsName = multiScope ? datasetNameForScope("agent", cfg, endAgentId) : cfg.datasetName;
           await withFinalSyncRetries("session-end improve", async () => {
             const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId] });
