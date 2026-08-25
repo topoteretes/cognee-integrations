@@ -10,6 +10,35 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0]
+
+### Added
+- **Switch datasets mid-session: `/cognee-memory:cognee-switch-datasets`.** Lists the
+  datasets you can write to (owned by the principal behind your API key — `GET
+  /api/v1/datasets` returns everything readable, so read-only ones are filtered out
+  and counted), lets you pick one, and moves the launch: the current session is
+  synced into its dataset first (`sync-session-to-graph.py --strict`; the switch
+  aborts if that fails, `--force` to proceed anyway), a **new** Cognee session is
+  registered on the target dataset under a fresh connection handle, and only then
+  is the old handle released — so a local agent-mode server never drops to zero
+  connections. Backed by `scripts/switch-dataset.py` (`--list [--json]`, `<name>
+  [--force] [--json]`, `--session-key`).
+
+### Changed
+- **The active dataset now lives in the launch record**
+  (`~/.cognee-plugin/claude-code/sessions/<host id>.json`), seeded at SessionStart
+  from `COGNEE_PLUGIN_DATASET`/default. `config.get_dataset`, `load_resolved`, the
+  `cognee-search.sh`/`cognee-remember.sh` wrappers, the idle and exit watchers and
+  the status line all read it, so a switch is followed everywhere and survives
+  `--resume`. A switched record beats an exported `COGNEE_SESSION_ID`.
+- **Status line** shows the launch's recorded dataset and a faint `· switched` tag
+  once it differs from the launch-time one.
+- **Final sync covers every session the launch touched.** The record keeps a
+  `touched` list of `{session_id, dataset, conn_uuid}` triples; the SessionEnd /
+  exit-watcher sync bridges each pair (current last) and releases every handle, so a
+  write that raced a switch is never lost.
+- `sync-session-to-graph.py --strict` exits non-zero on an incomplete bridge.
+
 ## [1.3.3]
 
 ### Fixed

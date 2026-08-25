@@ -180,6 +180,23 @@ def main() -> None:
         _log("pidfile_replaced", parent_pid=parent_pid, pidfile=str(pidfile))
         return
 
+    # A dataset switch mid-session replaced the session, dataset and connection
+    # handle this watcher was spawned with. Re-read the launch record so the
+    # final sync targets the live triple (the sync worker itself also covers the
+    # retired sessions in the record's ``touched`` list).
+    if session_key:
+        try:
+            from _plugin_common import _read_map_record
+
+            rec = _read_map_record(session_key)
+            if rec.get("switched_at"):
+                session_id = str(rec.get("session_id") or session_id)
+                dataset = str(rec.get("dataset") or dataset)
+                agent_session_name = str(rec.get("conn_uuid") or agent_session_name)
+                _log("exit_target_switched", session=session_id, dataset=dataset)
+        except Exception as exc:
+            _log("exit_target_resolve_failed", error=str(exc)[:200])
+
     _log("parent_exited", parent_pid=parent_pid, session=session_id, dataset=dataset)
     _spawn_sync(
         session_id,

@@ -163,9 +163,31 @@ codex
 `~/.cognee-plugin/config.json` may still show a `dataset` value for visibility,
 but runtime dataset selection does not read it.
 
-The dataset is fixed for the lifetime of a launch. Recall searches only the active dataset. If you want to
-change the active dataset, you have to exit Claude, change the dataset via env, and then start Claude again.
-Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset.
+Data added outside of Codex to the dataset (via SDK or the server for example) is visible in Codex via the Cognee plugin.
+
+### Switching datasets mid-session
+
+Ask Codex to switch datasets (the `cognee-switch-datasets` skill). Without a name it lists the
+datasets you can write to — those owned by the principal behind your API key; datasets you can
+only read are counted but never offered — as a numbered list and asks you to pick. A name that
+is not listed is created for you.
+
+A Cognee session never spans two datasets, so the switch:
+
+1. syncs the current session into its dataset (aborts if that fails — nothing changes);
+2. registers a **new** Cognee session on the chosen dataset under a fresh connection handle,
+   then releases the old handle (register-then-unregister, so a local agent-mode server never
+   sees zero connections);
+3. repoints this launch's record so every hook, the shell wrappers, the idle/exit watchers and
+   the in-context status line follow it (it gains a `· switched` tag on the next prompt).
+
+The choice lives in the launch record (`~/.cognee-plugin/codex/sessions/<host id>.json`), so it
+survives a resume and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
+`COGNEE_SESSION_ID`) for the rest of the launch. Retired sessions stay in the record's `touched`
+list and the session-end sync covers them again as a safety net. The script behind the skill is
+`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`,
+`--session-key <host id>` when several launches share a directory).
 
 ## Hooks
 
@@ -227,10 +249,11 @@ through), `COGNEE_AGENT_SESSION_NAME`, `COGNEE_PLUGIN_IN_VENV` (the re-exec guar
 and `COGNEE_SYNC_DATASET` / `COGNEE_SYNC_SESSION_ID` (arguments to the final-sync
 worker). Setting them yourself does not configure anything — the plugin overwrites
 them during startup — and a stale value can misroute identity or session resolution.
-Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to pin a dataset.
+Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the dataset
+(a mid-session dataset switch overrides both for that launch).
 
 The renderer reads only local state — no network calls on every refresh:
-1. Dataset: `COGNEE_PLUGIN_DATASET` env var, otherwise `agent_sessions`
+1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
 2. Mode: `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` switch, then `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/config.json` (`base_url`)
 3. Default mode: `local`
 
@@ -377,7 +400,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
-| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall (config value is informational-only) |
+| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall at launch; the `cognee-switch-datasets` skill changes it mid-session (config value is informational-only) |
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `codex` | Prefix for auto-generated session IDs |
@@ -402,7 +425,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `agent_sessions`).
+- Recall is scoped to the active dataset (the one in the status line — `COGNEE_PLUGIN_DATASET` / `agent_sessions` at launch, or whatever you switched to).
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 

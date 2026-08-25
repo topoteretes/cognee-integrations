@@ -206,7 +206,7 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
 
     Hooks call this after setting the host session key from their payload, so the
     resolver finds the launch's id in the map. An explicit ``COGNEE_SESSION_ID``
-    env (or ``.cognee/session-config.json`` picker) overrides.
+    env overrides, unless the launch was moved with ``switch-dataset.py``.
     """
     from _plugin_common import get_session_key, resolve_cognee_session_id
 
@@ -216,7 +216,23 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
 
 
 def get_dataset(config: dict) -> str:
-    """Get the dataset name from config."""
+    """The dataset this launch writes to.
+
+    Inside a launch (host session key set) the launch record is authoritative —
+    it carries the dataset chosen with ``switch-dataset.py``, seeded at
+    SessionStart from the env/default. Outside a launch, the config value
+    (``COGNEE_PLUGIN_DATASET`` → default) applies as before.
+    """
+    try:
+        from _plugin_common import _read_map_record, get_session_key
+
+        host_key = get_session_key()
+        if host_key:
+            recorded = str(_read_map_record(host_key).get("dataset") or "").strip()
+            if recorded:
+                return recorded
+    except Exception:
+        pass
     return config.get("dataset", "agent_sessions")
 
 
