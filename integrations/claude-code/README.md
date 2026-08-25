@@ -241,12 +241,14 @@ risk a duplicate). Only a genuine connection failure falls back.
 tennis"). The agent syncs the live session first (so unsynced content becomes a
 deletable document), reads candidate documents' raw content to decide what matches,
 confirms with the user, and deletes each matching document via `POST /api/v1/forget` —
-which removes the raw data, its derived graph knowledge, and the originating session's
-live cache. All server access goes through `scripts/cognee-forget.sh`, which resolves
-the API key like the other wrappers (env → `~/.cognee/.env` → the auto-minted local
-`api_key.json`) and always authenticates; it refuses to run without a key rather than
-send requests that can only 401. Deletion is irreversible; dataset-wide or
-delete-everything scopes require an explicit, unambiguous user request.
+which removes the raw data, its derived graph knowledge, and — best-effort — the session
+Q&A turns whose answers cited the deleted graph elements (plus guidance derived from
+them; agent trace entries are not matched). All server access goes through
+`scripts/cognee-forget.sh`, which resolves the API key like the other wrappers (env →
+`~/.cognee/.env` → the auto-minted local `api_key.json`) and always authenticates; it
+refuses to run without a key rather than send requests that can only 401. Deletion is
+irreversible; dataset-wide or delete-everything scopes require an explicit, unambiguous
+user request.
 
 ## Status line
 
