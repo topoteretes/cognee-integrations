@@ -13,20 +13,50 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 
 import pytest
 from utils.isolation import build_env
 from utils.mock_cognee import DEFAULT_DATA_ID, DEFAULT_DATASET_ID
 from utils.suites import PLUGIN_DIR_NAME
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+
+def _usable_bash() -> str | None:
+    """Path to a bash that actually runs scripts, or None.
+
+    ``shutil.which("bash")`` alone is not enough: on Windows it resolves to
+    ``C:\\Windows\\System32\\bash.exe`` — the WSL launcher — which, with no distro
+    installed, prints "Windows Subsystem for Linux has no installed
+    distributions" (as UTF-16) and exits 1. The wrapper is a POSIX script that
+    also needs ``python3`` and ``curl`` on the shell's PATH, so it is not
+    exercised on Windows at all; elsewhere the probe guards against any stub.
+    """
+    if sys.platform == "win32":
+        return None
+    bash = shutil.which("bash")
+    if not bash:
+        return None
+    try:
+        probe = subprocess.run(
+            [bash, "-c", "echo __ok__"], capture_output=True, encoding="utf-8", timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return bash if probe.returncode == 0 and "__ok__" in probe.stdout else None
+
+
+BASH = _usable_bash()
+
+pytestmark = pytest.mark.skipif(
+    BASH is None, reason="requires a working POSIX bash (wrapper is not run on Windows)"
+)
 
 
 def run_forget(suite, *args, home, service_url=None, api_key=None):
     script = suite.scripts_dir / "cognee-forget.sh"
     env = build_env(suite, home, service_url=service_url, api_key=api_key)
     return subprocess.run(
-        ["bash", str(script), *args],
+        [BASH, str(script), *args],
         env=env,
         cwd=str(home),
         capture_output=True,
