@@ -96,7 +96,35 @@ async function turn(
     ctx,
   );
   await harness.emit("llm_output", { assistantTexts: [answer] }, ctx);
-  await flush();
+  // `flush()` only drains the event loop; the capture itself is a fire-and-forget
+  // POST that on a cold server can outlast session_end's improve, which then
+  // bridges an empty session and the turn is lost for good. Wait for the plugin
+  // to report the QA row stored — the first nightly failure was exactly this race.
+  await waitForLog(harness, /qa stored/, "qa capture");
+}
+
+/**
+ * Resolve once the harness logger (any level) has seen a line matching `re`.
+ * Checks lines already logged first, so a fast write is not missed.
+ */
+async function waitForLog(
+  harness: ReturnType<typeof liveHarness>,
+  re: RegExp,
+  what: string,
+  deadlineMs = 60_000,
+): Promise<void> {
+  const end = Date.now() + deadlineMs;
+  while (Date.now() < end) {
+    const lines = Object.values(harness.logger)
+      .flatMap((fn) => (fn as jest.Mock).mock?.calls ?? [])
+      .map((call) => call.map(String).join(" "));
+    if (lines.some((l) => re.test(l))) return;
+    if (lines.some((l) => /store failed/.test(l))) {
+      throw new Error(`${what} failed on the server side: ${lines.find((l) => /store failed/.test(l))}`);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`${what}: no log matching ${re} within ${deadlineMs}ms`);
 }
 
 suite("live memory chain", () => {
@@ -144,7 +172,8 @@ suite("live memory chain", () => {
       // SessionEnd hands the bridge to a background chain and returns, so the
       // graph is not queryable yet — the poll below is the real gate.
       await harness.emit("session_end", {}, { agentId: "will", sessionId: "live-session-a" });
-      await flush();
+      // The chain is fire-and-forget; wait for improve to actually be dispatched.
+      await waitForLog(harness, /session-end improve dispatched/, "session-end improve", 120_000);
 
       // ── L1: the graph holds it ───────────────────────────────────────────
       const body = await waitUntilRecalled(cfg, `What did we standardise on for ${nonce}?`, ["paxos"]);
@@ -195,7 +224,7 @@ suite("live memory chain", () => {
         sessionId: "live-iso-a",
       });
       await harness.emit("session_end", {}, { agentId: "will", sessionId: "live-iso-a" });
-      await flush();
+      await waitForLog(harness, /session-end improve dispatched/, "session-end improve", 120_000);
 
       await waitUntilRecalled(cfg, `What does ${nonce} use?`, ["byzantine"]);
 
