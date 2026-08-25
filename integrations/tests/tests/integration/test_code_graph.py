@@ -442,14 +442,23 @@ def test_real_source_edits_still_register_next_to_a_snapshot(cg, git_repo):
 
 
 def _find_enola():
+    """Locate a local enola binary, or "" (the real-binary test then skips).
+
+    Runs at collection time (inside a skipif), so it must never raise on any
+    platform: an exception here fails the whole module, not one test.
+    """
     import glob
     import os
-    import pwd
     import shutil
 
     candidates = [os.environ.get("ENOLA_PATH", ""), shutil.which("enola") or ""]
     try:
-        real_home = pwd.getpwuid(os.getuid()).pw_dir  # tests redirect HOME
+        import pwd  # POSIX only: the fixtures redirect HOME, so ask the passwd db
+
+        real_home = pwd.getpwuid(os.getuid()).pw_dir
+    except Exception:  # Windows has no pwd module; fall back to the process HOME
+        real_home = os.path.expanduser("~")
+    try:
         candidates += sorted(glob.glob(os.path.join(real_home, ".cognee", "bin", "enola-*")))
     except Exception:
         pass
