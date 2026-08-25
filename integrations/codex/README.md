@@ -226,6 +226,11 @@ database, and two checkouts sharing a basename (`~/work/a/service`,
 stale-node sweep delete the other's nodes. `--code` searches resolve the
 dataset from the current checkout, so the generated name rarely needs typing.
 
+Indexing writes enola's snapshot into the indexed repository itself, at
+`<repo>/.enola/` (untracked). Add `.enola/` to the repository's `.gitignore` or
+your global excludes; the plugin's change detection already ignores it, so the
+indexer's own output never triggers a re-index.
+
 ### What the graph reflects: working tree vs. pushed commits
 
 **The freshness model differs by where the server runs.** This is a property of the

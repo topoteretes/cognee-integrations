@@ -44,6 +44,9 @@ ${CODEX_PLUGIN_ROOT}/scripts/cognee-index-repo.sh <repo-path-or-git-url> [--data
 - The submit returns quickly (background pipeline); `--wait 60` polls
   `pipeline=code_graph_pipeline` until queryable.
 
+Indexing writes enola's snapshot to `<repo>/.enola/` (untracked) — add it to
+`.gitignore` or global excludes. The plugin's change detection ignores it.
+
 **Indexing is also the freshness opt-in**: for local-path repos the plugin
 records a git fingerprint and automatically re-submits the repo in the
 background when a turn changed the working tree. Re-running the command on an

@@ -87,8 +87,8 @@ _STATE_DIR = Path.home() / ".cognee-plugin" / _INTEGRATION / "code-graph"
 _GIT_TIMEOUT_SECONDS = 10.0
 
 # Mirrors cognee's CodeLoader SUPPORTED_CODE_EXTENSIONS (v1.5.3) — the
-# extensions the per-file CODE route claims. Used for the --file remember
-# path's hinting and the identifier extractor's filename pattern.
+# extensions the per-file CODE route claims. Used by the identifier
+# extractor's filename pattern and the auto-index source-file count.
 CODE_EXTENSIONS = frozenset(
     {
         "c",
@@ -252,29 +252,48 @@ def git_repo_root(cwd: str) -> str:
     return os.path.realpath(out) if out else ""
 
 
+# enola writes its snapshot INTO the indexed repository (<repo>/.enola/) and
+# rotates files there on every run. Left visible to the fingerprint, the
+# indexer's own output would change the fingerprint after every index, so the
+# next turn would see a "changed" tree and re-index — a full enola parse per
+# turn, forever, for every locally indexed repo (verified: two enola runs with
+# no source edit produce two different fingerprints). Excluded at the git level
+# so neither the dirty-path set nor the untracked stats can see it.
+_ENOLA_SNAPSHOT_DIR = ".enola"
+_FINGERPRINT_PATHSPEC = ["--", ".", f":(exclude){_ENOLA_SNAPSHOT_DIR}"]
+
+
 def git_fingerprint(root: str) -> str:
     """A cheap content fingerprint of the working tree.
 
     Covers HEAD, the dirty-path set, tracked content changes (``git diff
     HEAD``), and untracked files by (path, size, mtime) — porcelain alone
-    would miss a re-edit of an already-dirty file. Returns "" when the root
-    is not a usable git repo; callers treat "" as "cannot fingerprint" and
-    skip the freshness gate (the server-side hashes still dedupe).
+    would miss a re-edit of an already-dirty file. The enola snapshot dir the
+    indexer itself writes is excluded (see ``_FINGERPRINT_PATHSPEC``). Returns
+    "" when the root is not a usable git repo; callers treat "" as "cannot
+    fingerprint" and skip the freshness gate (the server-side hashes still
+    dedupe).
     """
     if not root:
         return ""
     head = _run_git(["rev-parse", "HEAD"], root).strip()
     if not head:
         return ""
-    porcelain = _run_git(["status", "--porcelain"], root)
+    porcelain = _run_git(["status", "--porcelain", *_FINGERPRINT_PATHSPEC], root)
     digest = hashlib.sha256()
     digest.update(head.encode("utf-8"))
     digest.update(porcelain.encode("utf-8"))
-    digest.update(_run_git(["diff", "HEAD"], root).encode("utf-8", errors="replace"))
+    digest.update(
+        _run_git(["diff", "HEAD", *_FINGERPRINT_PATHSPEC], root).encode("utf-8", errors="replace")
+    )
     for line in porcelain.splitlines():
         if not line.startswith("??"):
             continue
         rel = line[3:].strip().strip('"')
+        # Belt and braces: an older git that ignores the exclude pathspec must
+        # still never let the snapshot dir drive the fingerprint.
+        if rel.rstrip("/") == _ENOLA_SNAPSHOT_DIR or rel.startswith(_ENOLA_SNAPSHOT_DIR + "/"):
+            continue
         path = os.path.join(root, rel)
         try:
             stat = os.stat(path)

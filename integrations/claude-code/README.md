@@ -215,6 +215,7 @@ Final sync on session end is triggered by the `SessionEnd` detached worker, with
 - `/cognee-memory:cognee-remember`
 - `/cognee-memory:cognee-search`
 - `/cognee-memory:cognee-sync`
+- `/cognee-memory:cognee-code`
 
 ## Remember (write) behavior
 
@@ -263,6 +264,11 @@ database, and two checkouts sharing a basename (`~/work/a/service`,
 `~/work/b/service`) landing in one database would let each re-index's
 stale-node sweep delete the other's nodes. `--code` searches resolve the
 dataset from the current checkout, so the generated name rarely needs typing.
+
+Indexing writes enola's snapshot into the indexed repository itself, at
+`<repo>/.enola/` (untracked). Add `.enola/` to the repository's `.gitignore` or
+your global excludes; the plugin's change detection already ignores it, so the
+indexer's own output never triggers a re-index.
 
 ### What the graph reflects: working tree vs. pushed commits
 

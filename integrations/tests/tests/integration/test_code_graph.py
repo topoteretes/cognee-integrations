@@ -398,6 +398,79 @@ def test_non_git_directory_is_skipped_quietly(cg, mock_server, tmp_path):
     mock_server.assert_not_called("POST", REMEMBER)
 
 
+# ── the indexer's own output must not re-trigger indexing ─────────────────
+
+
+def _write_enola_snapshot(repo, marker: str) -> None:
+    """Mimic what `enola --generate` leaves in the indexed repo: an untracked
+    .enola/ dir whose files (and rotated `previous/` copies) change every run."""
+    snap = repo / ".enola"
+    (snap / "previous").mkdir(parents=True, exist_ok=True)
+    (snap / "receipt.json").write_text('{"snapshot_id": "%s"}' % marker, encoding="utf-8")
+    (snap / "facts.jsonl").write_text(marker * 50, encoding="utf-8")
+    (snap / "previous" / f"receipt-{marker}.json").write_text("{}", encoding="utf-8")
+
+
+def test_enola_snapshot_dir_does_not_change_the_fingerprint(cg, git_repo):
+    """enola writes its snapshot INTO the repo it indexes and rotates files
+    there on every run. If that were visible to the fingerprint, every index
+    would make the next turn look 'changed' and re-index — a full parse per
+    turn, forever, for every locally indexed repo."""
+    before = cg.git_fingerprint(str(git_repo))
+    _write_enola_snapshot(git_repo, "run1")
+    assert cg.git_fingerprint(str(git_repo)) == before
+    _write_enola_snapshot(git_repo, "run2")  # a second run rewrites/rotates
+    assert cg.git_fingerprint(str(git_repo)) == before
+
+
+def test_enola_snapshot_dir_does_not_trigger_a_reindex(cg, mock_server, git_repo):
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    mock_server.calls.clear()
+    _write_enola_snapshot(git_repo, "run1")  # the background index landed
+
+    outcome = cg.reingest_if_changed(str(git_repo), mock_server.url, "")
+    assert outcome["changed"] is False
+    mock_server.assert_not_called("POST", REMEMBER)
+
+
+def test_real_source_edits_still_register_next_to_a_snapshot(cg, git_repo):
+    """Excluding .enola must not blind the fingerprint to actual edits."""
+    _write_enola_snapshot(git_repo, "run1")
+    before = cg.git_fingerprint(str(git_repo))
+    (git_repo / "app.py").write_text("def start():\n    return 7\n", encoding="utf-8")
+    assert cg.git_fingerprint(str(git_repo)) != before
+
+
+def _find_enola():
+    import glob
+    import os
+    import pwd
+    import shutil
+
+    candidates = [os.environ.get("ENOLA_PATH", ""), shutil.which("enola") or ""]
+    try:
+        real_home = pwd.getpwuid(os.getuid()).pw_dir  # tests redirect HOME
+        candidates += sorted(glob.glob(os.path.join(real_home, ".cognee", "bin", "enola-*")))
+    except Exception:
+        pass
+    return next((c for c in candidates if c and os.access(c, os.X_OK)), "")
+
+
+@pytest.mark.skipif(not _find_enola(), reason="enola binary not installed locally")
+def test_fingerprint_is_stable_across_real_enola_runs(cg, git_repo):
+    """The definitive check against the real binary, not a mimic of its
+    output: two generates with no source edit must leave the fingerprint
+    exactly where it was before the first one."""
+    enola = _find_enola()
+    before = cg.git_fingerprint(str(git_repo))
+    for _ in range(2):
+        subprocess.run(
+            [enola, "--generate"], cwd=git_repo, check=True, capture_output=True, timeout=180
+        )
+        assert cg.git_fingerprint(str(git_repo)) == before
+    assert (git_repo / ".enola").is_dir(), "enola did not write its snapshot where expected"
+
+
 # ── per-file code uploads (the .txt-rename fix) ────────────────────────────
 
 

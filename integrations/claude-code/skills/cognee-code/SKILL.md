@@ -34,6 +34,9 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh <repo-path-or-git-url> [--dat
   the graph is queryable. Poll manually via
   `GET /api/v1/datasets/status?dataset=<id>&pipeline=code_graph_pipeline`.
 
+Indexing writes enola's snapshot to `<repo>/.enola/` (untracked) — add it to
+`.gitignore` or global excludes. The plugin's change detection ignores it.
+
 **Indexing is also the freshness opt-in**: for local-path repos the plugin
 records a git fingerprint and automatically re-submits the repo in the
 background when a turn changed the working tree, so the graph tracks your
