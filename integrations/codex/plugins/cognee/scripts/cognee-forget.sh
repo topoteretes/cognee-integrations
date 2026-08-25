@@ -115,7 +115,7 @@ validate_uuid() {
 
 if [ -z "$API_KEY" ]; then
     echo "Error: no API key resolved (checked COGNEE_API_KEY, ~/.cognee/.env, ${PLUGIN_DIR%/*}/api_key.json)." >&2
-    echo "Cloud mode: set COGNEE_API_KEY in ~/.cognee/.env. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
+    echo "Cloud mode: set COGNEE_API_KEY in ~/.cognee/.env. Local mode: the key is minted at session start — start a new session or run doctor.py." >&2
     exit 2
 fi
 
