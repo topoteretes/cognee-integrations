@@ -12,6 +12,7 @@ cares about (``assert_called``), never a deep-equal of the whole body.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from werkzeug import Request, Response
@@ -22,6 +23,10 @@ from .identity_fake import IdentityFake
 STATUS_COMPLETED = "DATASET_PROCESSING_COMPLETED"
 STATUS_ERRORED = "DATASET_PROCESSING_ERRORED"
 STATUS_PROCESSING = "DATASET_PROCESSING_STARTED"
+
+#: Stable ids for the default dataset/data the forget surface serves.
+DEFAULT_DATASET_ID = "11111111-1111-5111-8111-111111111111"
+DEFAULT_DATA_ID = "22222222-2222-5222-8222-222222222222"
 
 
 def _json(status: int, body: Any) -> Response:
@@ -52,6 +57,14 @@ class MockCogneeServer:
         self._improve_response: dict | None = None
         self._credits_overview: Any = {"tenants": []}
         self._credits_fetches = 0
+        # Forget surface: dataset listing, per-dataset data, raw content.
+        self._datasets_list: list[dict] = [
+            {"id": DEFAULT_DATASET_ID, "name": "agent_sessions", "createdAt": "2026-01-01T00:00:00"}
+        ]
+        self._dataset_data: list[dict] = [
+            {"id": DEFAULT_DATA_ID, "name": "session_doc", "datasetId": DEFAULT_DATASET_ID}
+        ]
+        self._raw_content = "Session ID: test_session\n\nraw stored text"
         # (method, path) -> (status, body): short-circuits the normal handler.
         self._forced: dict[tuple[str, str], tuple[int, Any]] = {}
         self.calls: list[dict[str, Any]] = []
@@ -87,6 +100,18 @@ class MockCogneeServer:
     def set_improve_response(self, body: dict | None) -> None:
         """Configure POST /api/v1/improve. ``{}`` simulates the busy/lock skip."""
         self._improve_response = body
+
+    def set_datasets(self, datasets: list[dict]) -> None:
+        """Configure the JSON array returned by GET /api/v1/datasets."""
+        self._datasets_list = list(datasets)
+
+    def set_dataset_data(self, data: list[dict]) -> None:
+        """Configure the JSON array returned by GET /api/v1/datasets/<id>/data."""
+        self._dataset_data = list(data)
+
+    def set_raw_content(self, text: str) -> None:
+        """Configure the body of GET /api/v1/datasets/<id>/data/<id>/raw."""
+        self._raw_content = text
 
     def set_credits_overview(self, overview: dict | list) -> None:
         """Configure GET /api/v1/billing/credits/overview.
@@ -204,6 +229,12 @@ class MockCogneeServer:
         route("/api/v1/datasets", "GET", self._datasets_list)
         route("/api/v1/datasets/status", "GET", self._datasets_status)
 
+        # forget surface (dataset inspection + deletion)
+        route("/api/v1/datasets", "GET", self._datasets_get)
+        route(re.compile(r"^/api/v1/datasets/[^/]+/data$"), "GET", self._dataset_data_get)
+        route(re.compile(r"^/api/v1/datasets/[^/]+/data/[^/]+/raw$"), "GET", self._dataset_raw_get)
+        route("/api/v1/forget", "POST", self._forget)
+
         # cloud platform (billing)
         route("/api/v1/billing/credits/overview", "GET", self._credits)
 
@@ -295,6 +326,22 @@ class MockCogneeServer:
         self._record(req)
         status, body = self.identity.datasets_list()
         return _json(status, body)
+
+    def _datasets_get(self, req: Request) -> Response:
+        self._record(req)
+        return _json(200, self._datasets_list)
+
+    def _dataset_data_get(self, req: Request) -> Response:
+        self._record(req)
+        return _json(200, self._dataset_data)
+
+    def _dataset_raw_get(self, req: Request) -> Response:
+        self._record(req)
+        return Response(self._raw_content, status=200, content_type="text/plain")
+
+    def _forget(self, req: Request) -> Response:
+        self._record(req)
+        return _json(200, {"status": "success"})
 
     def _datasets_status(self, req: Request) -> Response:
         self._record(req)

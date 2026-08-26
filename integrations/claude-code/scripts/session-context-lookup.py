@@ -93,6 +93,12 @@ def _format_entry(entry: dict) -> str:
         content = str(entry.get("content", "") or entry.get("text", ""))[:TRUNCATE_GRAPH_CTX]
         return f"[agent-guidance]\n{content}"
 
+    if source == "code":
+        # Deterministic code-graph facts (ResponseCodeEntry): `text` is the
+        # normalized renderable field; raw payloads keep full structure.
+        content = str(entry.get("text", "") or entry.get("content", ""))[:TRUNCATE_GRAPH_CTX]
+        return f"[code-graph]\n{content}"
+
     if source == "trace":
         origin = entry.get("origin_function", "?")
         status = entry.get("status", "")
@@ -128,6 +134,8 @@ def _has_entry_content(entry: dict) -> bool:
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
+    if source == "code":
+        return bool(str(entry.get("text", "") or entry.get("content", "")).strip())
     if source == "trace":
         fields = ("origin_function", "status", "session_feedback", "method_return_value")
     else:
@@ -170,7 +178,7 @@ async def _recent_trace_fallback(session_id: str, user_id: str, top_k: int) -> l
     return normalized
 
 
-async def _run(prompt: str) -> dict | None:
+async def _run(prompt: str, cwd: str = "") -> dict | None:
     config = load_config()
     runtime = resolve_runtime_mode()
     cloud_mode = runtime["mode"] == "http"
@@ -265,6 +273,29 @@ async def _run(prompt: str) -> dict | None:
         (["session_context"], None, "agent"),
         (["graph"], "HYBRID_COMPLETION", None),
     ]
+    # Additive code-graph lane (cognee >= 1.5.3). Fires only when the prompt
+    # carries an identifier-shaped token AND the cwd sits inside a repo the
+    # user indexed via cognee-index-repo.sh — never on conversational prompts,
+    # never as a replacement for the semantic scopes. The server keeps this
+    # scope explicit-only (scope=auto never implies it), so the gate lives
+    # here. Placed before graph: the code lane is the cheapest call when its
+    # snapshot is warm, and graph is the long pole that must stay last.
+    code_lane = {}
+    try:
+        from _code_graph import auto_code_lane
+
+        code_lane = auto_code_lane(prompt, cwd) or {}
+    except Exception as exc:
+        hook_log("code_lane_gate_error", {"error": str(exc)[:200]})
+    if code_lane:
+        scope_specs.insert(3, (["code"], None, None))
+        hook_log(
+            "code_lane_armed",
+            {
+                "identifier": code_lane.get("identifier", ""),
+                "dataset": code_lane.get("dataset", ""),
+            },
+        )
     if not cloud_mode:
         import cognee
         from cognee.modules.search.types import SearchType
@@ -322,6 +353,11 @@ async def _run(prompt: str) -> dict | None:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
         scope_timeout = min(recall_timeout, remaining)
+        # The code lane searches the indexed repo's own (narrow) dataset with
+        # a structured query; every other scope keeps the session dataset.
+        is_code_scope = bool(code_lane) and scope_list == ["code"]
+        scope_dataset = code_lane["dataset"] if is_code_scope else get_dataset(config)
+        scope_code_query = code_lane["code_query"] if is_code_scope else None
         part = None
         t0 = time.monotonic()
         try:
@@ -334,7 +370,8 @@ async def _run(prompt: str) -> dict | None:
                     only_context=True,
                     search_type=qtype,
                     context_profile=context_profile,
-                    dataset=get_dataset(config),
+                    dataset=scope_dataset,
+                    code_query=scope_code_query,
                     timeout=scope_timeout,
                 )
             else:
@@ -349,6 +386,11 @@ async def _run(prompt: str) -> dict | None:
                         query_type=query_type,
                         user=user,
                         **({"context_profile": context_profile} if context_profile else {}),
+                        **(
+                            {"datasets": [scope_dataset], "code_query": scope_code_query}
+                            if is_code_scope
+                            else {}
+                        ),
                     ),
                     timeout=scope_timeout,
                 )
@@ -478,6 +520,7 @@ async def _run(prompt: str) -> dict | None:
         "trace": [],
         "graph_context": [],
         "session_context": [],
+        "code": [],
     }
     for r in results or []:
         if hasattr(r, "model_dump"):
@@ -551,7 +594,9 @@ async def _run(prompt: str) -> dict | None:
     header = (
         "Cognee memory: recall "
         f"{counts['session']} session / {counts['trace']} trace / "
-        f"{counts['graph_context']} graph / {counts['session_context']} agent; saved last turn "
+        f"{counts['graph_context']} graph / {counts['session_context']} agent"
+        + (f" / {counts['code']} code" if code_lane else "")
+        + "; saved last turn "
         f"{saves_last_turn['prompt']} prompt / {saves_last_turn['trace']} trace / "
         f"{saves_last_turn['answer']} answer"
     )
@@ -560,6 +605,11 @@ async def _run(prompt: str) -> dict | None:
     if by_source.get("session_context"):
         section_lines.append("=== Active agent guidance ===")
         for e in by_source["session_context"]:
+            section_lines.append(_format_entry(e))
+            section_lines.append("")
+    if by_source.get("code"):
+        section_lines.append("=== Code graph facts ===")
+        for e in by_source["code"]:
             section_lines.append(_format_entry(e))
             section_lines.append("")
     if by_source.get("graph_context"):
@@ -680,11 +730,12 @@ def main():
     prompt = payload.get("prompt", "")
     if not prompt or len(prompt) < 5:
         return
+    cwd = str(payload.get("cwd") or "") or os.getcwd()
 
     output = None
     try:
         with quiet_hook_output("session-context-lookup"):
-            output = asyncio.run(_run(prompt))
+            output = asyncio.run(_run(prompt, cwd))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
     if output:

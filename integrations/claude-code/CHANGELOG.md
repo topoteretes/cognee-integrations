@@ -24,7 +24,86 @@ project adheres to [Semantic Versioning](https://semver.org/).
   connections. Backed by `scripts/switch-dataset.py` (`--list [--json]`, `<name>
   [--force] [--json]`, `--session-key`).
 
+- **`cognee-forget` skill — user-directed deletion of memory.** "Forget what we
+  talked about tennis" now has a first-class flow: the agent syncs the live
+  session (so unsynced content becomes a deletable document), lists the plugin
+  dataset, judges candidate documents by their raw content, confirms with the
+  user, and deletes each match via `POST /api/v1/forget`. Documents from the
+  same session are treated as a group — deleting one while keeping its siblings
+  would leave the topic recallable.
+- **`scripts/cognee-forget.sh`** — the skill's server access. Subcommands
+  (`sync`, `datasets`, `data`, `raw`, `forget`, `env`) each resolve credentials
+  per invocation the same way the other wrappers do (shell env →
+  `~/.cognee/.env` → the auto-minted local `api_key.json`), because exported
+  variables don't survive across the agent's separate Bash calls. Every API
+  command appends a final `HTTP <status>` line; with no key resolvable the
+  helper exits 2 with guidance instead of sending a request that can only 401.
+  The helper deliberately supports single-document deletion only — dataset-wide
+  and `everything` scopes stay behind an explicit-user-request warning in the
+  skill. Ids are validated as UUIDs and the request body is built with `json.dumps` rather than string interpolation, so a crafted id cannot redirect the request to another endpoint or append body fields — an injected `everything: true` would have deleted every dataset the user owns.
+- **Mock-server forget surface + e2e tests.** `MockCogneeServer` now serves
+  `GET /api/v1/datasets`, `GET /datasets/<id>/data`, `GET .../raw`, and
+  `POST /api/v1/forget`; `tests/e2e/test_forget_script.py` runs the wrapper as
+  a subprocess against it (credential resolution incl. the `api_key.json`
+  fallback and the exit-2 path, payload shape, status trailer, 404 pass-through).
+
+- **Code graph.** Repositories can be indexed into cognee's deterministic,
+  enola-backed code graph (symbols, calls, imports, endpoints, dependencies)
+  and queried from the plugin — with **no LLM or embedding calls** on either
+  side. Requires a cognee server >= 1.5.3.
+  - **Automatic indexing**: opening a session inside a git repository indexes
+    it in the background at session start (never blocking the first prompt)
+    and refreshes an already-indexed repo whose tree changed. New repos are
+    auto-indexed only against a *local* server, where the code stays on the
+    machine; a remote server needs `COGNEE_CODE_AUTOINDEX=always` or an explicit
+    index. Non-git directories, repos with no source files, and repos over 3000
+    source files are skipped (explicit indexing has no cap).
+  - **Freshness**: the Stop hook re-submits an indexed repo when a turn changed
+    its working tree, detected by a git fingerprint (HEAD, dirty set, tracked
+    diff, untracked stats). Failures keep the fingerprint — the edits stay
+    pending — behind an escalating backoff (30s → 15min cap) so an unresolved
+    failure cannot re-submit once per turn forever; a new session always gets
+    one attempt.
+  - **Auto-recall code lane**: prompts naming an identifier-shaped token
+    (`process_payment`, `UserService`, `billing/api.py`) inside an indexed repo
+    get code facts injected under `=== Code graph facts ===`. The lane is
+    additive to the semantic scopes, gated syntactically, and contributes
+    nothing when it misses — conversational prompts are unchanged.
+  - **Explicit tools**: `cognee-index-repo.sh <path-or-git-url>`,
+    `cognee-search.sh "<seed>" --code [--code-query '<json>']` (operations:
+    `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
+    `delta`), `cognee-remember.sh --file <path>` (uploads under the real
+    filename so code routes as code, not prose), and a new `cognee-code` skill.
+- One dataset per indexed repository, `codebase-<repo>-<digest>`. The path
+  digest is load-bearing: same-basename checkouts sharing a dataset would share
+  a graph database, where cognee's repo-scoped stale-node sweep would let each
+  re-index delete the other's nodes. `--code` searches resolve the dataset from
+  the current checkout.
+
+### Fixed
+- **cognee-search SKILL.md no longer claims searches span all authorized
+  datasets.** The wrapper has always scoped recall to the plugin dataset
+  (`COGNEE_PLUGIN_DATASET`, default `agent_sessions`); the doc now says so, and
+  the raw `curl` examples pass `datasets` explicitly so following them doesn't
+  search every readable dataset.
+
 ### Changed
+- **Pinned cognee bumped to 1.5.3** (`_PINNED_COGNEE_VERSION` in
+  `session-start.py`). 1.5.3 carries the session-invalidation work the forget
+  skill depends on (COG-5947/COG-5835): deleting a document now also removes
+  the session Q&A turns whose answers cited the deleted graph elements, the
+  feedback and distilled guidance descending from them, and clamps the persist
+  watermark to the surviving entry count so post-delete turns are not silently
+  skipped by the next sync. Dataset-level deletes drop every session attributed
+  to the dataset. The plugin always installs the exact pin so the server's
+  lifespan migrations run on a known-good release.
+
+  Documented core limit, reflected in the skill: agent **trace** entries carry
+  no graph-element ids and are not matched, so trace content is not invalidated
+  by a document delete and a later sync can re-persist it as new trace
+  documents. The skill states this rather than promising the session cache is
+  clean.
+
 - **The active dataset now lives in the launch record**
   (`~/.cognee-plugin/claude-code/sessions/<host id>.json`), seeded at SessionStart
   from `COGNEE_PLUGIN_DATASET`/default. `config.get_dataset`, `load_resolved`, the
@@ -38,6 +117,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   exit-watcher sync bridges each pair (current last) and releases every handle, so a
   write that raced a switch is never lost.
 - `sync-session-to-graph.py --strict` exits non-zero on an incomplete bridge.
+
+- **Pinned cognee version is now `1.5.3`** (was `1.5.0`) — the release that
+  opened `content_type="code"` on `/api/v1/remember` and the `code` recall
+  scope. Installed into the managed venv on next session start.
+- The freshness model is documented as a property of where the server runs:
+  a local server reflects the working tree (uncommitted changes included); a
+  cloud server reflects the last *pushed* commit, since its clone cannot see
+  local edits.
 
 ## [1.3.3]
 

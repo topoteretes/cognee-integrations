@@ -160,7 +160,18 @@ def record_success(service_url=""):
     _write(servers)
 
 
-def recall(service_url, api_key, query, session_id, scope, top_k, dataset="", *, timeout=None):
+def recall(
+    service_url,
+    api_key,
+    query,
+    session_id,
+    scope,
+    top_k,
+    dataset="",
+    code_query=None,
+    *,
+    timeout=None,
+):
     """Breaker-wrapped recall. Returns a list, an error-envelope dict, or UNREACHABLE.
 
     Only genuine backend trouble trips the breaker: UNREACHABLE (positively
@@ -185,6 +196,10 @@ def recall(service_url, api_key, query, session_id, scope, top_k, dataset="", *,
         scope,
         top_k,
         dataset,
+        # Keyword, not positional: do_recall takes context_profile between
+        # dataset and code_query, so a positional here silently sends the
+        # code query as a context profile.
+        code_query=code_query,
         timeout=timeout or _RECALL_TIMEOUT,
     )
     if result == UNREACHABLE:
@@ -201,9 +216,11 @@ def recall(service_url, api_key, query, session_id, scope, top_k, dataset="", *,
 
 
 def main(argv):
-    # argv: service_url, api_key, query, session_id, scope, top_k[, dataset]
-    a = list(argv) + [""] * 7
-    result = recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
+    # argv: service_url, api_key, query, session_id, scope, top_k[, dataset[, code_query]]
+    # code_query (arg 8): JSON dict for the deterministic "code" scope (see
+    # _recall_http.coerce_code_query); requires scope to include "code".
+    a = list(argv) + [""] * 8
+    result = recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
 
 

@@ -459,6 +459,45 @@ async def _store_assistant_stop(payload: dict) -> None:
             await _fire_improve_background(dataset, session_id, user, reason=f"turn_{count}")
 
 
+def _maybe_reingest_code_repo(payload: dict) -> None:
+    """Freshness pass for indexed code repos (runs on the Stop hook only).
+
+    When this turn's cwd sits inside a repo indexed via cognee-index-repo.sh
+    and the working tree's git fingerprint changed since the last index, the
+    repo is re-submitted (background) so the code graph reflects the turn's
+    edits by the next prompt. The fingerprint is only a cheap client-side
+    gate — the server re-hashes every covered file anyway, so a false
+    positive costs one skipped submission. Repos indexed by git URL are NOT
+    re-submitted here: the server's clone only sees pushed commits, so local
+    edits cannot reach it. Never raises: this must not disturb the hook.
+    """
+    try:
+        from _code_graph import reingest_if_changed
+
+        cwd = str(payload.get("cwd") or "") or os.getcwd()
+        runtime = resolve_runtime_mode()
+        service_url = runtime.get("base_url", "")
+        if not service_url:
+            return
+        if not server_usable(service_url):
+            # Down server: skip quietly. The stale fingerprint is kept, so the
+            # next Stop retries once the server is back.
+            hook_log("code_reingest_skipped_server", {"base_url": service_url})
+            return
+        outcome = reingest_if_changed(cwd, service_url, os.environ.get("COGNEE_API_KEY", ""))
+        if not outcome:
+            return
+        if outcome.get("changed") and outcome.get("submitted"):
+            hook_log("code_reingest_submitted", outcome)
+            notify(f"code graph re-index submitted ({outcome.get('dataset', '')})")
+        elif outcome.get("changed"):
+            hook_log("code_reingest_failed", outcome)
+        else:
+            hook_log("code_reingest_unchanged", {"repo_root": outcome.get("repo_root", "")})
+    except Exception as exc:
+        hook_log("code_reingest_error", {"error": str(exc)[:200]})
+
+
 def main():
     payload_raw = sys.stdin.read()
     if not payload_raw.strip():
@@ -483,6 +522,9 @@ def main():
         with quiet_hook_output("store-to-session"):
             if is_stop:
                 asyncio.run(_store_assistant_stop(payload))
+                # End-of-turn code-graph freshness: independent of whether an
+                # assistant message was stored (edits happen either way).
+                _maybe_reingest_code_repo(payload)
             else:
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:

@@ -3,9 +3,18 @@
 #
 # Usage:
 #   cognee-search.sh <query> [top_k] [--session | --graph]
+#   cognee-search.sh <query> [top_k] --code [--dataset <name>] [--code-query '<json>']
 #
 # --session: search session cache only
 # --graph:   search permanent knowledge graph only
+# --code:    deterministic code-graph search (cognee >= 1.5.3). Query text is
+#            the seed; --code-query selects an exact operation instead, e.g.
+#            '{"operation": "impact_analysis", "targets": ["process_payment"]}'
+#            (operations: query_facts, explore, traverse, find_path,
+#            impact_analysis, delta). The repository's own code dataset is
+#            resolved from the current directory automatically.
+# --dataset: override the dataset to search (default: the plugin dataset, or
+#            the current repo's code dataset in --code mode)
 # No flag:   search session first, then graph if empty
 #
 # Configuration:
@@ -140,14 +149,39 @@ PY
 QUERY="${1:-}"
 TOP_K="${2:-5}"
 MODE="auto"
+CODE_QUERY=""
+DATASET_EXPLICIT=""
 
-# Parse flags from any position
-for arg in "$@"; do
-    case "$arg" in
+# Parse flags from any position (value flags consume the next argument)
+_args=("$@")
+_i=0
+while [ $_i -lt ${#_args[@]} ]; do
+    case "${_args[$_i]}" in
         --session) MODE="session" ;;
         --graph)   MODE="graph" ;;
+        --code)    MODE="code" ;;
+        --code-query)
+            _i=$((_i + 1))
+            CODE_QUERY="${_args[$_i]:-}"
+            ;;
+        --dataset|-d)
+            _i=$((_i + 1))
+            DATASET="${_args[$_i]:-$DATASET}"
+            DATASET_EXPLICIT="1"
+            ;;
     esac
+    _i=$((_i + 1))
 done
+
+# Code searches target the repository's OWN dataset, whose name carries a path
+# digest (two checkouts can share a basename, so the basename cannot be the
+# identity). Resolve it from the current checkout rather than making the caller
+# reconstruct it. An unindexed cwd leaves DATASET alone, and the search then
+# reports no code facts rather than silently querying the session dataset.
+if [ "$MODE" = "code" ] && [ -z "${DATASET_EXPLICIT:-}" ]; then
+    CODE_DATASET="$(python3 "${SELF_DIR}/_code_graph.py" "" "" dataset "$PWD" 2>/dev/null || true)"
+    [ -n "$CODE_DATASET" ] && DATASET="$CODE_DATASET"
+fi
 
 if [ -z "$QUERY" ]; then
     echo "Error: no query provided" >&2
@@ -158,6 +192,7 @@ fi
 case "$MODE" in
     session) SCOPE='["session"]' ;;
     graph)   SCOPE='["graph"]' ;;
+    code)    SCOPE='["code"]' ;;
     *)       SCOPE='["session", "graph"]' ;;
 esac
 
@@ -169,11 +204,18 @@ esac
 # and scopes the search to the plugin's dataset so unrelated datasets don't bleed in.
 # Logic lives in _recall_http.py (stdlib-only, unit-tested); stderr is surfaced.
 export COGNEE_PLUGIN_STATE_DIR="$PLUGIN_DIR"
-RECALL_JSON="$(python3 "${SELF_DIR}/_cognee_client.py" "$SERVICE_URL" "$API_KEY" "$QUERY" "$SESSION_ID" "$SCOPE" "$TOP_K" "$DATASET" || true)"
+RECALL_JSON="$(python3 "${SELF_DIR}/_cognee_client.py" "$SERVICE_URL" "$API_KEY" "$QUERY" "$SESSION_ID" "$SCOPE" "$TOP_K" "$DATASET" "$CODE_QUERY" || true)"
 
 if [ -n "$RECALL_JSON" ] && [ "$RECALL_JSON" != "UNREACHABLE" ]; then
     # Server answered — authoritative, even if the result is empty.
     printf '%s\n' "$RECALL_JSON"
+elif [ "$MODE" = "code" ]; then
+    # No CLI fallback for code searches: the deterministic code lane exists
+    # only on the server (>= 1.5.3); a CLI recall would answer from the wrong
+    # retriever and read as authoritative when it is not.
+    echo "[cognee-search] server unreachable — code search not run; retry once the server is back" >&2
+    echo "UNREACHABLE"
+    exit 1
 else
     echo "[cognee-search] falling back to cognee-cli (degraded — empty CLI output is NOT proof of absence; ground-truth via: curl -X POST \"\$COGNEE_BASE_URL/api/v1/recall\")" >&2
     if [ "$MODE" = "graph" ]; then
