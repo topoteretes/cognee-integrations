@@ -31,6 +31,10 @@ export const DEFAULT_RECALL_BREAKER_COOLDOWN_MS = 120_000;
 // Harness-noise filter (see noise.ts). Triggers match ctx.trigger verbatim;
 // patterns are regex sources matched against the prompt (leading whitespace
 // stripped). Overriding either with [] disables that layer.
+export const DEFAULT_MEMORY_HIT_FOOTER = true;
+export const DEFAULT_MEMORY_HIT_FOOTER_FORMAT = "[cognee: {count} {memories}]";
+export const DEFAULT_WEEKLY_DIGEST = true;
+
 export const DEFAULT_NOISE_TRIGGERS: string[] = ["heartbeat", "cron"];
 export const DEFAULT_NOISE_PATTERNS: string[] = [
   // OpenClaw's default heartbeat prompt: "Read HEARTBEAT.md if it exists …"
@@ -133,6 +137,14 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     ? raw.recallInjectionPosition
     : DEFAULT_RECALL_INJECTION_POSITION;
 
+  // Memory-hit visibility
+  const memoryHitFooter = typeof raw.memoryHitFooter === "boolean" ? raw.memoryHitFooter : DEFAULT_MEMORY_HIT_FOOTER;
+  const memoryHitFooterFormat =
+    typeof raw.memoryHitFooterFormat === "string" && raw.memoryHitFooterFormat.trim()
+      ? raw.memoryHitFooterFormat
+      : DEFAULT_MEMORY_HIT_FOOTER_FORMAT;
+  const weeklyDigest = typeof raw.weeklyDigest === "boolean" ? raw.weeklyDigest : DEFAULT_WEEKLY_DIGEST;
+
   // Harness-noise filter
   const noiseTriggers = Array.isArray(raw.noiseTriggers) ? raw.noiseTriggers : DEFAULT_NOISE_TRIGGERS;
   const noisePatterns = Array.isArray(raw.noisePatterns) ? raw.noisePatterns : DEFAULT_NOISE_PATTERNS;
@@ -146,7 +158,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition, noiseTriggers, noisePatterns,
+    recallInjectionPosition, memoryHitFooter, memoryHitFooterFormat, weeklyDigest, noiseTriggers, noisePatterns,
     enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,
