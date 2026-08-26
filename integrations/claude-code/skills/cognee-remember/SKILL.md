@@ -36,6 +36,18 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh "$ARGUMENTS" --node-set project
 ${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh "$ARGUMENTS" --node-set agent_actions
 ```
 
+**Storing a file (code included)**: pass `--file` so the upload keeps its real
+filename — the extension is the server's routing signal, and a code file
+(`.py`/`.ts`/`.go`/...) then rides the zero-LLM code path instead of being
+ingested as prose:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh --file src/payments.py --node-set project_docs
+```
+
+For a whole repository (cross-file calls/imports, impact analysis), index it
+instead — see the **cognee-code** skill.
+
 The wrapper POSTs to the running Cognee server (`/api/v1/remember`). A `{"ok": true}` response means the server accepted the data. An error response means the server rejected or failed the request — check `COGNEE_API_KEY` and server logs; do **not** re-run or conclude the data wasn't stored without confirming against the server.
 
 **Background by default + eventual consistency**: the wrapper submits with `run_in_background=true` (so a large cognify never holds one request open past the cloud's ~10-min request ceiling). The POST returns once the work is **enqueued**, with `dataset_id` and `pipeline_run_id`; `status: "running"` means *submitted, not yet in the permanent graph*. The session cache is searchable immediately, but the graph is queryable only after the cognify pipeline **completes**.

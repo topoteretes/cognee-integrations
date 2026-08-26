@@ -45,6 +45,7 @@ from _plugin_common import (
     quiet_hook_output,
     resolve_session_key_from_payload,
     server_presence,
+    service_url_is_local,
     set_session_key,
     touch_activity,
     write_connection_state,
@@ -1136,6 +1137,24 @@ async def _run_heavy(
                 hook_log("conn_state_unverified", {"base_url": service_url, "health": health})
     elif service_url and probe_health(service_url, timeout=1.5) == "ready":
         write_connection_state("ready", service_url)
+
+    # Code graph: index the repository this session opened in, or refresh it if
+    # the tree moved while the agent was away. Deliberately last and inside the
+    # detached worker — it must never delay the first prompt — and best-effort:
+    # a failure here costs code facts, not the session.
+    try:
+        from _code_graph import autoindex_on_session_start
+
+        code_outcome = autoindex_on_session_start(
+            cwd,
+            service_url,
+            os.environ.get("COGNEE_API_KEY", ""),
+            is_local_server=service_url_is_local(service_url),
+        )
+        if code_outcome:
+            hook_log("code_autoindex", code_outcome)
+    except Exception as exc:
+        hook_log("code_autoindex_error", {"error": str(exc)[:200]})
 
     return user_id, agent_api_key, True
 

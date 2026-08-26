@@ -35,6 +35,40 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (credential resolution incl. the `api_key.json` fallback and the exit-2 path,
   payload shape, status trailer, 404 pass-through).
 
+- **Code graph.** Repositories can be indexed into cognee's deterministic,
+  enola-backed code graph (symbols, calls, imports, endpoints, dependencies)
+  and queried from the plugin — with **no LLM or embedding calls** on either
+  side. Requires a cognee server >= 1.5.3.
+  - **Automatic indexing**: opening Codex inside a git repository indexes
+    it in the background at session start (never blocking the first prompt)
+    and refreshes an already-indexed repo whose tree changed. New repos are
+    auto-indexed only against a *local* server, where the code stays on the
+    machine; a remote server needs `COGNEE_CODE_AUTOINDEX=always` or an explicit
+    index. Non-git directories, repos with no source files, and repos over 3000
+    source files are skipped (explicit indexing has no cap).
+  - **Freshness**: the Stop hook re-submits an indexed repo when a turn changed
+    its working tree, detected by a git fingerprint (HEAD, dirty set, tracked
+    diff, untracked stats). Failures keep the fingerprint — the edits stay
+    pending — behind an escalating backoff (30s → 15min cap) so an unresolved
+    failure cannot re-submit once per turn forever; a new session always gets
+    one attempt.
+  - **Auto-recall code lane**: prompts naming an identifier-shaped token
+    (`process_payment`, `UserService`, `billing/api.py`) inside an indexed repo
+    get code facts injected under `=== Code graph facts ===`. The lane is
+    additive to the semantic scopes, gated syntactically, and contributes
+    nothing when it misses — conversational prompts are unchanged.
+  - **Explicit tools**: `cognee-index-repo.sh <path-or-git-url>`,
+    `cognee-search.sh "<seed>" --code [--code-query '<json>']` (operations:
+    `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
+    `delta`), `cognee-remember.sh --file <path>` (uploads under the real
+    filename so code routes as code, not prose), and the `codebase` skill (rewritten off the CLI).
+- One dataset per indexed repository, `codebase-<repo>-<digest>`. The path
+  digest is load-bearing: same-basename checkouts sharing a dataset would share
+  a graph database, where cognee's repo-scoped stale-node sweep would let each
+  re-index delete the other's nodes. `--code` searches resolve the dataset from
+  the current checkout.
+
+
 ### Changed
 - **Pinned cognee bumped to 1.5.3** (`_PINNED_COGNEE_VERSION` in
   `session-start.py`). 1.5.3 carries the session-invalidation work the forget
@@ -51,6 +85,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   by a document delete and a later sync can re-persist it as new trace
   documents. The skill states this rather than promising the session cache is
   clean.
+
+- **Pinned cognee version is now `1.5.3`** (was `1.5.0`) — the release that
+  opened `content_type="code"` on `/api/v1/remember` and the `code` recall
+  scope. Installed into the managed venv on next session start.
+- The freshness model is documented as a property of where the server runs:
+  a local server reflects the working tree (uncommitted changes included); a
+  cloud server reflects the last *pushed* commit, since its clone cannot see
+  local edits.
 
 ## [1.4.3]
 
