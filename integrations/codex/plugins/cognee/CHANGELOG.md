@@ -13,6 +13,28 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [1.5.0]
 
 ### Added
+- **`cognee-forget` skill — user-directed deletion of memory.** "Forget what we
+  talked about tennis" now has a first-class guided flow (ported from the
+  Claude Code plugin): the agent syncs the live session (so unsynced content
+  becomes a deletable document), lists the plugin dataset, judges candidate
+  documents by their raw content, confirms with the user, and deletes each
+  match via `POST /api/v1/forget`. Documents from the same session are treated
+  as a group — deleting one while keeping its siblings would leave the topic
+  recallable. The `memory` skill's Forget section now routes to this flow; the
+  bare `cognee-cli forget` commands remain as the server-unreachable fallback.
+- **`scripts/cognee-forget.sh`** — the skill's server access. Subcommands
+  (`sync`, `datasets`, `data`, `raw`, `forget`, `env`) each resolve credentials
+  per invocation the same way the other wrappers do (shell env →
+  `~/.cognee/.env` → the auto-minted `api_key.json` at the shared plugin root).
+  Every API command appends a final `HTTP <status>` line; with no key
+  resolvable the helper exits 2 with guidance instead of sending a request that
+  can only 401. Single-document deletion only — dataset-wide and `everything`
+  scopes stay behind an explicit-user-request warning in the skill. Ids are validated as UUIDs and the request body is built with `json.dumps` rather than string interpolation, so a crafted id cannot redirect the request to another endpoint or append body fields — an injected `everything: true` would have deleted every dataset the user owns.
+- **E2e coverage in the shared suite.** `tests/e2e/test_forget_script.py` runs
+  the wrapper as a subprocess against the mock server for BOTH suites
+  (credential resolution incl. the `api_key.json` fallback and the exit-2 path,
+  payload shape, status trailer, 404 pass-through).
+
 - **Code graph.** Repositories can be indexed into cognee's deterministic,
   enola-backed code graph (symbols, calls, imports, endpoints, dependencies)
   and queried from the plugin — with **no LLM or embedding calls** on either
@@ -46,7 +68,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   re-index delete the other's nodes. `--code` searches resolve the dataset from
   the current checkout.
 
+
 ### Changed
+- **Pinned cognee bumped to 1.5.3** (`_PINNED_COGNEE_VERSION` in
+  `session-start.py`). 1.5.3 carries the session-invalidation work the forget
+  skill depends on (COG-5947/COG-5835): deleting a document now also removes
+  the session Q&A turns whose answers cited the deleted graph elements, the
+  feedback and distilled guidance descending from them, and clamps the persist
+  watermark to the surviving entry count so post-delete turns are not silently
+  skipped by the next sync. Dataset-level deletes drop every session attributed
+  to the dataset. The plugin always installs the exact pin so the server's
+  lifespan migrations run on a known-good release.
+
+  Documented core limit, reflected in the skill: agent **trace** entries carry
+  no graph-element ids and are not matched, so trace content is not invalidated
+  by a document delete and a later sync can re-persist it as new trace
+  documents. The skill states this rather than promising the session cache is
+  clean.
+
 - **Pinned cognee version is now `1.5.3`** (was `1.5.0`) — the release that
   opened `content_type="code"` on `/api/v1/remember` and the `code` recall
   scope. Installed into the managed venv on next session start.

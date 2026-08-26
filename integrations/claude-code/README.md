@@ -216,6 +216,7 @@ Final sync on session end is triggered by the `SessionEnd` detached worker, with
 - `/cognee-memory:cognee-search`
 - `/cognee-memory:cognee-sync`
 - `/cognee-memory:cognee-code`
+- `/cognee-memory:cognee-forget`
 
 ## Remember (write) behavior
 
@@ -299,6 +300,21 @@ knows.
 
 Automatic indexing skips directories that are not git repositories, hold no source
 files, or exceed 3000 source files. Explicit indexing has no size cap.
+
+## Forget (delete) behavior
+
+`cognee-forget` deletes memory the user asks to forget ("forget what we talked about
+tennis"). The agent syncs the live session first (so unsynced content becomes a
+deletable document), reads candidate documents' raw content to decide what matches,
+confirms with the user, and deletes each matching document via `POST /api/v1/forget` —
+which removes the raw data, its derived graph knowledge, and — best-effort — the session
+Q&A turns whose answers cited the deleted graph elements (plus guidance derived from
+them; agent trace entries are not matched). All server access goes through
+`scripts/cognee-forget.sh`, which resolves the API key like the other wrappers (env →
+`~/.cognee/.env` → the auto-minted local `api_key.json`) and always authenticates; it
+refuses to run without a key rather than send requests that can only 401. Deletion is
+irreversible; dataset-wide or delete-everything scopes require an explicit, unambiguous
+user request.
 
 ## Status line
 
