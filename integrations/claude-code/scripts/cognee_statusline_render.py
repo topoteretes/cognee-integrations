@@ -84,13 +84,39 @@ _USER_SETTINGS = Path.home() / ".claude" / "settings.json"
 _OWNED_STATUSLINE_MARKER = "cognee-statusline"
 
 
-def _active_dataset() -> str:
-    # 1. env var (inherited from the shell that launched Claude Code)
+_SESSIONS_DIR = _SHARED_ROOT / "claude-code" / "sessions"
+
+
+def _launch_record(session_id: str) -> dict:
+    """This launch's record (``sessions/<host id>.json``), or {}.
+
+    The host session id in the statusline context is the same key SessionStart
+    files the record under, so the bar reads the dataset the launch is actually
+    writing to — including one chosen with ``/cognee-memory:cognee-switch-datasets``.
+    """
+    if not _path_safe(session_id):
+        return {}
+    return _read_json(_SESSIONS_DIR / f"{session_id}.json")
+
+
+def _active_dataset(session_id: str = "") -> str:
+    # 1. the launch record (authoritative once SessionStart has run; switchable)
+    recorded = str(_launch_record(session_id).get("dataset") or "").strip()
+    if recorded:
+        return recorded
+    # 2. env var (inherited from the shell that launched Claude Code)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. default
+    # 3. default
     return _DEFAULT_DATASET
+
+
+def _switched_marker(session_id: str = "") -> str:
+    """A faint ``· switched`` tag once the launch left its launch-time dataset."""
+    if _launch_record(session_id).get("switched_at"):
+        return " \033[2m· switched\033[0m"
+    return ""
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
@@ -780,7 +806,7 @@ def main() -> None:
     # of the steady-state line.
     sys.stdout.write(
         f"{_pipeline_health_glyph()}{_status_prefix(_session_id)}"
-        f"cognee: {_active_dataset()} · {_mode_label()}"
+        f"cognee: {_active_dataset(_session_id)} · {_mode_label()}{_switched_marker(_session_id)}"
         f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
     )
 

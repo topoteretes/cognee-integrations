@@ -18,8 +18,9 @@
 # No flag:   search session first, then graph if empty
 #
 # Configuration:
-#   Resolves session ID from Cognee endpoints using API auth.
-#   Dataset is env-driven: COGNEE_PLUGIN_DATASET, then agent_sessions.
+#   Session ID and dataset come from this launch's record (~/.cognee-plugin/
+#   claude-code/sessions/<host id>.json — follows a dataset switch), falling
+#   back to the Cognee connection endpoint and COGNEE_PLUGIN_DATASET / agent_sessions.
 
 set -euo pipefail
 
@@ -59,7 +60,19 @@ if not api_key:
 
 session_id = ""
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
-if service_url and api_key:
+# The launch record wins: it carries the dataset + session chosen with
+# switch-dataset.py, which the shell env and a first-connection lookup lack.
+try:
+    from _plugin_common import _read_map_record, resolve_host_key_outside_hook
+    _host_key, _ = resolve_host_key_outside_hook()
+    _rec = _read_map_record(_host_key) if _host_key else {}
+    if str(_rec.get("dataset") or "").strip():
+        dataset = str(_rec["dataset"]).strip()
+    if str(_rec.get("session_id") or "").strip():
+        session_id = str(_rec["session_id"]).strip()
+except Exception:
+    pass
+if not session_id and service_url and api_key:
     try:
         import ssl
         try:

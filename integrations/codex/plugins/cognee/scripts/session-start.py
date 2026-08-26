@@ -1279,9 +1279,22 @@ async def _start(payload: dict | None = None) -> dict:
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
     # synchronously here so prompt hooks read back the identical ids before any run.
-    session_id, conn_uuid = ensure_launch_record(session_key, cwd)
+    # The record also seeds the launch's active dataset (env/default) and stores
+    # the host pid + cwd so switch-dataset.py, which runs under the shell tool
+    # with no hook payload, can find this launch. A resumed record keeps the
+    # dataset it already has — including one chosen by a switch.
+    session_id, conn_uuid = ensure_launch_record(
+        session_key,
+        cwd,
+        dataset=str(config.get("dataset", "") or "").strip(),
+        host_pid=_find_codex_parent_pid(),
+    )
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
+    dataset = get_dataset(config)
+    # Registration and the bootstrap worker read the dataset off config: keep it
+    # in step with the record so a resumed, switched launch re-binds correctly.
+    config["dataset"] = dataset
     hook_log(
         "session_resolved",
         {
@@ -1289,9 +1302,9 @@ async def _start(payload: dict | None = None) -> dict:
             "session_key": session_key,
             "session_id": session_id,
             "conn_uuid": conn_uuid,
+            "dataset": dataset,
         },
     )
-    dataset = get_dataset(config)
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)

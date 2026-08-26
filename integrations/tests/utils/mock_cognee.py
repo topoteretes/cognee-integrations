@@ -226,6 +226,7 @@ class MockCogneeServer:
         route("/api/v1/recall", "POST", self._recall)
         route("/api/v1/improve", "POST", self._improve)
         route("/api/v1/datasets", "POST", self._datasets)
+        route("/api/v1/datasets", "GET", self._datasets_list)
         route("/api/v1/datasets/status", "GET", self._datasets_status)
 
         # forget surface (dataset inspection + deletion)
@@ -317,6 +318,13 @@ class MockCogneeServer:
         self._record(req)
         body_in = req.get_json(silent=True) or {}
         status, body = self.identity.datasets_create(body_in.get("name", "default"))
+        return _json(status, body)
+
+    def _datasets_list(self, req: Request) -> Response:
+        """GET /api/v1/datasets — every dataset the principal can read, camelCase
+        on the wire like the real OutDTO (``ownerId``)."""
+        self._record(req)
+        status, body = self.identity.datasets_list()
         return _json(status, body)
 
     def _datasets_get(self, req: Request) -> Response:

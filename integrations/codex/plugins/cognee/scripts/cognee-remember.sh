@@ -7,7 +7,7 @@
 #
 # --node-set: node set for categorization (default: user_context)
 #             user_context | project_docs | agent_actions
-# --dataset:  dataset name (default: COGNEE_PLUGIN_DATASET or agent_sessions)
+# --dataset:  dataset name (default: this launch's active dataset)
 # --file:     upload a file under its REAL filename instead of inline text.
 #             The extension is the server's routing signal: code files
 #             (.py/.ts/.go/...) ride the zero-LLM code-graph route on
@@ -16,7 +16,8 @@
 #
 # Configuration:
 #   Resolves auth from env/api_key.json.
-#   Dataset is env-driven: COGNEE_PLUGIN_DATASET, then agent_sessions.
+#   Dataset comes from this launch's record (follows a dataset switch), then
+#   COGNEE_PLUGIN_DATASET, then agent_sessions.
 #   Falls back to cognee-cli only if the server is unreachable.
 
 set -euo pipefail
@@ -54,6 +55,15 @@ if not api_key:
             pass
 
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+# The launch record wins: it carries the dataset chosen with switch-dataset.py.
+try:
+    from _plugin_common import _read_map_record, resolve_host_key_outside_hook
+    _host_key, _ = resolve_host_key_outside_hook()
+    _rec = _read_map_record(_host_key) if _host_key else {}
+    if str(_rec.get("dataset") or "").strip():
+        dataset = str(_rec["dataset"]).strip()
+except Exception:
+    pass
 
 print(json.dumps({"service_url": service_url, "api_key": api_key, "dataset": dataset}))
 PY
