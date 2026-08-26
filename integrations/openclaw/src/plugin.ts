@@ -1488,6 +1488,21 @@ const memoryCogneePlugin = {
           // only bridges what is already in the session cache.
           await awaitPendingStores(endSessionId);
           const dsName = multiScope ? datasetNameForScope("agent", cfg, endAgentId) : cfg.datasetName;
+          // The dataset must exist before improve bridges into it: servers up
+          // to 1.4.0 skip session persistence (non-fatally, so improve still
+          // reports success) when the name resolves to nothing, and a session
+          // that never triggered an /add is exactly that case. POST /datasets
+          // is create-or-return, so on every server this is at worst a no-op.
+          // Failure here is not fatal — improve gets its own retries below.
+          try {
+            const dsId = await client.ensureDataset(dsName);
+            if (dsId) {
+              const state = await loadDatasetState();
+              if (state[dsName] !== dsId) await saveDatasetState({ ...state, [dsName]: dsId });
+            }
+          } catch (e) {
+            api.logger.warn?.(`cognee-openclaw: ensure dataset "${dsName}" failed (continuing to improve): ${String(e)}`);
+          }
           await withFinalSyncRetries("session-end improve", async () => {
             const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId] });
             api.logger.info?.(`cognee-openclaw: session-end improve dispatched for session ${endSessionId} -> dataset "${dsName}" (status=${result.status ?? "?"})`);

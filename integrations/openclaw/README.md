@@ -508,6 +508,25 @@ to it would write into that graph. Naming the server is the consent. Each run
 invents a `live_<uuid>` dataset and deletes only that namespace afterwards — never
 delete-everything, because the target may hold real data.
 
+Or let the plugin boot one, the way the nightly does — this exercises the real
+first-run path (`ensure_and_boot.py`, the venv, the cognee pinned in
+`src/server.ts`, uvicorn) and mints its own key:
+
+```bash
+COGNEE_RUN_LIVE=1 \
+COGNEE_LIVE_ALLOW_BUILD=1 \
+COGNEE_LIVE_BASE_URL=http://127.0.0.1:9100 \
+LLM_API_KEY=... LLM_MODEL=openai/gpt-4o-mini \
+npm run test:live
+```
+
+Only for a loopback URL nothing answers at. The venv is built under the jest
+sandbox HOME by default, so it never touches your shared `~/.cognee-plugin/venv`;
+set `COGNEE_LIVE_SERVER_HOME=/some/dir` to reuse one across runs (CI sets it to
+the runner's home so the venv can be cached). `COGNEE_LIVE_VERBOSE=1` mirrors
+the plugin's log lines to the console — the harness logger is otherwise a silent
+`jest.fn()`, and a recall timeout with no plugin log is undiagnosable.
+
 Two things that cost time to learn, both worth knowing before adding tests:
 
 - **`os.homedir()` ignores `process.env.HOME` under jest.** Each test file gets its

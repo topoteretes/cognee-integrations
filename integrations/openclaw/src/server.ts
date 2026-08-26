@@ -261,6 +261,11 @@ export async function bootServerIfNeeded(
   const result = await runPluginCommandWithTimeout({
     argv: [python, ENSURE_SCRIPT_PATH, String(port)],
     timeoutMs: 5_000,
+    // The script derives every path from `~`, this module from `homedir()`.
+    // Pin the two together: identical in production, and the only way a
+    // redirected homedir (the test suite's sandbox) also redirects the venv
+    // and server state instead of landing them in the real home.
+    env: { ...process.env, HOME: homedir() },
   });
   if (result.code !== 0) {
     logger.warn?.(`cognee-openclaw: boot script exited ${result.code}: ${result.stderr}`);

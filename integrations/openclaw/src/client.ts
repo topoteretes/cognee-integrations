@@ -658,6 +658,26 @@ export class CogneeHttpClient {
     );
   }
 
+  /**
+   * POST /datasets — create-or-return by name (the server is idempotent here).
+   *
+   * Exists for one reason: on Cognee <= 1.4.0 `improve(session_ids=…)` looks the
+   * dataset up with an *existing-only* resolver and, when the name has never
+   * been written to, swallows the failure as "non-fatal" — the session cache is
+   * never bridged and the first session on a fresh dataset is lost, while the
+   * trailing memify then creates the dataset so every later session works. Newer
+   * servers resolve-or-create up front, where this is a harmless no-op.
+   */
+  async ensureDataset(name: string): Promise<string | undefined> {
+    const path = this.isCloud ? "/datasets" : "/api/v1/datasets";
+    const ds = await this.fetchAPI<{ id?: string }>(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    return typeof ds?.id === "string" ? ds.id : undefined;
+  }
+
   async listDatasets(): Promise<{ id: string; name: string }[]> {
     const path = this.isCloud ? "/datasets" : "/api/v1/datasets";
     return this.fetchAPI<{ id: string; name: string }[]>(path, { method: "GET" });
