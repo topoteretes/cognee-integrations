@@ -2749,6 +2749,7 @@ def recall_via_http(
     search_type: str | None = None,
     context_profile: str | None = None,
     dataset: str = "",
+    code_query: dict | None = None,
     timeout: float = 10.0,
 ) -> list:
     payload = {
@@ -2758,6 +2759,10 @@ def recall_via_http(
         "scope": scope,
         "only_context": only_context,
     }
+    # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
+    # the scope includes "code": the server rejects code_query without it.
+    if code_query:
+        payload["code_query"] = code_query
     # Always scope to the plugin's dataset. Without it the server resolves EVERY
     # readable dataset and then reconciles against the session's binding, so the
     # graph scope depends on that binding existing: an unbound session with more

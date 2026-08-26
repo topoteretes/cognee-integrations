@@ -148,6 +148,23 @@ def _error(status, message, *, transient=False):
     return envelope
 
 
+def coerce_code_query(value):
+    """Parse the JSON code_query arg; None on anything empty or malformed.
+
+    A malformed code_query must degrade to "no code lane", never to a server
+    422 that would read as a recall failure.
+    """
+    if not value:
+        return None
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def do_recall(
     service_url,
     api_key,
@@ -157,6 +174,7 @@ def do_recall(
     top_k,
     dataset="",
     context_profile="",
+    code_query=None,
     *,
     opener=None,
     timeout=120.0,
@@ -169,6 +187,11 @@ def do_recall(
         "only_context": True,
         "scope": coerce_scope(scope),
     }
+    # Deterministic code-graph lane (cognee >= 1.5.3): only meaningful when
+    # the scope includes "code" — the server rejects code_query without it.
+    parsed_code_query = coerce_code_query(code_query)
+    if parsed_code_query is not None:
+        body["code_query"] = parsed_code_query
     if session_id:
         body["session_id"] = session_id
     # Scope the search to the caller's plugin dataset (resolved by the shell from
@@ -241,9 +264,12 @@ def do_recall(
 
 
 def main(argv):
-    # argv: service_url, api_key, query, session_id, scope, top_k[, dataset[, context_profile]]
-    a = list(argv) + [""] * 8
-    result = do_recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
+    # argv: service_url, api_key, query, session_id, scope, top_k[, dataset
+    #        [, context_profile[, code_query]]]
+    # code_query (arg 9): JSON dict for the deterministic "code" scope, e.g.
+    # '{"operation": "impact_analysis", "targets": ["process_payment"]}'.
+    a = list(argv) + [""] * 9
+    result = do_recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8])
     # UNREACHABLE → caller falls back to CLI; a list (results) or an error
     # object → caller prints as-is and does NOT fall back.
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
