@@ -47,18 +47,13 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
-            "async": true
+            "timeout": 12,
+            "statusMessage": "Saving Cognee memory..."
           },
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
             "async": true
-          },
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/clear-transcript-context.py\"",
-            "timeout": 5,
-            "statusMessage": "Clearing Claude context..."
           }
         ]
       }

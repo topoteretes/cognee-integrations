@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -122,9 +123,38 @@ def test_doctor_wrapper_uses_version_checked_launcher(suite):
     if suite.name != "claude-code":
         pytest.skip("the Codex plugin owns a separate launcher")
 
-    wrapper = (suite.scripts_dir / "cognee-doctor.sh").read_text(encoding="utf-8")
+    wrapper_path = suite.scripts_dir / "cognee-doctor.sh"
+    wrapper = wrapper_path.read_text(encoding="utf-8")
     assert "run-python.sh" in wrapper
     assert "exec python3 " not in wrapper
+    assert wrapper_path.stat().st_mode & stat.S_IXUSR
+
+
+def test_claude_stop_does_not_race_capture_against_transcript_cleanup(suite, manifest):
+    """Parallel Stop hooks cannot clear the transcript while capture reads it."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude transcript cleanup is host-specific")
+
+    commands = _commands(manifest, "Stop")
+    assert any("store-to-session.py" in command and "--stop" in command for command in commands)
+    assert not any("clear-transcript-context.py" in command for command in commands)
+
+
+def test_claude_stop_capture_finishes_before_host_exit(suite, manifest):
+    """Claude kills async Stop children when a print-mode session exits."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude Stop child lifetime is host-specific")
+
+    capture_hooks = [
+        hook
+        for group in manifest.get("Stop", [])
+        for hook in group.get("hooks", [])
+        if "store-to-session.py" in str(hook.get("command", ""))
+    ]
+    assert len(capture_hooks) == 1
+    capture = capture_hooks[0]
+    assert not capture.get("async", False)
+    assert 0 < int(capture.get("timeout", 0)) <= 15
 
 
 def test_every_registered_script_exists(suite, manifest):
