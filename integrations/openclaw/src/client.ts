@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   CogneeAddResponse,
   CogneeDeleteMode,
+  CogneeImproveResult,
   CogneeMode,
   CogneeRememberItem,
   CogneeRememberResponse,
@@ -487,9 +488,9 @@ export class CogneeHttpClient {
     nodeName?: string[];
     sessionIds?: string[];
     runInBackground?: boolean;
-  }): Promise<{ status?: string }> {
+  }): Promise<CogneeImproveResult> {
     const path = this.isCloud ? "/improve" : "/api/v1/improve";
-    return this.fetchAPI<{ status?: string }>(path, {
+    const data = await this.fetchAPI<unknown>(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -503,6 +504,7 @@ export class CogneeHttpClient {
         ...(typeof params.runInBackground === "boolean" ? { run_in_background: params.runInBackground } : {}),
       }),
     });
+    return normalizeImproveResponse(data);
   }
 
   async search(params: {
@@ -544,7 +546,11 @@ export class CogneeHttpClient {
     datasetIds: string[];
     topK?: number;
     sessionId?: string;
+    /** Recall sources: "graph" | "session" | "trace" | "session_context" | "code" | "all" | "auto" or a list.
+     *  Omitted = server "auto", which is graph-only whenever dataset_ids/search_type are set. */
     scope?: string | string[];
+    /** "session_context" rendering profile: "qa" (conversational) or "agent" (tool/workflow). */
+    contextProfile?: "qa" | "agent";
     onlyContext?: boolean;
     /** Per-call timeout for the prompt hot path. When set, retries are
      *  disabled so a slow server fails fast instead of eating the budget. */
@@ -565,6 +571,7 @@ export class CogneeHttpClient {
           ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
           ...(params.sessionId ? { session_id: params.sessionId } : {}),
           ...(params.scope ? { scope: params.scope } : {}),
+          ...(params.contextProfile ? { context_profile: params.contextProfile } : {}),
         }),
       },
       params.timeoutMs ?? this.timeoutMs,
@@ -735,7 +742,43 @@ function extractDataId(value: unknown): string | undefined {
   return extractDataId(record.data_ingestion_info);
 }
 
-function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
+const RECALL_SOURCES: ReadonlySet<string> = new Set(["graph", "session", "trace", "session_context", "code", "tools", "system"]);
+
+function asString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+/**
+ * Render one recall entry to text according to its `source` (RecallResponse
+ * discriminator). Session layers don't carry `text`: Q&A turns have
+ * question/answer, trace steps have origin_function/status/return_value,
+ * session_context has content.
+ */
+function recallEntryText(record: Record<string, unknown>, source: string | undefined): string {
+  if (typeof record.text === "string") return record.text;
+  if (source === "session" || (typeof record.question === "string" && typeof record.answer === "string")) {
+    const q = asString(record.question).trim();
+    const a = asString(record.answer).trim();
+    const fb = typeof record.feedback_text === "string" && record.feedback_text.trim() ? `\nFeedback: ${record.feedback_text.trim()}` : "";
+    return `Q: ${q}\nA: ${a}${fb}`;
+  }
+  if (source === "trace" || typeof record.origin_function === "string") {
+    const fn = asString(record.origin_function);
+    const status = asString(record.status) || "success";
+    const params = record.method_params !== undefined && record.method_params !== null ? ` params=${asString(record.method_params).slice(0, 300)}` : "";
+    const ret = record.return_value !== undefined && record.return_value !== null ? `\nreturned: ${asString(record.return_value).slice(0, 500)}` : "";
+    const fb = typeof record.feedback_text === "string" && record.feedback_text.trim() ? `\nLesson: ${record.feedback_text.trim()}` : "";
+    return `${fn} (${status})${params}${ret}${fb}`;
+  }
+  if (typeof record.content === "string") return record.content;
+  if (Array.isArray(record.search_result)) return record.search_result.map(String).join("\n"); // cloud format
+  if (typeof record.search_result === "string") return record.search_result;
+  return JSON.stringify(record);
+}
+
+export function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
   if (Array.isArray(data)) {
     return data.map((item, index) => {
       if (typeof item === "string") {
@@ -743,26 +786,19 @@ function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
       }
       if (item && typeof item === "object") {
         const record = item as Record<string, unknown>;
-
-        // Extract text: prefer .text, then .search_result (cloud format), then stringify
-        let text: string;
-        if (typeof record.text === "string") {
-          text = record.text;
-        } else if (Array.isArray(record.search_result)) {
-          text = record.search_result.map(String).join("\n");
-        } else if (typeof record.search_result === "string") {
-          text = record.search_result;
-        } else {
-          text = JSON.stringify(record);
-        }
+        const rawSource = typeof record.source === "string" ? record.source
+          : typeof record._source === "string" ? record._source : undefined;
+        const source = rawSource && RECALL_SOURCES.has(rawSource) ? (rawSource as CogneeSearchResult["source"]) : undefined;
 
         return {
           id: typeof record.id === "string" ? record.id
-            : typeof record.dataset_id === "string" ? record.dataset_id
-              : `result-${index}`,
-          text,
+            : typeof record.entry_id === "string" ? record.entry_id
+              : typeof record.dataset_id === "string" ? record.dataset_id
+                : `result-${index}`,
+          text: recallEntryText(record, source),
           score: typeof record.score === "number" ? record.score : 1,
           metadata: record.metadata as Record<string, unknown> | undefined,
+          ...(source ? { source } : {}),
         };
       }
       return { id: `result-${index}`, text: String(item), score: 1 };
@@ -772,4 +808,46 @@ function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
     return normalizeSearchResults((data as { results: unknown }).results);
   }
   return [];
+}
+
+/**
+ * Collapse the `/improve` response to one shape. Cognee >= 1.4 answers
+ * `{ "<dataset_uuid>": { status, pipeline_run_id, ... }, ... }`; older servers
+ * a flat `{ status, ... }`. Reading `.status` off the map yielded undefined
+ * and the plugin logged `status=?` on every session end.
+ */
+export function normalizeImproveResponse(data: unknown): CogneeImproveResult {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  const record = data as Record<string, unknown>;
+
+  const flatStatus = typeof record.status === "string" ? record.status : undefined;
+  const flatRun = typeof record.pipeline_run_id === "string" ? record.pipeline_run_id : undefined;
+  if (flatStatus !== undefined || flatRun !== undefined) {
+    return {
+      ...(flatStatus !== undefined ? { status: flatStatus } : {}),
+      ...(flatRun !== undefined ? { pipelineRunId: flatRun } : {}),
+      ...(typeof record.dataset_id === "string" ? { datasetId: record.dataset_id } : {}),
+    };
+  }
+
+  const entries = Object.entries(record).filter(([, v]) => v && typeof v === "object" && !Array.isArray(v));
+  if (entries.length === 0) return {};
+
+  const datasets: NonNullable<CogneeImproveResult["datasets"]> = {};
+  for (const [dsId, v] of entries) {
+    const inner = v as Record<string, unknown>;
+    datasets[dsId] = {
+      ...(typeof inner.status === "string" ? { status: inner.status } : {}),
+      ...(typeof inner.pipeline_run_id === "string" ? { pipelineRunId: inner.pipeline_run_id } : {}),
+    };
+  }
+  const statuses = new Set(Object.values(datasets).map((d) => d.status).filter((s): s is string => typeof s === "string"));
+  const status = statuses.size === 1 ? [...statuses][0] : statuses.size > 1 ? "mixed" : undefined;
+  const single = entries.length === 1 ? datasets[entries[0][0]] : undefined;
+  return {
+    ...(status !== undefined ? { status } : {}),
+    ...(single?.pipelineRunId ? { pipelineRunId: single.pipelineRunId } : {}),
+    ...(entries.length === 1 ? { datasetId: entries[0][0] } : {}),
+    datasets,
+  };
 }

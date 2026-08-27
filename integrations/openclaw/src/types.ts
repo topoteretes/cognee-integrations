@@ -97,6 +97,17 @@ export type CogneePluginConfig = {
   /** Where recalled memories are injected in the prompt. Default: prependSystemContext */
   recallInjectionPosition?: "prependSystemContext" | "appendSystemContext" | "prependContext";
 
+  // --- Recall layers ---
+  /**
+   * Alongside the knowledge-graph search, recall this conversation's session
+   * layers explicitly — cached Q&A turns ("session"), tool-call lessons
+   * ("trace") and distilled agent guidance ("session_context") — and inject
+   * them as separate sections. Without an explicit scope the server searches
+   * the graph only whenever dataset_ids/search_type are supplied, which they
+   * always are here. Requires enableSessions. Default: true.
+   */
+  recallSessionLayers?: boolean;
+
   // --- Agent tools ---
   /**
    * Register the `memory_search` / `memory_get` agent tools that OpenClaw's
@@ -173,11 +184,34 @@ export type CogneeRememberResponse = {
   error?: string;
 };
 
+/**
+ * Recall source discriminator as returned by the server (RecallResponse):
+ * "graph" (knowledge graph), "session" (cached Q&A turns), "trace" (tool-call
+ * steps + feedback), "session_context" (distilled agent guidance), "code",
+ * "tools", "system". Absent on legacy/cloud shapes that carry no tag.
+ */
+export type CogneeRecallSource = "graph" | "session" | "trace" | "session_context" | "code" | "tools" | "system";
+
 export type CogneeSearchResult = {
   id: string;
   text: string;
   score: number;
   metadata?: Record<string, unknown>;
+  source?: CogneeRecallSource;
+};
+
+/**
+ * Normalized `/improve` response. Cognee >= 1.4 returns a per-dataset map
+ * `{ "<dataset_uuid>": { status, pipeline_run_id, ... } }`; older servers a
+ * flat `{ status, ... }`. Both collapse to this shape.
+ */
+export type CogneeImproveResult = {
+  /** Pipeline status ("PipelineRunCompleted", "PipelineRunStarted", …), or "mixed" across datasets. */
+  status?: string;
+  pipelineRunId?: string;
+  datasetId?: string;
+  /** Per-dataset detail when the server returned a map. */
+  datasets?: Record<string, { status?: string; pipelineRunId?: string }>;
 };
 
 export type DatasetState = Record<string, string>;

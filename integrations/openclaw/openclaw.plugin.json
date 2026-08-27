@@ -185,6 +185,10 @@
         "type": "boolean",
         "description": "Inject memories before each agent run (default: true)"
       },
+      "recallSessionLayers": {
+        "type": "boolean",
+        "description": "Alongside the graph search, recall this conversation's session layers (cached Q&A, tool-call lessons, distilled agent guidance) and inject them as separate sections. Requires enableSessions (default: true)"
+      },
       "memoryTools": {
         "type": "boolean",
         "description": "Register the memory_search / memory_get agent tools OpenClaw's memory slot expects (used by active-memory). Independent of autoRecall (default: true)"
@@ -320,6 +324,9 @@
     },
     "autoRecall": {
       "label": "Auto-Recall"
+    },
+    "recallSessionLayers": {
+      "label": "Recall Session Layers"
     },
     "memoryTools": {
       "label": "Memory Tools (memory_search / memory_get)"

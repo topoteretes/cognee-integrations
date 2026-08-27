@@ -296,7 +296,16 @@ export type RecallFn = (params: {
   searchPrompt?: string;
   topK?: number;
   sessionId?: string;
+  scope?: string | string[];
+  contextProfile?: "qa" | "agent";
 }) => Promise<CogneeSearchResult[]>;
+
+/**
+ * Session-cache layers recalled alongside the graph. The server's default
+ * scope ("auto") is graph-only whenever dataset_ids/search_type are supplied,
+ * so these must be requested explicitly.
+ */
+export const SESSION_LAYER_SCOPES = ["session", "trace", "session_context"] as const;
 
 export type MemoryToolsDeps = {
   cfg: Required<CogneePluginConfig>;
@@ -392,8 +401,16 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
       }
       if (wantSession && sessionId) {
         tasks.push(
-          deps.recall({ queryText: query, searchType: deps.cfg.searchType, datasetIds: datasets.map((d) => d.id), searchPrompt: deps.cfg.searchPrompt, topK, sessionId })
-            .then((rs) => rs.map((r) => toHit(r, "session", "session"))),
+          deps.recall({
+            queryText: query,
+            searchType: deps.cfg.searchType,
+            datasetIds: datasets.map((d) => d.id),
+            searchPrompt: deps.cfg.searchPrompt,
+            topK,
+            sessionId,
+            scope: [...SESSION_LAYER_SCOPES],
+            contextProfile: "agent",
+          }).then((rs) => rs.map((r) => toHit(r, "session", r.source === "session_context" ? "agent guidance" : r.source === "trace" ? "trace" : "session"))),
         );
       }
 

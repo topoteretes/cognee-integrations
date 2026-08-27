@@ -362,6 +362,25 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `searchPrompt` | string | `""` | System prompt to guide search |
 | `recallInjectionPosition` | string | `prependContext` | Where recalled memories are injected: `prependSystemContext`, `appendSystemContext`, or `prependContext` |
 
+### Recall layers
+
+Cognee holds more than the knowledge graph: every conversation also has a session cache with the captured Q&A turns, tool-call trace steps (with their feedback), and the agent guidance distilled from them by `/improve`. The server only searches those layers when the recall `scope` names them — with `dataset_ids`/`search_type` in the request, the default `auto` scope is graph-only. The plugin therefore runs one extra, cheap recall per prompt with `scope: ["session","trace","session_context"]` in parallel with the graph lanes and injects each non-empty layer as its own block:
+
+```
+<cognee_memories>
+<agent_guidance>   … standing guidance from past sessions …
+<trace_lessons>    … lessons from earlier tool calls …
+<session_memory>   … earlier turns of this conversation …
+<agent_memory> / <graph_memory> … knowledge-graph hits …
+</cognee_memories>
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `recallSessionLayers` | boolean | `true` | Recall the session layers alongside the graph and inject them as separate sections. Requires `enableSessions` |
+
+The same explicit scope backs `memory_search` with `corpus=sessions` / `all`.
+
 ### Agent tools: `memory_search` / `memory_get`
 
 OpenClaw's memory slot comes with a tool contract: the bundled `active-memory` extension runs a memory sub-agent before conversational replies with exactly `memory_search` and `memory_get` allow-listed, and the model can call them directly. The plugin registers Cognee-backed versions of both (declared in `openclaw.plugin.json` → `contracts.tools`), so they work with no `toolsAllow` override and independently of `autoRecall`.
