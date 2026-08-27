@@ -247,6 +247,18 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     return bool(_venv_cognee_version())
                 time.sleep(_VENV_INSTALL_POLL_SECONDS)
 
+        # Already at the pin: there is nothing to install, so do not touch the
+        # venv. The install used to run unconditionally at every cold boot; on
+        # a machine where two plugins with different pins share this venv that
+        # made each boot flip the version back and forth — and a `pip install`
+        # is a mutation window the shared runtime is better off without. The
+        # marker is (re)written so every plugin reading it sees the truth.
+        current = _venv_cognee_version()
+        if current == _PINNED_COGNEE_VERSION:
+            _write_venv_ready(current)
+            hook_log("cognee_install_skipped_at_pin", {"version": current})
+            return True
+
         uv = _find_uv() or _install_uv()
         venv_present = _VENV_PYTHON.exists()
 

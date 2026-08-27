@@ -11,6 +11,7 @@ a non-200 answer, a live spawned pid — vetoes installing or booting.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -208,3 +209,40 @@ def test_spawned_server_does_not_inherit_the_worker_stdio(
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["stderr"] is subprocess.DEVNULL
     assert captured["stdin"] is subprocess.DEVNULL
+
+
+# --- The install step is skipped when the venv is already at the pin --------------
+
+
+def test_install_is_skipped_when_venv_already_holds_the_pin(session_start, monkeypatch):
+    """No pip run, marker refreshed. The unconditional reinstall was a mutation
+    window on a venv shared with other plugins — and, with differing pins, the
+    mechanism that flipped its version at every cold boot."""
+    pin = session_start._PINNED_COGNEE_VERSION
+    monkeypatch.setattr(session_start, "_venv_cognee_version", lambda: pin)
+
+    def no_install(*a, **k):
+        raise AssertionError(f"install ran although the venv is already at {pin}: {a[0]}")
+
+    monkeypatch.setattr(session_start.subprocess, "run", no_install)
+    monkeypatch.setattr(session_start, "_find_uv", no_install)
+    assert session_start.ensure_cognee_installed() is True
+    marker = json.loads(session_start._VENV_READY_MARKER.read_text(encoding="utf-8"))
+    assert marker["cognee_version"] == pin
+
+
+def test_install_runs_when_venv_holds_another_version(session_start, monkeypatch):
+    pin = session_start._PINNED_COGNEE_VERSION
+    versions = iter(["1.0.0", pin])  # before the install / after it
+    monkeypatch.setattr(session_start, "_venv_cognee_version", lambda: next(versions))
+    monkeypatch.setattr(session_start, "_find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr(session_start, "_install_uv", lambda: None)
+    runs: list[list[str]] = []
+
+    def record(argv, **kwargs):
+        runs.append([str(a) for a in argv])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(session_start.subprocess, "run", record)
+    assert session_start.ensure_cognee_installed() is True
+    assert any(f"cognee=={pin}" in " ".join(argv) for argv in runs), runs
