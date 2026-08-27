@@ -1586,6 +1586,11 @@ async def _start(payload: dict | None = None) -> dict:
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
     _purge_legacy_resolved_files()
+    # Per-session files nothing else deletes (launch records, status markers,
+    # bridge caches, pending buffers, dead improve locks) and oversized logs.
+    from _plugin_common import sweep_stale_state
+
+    sweep_stale_state()
 
     # Reset the idle clock for this Claude process before the watcher
     # starts, otherwise a stale timestamp from a prior session can cause

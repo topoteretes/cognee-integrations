@@ -452,6 +452,14 @@ rotation. The local server's own log lives under `~/.cognee/logs/` (rotated by
 cognee, ten files kept); `bootstrap.log` holds only the plugin's bootstrap
 worker output.
 
+At every SessionStart the plugin also sweeps its own state directory: per-session
+files whose session is over (status markers, bridge caches and pending buffers
+untouched for a week; launch records a day after their host process died, or
+after 30 days), improve locks whose owner is gone, an expired
+`improve-unsupported.json`, and directories older versions left behind. It
+never touches another plugin's subdirectory. One `state_sweep` line in
+`hook.log` records what was removed.
+
 Shared state (used by both Claude Code and Codex plugins):
 
 ```bash

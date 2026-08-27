@@ -10,6 +10,7 @@ import errno
 import hashlib
 import json
 import os
+import shutil
 import socket
 import ssl
 import subprocess
@@ -3970,3 +3971,168 @@ def _run_session_improve_locked(dataset: str, session_id: str) -> bool:
         )
         return False
     return bool(outcome.get("ok"))
+
+
+# ---------------------------------------------------------------------------
+# State sweep — the per-session files nothing else ever deletes.
+# ---------------------------------------------------------------------------
+#
+# Every launch writes one file into several directories (a launch record, a
+# connection marker, an LLM-key verdict, last-recall counts, a bridge cache, a
+# pending-prompt buffer, maybe an improve lock). Nothing removed them, so a
+# machine in daily use accumulated ~1,200 of them in two months. Each is
+# useless once its session is over; the sweep runs at SessionStart and removes
+# the ones whose session is provably gone. The rules are deliberately lazy —
+# days, not minutes — because the only cost of a stale file is clutter, while
+# a premature delete can lose a final sync. Same ownership rule as everywhere
+# else in the state dir: this touches only THIS plugin's subdirectory, plus the
+# one shared marker this plugin itself writes.
+
+#: Status markers (conn-state, llm-state, recall) and the per-session bridge
+#: cache / pending-prompt buffer: gone after a week without a write. A live
+#: session rewrites its markers on every hook, so age alone is a safe signal.
+_SWEEP_SESSION_FILE_MAX_AGE_SECONDS = 7 * 24 * 3600
+#: Launch records: removed one day after their host pid is dead — the
+#: exit-watcher's final sync reads the record right after the host exits, and
+#: retries may follow — or after 30 days regardless (a record with no pid is
+#: treated as alive, so this is the only bound for those).
+_SWEEP_LAUNCH_RECORD_DEAD_GRACE_SECONDS = 24 * 3600
+_SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS = 30 * 24 * 3600
+#: Logs the sweep rotates when over the cap. Most are also rotated by their own
+#: writer; this catches files that predate the cap and logs only ever written
+#: by a child process.
+_SWEEP_LOG_FILES = (
+    "hook.log",
+    "bootstrap.log",
+    "watcher.log",
+    "exit-watcher.log",
+    "subprocess.log",
+    "recall-audit.log",
+    "activity.log",
+)
+#: Directories older plugin versions created here and nothing reads any more.
+_SWEEP_LEGACY_DIRS = ("statusline",)
+
+
+def _sweep_remove(path: Path, counts: dict, key: str) -> None:
+    try:
+        path.unlink()
+        counts[key] = counts.get(key, 0) + 1
+    except FileNotFoundError:
+        pass  # a concurrent SessionStart swept it first
+    except OSError as exc:
+        counts.setdefault("errors", []).append(f"{path.name}: {str(exc)[:80]}")
+
+
+def _sweep_dir_by_age(directory: Path, max_age: float, now: float, counts: dict, key: str) -> None:
+    try:
+        entries = list(directory.glob("*.json"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age > max_age:
+            _sweep_remove(path, counts, key)
+
+
+def _sweep_launch_records(now: float, counts: dict) -> None:
+    try:
+        entries = list(_SESSIONS_MAP_DIR.glob("*.json"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age > _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS:
+            _sweep_remove(path, counts, "launch_records")
+            continue
+        if age <= _SWEEP_LAUNCH_RECORD_DEAD_GRACE_SECONDS:
+            continue
+        rec = _load_json_file(path)
+        try:
+            pid = int((rec or {}).get("host_pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0 and not _proc.pid_alive(pid):
+            _sweep_remove(path, counts, "launch_records")
+
+
+def _sweep_improve_locks(now: float, counts: dict) -> None:
+    """Dead-pid or over-age locks. ``improve_session_lock`` clears such a lock
+    only when the *same* session locks again, which for an ended session is
+    never — so a crash left a lock file behind for good."""
+    try:
+        entries = list(_IMPROVE_LOCK_DIR.glob("*.lock"))
+    except OSError:
+        return
+    for path in entries:
+        stale = False
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+            pid = int(current.get("pid", 0) or 0)
+            created_at = float(current.get("created_at", 0) or 0)
+            stale = not (pid > 0 and _proc.pid_alive(pid)) or now - created_at > SYNC_LOCK_STALE_SECONDS
+        except Exception:
+            stale = True  # unreadable lock: nothing can release it either
+        if stale:
+            _sweep_remove(path, counts, "improve_locks")
+
+
+def _sweep_expired_improve_marker(now: float, counts: dict) -> None:
+    """The shared improve-unsupported marker outlives its TTL as a file; drop it
+    once expired so it stops looking like live state. Shared root, but this
+    plugin is one of its writers, so removing an expired one is in bounds."""
+    data = _load_json_file(_IMPROVE_UNSUPPORTED_MARKER)
+    if not isinstance(data, dict) or not data:
+        return
+    try:
+        marked_at = float(data.get("marked_at", 0) or 0)
+    except (TypeError, ValueError):
+        marked_at = 0.0
+    if now - marked_at >= _IMPROVE_UNSUPPORTED_TTL_SECONDS:
+        _sweep_remove(_IMPROVE_UNSUPPORTED_MARKER, counts, "expired_markers")
+
+
+def sweep_stale_state(now: Optional[float] = None) -> dict:
+    """Remove this plugin's dead per-session files and legacy leftovers.
+
+    Returns a count per category (only non-zero ones, plus ``errors`` when
+    something could not be removed). Never raises: a sweep that fails must
+    never cost a SessionStart. Logs one ``state_sweep`` event when it did
+    anything.
+    """
+    counts: dict = {}
+    now = datetime.now(timezone.utc).timestamp() if now is None else float(now)
+    try:
+        for directory, key in (
+            (_CONN_STATE_DIR, "conn_state"),
+            (_LLM_STATE_DIR, "llm_state"),
+            (_PLUGIN_DIR / "recall", "recall"),
+            (_BRIDGE_DIR, "bridge"),
+            (_PENDING_DIR, "pending"),
+        ):
+            _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
+        _sweep_launch_records(now, counts)
+        _sweep_improve_locks(now, counts)
+        _sweep_expired_improve_marker(now, counts)
+        for name in _SWEEP_LEGACY_DIRS:
+            legacy = _PLUGIN_DIR / name
+            if legacy.is_dir():
+                try:
+                    shutil.rmtree(legacy)
+                    counts["legacy_dirs"] = counts.get("legacy_dirs", 0) + 1
+                except OSError as exc:
+                    counts.setdefault("errors", []).append(f"{name}/: {str(exc)[:80]}")
+        for name in _SWEEP_LOG_FILES:
+            if _rotate_log_if_oversized(_PLUGIN_DIR / name):
+                counts["logs_rotated"] = counts.get("logs_rotated", 0) + 1
+    except Exception as exc:  # pragma: no cover - defensive
+        counts.setdefault("errors", []).append(str(exc)[:120])
+    if counts:
+        hook_log("state_sweep", counts)
+    return counts
