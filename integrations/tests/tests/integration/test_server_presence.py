@@ -193,7 +193,12 @@ def test_spawned_server_does_not_inherit_the_worker_stdio(
         def poll(self):
             return None
 
-    real_popen = subprocess.Popen  # the capture pump is a real child; only the server is faked
+    # Only the server spawn is faked. Everything else must reach the real Popen:
+    # the capture pump, and — on Windows — `netstat -ano`, which server_presence
+    # runs through subprocess.run to confirm the port is free. A blanket fake made
+    # netstat "fail", the verdict came back UNKNOWN, and the boot point refused
+    # to spawn at all (Windows CI only; POSIX confirms absence with a socket).
+    real_popen = subprocess.Popen
 
     def fake_popen(argv, **kwargs):
         if "uvicorn" not in [str(a) for a in argv]:
@@ -207,6 +212,10 @@ def test_spawned_server_does_not_inherit_the_worker_stdio(
     # Healthy as soon as the spawn happened, so the boot point returns.
     monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: "argv" in captured)
     monkeypatch.setattr(session_start, "write_server_pidfile", lambda *a, **k: None)
+
+    # With the fakes installed the port must still be provably free — this is the
+    # check that broke on Windows when the fake swallowed netstat.
+    assert session_start.server_presence(closed_port_url)[0] == session_start.PRESENCE_ABSENT
 
     session_start._ensure_local_server_running({"base_url": closed_port_url}, health_timeout=2.0)
 
@@ -266,7 +275,12 @@ def test_boot_failure_message_carries_the_console_tail(session_start, closed_por
         def poll(self):
             return 1
 
-    real_popen = subprocess.Popen  # the capture pump is a real child; only the server is faked
+    # Only the server spawn is faked. Everything else must reach the real Popen:
+    # the capture pump, and — on Windows — `netstat -ano`, which server_presence
+    # runs through subprocess.run to confirm the port is free. A blanket fake made
+    # netstat "fail", the verdict came back UNKNOWN, and the boot point refused
+    # to spawn at all (Windows CI only; POSIX confirms absence with a socket).
+    real_popen = subprocess.Popen
 
     def fake_popen(argv, **kwargs):
         if "uvicorn" not in [str(a) for a in argv]:
