@@ -31,6 +31,8 @@ export const DEFAULT_RECALL_BREAKER_COOLDOWN_MS = 120_000;
 // Harness-noise filter (see noise.ts). Triggers match ctx.trigger verbatim;
 // patterns are regex sources matched against the prompt (leading whitespace
 // stripped). Overriding either with [] disables that layer.
+export const DEFAULT_MEMORY_TOOLS = true;
+
 export const DEFAULT_NOISE_TRIGGERS: string[] = ["heartbeat", "cron"];
 export const DEFAULT_NOISE_PATTERNS: string[] = [
   // OpenClaw's default heartbeat prompt: "Read HEARTBEAT.md if it exists …"
@@ -133,6 +135,9 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     ? raw.recallInjectionPosition
     : DEFAULT_RECALL_INJECTION_POSITION;
 
+  // Agent tools
+  const memoryTools = typeof raw.memoryTools === "boolean" ? raw.memoryTools : DEFAULT_MEMORY_TOOLS;
+
   // Harness-noise filter
   const noiseTriggers = Array.isArray(raw.noiseTriggers) ? raw.noiseTriggers : DEFAULT_NOISE_TRIGGERS;
   const noisePatterns = Array.isArray(raw.noisePatterns) ? raw.noisePatterns : DEFAULT_NOISE_PATTERNS;
@@ -146,7 +151,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition, noiseTriggers, noisePatterns,
+    recallInjectionPosition, memoryTools, noiseTriggers, noisePatterns,
     enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,

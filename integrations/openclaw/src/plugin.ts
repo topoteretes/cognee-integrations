@@ -25,6 +25,7 @@ import {
 } from "./persistence.js";
 import { RecallBreaker, isBreakerError } from "./breaker.js";
 import { compileNoisePatterns, isHarnessNoise } from "./noise.js";
+import { ReferenceCache, createMemoryTools } from "./tools.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
 import { bootServerIfNeeded, waitForServerHealth, isLocalUrl, resolveOrMintApiKey, spawnExitWatcher, exitWatcherPidfilePath } from "./server.js";
@@ -207,6 +208,69 @@ const memoryCogneePlugin = {
       } catch (e) {
         if (isBreakerError(e)) void recallBreaker.recordFailure(String(e)).catch(() => {});
         throw e;
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Agent tools: memory_search / memory_get.
+    //
+    // OpenClaw's memory slot carries a tool contract (see tools.ts). The
+    // bundled active-memory extension allow-lists exactly these two names, so
+    // a memory plugin that registers nothing makes it fail with "No callable
+    // tools remain…". Registered through a factory so each tool instance sees
+    // the calling agent/session/workspace. Declared in openclaw.plugin.json
+    // `contracts.tools` — the runtime rejects undeclared registrations.
+    // ------------------------------------------------------------------
+
+    if (cfg.memoryTools) {
+      const toolReferenceCache = new ReferenceCache();
+
+      // Dataset ids to search plus a provenance label per id. Same resolution
+      // as prompt-time recall (getRecallDatasetIds) but keeps the scope label.
+      async function resolveToolDatasets(runtimeAgentId?: string): Promise<Array<{ id: string; label: string }>> {
+        const out: Array<{ id: string; label: string }> = [];
+        if (multiScope) {
+          const state = await loadDatasetState();
+          for (const scope of cfg.recallScopes) {
+            const dsName = datasetNameForScope(scope, cfg, runtimeAgentId);
+            const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, runtimeAgentId)
+              ?? await resolveDatasetIdFromServer(dsName);
+            if (dsId) out.push({ id: dsId, label: scope });
+          }
+        } else {
+          const { ids } = await getRecallDatasetIds(runtimeAgentId);
+          for (const id of ids) out.push({ id, label: cfg.datasetName });
+        }
+        return out;
+      }
+
+      const registerTool = (api as { registerTool?: OpenClawPluginApi["registerTool"] }).registerTool;
+      if (typeof registerTool === "function") {
+        registerTool.call(
+          api,
+          ((toolCtx: { agentId?: string; sessionId?: string; sessionKey?: string; workspaceDir?: string }) =>
+            createMemoryTools(
+              {
+                cfg,
+                resolveDatasets: resolveToolDatasets,
+                recall: (p) => recallWithBreaker({ ...p, searchType: p.searchType ?? cfg.searchType, searchPrompt: p.searchPrompt ?? cfg.searchPrompt }),
+                breakerOpenForSeconds: () => recallBreaker.openForSeconds(),
+                sessionIdFor: (hostSessionId) => (cfg.enableSessions && hostSessionId ? cogneeSessionId(hostSessionId) : undefined),
+                cache: toolReferenceCache,
+                logger: { debug: (m) => api.logger.debug?.(m), warn: (m) => api.logger.warn?.(m) },
+              },
+              {
+                agentId: toolCtx.agentId,
+                sessionId: toolCtx.sessionId,
+                sessionKey: toolCtx.sessionKey,
+                workspaceDir: expandHome(toolCtx.workspaceDir) ?? resolvedWorkspaceDir,
+              },
+            )) as unknown as Parameters<OpenClawPluginApi["registerTool"]>[0],
+          { names: ["memory_search", "memory_get"] },
+        );
+        api.logger.debug?.("cognee-openclaw: registered memory_search/memory_get tools");
+      } else {
+        api.logger.warn?.("cognee-openclaw: host does not support registerTool; memory_search/memory_get unavailable");
       }
     }
 

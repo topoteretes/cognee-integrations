@@ -14,6 +14,7 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Health check**: Verifies Cognee API connectivity before operations
 - **Auto-index**: Syncs memory markdown files to Cognee via `/remember` (add new, update changed, forget removed, skip unchanged). The `/remember` endpoint runs ingest, graph build, and graph enrichment in one server-side call.
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
+- **Native memory tools**: registers `memory_search` and `memory_get` — the tools OpenClaw's memory slot and `active-memory` expect — backed by Cognee recall, with `cognee://` references the model can resolve to full text
 - **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider and sets the required hook permissions
 - **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
 
@@ -360,6 +361,17 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `maxTokens` | number | `512` | Token cap for recall per scope |
 | `searchPrompt` | string | `""` | System prompt to guide search |
 | `recallInjectionPosition` | string | `prependContext` | Where recalled memories are injected: `prependSystemContext`, `appendSystemContext`, or `prependContext` |
+
+### Agent tools: `memory_search` / `memory_get`
+
+OpenClaw's memory slot comes with a tool contract: the bundled `active-memory` extension runs a memory sub-agent before conversational replies with exactly `memory_search` and `memory_get` allow-listed, and the model can call them directly. The plugin registers Cognee-backed versions of both (declared in `openclaw.plugin.json` → `contracts.tools`), so they work with no `toolsAllow` override and independently of `autoRecall`.
+
+| Tool | Parameters | Returns |
+|------|------------|---------|
+| `memory_search` | `query` (required), `maxResults`, `minScore`, `corpus` = `memory` \| `sessions` \| `all` (default) | `{ results: [{ reference, text, score, scope, source, time }] }`; `{ results: [], disabled: true, error, warning, action }` when Cognee is unreachable or the recall breaker is open |
+| `memory_get` | `path` (a `cognee://…` reference from `memory_search`, or a workspace memory file such as `MEMORY.md` / `memory/notes.md`), `from`, `lines` | The referenced memory's full text with provenance, or a bounded file excerpt with `truncated`/`nextFrom`. Stale references return an `error` field, not a failure |
+
+`corpus=memory` searches the permanent graph across the configured scopes, `corpus=sessions` this conversation's session cache, `all` both. `wiki` is not backed by Cognee and returns no results. Set `memoryTools: false` to opt out.
 
 ### Harness-noise filter
 

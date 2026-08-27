@@ -38,6 +38,12 @@ export interface FakePluginApi {
   registerCli: jest.Mock;
   registerMemoryFlushPlan: jest.Mock;
   registerService: jest.Mock;
+  registerTool: jest.Mock;
+  /**
+   * Materialize the tools the plugin registered, invoking any factory with
+   * `toolCtx` (agentId/sessionId/workspaceDir) the way the host would.
+   */
+  tools: (toolCtx?: Record<string, unknown>) => Array<{ name: string; execute: (id: string, params: unknown) => Promise<unknown> } & Record<string, unknown>>;
   mutateConfigFile: jest.Mock;
 }
 
@@ -107,6 +113,7 @@ export function createPluginApi(
   };
   const registerMemoryFlushPlan = jest.fn();
   const registerService = jest.fn();
+  const registerTool = jest.fn();
 
   // The plugin mutates its own config through this when `setup` runs; applying
   // the mutation to `loadedConfig` lets a test assert what it wrote.
@@ -140,6 +147,7 @@ export function createPluginApi(
     registerMemoryFlushPlan,
     registerCli,
     registerService,
+    registerTool,
     on: jest.fn((name: string, fn: HookHandler) => {
       const list = handlers.get(name) ?? [];
       list.push(fn);
@@ -168,6 +176,17 @@ export function createPluginApi(
     registerCli,
     registerMemoryFlushPlan,
     registerService,
+    registerTool,
+    tools: (toolCtx = {}) => {
+      const out: Array<{ name: string; execute: (id: string, params: unknown) => Promise<unknown> } & Record<string, unknown>> = [];
+      for (const call of registerTool.mock.calls) {
+        const registered = call[0];
+        const produced = typeof registered === "function" ? registered(toolCtx) : registered;
+        if (!produced) continue;
+        for (const t of Array.isArray(produced) ? produced : [produced]) out.push(t);
+      }
+      return out;
+    },
     mutateConfigFile,
   };
 }

@@ -2,6 +2,17 @@
   "id": "cognee-openclaw",
   "name": "Memory (Cognee)",
   "kind": "memory",
+  "contracts": {
+    "tools": [
+      "memory_search",
+      "memory_get"
+    ]
+  },
+  "toolMetadata": {
+    "memory_get": {
+      "replaySafe": true
+    }
+  },
   "configContracts": {
     "secretInputs": {
       "paths": [
@@ -174,6 +185,14 @@
         "type": "boolean",
         "description": "Inject memories before each agent run (default: true)"
       },
+      "memoryTools": {
+        "type": "boolean",
+        "description": "Register the memory_search / memory_get agent tools OpenClaw's memory slot expects (used by active-memory). Independent of autoRecall (default: true)"
+      },
+      "improveOnSessionEnd": {
+        "type": "boolean",
+        "description": "On session_end, call /improve with the session id to bridge session-cache QAs into the permanent graph (default: true)"
+      },
       "autoIndex": {
         "type": "boolean",
         "description": "Auto-sync memory files to Cognee on plugin startup (default: true)"
@@ -301,6 +320,12 @@
     },
     "autoRecall": {
       "label": "Auto-Recall"
+    },
+    "memoryTools": {
+      "label": "Memory Tools (memory_search / memory_get)"
+    },
+    "improveOnSessionEnd": {
+      "label": "Improve on Session End"
     },
     "autoIndex": {
       "label": "Auto-Index on Startup"

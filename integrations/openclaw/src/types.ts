@@ -97,6 +97,14 @@ export type CogneePluginConfig = {
   /** Where recalled memories are injected in the prompt. Default: prependSystemContext */
   recallInjectionPosition?: "prependSystemContext" | "appendSystemContext" | "prependContext";
 
+  // --- Agent tools ---
+  /**
+   * Register the `memory_search` / `memory_get` agent tools that OpenClaw's
+   * memory slot expects (active-memory allow-lists exactly these). Independent
+   * of autoRecall. Default: true.
+   */
+  memoryTools?: boolean;
+
   // --- Harness-noise filter ---
   /**
    * ctx.trigger values treated as harness-generated turns: their prompts are
