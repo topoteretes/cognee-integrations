@@ -458,7 +458,9 @@ Move **one conversation** to another Cognee dataset — the OpenClaw counterpart
 | `{action: "list"}` | Datasets visible on the server, current one first. Present them and let the user pick; a name that is not listed is created on switch |
 | `{action: "switch", dataset: "proj-a"}` | Syncs the current session into its dataset (`/improve`, strict — aborts on failure unless `force: true`), ensures the target exists and caches its id, then binds the conversation: later capture writes, the session-layer recall and the agent/single graph recall target `proj-a`, under a fresh Cognee session id (`open_claw_<id>__2`, `__3`, …) because a session never spans two datasets. Session-end `improve` follows too |
 | `{action: "current"}` | The dataset and Cognee session id this conversation uses, and whether it was switched |
-| `{action: "reset"}` | Back to the configured dataset |
+| `{action: "reset"}` | Back to the configured dataset. Re-syncs any retired session whose switch-time sync failed first; refuses without `force: true` while one is still unsynced |
+
+`force: true` on a switch does not skip the sync — it defers it: the retired session is recorded on the override and bridged into its own dataset at session end (and by `reset`). Until then its turns exist only in the server's session cache, so the tool tells the model to inform the user.
 
 In multi-scope mode only the **agent** scope is repointed; `company`/`user` memory stays shared. Memory-file sync keeps following `scopeRouting` — the switch moves the conversation's memory, not the agent's files. Overrides persist across gateway restarts in `~/.openclaw/memory/cognee/dataset-overrides.json`. Set `datasetSwitchTool: false` to not register it.
 

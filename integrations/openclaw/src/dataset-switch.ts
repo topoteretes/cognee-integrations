@@ -24,12 +24,12 @@
 // `action: "reset"`.
 // ---------------------------------------------------------------------------
 
-import type { CogneePluginConfig, DatasetOverride, DatasetOverridesFile } from "./types.js";
+import type { CogneePluginConfig, DatasetOverride, DatasetOverridesFile, RetiredSession } from "./types.js";
 import { DATASET_OVERRIDES_PATH, loadDatasetOverrides, saveDatasetOverrides } from "./persistence.js";
 import { jsonResult, type MemoryTool, type MemoryToolContext } from "./tools.js";
 
 export { loadDatasetOverrides, saveDatasetOverrides };
-export type { DatasetOverride, DatasetOverridesFile };
+export type { DatasetOverride, DatasetOverridesFile, RetiredSession };
 
 export function datasetOverridesPath(): string {
   return DATASET_OVERRIDES_PATH;
@@ -87,19 +87,46 @@ export class DatasetSwitchStore {
     return undefined;
   }
 
-  /** Record a switch; returns the new override. */
-  set(ctx: { sessionKey?: string; sessionId?: string }, dataset: string, currentDataset: string): DatasetOverride {
+  /**
+   * Record a switch; returns the new override. `retiring` is the session that
+   * was active until now and whether its cache was bridged — an unsynced one
+   * is re-synced at session end (or on reset) so `force` never loses turns.
+   */
+  set(
+    ctx: { sessionKey?: string; sessionId?: string },
+    dataset: string,
+    currentDataset: string,
+    retiring?: { sessionId: string; synced: boolean },
+  ): DatasetOverride {
     const existing = this.get(ctx);
+    const now = (this.opts.now ?? (() => new Date()))().toISOString();
     const previous = [...(existing?.previous ?? []), currentDataset];
+    const retired = [...(existing?.retired ?? [])];
+    if (retiring?.sessionId) retired.push({ dataset: currentDataset, sessionId: retiring.sessionId, synced: retiring.synced, retiredAt: now });
     const override: DatasetOverride = {
       dataset,
       sessionSuffix: (existing?.sessionSuffix ?? 1) + 1,
-      switchedAt: (this.opts.now ?? (() => new Date()))().toISOString(),
+      switchedAt: now,
       previous,
+      retired,
     };
     for (const k of conversationKeys(ctx)) this.data[k] = override;
     this.persist();
     return override;
+  }
+
+  /** Retired sessions whose switch-time sync failed. */
+  unsyncedRetired(ctx: { sessionKey?: string; sessionId?: string } | undefined): RetiredSession[] {
+    return (this.get(ctx)?.retired ?? []).filter((r) => !r.synced);
+  }
+
+  /** Flag a retired session as bridged (after a successful later sync). */
+  markRetiredSynced(ctx: { sessionKey?: string; sessionId?: string }, sessionId: string): void {
+    const override = this.get(ctx);
+    if (!override) return;
+    let changed = false;
+    for (const r of override.retired) if (r.sessionId === sessionId && !r.synced) { r.synced = true; changed = true; }
+    if (changed) this.persist();
   }
 
   /** Drop a conversation's override (back to the configured dataset). */
@@ -137,7 +164,7 @@ export const MemorySwitchDatasetSchema = {
     dataset: { type: "string", description: "switch only: target dataset name (letters, digits, - _ .)." },
     force: {
       type: "boolean",
-      description: "switch only: proceed even if syncing the current session into its dataset fails (unsynced turns are retried at session end). Ask the user before setting this.",
+      description: "switch/reset only: proceed even if syncing the current session into its dataset fails. The unsynced session is recorded and re-synced at session end (and on reset); until then its turns exist only in the server's session cache and are lost if that cache expires first. Ask the user before setting this.",
     },
   },
   required: ["action"],
@@ -163,7 +190,7 @@ export type MemorySwitchDatasetResult =
       error?: string;
       note?: string;
     }
-  | { action: "reset"; reset: boolean; dataset: string; note?: string };
+  | { action: "reset"; reset: boolean; dataset: string; resynced?: string[]; unsynced?: string[]; error?: string; note?: string };
 
 export type DatasetSwitchDeps = {
   cfg: Required<CogneePluginConfig>;
@@ -255,8 +282,9 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
       return { action: "switch", switched: false, dataset: before, error: `could not create/resolve dataset "${target}": ${String(e)}. Nothing was changed.` };
     }
 
-    // 3. Record the override; later hooks pick it up.
-    deps.store.set(convo, target, before);
+    // 3. Record the override (and the retired session) so later hooks — and
+    //    the session-end re-sync of anything left unsynced — pick it up.
+    deps.store.set(convo, target, before, prevSid ? { sessionId: prevSid, synced } : undefined);
     const newSid = deps.currentSessionId(ctx);
     deps.logger?.debug?.(`cognee-openclaw: conversation switched ${before} -> ${target} (session ${newSid ?? "-"})`);
     return {
@@ -265,13 +293,59 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
       dataset: target,
       ...(newSid ? { sessionId: newSid } : {}),
       previous: { dataset: before, ...(prevSid ? { sessionId: prevSid } : {}), synced },
-      note: "From now on this conversation saves to and recalls from the new dataset; earlier context from the previous dataset is no longer injected — switch back to see it again. Memory files and shared company/user scopes are unaffected.",
+      note:
+        "From now on this conversation saves to and recalls from the new dataset; earlier context from the previous dataset is no longer injected — switch back to see it again. Memory files and shared company/user scopes are unaffected." +
+        (synced ? "" : " The previous session was NOT synced (force); it is re-synced automatically at session end. Tell the user."),
     };
   }
 
-  function reset(): MemorySwitchDatasetResult {
-    const removed = deps.store.clear(convo);
-    return { action: "reset", reset: removed, dataset: deps.currentDataset(ctx), ...(removed ? {} : { note: "This conversation was already on its configured dataset." }) };
+  /**
+   * Re-sync retired sessions whose switch-time sync failed. Returns the ids
+   * still unsynced. Used by reset (before dropping the override) and exposed
+   * to the plugin's session-end chain via the store.
+   */
+  async function resyncRetired(): Promise<{ resynced: string[]; unsynced: string[] }> {
+    const resynced: string[] = [];
+    const unsynced: string[] = [];
+    for (const r of deps.store.unsyncedRetired(convo)) {
+      try {
+        await deps.syncSession(r.dataset, r.sessionId);
+        deps.store.markRetiredSynced(convo, r.sessionId);
+        resynced.push(r.sessionId);
+      } catch (e) {
+        deps.logger?.warn?.(`cognee-openclaw: re-sync of retired session ${r.sessionId} into "${r.dataset}" failed: ${String(e)}`);
+        unsynced.push(r.sessionId);
+      }
+    }
+    return { resynced, unsynced };
+  }
+
+  async function reset(params: MemorySwitchDatasetParams): Promise<MemorySwitchDatasetResult> {
+    if (!deps.store.get(convo)) {
+      return { action: "reset", reset: false, dataset: deps.currentDataset(ctx), note: "This conversation was already on its configured dataset." };
+    }
+    // Dropping the override would also drop the record of unsynced retired
+    // sessions, so bridge them first; refuse (without force) if any still fail.
+    const { resynced, unsynced } = await resyncRetired();
+    if (unsynced.length > 0 && !params.force) {
+      return {
+        action: "reset",
+        reset: false,
+        dataset: deps.currentDataset(ctx),
+        resynced,
+        unsynced,
+        error: `${unsynced.length} retired session(s) could not be synced into their dataset; nothing was changed. Retry, or call again with force=true only if the user accepts that those turns may be lost.`,
+      };
+    }
+    if (unsynced.length > 0) deps.logger?.warn?.(`cognee-openclaw: reset with force — ${unsynced.length} retired session(s) left unsynced: ${unsynced.join(", ")}`);
+    deps.store.clear(convo);
+    return {
+      action: "reset",
+      reset: true,
+      dataset: deps.currentDataset(ctx),
+      ...(resynced.length > 0 ? { resynced } : {}),
+      ...(unsynced.length > 0 ? { unsynced, note: "Reset forced; the listed sessions were not bridged into the graph. Tell the user." } : {}),
+    };
   }
 
   return {
@@ -286,7 +360,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
         case "list": return jsonResult(await list());
         case "current": return jsonResult(current());
         case "switch": return jsonResult(await doSwitch(params));
-        case "reset": return jsonResult(reset());
+        case "reset": return jsonResult(await reset(params));
         default: return jsonResult<MemorySwitchDatasetResult>({ action: "current", dataset: deps.currentDataset(ctx), switched: false, previous: [], note: "action must be list, current, switch or reset" });
       }
     },

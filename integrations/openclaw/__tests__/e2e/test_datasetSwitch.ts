@@ -150,6 +150,35 @@ describe("memory_switch_dataset end to end", () => {
     expect(call).toMatchObject({ datasetName: "proj-a", sessionIds: ["open_claw_s1__2"] });
   });
 
+  it("a forced switch after a failed sync re-syncs the retired session into its old dataset at session end", async () => {
+    const h = harness();
+    await h.emit("gateway_start", { port: 1 }, {});
+    await flush();
+    await h.emit("before_prompt_build", { prompt: "hello there" }, CONVO_A);
+    await flush();
+
+    // Switch-time sync fails; the user accepts force.
+    mockImprove.mockImplementationOnce(async () => { throw new Error("improve 503"); });
+    const tool = h.tools(CONVO_A).find((t) => t.name === "memory_switch_dataset")!;
+    const res = (await tool.execute("c", { action: "switch", dataset: "proj-a", force: true })) as { details: { switched: boolean; previous: { synced: boolean } } };
+    expect(res.details.switched).toBe(true);
+    expect(res.details.previous.synced).toBe(false);
+    mockImprove.mockClear();
+
+    await h.emit("session_end", { sessionId: "s1", sessionKey: CONVO_A.sessionKey, messageCount: 2 }, CONVO_A);
+    await flush(40);
+
+    const calls = mockImprove.mock.calls.map((c) => c[0] as { datasetName: string; sessionIds: string[] });
+    // Retired (old dataset, base session id) first, then the active switched session.
+    expect(calls).toEqual([
+      expect.objectContaining({ datasetName: "testds", sessionIds: ["open_claw_s1"] }),
+      expect.objectContaining({ datasetName: "proj-a", sessionIds: ["open_claw_s1__2"] }),
+    ]);
+    // ...and it is flagged synced so it is not bridged again.
+    const persisted = Object.values(overridesOnDisk)[0] as { retired: Array<{ sessionId: string; synced: boolean }> };
+    expect(persisted.retired).toEqual([expect.objectContaining({ sessionId: "open_claw_s1", synced: true })]);
+  });
+
   it("memory_search on a switched conversation searches the new dataset", async () => {
     const h = harness();
     await switchTo(h, "proj-a");

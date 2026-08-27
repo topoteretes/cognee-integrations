@@ -275,6 +275,15 @@ export type CogneeDataItem = {
 
 export type DatasetState = Record<string, string>;
 
+/** A (dataset, session) pair a conversation used before a switch. */
+export type RetiredSession = {
+  dataset: string;
+  sessionId: string;
+  /** Whether its session cache was bridged into the graph when it was retired. */
+  synced: boolean;
+  retiredAt: string;
+};
+
 /** One conversation's dataset switch (memory_switch_dataset). */
 export type DatasetOverride = {
   dataset: string;
@@ -283,6 +292,11 @@ export type DatasetOverride = {
   switchedAt: string;
   /** Datasets this conversation used before, newest last (informational). */
   previous: string[];
+  /**
+   * Sessions retired by switches, newest last. Session-end re-syncs the ones
+   * whose sync failed at switch time (`force`), so no captured turn is lost.
+   */
+  retired: RetiredSession[];
 };
 
 /** Keyed by `key:<sessionKey>` and `sid:<sessionId>` (both written per switch). */

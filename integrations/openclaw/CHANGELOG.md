@@ -36,8 +36,11 @@ capabilities — as tools, not slash-command skills.
   A switch syncs the current session strictly (`force` to override), ensures the target and
   caches its id, then repoints capture, the agent/single recall scope, the session-layer
   lane and session-end `improve` under a fresh Cognee session id (`open_claw_<id>__N`).
-  `company`/`user` scopes and memory-file sync are untouched. Overrides persist in
-  `~/.openclaw/memory/cognee/dataset-overrides.json`. (parity with SDK-400)
+  `company`/`user` scopes and memory-file sync are untouched. A session retired with
+  `force` after a failed sync is recorded and re-synced into its own dataset at session
+  end (and by `reset`, which refuses without `force` while any retired session is still
+  unsynced), so the escape hatch defers the sync instead of dropping turns. Overrides
+  persist in `~/.openclaw/memory/cognee/dataset-overrides.json`. (parity with SDK-400)
 - **Code graph.** `openclaw cognee index-repo <path|url> [--dataset] [--index-vectors]
   [--wait <s>]` indexes a repository into a deterministic code graph (enola pipeline, one
   `codebase-<repo>-<digest>` dataset per repo); `memory_code_search` answers structural

@@ -1896,6 +1896,21 @@ const memoryCogneePlugin = {
           } catch (e) {
             api.logger.warn?.(`cognee-openclaw: ensure dataset "${dsName}" failed (continuing to improve): ${String(e)}`);
           }
+          // Sessions retired by a forced dataset switch (their switch-time
+          // sync failed) are bridged here into THEIR dataset, so `force`
+          // defers the sync rather than dropping the turns.
+          for (const retired of switchStore.unsyncedRetired(endCtx)) {
+            let bridged = false;
+            // withFinalSyncRetries swallows the final failure, so success is
+            // tracked explicitly: only a completed improve flips `synced`.
+            await withFinalSyncRetries(`retired-session improve (${retired.sessionId})`, async () => {
+              const r = await client.improve({ datasetName: retired.dataset, sessionIds: [retired.sessionId] });
+              api.logger.info?.(`cognee-openclaw: retired session ${retired.sessionId} bridged into "${retired.dataset}" (${describeImprove(r)})`);
+              bridged = true;
+            });
+            if (bridged) switchStore.markRetiredSynced(endCtx, retired.sessionId);
+            else api.logger.warn?.(`cognee-openclaw: retired session ${retired.sessionId} still unsynced after retries; it stays recorded for the next attempt`);
+          }
           await withFinalSyncRetries("session-end improve", async () => {
             const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId] });
             api.logger.info?.(`cognee-openclaw: session-end improve dispatched for session ${endSessionId} -> dataset "${dsName}" (${describeImprove(result)})`);

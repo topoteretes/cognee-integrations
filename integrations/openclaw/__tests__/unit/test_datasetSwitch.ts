@@ -39,8 +39,8 @@ describe("helpers", () => {
 
   it("withSessionSuffix appends the ordinal only when switched", () => {
     expect(withSessionSuffix("open_claw_s1", undefined)).toBe("open_claw_s1");
-    expect(withSessionSuffix("open_claw_s1", { dataset: "x", sessionSuffix: 3, switchedAt: "", previous: [] })).toBe("open_claw_s1__3");
-    expect(withSessionSuffix("", { dataset: "x", sessionSuffix: 2, switchedAt: "", previous: [] })).toBe("");
+    expect(withSessionSuffix("open_claw_s1", { dataset: "x", sessionSuffix: 3, switchedAt: "", previous: [], retired: [] })).toBe("open_claw_s1__3");
+    expect(withSessionSuffix("", { dataset: "x", sessionSuffix: 2, switchedAt: "", previous: [], retired: [] })).toBe("");
   });
 });
 
@@ -58,7 +58,7 @@ describe("DatasetSwitchStore", () => {
     const store = new DatasetSwitchStore({ path, now: () => now });
     await store.ready();
     const first = store.set({ sessionKey: "k1", sessionId: "s1" }, "proj-a", "testds");
-    expect(first).toEqual({ dataset: "proj-a", sessionSuffix: 2, switchedAt: "2026-08-27T10:00:00.000Z", previous: ["testds"] });
+    expect(first).toEqual({ dataset: "proj-a", sessionSuffix: 2, switchedAt: "2026-08-27T10:00:00.000Z", previous: ["testds"], retired: [] });
     expect(store.get({ sessionKey: "k1" })?.dataset).toBe("proj-a");
     expect(store.get({ sessionId: "s1" })?.dataset).toBe("proj-a");
     expect(store.get({ sessionId: "other" })).toBeUndefined();
@@ -92,7 +92,24 @@ describe("DatasetSwitchStore", () => {
     expect(await loadDatasetOverrides(path)).toEqual({});
     const { writeFile } = await import("node:fs/promises");
     await writeFile(path, JSON.stringify({ "key:a": { dataset: "x" }, "key:b": { nope: 1 }, "key:c": "str" }));
-    expect(await loadDatasetOverrides(path)).toEqual({ "key:a": { dataset: "x", sessionSuffix: 2, switchedAt: "", previous: [] } });
+    expect(await loadDatasetOverrides(path)).toEqual({ "key:a": { dataset: "x", sessionSuffix: 2, switchedAt: "", previous: [], retired: [] } });
+  });
+
+  it("tracks retired sessions across switches and flips synced only on request", async () => {
+    const store = new DatasetSwitchStore({ path, now: () => new Date("2026-08-27T10:00:00Z") });
+    await store.ready();
+    const ctx = { sessionKey: "k1", sessionId: "s1" };
+    store.set(ctx, "proj-a", "testds", { sessionId: "open_claw_s1", synced: false });
+    store.set(ctx, "proj-b", "proj-a", { sessionId: "open_claw_s1__2", synced: true });
+    expect(store.get(ctx)?.retired).toEqual([
+      { dataset: "testds", sessionId: "open_claw_s1", synced: false, retiredAt: "2026-08-27T10:00:00.000Z" },
+      { dataset: "proj-a", sessionId: "open_claw_s1__2", synced: true, retiredAt: "2026-08-27T10:00:00.000Z" },
+    ]);
+    expect(store.unsyncedRetired(ctx).map((r) => r.sessionId)).toEqual(["open_claw_s1"]);
+    store.markRetiredSynced(ctx, "open_claw_s1");
+    expect(store.unsyncedRetired(ctx)).toEqual([]);
+    await store.flush();
+    expect((await loadDatasetOverrides(path))["key:k1"].retired.every((r) => r.synced)).toBe(true);
   });
 });
 
@@ -129,7 +146,11 @@ describe("memory_switch_dataset tool", () => {
     store = new DatasetSwitchStore({ path: join(dir, "o.json") });
     await store.ready();
   });
-  afterEach(async () => rm(dir, { recursive: true, force: true }));
+  afterEach(async () => {
+    // Let the store's coalesced save land before the directory disappears.
+    await store.flush();
+    await rm(dir, { recursive: true, force: true });
+  });
 
   it("lists datasets with the current one first and flagged", async () => {
     const out = await run(deps(), { action: "list" });
@@ -169,6 +190,36 @@ describe("memory_switch_dataset tool", () => {
 
     const forced = await run(d, { action: "switch", dataset: "proj-a", force: true });
     expect(forced).toMatchObject({ switched: true, dataset: "proj-a", previous: { dataset: "testds", synced: false } });
+    expect((forced as { note: string }).note).toMatch(/NOT synced \(force\); it is re-synced automatically at session end/);
+    // The unsynced session is remembered so session end / reset can bridge it.
+    expect(store.unsyncedRetired(ctx)).toEqual([expect.objectContaining({ dataset: "testds", sessionId: "open_claw_s1", synced: false })]);
+  });
+
+  it("reset re-syncs unsynced retired sessions first, and refuses without force when that fails", async () => {
+    let failSync = true;
+    const synced: Array<[string, string]> = [];
+    const d = deps({ syncSession: async (ds, sid) => { if (failSync) throw new Error("improve 503"); synced.push([ds, sid]); } });
+    await run(d, { action: "switch", dataset: "proj-a", force: true });
+
+    const refused = await run(d, { action: "reset" });
+    expect(refused).toMatchObject({ action: "reset", reset: false, dataset: "proj-a", unsynced: ["open_claw_s1"] });
+    expect((refused as { error: string }).error).toMatch(/could not be synced.*nothing was changed/i);
+    expect(store.get(ctx)?.dataset).toBe("proj-a");
+
+    failSync = false;
+    const ok = await run(d, { action: "reset" });
+    expect(ok).toEqual({ action: "reset", reset: true, dataset: "testds", resynced: ["open_claw_s1"] });
+    expect(synced).toEqual([["testds", "open_claw_s1"]]);
+    expect(store.get(ctx)).toBeUndefined();
+  });
+
+  it("reset with force drops the override even when a retired session stays unsynced, and says so", async () => {
+    const d = deps({ syncSession: async () => { throw new Error("down"); } });
+    await run(d, { action: "switch", dataset: "proj-a", force: true });
+    const out = await run(d, { action: "reset", force: true });
+    expect(out).toMatchObject({ reset: true, dataset: "testds", unsynced: ["open_claw_s1"] });
+    expect((out as { note: string }).note).toMatch(/not bridged/);
+    expect(store.get(ctx)).toBeUndefined();
   });
 
   it("rejects bad input and reports already_active without side effects", async () => {
