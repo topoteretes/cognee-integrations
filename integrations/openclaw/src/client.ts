@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   CogneeAddResponse,
+  CogneeDataItem,
   CogneeDeleteMode,
   CogneeImproveResult,
   CogneeMode,
@@ -375,6 +376,49 @@ export class CogneeHttpClient {
     return { datasetId: data.dataset_id, datasetName: data.dataset_name, dataId };
   }
 
+  // GET /api/v1/datasets/{id}/data — every stored document in a dataset.
+  // DataDTO is camelCased on the wire (createdAt, mimeType, datasetId, …);
+  // older servers may still emit snake_case, so both are accepted.
+  async listDatasetData(datasetId: string): Promise<CogneeDataItem[]> {
+    const path = this.isCloud ? `/datasets/${datasetId}/data` : `/api/v1/datasets/${datasetId}/data`;
+    const items = await this.fetchAPI<unknown>(path, { method: "GET" });
+    if (!Array.isArray(items)) return [];
+    const out: CogneeDataItem[] = [];
+    for (const raw of items) {
+      if (!raw || typeof raw !== "object") continue;
+      const r = raw as Record<string, unknown>;
+      const id = typeof r.id === "string" ? r.id : undefined;
+      if (!id) continue;
+      const pick = (camel: string, snake: string): string | undefined => {
+        const v = r[camel] ?? r[snake];
+        return typeof v === "string" ? v : undefined;
+      };
+      const meta = r.externalMetadata ?? r.external_metadata;
+      out.push({
+        id,
+        name: typeof r.name === "string" ? r.name : id,
+        datasetId: pick("datasetId", "dataset_id") ?? datasetId,
+        ...(pick("createdAt", "created_at") ? { createdAt: pick("createdAt", "created_at") } : {}),
+        ...(pick("updatedAt", "updated_at") ? { updatedAt: pick("updatedAt", "updated_at") } : {}),
+        ...(pick("mimeType", "mime_type") ? { mimeType: pick("mimeType", "mime_type") } : {}),
+        ...(typeof r.extension === "string" ? { extension: r.extension } : {}),
+        ...(typeof r.label === "string" ? { label: r.label } : {}),
+        ...(meta && typeof meta === "object" ? { externalMetadata: meta as Record<string, unknown> } : {}),
+      });
+    }
+    return out;
+  }
+
+  // GET /api/v1/datasets/{id}/data/{dataId}/raw — the original stored text
+  // (FileResponse, so parsed as text, not JSON).
+  async readRawData(datasetId: string, dataId: string, maxChars?: number): Promise<string> {
+    const path = this.isCloud
+      ? `/datasets/${datasetId}/data/${dataId}/raw`
+      : `/api/v1/datasets/${datasetId}/data/${dataId}/raw`;
+    const text = await this.fetchAPI<string>(path, { method: "GET" }, this.timeoutMs, async (r: Response) => await r.text());
+    return typeof maxChars === "number" && text.length > maxChars ? text.slice(0, maxChars) : text;
+  }
+
   async resolveDataIdFromDataset(datasetId: string, fileName: string): Promise<string | undefined> {
     try {
       const path = this.isCloud ? `/datasets/${datasetId}/data` : `/api/v1/datasets/${datasetId}/data`;
@@ -414,13 +458,17 @@ export class CogneeHttpClient {
   // legacy per-item DELETE for older deployments that don't expose /forget.
   async forget(params: {
     dataId?: string;
+    /** Dataset NAME (server resolves by name). Mutually exclusive with datasetId. */
     dataset?: string;
+    /** Dataset UUID. Preferred when known (e.g. from listDatasetData). */
+    datasetId?: string;
     everything?: boolean;
   }): Promise<{ datasetId?: string; dataId?: string; deleted: boolean; error?: string }> {
     try {
       const body: Record<string, unknown> = {};
       if (params.everything) body.everything = true;
-      if (params.dataset) body.dataset = params.dataset;
+      if (params.datasetId) body.dataset_id = params.datasetId;
+      else if (params.dataset) body.dataset = params.dataset;
       if (params.dataId) body.data_id = params.dataId;
 
       const forgetPath = this.isCloud ? "/forget" : "/api/v1/forget";
@@ -435,19 +483,20 @@ export class CogneeHttpClient {
         // In that case, fall back to per-item DELETE when enough identifiers are provided.
         const msg = error instanceof Error ? error.message : String(error);
         const missingForgetEndpoint = msg.includes("(404)") || msg.includes("(405)");
-        const canUseLegacyDelete = this.isCloud && !!params.dataset && !!params.dataId;
+        const legacyDataset = params.datasetId ?? params.dataset;
+        const canUseLegacyDelete = this.isCloud && !!legacyDataset && !!params.dataId;
         if (!missingForgetEndpoint || !canUseLegacyDelete) {
           throw error;
         }
-        await this.fetchAPI<unknown>(`/datasets/${params.dataset}/data/${params.dataId}`, {
+        await this.fetchAPI<unknown>(`/datasets/${legacyDataset}/data/${params.dataId}`, {
           method: "DELETE",
         });
       }
 
-      return { datasetId: params.dataset, dataId: params.dataId, deleted: true };
+      return { datasetId: params.datasetId ?? params.dataset, dataId: params.dataId, deleted: true };
     } catch (error) {
       return {
-        datasetId: params.dataset,
+        datasetId: params.datasetId ?? params.dataset,
         dataId: params.dataId,
         deleted: false,
         error: error instanceof Error ? error.message : String(error),

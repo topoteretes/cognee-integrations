@@ -5,12 +5,16 @@
   "contracts": {
     "tools": [
       "memory_search",
-      "memory_get"
+      "memory_get",
+      "memory_forget"
     ]
   },
   "toolMetadata": {
     "memory_get": {
       "replaySafe": true
+    },
+    "memory_forget": {
+      "optional": true
     }
   },
   "configContracts": {
@@ -193,6 +197,10 @@
         "type": "boolean",
         "description": "Register the memory_search / memory_get agent tools OpenClaw's memory slot expects (used by active-memory). Independent of autoRecall (default: true)"
       },
+      "memoryForgetTool": {
+        "type": "boolean",
+        "description": "Also register the memory_forget agent tool: user-directed deletion of individual documents, two-phase (find candidates, then forget listed data ids with confirm=true). Whole-dataset wipes stay CLI-only. Requires Cognee >= 1.5.3 (default: true)"
+      },
       "improveOnSessionEnd": {
         "type": "boolean",
         "description": "On session_end, call /improve with the session id to bridge session-cache QAs into the permanent graph (default: true)"
@@ -330,6 +338,9 @@
     },
     "memoryTools": {
       "label": "Memory Tools (memory_search / memory_get)"
+    },
+    "memoryForgetTool": {
+      "label": "Memory Forget Tool (memory_forget)"
     },
     "improveOnSessionEnd": {
       "label": "Improve on Session End"

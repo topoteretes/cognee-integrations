@@ -32,6 +32,7 @@ export const DEFAULT_RECALL_BREAKER_COOLDOWN_MS = 120_000;
 // patterns are regex sources matched against the prompt (leading whitespace
 // stripped). Overriding either with [] disables that layer.
 export const DEFAULT_MEMORY_TOOLS = true;
+export const DEFAULT_MEMORY_FORGET_TOOL = true;
 export const DEFAULT_RECALL_SESSION_LAYERS = true;
 
 export const DEFAULT_NOISE_TRIGGERS: string[] = ["heartbeat", "cron"];
@@ -138,6 +139,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
 
   // Agent tools
   const memoryTools = typeof raw.memoryTools === "boolean" ? raw.memoryTools : DEFAULT_MEMORY_TOOLS;
+  const memoryForgetTool = typeof raw.memoryForgetTool === "boolean" ? raw.memoryForgetTool : DEFAULT_MEMORY_FORGET_TOOL;
 
   // Recall layers
   const recallSessionLayers = typeof raw.recallSessionLayers === "boolean" ? raw.recallSessionLayers : DEFAULT_RECALL_SESSION_LAYERS;
@@ -155,7 +157,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition, memoryTools, recallSessionLayers, noiseTriggers, noisePatterns,
+    recallInjectionPosition, memoryTools, memoryForgetTool, recallSessionLayers, noiseTriggers, noisePatterns,
     enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,

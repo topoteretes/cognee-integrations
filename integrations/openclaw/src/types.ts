@@ -115,6 +115,14 @@ export type CogneePluginConfig = {
    * of autoRecall. Default: true.
    */
   memoryTools?: boolean;
+  /**
+   * Also register `memory_forget`: user-directed deletion of individual
+   * documents ("forget what we said about X"). Two-phase — `find` lists
+   * candidates with previews, `forget` deletes only the listed data ids and
+   * only with confirm=true; whole-dataset wipes stay CLI-only. Requires a
+   * Cognee server >= 1.5.3 for targeted session invalidation. Default: true.
+   */
+  memoryForgetTool?: boolean;
 
   // --- Harness-noise filter ---
   /**
@@ -212,6 +220,19 @@ export type CogneeImproveResult = {
   datasetId?: string;
   /** Per-dataset detail when the server returned a map. */
   datasets?: Record<string, { status?: string; pipelineRunId?: string }>;
+};
+
+/** One stored document, from GET /api/v1/datasets/{id}/data (DataDTO, camelCased on the wire). */
+export type CogneeDataItem = {
+  id: string;
+  name: string;
+  datasetId: string;
+  createdAt?: string;
+  updatedAt?: string;
+  mimeType?: string;
+  extension?: string;
+  label?: string;
+  externalMetadata?: Record<string, unknown>;
 };
 
 export type DatasetState = Record<string, string>;

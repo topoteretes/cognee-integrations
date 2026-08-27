@@ -26,6 +26,7 @@ import {
 import { RecallBreaker, isBreakerError } from "./breaker.js";
 import { compileNoisePatterns, isHarnessNoise } from "./noise.js";
 import { ReferenceCache, SESSION_LAYER_SCOPES, createMemoryTools } from "./tools.js";
+import { createMemoryForgetTool } from "./forget-tool.js";
 import { describeImprove, renderSessionLayerSections } from "./recall-layers.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
@@ -245,31 +246,62 @@ const memoryCogneePlugin = {
         return out;
       }
 
+      const toolNames = ["memory_search", "memory_get", ...(cfg.memoryForgetTool ? ["memory_forget"] : [])];
+      const toolLogger = { debug: (m: string) => api.logger.debug?.(m), warn: (m: string) => api.logger.warn?.(m) };
+
       const registerTool = (api as { registerTool?: OpenClawPluginApi["registerTool"] }).registerTool;
       if (typeof registerTool === "function") {
         registerTool.call(
           api,
-          ((toolCtx: { agentId?: string; sessionId?: string; sessionKey?: string; workspaceDir?: string }) =>
-            createMemoryTools(
-              {
-                cfg,
-                resolveDatasets: resolveToolDatasets,
-                recall: (p) => recallWithBreaker({ ...p, searchType: p.searchType ?? cfg.searchType, searchPrompt: p.searchPrompt ?? cfg.searchPrompt }),
-                breakerOpenForSeconds: () => recallBreaker.openForSeconds(),
-                sessionIdFor: (hostSessionId) => (cfg.enableSessions && hostSessionId ? cogneeSessionId(hostSessionId) : undefined),
-                cache: toolReferenceCache,
-                logger: { debug: (m) => api.logger.debug?.(m), warn: (m) => api.logger.warn?.(m) },
-              },
-              {
-                agentId: toolCtx.agentId,
-                sessionId: toolCtx.sessionId,
-                sessionKey: toolCtx.sessionKey,
-                workspaceDir: expandHome(toolCtx.workspaceDir) ?? resolvedWorkspaceDir,
-              },
-            )) as unknown as Parameters<OpenClawPluginApi["registerTool"]>[0],
-          { names: ["memory_search", "memory_get"] },
+          ((toolCtx: { agentId?: string; sessionId?: string; sessionKey?: string; workspaceDir?: string }) => {
+            const memoryCtx = {
+              agentId: toolCtx.agentId,
+              sessionId: toolCtx.sessionId,
+              sessionKey: toolCtx.sessionKey,
+              workspaceDir: expandHome(toolCtx.workspaceDir) ?? resolvedWorkspaceDir,
+            };
+            const tools: unknown[] = [
+              ...createMemoryTools(
+                {
+                  cfg,
+                  resolveDatasets: resolveToolDatasets,
+                  recall: (p) => recallWithBreaker({ ...p, searchType: p.searchType ?? cfg.searchType, searchPrompt: p.searchPrompt ?? cfg.searchPrompt }),
+                  breakerOpenForSeconds: () => recallBreaker.openForSeconds(),
+                  sessionIdFor: (hostSessionId) => (cfg.enableSessions && hostSessionId ? cogneeSessionId(hostSessionId) : undefined),
+                  cache: toolReferenceCache,
+                  logger: toolLogger,
+                },
+                memoryCtx,
+              ),
+            ];
+            if (cfg.memoryForgetTool) {
+              tools.push(
+                createMemoryForgetTool(
+                  {
+                    cfg,
+                    resolveDatasets: resolveToolDatasets,
+                    listDatasetData: (dsId) => client.listDatasetData(dsId),
+                    readRawData: (dsId, dataId, max) => client.readRawData(dsId, dataId, max),
+                    forget: (p) => client.forget(p),
+                    // Bridge the live session so this conversation's content
+                    // becomes a findable/deletable document (server-side improve).
+                    syncSession: cfg.enableSessions
+                      ? async (hostSessionId, agentId) => {
+                          const dsName = captureDatasetName(agentId);
+                          await client.improve({ datasetName: dsName, sessionIds: [cogneeSessionId(hostSessionId)], runInBackground: false });
+                        }
+                      : undefined,
+                    logger: toolLogger,
+                  },
+                  memoryCtx,
+                ),
+              );
+            }
+            return tools;
+          }) as unknown as Parameters<OpenClawPluginApi["registerTool"]>[0],
+          { names: toolNames },
         );
-        api.logger.debug?.("cognee-openclaw: registered memory_search/memory_get tools");
+        api.logger.debug?.(`cognee-openclaw: registered ${toolNames.join("/")} tools`);
       } else {
         api.logger.warn?.("cognee-openclaw: host does not support registerTool; memory_search/memory_get unavailable");
       }

@@ -14,7 +14,7 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Health check**: Verifies Cognee API connectivity before operations
 - **Auto-index**: Syncs memory markdown files to Cognee via `/remember` (add new, update changed, forget removed, skip unchanged). The `/remember` endpoint runs ingest, graph build, and graph enrichment in one server-side call.
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
-- **Native memory tools**: registers `memory_search` and `memory_get` — the tools OpenClaw's memory slot and `active-memory` expect — backed by Cognee recall, with `cognee://` references the model can resolve to full text
+- **Native memory tools**: registers `memory_search` and `memory_get` — the tools OpenClaw's memory slot and `active-memory` expect — backed by Cognee recall, with `cognee://` references the model can resolve to full text; plus `memory_forget` for user-directed, per-document deletion with mandatory confirmation
 - **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider and sets the required hook permissions
 - **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
 
@@ -391,6 +391,19 @@ OpenClaw's memory slot comes with a tool contract: the bundled `active-memory` e
 | `memory_get` | `path` (a `cognee://…` reference from `memory_search`, or a workspace memory file such as `MEMORY.md` / `memory/notes.md`), `from`, `lines` | The referenced memory's full text with provenance, or a bounded file excerpt with `truncated`/`nextFrom`. Stale references return an `error` field, not a failure |
 
 `corpus=memory` searches the permanent graph across the configured scopes, `corpus=sessions` this conversation's session cache, `all` both. `wiki` is not backed by Cognee and returns no results. Set `memoryTools: false` to opt out.
+
+### Agent tool: `memory_forget`
+
+User-directed deletion — "forget what we talked about tennis", "delete that from memory". Deciding *which* stored documents match is a judgement the model makes by reading them, so the tool is two-phase and the model stays in the loop:
+
+| Call | What happens |
+|------|--------------|
+| `memory_forget {action: "find", query: "tennis"}` | Lists the newest documents across the agent's datasets, reads each one's raw text (bounded scan of the 60 most recent), and returns candidates with `preview`, `sessionId` (when recoverable), `matchedTerms` and `dataId`/`datasetId`. Read-only. Pass `syncSession: true` to first bridge the current conversation into the graph so its content is findable |
+| `memory_forget {action: "forget", dataIds: [...], confirm: true}` | Deletes exactly those documents, one `POST /api/v1/forget {datasetId, dataId}` each, and reports `deleted` / `failed`. Without `confirm: true` nothing is deleted and the tool asks for confirmation |
+
+The tool deliberately cannot express a whole-dataset or everything-wipe; those stay behind `openclaw cognee forget --dataset <name>` / `--everything --confirm`. Deleting a document removes its raw data, its derived graph knowledge, and (Cognee ≥ 1.5.3) the session turns whose answers cited it — targeted, not whole-session; tool-call traces are not matched. Set `memoryForgetTool: false` to not register it.
+
+The plugin's bundled server pin is `cognee==1.5.3` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.5.3`.
 
 ### Harness-noise filter
 

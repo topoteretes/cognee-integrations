@@ -67,9 +67,15 @@ beforeEach(() => {
 });
 
 describe("tool registration", () => {
-  it("registers a factory under both contract names", () => {
+  it("registers a factory under all contract names", () => {
     const { registerTool, tools } = createPluginApi(plugin);
     expect(registerTool).toHaveBeenCalledTimes(1);
+    expect(registerTool.mock.calls[0][1]).toEqual({ names: ["memory_search", "memory_get", "memory_forget"] });
+    expect(tools({ agentId: "will" }).map((t) => t.name)).toEqual(["memory_search", "memory_get", "memory_forget"]);
+  });
+
+  it("leaves memory_forget out when memoryForgetTool is false", () => {
+    const { registerTool, tools } = createPluginApi(plugin, { memoryForgetTool: false });
     expect(registerTool.mock.calls[0][1]).toEqual({ names: ["memory_search", "memory_get"] });
     expect(tools({ agentId: "will" }).map((t) => t.name)).toEqual(["memory_search", "memory_get"]);
   });
@@ -86,7 +92,8 @@ describe("tool registration", () => {
 
   it("declares the same tool names in the manifest contracts", () => {
     const manifest = JSON.parse(readFileSync(join(__dirname, "..", "..", "openclaw.plugin.json"), "utf-8"));
-    expect(manifest.contracts.tools.sort()).toEqual(["memory_get", "memory_search"]);
+    expect(manifest.contracts.tools.sort()).toEqual(["memory_forget", "memory_get", "memory_search"]);
+    expect(manifest.configSchema.properties.memoryForgetTool.type).toBe("boolean");
     expect(manifest.configSchema.properties.memoryTools.type).toBe("boolean");
     expect(manifest.configSchema.properties.improveOnSessionEnd.type).toBe("boolean");
   });
