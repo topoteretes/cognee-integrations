@@ -28,6 +28,7 @@ import { compileNoisePatterns, isHarnessNoise } from "./noise.js";
 import { ReferenceCache, SESSION_LAYER_SCOPES, createMemoryTools } from "./tools.js";
 import { createMemoryForgetTool } from "./forget-tool.js";
 import { DatasetSwitchStore, createDatasetSwitchTool, withSessionSuffix } from "./dataset-switch.js";
+import { PLUGIN_VERSION, formatUpdateHint, isNewer, readUpdateCache, runUpdateCheck } from "./version.js";
 import { describeImprove, renderSessionLayerSections } from "./recall-layers.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
@@ -62,6 +63,12 @@ const memoryCogneePlugin = {
   kind: "memory" as const,
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
+
+    // Installed plugin version. OpenClaw populates `api.version` from the
+    // plugin's package.json at load time; PLUGIN_VERSION is the fallback for
+    // load paths (source checkouts, dev links) that leave it unset.
+    const pluginVersion = (api as { version?: string }).version ?? PLUGIN_VERSION;
+    api.logger.info?.(`cognee-openclaw: v${pluginVersion} loaded`);
 
     const raw = api.pluginConfig as Record<string, unknown> | null | undefined;
     if (!raw?.datasetName && !process.env.COGNEE_PLUGIN_DATASET) {
@@ -673,6 +680,21 @@ const memoryCogneePlugin = {
 
       autoSyncStarted = true;
 
+      // Installed version plus, when one is available, an update hint. Reads
+      // the cached npm check by default; `checkNow` forces a live check. The
+      // verdict is computed here from the cached `latest` against the running
+      // version, so it can never go stale after an upgrade.
+      async function printVersionLine(checkNow?: boolean): Promise<void> {
+        console.log(`Plugin: cognee-openclaw v${pluginVersion}`);
+        const record = checkNow ? await runUpdateCheck({ force: true }) : await readUpdateCache();
+        const latest = record?.latest ?? "";
+        if (isNewer(latest, pluginVersion)) {
+          console.log(formatUpdateHint(latest));
+        } else if (checkNow) {
+          console.log("No newer version found.");
+        }
+      }
+
       cognee
         .command("index")
         .description("Sync memory files to Cognee (add new, update changed, skip unchanged)")
@@ -702,10 +724,21 @@ const memoryCogneePlugin = {
         });
 
       cognee
+        .command("version")
+        .description("Show the installed plugin version (add --check-updates to check npm now)")
+        .option("--check-updates", "Check npm for a newer plugin version now")
+        .action(async (opts: { checkUpdates?: boolean }) => {
+          await printVersionLine(opts.checkUpdates);
+          process.exit(0);
+        });
+
+      cognee
         .command("status")
         .description("Show Cognee sync state")
-        .action(async () => {
+        .option("--check-updates", "Check npm for a newer plugin version now")
+        .action(async (opts: { checkUpdates?: boolean }) => {
           await stateReady;
+          await printVersionLine(opts?.checkUpdates);
           const files = await collectMemoryFiles(cliWorkspaceDir);
 
           if (multiScope) {
@@ -982,6 +1015,11 @@ const memoryCogneePlugin = {
     api.on("gateway_start", async (_event, ctx) => {
       // Unblock agent_end/session_end immediately — they wait on serviceReady.
       resolveServiceReady?.();
+
+      // Refresh the cached npm update check once per gateway start. Independent
+      // of Cognee server health and of autoIndex: fail-silent, rate-limited, and
+      // the `cognee status` / `version` surface only ever reads the cache.
+      runUpdateCheck().catch(() => {});
 
       // Newer SDK versions dropped workspaceDir from the gateway context type;
       // some runtimes still provide it, so read it defensively.
@@ -1282,6 +1320,22 @@ const memoryCogneePlugin = {
         }
       }
     });
+
+    // ------------------------------------------------------------------
+    // Memory steer: one static system-prompt line asserting Cognee as the
+    // preferred long-term memory and naming the memory tools (claude-code's
+    // COGNEE_PREFER_MEMORY equivalent). Goes into appendSystemContext so
+    // providers cache it; skipped on harness-noise turns. before_agent_start
+    // is a prompt-injection hook — `openclaw cognee setup` grants
+    // allowPromptInjection (it defaults to allowed anyway).
+    // ------------------------------------------------------------------
+
+    if (cfg.memorySteer) {
+      api.on("before_agent_start", (event, ctx) => {
+        if (event.prompt && isNoisePrompt(event.prompt, ctx)) return;
+        return { appendSystemContext: cfg.memorySteerText };
+      });
+    }
 
     if (cfg.autoRecall) {
       api.on("before_prompt_build", async (event, ctx) => {

@@ -121,6 +121,7 @@ describe("registration", () => {
       "scopes",
       "setup",
       "status",
+      "version",
       "visualise",
     ]);
   });

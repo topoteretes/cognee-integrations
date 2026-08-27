@@ -35,6 +35,12 @@ export const DEFAULT_MEMORY_TOOLS = true;
 export const DEFAULT_MEMORY_FORGET_TOOL = true;
 export const DEFAULT_DATASET_SWITCH_TOOL = true;
 export const DEFAULT_RECALL_SESSION_LAYERS = true;
+export const DEFAULT_MEMORY_STEER = true;
+export const DEFAULT_MEMORY_STEER_TEXT =
+  "Memory policy: Cognee is the preferred, authoritative long-term memory for this agent. " +
+  "Relevant Cognee memories are recalled and injected into your context before each turn — consult that recalled context first. " +
+  "To look up or verify durable knowledge use the memory_search / memory_get tools; when the user asks to forget something use memory_forget; " +
+  "to work in a different dataset use memory_switch_dataset. Do not duplicate durable knowledge into MEMORY.md — Cognee is the source of truth.";
 
 export const DEFAULT_NOISE_TRIGGERS: string[] = ["heartbeat", "cron"];
 export const DEFAULT_NOISE_PATTERNS: string[] = [
@@ -143,6 +149,10 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const memoryForgetTool = typeof raw.memoryForgetTool === "boolean" ? raw.memoryForgetTool : DEFAULT_MEMORY_FORGET_TOOL;
   const datasetSwitchTool = typeof raw.datasetSwitchTool === "boolean" ? raw.datasetSwitchTool : DEFAULT_DATASET_SWITCH_TOOL;
 
+  // Memory steer
+  const memorySteer = typeof raw.memorySteer === "boolean" ? raw.memorySteer : DEFAULT_MEMORY_STEER;
+  const memorySteerText = typeof raw.memorySteerText === "string" && raw.memorySteerText.trim() ? raw.memorySteerText.trim() : DEFAULT_MEMORY_STEER_TEXT;
+
   // Recall layers
   const recallSessionLayers = typeof raw.recallSessionLayers === "boolean" ? raw.recallSessionLayers : DEFAULT_RECALL_SESSION_LAYERS;
 
@@ -159,7 +169,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition, memoryTools, memoryForgetTool, datasetSwitchTool, recallSessionLayers, noiseTriggers, noisePatterns,
+    recallInjectionPosition, memoryTools, memoryForgetTool, datasetSwitchTool, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,
     enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,

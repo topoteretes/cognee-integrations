@@ -97,6 +97,19 @@ export type CogneePluginConfig = {
   /** Where recalled memories are injected in the prompt. Default: prependSystemContext */
   recallInjectionPosition?: "prependSystemContext" | "appendSystemContext" | "prependContext";
 
+  // --- Memory steer ---
+  /**
+   * Append a short, static system-prompt line on every agent run asserting
+   * Cognee as the preferred, authoritative long-term memory and naming the
+   * memory tools — the OpenClaw counterpart of claude-code's
+   * COGNEE_PREFER_MEMORY steer. Cached by providers (system context), so no
+   * per-turn token cost beyond the first. Skipped on harness-noise turns.
+   * Default: true.
+   */
+  memorySteer?: boolean;
+  /** Replace the default steer text entirely. */
+  memorySteerText?: string;
+
   // --- Recall layers ---
   /**
    * Alongside the knowledge-graph search, recall this conversation's session

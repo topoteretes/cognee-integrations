@@ -193,6 +193,14 @@
         "type": "boolean",
         "description": "Inject memories before each agent run (default: true)"
       },
+      "memorySteer": {
+        "type": "boolean",
+        "description": "Append a static system-prompt line on each agent run asserting Cognee as the preferred long-term memory and naming the memory tools (default: true)"
+      },
+      "memorySteerText": {
+        "type": "string",
+        "description": "Replace the default memory-steer text"
+      },
       "recallSessionLayers": {
         "type": "boolean",
         "description": "Alongside the graph search, recall this conversation's session layers (cached Q&A, tool-call lessons, distilled agent guidance) and inject them as separate sections. Requires enableSessions (default: true)"
@@ -343,6 +351,12 @@
     },
     "recallSessionLayers": {
       "label": "Recall Session Layers"
+    },
+    "memorySteer": {
+      "label": "Memory Steer (system prompt)"
+    },
+    "memorySteerText": {
+      "label": "Memory Steer Text"
     },
     "memoryTools": {
       "label": "Memory Tools (memory_search / memory_get)"

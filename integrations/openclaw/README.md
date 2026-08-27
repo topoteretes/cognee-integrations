@@ -16,7 +16,9 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
 - **Native memory tools**: registers `memory_search` and `memory_get` — the tools OpenClaw's memory slot and `active-memory` expect — backed by Cognee recall, with `cognee://` references the model can resolve to full text; plus `memory_forget` for user-directed, per-document deletion with mandatory confirmation, and `memory_switch_dataset` to move a conversation to another dataset
 - **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider and sets the required hook permissions
-- **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
+- **Memory steer**: a cached system-prompt line on every run asserting Cognee as the authoritative memory and pointing the model at the memory tools
+- **Version & update hint**: `openclaw cognee status` / `openclaw cognee version` show the installed version and, when npm has a newer release, how to upgrade
+- **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee version`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
 
 ## Security: Recommended Plugin Allowlist
 
@@ -361,6 +363,24 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `maxTokens` | number | `512` | Token cap for recall per scope |
 | `searchPrompt` | string | `""` | System prompt to guide search |
 | `recallInjectionPosition` | string | `prependContext` | Where recalled memories are injected: `prependSystemContext`, `appendSystemContext`, or `prependContext` |
+
+### Memory steer
+
+OpenClaw agents also have native memory files (`MEMORY.md`, `memory/*.md`) and may reach for them by habit. On every real agent run the plugin appends one static line to the system prompt (`appendSystemContext`, so providers cache it) asserting Cognee as the preferred, authoritative long-term memory and naming the memory tools — the counterpart of claude-code's `COGNEE_PREFER_MEMORY` steer. Heartbeat/cron turns are skipped.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `memorySteer` | boolean | `true` | Append the steer on each agent run |
+| `memorySteerText` | string | built-in text | Replace the steer text entirely |
+
+### Version & update check
+
+`openclaw cognee status` leads with the installed plugin version, and `openclaw cognee version` prints it on its own. On gateway start the plugin refreshes a cached check against the npm registry (`~/.openclaw/memory/cognee/update-check.json`); when the cached latest is newer than the running version, both commands add `Update available: v… Run: openclaw plugins install @cognee/cognee-openclaw@latest`. The check is rate-limited and fail-silent — it never blocks a command or the gateway, and a network failure keeps the last known result. `--check-updates` forces a live check.
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `COGNEE_UPDATE_CHECK` | `true` | `false`/`0`/`no`/`off` disables the check |
+| `COGNEE_UPDATE_CHECK_INTERVAL` | `86400` | Minimum seconds between background checks (same name as claude-code/codex) |
 
 ### Recall layers
 
