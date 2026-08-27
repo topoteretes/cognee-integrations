@@ -8,4 +8,4 @@
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
-exec python3 "${SELF_DIR}/doctor.py" "$@"
+exec bash "${SELF_DIR}/run-python.sh" "${SELF_DIR}/doctor.py" "$@"
