@@ -456,7 +456,7 @@ where a boot that failed before the server could open its own log explains itsel
 
 At every SessionStart the plugin also sweeps its own state directory: per-session
 files whose session is over (status markers, bridge caches and pending buffers
-untouched for a week; launch records a day after their host process died, or
+untouched for a week; launch records a week after their host process died, or
 after 30 days), improve locks whose owner is gone, an expired
 `improve-unsupported.json`, and directories older versions left behind. It
 never touches another plugin's subdirectory. One `state_sweep` line in

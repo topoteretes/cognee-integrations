@@ -67,13 +67,17 @@ def test_nothing_to_do_is_silent(pc):
 def test_launch_record_of_dead_host_is_removed_after_the_grace_period(pc):
     dead = _dead_pid()
     gone = _write(
-        pc._SESSIONS_MAP_DIR / "gone.json", {"session_id": "s", "host_pid": dead}, 2 * DAY
+        pc._SESSIONS_MAP_DIR / "gone.json", {"session_id": "s", "host_pid": dead}, 8 * DAY
+    )
+    weekend = _write(
+        pc._SESSIONS_MAP_DIR / "weekend.json", {"session_id": "s", "host_pid": dead}, 3 * DAY
     )
     just_died = _write(
         pc._SESSIONS_MAP_DIR / "just.json", {"session_id": "s", "host_pid": dead}, 3600
     )
     pc.sweep_stale_state()
-    assert not gone.exists(), "dead for two days: the exit-watcher had its chance"
+    assert not gone.exists(), "dead for over a week: nobody needs it any more"
+    assert weekend.exists(), "a Friday crash is still readable on Monday"
     assert just_died.exists(), "within the grace period the final sync may still read it"
 
 

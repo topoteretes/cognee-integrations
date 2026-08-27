@@ -3992,11 +3992,14 @@ def _run_session_improve_locked(dataset: str, session_id: str) -> bool:
 #: cache / pending-prompt buffer: gone after a week without a write. A live
 #: session rewrites its markers on every hook, so age alone is a safe signal.
 _SWEEP_SESSION_FILE_MAX_AGE_SECONDS = 7 * 24 * 3600
-#: Launch records: removed one day after their host pid is dead — the
-#: exit-watcher's final sync reads the record right after the host exits, and
-#: retries may follow — or after 30 days regardless (a record with no pid is
-#: treated as alive, so this is the only bound for those).
-_SWEEP_LAUNCH_RECORD_DEAD_GRACE_SECONDS = 24 * 3600
+#: Launch records: removed a week after their host pid is dead, or after 30
+#: days regardless (a record with no pid is treated as alive, so that is the
+#: only bound for those). The functional reader — the exit-watcher's final
+#: sync — needs the record for seconds after the host exits, but a human
+#: debugging a Friday crash on Monday needs it for days; a week matches the
+#: marker rule above so there is one number to remember. Costs nothing:
+#: `_live_launch_records` already ignores dead-pid records at read time.
+_SWEEP_LAUNCH_RECORD_DEAD_GRACE_SECONDS = 7 * 24 * 3600
 _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS = 30 * 24 * 3600
 #: Logs the sweep rotates when over the cap. Most are also rotated by their own
 #: writer; this catches files that predate the cap and logs only ever written
