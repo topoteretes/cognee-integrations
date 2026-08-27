@@ -94,6 +94,10 @@ capabilities — as tools, not slash-command skills.
   Observability only; tracked as SDK-482 (server route first, plugin follow-up after).
 - `time` provenance on `memory_search` results depends on the server populating
   `created_at`/`timestamp` in result metadata.
+- State under `~/.openclaw/memory/cognee/` (dataset ids, sync indexes, dataset overrides,
+  code-graph registry) is owned by one gateway process. Within a process every plugin
+  instance shares one in-memory store per file; two gateway processes sharing the same
+  home directory are not supported.
 
 ## [2026.8.20] and earlier
 

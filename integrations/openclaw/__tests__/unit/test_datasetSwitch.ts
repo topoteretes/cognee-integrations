@@ -132,6 +132,26 @@ describe("DatasetSwitchStore", () => {
     expect(pruneRetired([])).toEqual([]);
     await store.flush(); // let the coalesced save land before afterEach removes the dir
   });
+
+  it("applies the cap on load too, so an oversized file shrinks without waiting for a switch", async () => {
+    const retired = Array.from({ length: MAX_SYNCED_RETIRED + 5 }, (_, i) => ({ dataset: "d", sessionId: `s-${i}`, synced: i !== 1, retiredAt: "" }));
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path, JSON.stringify({ "key:k": { dataset: "x", sessionSuffix: 2, switchedAt: "", previous: [], retired } }));
+    const loaded = (await loadDatasetOverrides(path))["key:k"].retired;
+    expect(loaded.filter((r) => r.synced)).toHaveLength(MAX_SYNCED_RETIRED);
+    expect(loaded.some((r) => r.sessionId === "s-1" && !r.synced)).toBe(true);
+  });
+
+  it("shared() hands every caller the same instance per file, so duplicate register() cannot clobber writes", async () => {
+    const a = DatasetSwitchStore.shared({ path });
+    const b = DatasetSwitchStore.shared({ path });
+    expect(a).toBe(b);
+    expect(DatasetSwitchStore.shared({ path: join(dir, "other.json") })).not.toBe(a);
+    await a.ready();
+    a.set({ sessionKey: "k1", sessionId: "s1" }, "proj-a", "testds");
+    expect(b.get({ sessionKey: "k1" })?.dataset).toBe("proj-a");
+    await a.flush();
+  });
 });
 
 describe("memory_switch_dataset tool", () => {

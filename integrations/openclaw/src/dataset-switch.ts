@@ -26,9 +26,10 @@
 
 import type { CogneePluginConfig, DatasetOverride, DatasetOverridesFile, RetiredSession } from "./types.js";
 import { DATASET_OVERRIDES_PATH, loadDatasetOverrides, saveDatasetOverrides } from "./persistence.js";
+import { MAX_PREVIOUS_DATASETS, MAX_SYNCED_RETIRED, pruneRetired } from "./retired.js";
 import { jsonResult, type MemoryTool, type MemoryToolContext } from "./tools.js";
 
-export { loadDatasetOverrides, saveDatasetOverrides };
+export { loadDatasetOverrides, saveDatasetOverrides, pruneRetired, MAX_SYNCED_RETIRED, MAX_PREVIOUS_DATASETS };
 export type { DatasetOverride, DatasetOverridesFile, RetiredSession };
 
 export function datasetOverridesPath(): string {
@@ -48,27 +49,6 @@ export function isValidDatasetName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name);
 }
 
-/** Synced retired sessions kept for the record; unsynced ones are never pruned. */
-export const MAX_SYNCED_RETIRED = 20;
-/** Previous-dataset trail kept on the override (informational). */
-export const MAX_PREVIOUS_DATASETS = 50;
-
-/**
- * Bound the retired list: every unsynced session stays (each is a pending
- * sync), only the oldest *synced* ones beyond MAX_SYNCED_RETIRED are dropped.
- * Order is preserved (oldest first).
- */
-export function pruneRetired(retired: readonly RetiredSession[]): RetiredSession[] {
-  const syncedCount = retired.filter((r) => r.synced).length;
-  let toDrop = Math.max(0, syncedCount - MAX_SYNCED_RETIRED);
-  const out: RetiredSession[] = [];
-  for (const r of retired) {
-    if (r.synced && toDrop > 0) { toDrop--; continue; }
-    out.push(r);
-  }
-  return out;
-}
-
 export function withSessionSuffix(baseSessionId: string, override: DatasetOverride | undefined): string {
   if (!baseSessionId || !override) return baseSessionId;
   return `${baseSessionId}__${override.sessionSuffix}`;
@@ -79,7 +59,32 @@ export function withSessionSuffix(baseSessionId: string, override: DatasetOverri
  * are synchronous so the hot path (capture, recall) never waits on disk; the
  * plugin awaits `ready()` once per hook before consulting it.
  */
+const sharedStores = new Map<string, DatasetSwitchStore>();
+
 export class DatasetSwitchStore {
+  /**
+   * One store per overrides file within this process. The plugin's register()
+   * can run more than once in a gateway (plugin loaded via two module
+   * specifiers, agent-scoped instances); two instances over one file would be
+   * last-writer-wins, so every register() shares the same in-memory state.
+   * Cross-process sharing of ~/.openclaw/memory/cognee is not supported —
+   * the same holds for every other state file the plugin keeps there.
+   */
+  static shared(opts: ConstructorParameters<typeof DatasetSwitchStore>[0] = {}): DatasetSwitchStore {
+    const key = opts.path ?? DATASET_OVERRIDES_PATH;
+    let store = sharedStores.get(key);
+    if (!store) {
+      store = new DatasetSwitchStore(opts);
+      sharedStores.set(key, store);
+    }
+    return store;
+  }
+
+  /** Drop the shared instances (tests: each harness must start from a clean store). */
+  static resetShared(): void {
+    sharedStores.clear();
+  }
+
   private data: DatasetOverridesFile = {};
   private readonly loaded: Promise<void>;
   private chain: Promise<void> = Promise.resolve();

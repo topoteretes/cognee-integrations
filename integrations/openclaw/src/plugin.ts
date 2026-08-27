@@ -249,12 +249,12 @@ const memoryCogneePlugin = {
     // ------------------------------------------------------------------
 
     type ConvoCtx = { sessionKey?: string; sessionId?: string };
-    const switchStore = new DatasetSwitchStore({ warn: (m) => api.logger.warn?.(m), debug: (m) => api.logger.debug?.(m) });
+    const switchStore = DatasetSwitchStore.shared({ warn: (m) => api.logger.warn?.(m), debug: (m) => api.logger.debug?.(m) });
 
     // Repositories indexed into code-graph datasets (openclaw cognee index-repo),
     // plus any datasets the operator listed in `codeDatasets`. Drives the
     // memory_code_search default and gates the code recall lane.
-    const codeRegistry = new CodeGraphRegistry({ warn: (m) => api.logger.warn?.(m), debug: (m) => api.logger.debug?.(m) });
+    const codeRegistry = CodeGraphRegistry.shared({ warn: (m) => api.logger.warn?.(m), debug: (m) => api.logger.debug?.(m) });
     function codeDatasetNames(): string[] {
       const names = codeRegistry.list().map((r) => r.dataset);
       for (const d of cfg.codeDatasets) if (!names.includes(d)) names.push(d);

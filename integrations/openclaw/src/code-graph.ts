@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import type { CodeGraphRecord, CodeGraphsFile, CogneePluginConfig, CogneeSearchResult } from "./types.js";
-import { loadCodeGraphs, saveCodeGraphs } from "./persistence.js";
+import { CODE_GRAPHS_PATH, loadCodeGraphs, saveCodeGraphs } from "./persistence.js";
 import { jsonResult, type MemoryTool, type MemoryToolContext } from "./tools.js";
 
 // ---------------------------------------------------------------------------
@@ -134,7 +134,25 @@ export function buildCodeQuery(identifier: string, limit = 5): Record<string, un
 // Registry of indexed repositories
 // ---------------------------------------------------------------------------
 
+const sharedRegistries = new Map<string, CodeGraphRegistry>();
+
 export class CodeGraphRegistry {
+  /** One registry per file within this process (see DatasetSwitchStore.shared). */
+  static shared(opts: ConstructorParameters<typeof CodeGraphRegistry>[0] = {}): CodeGraphRegistry {
+    const key = opts.path ?? CODE_GRAPHS_PATH;
+    let reg = sharedRegistries.get(key);
+    if (!reg) {
+      reg = new CodeGraphRegistry(opts);
+      sharedRegistries.set(key, reg);
+    }
+    return reg;
+  }
+
+  /** Drop the shared instances (tests). */
+  static resetShared(): void {
+    sharedRegistries.clear();
+  }
+
   private data: CodeGraphsFile = {};
   private readonly loaded: Promise<void>;
   private chain: Promise<void> = Promise.resolve();

@@ -7,6 +7,8 @@
 
 import plugin from "../../src/plugin";
 import { CogneeHttpClient } from "../../src/client";
+import { CodeGraphRegistry } from "../../src/code-graph";
+import { DatasetSwitchStore } from "../../src/dataset-switch";
 import { createPluginApi } from "../../test-utils/fakeApi";
 
 jest.mock("../../src/client");
@@ -53,6 +55,8 @@ let logSpy: jest.SpyInstance;
 let exitSpy: jest.SpyInstance;
 beforeEach(() => {
   jest.clearAllMocks();
+  DatasetSwitchStore.resetShared();
+  CodeGraphRegistry.resetShared();
   datasetState = { testds: "ds-1" };
   codeGraphsOnDisk = {};
   mockRecall.mockImplementation(async (p) => (p.scope?.includes("code") ? [CODE_FACT] : [GRAPH_HIT]));

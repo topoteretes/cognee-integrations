@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { AgentSyncIndexes, CodeGraphRecord, CodeGraphsFile, DatasetOverride, DatasetOverridesFile, RetiredSession, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
+import { MAX_PREVIOUS_DATASETS, pruneRetired } from "./retired.js";
 
 // ---------------------------------------------------------------------------
 // State file paths
@@ -191,12 +192,12 @@ export async function loadDatasetOverrides(path: string = DATASET_OVERRIDES_PATH
         dataset: o.dataset,
         sessionSuffix: typeof o.sessionSuffix === "number" && o.sessionSuffix >= 2 ? o.sessionSuffix : 2,
         switchedAt: typeof o.switchedAt === "string" ? o.switchedAt : "",
-        previous: Array.isArray(o.previous) ? o.previous.filter((p): p is string => typeof p === "string") : [],
-        retired: Array.isArray(o.retired)
+        previous: (Array.isArray(o.previous) ? o.previous.filter((p): p is string => typeof p === "string") : []).slice(-MAX_PREVIOUS_DATASETS),
+        retired: pruneRetired(Array.isArray(o.retired)
           ? o.retired
               .filter((r): r is RetiredSession => !!r && typeof r === "object" && typeof (r as RetiredSession).dataset === "string" && typeof (r as RetiredSession).sessionId === "string")
               .map((r) => ({ dataset: r.dataset, sessionId: r.sessionId, synced: r.synced === true, retiredAt: typeof r.retiredAt === "string" ? r.retiredAt : "" }))
-          : [],
+          : []),
       };
     }
     return out;

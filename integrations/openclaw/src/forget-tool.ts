@@ -119,6 +119,8 @@ export const DEFAULT_MAX_CANDIDATES = 20;
 /** Raw-text scan is bounded so `find` on a large dataset stays cheap. */
 export const MAX_SCANNED_DOCUMENTS = 60;
 export const RAW_SCAN_CHARS = 20_000;
+/** Enough for the "Session ID:" header plus the preview when no query is being matched. */
+export const RAW_PREVIEW_CHARS = 2_000;
 export const PREVIEW_CHARS = 300;
 
 const INVALIDATION_NOTE =
@@ -205,7 +207,10 @@ export function createMemoryForgetTool(deps: MemoryForgetDeps, ctx: MemoryToolCo
     for (const it of toScan) {
       let raw = "";
       try {
-        raw = await deps.readRawData(it.datasetId, it.id, RAW_SCAN_CHARS);
+        // The server returns the whole document either way; the cap only bounds
+        // what is kept in memory — 20K when there are terms to match, 2K for
+        // header + preview otherwise.
+        raw = await deps.readRawData(it.datasetId, it.id, terms.length > 0 ? RAW_SCAN_CHARS : RAW_PREVIEW_CHARS);
       } catch (e) {
         deps.logger?.debug?.(`cognee-openclaw: memory_forget raw read failed for ${it.id}: ${String(e)}`);
       }

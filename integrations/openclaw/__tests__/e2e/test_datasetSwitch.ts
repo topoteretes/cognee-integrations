@@ -7,6 +7,7 @@
 
 import plugin from "../../src/plugin";
 import { CogneeHttpClient } from "../../src/client";
+import { DatasetSwitchStore } from "../../src/dataset-switch";
 import { createPluginApi } from "../../test-utils/fakeApi";
 
 jest.mock("../../src/client");
@@ -64,6 +65,7 @@ function harness(extra: Record<string, unknown> = {}) {
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  DatasetSwitchStore.resetShared();
   overridesOnDisk = {};
   datasetState = { testds: "ds-1" };
   mockBreaker.openForSeconds.mockImplementation(async () => 0);
