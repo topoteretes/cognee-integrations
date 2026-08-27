@@ -18,6 +18,7 @@ from pathlib import Path
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _plugin_common import (
     bump_save_counter,
     drain_warmup_entries,
@@ -37,7 +38,6 @@ from _plugin_common import (
     touch_activity,
 )
 from _proc import pid_alive
-from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000

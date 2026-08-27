@@ -66,8 +66,12 @@ def test_nothing_to_do_is_silent(pc):
 
 def test_launch_record_of_dead_host_is_removed_after_the_grace_period(pc):
     dead = _dead_pid()
-    gone = _write(pc._SESSIONS_MAP_DIR / "gone.json", {"session_id": "s", "host_pid": dead}, 2 * DAY)
-    just_died = _write(pc._SESSIONS_MAP_DIR / "just.json", {"session_id": "s", "host_pid": dead}, 3600)
+    gone = _write(
+        pc._SESSIONS_MAP_DIR / "gone.json", {"session_id": "s", "host_pid": dead}, 2 * DAY
+    )
+    just_died = _write(
+        pc._SESSIONS_MAP_DIR / "just.json", {"session_id": "s", "host_pid": dead}, 3600
+    )
     pc.sweep_stale_state()
     assert not gone.exists(), "dead for two days: the exit-watcher had its chance"
     assert just_died.exists(), "within the grace period the final sync may still read it"
@@ -100,7 +104,11 @@ def test_dead_pid_and_overaged_improve_locks_are_cleared_live_ones_kept(pc):
     )
     old = _write(
         pc._IMPROVE_LOCK_DIR / "old.lock",
-        {"owner": "run_session_improve", "pid": os.getpid(), "created_at": now - 2 * pc.SYNC_LOCK_STALE_SECONDS},
+        {
+            "owner": "run_session_improve",
+            "pid": os.getpid(),
+            "created_at": now - 2 * pc.SYNC_LOCK_STALE_SECONDS,
+        },
         60,
     )
     live = _write(
@@ -122,11 +130,15 @@ def test_dead_pid_and_overaged_improve_locks_are_cleared_live_ones_kept(pc):
 def test_expired_improve_marker_is_removed_but_a_fresh_one_kept(pc):
     marker = pc._IMPROVE_UNSUPPORTED_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"base_url": "x", "marked_at": time.time() - 3600}), encoding="utf-8")
+    marker.write_text(
+        json.dumps({"base_url": "x", "marked_at": time.time() - 3600}), encoding="utf-8"
+    )
     pc.sweep_stale_state()
     assert marker.exists(), "still inside its 24h TTL"
     marker.write_text(
-        json.dumps({"base_url": "x", "marked_at": time.time() - pc._IMPROVE_UNSUPPORTED_TTL_SECONDS - 1}),
+        json.dumps(
+            {"base_url": "x", "marked_at": time.time() - pc._IMPROVE_UNSUPPORTED_TTL_SECONDS - 1}
+        ),
         encoding="utf-8",
     )
     assert pc.sweep_stale_state()["expired_markers"] == 1
@@ -173,7 +185,9 @@ def test_sweep_never_touches_other_plugins_state(pc, suite, temp_home):
     from utils.suites import plugin_root
 
     other = plugin_root(temp_home) / ("codex" if suite.name == "claude-code" else "claude-code")
-    victim = _write(other / "sessions" / "x.json", {"session_id": "s", "host_pid": _dead_pid()}, 40 * DAY)
+    victim = _write(
+        other / "sessions" / "x.json", {"session_id": "s", "host_pid": _dead_pid()}, 40 * DAY
+    )
     pc.sweep_stale_state()
     assert victim.exists()
 

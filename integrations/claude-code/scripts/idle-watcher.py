@@ -22,9 +22,9 @@ import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
+from typing import Optional
 
 from _logfiles import append_line as _append_log_line
-from typing import Optional
 
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
 # threshold means you have to actively pause a full minute, and the 10-minute

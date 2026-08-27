@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized  # noqa: E402
 from _plugin_common import (  # noqa: E402
     _new_conn_uuid,
     _read_map_record,
@@ -49,7 +50,6 @@ from _plugin_common import (  # noqa: E402
     unregister_agent_via_http,
 )
 from _proc import pid_alive  # noqa: E402
-from _logfiles import rotate_if_oversized as _rotate_log_if_oversized  # noqa: E402
 from config import ensure_dataset_ready_via_api, load_config  # noqa: E402
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"

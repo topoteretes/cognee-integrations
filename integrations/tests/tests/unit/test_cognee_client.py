@@ -172,7 +172,8 @@ def test_search_skill_shares_the_hooks_breaker(suite):
     status line used ~/.cognee-plugin/recall-breaker.json."""
     script = (suite.scripts_dir / "cognee-search.sh").read_text(encoding="utf-8")
     exports = [
-        line for line in script.splitlines()
+        line
+        for line in script.splitlines()
         if "COGNEE_PLUGIN_STATE_DIR=" in line and not line.lstrip().startswith("#")
     ]
     assert exports == [], exports

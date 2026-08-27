@@ -15,8 +15,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _proc import pid_alive as _pid_alive
 from _logfiles import append_line as _append_log_line
+from _proc import pid_alive as _pid_alive
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"

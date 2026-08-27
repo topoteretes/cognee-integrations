@@ -4165,7 +4165,9 @@ def _sweep_improve_locks(now: float, counts: dict) -> None:
             current = json.loads(path.read_text(encoding="utf-8"))
             pid = int(current.get("pid", 0) or 0)
             created_at = float(current.get("created_at", 0) or 0)
-            stale = not (pid > 0 and _proc.pid_alive(pid)) or now - created_at > SYNC_LOCK_STALE_SECONDS
+            stale = (
+                not (pid > 0 and _proc.pid_alive(pid)) or now - created_at > SYNC_LOCK_STALE_SECONDS
+            )
         except Exception:
             stale = True  # unreadable lock: nothing can release it either
         if stale:

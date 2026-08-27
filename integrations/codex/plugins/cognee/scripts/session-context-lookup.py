@@ -61,7 +61,6 @@ def _audit_clip(value, limit: int) -> str:
     return text[:limit] + f"…[+{len(text) - limit} chars]"
 
 
-
 def _float_env(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, "") or default)

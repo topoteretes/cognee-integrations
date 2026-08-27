@@ -95,7 +95,10 @@ def test_legacy_config_json_is_ignored(pc, suite, isolated_modules, temp_home):
     from utils.suites import plugin_root, state_dir
 
     config = isolated_modules(suite, "config")
-    for path in (plugin_root(temp_home) / "config.json", state_dir(suite, temp_home) / "config.json"):
+    for path in (
+        plugin_root(temp_home) / "config.json",
+        state_dir(suite, temp_home) / "config.json",
+    ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"base_url": "http://stale-managed:8012"}), encoding="utf-8")
     assert pc._local_api_url_with_source() == ("http://localhost:8011", "default_local")
