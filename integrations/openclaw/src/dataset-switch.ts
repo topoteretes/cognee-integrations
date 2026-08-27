@@ -48,6 +48,27 @@ export function isValidDatasetName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name);
 }
 
+/** Synced retired sessions kept for the record; unsynced ones are never pruned. */
+export const MAX_SYNCED_RETIRED = 20;
+/** Previous-dataset trail kept on the override (informational). */
+export const MAX_PREVIOUS_DATASETS = 50;
+
+/**
+ * Bound the retired list: every unsynced session stays (each is a pending
+ * sync), only the oldest *synced* ones beyond MAX_SYNCED_RETIRED are dropped.
+ * Order is preserved (oldest first).
+ */
+export function pruneRetired(retired: readonly RetiredSession[]): RetiredSession[] {
+  const syncedCount = retired.filter((r) => r.synced).length;
+  let toDrop = Math.max(0, syncedCount - MAX_SYNCED_RETIRED);
+  const out: RetiredSession[] = [];
+  for (const r of retired) {
+    if (r.synced && toDrop > 0) { toDrop--; continue; }
+    out.push(r);
+  }
+  return out;
+}
+
 export function withSessionSuffix(baseSessionId: string, override: DatasetOverride | undefined): string {
   if (!baseSessionId || !override) return baseSessionId;
   return `${baseSessionId}__${override.sessionSuffix}`;
@@ -100,9 +121,11 @@ export class DatasetSwitchStore {
   ): DatasetOverride {
     const existing = this.get(ctx);
     const now = (this.opts.now ?? (() => new Date()))().toISOString();
-    const previous = [...(existing?.previous ?? []), currentDataset];
-    const retired = [...(existing?.retired ?? [])];
-    if (retiring?.sessionId) retired.push({ dataset: currentDataset, sessionId: retiring.sessionId, synced: retiring.synced, retiredAt: now });
+    const previous = [...(existing?.previous ?? []), currentDataset].slice(-MAX_PREVIOUS_DATASETS);
+    const retired = pruneRetired([
+      ...(existing?.retired ?? []),
+      ...(retiring?.sessionId ? [{ dataset: currentDataset, sessionId: retiring.sessionId, synced: retiring.synced, retiredAt: now }] : []),
+    ]);
     const override: DatasetOverride = {
       dataset,
       sessionSuffix: (existing?.sessionSuffix ?? 1) + 1,
@@ -126,7 +149,10 @@ export class DatasetSwitchStore {
     if (!override) return;
     let changed = false;
     for (const r of override.retired) if (r.sessionId === sessionId && !r.synced) { r.synced = true; changed = true; }
-    if (changed) this.persist();
+    if (changed) {
+      override.retired = pruneRetired(override.retired);
+      this.persist();
+    }
   }
 
   /** Drop a conversation's override (back to the configured dataset). */

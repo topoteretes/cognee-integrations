@@ -11,10 +11,12 @@ import { join } from "node:path";
 import { resolveConfig } from "../../src/config";
 import {
   DatasetSwitchStore,
+  MAX_SYNCED_RETIRED,
   conversationKeys,
   createDatasetSwitchTool,
   isValidDatasetName,
   loadDatasetOverrides,
+  pruneRetired,
   withSessionSuffix,
   type DatasetSwitchDeps,
   type MemorySwitchDatasetResult,
@@ -110,6 +112,25 @@ describe("DatasetSwitchStore", () => {
     expect(store.unsyncedRetired(ctx)).toEqual([]);
     await store.flush();
     expect((await loadDatasetOverrides(path))["key:k1"].retired.every((r) => r.synced)).toBe(true);
+  });
+
+  it("prunes only the oldest synced retired sessions beyond the cap; unsynced ones are never dropped", async () => {
+    const store = new DatasetSwitchStore({ path });
+    await store.ready();
+    const ctx = { sessionKey: "k1", sessionId: "s1" };
+    // 25 synced switches, with one unsynced in the middle.
+    for (let i = 0; i < 25; i++) {
+      store.set(ctx, `ds-${i + 1}`, `ds-${i}`, { sessionId: `sid-${i}`, synced: i !== 3 });
+    }
+    const retired = store.get(ctx)!.retired;
+    expect(retired.filter((r) => r.synced)).toHaveLength(MAX_SYNCED_RETIRED);
+    expect(retired.filter((r) => !r.synced).map((r) => r.sessionId)).toEqual(["sid-3"]);
+    // Oldest synced entries were the ones dropped; order preserved.
+    expect(retired[0].sessionId).toBe("sid-3");
+    expect(retired.map((r) => r.sessionId).slice(-2)).toEqual(["sid-23", "sid-24"]);
+
+    expect(pruneRetired([])).toEqual([]);
+    await store.flush(); // let the coalesced save land before afterEach removes the dir
   });
 });
 

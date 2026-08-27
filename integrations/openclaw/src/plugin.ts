@@ -1899,17 +1899,27 @@ const memoryCogneePlugin = {
           // Sessions retired by a forced dataset switch (their switch-time
           // sync failed) are bridged here into THEIR dataset, so `force`
           // defers the sync rather than dropping the turns.
-          for (const retired of switchStore.unsyncedRetired(endCtx)) {
-            let bridged = false;
-            // withFinalSyncRetries swallows the final failure, so success is
-            // tracked explicitly: only a completed improve flips `synced`.
-            await withFinalSyncRetries(`retired-session improve (${retired.sessionId})`, async () => {
-              const r = await client.improve({ datasetName: retired.dataset, sessionIds: [retired.sessionId] });
-              api.logger.info?.(`cognee-openclaw: retired session ${retired.sessionId} bridged into "${retired.dataset}" (${describeImprove(r)})`);
-              bridged = true;
-            });
-            if (bridged) switchStore.markRetiredSynced(endCtx, retired.sessionId);
-            else api.logger.warn?.(`cognee-openclaw: retired session ${retired.sessionId} still unsynced after retries; it stays recorded for the next attempt`);
+          //
+          // They run in parallel with each other (distinct sessions; the
+          // retries are per session) so several pending syncs cost one retry
+          // window, not one each — this chain is already off the host's
+          // critical path, but unregister waits on it, and in agent mode the
+          // server's shutdown waits on unregister.
+          const unsyncedRetired = switchStore.unsyncedRetired(endCtx);
+          if (unsyncedRetired.length > 0) {
+            api.logger.info?.(`cognee-openclaw: bridging ${unsyncedRetired.length} retired session(s) left unsynced by forced dataset switches`);
+            await Promise.allSettled(unsyncedRetired.map(async (retired) => {
+              let bridged = false;
+              // withFinalSyncRetries swallows the final failure, so success is
+              // tracked explicitly: only a completed improve flips `synced`.
+              await withFinalSyncRetries(`retired-session improve (${retired.sessionId})`, async () => {
+                const r = await client.improve({ datasetName: retired.dataset, sessionIds: [retired.sessionId] });
+                api.logger.info?.(`cognee-openclaw: retired session ${retired.sessionId} bridged into "${retired.dataset}" (${describeImprove(r)})`);
+                bridged = true;
+              });
+              if (bridged) switchStore.markRetiredSynced(endCtx, retired.sessionId);
+              else api.logger.warn?.(`cognee-openclaw: retired session ${retired.sessionId} still unsynced after retries; it stays recorded for the next attempt`);
+            }));
           }
           await withFinalSyncRetries("session-end improve", async () => {
             const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId] });
