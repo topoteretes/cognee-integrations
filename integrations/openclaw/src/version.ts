@@ -26,7 +26,7 @@ import { UPDATE_CHECK_PATH } from "./persistence.js";
  * Fallback version used when api.version is unset. The drift-guard test in
  * __tests__/unit/test_version.ts asserts this stays equal to package.json.
  */
-export const PLUGIN_VERSION = "2026.8.20";
+export const PLUGIN_VERSION = "2026.8.27";
 
 const NPM_LATEST_URL = "https://registry.npmjs.org/@cognee/cognee-openclaw/latest";
 const DEFAULT_INTERVAL_SECONDS = 86_400; // 24h
