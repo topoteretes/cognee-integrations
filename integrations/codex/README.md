@@ -329,6 +329,14 @@ tail -f ~/.cognee-plugin/codex/exit-watcher.log
 tail -f ~/.cognee-plugin/codex/watcher.log
 ```
 
+Every log is capped: when one passes `COGNEE_LOG_MAX_BYTES` (default 20 MiB) it
+is rotated to `<name>.1` and started fresh, so a log is never bigger than twice
+the cap and the stretch just before a failure survives in the `.1` file. Set the
+variable (in `~/.cognee/.env` or the shell) to change the ceiling; `0` disables
+rotation. The local server's own log lives under `~/.cognee/logs/` (rotated by
+cognee, ten files kept); `bootstrap.log` holds only the plugin's bootstrap
+worker output.
+
 ## Usage metrics
 
 For an offline usage rollup compiled purely from the local files above — no

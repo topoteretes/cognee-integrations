@@ -49,6 +49,7 @@ from _plugin_common import (  # noqa: E402
     unregister_agent_via_http,
 )
 from _proc import pid_alive  # noqa: E402
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized  # noqa: E402
 from config import ensure_dataset_ready_via_api, load_config  # noqa: E402
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "codex"
@@ -218,6 +219,7 @@ def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id:
         },
     }
     try:
+        _rotate_log_if_oversized(_STATE_DIR / "watcher.log")  # the child writes it
         log_fh = (_STATE_DIR / "watcher.log").open("a", encoding="utf-8")
     except Exception:
         log_fh = subprocess.DEVNULL

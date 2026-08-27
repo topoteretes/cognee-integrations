@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _proc import pid_alive as _pid_alive
+from _logfiles import append_line as _append_log_line
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "codex"
 _EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"
@@ -29,12 +30,10 @@ _SYNC_START_DELAY = 2.0
 
 def _log(event: str, **detail) -> None:
     try:
-        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         line = {"ts": time.time(), "pid": os.getpid(), "event": event}
         if detail:
             line["detail"] = detail
-        with _LOGFILE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+        _append_log_line(_LOGFILE, json.dumps(line, default=str))
     except Exception:
         pass
 

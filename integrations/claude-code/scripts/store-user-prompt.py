@@ -37,6 +37,7 @@ from _plugin_common import (
     touch_activity,
 )
 from _proc import pid_alive
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
@@ -98,6 +99,7 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
     log_path = _STATE_DIR / "watcher.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("prompt_watcher_log_open_failed", {"error": str(exc)[:200]})

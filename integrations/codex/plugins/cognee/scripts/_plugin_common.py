@@ -27,6 +27,8 @@ from typing import Optional
 
 import _proc
 from _env_file import load_env_file
+from _logfiles import append_line as _append_log_line
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _recall_http import DOWN, SLOW, UNKNOWN, classify_transport_exception
 
 # One-time config: ~/.cognee/.env acts like shell exports (setdefault — a real
@@ -1157,8 +1159,7 @@ def hook_log(event: str, detail: Optional[dict] = None) -> None:
         serialized = json.dumps(line, default=str)
         if len(serialized) > _LOG_LINE_CAP:
             serialized = serialized[: _LOG_LINE_CAP - 3] + "..."
-        with _HOOK_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(serialized + "\n")
+        _append_log_line(_HOOK_LOG, serialized)
     except Exception:
         pass
 
@@ -1267,10 +1268,8 @@ def notify(msg: str) -> None:
     print(line, file=sys.stderr)
     if _verbose_enabled():
         try:
-            _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            with _ACTIVITY_LOG.open("a", encoding="utf-8") as fh:
-                fh.write(f"{ts} {line}\n")
+            _append_log_line(_ACTIVITY_LOG, f"{ts} {line}")
         except Exception as exc:
             hook_log("activity_log_write_failed", {"error": str(exc)[:200]})
 
@@ -1286,6 +1285,8 @@ def quiet_hook_output(label: str):
     _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
     saved_stdout_fd = os.dup(1)
     saved_stderr_fd = os.dup(2)
+    # The child writes this fd itself, so the cap can only be applied here.
+    _rotate_log_if_oversized(_SUBPROCESS_LOG)
     log_fd = os.open(_SUBPROCESS_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         marker = (

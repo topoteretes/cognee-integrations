@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Optional
 
 from _env_file import load_env_file
+from _logfiles import append_line as _append_log_line
 
 # Must run before the _ENV_MAP scan in load_config() and before any importer's
 # module-level os.environ reads.
@@ -86,8 +87,7 @@ def _config_log(event: str, detail: dict | None = None) -> None:
         }
         if detail:
             line["detail"] = detail
-        with _HOOK_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+        _append_log_line(_HOOK_LOG, json.dumps(line, default=str))
     except Exception:
         pass
 

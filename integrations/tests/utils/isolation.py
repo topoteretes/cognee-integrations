@@ -34,6 +34,7 @@ ISOLATED_MODULES = (
     "_plugin_common",
     "_cognee_client",
     "_env_file",
+    "_logfiles",
     "_proc",
     "_recall_http",
     "_remember_http",

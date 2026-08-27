@@ -22,6 +22,8 @@ import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
+
+from _logfiles import append_line as _append_log_line
 from typing import Optional
 
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
@@ -43,12 +45,10 @@ _should_stop = False
 
 def _log(event: str, **detail) -> None:
     try:
-        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         line = {"ts": time.time(), "pid": os.getpid(), "event": event}
         if detail:
             line["detail"] = detail
-        with _LOGFILE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+        _append_log_line(_LOGFILE, json.dumps(line, default=str))
     except Exception:
         pass
 

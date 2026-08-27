@@ -26,6 +26,7 @@ from pathlib import Path
 
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _plugin_common import (
     _COGNEE_CACHE_DIR,
     _COGNEE_DATA_DIR,
@@ -718,6 +719,7 @@ def _spawn_idle_watcher(
     log_path = _STATE_DIR / "watcher.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -837,6 +839,7 @@ def _spawn_exit_watcher(
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _EXIT_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("exit_watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -955,6 +958,7 @@ def _spawn_bootstrap(
     log_path = _STATE_DIR / "bootstrap.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("bootstrap_log_open_failed", {"error": str(exc)[:200]})
