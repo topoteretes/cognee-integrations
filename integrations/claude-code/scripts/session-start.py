@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
     _COGNEE_CACHE_DIR,
     _COGNEE_DATA_DIR,
+    _COGNEE_HOME,
     _COGNEE_SYSTEM_DIR,
     _VENV_DIR,
     _VENV_PYTHON,
@@ -480,9 +481,20 @@ def _ensure_local_server_running(
         # Run in agent mode: the server tears itself down once all registered
         # agents disconnect.
         server_env["COGNEE_AGENT_MODE"] = "true"
+        # The server's console output goes nowhere on purpose. Without these
+        # the child inherits this worker's stdout/stderr — bootstrap.log — and
+        # that file then holds every line the server ever prints for as long
+        # as it runs (cognify chatter, code-graph warnings, a looping
+        # traceback), which is how bootstrap.log reached gigabytes. cognee
+        # keeps its own per-start log under ~/.cognee/logs/ (rotated, ten
+        # files), so nothing diagnostic is lost — the error paths below say
+        # where to look.
         server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
         # Presence evidence for future boot points: covers the spawn-to-bind
@@ -505,12 +517,14 @@ def _ensure_local_server_running(
                     return
                 raise RuntimeError(
                     f"server process exited (rc={exit_code}) before becoming "
-                    f"healthy at {health_url}"
+                    f"healthy at {health_url}; see the newest file in "
+                    f"{_COGNEE_HOME / 'logs'} for the server's own log"
                 )
             time.sleep(_HEALTH_POLL_SECONDS)
 
         raise RuntimeError(
-            f"Cognee server did not become healthy at {health_url} within {health_timeout}s"
+            f"Cognee server did not become healthy at {health_url} within {health_timeout}s; "
+            f"see the newest file in {_COGNEE_HOME / 'logs'} for the server's own log"
         )
     finally:
         if acquired:

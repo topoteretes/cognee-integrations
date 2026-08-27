@@ -171,3 +171,40 @@ def test_boot_point_proceeds_when_positively_absent(session_start, closed_port_u
             {"base_url": closed_port_url}, health_timeout=1.0
         )
     assert installs
+
+
+def test_spawned_server_does_not_inherit_the_worker_stdio(
+    session_start, closed_port_url, monkeypatch
+):
+    """The server's console output must not land in bootstrap.log.
+
+    The bootstrap worker runs with stdout/stderr redirected to bootstrap.log; a
+    server spawned without its own stdio inherits those, and then every line the
+    server prints for its whole lifetime accumulates there — the file reached
+    gigabytes that way. cognee keeps its own rotated log under ~/.cognee/logs.
+    """
+    captured: dict = {}
+
+    class _FakeProc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return _FakeProc()
+
+    monkeypatch.setattr(session_start, "ensure_cognee_installed", lambda *a, **k: True)
+    monkeypatch.setattr(session_start.subprocess, "Popen", fake_popen)
+    # Healthy as soon as the spawn happened, so the boot point returns.
+    monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: "argv" in captured)
+    monkeypatch.setattr(session_start, "write_server_pidfile", lambda *a, **k: None)
+
+    session_start._ensure_local_server_running({"base_url": closed_port_url}, health_timeout=2.0)
+
+    assert "uvicorn" in captured["argv"]
+    assert captured["stdout"] is subprocess.DEVNULL
+    assert captured["stderr"] is subprocess.DEVNULL
+    assert captured["stdin"] is subprocess.DEVNULL

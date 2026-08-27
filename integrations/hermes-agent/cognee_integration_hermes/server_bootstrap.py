@@ -56,6 +56,46 @@ def port_bound(port, timeout=1.0):
         return False
 
 
+#: Rotate the server log when it is this big at the next spawn. It holds the
+#: server's console output for the process lifetime and is read back by the
+#: overflow scan (http_backend), so it cannot go to /dev/null like the other
+#: plugins' server output — but nothing needs more than the recent past, and an
+#: unbounded file is how one looping traceback turned into gigabytes.
+SERVER_LOG_MAX_BYTES = 20 * 1024 * 1024
+SERVER_LOG_MAX_BYTES_ENV = "COGNEE_SERVER_LOG_MAX_BYTES"
+
+
+def _server_log_cap():
+    raw = os.environ.get(SERVER_LOG_MAX_BYTES_ENV, "").strip()
+    if not raw:
+        return SERVER_LOG_MAX_BYTES
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return SERVER_LOG_MAX_BYTES
+
+
+def rotate_oversized_log(log_path, max_bytes=None):
+    """Move ``log_path`` to ``<log_path>.1`` when it exceeds ``max_bytes``.
+
+    One generation is kept: the interesting part of a failure is usually the
+    stretch right before the cap hit, and that survives in ``.1``. Best-effort —
+    a rotation that cannot happen must never stop the server from booting.
+    Returns True when a rotation happened. The overflow scan tolerates this: it
+    treats a shrunk log as rotated and rescans from the top.
+    """
+    cap = _server_log_cap() if max_bytes is None else max_bytes
+    if cap <= 0:
+        return False
+    try:
+        if os.path.getsize(log_path) <= cap:
+            return False
+        os.replace(log_path, str(log_path) + ".1")
+        return True
+    except OSError:
+        return False
+
+
 def _spawn(port, data_root, system_root, log_path):
     env = dict(os.environ)
     env["COGNEE_AGENT_MODE"] = "true"  # server tears itself down once idle / no clients
@@ -88,6 +128,7 @@ def _spawn(port, data_root, system_root, log_path):
         env["DATA_ROOT_DIRECTORY"] = data_root
     if system_root:
         env["SYSTEM_ROOT_DIRECTORY"] = system_root
+    rotate_oversized_log(log_path)
     try:
         log = open(log_path, "ab", buffering=0)  # noqa: SIM115 — handed to the child
     except Exception:
