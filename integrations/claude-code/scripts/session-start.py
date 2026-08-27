@@ -65,7 +65,6 @@ from config import (
     get_dataset,
     is_cloud_mode,
     load_config,
-    save_config,
 )
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
@@ -858,6 +857,17 @@ def _spawn_exit_watcher(
 def _purge_legacy_resolved_files() -> None:
     legacy = _STATE_DIR / "resolved.json"
     scoped_dir = _STATE_DIR / "resolved"
+    # config.json: an older config layer that SessionStart read but the per-turn
+    # hooks never did, so a stale base_url in it split the plugin across two
+    # servers (SDK-466). Nothing reads it any more; remove it so it cannot be
+    # mistaken for live configuration. ~/.cognee/.env is the one setup file.
+    legacy_config = _STATE_DIR / "config.json"
+    try:
+        if legacy_config.exists():
+            legacy_config.unlink()
+            hook_log("legacy_config_json_removed", {"path": str(legacy_config)})
+    except Exception as exc:
+        hook_log("legacy_config_json_unlink_failed", {"error": str(exc)[:200]})
     try:
         if legacy.exists():
             legacy.unlink()
@@ -1558,11 +1568,6 @@ async def _start(payload: dict | None = None) -> dict:
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
     _purge_legacy_resolved_files()
-
-    # Create config file on first run if it doesn't exist
-    config_file = _STATE_DIR / "config.json"
-    if not config_file.exists():
-        save_config(config)
 
     # Reset the idle clock for this Claude process before the watcher
     # starts, otherwise a stale timestamp from a prior session can cause

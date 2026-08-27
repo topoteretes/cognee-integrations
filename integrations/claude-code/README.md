@@ -80,15 +80,6 @@ Details worth knowing:
 - `COGNEE_BACKEND` can also live in `~/.cognee/.env` to make a mode the durable default; a shell export still overrides it per terminal.
 - Not sure what a terminal resolved? The status line's mode field shows it live, and `doctor.py` prints the decision with its cause, e.g. `Mode: Local — forced by COGNEE_BACKEND=local`.
 
-You can also set config in `~/.cognee-plugin/claude-code/config.json`:
-
-```json
-{
-  "base_url": "https://your-instance.cognee.ai",
-  "dataset": "agent_sessions"
-}
-```
-
 Then launch `claude`. All setup happens in the `SessionStart` hook, which fires once per fresh launch — so with the shell install above, the first launch connects memory with no extra steps.
 
 If you instead installed **from inside the chat** with the `/plugin` slash commands, you must **restart Claude Code** (start a new session) before memory connects: `/reload-plugins` makes the skills and agents available in the current session but does not run `SessionStart`. On a first-run marketplace install the marketplace is also fetched asynchronously, so `SessionStart` may not fire that session even with a reload. Either way, make sure your configuration is in `~/.cognee/.env` (or exported in the shell you launch from).
@@ -148,9 +139,6 @@ Set a custom dataset at launch:
 ```bash
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
-
-`~/.cognee-plugin/claude-code/config.json` may still show a `dataset` value for
-visibility, but runtime dataset selection does not read it.
 
 `COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset.
 Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
@@ -422,7 +410,7 @@ The entry sets `refreshInterval: 2`, so Claude re-runs the (network-free, local-
 
 The status line reads only local state — no network calls on every refresh:
 1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
-2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/claude-code/config.json` (`base_url`)
+2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then `COGNEE_BASE_URL` env var
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
 5. LLM key: `llm-state/<session>.json`, then `llm-state.json`
@@ -571,10 +559,11 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 Config precedence:
 1. env vars (shell exports)
 2. `~/.cognee/.env` (one-time setup file, shared with the Codex plugin; loaded into the environment at process start, so every env var below can live here)
-3. `~/.cognee-plugin/claude-code/config.json`
-4. defaults
+3. defaults
 
-One exception sits above all four layers: the `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` mode switch. When exported, it pins the mode regardless of where the connection variables are defined — forced local ignores a configured `COGNEE_BASE_URL` entirely (it is scrubbed from the process environment), and forced cloud stays cloud even when the URL is missing. See [Which mode wins](#which-mode-wins-and-how-to-switch).
+There is no `config.json`. Older versions wrote `~/.cognee-plugin/claude-code/config.json` and SessionStart read a `base_url` from it while the per-turn hooks did not, so a stale URL there could point the two halves of the plugin at different servers. SessionStart now deletes a leftover file; put everything in `~/.cognee/.env` instead.
+
+One exception sits above all three layers: the `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` mode switch. When exported, it pins the mode regardless of where the connection variables are defined — forced local ignores a configured `COGNEE_BASE_URL` entirely (it is scrubbed from the process environment), and forced cloud stays cloud even when the URL is missing. See [Which mode wins](#which-mode-wins-and-how-to-switch).
 
 `~/.cognee/.env` is created with a commented template on first session start (permissions `0600`; the path can be overridden with `COGNEE_ENV_FILE`). Run `doctor.py` to see which keys the file defines, which are overridden by shell exports, and — in the mode row — whether a backend switch forced the mode decision.
 

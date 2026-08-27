@@ -4,8 +4,13 @@ Loads settings from (in priority order):
   1. Environment variables (runtime overrides)
   2. Env file (~/.cognee/.env — one-time setup, injected into os.environ
      with setdefault, so it sits just below real shell exports)
-  3. Config file (~/.cognee-plugin/config.json)
-  4. Defaults
+  3. Defaults
+
+There is deliberately no config file. An earlier ``~/.cognee-plugin/config.json``
+layer was read by SessionStart but not by the per-turn hooks, so a stale
+``base_url`` in it could point the two halves of the plugin at different servers
+(SDK-466); the env file covers every key it held, from one place every process
+reads. SessionStart deletes a leftover file so it cannot mislead anyone.
 
 The env file may hold both modes' variables at once; cloud wins when both are
 configured. `export COGNEE_BACKEND=local` (or `=cloud`) flips one terminal —
@@ -15,8 +20,6 @@ from the process environment (see _env_file), and forced cloud keeps
 is_cloud_mode() true even when connection vars are missing, so the plugin
 attempts the cloud connection and the status line reports what is wrong
 instead of silently falling back to local.
-
-Config file is created on first SessionStart if it doesn't exist.
 
 Supports three modes:
   - Local: Cognee runs in-process (SQLite + LanceDB + Kuzu)
@@ -38,9 +41,7 @@ from _env_file import load_env_file
 # module-level os.environ reads.
 load_env_file()
 
-_CONFIG_DIR = Path.home() / ".cognee-plugin"
-_STATE_DIR = _CONFIG_DIR / "codex"
-_CONFIG_FILE = _CONFIG_DIR / "config.json"
+_STATE_DIR = Path.home() / ".cognee-plugin" / "codex"
 _BRIDGE_STATE_FILE = _STATE_DIR / "bridge_state.json"
 _HOOK_LOG = _STATE_DIR / "hook.log"
 
@@ -111,31 +112,9 @@ _ENV_MAP = {
 
 
 def load_config() -> dict:
-    """Load merged config: defaults → file → env vars."""
+    """Load merged config: defaults → env vars (the env file is already in os.environ)."""
     config = dict(_DEFAULTS)
 
-    # Layer 2: config file
-    # dataset is intentionally excluded here: it is always driven by the default
-    # or by COGNEE_PLUGIN_DATASET (env var, layer 3). Reading it from the file
-    # would create confusing precedence when users open a terminal without the
-    # env var set. The value is still written to the file for human visibility.
-    _file_excluded = {"dataset"}
-    if _CONFIG_FILE.exists():
-        try:
-            file_cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-            config.update(
-                {
-                    k: v
-                    for k, v in file_cfg.items()
-                    if v is not None and v != "" and k not in _file_excluded
-                }
-            )
-        except Exception as exc:
-            _config_log(
-                "config_file_load_failed", {"path": str(_CONFIG_FILE), "error": str(exc)[:200]}
-            )
-
-    # Layer 3: env vars (highest priority)
     for env_key, config_key in _ENV_MAP.items():
         val = os.environ.get(env_key, "")
         if val:
@@ -162,25 +141,6 @@ def load_config() -> dict:
             config["base_url"] = ""
 
     return config
-
-
-def save_config(config: dict) -> None:
-    """Write config to disk. Creates directory if needed."""
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    # Only save non-secret, non-default values.
-    # dataset is always written even when it equals the default so that users
-    # who open the file can see which dataset the plugin is using.
-    transient_keys = {"api_key", "llm_api_key", "base_url", "backend"}
-    _always_include = {"dataset"}
-    to_save = {
-        k: v
-        for k, v in config.items()
-        if k not in transient_keys
-        and not k.startswith("_")
-        and v
-        and (k in _always_include or v != _DEFAULTS.get(k))
-    }
-    _CONFIG_FILE.write_text(json.dumps(to_save, indent=2), encoding="utf-8")
 
 
 def get_session_id(config: dict, cwd: Optional[str] = None) -> str:

@@ -3,8 +3,8 @@
 
 Invoked by Claude Code's ``statusLine`` (via ``cognee-statusline.sh``), which
 pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
-only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
-``_plugin_common`` import.
+only env vars (``~/.cognee/.env`` included) and the plugin's own state files —
+no network calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
 """
@@ -26,7 +26,6 @@ from _env_file import forced_backend, load_env_file
 load_env_file()
 
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
-_CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
@@ -130,16 +129,7 @@ def _active_mode() -> str:
     forced = forced_backend()
     if forced == "local":
         return "local"
-    # 1. env var
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
-    # 2. config file
-    if not url:
-        try:
-            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                url = str(data.get("base_url") or "").strip()
-        except Exception:
-            pass
     if not url:
         return "cloud" if forced == "cloud" else "local"
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
@@ -194,14 +184,6 @@ def _active_base_url() -> str:
         url = os.environ.get(var, "").strip()
         if url:
             return url.rstrip("/")
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            url = str(data.get("base_url") or "").strip()
-            if url:
-                return url.rstrip("/")
-    except Exception:
-        pass
     return _DEFAULT_LOCAL_BASE_URL
 
 
@@ -726,19 +708,11 @@ def _credits_segment() -> str:
 def _forced_cloud_unconfigured() -> bool:
     """Forced cloud (backend switch) with no URL anywhere: nothing to connect
     to — a definitive misconfiguration this renderer can see directly from
-    env + config.json, without waiting for a hook to record a failed attempt.
+    the environment, without waiting for a hook to record a failed attempt.
     """
     if forced_backend() != "cloud":
         return False
-    if os.environ.get("COGNEE_BASE_URL", "").strip():
-        return False
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and str(data.get("base_url") or "").strip():
-            return False
-    except Exception:
-        pass
-    return True
+    return not os.environ.get("COGNEE_BASE_URL", "").strip()
 
 
 def _status_prefix(session_id: str = "") -> str:

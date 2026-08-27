@@ -4,9 +4,8 @@ claude-code and codex are the same hook code differing only in constants. A Suit
 captures those differences so one parametrized test set runs against both.
 
 Constants are verified against each suite's ``config.py`` / ``_plugin_common.py``:
-  - claude-code: config AND state both live in ``~/.cognee-plugin/claude-code/``
-  - codex:       config.json lives at the shared root ``~/.cognee-plugin/``,
-                 state nests under ``~/.cognee-plugin/codex/``
+  - claude-code: state lives in ``~/.cognee-plugin/claude-code/``
+  - codex:       state nests under ``~/.cognee-plugin/codex/``
   - both:        default dataset ``agent_sessions``; the shared server-ready
                  marker sits at the ``~/.cognee-plugin/`` root; local-SDK data
                  dirs live under ``~/.cognee/``
@@ -33,8 +32,6 @@ class Suite:
 
     name: str
     scripts_dir: Path
-    #: Subdirectory under ~/.cognee-plugin holding config.json ("" = the root).
-    config_subdir: str
     #: Subdirectory under ~/.cognee-plugin holding per-suite state.
     state_subdir: str
     default_dataset: str
@@ -115,7 +112,6 @@ CLAUDE = Suite(
     scripts_dir=_INTEGRATIONS / "claude-code" / "scripts",
     hooks_json=_INTEGRATIONS / "claude-code" / "hooks" / "hooks.json",
     plugin_manifest=_INTEGRATIONS / "claude-code" / ".claude-plugin" / "plugin.json",
-    config_subdir="claude-code",
     state_subdir="claude-code",
     default_dataset="agent_sessions",
     agent_name="claude-code-agent",
@@ -142,7 +138,6 @@ CODEX = Suite(
     / "cognee"
     / ".codex-plugin"
     / "plugin.json",
-    config_subdir="",
     state_subdir="codex",
     default_dataset="agent_sessions",
     agent_name="codex-agent",
@@ -165,15 +160,9 @@ ALL_SUITES = [CLAUDE, CODEX]
 def plugin_root(home: Path | str) -> Path:
     """The shared ~/.cognee-plugin root under the given (temp) HOME.
 
-    The server-ready marker and (for codex) config.json live here.
+    The server-ready marker lives here.
     """
     return Path(home) / PLUGIN_DIR_NAME
-
-
-def config_dir(suite: Suite, home: Path | str) -> Path:
-    """The dir holding the suite's config.json under the given (temp) HOME."""
-    base = plugin_root(home)
-    return base / suite.config_subdir if suite.config_subdir else base
 
 
 def state_dir(suite: Suite, home: Path | str) -> Path:

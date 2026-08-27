@@ -40,7 +40,6 @@ all trigger this suite.
 | | `claude-code` | `codex` |
 |---|---|---|
 | Scripts dir | `claude-code/scripts/` | `codex/plugins/cognee/scripts/` |
-| config.json | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/` (shared root) |
 | State dir | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/codex/` |
 | Default dataset | `agent_sessions` | `agent_sessions` |
 | `agent_name` default | `claude-code-agent` | `codex-agent` |
