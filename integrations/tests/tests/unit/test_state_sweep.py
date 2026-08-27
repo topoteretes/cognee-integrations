@@ -168,7 +168,7 @@ def test_legacy_per_plugin_breaker_file_is_removed(pc):
 def test_oversized_logs_are_rotated_even_when_no_writer_touches_them(pc, monkeypatch):
     """A bootstrap.log from before the cap, or one only a child writes, still
     gets bounded at the next SessionStart."""
-    monkeypatch.setenv("COGNEE_LOG_MAX_BYTES", "100")
+    monkeypatch.setenv("COGNEE_PLUGIN_LOG_MAX_BYTES", "100")
     big = pc._PLUGIN_DIR / "bootstrap.log"
     big.parent.mkdir(parents=True, exist_ok=True)
     big.write_bytes(b"x" * 500)

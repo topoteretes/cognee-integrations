@@ -444,13 +444,15 @@ tail -f ~/.cognee-plugin/claude-code/exit-watcher.log
 tail -f ~/.cognee-plugin/claude-code/recall-audit.log
 ```
 
-Every log is capped: when one passes `COGNEE_LOG_MAX_BYTES` (default 20 MiB) it
+Every log is capped: when one passes `COGNEE_PLUGIN_LOG_MAX_BYTES` (default 20 MiB) it
 is rotated to `<name>.1` and started fresh, so a log is never bigger than twice
 the cap and the stretch just before a failure survives in the `.1` file. Set the
 variable (in `~/.cognee/.env` or the shell) to change the ceiling; `0` disables
 rotation. The local server's own log lives under `~/.cognee/logs/` (rotated by
 cognee, ten files kept); `bootstrap.log` holds only the plugin's bootstrap
-worker output.
+worker output, and `server-console.log` the first megabyte of the server's
+console output for the current boot (previous boot in `server-console.log.1`) —
+where a boot that failed before the server could open its own log explains itself.
 
 At every SessionStart the plugin also sweeps its own state directory: per-session
 files whose session is over (status markers, bridge caches and pending buffers

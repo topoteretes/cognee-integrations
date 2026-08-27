@@ -20,10 +20,12 @@ Rotation keeps exactly one previous generation (``<name>.1``): the useful part o
 a failure is usually the stretch right before the cap hit, and that survives the
 rotation. Two generations bound every log at ``2 * cap``.
 
-The cap is ``COGNEE_LOG_MAX_BYTES`` (bytes; default 20 MiB), the same for every
+The cap is ``COGNEE_PLUGIN_LOG_MAX_BYTES`` (bytes; default 20 MiB), the same for every
 log — a number small enough to open and grep comfortably and large enough for
 months of normal hook traffic (hook.log runs at roughly 0.5 MB a day). ``0``
-disables rotation. Everything here is best-effort and never raises: a log we
+disables rotation. (Not ``COGNEE_LOG_MAX_BYTES``: cognee itself reads that one
+for its own file-log rotation, and the spawned server inherits our environment.)
+Everything here is best-effort and never raises: a log we
 cannot rotate or write must never be the reason a hook fails.
 
 Kept stdlib-only, like ``_proc`` and ``_env_file``, so the detached watchers can
@@ -36,13 +38,13 @@ import os
 from pathlib import Path
 
 DEFAULT_MAX_BYTES = 20 * 1024 * 1024
-MAX_BYTES_ENV = "COGNEE_LOG_MAX_BYTES"
+MAX_BYTES_ENV = "COGNEE_PLUGIN_LOG_MAX_BYTES"
 #: Suffix of the single kept generation.
 ROTATED_SUFFIX = ".1"
 
 
 def max_bytes(default: int | None = None) -> int:
-    """The cap in bytes: ``COGNEE_LOG_MAX_BYTES`` when set and numeric, else ``default``."""
+    """The cap in bytes: ``COGNEE_PLUGIN_LOG_MAX_BYTES`` when set and numeric, else ``default``."""
     fallback = DEFAULT_MAX_BYTES if default is None else default
     raw = os.environ.get(MAX_BYTES_ENV, "").strip()
     if not raw:
@@ -96,3 +98,86 @@ def append_line(path, text: str, cap: int | None = None) -> bool:
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Console capture for a child that outlives us (the local cognee server).
+# ---------------------------------------------------------------------------
+#
+# The server's console output is a stream nobody can cap after the fact: the
+# worker that spawns it exits as soon as /health answers, and cognee's console
+# handler cannot be switched off. Sending it to a file recreated the gigabyte
+# log; sending it to /dev/null lost the one thing that matters — the traceback
+# from a boot that never got as far as opening its own log (import error,
+# broken venv, port already bound). So the child writes into a pipe read by
+# this pump: a detached, stdlib-only process that copies the first ``cap``
+# bytes of each boot to ``server-console.log`` (the previous boot's capture is
+# kept as ``.1``), then keeps draining the pipe and discards the rest until the
+# child exits. The server never blocks on a full pipe, and the file is bounded
+# by construction.
+
+#: Default capture per boot. Every boot failure ever seen fit in a few KB; a
+#: healthy boot's chatter fills this in minutes and is then discarded.
+SERVER_CONSOLE_CAP_BYTES = 1024 * 1024
+
+_CONSOLE_PUMP_SOURCE = r"""
+import os, sys
+path, cap = sys.argv[1], int(sys.argv[2])
+try:
+    os.replace(path, path + ".1")
+except OSError:
+    pass
+out = open(path, "ab")
+written = 0
+while True:
+    try:
+        chunk = os.read(0, 65536)
+    except OSError:
+        break
+    if not chunk:
+        break
+    if written < cap:
+        take = chunk[: cap - written]
+        out.write(take)
+        out.flush()
+        written += len(take)
+        if written >= cap:
+            out.write(
+                b"\n[cognee-plugin: console capture cap reached; "
+                b"the rest of this boot's output is discarded]\n"
+            )
+            out.flush()
+out.close()
+"""
+
+
+def start_console_capture(path, cap: int = SERVER_CONSOLE_CAP_BYTES):
+    """Start the capture pump; returns the ``Popen`` whose ``stdin`` is the sink
+    to hand a child as its stdout/stderr, or ``None`` when the pump could not be
+    started (callers then fall back to discarding the child's output). Close
+    ``pump.stdin`` in the parent once the child holds it, or the pump never
+    sees EOF."""
+    import subprocess
+    import sys
+
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return subprocess.Popen(
+            [sys.executable, "-c", _CONSOLE_PUMP_SOURCE, str(path), str(int(cap))],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        return None
+
+
+def console_capture_tail(path, max_bytes: int = 2000) -> str:
+    """The last ``max_bytes`` of a capture file, for error messages. '' if none."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return ""
+    return data[-max_bytes:].decode("utf-8", "replace").strip()

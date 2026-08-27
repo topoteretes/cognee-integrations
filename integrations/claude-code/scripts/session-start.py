@@ -26,7 +26,9 @@ from pathlib import Path
 
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
+from _logfiles import console_capture_tail as _console_capture_tail
 from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
+from _logfiles import start_console_capture as _start_console_capture
 from _plugin_common import (
     _COGNEE_CACHE_DIR,
     _COGNEE_DATA_DIR,
@@ -494,22 +496,27 @@ def _ensure_local_server_running(
         # Run in agent mode: the server tears itself down once all registered
         # agents disconnect.
         server_env["COGNEE_AGENT_MODE"] = "true"
-        # The server's console output goes nowhere on purpose. Without these
-        # the child inherits this worker's stdout/stderr — bootstrap.log — and
-        # that file then holds every line the server ever prints for as long
-        # as it runs (cognify chatter, code-graph warnings, a looping
-        # traceback), which is how bootstrap.log reached gigabytes. cognee
-        # keeps its own per-start log under ~/.cognee/logs/ (rotated, ten
-        # files), so nothing diagnostic is lost — the error paths below say
-        # where to look.
+        # The server's console output must not inherit this worker's stdio
+        # (bootstrap.log — that is how it reached gigabytes: every line the
+        # server printed for as long as it ran), but it must not vanish either:
+        # a boot that dies before cognee opens its own log (import error,
+        # broken venv, port bind) explains itself only on stderr. So it goes to
+        # a capture pump that keeps the first megabyte of each boot in
+        # server-console.log (previous boot in .1) and discards the rest.
+        console_log = _STATE_DIR / "server-console.log"
+        pump = _start_console_capture(console_log)
+        if pump is None:
+            hook_log("server_console_capture_unavailable", {"path": str(console_log)})
         server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=pump.stdin if pump else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if pump else subprocess.DEVNULL,
             start_new_session=True,
         )
+        if pump is not None and pump.stdin is not None:
+            pump.stdin.close()  # the server holds the write end now
         # Presence evidence for future boot points: covers the spawn-to-bind
         # window where neither the health probe nor the TCP listener sees it.
         write_server_pidfile(port, server_proc.pid, version=_PINNED_COGNEE_VERSION)
@@ -528,16 +535,20 @@ def _ensure_local_server_running(
                 if _health_ok(health_url):
                     _ready()
                     return
+                tail = _console_capture_tail(console_log)
+                hook_log(
+                    "server_exited_before_healthy", {"rc": exit_code, "console_tail": tail[-600:]}
+                )
                 raise RuntimeError(
                     f"server process exited (rc={exit_code}) before becoming "
-                    f"healthy at {health_url}; see the newest file in "
-                    f"{_COGNEE_HOME / 'logs'} for the server's own log"
+                    f"healthy at {health_url}; console: {console_log}"
+                    + (f"\n{tail}" if tail else "")
                 )
             time.sleep(_HEALTH_POLL_SECONDS)
 
         raise RuntimeError(
             f"Cognee server did not become healthy at {health_url} within {health_timeout}s; "
-            f"see the newest file in {_COGNEE_HOME / 'logs'} for the server's own log"
+            f"console: {console_log}; server log: newest file in {_COGNEE_HOME / 'logs'}"
         )
     finally:
         if acquired:

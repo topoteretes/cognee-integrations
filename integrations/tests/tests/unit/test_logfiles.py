@@ -116,7 +116,7 @@ def test_rotate_reads_the_cap_from_env_when_not_given(lf, log, monkeypatch):
 def test_hook_log_is_capped(suite, isolated_modules, monkeypatch):
     """hook.log is the busiest log; a hook that loops must not grow it forever."""
     pc = isolated_modules(suite, "_plugin_common")
-    monkeypatch.setenv("COGNEE_LOG_MAX_BYTES", "2000")
+    monkeypatch.setenv("COGNEE_PLUGIN_LOG_MAX_BYTES", "2000")
     for i in range(40):
         pc.hook_log("noise", {"i": i, "pad": "x" * 100})
     assert pc._HOOK_LOG.stat().st_size <= 2000 + 300  # at most one line over the cap
@@ -126,3 +126,44 @@ def test_hook_log_is_capped(suite, isolated_modules, monkeypatch):
     for path in (pc._HOOK_LOG, rotated):
         for line in path.read_text(encoding="utf-8").splitlines():
             assert json.loads(line)["event"] == "noise"
+
+
+# ── console capture pump ───────────────────────────────────────────────────
+
+
+def test_pump_source_is_valid_python(lf):
+    """The pump is a string executed by a child interpreter, so the module can
+    import fine while the child dies with SyntaxError — and then the server
+    writes into a pipe with no reader. A formatter wrapping a literal inside
+    the string did exactly that once."""
+    compile(lf._CONSOLE_PUMP_SOURCE, "<console-pump>", "exec")
+
+
+def _pump_and_wait(lf, path, payload: bytes, cap: int):
+    pump = lf.start_console_capture(path, cap=cap)
+    assert pump is not None
+    pump.stdin.write(payload)
+    pump.stdin.close()
+    assert pump.wait(timeout=10) == 0
+
+
+def test_console_capture_keeps_the_head_and_discards_the_rest(lf, tmp_path):
+    log = tmp_path / "server-console.log"
+    _pump_and_wait(lf, log, b"A" * 100 + b"B" * 5000, cap=100)
+    text = log.read_text(encoding="utf-8")
+    assert text.startswith("A" * 100)
+    assert "B" not in text
+    assert "capture cap reached" in text
+
+
+def test_console_capture_rotates_the_previous_boot(lf, tmp_path):
+    log = tmp_path / "server-console.log"
+    _pump_and_wait(lf, log, b"first boot\n", cap=1000)
+    _pump_and_wait(lf, log, b"second boot\n", cap=1000)
+    assert log.read_text(encoding="utf-8") == "second boot\n"
+    assert (tmp_path / "server-console.log.1").read_text(encoding="utf-8") == "first boot\n"
+    assert lf.console_capture_tail(log) == "second boot"
+
+
+def test_console_capture_tail_of_missing_file_is_empty(lf, tmp_path):
+    assert lf.console_capture_tail(tmp_path / "nope.log") == ""

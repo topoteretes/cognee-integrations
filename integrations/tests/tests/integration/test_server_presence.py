@@ -177,12 +177,13 @@ def test_boot_point_proceeds_when_positively_absent(session_start, closed_port_u
 def test_spawned_server_does_not_inherit_the_worker_stdio(
     session_start, closed_port_url, monkeypatch
 ):
-    """The server's console output must not land in bootstrap.log.
+    """The server's console output must not land in bootstrap.log — nor vanish.
 
     The bootstrap worker runs with stdout/stderr redirected to bootstrap.log; a
     server spawned without its own stdio inherits those, and then every line the
     server prints for its whole lifetime accumulates there — the file reached
-    gigabytes that way. cognee keeps its own rotated log under ~/.cognee/logs.
+    gigabytes that way. /dev/null would lose the traceback of a boot that dies
+    before cognee opens its own log, so the output goes to the capture pump.
     """
     captured: dict = {}
 
@@ -192,7 +193,11 @@ def test_spawned_server_does_not_inherit_the_worker_stdio(
         def poll(self):
             return None
 
+    real_popen = subprocess.Popen  # the capture pump is a real child; only the server is faked
+
     def fake_popen(argv, **kwargs):
+        if "uvicorn" not in [str(a) for a in argv]:
+            return real_popen(argv, **kwargs)
         captured["argv"] = argv
         captured.update(kwargs)
         return _FakeProc()
@@ -206,9 +211,12 @@ def test_spawned_server_does_not_inherit_the_worker_stdio(
     session_start._ensure_local_server_running({"base_url": closed_port_url}, health_timeout=2.0)
 
     assert "uvicorn" in captured["argv"]
-    assert captured["stdout"] is subprocess.DEVNULL
-    assert captured["stderr"] is subprocess.DEVNULL
+    # Not the worker's stdio, not /dev/null either: a pipe into the capture pump,
+    # with stderr folded into it, so an early boot failure is kept.
     assert captured["stdin"] is subprocess.DEVNULL
+    assert captured["stderr"] is subprocess.STDOUT
+    sink = captured["stdout"]
+    assert sink is not subprocess.DEVNULL and sink is not None and hasattr(sink, "fileno")
 
 
 # --- The install step is skipped when the venv is already at the pin --------------
@@ -246,3 +254,54 @@ def test_install_runs_when_venv_holds_another_version(session_start, monkeypatch
     monkeypatch.setattr(session_start.subprocess, "run", record)
     assert session_start.ensure_cognee_installed() is True
     assert any(f"cognee=={pin}" in " ".join(argv) for argv in runs), runs
+
+
+def test_boot_failure_message_carries_the_console_tail(session_start, closed_port_url, monkeypatch):
+    """An import error or bad port bind shows up in the RuntimeError, not only
+    in a file the user has to know about."""
+
+    class _DeadProc:
+        pid = 4243
+
+        def poll(self):
+            return 1
+
+    real_popen = subprocess.Popen  # the capture pump is a real child; only the server is faked
+
+    def fake_popen(argv, **kwargs):
+        if "uvicorn" not in [str(a) for a in argv]:
+            return real_popen(argv, **kwargs)
+        sink = kwargs.get("stdout")
+        if sink is not None and sink is not subprocess.DEVNULL:
+            sink.write(
+                b"Traceback (most recent call last):\n  "
+                b"ModuleNotFoundError: No module named 'kuzu'\n"
+            )
+            sink.flush()
+        return _DeadProc()
+
+    monkeypatch.setattr(session_start, "ensure_cognee_installed", lambda *a, **k: True)
+    monkeypatch.setattr(session_start.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: False)
+    monkeypatch.setattr(session_start, "write_server_pidfile", lambda *a, **k: None)
+    monkeypatch.setattr(session_start, "clear_server_pidfile", lambda *a, **k: None)
+
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError"):
+        # The pump is asynchronous; give it a moment to land the bytes before the
+        # tail is read. _console_capture_tail reads the file, so retry briefly.
+        original_tail = session_start._console_capture_tail
+
+        def patient_tail(path, max_bytes=2000):
+            import time as _t
+
+            for _ in range(50):
+                text = original_tail(path, max_bytes)
+                if text:
+                    return text
+                _t.sleep(0.05)
+            return original_tail(path, max_bytes)
+
+        monkeypatch.setattr(session_start, "_console_capture_tail", patient_tail)
+        session_start._ensure_local_server_running(
+            {"base_url": closed_port_url}, health_timeout=2.0
+        )
