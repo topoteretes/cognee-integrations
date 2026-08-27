@@ -144,6 +144,15 @@ def test_legacy_statusline_dir_is_removed(pc):
     assert not legacy.exists()
 
 
+def test_legacy_per_plugin_breaker_file_is_removed(pc):
+    """cognee-search.sh used to keep its own recall-breaker.json here."""
+    stray = pc._PLUGIN_DIR / "recall-breaker.json"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_text("{}", encoding="utf-8")
+    assert pc.sweep_stale_state()["legacy_files"] == 1
+    assert not stray.exists()
+
+
 def test_oversized_logs_are_rotated_even_when_no_writer_touches_them(pc, monkeypatch):
     """A bootstrap.log from before the cap, or one only a child writes, still
     gets bounded at the next SessionStart."""

@@ -4012,6 +4012,9 @@ _SWEEP_LOG_FILES = (
 )
 #: Directories older plugin versions created here and nothing reads any more.
 _SWEEP_LEGACY_DIRS = ("statusline",)
+#: Files likewise. recall-breaker.json: cognee-search.sh used to redirect the
+#: circuit breaker into this dir, splitting it from the one the hooks use.
+_SWEEP_LEGACY_FILES = ("recall-breaker.json",)
 
 
 def _sweep_remove(path: Path, counts: dict, key: str) -> None:
@@ -4120,6 +4123,10 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
         _sweep_launch_records(now, counts)
         _sweep_improve_locks(now, counts)
         _sweep_expired_improve_marker(now, counts)
+        for name in _SWEEP_LEGACY_FILES:
+            legacy_file = _PLUGIN_DIR / name
+            if legacy_file.is_file():
+                _sweep_remove(legacy_file, counts, "legacy_files")
         for name in _SWEEP_LEGACY_DIRS:
             legacy = _PLUGIN_DIR / name
             if legacy.is_dir():
