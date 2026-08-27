@@ -258,6 +258,8 @@ export type CogneeImproveResult = {
   datasetId?: string;
   /** Per-dataset detail when the server returned a map. */
   datasets?: Record<string, { status?: string; pipelineRunId?: string }>;
+  /** Set when the response matched neither the flat nor the per-dataset shape (server version mismatch?). */
+  error?: string;
 };
 
 /** One stored document, from GET /api/v1/datasets/{id}/data (DataDTO, camelCased on the wire). */

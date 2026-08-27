@@ -111,11 +111,12 @@ describe("normalizeImproveResponse / describeImprove", () => {
     expect(same.status).toBe("PipelineRunCompleted");
   });
 
-  it("tolerates garbage without throwing", () => {
-    expect(normalizeImproveResponse(null)).toEqual({});
-    expect(normalizeImproveResponse("nope")).toEqual({});
-    expect(normalizeImproveResponse([1, 2])).toEqual({});
-    expect(normalizeImproveResponse({ note: "no status here" })).toEqual({});
+  it("names an unrecognized shape in `error` instead of silently returning {}", () => {
+    expect(normalizeImproveResponse(null)).toEqual({ error: "unexpected improve response: null" });
+    expect(normalizeImproveResponse("nope")).toEqual({ error: "unexpected improve response: string" });
+    expect(normalizeImproveResponse([1, 2])).toEqual({ error: "unexpected improve response: array" });
+    expect(normalizeImproveResponse({ note: "no status here", other: 1 })).toEqual({ error: "unexpected improve response: object with keys [note, other]" });
     expect(describeImprove(undefined)).toBe("status=?");
+    expect(describeImprove(normalizeImproveResponse("nope"))).toBe("status=? (unexpected improve response: string)");
   });
 });

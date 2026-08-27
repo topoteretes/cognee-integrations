@@ -62,5 +62,6 @@ export function describeImprove(result: CogneeImproveResult | undefined | null):
   if (result.pipelineRunId) parts.push(`run=${result.pipelineRunId.slice(0, 8)}`);
   const n = result.datasets ? Object.keys(result.datasets).length : 0;
   if (n > 1) parts.push(`datasets=${n}`);
+  if (result.error) parts.push(`(${result.error})`);
   return parts.join(" ");
 }

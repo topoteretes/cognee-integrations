@@ -907,7 +907,9 @@ export function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
  * and the plugin logged `status=?` on every session end.
  */
 export function normalizeImproveResponse(data: unknown): CogneeImproveResult {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { error: `unexpected improve response: ${data === null ? "null" : Array.isArray(data) ? "array" : typeof data}` };
+  }
   const record = data as Record<string, unknown>;
 
   const flatStatus = typeof record.status === "string" ? record.status : undefined;
@@ -921,7 +923,10 @@ export function normalizeImproveResponse(data: unknown): CogneeImproveResult {
   }
 
   const entries = Object.entries(record).filter(([, v]) => v && typeof v === "object" && !Array.isArray(v));
-  if (entries.length === 0) return {};
+  if (entries.length === 0) {
+    const keys = Object.keys(record);
+    return { error: `unexpected improve response: object with keys [${keys.slice(0, 8).join(", ")}${keys.length > 8 ? ", …" : ""}]` };
+  }
 
   const datasets: NonNullable<CogneeImproveResult["datasets"]> = {};
   for (const [dsId, v] of entries) {
