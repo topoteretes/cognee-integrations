@@ -97,6 +97,22 @@ export type CogneePluginConfig = {
   /** Where recalled memories are injected in the prompt. Default: prependSystemContext */
   recallInjectionPosition?: "prependSystemContext" | "appendSystemContext" | "prependContext";
 
+  // --- Code graph ---
+  /**
+   * Register `memory_code_search`: deterministic structural queries (callers,
+   * impact, paths, endpoints) against repositories indexed with
+   * `openclaw cognee index-repo`. Default: true.
+   */
+  codeSearchTool?: boolean;
+  /**
+   * Add a "code" recall lane when a prompt carries an identifier-shaped token
+   * and at least one code graph is registered or listed in codeDatasets.
+   * Additive — never replaces the semantic scopes. Default: true.
+   */
+  codeGraphRecall?: boolean;
+  /** Extra code-graph dataset names to query (e.g. indexed from another machine). */
+  codeDatasets?: string[];
+
   // --- Memory steer ---
   /**
    * Append a short, static system-prompt line on every agent run asserting
@@ -271,6 +287,24 @@ export type DatasetOverride = {
 
 /** Keyed by `key:<sessionKey>` and `sid:<sessionId>` (both written per switch). */
 export type DatasetOverridesFile = Record<string, DatasetOverride>;
+
+/** One repository indexed into a code-graph dataset via `openclaw cognee index-repo`. */
+export type CodeGraphRecord = {
+  dataset: string;
+  datasetId?: string;
+  /** Spec as given (local path or git URL). */
+  spec: string;
+  /** Realpath for local checkouts, trimmed URL for remotes. */
+  canonical: string;
+  kind: "path" | "url";
+  indexVectors: boolean;
+  indexedAt: string;
+  /** Last known code_graph_pipeline status, when polled. */
+  lastStatus?: string;
+};
+
+/** Keyed by dataset name. */
+export type CodeGraphsFile = Record<string, CodeGraphRecord>;
 
 export type SyncIndex = {
   datasetId?: string;

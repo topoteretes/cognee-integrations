@@ -16,6 +16,7 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
 - **Native memory tools**: registers `memory_search` and `memory_get` — the tools OpenClaw's memory slot and `active-memory` expect — backed by Cognee recall, with `cognee://` references the model can resolve to full text; plus `memory_forget` for user-directed, per-document deletion with mandatory confirmation, and `memory_switch_dataset` to move a conversation to another dataset
 - **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider and sets the required hook permissions
+- **Code graph**: `openclaw cognee index-repo <path|url>` indexes a repository into a deterministic code graph; `memory_code_search` answers callers/impact/path/endpoint questions exactly, and an identifier-gated recall lane injects code facts when a prompt names a symbol
 - **Memory steer**: a cached system-prompt line on every run asserting Cognee as the authoritative memory and pointing the model at the memory tools
 - **Version & update hint**: `openclaw cognee status` / `openclaw cognee version` show the installed version and, when npm has a newer release, how to upgrade
 - **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee version`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
@@ -363,6 +364,31 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `maxTokens` | number | `512` | Token cap for recall per scope |
 | `searchPrompt` | string | `""` | System prompt to guide search |
 | `recallInjectionPosition` | string | `prependContext` | Where recalled memories are injected: `prependSystemContext`, `appendSystemContext`, or `prependContext` |
+
+### Code graph (repositories)
+
+Cognee can index a whole repository into a deterministic **code graph** (the enola pipeline — no LLM or embedding calls) and answer structural questions exactly: who calls X, what breaks if X changes, how A reaches B, all routes. OpenClaw agents are rarely launched inside a checkout, so unlike the claude-code/codex plugins nothing is indexed automatically; the operator opts a repository in and the model gets a tool. Requires Cognee ≥ 1.5.3.
+
+```bash
+# Local path (the Cognee server must share this filesystem — the default local server does)
+openclaw cognee index-repo ~/work/my-service --wait 60
+
+# Git URL (the server clones it; the graph reflects PUSHED commits)
+openclaw cognee index-repo https://github.com/org/repo --dataset codebase-repo --index-vectors
+```
+
+One narrow dataset per repository (`codebase-<repo>-<digest>` by default). `--index-vectors` also embeds the facts so `memory_search` can see them; without it the graph is reachable only through the code tool and lane. Indexed repositories are recorded in `~/.openclaw/memory/cognee/code-graphs.json`; re-run `index-repo` after changes (unchanged content is skipped server-side).
+
+| Surface | What it does |
+|---------|--------------|
+| `memory_code_search` tool | `{query, operation?, args?, dataset?, limit?}` — operations `query_facts` (default, substring listing), `explore`, `traverse`, `find_path` (`args.source`/`args.target`), `impact_analysis`, `delta`. `dataset` is optional when exactly one repo is indexed |
+| Code recall lane | When a prompt names an identifier-shaped token (backticked symbol, file path, `snake_case`, `CamelCase`, dotted name) **and** a code graph is indexed or listed in `codeDatasets`, one extra `scope: ["code"]` recall runs alongside the semantic lanes and its facts are injected as a `<code_graph>` block. Conversational prompts never trigger it |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `codeSearchTool` | boolean | `true` | Register `memory_code_search` |
+| `codeGraphRecall` | boolean | `true` | Enable the identifier-gated code recall lane |
+| `codeDatasets` | string[] | `[]` | Extra code-graph dataset names (e.g. indexed from another machine) |
 
 ### Memory steer
 

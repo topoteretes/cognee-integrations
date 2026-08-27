@@ -600,6 +600,8 @@ export class CogneeHttpClient {
     scope?: string | string[];
     /** "session_context" rendering profile: "qa" (conversational) or "agent" (tool/workflow). */
     contextProfile?: "qa" | "agent";
+    /** "code" scope only: structured code-graph query ({operation, ...args}). Requires scope to include "code". */
+    codeQuery?: Record<string, unknown>;
     onlyContext?: boolean;
     /** Per-call timeout for the prompt hot path. When set, retries are
      *  disabled so a slow server fails fast instead of eating the budget. */
@@ -621,6 +623,7 @@ export class CogneeHttpClient {
           ...(params.sessionId ? { session_id: params.sessionId } : {}),
           ...(params.scope ? { scope: params.scope } : {}),
           ...(params.contextProfile ? { context_profile: params.contextProfile } : {}),
+          ...(params.codeQuery ? { code_query: params.codeQuery } : {}),
         }),
       },
       params.timeoutMs ?? this.timeoutMs,
@@ -754,6 +757,44 @@ export class CogneeHttpClient {
   /**
    * Poll cognify pipeline status. Returns the status string ("completed", "running", "failed", etc.).
    */
+  /**
+   * POST /api/v1/remember with content_type="code": index one repository
+   * (local path the server can read, or a git URL it clones) into a code-graph
+   * dataset via the enola pipeline. No LLM/embedding calls unless
+   * indexVectors. Requires cognee >= 1.5.3 (older servers reject content_type).
+   */
+  async indexRepository(params: {
+    datasetName: string;
+    repository: string;
+    indexVectors?: boolean;
+    runInBackground?: boolean;
+  }): Promise<CogneeRememberResponse> {
+    const path = this.isCloud ? "/remember" : "/api/v1/remember";
+    const formData = new FormData();
+    formData.append("datasetName", params.datasetName);
+    formData.append("content_type", "code");
+    formData.append("repositories", params.repository);
+    formData.append("run_in_background", params.runInBackground === false ? "false" : "true");
+    formData.append("index_vectors", params.indexVectors ? "true" : "false");
+    return this.fetchAPI<CogneeRememberResponse>(path, { method: "POST", body: formData }, this.ingestionTimeoutMs);
+  }
+
+  /**
+   * GET /api/v1/datasets/status?dataset=…&pipeline=… — status of one pipeline
+   * for one dataset, lower-cased ("completed", "errored", "processing", …) or
+   * "unknown". A single pipeline yields {id: status}; several yield
+   * {id: {pipeline: status}}; both shapes are handled.
+   */
+  async pipelineStatus(datasetId: string, pipeline: string): Promise<string> {
+    const q = `dataset=${encodeURIComponent(datasetId)}&pipeline=${encodeURIComponent(pipeline)}`;
+    const path = this.isCloud ? `/datasets/status?${q}` : `/api/v1/datasets/status?${q}`;
+    const resp = await this.fetchAPI<Record<string, unknown>>(path, { method: "GET" });
+    let val: unknown = resp?.[datasetId];
+    if (val === undefined && resp && Object.keys(resp).length === 1) val = Object.values(resp)[0];
+    if (val && typeof val === "object") val = (val as Record<string, unknown>)[pipeline];
+    return typeof val === "string" && val ? val.toLowerCase().replace("dataset_processing_", "") : "unknown";
+  }
+
   async datasetStatus(datasetId: string): Promise<string> {
     // Cognee 1.0.3 renamed the query param from `dataset_id` to `dataset`.
     const path = this.isCloud ? `/datasets/status?dataset=${datasetId}` : `/api/v1/datasets/status?dataset=${datasetId}`;

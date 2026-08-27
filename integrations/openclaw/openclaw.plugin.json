@@ -7,7 +7,8 @@
       "memory_search",
       "memory_get",
       "memory_forget",
-      "memory_switch_dataset"
+      "memory_switch_dataset",
+      "memory_code_search"
     ]
   },
   "toolMetadata": {
@@ -19,6 +20,10 @@
     },
     "memory_switch_dataset": {
       "optional": true
+    },
+    "memory_code_search": {
+      "optional": true,
+      "replaySafe": true
     }
   },
   "configContracts": {
@@ -193,6 +198,19 @@
         "type": "boolean",
         "description": "Inject memories before each agent run (default: true)"
       },
+      "codeSearchTool": {
+        "type": "boolean",
+        "description": "Register the memory_code_search agent tool for deterministic structural queries against repositories indexed with `openclaw cognee index-repo` (default: true)"
+      },
+      "codeGraphRecall": {
+        "type": "boolean",
+        "description": "Add a deterministic code-graph recall lane when a prompt names an identifier and at least one code graph is indexed or listed in codeDatasets (default: true)"
+      },
+      "codeDatasets": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Extra code-graph dataset names to query in addition to repositories indexed on this machine"
+      },
       "memorySteer": {
         "type": "boolean",
         "description": "Append a static system-prompt line on each agent run asserting Cognee as the preferred long-term memory and naming the memory tools (default: true)"
@@ -351,6 +369,15 @@
     },
     "recallSessionLayers": {
       "label": "Recall Session Layers"
+    },
+    "codeSearchTool": {
+      "label": "Code Search Tool (memory_code_search)"
+    },
+    "codeGraphRecall": {
+      "label": "Code-Graph Recall Lane"
+    },
+    "codeDatasets": {
+      "label": "Extra Code-Graph Datasets"
     },
     "memorySteer": {
       "label": "Memory Steer (system prompt)"

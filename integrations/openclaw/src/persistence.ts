@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentSyncIndexes, DatasetOverride, DatasetOverridesFile, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
+import type { AgentSyncIndexes, CodeGraphRecord, CodeGraphsFile, DatasetOverride, DatasetOverridesFile, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // State file paths
@@ -202,6 +202,44 @@ export async function loadDatasetOverrides(path: string = DATASET_OVERRIDES_PATH
 }
 
 export async function saveDatasetOverrides(data: DatasetOverridesFile, path: string = DATASET_OVERRIDES_PATH): Promise<void> {
+  await fs.mkdir(dirname(path), { recursive: true });
+  await fs.writeFile(path, JSON.stringify(data, null, 2), "utf-8");
+}
+
+// ---------------------------------------------------------------------------
+// Indexed code graphs (openclaw cognee index-repo)
+// ---------------------------------------------------------------------------
+
+export const CODE_GRAPHS_PATH = join(STATE_DIR, "code-graphs.json");
+
+export async function loadCodeGraphs(path: string = CODE_GRAPHS_PATH): Promise<CodeGraphsFile> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: CodeGraphsFile = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!v || typeof v !== "object") continue;
+      const r = v as Partial<CodeGraphRecord>;
+      if (typeof r.dataset !== "string" || !r.dataset || typeof r.spec !== "string") continue;
+      out[k] = {
+        dataset: r.dataset,
+        ...(typeof r.datasetId === "string" ? { datasetId: r.datasetId } : {}),
+        spec: r.spec,
+        canonical: typeof r.canonical === "string" ? r.canonical : r.spec,
+        kind: r.kind === "url" ? "url" : "path",
+        indexVectors: r.indexVectors === true,
+        indexedAt: typeof r.indexedAt === "string" ? r.indexedAt : "",
+        ...(typeof r.lastStatus === "string" ? { lastStatus: r.lastStatus } : {}),
+      };
+    }
+    return out;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+export async function saveCodeGraphs(data: CodeGraphsFile, path: string = CODE_GRAPHS_PATH): Promise<void> {
   await fs.mkdir(dirname(path), { recursive: true });
   await fs.writeFile(path, JSON.stringify(data, null, 2), "utf-8");
 }

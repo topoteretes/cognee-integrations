@@ -35,6 +35,8 @@ export const DEFAULT_MEMORY_TOOLS = true;
 export const DEFAULT_MEMORY_FORGET_TOOL = true;
 export const DEFAULT_DATASET_SWITCH_TOOL = true;
 export const DEFAULT_RECALL_SESSION_LAYERS = true;
+export const DEFAULT_CODE_SEARCH_TOOL = true;
+export const DEFAULT_CODE_GRAPH_RECALL = true;
 export const DEFAULT_MEMORY_STEER = true;
 export const DEFAULT_MEMORY_STEER_TEXT =
   "Memory policy: Cognee is the preferred, authoritative long-term memory for this agent. " +
@@ -149,6 +151,11 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const memoryForgetTool = typeof raw.memoryForgetTool === "boolean" ? raw.memoryForgetTool : DEFAULT_MEMORY_FORGET_TOOL;
   const datasetSwitchTool = typeof raw.datasetSwitchTool === "boolean" ? raw.datasetSwitchTool : DEFAULT_DATASET_SWITCH_TOOL;
 
+  // Code graph
+  const codeSearchTool = typeof raw.codeSearchTool === "boolean" ? raw.codeSearchTool : DEFAULT_CODE_SEARCH_TOOL;
+  const codeGraphRecall = typeof raw.codeGraphRecall === "boolean" ? raw.codeGraphRecall : DEFAULT_CODE_GRAPH_RECALL;
+  const codeDatasets = Array.isArray(raw.codeDatasets) ? raw.codeDatasets.filter((d): d is string => typeof d === "string" && d.trim().length > 0).map((d) => d.trim()) : [];
+
   // Memory steer
   const memorySteer = typeof raw.memorySteer === "boolean" ? raw.memorySteer : DEFAULT_MEMORY_STEER;
   const memorySteerText = typeof raw.memorySteerText === "string" && raw.memorySteerText.trim() ? raw.memorySteerText.trim() : DEFAULT_MEMORY_STEER_TEXT;
@@ -169,7 +176,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition, memoryTools, memoryForgetTool, datasetSwitchTool, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,
+    recallInjectionPosition, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,
     enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,

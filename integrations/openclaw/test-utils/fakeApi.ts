@@ -32,8 +32,8 @@ export interface FakePluginApi {
   handlerCount: (name: string) => number;
   /** `cognee <name>` actions, keyed by subcommand. See `runCli`. */
   actions: Map<string, CliAction>;
-  /** Invoke one subcommand's action. Throws if the plugin never registered it. */
-  runCli: (name: string, opts?: Record<string, unknown>) => Promise<void>;
+  /** Invoke one subcommand's action (positional args first, like commander). Throws if the plugin never registered it. */
+  runCli: (name: string, opts?: Record<string, unknown>, ...positional: unknown[]) => Promise<void>;
   logger: { info: jest.Mock; warn: jest.Mock; debug: jest.Mock; error: jest.Mock };
   registerCli: jest.Mock;
   registerMemoryFlushPlan: jest.Mock;
@@ -165,12 +165,13 @@ export function createPluginApi(
     subscribed: () => [...handlers.keys()],
     handlerCount: (name) => (handlers.get(name) ?? []).length,
     actions,
-    runCli: async (name, cliOpts = {}) => {
+    runCli: async (name, cliOpts = {}, ...positional) => {
       const action = actions.get(name);
       if (!action) {
         throw new Error(`no cognee subcommand "${name}"; registered: ${[...actions.keys()].join(", ")}`);
       }
-      await action(cliOpts);
+      // commander passes declared <arguments> first, then the options object.
+      await (action as (...a: unknown[]) => Promise<void> | void)(...positional, cliOpts);
     },
     logger,
     registerCli,
