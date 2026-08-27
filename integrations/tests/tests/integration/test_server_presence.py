@@ -214,8 +214,15 @@ def test_spawned_server_does_not_inherit_the_worker_stdio(
     monkeypatch.setattr(session_start, "write_server_pidfile", lambda *a, **k: None)
 
     # With the fakes installed the port must still be provably free — this is the
-    # check that broke on Windows when the fake swallowed netstat.
-    assert session_start.server_presence(closed_port_url)[0] == session_start.PRESENCE_ABSENT
+    # check that broke on Windows when the fake swallowed netstat. The quick form
+    # (no confirming reprobe) is enough to exercise that path.
+    verdict, _ = session_start.server_presence(closed_port_url, confirm_absent=False)
+    assert verdict == session_start.PRESENCE_ABSENT
+    # The spawn is what this test is about; skip the (slow on Windows) presence
+    # dance in front of it now that it has been checked once above.
+    monkeypatch.setattr(
+        session_start, "server_presence", lambda *a, **k: (session_start.PRESENCE_ABSENT, {})
+    )
 
     session_start._ensure_local_server_running({"base_url": closed_port_url}, health_timeout=2.0)
 
@@ -299,6 +306,10 @@ def test_boot_failure_message_carries_the_console_tail(session_start, closed_por
     monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: False)
     monkeypatch.setattr(session_start, "write_server_pidfile", lambda *a, **k: None)
     monkeypatch.setattr(session_start, "clear_server_pidfile", lambda *a, **k: None)
+    # Presence is covered elsewhere; on Windows the real check costs seconds.
+    monkeypatch.setattr(
+        session_start, "server_presence", lambda *a, **k: (session_start.PRESENCE_ABSENT, {})
+    )
 
     with pytest.raises(RuntimeError, match="ModuleNotFoundError"):
         # The pump is asynchronous; give it a moment to land the bytes before the
