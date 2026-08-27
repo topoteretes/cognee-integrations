@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -28,11 +27,6 @@ load_env_file()
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
-# Written by the external pipeline-health sweep (see the claude-code renderer's
-# `_pipeline_health_glyph` and docs/KB/pipeline-monitor-notify-policy.md in the
-# total_recall/thessary repo). Machine-wide and integration-neutral — deliberately
-# in the shared root, NOT under codex/ — so both integrations read the same file.
-_PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "codex" / "update-check.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "codex" / "llm-state.json"
 # Per-session copies (see _plugin_common._write_session_marker): the shared files
@@ -53,12 +47,6 @@ _CREDITS_PATH = _SHARED_ROOT / "codex" / "credits.json"
 # number that no longer reflects spend.
 _CREDITS_STALE_SECONDS = 15 * 60
 
-# TTL for the pipeline-health sweep's finding, matching the claude-code renderer.
-# The sweep runs every 2-5 minutes, so anything older means the sweep itself has
-# stopped — its own separate (unmonitored-by-this-glyph) problem, not something
-# to imply here; treat the file as stale/unknown rather than showing a possibly-
-# outdated warning.
-_PIPELINE_HEALTH_STALE_SECONDS = 30 * 60
 _DEFAULT_DATASET = "agent_sessions"
 # Must match _plugin_common._DEFAULT_LOCAL_SERVICE_URL: the hooks stamp this URL into
 # the markers this renderer compares against.
@@ -338,55 +326,6 @@ def _running_plugin_version() -> str:
     return ""
 
 
-def _pipeline_health_glyph() -> str:
-    """ "⚠ N pipeline(s) stuck " / "⚠ server-down " when the pipeline sweep has a
-    fresh, non-stale finding; "" otherwise (no file yet, stale, or everything's
-    clean). Codex copy of the claude-code renderer's glyph (kept in sync by hand —
-    this module is deliberately standalone); plain text since the status is
-    injected into model context, not a terminal bar. Passive and app-closed-safe:
-    it surfaces a stuck-pipeline finding the instant the user next prompts any
-    Codex session running the plugin. See docs/KB/pipeline-monitor-notify-policy.md
-    (total_recall/thessary repo) for the full monitoring design this is one small
-    piece of.
-    """
-    try:
-        raw = json.loads(_PIPELINE_HEALTH_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    if not isinstance(raw, dict):
-        return ""
-    try:
-        generated_at = datetime.fromisoformat(str(raw.get("generated_at", "")))
-        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
-        if age_seconds > _PIPELINE_HEALTH_STALE_SECONDS:
-            return ""
-    except (ValueError, TypeError):
-        return ""
-    # isinstance, not `or {}`: a truthy non-dict ("yes", 5) would flow through
-    # an `or` fallback and raise AttributeError on .get() — and this module must
-    # never raise (see the sum() guard below).
-    server = raw.get("server") if isinstance(raw.get("server"), dict) else {}
-    if server.get("up") is False:
-        return "⚠ server-down "
-    summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else {}
-    worst = str(summary.get("worst_classification") or "ok")
-    # The isinstance guard only vets the container; a non-numeric VALUE
-    # ("many", None, a nested dict) would make sum() raise — and this module
-    # must never raise (a crash here aborts the whole context-injection hook,
-    # silently dropping the turn's recalled memory, not just this glyph).
-    try:
-        flagged = (
-            sum((summary.get("by_classification") or {}).values())
-            if isinstance(summary.get("by_classification"), dict)
-            else 0
-        )
-    except (TypeError, ValueError):
-        flagged = 0
-    if worst in ("alert", "critical") and flagged > 0:
-        return f"⚠ {flagged} pipeline(s) stuck "
-    return ""
-
-
 def _llm_prefix(session_id: str = "") -> str:
     """Plain-text 'LLM key' failure glyph, or '' — local mode only.
 
@@ -520,7 +459,7 @@ def render_status_for_host(host_id: str) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
     return (
-        f"{_pipeline_health_glyph()}{_status_prefix(str(host_id or ''))}"
+        f"{_status_prefix(str(host_id or ''))}"
         f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
         f"{_switched_marker(str(host_id or ''))}"
         f"{_credits_segment()}{_update_segment()}"
@@ -553,7 +492,7 @@ def main() -> None:
     # record, so the dataset shown follows a switch.
     host_id = str(ctx.get("session_id") or ctx.get("thread_id") or "")
     sys.stdout.write(
-        f"{_pipeline_health_glyph()}{_status_prefix()}"
+        f"{_status_prefix()}"
         f"cognee: {_active_dataset(host_id)} · {_active_mode()}{_switched_marker(host_id)}"
         f"{_credits_segment()}{_update_segment()}"
     )

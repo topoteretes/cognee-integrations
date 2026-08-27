@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -33,7 +32,6 @@ _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
 # (or a marketplace auto-update) installs a new version, which makes it the
 # only signal that clears the update nudge mid-session (see _update_segment).
 _INSTALLED_PLUGINS_PATH = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-_PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "claude-code" / "llm-state.json"
 _RECALL_PATH = _SHARED_ROOT / "claude-code" / "last_recall.json"
 _RECALL_DIR = _SHARED_ROOT / "claude-code" / "recall"
@@ -52,16 +50,6 @@ _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 # there is no periodic re-check — so a verdict this old came from a session that is
 # gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
 _LLM_STATE_STALE_SECONDS = 30 * 60
-
-# Passive, app-closed-safe mitigation for the pipeline-health sweep (Layer 1, a
-# Windows Scheduled Task) -- PushNotification (Layer 2) only fires while the app
-# is open, so this is what lets Mike see a stuck-pipeline finding the INSTANT he
-# next opens any terminal running the plugin, even after a period the app was
-# closed. Older than this many seconds, treat the file as stale/unknown rather
-# than showing a possibly-outdated warning -- the sweep runs every 2-5 minutes,
-# so anything older than that means the sweep itself has stopped, which is its
-# own separate (unmonitored-by-this-glyph) problem, not something to imply here.
-_PIPELINE_HEALTH_STALE_SECONDS = 30 * 60
 
 # TTL for the credits balance. Written per turn (async prompt hook), after
 # improve/remember, and by the idle watcher every ~5 minutes — so a marker
@@ -452,41 +440,6 @@ def _recorded_install_version() -> str:
     return best_str
 
 
-def _pipeline_health_glyph() -> str:
-    """ "⚠ N " when the pipeline sweep (scripts/pipeline_sweep.py) has a fresh,
-    non-stale finding of one or more stuck runs or a down server; "" otherwise
-    (no file yet, stale, or everything's clean). See
-    docs/KB/pipeline-monitor-notify-policy.md for the full monitoring design this
-    is one small passive piece of.
-    """
-    try:
-        raw = json.loads(_PIPELINE_HEALTH_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    if not isinstance(raw, dict):
-        return ""
-    try:
-        generated_at = datetime.fromisoformat(str(raw.get("generated_at", "")))
-        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
-        if age_seconds > _PIPELINE_HEALTH_STALE_SECONDS:
-            return ""
-    except (ValueError, TypeError):
-        return ""
-    server = raw.get("server") or {}
-    if server.get("up") is False:
-        return "⚠ server-down "
-    summary = raw.get("summary") or {}
-    worst = str(summary.get("worst_classification") or "ok")
-    flagged = (
-        sum((summary.get("by_classification") or {}).values())
-        if isinstance(summary.get("by_classification"), dict)
-        else 0
-    )
-    if worst in ("alert", "critical") and flagged > 0:
-        return f"⚠ {flagged} pipeline(s) stuck "
-    return ""
-
-
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -779,7 +732,7 @@ def main() -> None:
     # mode; the update nudge stays last because it is a transient banner, not part
     # of the steady-state line.
     sys.stdout.write(
-        f"{_pipeline_health_glyph()}{_status_prefix(_session_id)}"
+        f"{_status_prefix(_session_id)}"
         f"cognee: {_active_dataset(_session_id)} · {_mode_label()}{_switched_marker(_session_id)}"
         f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
     )

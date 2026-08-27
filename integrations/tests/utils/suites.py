@@ -90,9 +90,8 @@ class Suite:
     #: model's context, so those segment-level assertions do not apply to it, though
     #: its bar still has to render and name the dataset.
     #:
-    #: Not a blanket "codex has no segments": codex *does* have
-    #: ``_pipeline_health_glyph`` as of the same port. Tests for individual segments
-    #: probe for their own symbol, so they pick that up on their own.
+    #: Not a blanket "codex has no segments": tests for individual segments probe
+    #: for their own symbol, so whatever codex does ship is picked up on its own.
     has_rich_statusline: bool
     #: Capability: ``pre-compact.py`` produces an anchor against a server.
     #:
