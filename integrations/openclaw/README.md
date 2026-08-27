@@ -14,7 +14,7 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Health check**: Verifies Cognee API connectivity before operations
 - **Auto-index**: Syncs memory markdown files to Cognee via `/remember` (add new, update changed, forget removed, skip unchanged). The `/remember` endpoint runs ingest, graph build, and graph enrichment in one server-side call.
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
-- **Native memory tools**: registers `memory_search` and `memory_get` — the tools OpenClaw's memory slot and `active-memory` expect — backed by Cognee recall, with `cognee://` references the model can resolve to full text; plus `memory_forget` for user-directed, per-document deletion with mandatory confirmation
+- **Native memory tools**: registers `memory_search` and `memory_get` — the tools OpenClaw's memory slot and `active-memory` expect — backed by Cognee recall, with `cognee://` references the model can resolve to full text; plus `memory_forget` for user-directed, per-document deletion with mandatory confirmation, and `memory_switch_dataset` to move a conversation to another dataset
 - **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider and sets the required hook permissions
 - **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
 
@@ -402,6 +402,19 @@ User-directed deletion — "forget what we talked about tennis", "delete that fr
 | `memory_forget {action: "forget", dataIds: [...], confirm: true}` | Deletes exactly those documents, one `POST /api/v1/forget {datasetId, dataId}` each, and reports `deleted` / `failed`. Without `confirm: true` nothing is deleted and the tool asks for confirmation |
 
 The tool deliberately cannot express a whole-dataset or everything-wipe; those stay behind `openclaw cognee forget --dataset <name>` / `--everything --confirm`. Deleting a document removes its raw data, its derived graph knowledge, and (Cognee ≥ 1.5.3) the session turns whose answers cited it — targeted, not whole-session; tool-call traces are not matched. Set `memoryForgetTool: false` to not register it.
+
+### Agent tool: `memory_switch_dataset`
+
+Move **one conversation** to another Cognee dataset — the OpenClaw counterpart of the claude-code/codex `cognee-switch-datasets` skill. One gateway serves many conversations per agent, so the switch is keyed by the host's `sessionKey` (falling back to `sessionId`), never by agent.
+
+| Call | What happens |
+|------|--------------|
+| `{action: "list"}` | Datasets visible on the server, current one first. Present them and let the user pick; a name that is not listed is created on switch |
+| `{action: "switch", dataset: "proj-a"}` | Syncs the current session into its dataset (`/improve`, strict — aborts on failure unless `force: true`), ensures the target exists and caches its id, then binds the conversation: later capture writes, the session-layer recall and the agent/single graph recall target `proj-a`, under a fresh Cognee session id (`open_claw_<id>__2`, `__3`, …) because a session never spans two datasets. Session-end `improve` follows too |
+| `{action: "current"}` | The dataset and Cognee session id this conversation uses, and whether it was switched |
+| `{action: "reset"}` | Back to the configured dataset |
+
+In multi-scope mode only the **agent** scope is repointed; `company`/`user` memory stays shared. Memory-file sync keeps following `scopeRouting` — the switch moves the conversation's memory, not the agent's files. Overrides persist across gateway restarts in `~/.openclaw/memory/cognee/dataset-overrides.json`. Set `datasetSwitchTool: false` to not register it.
 
 The plugin's bundled server pin is `cognee==1.5.3` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.5.3`.
 

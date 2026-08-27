@@ -70,12 +70,12 @@ describe("tool registration", () => {
   it("registers a factory under all contract names", () => {
     const { registerTool, tools } = createPluginApi(plugin);
     expect(registerTool).toHaveBeenCalledTimes(1);
-    expect(registerTool.mock.calls[0][1]).toEqual({ names: ["memory_search", "memory_get", "memory_forget"] });
-    expect(tools({ agentId: "will" }).map((t) => t.name)).toEqual(["memory_search", "memory_get", "memory_forget"]);
+    expect(registerTool.mock.calls[0][1]).toEqual({ names: ["memory_search", "memory_get", "memory_forget", "memory_switch_dataset"] });
+    expect(tools({ agentId: "will" }).map((t) => t.name)).toEqual(["memory_search", "memory_get", "memory_forget", "memory_switch_dataset"]);
   });
 
-  it("leaves memory_forget out when memoryForgetTool is false", () => {
-    const { registerTool, tools } = createPluginApi(plugin, { memoryForgetTool: false });
+  it("leaves optional tools out when their flags are false", () => {
+    const { registerTool, tools } = createPluginApi(plugin, { memoryForgetTool: false, datasetSwitchTool: false });
     expect(registerTool.mock.calls[0][1]).toEqual({ names: ["memory_search", "memory_get"] });
     expect(tools({ agentId: "will" }).map((t) => t.name)).toEqual(["memory_search", "memory_get"]);
   });
@@ -92,8 +92,9 @@ describe("tool registration", () => {
 
   it("declares the same tool names in the manifest contracts", () => {
     const manifest = JSON.parse(readFileSync(join(__dirname, "..", "..", "openclaw.plugin.json"), "utf-8"));
-    expect(manifest.contracts.tools.sort()).toEqual(["memory_forget", "memory_get", "memory_search"]);
+    expect(manifest.contracts.tools.sort()).toEqual(["memory_forget", "memory_get", "memory_search", "memory_switch_dataset"]);
     expect(manifest.configSchema.properties.memoryForgetTool.type).toBe("boolean");
+    expect(manifest.configSchema.properties.datasetSwitchTool.type).toBe("boolean");
     expect(manifest.configSchema.properties.memoryTools.type).toBe("boolean");
     expect(manifest.configSchema.properties.improveOnSessionEnd.type).toBe("boolean");
   });

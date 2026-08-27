@@ -106,7 +106,7 @@ export type MemoryForgetResult = MemoryForgetFindResult | MemoryForgetDeleteResu
 
 export type MemoryForgetDeps = {
   cfg: Required<CogneePluginConfig>;
-  resolveDatasets: (agentId?: string) => Promise<Array<{ id: string; label: string }>>;
+  resolveDatasets: (agentId?: string, ctx?: MemoryToolContext) => Promise<Array<{ id: string; label: string }>>;
   listDatasetData: (datasetId: string) => Promise<CogneeDataItem[]>;
   readRawData: (datasetId: string, dataId: string, maxChars?: number) => Promise<string>;
   forget: (params: { datasetId: string; dataId: string }) => Promise<{ deleted: boolean; error?: string }>;
@@ -174,7 +174,7 @@ export function createMemoryForgetTool(deps: MemoryForgetDeps, ctx: MemoryToolCo
 
     let datasets: Array<{ id: string; label: string }>;
     try {
-      datasets = await deps.resolveDatasets(ctx.agentId);
+      datasets = await deps.resolveDatasets(ctx.agentId, ctx);
     } catch (e) {
       return { action: "find", ...(query ? { query } : {}), candidates: [], totalDocuments: 0, scannedDocuments: 0, disabled: true, error: `dataset resolution failed: ${String(e)}`, note: "Cognee is unreachable; retry later." };
     }
@@ -271,7 +271,7 @@ export function createMemoryForgetTool(deps: MemoryForgetDeps, ctx: MemoryToolCo
     const unknown = ids.filter((id) => !located.has(id));
     if (unknown.length > 0) {
       try {
-        for (const ds of await deps.resolveDatasets(ctx.agentId)) {
+        for (const ds of await deps.resolveDatasets(ctx.agentId, ctx)) {
           const list = await deps.listDatasetData(ds.id);
           for (const it of list) if (unknown.includes(it.id)) located.set(it.id, { datasetId: it.datasetId || ds.id, name: it.name });
         }

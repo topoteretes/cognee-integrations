@@ -123,6 +123,15 @@ export type CogneePluginConfig = {
    * Cognee server >= 1.5.3 for targeted session invalidation. Default: true.
    */
   memoryForgetTool?: boolean;
+  /**
+   * Also register `memory_switch_dataset`: move ONE conversation to another
+   * dataset (list / current / switch / reset). The switch syncs the current
+   * session, then repoints capture, session-end improve and the agent/single
+   * recall scope for that conversation, with a fresh Cognee session id.
+   * Overrides persist in ~/.openclaw/memory/cognee/dataset-overrides.json.
+   * Default: true.
+   */
+  datasetSwitchTool?: boolean;
 
   // --- Harness-noise filter ---
   /**
@@ -236,6 +245,19 @@ export type CogneeDataItem = {
 };
 
 export type DatasetState = Record<string, string>;
+
+/** One conversation's dataset switch (memory_switch_dataset). */
+export type DatasetOverride = {
+  dataset: string;
+  /** Ordinal appended to the Cognee session id: `<base>__<sessionSuffix>`. */
+  sessionSuffix: number;
+  switchedAt: string;
+  /** Datasets this conversation used before, newest last (informational). */
+  previous: string[];
+};
+
+/** Keyed by `key:<sessionKey>` and `sid:<sessionId>` (both written per switch). */
+export type DatasetOverridesFile = Record<string, DatasetOverride>;
 
 export type SyncIndex = {
   datasetId?: string;

@@ -6,7 +6,8 @@
     "tools": [
       "memory_search",
       "memory_get",
-      "memory_forget"
+      "memory_forget",
+      "memory_switch_dataset"
     ]
   },
   "toolMetadata": {
@@ -14,6 +15,9 @@
       "replaySafe": true
     },
     "memory_forget": {
+      "optional": true
+    },
+    "memory_switch_dataset": {
       "optional": true
     }
   },
@@ -201,6 +205,10 @@
         "type": "boolean",
         "description": "Also register the memory_forget agent tool: user-directed deletion of individual documents, two-phase (find candidates, then forget listed data ids with confirm=true). Whole-dataset wipes stay CLI-only. Requires Cognee >= 1.5.3 (default: true)"
       },
+      "datasetSwitchTool": {
+        "type": "boolean",
+        "description": "Also register the memory_switch_dataset agent tool: move one conversation to another dataset (list / current / switch / reset). Syncs the current session first; later capture, recall and session-end improve for that conversation target the new dataset (default: true)"
+      },
       "improveOnSessionEnd": {
         "type": "boolean",
         "description": "On session_end, call /improve with the session id to bridge session-cache QAs into the permanent graph (default: true)"
@@ -341,6 +349,9 @@
     },
     "memoryForgetTool": {
       "label": "Memory Forget Tool (memory_forget)"
+    },
+    "datasetSwitchTool": {
+      "label": "Dataset Switch Tool (memory_switch_dataset)"
     },
     "improveOnSessionEnd": {
       "label": "Improve on Session End"

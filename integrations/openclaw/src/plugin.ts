@@ -27,6 +27,7 @@ import { RecallBreaker, isBreakerError } from "./breaker.js";
 import { compileNoisePatterns, isHarnessNoise } from "./noise.js";
 import { ReferenceCache, SESSION_LAYER_SCOPES, createMemoryTools } from "./tools.js";
 import { createMemoryForgetTool } from "./forget-tool.js";
+import { DatasetSwitchStore, createDatasetSwitchTool, withSessionSuffix } from "./dataset-switch.js";
 import { describeImprove, renderSessionLayerSections } from "./recall-layers.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
@@ -224,29 +225,57 @@ const memoryCogneePlugin = {
     // `contracts.tools` — the runtime rejects undeclared registrations.
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // Per-conversation dataset overrides (memory_switch_dataset). Consulted
+    // by capture, recall and session-end improve through the three helpers
+    // below; hooks `await switchStore.ready()` once before reading.
+    // ------------------------------------------------------------------
+
+    type ConvoCtx = { sessionKey?: string; sessionId?: string };
+    const switchStore = new DatasetSwitchStore({ warn: (m) => api.logger.warn?.(m), debug: (m) => api.logger.debug?.(m) });
+
+    /** Cognee session id for a conversation: base `open_claw_<id>`, plus `__N` after a switch. */
+    function conversationSessionId(hostSessionId: string | undefined, ctx?: ConvoCtx): string {
+      return withSessionSuffix(cogneeSessionId(hostSessionId), switchStore.get(ctx ?? { sessionId: hostSessionId }));
+    }
+
+    /** Dataset name for a scope, honouring a conversation's switch for the agent/single scope. */
+    function scopeDatasetName(scope: MemoryScope, runtimeAgentId: string | undefined, ctx?: ConvoCtx): string {
+      const override = switchStore.get(ctx);
+      if (override && scope === "agent") return override.dataset;
+      return datasetNameForScope(scope, cfg, runtimeAgentId);
+    }
+
     if (cfg.memoryTools) {
       const toolReferenceCache = new ReferenceCache();
 
       // Dataset ids to search plus a provenance label per id. Same resolution
       // as prompt-time recall (getRecallDatasetIds) but keeps the scope label.
-      async function resolveToolDatasets(runtimeAgentId?: string): Promise<Array<{ id: string; label: string }>> {
+      async function resolveToolDatasets(runtimeAgentId?: string, ctx?: ConvoCtx): Promise<Array<{ id: string; label: string }>> {
+        await switchStore.ready();
         const out: Array<{ id: string; label: string }> = [];
         if (multiScope) {
           const state = await loadDatasetState();
           for (const scope of cfg.recallScopes) {
-            const dsName = datasetNameForScope(scope, cfg, runtimeAgentId);
+            const dsName = scopeDatasetName(scope, runtimeAgentId, ctx);
             const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, runtimeAgentId)
               ?? await resolveDatasetIdFromServer(dsName);
             if (dsId) out.push({ id: dsId, label: scope });
           }
         } else {
-          const { ids } = await getRecallDatasetIds(runtimeAgentId);
-          for (const id of ids) out.push({ id, label: cfg.datasetName });
+          const { ids } = await getRecallDatasetIds(runtimeAgentId, ctx);
+          const label = switchStore.get(ctx)?.dataset ?? cfg.datasetName;
+          for (const id of ids) out.push({ id, label });
         }
         return out;
       }
 
-      const toolNames = ["memory_search", "memory_get", ...(cfg.memoryForgetTool ? ["memory_forget"] : [])];
+      const toolNames = [
+        "memory_search",
+        "memory_get",
+        ...(cfg.memoryForgetTool ? ["memory_forget"] : []),
+        ...(cfg.datasetSwitchTool ? ["memory_switch_dataset"] : []),
+      ];
       const toolLogger = { debug: (m: string) => api.logger.debug?.(m), warn: (m: string) => api.logger.warn?.(m) };
 
       const registerTool = (api as { registerTool?: OpenClawPluginApi["registerTool"] }).registerTool;
@@ -267,7 +296,7 @@ const memoryCogneePlugin = {
                   resolveDatasets: resolveToolDatasets,
                   recall: (p) => recallWithBreaker({ ...p, searchType: p.searchType ?? cfg.searchType, searchPrompt: p.searchPrompt ?? cfg.searchPrompt }),
                   breakerOpenForSeconds: () => recallBreaker.openForSeconds(),
-                  sessionIdFor: (hostSessionId) => (cfg.enableSessions && hostSessionId ? cogneeSessionId(hostSessionId) : undefined),
+                  sessionIdFor: (hostSessionId, c) => (cfg.enableSessions && hostSessionId ? conversationSessionId(hostSessionId, c ?? memoryCtx) : undefined),
                   cache: toolReferenceCache,
                   logger: toolLogger,
                 },
@@ -287,10 +316,34 @@ const memoryCogneePlugin = {
                     // becomes a findable/deletable document (server-side improve).
                     syncSession: cfg.enableSessions
                       ? async (hostSessionId, agentId) => {
-                          const dsName = captureDatasetName(agentId);
-                          await client.improve({ datasetName: dsName, sessionIds: [cogneeSessionId(hostSessionId)], runInBackground: false });
+                          const dsName = captureDatasetName(agentId, memoryCtx);
+                          await client.improve({ datasetName: dsName, sessionIds: [conversationSessionId(hostSessionId, memoryCtx)], runInBackground: false });
                         }
                       : undefined,
+                    logger: toolLogger,
+                  },
+                  memoryCtx,
+                ),
+              );
+            }
+            if (cfg.datasetSwitchTool) {
+              tools.push(
+                createDatasetSwitchTool(
+                  {
+                    cfg,
+                    store: switchStore,
+                    currentDataset: (c) => captureDatasetName(c.agentId, c),
+                    currentSessionId: (c) => (cfg.enableSessions && c.sessionId ? conversationSessionId(c.sessionId, c) : undefined),
+                    listDatasets: () => client.listDatasets(),
+                    ensureDataset: (name) => client.ensureDataset(name),
+                    syncSession: async (datasetName, sid) => {
+                      await awaitPendingStores(sid);
+                      await client.improve({ datasetName, sessionIds: [sid], runInBackground: false });
+                    },
+                    rememberDatasetId: async (name, id) => {
+                      const state = await loadDatasetState();
+                      if (state[name] !== id) await saveDatasetState({ ...state, [name]: id });
+                    },
                     logger: toolLogger,
                   },
                   memoryCtx,
@@ -332,6 +385,9 @@ const memoryCogneePlugin = {
     let autoSyncStarted = false;
 
     const stateReady = Promise.all([
+      // Per-conversation dataset overrides load alongside the dataset state so
+      // every hook that awaits stateReady sees switches from before a restart.
+      switchStore.ready(),
       loadDatasetState()
         .then((state) => {
           if (!multiScope) {
@@ -394,15 +450,18 @@ const memoryCogneePlugin = {
     // Fix #8: Log when scopes have no dataset ID during recall
     async function getRecallDatasetIds(
       runtimeAgentId?: string,
+      ctx?: ConvoCtx,
     ): Promise<{ ids: string[]; missingScopes: string[] }> {
       const state = await loadDatasetState();
       const ids: string[] = [];
       const missingScopes: string[] = [];
+      const override = switchStore.get(ctx);
 
       if (multiScope) {
         for (const scope of cfg.recallScopes) {
-          const dsName = datasetNameForScope(scope, cfg, runtimeAgentId);
-          const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, runtimeAgentId)
+          const dsName = scopeDatasetName(scope, runtimeAgentId, ctx);
+          const dsId = state[dsName]
+            ?? (override && scope === "agent" ? undefined : scopeFallbackDatasetId(scope, runtimeAgentId))
             ?? await resolveDatasetIdFromServer(dsName);
           if (dsId) {
             ids.push(dsId);
@@ -410,6 +469,10 @@ const memoryCogneePlugin = {
             missingScopes.push(scope);
           }
         }
+      } else if (override) {
+        // Switched conversation: recall from the override dataset only.
+        const overrideId = state[override.dataset] ?? await resolveDatasetIdFromServer(override.dataset);
+        if (overrideId) ids.push(overrideId);
       } else {
         const resolvedId = datasetId ?? await resolveDatasetIdFromServer(cfg.datasetName);
         if (resolvedId) {
@@ -1065,7 +1128,9 @@ const memoryCogneePlugin = {
       return s.length > max ? `${s.slice(0, max)}…[truncated]` : s;
     }
 
-    function captureDatasetName(rawAgentId?: string): string {
+    function captureDatasetName(rawAgentId?: string, ctx?: ConvoCtx): string {
+      const override = switchStore.get(ctx);
+      if (override) return override.dataset;
       return multiScope ? datasetNameForScope("agent", cfg, rawAgentId) : cfg.datasetName;
     }
 
@@ -1087,10 +1152,11 @@ const memoryCogneePlugin = {
       });
     }
 
-    function storeEntry(entry: Record<string, unknown>, rawAgentId: string | undefined, hostSessionId: string, kind: string): void {
-      const cogneeSid = cogneeSessionId(hostSessionId);
+    function storeEntry(entry: Record<string, unknown>, rawAgentId: string | undefined, hostSessionId: string, kind: string, ctx?: ConvoCtx): void {
+      const convo = ctx ?? { sessionId: hostSessionId };
+      const cogneeSid = conversationSessionId(hostSessionId, convo);
       const p: Promise<void> = client.rememberEntry({
-        datasetName: captureDatasetName(rawAgentId),
+        datasetName: captureDatasetName(rawAgentId, convo),
         sessionId: cogneeSid,
         entry,
       }).then(({ entryId }) => {
@@ -1133,7 +1199,7 @@ const memoryCogneePlugin = {
           // LLM-backed feedback per step is expensive on a busy session;
           // the server-side AUTO_FEEDBACK + improve pass covers synthesis.
           generate_feedback_with_llm: false,
-        }, ctx.agentId, ctx.sessionId, "trace");
+        }, ctx.agentId, ctx.sessionId, "trace", ctx);
       });
 
       api.on("llm_output", async (event, ctx) => {
@@ -1151,7 +1217,7 @@ const memoryCogneePlugin = {
           question,
           answer,
           context: "",
-        }, ctx.agentId, hostSessionId, "qa");
+        }, ctx.agentId, hostSessionId, "qa", ctx);
       });
     }
 
@@ -1222,7 +1288,7 @@ const memoryCogneePlugin = {
         await stateReady;
 
         // session_start isn't fired in every openclaw flow; sync from ctx on every hook.
-        if (cfg.enableSessions && ctx.sessionId) sessionId = cogneeSessionId(ctx.sessionId);
+        if (cfg.enableSessions && ctx.sessionId) sessionId = conversationSessionId(ctx.sessionId, ctx);
 
         if (!event.prompt || event.prompt.length < 5) {
           api.logger.debug?.("cognee-openclaw: skipping recall (prompt too short)");
@@ -1234,7 +1300,7 @@ const memoryCogneePlugin = {
           return;
         }
 
-        const { ids: recallDatasetIds, missingScopes } = await getRecallDatasetIds(ctx.agentId);
+        const { ids: recallDatasetIds, missingScopes } = await getRecallDatasetIds(ctx.agentId, ctx);
 
         // Fix #8: Log missing scopes so users know what's not being searched
         if (missingScopes.length > 0) {
@@ -1285,8 +1351,9 @@ const memoryCogneePlugin = {
             const state = await loadDatasetState();
 
             const searchPromises = cfg.recallScopes.map(async (scope): Promise<{ scope: MemoryScope; results: CogneeSearchResult[] } | null> => {
-              const dsName = datasetNameForScope(scope, cfg, ctx.agentId);
-              const dsId = state[dsName] ?? scopeFallbackDatasetId(scope, ctx.agentId);
+              const dsName = scopeDatasetName(scope, ctx.agentId, ctx);
+              const switched = scope === "agent" && !!switchStore.get(ctx);
+              const dsId = state[dsName] ?? (switched ? await resolveDatasetIdFromServer(dsName) : scopeFallbackDatasetId(scope, ctx.agentId));
               if (!dsId) return null;
 
               const recallScope = (ids: string[]) => recallWithBreaker({
@@ -1366,7 +1433,7 @@ const memoryCogneePlugin = {
               results = await recallSingle(recallDatasetIds);
             } catch (e) {
               if (!isStaleDatasetError(e)) throw e;
-              const fresh = await healDatasetId(cfg.datasetName);
+              const fresh = await healDatasetId(switchStore.get(ctx)?.dataset ?? cfg.datasetName);
               if (!fresh || recallDatasetIds.includes(fresh)) throw e;
               results = await recallSingle([fresh]);
             }
@@ -1425,7 +1492,7 @@ const memoryCogneePlugin = {
 
         lastAgentId = ctx.agentId;
         lastWorkspaceDir = ctx.workspaceDir || resolvedWorkspaceDir;
-        if (cfg.enableSessions && ctx.sessionId) sessionId = cogneeSessionId(ctx.sessionId);
+        if (cfg.enableSessions && ctx.sessionId) sessionId = conversationSessionId(ctx.sessionId, ctx);
 
         const workspaceDir = ctx.workspaceDir || resolvedWorkspaceDir!;
         // Remember this agent's workspace so session_end can sweep the right one.
@@ -1563,7 +1630,10 @@ const memoryCogneePlugin = {
 
       // Wrap to the same {agent}_{id} form data was saved under, so improve()
       // looks up the right session (must match the session_start/hook wrapping).
-      const endSessionId = cogneeSessionId(rawSessionId);
+      // A switched conversation saved under a suffixed id and another dataset.
+      await switchStore.ready();
+      const endCtx: ConvoCtx = { sessionKey: ctx?.sessionKey ?? event.sessionKey, sessionId: rawSessionId };
+      const endSessionId = conversationSessionId(rawSessionId, endCtx);
       const agentSessionName = agentSessionNames.get(regKey);
       sessionId = undefined;
 
@@ -1610,7 +1680,7 @@ const memoryCogneePlugin = {
           // Let this session's in-flight capture writes land first; improve
           // only bridges what is already in the session cache.
           await awaitPendingStores(endSessionId);
-          const dsName = multiScope ? datasetNameForScope("agent", cfg, endAgentId) : cfg.datasetName;
+          const dsName = captureDatasetName(endAgentId, endCtx);
           // The dataset must exist before improve bridges into it: servers up
           // to 1.4.0 skip session persistence (non-fatally, so improve still
           // reports success) when the name resolves to nothing, and a session

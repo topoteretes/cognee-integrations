@@ -309,14 +309,14 @@ export const SESSION_LAYER_SCOPES = ["session", "trace", "session_context"] as c
 
 export type MemoryToolsDeps = {
   cfg: Required<CogneePluginConfig>;
-  /** Dataset ids to search for this agent, plus scope labels for provenance. */
-  resolveDatasets: (agentId?: string) => Promise<Array<{ id: string; label: string }>>;
+  /** Dataset ids to search for this agent/conversation, plus scope labels for provenance. */
+  resolveDatasets: (agentId?: string, ctx?: MemoryToolContext) => Promise<Array<{ id: string; label: string }>>;
   /** Recall call (breaker-aware in production). */
   recall: RecallFn;
   /** Seconds until the recall breaker closes; 0 when closed. */
   breakerOpenForSeconds?: () => Promise<number>;
-  /** Cognee session id for corpus=sessions. */
-  sessionIdFor?: (hostSessionId?: string) => string | undefined;
+  /** Cognee session id for corpus=sessions (conversation-aware). */
+  sessionIdFor?: (hostSessionId?: string, ctx?: MemoryToolContext) => string | undefined;
   cache?: ReferenceCache;
   logger?: { debug?: (m: string) => void; warn?: (m: string) => void };
 };
@@ -378,7 +378,7 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
 
       let datasets: Array<{ id: string; label: string }>;
       try {
-        datasets = await deps.resolveDatasets(ctx.agentId);
+        datasets = await deps.resolveDatasets(ctx.agentId, ctx);
       } catch (e) {
         return jsonResult(unavailable(query, corpus, `dataset resolution failed: ${String(e)}`, "Check the Cognee server connection and retry memory_search."));
       }
@@ -388,7 +388,7 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
 
       const wantGraph = corpus === "memory" || corpus === "all";
       const wantSession = corpus === "sessions" || corpus === "all";
-      const sessionId = wantSession ? deps.sessionIdFor?.(ctx.sessionId) : undefined;
+      const sessionId = wantSession ? deps.sessionIdFor?.(ctx.sessionId, ctx) : undefined;
 
       const tasks: Array<Promise<MemorySearchHit[]>> = [];
       if (wantGraph) {

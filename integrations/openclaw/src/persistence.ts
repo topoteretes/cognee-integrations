@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentSyncIndexes, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
+import type { AgentSyncIndexes, DatasetOverride, DatasetOverridesFile, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // State file paths
@@ -169,4 +169,38 @@ export async function migrateAgentScopeToPerAgent(agentId: string): Promise<Agen
   delete shared.agent;
   await saveScopedSyncIndexes(shared);
   return agentIndexes;
+}
+
+// ---------------------------------------------------------------------------
+// Per-conversation dataset overrides (memory_switch_dataset)
+// ---------------------------------------------------------------------------
+
+export const DATASET_OVERRIDES_PATH = join(STATE_DIR, "dataset-overrides.json");
+
+export async function loadDatasetOverrides(path: string = DATASET_OVERRIDES_PATH): Promise<DatasetOverridesFile> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: DatasetOverridesFile = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!v || typeof v !== "object") continue;
+      const o = v as Partial<DatasetOverride>;
+      if (typeof o.dataset !== "string" || !o.dataset) continue;
+      out[k] = {
+        dataset: o.dataset,
+        sessionSuffix: typeof o.sessionSuffix === "number" && o.sessionSuffix >= 2 ? o.sessionSuffix : 2,
+        switchedAt: typeof o.switchedAt === "string" ? o.switchedAt : "",
+        previous: Array.isArray(o.previous) ? o.previous.filter((p): p is string => typeof p === "string") : [],
+      };
+    }
+    return out;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+export async function saveDatasetOverrides(data: DatasetOverridesFile, path: string = DATASET_OVERRIDES_PATH): Promise<void> {
+  await fs.mkdir(dirname(path), { recursive: true });
+  await fs.writeFile(path, JSON.stringify(data, null, 2), "utf-8");
 }
