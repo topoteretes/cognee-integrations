@@ -10,6 +10,23 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **Status line: memory hits in plain words, plus a per-session total.** The
+  `recall 4s/5t/0g/1a · saved 2p/41t/2a` strip is replaced by
+  `5 memory hits · 12/40 turns had hits this session` — how many memories this
+  turn's lookup injected — with `(3 from past sessions)` for the graph passages
+  that came from an earlier session or a remembered document, i.e. what this
+  conversation alone could not have supplied — then (faint) on how many of this
+  session's prompts memory fired at all. A session with no hit yet reads `memory warming up
+  (7 turns)` rather than `0/7`. The running total is accumulated by
+  `session-context-lookup.py` in the per-session marker
+  (`recall/<session>.json`, `session_totals`), so it costs no extra call, resets
+  on `/clear` and continues across `--resume`. `COGNEE_STATUSLINE_COUNTS=full`
+  restores the per-scope diagnostic strip; `false` still hides the segment.
+  (SDK-437)
+
 ## [1.4.0]
 
 ### Added
