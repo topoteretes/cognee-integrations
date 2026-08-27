@@ -6,6 +6,7 @@ The integration:
 - captures prompts, tool traces, and assistant responses into session memory
 - injects relevant context on prompt submit
 - syncs session memory into graph memory on session end/final exit
+- deletes memory on request via the `cognee-forget` skill ("forget what we talked about X")
 
 ## Install
 
@@ -163,9 +164,31 @@ codex
 `~/.cognee-plugin/config.json` may still show a `dataset` value for visibility,
 but runtime dataset selection does not read it.
 
-The dataset is fixed for the lifetime of a launch. Recall searches only the active dataset. If you want to
-change the active dataset, you have to exit Claude, change the dataset via env, and then start Claude again.
-Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset.
+Data added outside of Codex to the dataset (via SDK or the server for example) is visible in Codex via the Cognee plugin.
+
+### Switching datasets mid-session
+
+Ask Codex to switch datasets (the `cognee-switch-datasets` skill). Without a name it lists the
+datasets you can write to — those owned by the principal behind your API key; datasets you can
+only read are counted but never offered — as a numbered list and asks you to pick. A name that
+is not listed is created for you.
+
+A Cognee session never spans two datasets, so the switch:
+
+1. syncs the current session into its dataset (aborts if that fails — nothing changes);
+2. registers a **new** Cognee session on the chosen dataset under a fresh connection handle,
+   then releases the old handle (register-then-unregister, so a local agent-mode server never
+   sees zero connections);
+3. repoints this launch's record so every hook, the shell wrappers, the idle/exit watchers and
+   the in-context status line follow it (it gains a `· switched` tag on the next prompt).
+
+The choice lives in the launch record (`~/.cognee-plugin/codex/sessions/<host id>.json`), so it
+survives a resume and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
+`COGNEE_SESSION_ID`) for the rest of the launch. Retired sessions stay in the record's `touched`
+list and the session-end sync covers them again as a safety net. The script behind the skill is
+`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`,
+`--session-key <host id>` when several launches share a directory).
 
 ## Hooks
 
@@ -195,6 +218,71 @@ An idle watcher runs in the background for the lifetime of each launch. It polls
 | `COGNEE_IMPROVE_BUSY_RETRY_INTERVAL` | `15` | Seconds between re-submits while the session lock is held |
 
 Final sync on session end is triggered by the `SessionEnd` detached worker, with an exit watcher as fallback if the process exits without firing `SessionEnd`.
+
+## Code graph
+
+Repositories can be indexed into a deterministic **code graph** (symbols, calls,
+imports, endpoints, dependencies) via cognee's enola-backed pipeline. Indexing makes
+**no LLM or embedding calls** — it is fast and costs no tokens. Requires a cognee
+server >= 1.5.3.
+
+Opening Codex inside a git repository indexes it automatically at session start
+(background, never blocking the first prompt), and re-indexes it after any turn that
+changed the working tree. Index one explicitly — a different repo, a git URL, or one
+automation declined — with:
+
+```bash
+${CODEX_PLUGIN_ROOT}/scripts/cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+```
+
+Query it with `cognee-search.sh ... --code` (see the `codebase` skill for the
+operations: `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
+`delta`). Prompts that mention an identifier-shaped token inside an indexed repo also
+get code facts injected automatically by the per-prompt recall hook.
+
+Each indexed repository gets its own dataset, named
+`codebase-<repo-name>-<digest>` where the digest identifies the indexed path.
+Narrow datasets keep code searches fast, and the digest matters for
+correctness: with cognee's default backend every dataset is a separate graph
+database, and two checkouts sharing a basename (`~/work/a/service`,
+`~/work/b/service`) landing in one database would let each re-index's
+stale-node sweep delete the other's nodes. `--code` searches resolve the
+dataset from the current checkout, so the generated name rarely needs typing.
+
+Indexing writes enola's snapshot into the indexed repository itself, at
+`<repo>/.enola/` (untracked). Add `.enola/` to the repository's `.gitignore` or
+your global excludes; the plugin's change detection already ignores it, so the
+indexer's own output never triggers a re-index.
+
+### What the graph reflects: working tree vs. pushed commits
+
+**The freshness model differs by where the server runs.** This is a property of the
+architecture, not a limitation to work around — but it is worth knowing which one you
+are using, because the output looks identical either way.
+
+| Server | Indexed from | Graph reflects | Updated by |
+|---|---|---|---|
+| **Local** (default) | The repository path on this machine | Your working tree, **including uncommitted and untracked changes** | Every turn that changes a file |
+| **Cloud / remote** | A git URL the server clones | The **last pushed commit** on the cloned branch | Pushing, then re-indexing |
+
+A remote server cannot read your disk. It only ever sees code you have pushed, so a
+local edit — however recent — is invisible to it until it lands on the remote. The
+plugin therefore does not re-submit URL-indexed repositories after local edits: doing
+so would re-pull the same commits and change nothing.
+
+The practical consequence on cloud: if you refactor locally and ask about the old
+symbol, the graph answers from the pushed state and the answer *looks* authoritative.
+**Push before relying on code answers about work in progress**, or use a local server
+for branches you are actively editing. `{"operation": "delta"}` reports what the last
+index actually changed, which is the quickest way to confirm what the graph currently
+knows.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_CODE_AUTOINDEX` | `auto` | `auto`: auto-index new repositories only when the server is local (code never leaves the machine) · `always`: also auto-index against a remote server · `off`: never auto-index new repositories (explicitly indexed ones still refresh) |
+
+Automatic indexing skips directories that are not git repositories, hold no source
+files, or exceed 3000 source files. Explicit indexing has no size cap.
 
 ## Status visibility
 
@@ -227,10 +315,11 @@ through), `COGNEE_AGENT_SESSION_NAME`, `COGNEE_PLUGIN_IN_VENV` (the re-exec guar
 and `COGNEE_SYNC_DATASET` / `COGNEE_SYNC_SESSION_ID` (arguments to the final-sync
 worker). Setting them yourself does not configure anything — the plugin overwrites
 them during startup — and a stale value can misroute identity or session resolution.
-Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to pin a dataset.
+Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the dataset
+(a mid-session dataset switch overrides both for that launch).
 
 The renderer reads only local state — no network calls on every refresh:
-1. Dataset: `COGNEE_PLUGIN_DATASET` env var, otherwise `agent_sessions`
+1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
 2. Mode: `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` switch, then `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/config.json` (`base_url`)
 3. Default mode: `local`
 
@@ -377,7 +466,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
-| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall (config value is informational-only) |
+| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall at launch; the `cognee-switch-datasets` skill changes it mid-session (config value is informational-only) |
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `codex` | Prefix for auto-generated session IDs |
@@ -402,7 +491,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `agent_sessions`).
+- Recall is scoped to the active dataset (the one in the status line — `COGNEE_PLUGIN_DATASET` / `agent_sessions` at launch, or whatever you switched to).
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 

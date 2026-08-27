@@ -82,7 +82,7 @@ def test_erroring_server_is_busy_not_absent(pc, mock_server):
 
 def test_refused_port_is_absent_after_confirmation(pc, closed_port_url):
     verdict, evidence = pc.server_presence(closed_port_url, probe_timeout=0.2)
-    assert verdict == pc.PRESENCE_ABSENT
+    assert verdict == pc.PRESENCE_ABSENT, evidence
     assert evidence["tcp"] == "refused"
     # Absence was confirmed by the delayed second probe, not assumed from one.
     assert "http_retry" in evidence
@@ -90,7 +90,7 @@ def test_refused_port_is_absent_after_confirmation(pc, closed_port_url):
 
 def test_quick_form_skips_the_confirming_reprobe(pc, closed_port_url):
     verdict, evidence = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
-    assert verdict == pc.PRESENCE_ABSENT
+    assert verdict == pc.PRESENCE_ABSENT, evidence
     assert "http_retry" not in evidence
 
 
@@ -116,8 +116,8 @@ def test_dead_pidfile_cannot_veto_and_is_reaped(pc, closed_port_url):
     dead_pid.wait()
     port = _port_of(closed_port_url)
     pc.write_server_pidfile(port, dead_pid.pid)
-    verdict, _ = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
-    assert verdict == pc.PRESENCE_ABSENT
+    verdict, evidence = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
+    assert verdict == pc.PRESENCE_ABSENT, evidence
     assert not pc._server_pidfile(port).exists()
 
 
@@ -127,8 +127,8 @@ def test_reused_pid_running_something_else_is_ignored(pc, closed_port_url, monke
     port = _port_of(closed_port_url)
     pc.write_server_pidfile(port, os.getpid())
     monkeypatch.setattr(pc, "_pid_looks_like_server", lambda pid: False)
-    verdict, _ = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
-    assert verdict == pc.PRESENCE_ABSENT
+    verdict, evidence = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
+    assert verdict == pc.PRESENCE_ABSENT, evidence
     assert not pc._server_pidfile(port).exists()
 
 

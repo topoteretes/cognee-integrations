@@ -17,8 +17,8 @@ Usage:
     python scripts/check_version_pins.py
 """
 
-import sys
 import re
+import sys
 from pathlib import Path
 
 INTEGRATIONS_DIR = Path(__file__).resolve().parent.parent / "integrations"

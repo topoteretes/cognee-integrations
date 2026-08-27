@@ -24,6 +24,7 @@ import {
   SYNC_INDEX_PATH,
 } from "./persistence.js";
 import { RecallBreaker, isBreakerError } from "./breaker.js";
+import { compileNoisePatterns, isHarnessNoise } from "./noise.js";
 import { cogneeSessionId, datasetNameForScope, isMultiScopeEnabled, normalizeAgentId, routeFileToScope } from "./scope.js";
 import { syncFiles, syncFilesScoped } from "./sync.js";
 import { bootServerIfNeeded, waitForServerHealth, isLocalUrl, resolveOrMintApiKey, spawnExitWatcher, exitWatcherPidfilePath } from "./server.js";
@@ -181,6 +182,17 @@ const memoryCogneePlugin = {
     // Recall circuit breaker — file-backed and shared with the claude-code
     // and codex integrations, so all plugins on this server back off together.
     const recallBreaker = new RecallBreaker(cfg.recallBreakerThreshold, cfg.recallBreakerCooldownMs);
+
+    // Harness-noise filter: heartbeat/cron/system template prompts are host
+    // instructions, not user queries. They must never reach recall (LLM-backed
+    // search per scope, per heartbeat) or QA capture (templates would be
+    // bridged into the permanent graph by improve). ctx.trigger is optional in
+    // the SDK type and absent on older hosts, hence the defensive read.
+    const noiseRegexes = compileNoisePatterns(cfg.noisePatterns, (msg) => api.logger.warn?.(msg));
+    function isNoisePrompt(prompt: string, ctx: unknown): boolean {
+      const trigger = (ctx as { trigger?: string } | null | undefined)?.trigger;
+      return isHarnessNoise(prompt, trigger, noiseRegexes, cfg.noiseTriggers);
+    }
 
     // Prompt-hot-path recall: short per-call timeout (no retries) + breaker
     // bookkeeping. Only unavailability signals (network/timeout/5xx) count as
@@ -960,16 +972,44 @@ const memoryCogneePlugin = {
       return multiScope ? datasetNameForScope("agent", cfg, rawAgentId) : cfg.datasetName;
     }
 
+    // In-flight capture writes, keyed by Cognee session id. Writes are
+    // fire-and-forget from the hook's point of view, but session_end's improve
+    // bridges whatever is in the session cache *at that moment*: if the final
+    // QA's POST is still in flight when /improve arrives, improve bridges an
+    // empty session, reports success, and the turn is stranded in the cache
+    // for good. The live tier hit exactly this on a cold server. session_end
+    // awaits this set (per session) before calling improve.
+    const pendingStores = new Map<string, Set<Promise<void>>>();
+
+    function awaitPendingStores(cogneeSid: string): Promise<void> {
+      const set = pendingStores.get(cogneeSid);
+      if (!set || set.size === 0) return Promise.resolve();
+      return Promise.allSettled([...set]).then(() => {
+        // A store may have been added while we waited (late llm_output).
+        return awaitPendingStores(cogneeSid);
+      });
+    }
+
     function storeEntry(entry: Record<string, unknown>, rawAgentId: string | undefined, hostSessionId: string, kind: string): void {
-      client.rememberEntry({
+      const cogneeSid = cogneeSessionId(hostSessionId);
+      const p: Promise<void> = client.rememberEntry({
         datasetName: captureDatasetName(rawAgentId),
-        sessionId: cogneeSessionId(hostSessionId),
+        sessionId: cogneeSid,
         entry,
       }).then(({ entryId }) => {
         api.logger.debug?.(`cognee-openclaw: ${kind} stored${entryId ? ` (${entryId})` : ""}`);
       }).catch((e: unknown) => {
         api.logger.warn?.(`cognee-openclaw: ${kind} store failed: ${String(e)}`);
+      }).finally(() => {
+        const set = pendingStores.get(cogneeSid);
+        if (set) {
+          set.delete(p);
+          if (set.size === 0) pendingStores.delete(cogneeSid);
+        }
       });
+      let set = pendingStores.get(cogneeSid);
+      if (!set) { set = new Set(); pendingStores.set(cogneeSid, set); }
+      set.add(p);
     }
 
     if (captureEnabled) {
@@ -1023,7 +1063,14 @@ const memoryCogneePlugin = {
     api.on("before_prompt_build", async (event, ctx) => {
       if (cfg.enableSessions && ctx.sessionId) sessionId = ctx.sessionId;
       if (captureEnabled && ctx.sessionId && event.prompt && event.prompt.length >= 5) {
-        pendingPrompts.set(ctx.sessionId, truncateForCapture(event.prompt, MAX_QA_CHARS));
+        if (isNoisePrompt(event.prompt, ctx)) {
+          // Also drop any unanswered earlier prompt: this turn's llm_output
+          // must not pair a stale user question with a harness turn's answer.
+          pendingPrompts.delete(ctx.sessionId);
+          api.logger.debug?.("cognee-openclaw: skipping QA capture (harness noise: heartbeat/cron/system template)");
+        } else {
+          pendingPrompts.set(ctx.sessionId, truncateForCapture(event.prompt, MAX_QA_CHARS));
+        }
       }
       if (cfg.enableSessions && ctx.sessionId) {
         const regKey = `${normalizeAgentId(ctx.agentId, cfg)}::${ctx.sessionId}`;
@@ -1082,6 +1129,11 @@ const memoryCogneePlugin = {
 
         if (!event.prompt || event.prompt.length < 5) {
           api.logger.debug?.("cognee-openclaw: skipping recall (prompt too short)");
+          return;
+        }
+
+        if (isNoisePrompt(event.prompt, ctx)) {
+          api.logger.debug?.("cognee-openclaw: skipping recall (harness noise: heartbeat/cron/system template)");
           return;
         }
 
@@ -1432,7 +1484,25 @@ const memoryCogneePlugin = {
         // unregister can drop activeAgents to 0 and, in COGNEE_AGENT_MODE,
         // shut the server down mid-pipeline.
         if (cfg.improveOnSessionEnd && endSessionId) {
+          // Let this session's in-flight capture writes land first; improve
+          // only bridges what is already in the session cache.
+          await awaitPendingStores(endSessionId);
           const dsName = multiScope ? datasetNameForScope("agent", cfg, endAgentId) : cfg.datasetName;
+          // The dataset must exist before improve bridges into it: servers up
+          // to 1.4.0 skip session persistence (non-fatally, so improve still
+          // reports success) when the name resolves to nothing, and a session
+          // that never triggered an /add is exactly that case. POST /datasets
+          // is create-or-return, so on every server this is at worst a no-op.
+          // Failure here is not fatal — improve gets its own retries below.
+          try {
+            const dsId = await client.ensureDataset(dsName);
+            if (dsId) {
+              const state = await loadDatasetState();
+              if (state[dsName] !== dsId) await saveDatasetState({ ...state, [dsName]: dsId });
+            }
+          } catch (e) {
+            api.logger.warn?.(`cognee-openclaw: ensure dataset "${dsName}" failed (continuing to improve): ${String(e)}`);
+          }
           await withFinalSyncRetries("session-end improve", async () => {
             const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId] });
             api.logger.info?.(`cognee-openclaw: session-end improve dispatched for session ${endSessionId} -> dataset "${dsName}" (status=${result.status ?? "?"})`);

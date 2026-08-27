@@ -361,6 +361,15 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `searchPrompt` | string | `""` | System prompt to guide search |
 | `recallInjectionPosition` | string | `prependContext` | Where recalled memories are injected: `prependSystemContext`, `appendSystemContext`, or `prependContext` |
 
+### Harness-noise filter
+
+OpenClaw drives agents with synthetic prompts the user never typed: heartbeat probes (`Read HEARTBEAT.md if it exists…`), cron payloads, and `System: …` event lines. Those are host instructions, not memory queries, so the plugin excludes them from auto-recall (which would otherwise run an LLM-backed search per scope, per heartbeat) and from QA capture (which would bridge the templates into the permanent graph via `/improve`). Filtering is two-layered: runs whose hook context carries a matching `trigger` are always filtered; prompts matching a shape pattern are filtered even without a trigger. Session registration and tool-call trace capture are unaffected.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `noiseTriggers` | string[] | `["heartbeat","cron"]` | `ctx.trigger` values treated as harness turns. `[]` disables this layer |
+| `noisePatterns` | string[] | `["^Read HEARTBEAT\\.md", "^System:\\s", "^\\[cron\\b"]` | Regexes matched against the prompt (leading whitespace stripped). Replaces the defaults when set; `[]` disables this layer |
+
 ### Search Types
 
 | Type | Description |
@@ -498,6 +507,25 @@ real Cognee on the conventional port holding real data, and a tier that defaulte
 to it would write into that graph. Naming the server is the consent. Each run
 invents a `live_<uuid>` dataset and deletes only that namespace afterwards — never
 delete-everything, because the target may hold real data.
+
+Or let the plugin boot one, the way the nightly does — this exercises the real
+first-run path (`ensure_and_boot.py`, the venv, the cognee pinned in
+`src/server.ts`, uvicorn) and mints its own key:
+
+```bash
+COGNEE_RUN_LIVE=1 \
+COGNEE_LIVE_ALLOW_BUILD=1 \
+COGNEE_LIVE_BASE_URL=http://127.0.0.1:9100 \
+LLM_API_KEY=... LLM_MODEL=openai/gpt-4o-mini \
+npm run test:live
+```
+
+Only for a loopback URL nothing answers at. The venv is built under the jest
+sandbox HOME by default, so it never touches your shared `~/.cognee-plugin/venv`;
+set `COGNEE_LIVE_SERVER_HOME=/some/dir` to reuse one across runs (CI sets it to
+the runner's home so the venv can be cached). `COGNEE_LIVE_VERBOSE=1` mirrors
+the plugin's log lines to the console — the harness logger is otherwise a silent
+`jest.fn()`, and a recall timeout with no plugin log is undiagnosable.
 
 Two things that cost time to learn, both worth knowing before adding tests:
 

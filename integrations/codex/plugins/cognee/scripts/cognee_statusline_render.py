@@ -66,13 +66,40 @@ _DEFAULT_DATASET = "agent_sessions"
 _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 
 
-def _active_dataset() -> str:
-    # 1. env var (inherited from the shell that launched Codex)
+_SESSIONS_DIR = _SHARED_ROOT / "codex" / "sessions"
+
+
+def _launch_record(host_id: str) -> dict:
+    """This launch's record (``sessions/<host id>.json``), or {}.
+
+    The host session key handed to the renderer is the same key SessionStart
+    files the record under, so the bar reads the dataset the launch is actually
+    writing to — including one chosen with the ``cognee-switch-datasets`` skill.
+    """
+    if not _path_safe(host_id):
+        return {}
+    return _read_json(_SESSIONS_DIR / f"{host_id}.json")
+
+
+def _active_dataset(host_id: str = "") -> str:
+    # 1. the launch record (authoritative once SessionStart has run; switchable)
+    recorded = str(_launch_record(host_id).get("dataset") or "").strip()
+    if recorded:
+        return recorded
+    # 2. env var (inherited from the shell that launched Codex)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. default
+    # 3. default
     return _DEFAULT_DATASET
+
+
+def _switched_marker(host_id: str = "") -> str:
+    """A plain ``· switched`` tag once the launch left its launch-time dataset
+    (this bar goes into the model's context, so no styling)."""
+    if _launch_record(host_id).get("switched_at"):
+        return " · switched"
+    return ""
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
@@ -520,7 +547,8 @@ def render_status_for_host(host_id: str) -> str:
     LLM-key verdicts written by this session (the marker is machine-wide)."""
     return (
         f"{_pipeline_health_glyph()}{_status_prefix(str(host_id or ''))}"
-        f"cognee: {_active_dataset()} · {_active_mode()}"
+        f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
+        f"{_switched_marker(str(host_id or ''))}"
         f"{_credits_segment()}{_update_segment()}"
     )
 
@@ -540,13 +568,19 @@ def main() -> None:
         except Exception:
             pass
 
+    ctx: dict = {}
     try:
-        json.load(sys.stdin)  # consume stdin as required by the host
+        ctx = json.load(sys.stdin)  # consume stdin as required by the host
     except Exception:
-        pass
+        ctx = {}
+    if not isinstance(ctx, dict):
+        ctx = {}
+    # The host session id (when the context carries one) selects this launch's
+    # record, so the dataset shown follows a switch.
+    host_id = str(ctx.get("session_id") or ctx.get("thread_id") or "")
     sys.stdout.write(
         f"{_pipeline_health_glyph()}{_status_prefix()}"
-        f"cognee: {_active_dataset()} · {_active_mode()}"
+        f"cognee: {_active_dataset(host_id)} · {_active_mode()}{_switched_marker(host_id)}"
         f"{_credits_segment()}{_update_segment()}"
     )
 

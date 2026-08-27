@@ -40,12 +40,14 @@ from _plugin_common import (
     apply_cognee_env,
     clear_server_pidfile,
     ensure_launch_record,
+    get_session_key,
     hook_log,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
     server_presence,
     server_ready_hint,
+    service_url_is_local,
     set_session_key,
     touch_activity,
     write_connection_state,
@@ -103,7 +105,7 @@ _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.5.0"
+_PINNED_COGNEE_VERSION = "1.5.3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Install single-flight. Distinct from the server boot lock (which is short, on
@@ -1138,6 +1140,24 @@ async def _run_heavy(
     elif service_url and probe_health(service_url, timeout=1.5) == "ready":
         write_connection_state("ready", service_url)
 
+    # Code graph: index the repository this session opened in, or refresh it if
+    # the tree moved while the agent was away. Deliberately last and inside the
+    # detached worker — it must never delay the first prompt — and best-effort:
+    # a failure here costs code facts, not the session.
+    try:
+        from _code_graph import autoindex_on_session_start
+
+        code_outcome = autoindex_on_session_start(
+            cwd,
+            service_url,
+            os.environ.get("COGNEE_API_KEY", ""),
+            is_local_server=service_url_is_local(service_url),
+        )
+        if code_outcome:
+            hook_log("code_autoindex", code_outcome)
+    except Exception as exc:
+        hook_log("code_autoindex_error", {"error": str(exc)[:200]})
+
     return user_id, agent_api_key, True
 
 
@@ -1429,6 +1449,13 @@ async def _start(payload: dict | None = None) -> dict:
     session_candidate, session_source = resolve_session_key_from_payload(payload)
     session_key = set_session_key(session_candidate)
     if not session_key:
+        # The mid-bootstrap venv re-exec (_run_heavy) replays this script after
+        # stdin was already consumed, so the payload is gone — but the pre-exec
+        # run exported COGNEE_SESSION_KEY, which execv preserves.
+        session_key = get_session_key()
+        if session_key:
+            session_source = "env_session_key"
+    if not session_key:
         hook_log("missing_payload_session_id", {"cwd": cwd, "payload": payload})
         print(
             "cognee-plugin: missing payload session_id; refusing to register",
@@ -1445,9 +1472,22 @@ async def _start(payload: dict | None = None) -> dict:
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
     # synchronously here so prompt hooks read back the identical ids before any run.
-    session_id, conn_uuid = ensure_launch_record(session_key, cwd)
+    # The record also seeds the launch's active dataset (env/default) and stores
+    # the host pid + cwd so switch-dataset.py, which runs under the shell tool
+    # with no hook payload, can find this launch. A resumed record keeps the
+    # dataset it already has — including one chosen by a switch.
+    session_id, conn_uuid = ensure_launch_record(
+        session_key,
+        cwd,
+        dataset=str(config.get("dataset", "") or "").strip(),
+        host_pid=_find_claude_parent_pid(),
+    )
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
+    dataset = get_dataset(config)
+    # Registration and the bootstrap worker read the dataset off config: keep it
+    # in step with the record so a resumed, switched launch re-binds correctly.
+    config["dataset"] = dataset
     hook_log(
         "session_resolved",
         {
@@ -1455,9 +1495,9 @@ async def _start(payload: dict | None = None) -> dict:
             "session_key": session_key,
             "session_id": session_id,
             "conn_uuid": conn_uuid,
+            "dataset": dataset,
         },
     )
-    dataset = get_dataset(config)
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)
