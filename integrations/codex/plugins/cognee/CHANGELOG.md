@@ -10,7 +10,7 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.5.1]
 
 ### Changed
 - **Memory header in plain words, plus a per-session total.** The
@@ -25,7 +25,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   total is accumulated by `session-context-lookup.py` in `last_recall.json`
   (`session_totals`, stamped with `session_key` so another terminal's count is
   never continued); `cross_session_hits` is written alongside. Mirrors the
-  Claude Code status-line change. (SDK-437)
+  Claude Code status-line change.
 
 ## [1.5.0]
 
@@ -100,7 +100,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - **Pinned cognee bumped to 1.5.3** (`_PINNED_COGNEE_VERSION` in
   `session-start.py`). 1.5.3 carries the session-invalidation work the forget
-  skill depends on (COG-5947/COG-5835): deleting a document now also removes
+  skill depends on: deleting a document now also removes
   the session Q&A turns whose answers cited the deleted graph elements, the
   feedback and distilled guidance descending from them, and clamps the persist
   watermark to the surviving entry count so post-delete turns are not silently

@@ -10,7 +10,7 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.4.1]
 
 ### Changed
 - **Status line: memory hits in plain words, plus a per-session total.** The
@@ -25,7 +25,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (`recall/<session>.json`, `session_totals`), so it costs no extra call, resets
   on `/clear` and continues across `--resume`. `COGNEE_STATUSLINE_COUNTS=full`
   restores the per-scope diagnostic strip; `false` still hides the segment.
-  (SDK-437)
 
 ## [1.4.0]
 
@@ -107,7 +106,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - **Pinned cognee bumped to 1.5.3** (`_PINNED_COGNEE_VERSION` in
   `session-start.py`). 1.5.3 carries the session-invalidation work the forget
-  skill depends on (COG-5947/COG-5835): deleting a document now also removes
+  skill depends on: deleting a document now also removes
   the session Q&A turns whose answers cited the deleted graph elements, the
   feedback and distilled guidance descending from them, and clamps the persist
   watermark to the surviving entry count so post-delete turns are not silently
@@ -198,7 +197,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   user question at compaction time) and the server matches nothing on one, so no
   session or trace entries come back and no anchor is printed. Per-prompt recall
   is unaffected — this costs the summary carried across a compaction, not memory
-  itself. Tracked as SDK-424; the fix is server-side.
+  itself. The fix is server-side.
 
 ## [1.3.1]
 
