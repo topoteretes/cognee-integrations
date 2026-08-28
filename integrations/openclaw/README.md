@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://www.cognee.ai">
-    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="cognee" width="220">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="cognee" width="260">
   </a>
   <p><strong>Cognee memory for OpenClaw</strong> — persistent, multi-scope memory with automatic recall and capture for your OpenClaw agents.</p>
 </div>

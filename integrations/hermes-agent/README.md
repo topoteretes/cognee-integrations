@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://www.cognee.ai">
-    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="cognee" width="220">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="cognee" width="260">
   </a>
   <p><strong>Cognee memory for Hermes Agent</strong> — persistent, graph-backed memory with session recall, durable remember/forget, and automatic capture for your Hermes agents.</p>
 </div>
