@@ -382,17 +382,17 @@ Both cases show the same reason — the fix is the same either way, and `llm-sta
 | `COGNEE_LLM_KEY_CHECK` | `true` | Background, provider-agnostic `LLM_API_KEY` validation (local mode) surfacing `✕ (incorrect_llm_api_key)` |
 | `COGNEE_LLM_CHECK_INTERVAL` | `300` | Minimum seconds between LLM-key checks |
 
-**Recall counts.** The line ends with what memory actually did, faint so it stays secondary:
+**Memory hits.** The line ends with what memory actually did — this turn, then (faint) over the session:
 
 ```
-● cognee: agent_sessions · local · recall 4s/5t/0g/1a · saved 2p/41t/2a
+● cognee: agent_sessions · local · 5 memory hits (3 from past sessions) · 12/40 turns had hits this session
 ```
 
-`recall` is what this turn's lookup found — `s`ession turns, `t`races, `g`raph context, `a`gent guidance — and `saved` is what the *previous* turn persisted: `p`rompts, `t`races, `a`nswers. These are the same numbers the Codex plugin puts in the `Cognee memory: recall …` header it injects into model context; on Claude Code they live in the bar instead. `UserPromptSubmit` already writes them to `~/.cognee-plugin/claude-code/last_recall.json`, so the renderer stays network-free, and the counts are stamped with the session that produced them so a second terminal's numbers never show up here. Hide them with `COGNEE_STATUSLINE_COUNTS=false`.
+`5 memory hits` is how many memories this turn's lookup found and injected into context (across session turns, traces, graph context and agent guidance). `3 from past sessions` is the part of that Claude could not have known from this conversation: knowledge-graph passages that came from an earlier session (or from a `remember`-ed document) rather than from this session's own cache — omitted when zero. `12/40 turns had hits this session` is the running total — 40 prompts so far, memory fired on 12 of them. A session that has not had a single hit yet shows `memory warming up (7 turns)` instead of a bare `0/7`: the graph is usually still filling up. `UserPromptSubmit` writes these to `~/.cognee-plugin/claude-code/recall/<session>.json`, so the renderer stays network-free, and the counts are stamped with the session that produced them so a second terminal's numbers never show up here. The per-scope breakdown (`recall 4s/5t/0g/1a · saved 2p/41t/2a` — `s`ession turns, `t`races, `g`raph context, `a`gent guidance; saves as `p`rompts, `t`races, `a`nswers) is still available with `COGNEE_STATUSLINE_COUNTS=full`; hide the segment with `false`.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Show the trailing `recall …/saved …` counts |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | `true`: `N memory hits · H/T turns had hits this session`; `full`: per-scope `recall …/saved …` strip; `false`: hidden |
 
 **Per-terminal status.** Every signal in the line answers *for this terminal*, not for the machine. That matters because terminals legitimately disagree: one shell exported `LLM_API_KEY` and another didn't, or two hold different `COGNEE_API_KEY`s against the same server. Both sessions show the truth at the same time:
 

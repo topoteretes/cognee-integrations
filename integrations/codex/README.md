@@ -104,6 +104,14 @@ You can also set config in `~/.cognee-plugin/config.json`:
 
 On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to confirm the plugin is active.
 
+Every prompt's recalled context opens with a one-line memory header:
+
+```
+Cognee memory: 5 memory hits (3 from past sessions) · 12/40 turns had hits this session · saved last turn 1 prompt / 3 trace / 1 answer
+```
+
+`5 memory hits` is how many memories this turn's lookup found and injected (across session turns, traces, graph context and agent guidance); `3 from past sessions` is the part the model could not have known from this conversation — knowledge-graph passages from an earlier session or a `remember`-ed document (omitted when zero); `12/40 turns had hits this session` is the running total, reading `memory warming up (7 turns)` until the first hit; `saved last turn` is what the previous turn persisted. The counts are also written to `~/.cognee-plugin/codex/last_recall.json`.
+
 ## Auth
 
 The integration uses a **single auth principal** — one API key, one user. No per-agent credentials.

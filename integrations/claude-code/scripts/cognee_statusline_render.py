@@ -609,53 +609,111 @@ def _llm_prefix(session_id: str = "") -> str:
     return ""
 
 
-def _recall_segment(session_id: str) -> str:
-    """Dim 'what memory did on the last turn' counts, or '' — read from the marker.
-
-    ``session-context-lookup`` already writes ``last_recall.json`` on every prompt
-    (hits per scope + what the previous turn persisted) precisely so the status line
-    can show them; this is the Claude Code counterpart of the ``Cognee memory:
-    recall …`` header Codex injects into model context.
+def _recall_marker(session_id: str) -> dict:
+    """This session's recall marker, or {} when nothing attributable exists.
 
     Per session: ``recall/<session_key>.json`` is this session's own copy, so with
     several terminals open each bar shows its own numbers. The machine-wide
     ``last_recall.json`` (written for ``cognee_plugin.py``) is the fallback for hooks
     that predate the per-session copy, and is only trusted when it is unattributed or
-    stamped with our session — a neighbour's counts must never appear here.
-
-    Faint (`\\033[2m`) so it sits below the health glyph and dataset in the visual
-    hierarchy; the reset prevents color bleed.
+    stamped with our session — a neighbour's counts must never appear here. The
+    fallback carries no ``session_totals``: a cumulative number is only meaningful
+    from the session that accumulated it.
     """
-    if os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower() in (
-        "0",
-        "false",
-        "no",
-        "off",
-    ):
-        return ""
     marker = _read_json(_RECALL_DIR / f"{session_id}.json") if _path_safe(session_id) else {}
-    if not isinstance(marker.get("hits"), dict):
-        marker = _read_json(_RECALL_PATH)
-        marked_key = str(marker.get("session_key") or "")
-        if session_id and marked_key and session_id != marked_key:
-            return ""
+    if isinstance(marker.get("hits"), dict):
+        return marker
+    marker = _read_json(_RECALL_PATH)
+    marked_key = str(marker.get("session_key") or "")
+    if session_id and marked_key and session_id != marked_key:
+        return {}
+    marker.pop("session_totals", None)
+    return marker
+
+
+def _int(mapping, key) -> int:
+    try:
+        return int(mapping.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _recall_segment(session_id: str) -> str:
+    """What memory did — this turn and over the session — or '' when unknown.
+
+    ``session-context-lookup`` writes the recall marker on every prompt (hits per
+    scope, what the previous turn persisted, and a per-session running total)
+    precisely so the status line can show it without any network call.
+
+    Default rendering, per turn at normal weight and the session total faint::
+
+        · 5 memory hits (3 from past sessions) · 12/40 turns had hits this session
+
+    ``from past sessions`` counts the graph passages not stamped with this
+    session's id (see ``_count_cross_session_hits`` in the lookup hook) —
+    the part of the hit that no amount of scrolling back would have given
+    Claude. It is omitted when zero.
+
+    A session that has not had a single hit yet says so instead of showing a
+    bare ``0/7`` (the graph is usually still filling up)::
+
+        · 0 memory hits · memory warming up (7 turns)
+
+    The per-turn number is the sum over every scope that returned something and
+    was injected (session turns, traces, graph context, agent guidance, code).
+    The per-scope diagnostic strip ``recall 4s/5t/0g/1a · saved 2p/41t/2a`` is
+    still available with ``COGNEE_STATUSLINE_COUNTS=full``; ``false`` hides the
+    segment entirely.
+    """
+    mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
+    if mode in ("0", "false", "no", "off"):
+        return ""
+    marker = _recall_marker(session_id)
     hits = marker.get("hits")
     if not isinstance(hits, dict):
         return ""
+    if mode == "full":
+        return _recall_diagnostic_segment(marker, hits)
 
-    def _n(mapping, key) -> int:
-        try:
-            return int(mapping.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            return 0
+    total = sum(_int(hits, key) for key in hits)
+    out = f" · {_plural(total, 'memory hit')}"
+    # Of those, the ones this conversation could not have produced: graph
+    # passages from earlier sessions (or remembered documents). This is the
+    # plugin's distinctive contribution, so it rides along at normal weight.
+    cross = min(_int(marker, "cross_session_hits"), total)
+    if cross == 1:
+        out += " (1 from a past session)"
+    elif cross > 1:
+        out += f" ({cross} from past sessions)"
 
+    totals = marker.get("session_totals")
+    if isinstance(totals, dict):
+        turns = _int(totals, "turns")
+        with_hits = _int(totals, "turns_with_hits")
+        if turns > 0:
+            if with_hits > 0:
+                cumulative = f"{with_hits}/{turns} turns had hits this session"
+            else:
+                cumulative = f"memory warming up ({_plural(turns, 'turn')})"
+            out += f" \033[2m· {cumulative}\033[0m"
+    return out
+
+
+def _recall_diagnostic_segment(marker: dict, hits: dict) -> str:
+    """The per-scope strip (``COGNEE_STATUSLINE_COUNTS=full``): hits per scope and
+    what the previous turn persisted, faint so it sits below the health glyph and
+    dataset in the visual hierarchy; the reset prevents color bleed."""
     recall = (
-        f"{_n(hits, 'session')}s/{_n(hits, 'trace')}t/"
-        f"{_n(hits, 'graph_context')}g/{_n(hits, 'session_context')}a"
+        f"{_int(hits, 'session')}s/{_int(hits, 'trace')}t/"
+        f"{_int(hits, 'graph_context')}g/{_int(hits, 'session_context')}a"
     )
     saves = marker.get("saves_last_turn")
     if isinstance(saves, dict):
-        saved = f"{_n(saves, 'prompt')}p/{_n(saves, 'trace')}t/{_n(saves, 'answer')}a"
+        saved = f"{_int(saves, 'prompt')}p/{_int(saves, 'trace')}t/{_int(saves, 'answer')}a"
         return f" \033[2m· recall {recall} · saved {saved}\033[0m"
     return f" \033[2m· recall {recall}\033[0m"
 
