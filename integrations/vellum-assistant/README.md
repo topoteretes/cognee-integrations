@@ -1,8 +1,13 @@
 <div align="center">
   <a href="https://www.cognee.ai">
-    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="cognee" width="260">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="Cognee" width="260">
   </a>
   <p><strong>Cognee memory for Vellum Assistant</strong> — session-aware knowledge-graph memory with auto-routing recall and persistent learning across sessions.</p>
+  <p>
+    <a href="https://docs.cognee.ai">Docs</a> ·
+    <a href="https://discord.gg/NQPKmU5CCg">Discord</a> ·
+    <a href="https://github.com/topoteretes/cognee">Cognee core</a>
+  </p>
 </div>
 
 # Cognee Plugin for Vellum Assistant
