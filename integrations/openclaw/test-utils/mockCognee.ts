@@ -48,6 +48,8 @@ const DEFAULT_RESPONSES: Record<string, unknown> = {
   "POST /auth/api-keys": { key: "minted-api-key" },
   "GET /health": { status: "ok" },
   "GET /datasets": [{ id: "ds-1", name: "testds" }],
+  // Create-or-return by name; the plugin calls it before session-end improve.
+  "POST /datasets": { id: "ds-1", name: "testds" },
   "POST /add": { datasetId: "ds-1" },
   "POST /remember": { datasetId: "ds-1", items: [] },
   "POST /remember/entry": { entryId: "e1" },

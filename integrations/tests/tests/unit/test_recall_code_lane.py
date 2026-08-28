@@ -77,9 +77,13 @@ def test_identifier_outside_an_indexed_repo_does_not_arm(lookup, monkeypatch, tm
     assert run.calls == STANDARD
 
 
-def test_header_shape_is_unchanged_when_the_lane_is_off(lookup, monkeypatch):
+def test_header_shape_is_unchanged_when_the_lane_is_off(suite, lookup, monkeypatch):
     """The one-line header is parsed downstream; adding a code counter to every
-    turn would change a line that most turns have no code content for."""
+    turn would change a line that most turns have no code content for.
+
+    claude-code's header still lists every scope (``… / N graph / …``); codex's
+    reads in plain words (``N memory hits · … turns had hits this session``).
+    """
     run = drive_recall(
         lookup,
         monkeypatch,
@@ -88,7 +92,10 @@ def test_header_shape_is_unchanged_when_the_lane_is_off(lookup, monkeypatch):
     )
     header = _header(run.output)
     assert "code" not in header
-    assert "session" in header and "graph" in header
+    if suite.name == "codex":
+        assert "memory hit" in header and "turns had hits this session" in header
+    else:
+        assert "session" in header and "graph" in header
 
 
 # ── the lane fires ─────────────────────────────────────────────────────────

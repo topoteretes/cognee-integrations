@@ -309,3 +309,37 @@ describe("memory verbs send what the server expects", () => {
     ]);
   });
 });
+
+describe("forget-tool server calls", () => {
+  it("listDatasetData maps the camelCased DataDTO and tolerates snake_case", async () => {
+    mock.forceResponse("GET", "/datasets/ds-1/data", 200, [
+      { id: "d1", name: "sess.txt", createdAt: "2026-08-20T10:00:00Z", mimeType: "text/plain", datasetId: "ds-1", externalMetadata: { session_id: "s-1" } },
+      { id: "d2", name: "old.txt", created_at: "2026-08-01T00:00:00Z", dataset_id: "ds-1" },
+      { name: "no-id" },
+    ], true);
+
+    const items = await localClient().listDatasetData("ds-1");
+    expect(items).toEqual([
+      { id: "d1", name: "sess.txt", datasetId: "ds-1", createdAt: "2026-08-20T10:00:00Z", mimeType: "text/plain", externalMetadata: { session_id: "s-1" } },
+      { id: "d2", name: "old.txt", datasetId: "ds-1", createdAt: "2026-08-01T00:00:00Z" },
+    ]);
+    expect(mock.calls.map((c) => c.rawPath)).toEqual(["/api/v1/datasets/ds-1/data"]);
+  });
+
+  it("readRawData fetches the raw route as text and honours maxChars", async () => {
+    mock.forceResponse("GET", "/datasets/ds-1/data/d1/raw", 200, "Session ID: s-1\nhello world", true);
+    const text = await localClient().readRawData("ds-1", "d1", 20);
+    // The mock always JSON-encodes bodies, so the text arrives quoted; what
+    // matters here is the route, the text parser, and the cap.
+    expect(text).toHaveLength(20);
+    expect(text).toContain("Session ID: s-1");
+    expect(mock.calls.map((c) => c.rawPath)).toEqual(["/api/v1/datasets/ds-1/data/d1/raw"]);
+  });
+
+  it("forget by datasetId sends dataset_id + data_id (never the name), one document only", async () => {
+    const result = await localClient().forget({ datasetId: "ds-1", dataId: "d1" });
+    expect(result).toEqual({ datasetId: "ds-1", dataId: "d1", deleted: true });
+    const call = mock.assertCalled("POST", "/forget");
+    expect(call.json).toEqual({ dataset_id: "ds-1", data_id: "d1" });
+  });
+});

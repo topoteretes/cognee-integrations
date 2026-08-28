@@ -26,10 +26,43 @@
  * directory.
  */
 
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * Where the plugin — and, through `bootServerIfNeeded`, the server it boots —
+ * keeps its state for this run. Overrides the suite-wide sandbox from
+ * `jest.setup.ts` for one reason: when this tier boots a server, the venv it
+ * builds is worth keeping. CI sets `COGNEE_LIVE_SERVER_HOME` to the runner's home
+ * so the cache step finds the venv; a developer can point it at a scratch dir to
+ * reuse a build across runs. Unset, it is a fresh temp dir like every other test
+ * file's — never the real home, whose `~/.cognee-plugin/venv` the boot script
+ * would otherwise `pip install --upgrade` the plugin's pin over.
+ */
+/**
+ * The hermetic tiers map the plugin SDK's sandbox to a stub that "runs" commands
+ * by returning exit 0. Booting a server needs the command to actually run — see
+ * `test-utils/realSandbox.ts` for the full story. Live tier only; every other
+ * test keeps the stub, and with it the guarantee that no test installs anything.
+ */
+jest.mock("openclaw/plugin-sdk/sandbox", () => jest.requireActual("../../test-utils/realSandbox"));
+
+jest.mock("node:os", () => {
+  const actual = jest.requireActual<typeof import("node:os")>("node:os");
+  const { mkdtempSync } = jest.requireActual<typeof import("node:fs")>("node:fs");
+  const { join: joinPath } = jest.requireActual<typeof import("node:path")>("node:path");
+  const chosen =
+    (process.env.COGNEE_LIVE_SERVER_HOME ?? "").trim() ||
+    mkdtempSync(joinPath(actual.tmpdir(), "cognee-openclaw-live-home-"));
+  return { ...actual, homedir: () => chosen };
+});
+
 import plugin from "../../src/plugin";
 import { createPluginApi, flush } from "../../test-utils/fakeApi";
 import {
   deleteTestDatasets,
+  liveAllowBuild,
   liveConfig,
   liveEnabled,
   liveSkipReason,
@@ -55,23 +88,105 @@ if (!enabled) {
 let cfg: LiveConfig;
 
 /**
+ * The harness that booted the server, when this run did the booting.
+ *
+ * Held open for the whole suite on purpose: the plugin boots the server in
+ * `COGNEE_AGENT_MODE`, where it shuts itself down once the last registered agent
+ * leaves. Every test registers and unregisters its own anchor, so without one
+ * anchor that outlives them the server would exit between tests. `afterAll`
+ * releases it last, which is also what takes the server down again.
+ */
+let bootHarness: ReturnType<typeof liveHarness> | undefined;
+
+/**
+ * Boot a server through the plugin's own first-run path and mint a key for it.
+ *
+ * This is `gateway_start` doing what it does for a new user — write
+ * `ensure_and_boot.py`, build the venv, install the pinned cognee, start uvicorn,
+ * wait for `/health`, mint an API key — driven by the test instead of OpenClaw.
+ * Nothing here is test-only code; that is the point of using it: the nightly then
+ * covers the install path and the shipped server version, which pointing at a
+ * pre-booted server of someone else's pin never did.
+ */
+async function bootServerViaPlugin(): Promise<string> {
+  const home = homedir(); // the mock above; also the HOME the boot script gets
+  // `gateway_start` catches every boot failure and returns, so success is judged
+  // by health afterwards, not by the emit resolving.
+  bootHarness = liveHarness();
+  await bootHarness.emit("gateway_start", {}, {});
+  await flush();
+  if ((await serverHealth(cfg)) !== 200) {
+    throw new Error(
+      `plugin could not boot a Cognee at ${cfg.baseUrl} (home=${home}).\n` +
+        `plugin log:\n  ${pluginLog(bootHarness).slice(-30).join("\n  ")}`,
+    );
+  }
+  // gateway_start cached the key it resolved or minted where the plugin's own
+  // persistence puts it.
+  const raw = await readFile(join(home, ".cognee-plugin", "api_key.json"), "utf-8");
+  const key = String((JSON.parse(raw) as { api_key?: string }).api_key ?? "");
+  if (!key) throw new Error("plugin booted the server but minted no API key");
+  return key;
+}
+
+/**
  * Build a plugin harness wired to the live server.
  *
  * `autoIndex` stays off so a test is not racing a workspace sync it never asked
  * for; `enableSessions`/`captureSession` are the features under test.
  */
 function liveHarness(overrides: Record<string, unknown> = {}) {
-  return createPluginApi(plugin, {
-    baseUrl: cfg.baseUrl,
-    apiKey: cfg.apiKey,
-    mode: cfg.mode,
-    datasetName: cfg.dataset,
-    autoIndex: false,
-    autoRecall: true,
-    enableSessions: true,
-    captureSession: true,
-    ...overrides,
-  });
+  return tapLogger(
+    createPluginApi(plugin, {
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+      mode: cfg.mode,
+      datasetName: cfg.dataset,
+      autoIndex: false,
+      autoRecall: true,
+      enableSessions: true,
+      captureSession: true,
+      ...overrides,
+    }),
+  );
+}
+
+/**
+ * The harness logger is a bare `jest.fn()`, so nothing the plugin says reaches
+ * the CI log — the first nightly failures were undiagnosable for exactly that
+ * reason ("graph never returned…" with no hint of what improve had answered).
+ * With `COGNEE_LIVE_VERBOSE=1` every plugin line is mirrored to the console;
+ * either way `pluginLog()` can attach them to an assertion failure.
+ */
+function tapLogger<T extends { logger: Record<string, unknown> }>(harness: T): T {
+  if (!["1", "true", "yes"].includes((process.env.COGNEE_LIVE_VERBOSE ?? "").trim().toLowerCase())) {
+    return harness;
+  }
+  for (const [level, fn] of Object.entries(harness.logger)) {
+    (fn as jest.Mock).mockImplementation((...args: unknown[]) => {
+      // eslint-disable-next-line no-console
+      console.log(`[plugin:${level}] ${args.map(String).join(" ")}`);
+    });
+  }
+  return harness;
+}
+
+/** Every line the plugin has logged on this harness, oldest first. */
+function pluginLog(harness: { logger: Record<string, unknown> }): string[] {
+  return Object.entries(harness.logger).flatMap(([level, fn]) =>
+    ((fn as jest.Mock).mock?.calls ?? []).map((call) => `[${level}] ${call.map(String).join(" ")}`),
+  );
+}
+
+/** Run `fn`; on failure, append the plugin's own log so the error says why. */
+async function withPluginLog<T>(harness: { logger: Record<string, unknown> }, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    const lines = pluginLog(harness);
+    const tail = lines.slice(-40).join("\n  ");
+    throw new Error(`${String(error)}\n\nplugin log (${lines.length} lines, last 40):\n  ${tail}`);
+  }
 }
 
 /**
@@ -86,7 +201,12 @@ function liveHarness(overrides: Record<string, unknown> = {}) {
  */
 async function turn(
   harness: ReturnType<typeof liveHarness>,
-  { prompt, answer, sessionId }: { prompt: string; answer: string; sessionId: string },
+  {
+    prompt,
+    answer,
+    sessionId,
+    expectStoreFailure = false,
+  }: { prompt: string; answer: string; sessionId: string; expectStoreFailure?: boolean },
 ): Promise<void> {
   const ctx = { agentId: "will", sessionId };
   await harness.emit("before_prompt_build", { prompt }, ctx);
@@ -100,6 +220,14 @@ async function turn(
   // POST that on a cold server can outlast session_end's improve, which then
   // bridges an empty session and the turn is lost for good. Wait for the plugin
   // to report the QA row stored — the first nightly failure was exactly this race.
+  //
+  // The outage scenario is the one caller that *wants* the store to fail: there
+  // the assertion is that the plugin degraded (warned) rather than threw, so wait
+  // for the failure line instead of treating it as fatal.
+  if (expectStoreFailure) {
+    await waitForLog(harness, /qa store failed/, "qa capture (expected to fail)", 60_000, false);
+    return;
+  }
   await waitForLog(harness, /qa stored/, "qa capture");
 }
 
@@ -112,14 +240,13 @@ async function waitForLog(
   re: RegExp,
   what: string,
   deadlineMs = 60_000,
+  failOnStoreError = true,
 ): Promise<void> {
   const end = Date.now() + deadlineMs;
   while (Date.now() < end) {
-    const lines = Object.values(harness.logger)
-      .flatMap((fn) => (fn as jest.Mock).mock?.calls ?? [])
-      .map((call) => call.map(String).join(" "));
+    const lines = pluginLog(harness);
     if (lines.some((l) => re.test(l))) return;
-    if (lines.some((l) => /store failed/.test(l))) {
+    if (failOnStoreError && lines.some((l) => /store failed/.test(l))) {
       throw new Error(`${what} failed on the server side: ${lines.find((l) => /store failed/.test(l))}`);
     }
     await new Promise((r) => setTimeout(r, 100));
@@ -130,9 +257,21 @@ async function waitForLog(
 suite("live memory chain", () => {
   beforeAll(async () => {
     cfg = liveConfig();
-    const health = await serverHealth(cfg);
+    let health = await serverHealth(cfg);
+    if (health !== 200 && liveAllowBuild() && cfg.mode === "local") {
+      // eslint-disable-next-line no-console
+      console.log(`[live] nothing at ${cfg.baseUrl}; COGNEE_LIVE_ALLOW_BUILD set — booting via the plugin`);
+      const minted = await bootServerViaPlugin();
+      if (!cfg.apiKey) cfg.apiKey = minted;
+      health = await serverHealth(cfg);
+    }
     if (health !== 200) {
-      throw new Error(`no healthy Cognee at ${cfg.baseUrl} (/health -> ${health}); refusing to run`);
+      throw new Error(
+        `no healthy Cognee at ${cfg.baseUrl} (/health -> ${health}); refusing to run` +
+          (cfg.mode === "local" && !liveAllowBuild()
+            ? " (set COGNEE_LIVE_ALLOW_BUILD=1 to let the plugin boot one there)"
+            : ""),
+      );
     }
     // Clear residue from a run that was killed before its teardown.
     const [deleted] = await deleteTestDatasets(cfg);
@@ -142,6 +281,12 @@ suite("live memory chain", () => {
 
   afterAll(async () => {
     const [deleted, failures] = await deleteTestDatasets(cfg);
+    // Last out: with the datasets gone, releasing the boot anchor lets the
+    // agent-mode server shut itself down.
+    if (bootHarness) {
+      await bootHarness.emit("gateway_stop", {}, {});
+      await flush();
+    }
     // Never fail the run over cleanup — a red tier should mean the product broke.
     // But say so loudly: silent cleanup failure is how a server fills up.
     // eslint-disable-next-line no-console
@@ -176,7 +321,9 @@ suite("live memory chain", () => {
       await waitForLog(harness, /session-end improve dispatched/, "session-end improve", 120_000);
 
       // ── L1: the graph holds it ───────────────────────────────────────────
-      const body = await waitUntilRecalled(cfg, `What did we standardise on for ${nonce}?`, ["paxos"]);
+      const body = await withPluginLog(harness, () =>
+        waitUntilRecalled(cfg, `What did we standardise on for ${nonce}?`, ["paxos"]),
+      );
       expect(body.toLowerCase()).toContain("paxos");
 
       // ── L2: a later session is handed it ─────────────────────────────────
@@ -226,7 +373,7 @@ suite("live memory chain", () => {
       await harness.emit("session_end", {}, { agentId: "will", sessionId: "live-iso-a" });
       await waitForLog(harness, /session-end improve dispatched/, "session-end improve", 120_000);
 
-      await waitUntilRecalled(cfg, `What does ${nonce} use?`, ["byzantine"]);
+      await withPluginLog(harness, () => waitUntilRecalled(cfg, `What does ${nonce} use?`, ["byzantine"]));
 
       // Same server, a dataset that was never written to.
       const other: LiveConfig = { ...cfg, dataset: `${cfg.dataset}_other` };
@@ -261,16 +408,18 @@ suite("live memory chain", () => {
       // `.invalid` host can never resolve, so the plugin takes its
       // "remote and unreachable, warn and carry on" path immediately.
       const dead: LiveConfig = { ...cfg, baseUrl: "http://cognee-outage.invalid:9100" };
-      const harness = createPluginApi(plugin, {
-        baseUrl: dead.baseUrl,
-        apiKey: cfg.apiKey,
-        mode: "cloud",
-        datasetName: dead.dataset,
-        autoIndex: false,
-        autoRecall: true,
-        enableSessions: true,
-        captureSession: true,
-      });
+      const harness = tapLogger(
+        createPluginApi(plugin, {
+          baseUrl: dead.baseUrl,
+          apiKey: cfg.apiKey,
+          mode: "cloud",
+          datasetName: dead.dataset,
+          autoIndex: false,
+          autoRecall: true,
+          enableSessions: true,
+          captureSession: true,
+        }),
+      );
 
       await expect(harness.emit("gateway_start", {}, {})).resolves.toBeUndefined();
       await expect(
@@ -278,11 +427,17 @@ suite("live memory chain", () => {
           prompt: "anything at all",
           answer: "an answer",
           sessionId: "live-outage",
+          // The store cannot succeed here; the contract is that it fails quietly.
+          expectStoreFailure: true,
         }),
       ).resolves.toBeUndefined();
       await expect(
         harness.emit("session_end", {}, { agentId: "will", sessionId: "live-outage" }),
       ).resolves.toBeUndefined();
+      // session_end hands improve to a background chain that retries 3x with a
+      // 10s pause. Let it exhaust: a chain still running when the suite ends
+      // logs after Jest has torn down, which Jest reports as a failure of its own.
+      await waitForLog(harness, /session-end improve failed \(attempt 3\/3\)/, "improve retries", 60_000, false);
       await flush();
 
       // A warning is expected; a throw is not.

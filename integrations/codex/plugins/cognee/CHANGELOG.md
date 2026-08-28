@@ -10,6 +10,23 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.1]
+
+### Changed
+- **Memory header in plain words, plus a per-session total.** The
+  `Cognee memory: recall 4 session / 5 trace / 0 graph / 1 agent; saved …` line
+  that opens every prompt's recalled context now reads
+  `Cognee memory: 5 memory hits (3 from past sessions) · 12/40 turns had hits
+  this session · saved last turn 1 prompt / 3 trace / 1 answer` — how many
+  memories this turn injected, how many of those are knowledge-graph passages
+  from an earlier session or a remembered document (what this conversation alone
+  could not have supplied), and on how many of this session's prompts memory
+  fired at all (`memory warming up (7 turns)` until the first hit). The running
+  total is accumulated by `session-context-lookup.py` in `last_recall.json`
+  (`session_totals`, stamped with `session_key` so another terminal's count is
+  never continued); `cross_session_hits` is written alongside. Mirrors the
+  Claude Code status-line change.
+
 ## [1.5.0]
 
 ### Added
@@ -83,7 +100,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - **Pinned cognee bumped to 1.5.3** (`_PINNED_COGNEE_VERSION` in
   `session-start.py`). 1.5.3 carries the session-invalidation work the forget
-  skill depends on (COG-5947/COG-5835): deleting a document now also removes
+  skill depends on: deleting a document now also removes
   the session Q&A turns whose answers cited the deleted graph elements, the
   feedback and distilled guidance descending from them, and clamps the persist
   watermark to the surviving entry count so post-delete turns are not silently

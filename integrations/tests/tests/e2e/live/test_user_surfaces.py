@@ -97,12 +97,17 @@ def test_the_status_line_shows_the_counts_from_a_real_recall(recalled_session, l
     bar = session.run("cognee_statusline_render.py", {"session_id": session.session_id})
     assert bar.ok, f"status line render failed (rc={bar.returncode}): {bar.stderr[:500]}"
 
-    assert "recall " in bar.stdout, (
-        f"the bar omitted the recall counts after a successful recall: {bar.stdout!r}"
+    assert "memory hit" in bar.stdout, (
+        f"the bar omitted the memory-hit counts after a successful recall: {bar.stdout!r}"
     )
-    # The rendered counts must not all be zero — that would misreport a real hit.
-    assert "recall 0s/0t/0g/0a" not in bar.stdout, (
-        f"the bar reported all-zero counts despite {recalled} hits: {bar.stdout!r}"
+    # The rendered count must not be zero — that would misreport a real hit —
+    # and the session total must have registered the hit rather than still
+    # calling the memory "warming up".
+    assert "0 memory hits" not in bar.stdout, (
+        f"the bar reported zero hits despite {recalled} hits: {bar.stdout!r}"
+    )
+    assert "turns had hits this session" in bar.stdout, (
+        f"the bar has no session total after a recall with hits: {bar.stdout!r}"
     )
 
 
