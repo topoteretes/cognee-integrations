@@ -58,7 +58,12 @@ class MockCogneeServer:
         self._credits_overview: Any = {"tenants": []}
         self._credits_fetches = 0
         # Forget surface: dataset listing, per-dataset data, raw content.
-        self._datasets_list: list[dict] = [
+        # Named `_static_datasets`, NOT `_datasets_list`: that is the GET handler
+        # below, and an instance attribute of the same name shadows the method —
+        # `route(..., self._datasets_list)` then registers a list, every GET
+        # /api/v1/datasets 500s with "'list' object is not callable", and the
+        # merge of the forget skill with dataset switching did exactly that.
+        self._static_datasets: list[dict] = [
             {"id": DEFAULT_DATASET_ID, "name": "agent_sessions", "createdAt": "2026-01-01T00:00:00"}
         ]
         self._dataset_data: list[dict] = [
@@ -102,8 +107,9 @@ class MockCogneeServer:
         self._improve_response = body
 
     def set_datasets(self, datasets: list[dict]) -> None:
-        """Configure the JSON array returned by GET /api/v1/datasets."""
-        self._datasets_list = list(datasets)
+        """Configure the JSON array returned by GET /api/v1/datasets when the
+        identity fake has no seeded datasets (see ``_datasets_list``)."""
+        self._static_datasets = list(datasets)
 
     def set_dataset_data(self, data: list[dict]) -> None:
         """Configure the JSON array returned by GET /api/v1/datasets/<id>/data."""
@@ -229,8 +235,8 @@ class MockCogneeServer:
         route("/api/v1/datasets", "GET", self._datasets_list)
         route("/api/v1/datasets/status", "GET", self._datasets_status)
 
-        # forget surface (dataset inspection + deletion)
-        route("/api/v1/datasets", "GET", self._datasets_get)
+        # forget surface (dataset inspection + deletion); the listing itself is
+        # the shared GET /api/v1/datasets route above.
         route(re.compile(r"^/api/v1/datasets/[^/]+/data$"), "GET", self._dataset_data_get)
         route(re.compile(r"^/api/v1/datasets/[^/]+/data/[^/]+/raw$"), "GET", self._dataset_raw_get)
         route("/api/v1/forget", "POST", self._forget)
@@ -321,15 +327,18 @@ class MockCogneeServer:
         return _json(status, body)
 
     def _datasets_list(self, req: Request) -> Response:
-        """GET /api/v1/datasets — every dataset the principal can read, camelCase
-        on the wire like the real OutDTO (``ownerId``)."""
-        self._record(req)
-        status, body = self.identity.datasets_list()
-        return _json(status, body)
+        """GET /api/v1/datasets — one route, two kinds of test behind it.
 
-    def _datasets_get(self, req: Request) -> Response:
+        Tests that model ownership (dataset switching) seed the identity fake and
+        get exactly what they seeded, camelCase like the real OutDTO (``ownerId``).
+        Tests that only need *a* listing (the forget skill's ``datasets`` command)
+        seed nothing and get the fixed ``set_datasets`` list instead.
+        """
         self._record(req)
-        return _json(200, self._datasets_list)
+        if self.identity.datasets:
+            status, body = self.identity.datasets_list()
+            return _json(status, body)
+        return _json(200, self._static_datasets)
 
     def _dataset_data_get(self, req: Request) -> Response:
         self._record(req)

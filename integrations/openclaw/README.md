@@ -18,11 +18,16 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Agent lifecycle registration**: Registers/unregisters each agent session with the Cognee server on every prompt turn; combined with `COGNEE_AGENT_MODE=true` on the server, Cognee shuts down automatically when all agents disconnect
 - **14 search types**: From simple semantic search (CHUNKS) to chain-of-thought graph reasoning (GRAPH_COMPLETION_COT) to auto-selection (FEELING_LUCKY)
 - **Lazy dataset resolution**: On first prompt, if a dataset UUID is not cached locally, the plugin queries the Cognee server by name so you can connect to any pre-existing dataset without manual configuration
+- **Memory-hit visibility**: a `[cognee: N memories]` footer on replies where recall actually injected memories, plus a once-a-week digest of turns-with-hits and top sources — no extra LLM calls
 - **Health check**: Verifies Cognee API connectivity before operations
 - **Auto-index**: Syncs memory markdown files to Cognee via `/remember` (add new, update changed, forget removed, skip unchanged). The `/remember` endpoint runs ingest, graph build, and graph enrichment in one server-side call.
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
+- **Native memory tools**: registers `memory_search` and `memory_get` — the tools OpenClaw's memory slot and `active-memory` expect — backed by Cognee recall, with `cognee://` references the model can resolve to full text; plus `memory_forget` for user-directed, per-document deletion with mandatory confirmation, and `memory_switch_dataset` to move a conversation to another dataset
 - **One-command setup**: `openclaw cognee setup` configures Cognee as the sole memory provider and sets the required hook permissions
-- **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
+- **Code graph**: `openclaw cognee index-repo <path|url>` indexes a repository into a deterministic code graph; `memory_code_search` answers callers/impact/path/endpoint questions exactly, and an identifier-gated recall lane injects code facts when a prompt names a symbol
+- **Memory steer**: a cached system-prompt line on every run asserting Cognee as the authoritative memory and pointing the model at the memory tools
+- **Version & update hint**: `openclaw cognee status` / `openclaw cognee version` show the installed version and, when npm has a newer release, how to upgrade
+- **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee version`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`
 
 ## Security: Recommended Plugin Allowlist
 
@@ -368,6 +373,122 @@ This lets the agent distinguish between personal context, shared knowledge, and 
 | `searchPrompt` | string | `""` | System prompt to guide search |
 | `recallInjectionPosition` | string | `prependContext` | Where recalled memories are injected: `prependSystemContext`, `appendSystemContext`, or `prependContext` |
 
+### Code graph (repositories)
+
+Cognee can index a whole repository into a deterministic **code graph** (the enola pipeline — no LLM or embedding calls) and answer structural questions exactly: who calls X, what breaks if X changes, how A reaches B, all routes. OpenClaw agents are rarely launched inside a checkout, so unlike the claude-code/codex plugins nothing is indexed automatically; the operator opts a repository in and the model gets a tool. Requires Cognee ≥ 1.5.3.
+
+```bash
+# Local path (the Cognee server must share this filesystem — the default local server does)
+openclaw cognee index-repo ~/work/my-service --wait 60
+
+# Git URL (the server clones it; the graph reflects PUSHED commits)
+openclaw cognee index-repo https://github.com/org/repo --dataset codebase-repo --index-vectors
+```
+
+One narrow dataset per repository (`codebase-<repo>-<digest>` by default). `--index-vectors` also embeds the facts so `memory_search` can see them; without it the graph is reachable only through the code tool and lane. Indexed repositories are recorded in `~/.openclaw/memory/cognee/code-graphs.json`; re-run `index-repo` after changes (unchanged content is skipped server-side).
+
+| Surface | What it does |
+|---------|--------------|
+| `memory_code_search` tool | `{query, operation?, args?, dataset?, limit?}` — operations `query_facts` (default, substring listing), `explore`, `traverse`, `find_path` (`args.source`/`args.target`), `impact_analysis`, `delta`. `dataset` is optional when exactly one repo is indexed |
+| Code recall lane | When a prompt names an identifier-shaped token (backticked symbol, file path, `snake_case`, `CamelCase`, dotted name) **and** a code graph is indexed or listed in `codeDatasets`, one extra `scope: ["code"]` recall runs alongside the semantic lanes and its facts are injected as a `<code_graph>` block. Conversational prompts never trigger it |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `codeSearchTool` | boolean | `true` | Register `memory_code_search` |
+| `codeGraphRecall` | boolean | `true` | Enable the identifier-gated code recall lane |
+| `codeDatasets` | string[] | `[]` | Extra code-graph dataset names (e.g. indexed from another machine) |
+
+### Memory steer
+
+OpenClaw agents also have native memory files (`MEMORY.md`, `memory/*.md`) and may reach for them by habit. On every real agent run the plugin appends one static line to the system prompt (`appendSystemContext`, so providers cache it) asserting Cognee as the preferred, authoritative long-term memory and naming the memory tools — the counterpart of claude-code's `COGNEE_PREFER_MEMORY` steer. Heartbeat/cron turns are skipped.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `memorySteer` | boolean | `true` | Append the steer on each agent run |
+| `memorySteerText` | string | built-in text | Replace the steer text entirely |
+
+### Version & update check
+
+`openclaw cognee status` leads with the installed plugin version, and `openclaw cognee version` prints it on its own. On gateway start the plugin refreshes a cached check against the npm registry (`~/.openclaw/memory/cognee/update-check.json`); when the cached latest is newer than the running version, both commands add `Update available: v… Run: openclaw plugins install @cognee/cognee-openclaw@latest`. The check is rate-limited and fail-silent — it never blocks a command or the gateway, and a network failure keeps the last known result. `--check-updates` forces a live check.
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `COGNEE_UPDATE_CHECK` | `true` | `false`/`0`/`no`/`off` disables the check |
+| `COGNEE_UPDATE_CHECK_INTERVAL` | `86400` | Minimum seconds between background checks (same name as claude-code/codex) |
+
+### Recall layers
+
+Cognee holds more than the knowledge graph: every conversation also has a session cache with the captured Q&A turns, tool-call trace steps (with their feedback), and the agent guidance distilled from them by `/improve`. The server only searches those layers when the recall `scope` names them — with `dataset_ids`/`search_type` in the request, the default `auto` scope is graph-only. The plugin therefore runs one extra, cheap recall per prompt with `scope: ["session","trace","session_context"]` in parallel with the graph lanes and injects each non-empty layer as its own block:
+
+```
+<cognee_memories>
+<agent_guidance>   … standing guidance from past sessions …
+<trace_lessons>    … lessons from earlier tool calls …
+<session_memory>   … earlier turns of this conversation …
+<agent_memory> / <graph_memory> … knowledge-graph hits …
+</cognee_memories>
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `recallSessionLayers` | boolean | `true` | Recall the session layers alongside the graph and inject them as separate sections. Requires `enableSessions` |
+
+The same explicit scope backs `memory_search` with `corpus=sessions` / `all`.
+
+### Agent tools: `memory_search` / `memory_get`
+
+OpenClaw's memory slot comes with a tool contract: the bundled `active-memory` extension runs a memory sub-agent before conversational replies with exactly `memory_search` and `memory_get` allow-listed, and the model can call them directly. The plugin registers Cognee-backed versions of both (declared in `openclaw.plugin.json` → `contracts.tools`), so they work with no `toolsAllow` override and independently of `autoRecall`.
+
+| Tool | Parameters | Returns |
+|------|------------|---------|
+| `memory_search` | `query` (required), `maxResults`, `minScore`, `corpus` = `memory` \| `sessions` \| `all` (default) | `{ results: [{ reference, text, score, scope, source, time }] }`; `{ results: [], disabled: true, error, warning, action }` when Cognee is unreachable or the recall breaker is open |
+| `memory_get` | `path` (a `cognee://…` reference from `memory_search`, or a workspace memory file such as `MEMORY.md` / `memory/notes.md`), `from`, `lines` | The referenced memory's full text with provenance, or a bounded file excerpt with `truncated`/`nextFrom`. Stale references return an `error` field, not a failure |
+
+`corpus=memory` searches the permanent graph across the configured scopes, `corpus=sessions` this conversation's session cache, `all` both. `wiki` is not backed by Cognee and returns no results. Set `memoryTools: false` to opt out.
+
+### Agent tool: `memory_forget`
+
+User-directed deletion — "forget what we talked about tennis", "delete that from memory". Deciding *which* stored documents match is a judgement the model makes by reading them, so the tool is two-phase and the model stays in the loop:
+
+| Call | What happens |
+|------|--------------|
+| `memory_forget {action: "find", query: "tennis"}` | Lists the newest documents across the agent's datasets, reads each one's raw text (bounded scan of the 60 most recent), and returns candidates with `preview`, `sessionId` (when recoverable), `matchedTerms` and `dataId`/`datasetId`. Read-only. Pass `syncSession: true` to first bridge the current conversation into the graph so its content is findable |
+| `memory_forget {action: "forget", dataIds: [...], confirm: true}` | Deletes exactly those documents, one `POST /api/v1/forget {datasetId, dataId}` each, and reports `deleted` / `failed`. Without `confirm: true` nothing is deleted and the tool asks for confirmation |
+
+The tool deliberately cannot express a whole-dataset or everything-wipe; those stay behind `openclaw cognee forget --dataset <name>` / `--everything --confirm`. Deleting a document removes its raw data, its derived graph knowledge, and (Cognee ≥ 1.5.3) the session turns whose answers cited it — targeted, not whole-session; tool-call traces are not matched. Set `memoryForgetTool: false` to not register it.
+
+### Agent tool: `memory_switch_dataset`
+
+Move **one conversation** to another Cognee dataset — the OpenClaw counterpart of the claude-code/codex `cognee-switch-datasets` skill. One gateway serves many conversations per agent, so the switch is keyed by the host's `sessionKey` (falling back to `sessionId`), never by agent.
+
+| Call | What happens |
+|------|--------------|
+| `{action: "list"}` | Datasets visible on the server, current one first. Present them and let the user pick; a name that is not listed is created on switch |
+| `{action: "switch", dataset: "proj-a"}` | Syncs the current session into its dataset (`/improve`, strict — aborts on failure unless `force: true`), ensures the target exists and caches its id, then binds the conversation: later capture writes, the session-layer recall and the agent/single graph recall target `proj-a`, under a fresh Cognee session id (`open_claw_<id>__2`, `__3`, …) because a session never spans two datasets. Session-end `improve` follows too |
+| `{action: "current"}` | The dataset and Cognee session id this conversation uses, and whether it was switched |
+| `{action: "reset"}` | Back to the configured dataset. Re-syncs any retired session whose switch-time sync failed first; refuses without `force: true` while one is still unsynced |
+
+`force: true` on a switch does not skip the sync — it defers it: the retired session is recorded on the override and bridged into its own dataset at session end (and by `reset`). Until then its turns exist only in the server's session cache, so the tool tells the model to inform the user.
+
+In multi-scope mode only the **agent** scope is repointed; `company`/`user` memory stays shared. Memory-file sync keeps following `scopeRouting` — the switch moves the conversation's memory, not the agent's files. Overrides persist across gateway restarts in `~/.openclaw/memory/cognee/dataset-overrides.json`. Set `datasetSwitchTool: false` to not register it.
+
+The plugin's bundled server pin is `cognee==1.5.3` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.5.3`.
+
+### Memory-hit visibility
+
+Recall's cost (latency, injected tokens) is felt on every turn, but a recall that actually helped is invisible in the reply. Two features make it visible, at zero extra LLM calls and no hot-path I/O:
+
+- **Per-turn footer** — when auto-recall injected at least one memory into a turn, the agent's *final* reply gets a one-line trailer, e.g. `[cognee: 3 memories]`. Turns with no hits (and heartbeat/cron turns, which never recall) get nothing. Streamed/tool chunks are never footered — only the final payload, once.
+- **Weekly digest** — the plugin keeps a rolling 7-day count per agent of non-noise turns, turns with hits, and which memory sources produced them. When the week closes, the next final reply carries one summary line, e.g. `[cognee weekly digest] This week cognee found relevant memories on 47 of your agent's 120 turns (top sources: session summaries, MEMORY.md).` A week with zero hits posts nothing. Counters live in `~/.openclaw/memory/cognee/digest-stats.json`.
+
+Both ride the outbound `reply_payload_sending` hook, which is not a conversation hook and therefore needs no `allowConversationAccess` grant.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `memoryHitFooter` | boolean | `true` | Append the footer on turns with ≥1 injected memory |
+| `memoryHitFooterFormat` | string | `[cognee: {count} {memories}]` | Footer template. `{count}`, `{memories}` (memory/memories), `{sources}` (comma-joined source labels) |
+| `weeklyDigest` | boolean | `true` | Append the weekly summary to the first final reply after a 7-day window closes |
+
 ### Harness-noise filter
 
 OpenClaw drives agents with synthetic prompts the user never typed: heartbeat probes (`Read HEARTBEAT.md if it exists…`), cron payloads, and `System: …` event lines. Those are host instructions, not memory queries, so the plugin excludes them from auto-recall (which would otherwise run an LLM-backed search per scope, per heartbeat) and from QA capture (which would bridge the templates into the permanent graph via `/improve`). Filtering is two-layered: runs whose hook context carries a matching `trigger` are always filtered; prompts matching a shape pattern are filtered even without a trigger. Session registration and tool-call trace capture are unaffected.
@@ -514,6 +635,25 @@ real Cognee on the conventional port holding real data, and a tier that defaulte
 to it would write into that graph. Naming the server is the consent. Each run
 invents a `live_<uuid>` dataset and deletes only that namespace afterwards — never
 delete-everything, because the target may hold real data.
+
+Or let the plugin boot one, the way the nightly does — this exercises the real
+first-run path (`ensure_and_boot.py`, the venv, the cognee pinned in
+`src/server.ts`, uvicorn) and mints its own key:
+
+```bash
+COGNEE_RUN_LIVE=1 \
+COGNEE_LIVE_ALLOW_BUILD=1 \
+COGNEE_LIVE_BASE_URL=http://127.0.0.1:9100 \
+LLM_API_KEY=... LLM_MODEL=openai/gpt-4o-mini \
+npm run test:live
+```
+
+Only for a loopback URL nothing answers at. The venv is built under the jest
+sandbox HOME by default, so it never touches your shared `~/.cognee-plugin/venv`;
+set `COGNEE_LIVE_SERVER_HOME=/some/dir` to reuse one across runs (CI sets it to
+the runner's home so the venv can be cached). `COGNEE_LIVE_VERBOSE=1` mirrors
+the plugin's log lines to the console — the harness logger is otherwise a silent
+`jest.fn()`, and a recall timeout with no plugin log is undiagnosable.
 
 Two things that cost time to learn, both worth knowing before adding tests:
 

@@ -6,7 +6,7 @@ in every shell. This module makes that a one-time step: values placed in
 Claude Code and Codex plugins) are injected into ``os.environ`` at process
 start with **setdefault** semantics, so:
 
-  real exported env vars  >  ~/.cognee/.env  >  config.json  >  defaults
+  real exported env vars  >  ~/.cognee/.env  >  defaults
 
 Every existing ``os.environ.get(...)`` call site — and every child process the
 hooks spawn (the local cognee server, idle/exit watchers) — picks the values up

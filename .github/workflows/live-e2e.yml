@@ -299,23 +299,26 @@ jobs:
               || echo "(no server log — the boot never got that far)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # openclaw's live tier will not boot anything: it requires a *named* server that
-  # already answers /health, deliberately, because there is no safe default (the
-  # conventional port usually holds a developer's real data). So this job boots one
-  # for it and hands over the URL.
+  # openclaw boots its own server, the way the other two tiers do: the plugin's
+  # `gateway_start` first-run path (`ensure_and_boot.py` → venv → the cognee pinned
+  # in src/server.ts → uvicorn), driven by the suite's beforeAll when
+  # COGNEE_LIVE_ALLOW_BUILD is set and nothing answers at the loopback URL. That
+  # makes the version under test the one the plugin ships. This job used to borrow
+  # hermes-agent's venv for a server instead, which quietly tested a different,
+  # older cognee than openclaw installs for its users — and failed on a bug that
+  # only existed there.
   #
-  # Loopback, not the cloud tenant, and not by preference: `liveConfig()` derives
-  # its mode from the URL, and its cloud branch drops the `/api/v1` prefix that the
-  # Python tiers use against that same tenant (`isCloud ? "/remember" : "/api/v1/
-  # remember"` in src/client.ts). Verified against a real server: with the prefix
-  # /datasets answers 200, without it 404. Loopback is the shape this tier is
-  # written for, and the one its own docstring documents.
+  # Loopback, not the cloud tenant: `liveConfig()` derives its mode from the URL,
+  # and only the local mode has a boot path (and the `/api/v1` prefix the tenant
+  # does not serve). Port 9100 is the tier's documented example and nothing else on
+  # the runner is near it.
   openclaw:
     name: live tier (openclaw)
     runs-on: ubuntu-latest
     continue-on-error: false
     # Three scenarios, each allowed 15m by the suite itself, and a graph write is
-    # polled for up to 10m before it gives up.
+    # polled for up to 10m before it gives up. A cache-miss run also pays the venv
+    # build (the plugin allows 600s) before any test.
     timeout-minutes: 60
     outputs:
       failed_tests: ${{ steps.failures.outputs.list }}
@@ -328,27 +331,46 @@ jobs:
         with:
           node-version: "20"
 
-      # The server side of this job. hermes-agent is used purely as a packaged,
-      # version-pinned cognee plus a boot path this repo already tests
-      # (tests/test_integration_concurrency.py asserts exactly this spawn) — the
-      # alternative is a second, untested uvicorn incantation living in YAML.
-      - name: Set up Python for the server
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: integrations/hermes-agent/.python-version
-
+      # ensure_and_boot.py prefers `uv` when it is on PATH (`uv venv --python 3.12`
+      # + `uv pip install`), falling back to the system python's venv module.
+      # Giving it uv keeps the cold build to a couple of minutes.
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
 
-      - name: Install the cognee server
-        working-directory: integrations/hermes-agent
-        run: uv sync --locked
+      # The venv the plugin builds, keyed on the file that pins its cognee version
+      # so a bump rebuilds. The ready marker sits next to the venv, not inside it;
+      # cached too, or every hit would re-run the (fast, but not free) install
+      # check. COGNEE_LIVE_SERVER_HOME points the boot at the runner's real home
+      # because the suite otherwise sandboxes it into a temp dir the cache step
+      # would never see.
+      - name: Cache the plugin runtime venv
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cognee-plugin/venv
+            ~/.cognee-plugin/.venv-ready.json
+          key: cognee-openclaw-venv-${{ runner.os }}-${{ hashFiles('integrations/openclaw/src/server.ts') }}
+          restore-keys: |
+            cognee-openclaw-venv-${{ runner.os }}-
 
-      - name: Boot a cognee server and mint a key for it
-        working-directory: integrations/hermes-agent
+      - name: Install openclaw dependencies
+        working-directory: integrations/openclaw
+        run: npm install
+
+      - name: Run the live tier against a self-booted server
+        working-directory: integrations/openclaw
         env:
+          COGNEE_RUN_LIVE: '1'
+          COGNEE_LIVE_BASE_URL: http://127.0.0.1:9100
+          COGNEE_LIVE_ALLOW_BUILD: '1'
+          # No COGNEE_LIVE_API_KEY: the plugin mints one against the server it
+          # boots, exactly as it does for a first-time user, and the suite reads it
+          # back from the plugin's own cache.
+          # Mirrored into the CI log so a failure names what the plugin saw; the
+          # harness logger is otherwise a silent jest.fn().
+          COGNEE_LIVE_VERBOSE: '1'
           LLM_API_KEY: ${{ secrets.LIVE_E2E_LLM_API_KEY }}
           # Graph extraction is the only model spend here; the server inherits this.
           LLM_MODEL: openai/gpt-4o-mini
@@ -357,39 +379,10 @@ jobs:
             echo "::error::LIVE_E2E_LLM_API_KEY is not set — the openclaw live tier cannot run."
             exit 1
           fi
-          # 9100, not cognee's conventional 8011: the same port the tier's own
-          # docstring uses, and nothing else on the runner will be near it.
-          #
-          # `_resolve_api_key` is private, and reused on purpose: the server rejects
-          # an unauthenticated /api/v1/datasets with 401, so the tier needs a real
-          # key, and this is the login-then-mint flow the plugin already ships and
-          # tests. Reimplementing it in shell would be a second copy to keep true.
-          key="$(uv run python -c '
-          from cognee_integration_hermes.http_backend import HttpBackend
-          from cognee_integration_hermes.server_bootstrap import ensure_local_server
-
-          backend = HttpBackend()
-          backend.url = ensure_local_server(9100, boot_timeout=600.0)
-          print(backend._resolve_api_key("", timeout=60.0))
-          ' | tail -1)"
-          if [ -z "$key" ]; then
-            echo "::error::could not mint an API key against the booted server."
-            exit 1
-          fi
-          echo "::add-mask::$key"
-          echo "COGNEE_LIVE_API_KEY=$key" >> "$GITHUB_ENV"
-
-      - name: Install openclaw dependencies
-        working-directory: integrations/openclaw
-        run: npm install
-
-      - name: Run the live tier against the booted server
-        working-directory: integrations/openclaw
-        env:
-          COGNEE_RUN_LIVE: '1'
-          COGNEE_LIVE_BASE_URL: http://127.0.0.1:9100
-          # COGNEE_LIVE_API_KEY comes from the boot step via GITHUB_ENV.
-        run: |
+          # The runner's real home, so the venv the plugin builds is the path the
+          # cache step saves. (`$HOME` is not in the workflow `env` context, hence
+          # here rather than above.)
+          export COGNEE_LIVE_SERVER_HOME="$HOME"
           set -o pipefail
           npm run test:live 2>&1 | tee jest-live.log
           # The tier is `describe.skip` when its two variables are not both set, and
@@ -411,13 +404,16 @@ jobs:
             echo 'GITHUB_OUTPUT_EOF'
           } >> "$GITHUB_OUTPUT"
 
+      # ensure_and_boot.py detaches uvicorn with its stdio on /dev/null; what the
+      # server says lands in cognee's own log directory under the HOME it was
+      # booted with. Newest file first — one per server start.
       - name: Collect server logs on failure
         if: failure()
         run: |
           {
             echo "### cognee server log (openclaw tier)"
-            tail -200 "$HOME/.cognee-plugin/hermes/server.log" 2>/dev/null \
-              || echo "(no server log — the boot never got that far)"
+            latest="$(ls -t "$HOME"/.cognee/logs/*.log 2>/dev/null | head -1)"
+            if [ -n "$latest" ]; then tail -200 "$latest"; else echo "(no server log — the boot never got that far)"; fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   notify:

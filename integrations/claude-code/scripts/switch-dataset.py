@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized  # noqa: E402
 from _plugin_common import (  # noqa: E402
     _new_conn_uuid,
     _read_map_record,
@@ -218,6 +219,7 @@ def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id:
         },
     }
     try:
+        _rotate_log_if_oversized(_STATE_DIR / "watcher.log")  # the child writes it
         log_fh = (_STATE_DIR / "watcher.log").open("a", encoding="utf-8")
     except Exception:
         log_fh = subprocess.DEVNULL

@@ -38,6 +38,11 @@ _RECALL_TIMEOUT = float(os.environ.get("COGNEE_RECALL_TIMEOUT", "120"))
 
 
 def _state_path():
+    """The one breaker file every Cognee plugin on the machine shares
+    (``~/.cognee-plugin/recall-breaker.json``; openclaw reads the same path). It
+    is keyed by server URL, so sharing is correct — a server the hooks have
+    given up on is down for the search skill too. ``COGNEE_PLUGIN_STATE_DIR``
+    exists for tests to redirect it; production code must not set it."""
     base = os.environ.get("COGNEE_PLUGIN_STATE_DIR") or os.path.expanduser("~/.cognee-plugin")
     return pathlib.Path(base) / "recall-breaker.json"
 

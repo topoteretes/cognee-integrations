@@ -13,13 +13,22 @@
  * real Cognee on the conventional port holding real data, and a test tier that
  * defaulted to it would write into that graph. Naming the server is the consent.
  *
- * ## Why no server boot
+ * ## Booting a server
  *
- * `gateway_start` skips its boot path entirely when `client.health()` already
- * answers, so pointing at a running server means the plugin connects rather than
- * writing `ensure_and_boot.py` and building a venv. That keeps this tier fast, and
- * the boot/install path is already covered by the Python live tier which shares the
- * same `~/.cognee-plugin` directory.
+ * `gateway_start` skips its boot path when `client.health()` already answers, so
+ * pointing at a running server means the plugin connects rather than writing
+ * `ensure_and_boot.py` and building a venv — the fast option for a developer.
+ *
+ * With `COGNEE_LIVE_ALLOW_BUILD=1` and a loopback URL nothing answers at, the suite
+ * instead lets that boot path run, exactly as it does for a first-time user, and
+ * mints its key the same way. This is how the nightly runs: it is the only thing
+ * that tests the cognee version the plugin actually installs (`COGNEE_VERSION` in
+ * `src/server.ts`) and the install path itself. The Python live tier does *not*
+ * cover either — it builds the claude-code plugin's pin, in a different job.
+ * `COGNEE_LIVE_SERVER_HOME` chooses the home everything is built under (see the
+ * `node:os` mock in the test file); by default that is a fresh sandbox, so a
+ * developer's shared `~/.cognee-plugin/venv` is never upgraded or downgraded by a
+ * test run.
  *
  * ## Isolation
  *
@@ -57,6 +66,22 @@ export function liveBaseUrl(): string {
 export function liveApiKey(): string {
   return (process.env.COGNEE_LIVE_API_KEY ?? "").trim();
 }
+
+/**
+ * True when the tier may boot a server itself if nothing answers at the URL.
+ *
+ * Same variable, same meaning as the Python live tier: without it a dead URL is
+ * a hard error, because "boot something" against an unnamed loopback port is how
+ * a test tier ends up installing a venv on a developer's machine uninvited. With
+ * it, and only for a loopback URL, the plugin's own `gateway_start` boot path
+ * runs — `ensure_and_boot.py`, the venv, the pinned cognee, uvicorn — exactly as
+ * it would for a first-time user, so the tier tests the server version the
+ * plugin actually ships rather than whatever happened to be listening.
+ */
+export function liveAllowBuild(): boolean {
+  return ["1", "true", "yes"].includes((process.env.COGNEE_LIVE_ALLOW_BUILD ?? "").trim().toLowerCase());
+}
+
 
 /**
  * Why the tier is skipped, for a message that tells the reader what to set.

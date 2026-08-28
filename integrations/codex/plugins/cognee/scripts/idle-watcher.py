@@ -24,6 +24,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
+from _logfiles import append_line as _append_log_line
+
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
 # threshold means you have to actively pause a full minute, and the 10-minute
 # improve cooldown prevents back-to-back improve runs when activity is sporadic.
@@ -43,12 +45,10 @@ _should_stop = False
 
 def _log(event: str, **detail) -> None:
     try:
-        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         line = {"ts": time.time(), "pid": os.getpid(), "event": event}
         if detail:
             line["detail"] = detail
-        with _LOGFILE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+        _append_log_line(_LOGFILE, json.dumps(line, default=str))
     except Exception:
         pass
 

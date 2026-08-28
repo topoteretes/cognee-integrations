@@ -26,9 +26,13 @@ from pathlib import Path
 
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
+from _logfiles import console_capture_tail as _console_capture_tail
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
+from _logfiles import start_console_capture as _start_console_capture
 from _plugin_common import (
     _COGNEE_CACHE_DIR,
     _COGNEE_DATA_DIR,
+    _COGNEE_HOME,
     _COGNEE_SYSTEM_DIR,
     _VENV_DIR,
     _VENV_PYTHON,
@@ -65,7 +69,6 @@ from config import (
     get_dataset,
     is_cloud_mode,
     load_config,
-    save_config,
 )
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
@@ -246,6 +249,18 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 if time.monotonic() >= deadline:
                     return bool(_venv_cognee_version())
                 time.sleep(_VENV_INSTALL_POLL_SECONDS)
+
+        # Already at the pin: there is nothing to install, so do not touch the
+        # venv. The install used to run unconditionally at every cold boot; on
+        # a machine where two plugins with different pins share this venv that
+        # made each boot flip the version back and forth — and a `pip install`
+        # is a mutation window the shared runtime is better off without. The
+        # marker is (re)written so every plugin reading it sees the truth.
+        current = _venv_cognee_version()
+        if current == _PINNED_COGNEE_VERSION:
+            _write_venv_ready(current)
+            hook_log("cognee_install_skipped_at_pin", {"version": current})
+            return True
 
         uv = _find_uv() or _install_uv()
         venv_present = _VENV_PYTHON.exists()
@@ -481,11 +496,27 @@ def _ensure_local_server_running(
         # Run in agent mode: the server tears itself down once all registered
         # agents disconnect.
         server_env["COGNEE_AGENT_MODE"] = "true"
+        # The server's console output must not inherit this worker's stdio
+        # (bootstrap.log — that is how it reached gigabytes: every line the
+        # server printed for as long as it ran), but it must not vanish either:
+        # a boot that dies before cognee opens its own log (import error,
+        # broken venv, port bind) explains itself only on stderr. So it goes to
+        # a capture pump that keeps the first megabyte of each boot in
+        # server-console.log (previous boot in .1) and discards the rest.
+        console_log = _STATE_DIR / "server-console.log"
+        pump = _start_console_capture(console_log)
+        if pump is None:
+            hook_log("server_console_capture_unavailable", {"path": str(console_log)})
         server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
+            stdin=subprocess.DEVNULL,
+            stdout=pump.stdin if pump else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if pump else subprocess.DEVNULL,
             start_new_session=True,
         )
+        if pump is not None and pump.stdin is not None:
+            pump.stdin.close()  # the server holds the write end now
         # Presence evidence for future boot points: covers the spawn-to-bind
         # window where neither the health probe nor the TCP listener sees it.
         write_server_pidfile(port, server_proc.pid, version=_PINNED_COGNEE_VERSION)
@@ -504,14 +535,20 @@ def _ensure_local_server_running(
                 if _health_ok(health_url):
                     _ready()
                     return
+                tail = _console_capture_tail(console_log)
+                hook_log(
+                    "server_exited_before_healthy", {"rc": exit_code, "console_tail": tail[-600:]}
+                )
                 raise RuntimeError(
                     f"server process exited (rc={exit_code}) before becoming "
-                    f"healthy at {health_url}"
+                    f"healthy at {health_url}; console: {console_log}"
+                    + (f"\n{tail}" if tail else "")
                 )
             time.sleep(_HEALTH_POLL_SECONDS)
 
         raise RuntimeError(
-            f"Cognee server did not become healthy at {health_url} within {health_timeout}s"
+            f"Cognee server did not become healthy at {health_url} within {health_timeout}s; "
+            f"console: {console_log}; server log: newest file in {_COGNEE_HOME / 'logs'}"
         )
     finally:
         if acquired:
@@ -705,6 +742,7 @@ def _spawn_idle_watcher(
     log_path = _STATE_DIR / "watcher.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -824,6 +862,7 @@ def _spawn_exit_watcher(
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _EXIT_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("exit_watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -858,6 +897,17 @@ def _spawn_exit_watcher(
 def _purge_legacy_resolved_files() -> None:
     legacy = _STATE_DIR / "resolved.json"
     scoped_dir = _STATE_DIR / "resolved"
+    # config.json: an older config layer that SessionStart read but the per-turn
+    # hooks never did, so a stale base_url in it split the plugin across two
+    # servers (SDK-466). Nothing reads it any more; remove it so it cannot be
+    # mistaken for live configuration. ~/.cognee/.env is the one setup file.
+    legacy_config = _STATE_DIR / "config.json"
+    try:
+        if legacy_config.exists():
+            legacy_config.unlink()
+            hook_log("legacy_config_json_removed", {"path": str(legacy_config)})
+    except Exception as exc:
+        hook_log("legacy_config_json_unlink_failed", {"error": str(exc)[:200]})
     try:
         if legacy.exists():
             legacy.unlink()
@@ -931,6 +981,7 @@ def _spawn_bootstrap(
     log_path = _STATE_DIR / "bootstrap.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("bootstrap_log_open_failed", {"error": str(exc)[:200]})
@@ -1558,11 +1609,11 @@ async def _start(payload: dict | None = None) -> dict:
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
     _purge_legacy_resolved_files()
+    # Per-session files nothing else deletes (launch records, status markers,
+    # bridge caches, pending buffers, dead improve locks) and oversized logs.
+    from _plugin_common import sweep_stale_state
 
-    # Create config file on first run if it doesn't exist
-    config_file = _STATE_DIR / "config.json"
-    if not config_file.exists():
-        save_config(config)
+    sweep_stale_state()
 
     # Reset the idle clock for this Claude process before the watcher
     # starts, otherwise a stale timestamp from a prior session can cause

@@ -93,16 +93,15 @@ Details worth knowing:
 - `COGNEE_BACKEND` can also live in `~/.cognee/.env` to make a mode the durable default; a shell export still overrides it per terminal.
 - Not sure what a terminal resolved? The status line's mode field shows it live, and `doctor.py` prints the decision with its cause, e.g. `Mode: Local — forced by COGNEE_BACKEND=local`.
 
-You can also set config in `~/.cognee-plugin/config.json`:
+On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to confirm the plugin is active.
 
-```json
-{
-  "base_url": "https://your-instance.cognee.ai",
-  "dataset": "agent_sessions"
-}
+Every prompt's recalled context opens with a one-line memory header:
+
+```
+Cognee memory: 5 memory hits (3 from past sessions) · 12/40 turns had hits this session · saved last turn 1 prompt / 3 trace / 1 answer
 ```
 
-On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to confirm the plugin is active.
+`5 memory hits` is how many memories this turn's lookup found and injected (across session turns, traces, graph context and agent guidance); `3 from past sessions` is the part the model could not have known from this conversation — knowledge-graph passages from an earlier session or a `remember`-ed document (omitted when zero); `12/40 turns had hits this session` is the running total, reading `memory warming up (7 turns)` until the first hit; `saved last turn` is what the previous turn persisted. The counts are also written to `~/.cognee-plugin/codex/last_recall.json`.
 
 ## Auth
 
@@ -123,7 +122,7 @@ At startup (`SessionStart`):
 A forced-local switch also scrubs `COGNEE_BASE_URL`/`COGNEE_API_KEY` from the process environment, so the per-prompt recall/remember calls and every spawned worker resolve the same local endpoint — not just `SessionStart`. A forced-cloud switch with no URL configured never boots the local server; the connection attempt fails visibly instead (status + doctor).
 
 At hook runtime:
-- hooks resolve the endpoint from env, then `config.json`, with localhost as the default
+- hooks resolve the endpoint from env, with localhost as the default
 - hooks resolve auth from env, then the URL-scoped `api_key.json` cache
 - `http` mode skips local SDK initialization
 
@@ -160,9 +159,6 @@ Set a custom dataset at launch:
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 codex
 ```
-
-`~/.cognee-plugin/config.json` may still show a `dataset` value for visibility,
-but runtime dataset selection does not read it.
 
 `COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset.
 Data added outside of Codex to the dataset (via SDK or the server for example) is visible in Codex via the Cognee plugin.
@@ -320,7 +316,7 @@ Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the
 
 The renderer reads only local state — no network calls on every refresh:
 1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
-2. Mode: `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` switch, then `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/config.json` (`base_url`)
+2. Mode: `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` switch, then `COGNEE_BASE_URL` env var
 3. Default mode: `local`
 
 ## Logs and state
@@ -340,6 +336,24 @@ tail -f ~/.cognee-plugin/codex/recall-audit.log
 tail -f ~/.cognee-plugin/codex/exit-watcher.log
 tail -f ~/.cognee-plugin/codex/watcher.log
 ```
+
+Every log is capped: when one passes `COGNEE_PLUGIN_LOG_MAX_BYTES` (default 20 MiB) it
+is rotated to `<name>.1` and started fresh, so a log is never bigger than twice
+the cap and the stretch just before a failure survives in the `.1` file. Set the
+variable (in `~/.cognee/.env` or the shell) to change the ceiling; `0` disables
+rotation. The local server's own log lives under `~/.cognee/logs/` (rotated by
+cognee, ten files kept); `bootstrap.log` holds only the plugin's bootstrap
+worker output, and `server-console.log` the first megabyte of the server's
+console output for the current boot (previous boot in `server-console.log.1`) —
+where a boot that failed before the server could open its own log explains itself.
+
+At every SessionStart the plugin also sweeps its own state directory: per-session
+files whose session is over (status markers, bridge caches and pending buffers
+untouched for a week; launch records a week after their host process died, or
+after 30 days), improve locks whose owner is gone, an expired
+`improve-unsupported.json`, and directories older versions left behind. It
+never touches another plugin's subdirectory. One `state_sweep` line in
+`hook.log` records what was removed.
 
 ## Usage metrics
 
@@ -415,8 +429,9 @@ codex plugin marketplace remove cognee
 Config precedence:
 1. env vars (shell exports)
 2. `~/.cognee/.env` (one-time setup file, shared with the Claude Code plugin; loaded into the environment at process start, so every env var below can live here)
-3. `~/.cognee-plugin/config.json`
-4. defaults
+3. defaults
+
+There is no `config.json`. Older versions wrote `~/.cognee-plugin/config.json` and SessionStart read a `base_url` from it while the per-turn hooks did not, so a stale URL there could point the two halves of the plugin at different servers. SessionStart now deletes a leftover file; put everything in `~/.cognee/.env` instead.
 
 One exception sits above all four layers: the `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` mode switch. When exported, it pins the mode regardless of where the connection variables are defined — forced local ignores a configured `COGNEE_BASE_URL` entirely (it is scrubbed from the process environment), and forced cloud stays cloud even when the URL is missing. See [Which mode wins](#which-mode-wins-and-how-to-switch).
 

@@ -80,15 +80,6 @@ Details worth knowing:
 - `COGNEE_BACKEND` can also live in `~/.cognee/.env` to make a mode the durable default; a shell export still overrides it per terminal.
 - Not sure what a terminal resolved? The status line's mode field shows it live, and `doctor.py` prints the decision with its cause, e.g. `Mode: Local — forced by COGNEE_BACKEND=local`.
 
-You can also set config in `~/.cognee-plugin/claude-code/config.json`:
-
-```json
-{
-  "base_url": "https://your-instance.cognee.ai",
-  "dataset": "agent_sessions"
-}
-```
-
 Then launch `claude`. All setup happens in the `SessionStart` hook, which fires once per fresh launch — so with the shell install above, the first launch connects memory with no extra steps.
 
 If you instead installed **from inside the chat** with the `/plugin` slash commands, you must **restart Claude Code** (start a new session) before memory connects: `/reload-plugins` makes the skills and agents available in the current session but does not run `SessionStart`. On a first-run marketplace install the marketplace is also fetched asynchronously, so `SessionStart` may not fire that session even with a reload. Either way, make sure your configuration is in `~/.cognee/.env` (or exported in the shell you launch from).
@@ -148,9 +139,6 @@ Set a custom dataset at launch:
 ```bash
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
-
-`~/.cognee-plugin/claude-code/config.json` may still show a `dataset` value for
-visibility, but runtime dataset selection does not read it.
 
 `COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset.
 Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
@@ -382,17 +370,17 @@ Both cases show the same reason — the fix is the same either way, and `llm-sta
 | `COGNEE_LLM_KEY_CHECK` | `true` | Background, provider-agnostic `LLM_API_KEY` validation (local mode) surfacing `✕ (incorrect_llm_api_key)` |
 | `COGNEE_LLM_CHECK_INTERVAL` | `300` | Minimum seconds between LLM-key checks |
 
-**Recall counts.** The line ends with what memory actually did, faint so it stays secondary:
+**Memory hits.** The line ends with what memory actually did — this turn, then (faint) over the session:
 
 ```
-● cognee: agent_sessions · local · recall 4s/5t/0g/1a · saved 2p/41t/2a
+● cognee: agent_sessions · local · 5 memory hits (3 from past sessions) · 12/40 turns had hits this session
 ```
 
-`recall` is what this turn's lookup found — `s`ession turns, `t`races, `g`raph context, `a`gent guidance — and `saved` is what the *previous* turn persisted: `p`rompts, `t`races, `a`nswers. These are the same numbers the Codex plugin puts in the `Cognee memory: recall …` header it injects into model context; on Claude Code they live in the bar instead. `UserPromptSubmit` already writes them to `~/.cognee-plugin/claude-code/last_recall.json`, so the renderer stays network-free, and the counts are stamped with the session that produced them so a second terminal's numbers never show up here. Hide them with `COGNEE_STATUSLINE_COUNTS=false`.
+`5 memory hits` is how many memories this turn's lookup found and injected into context (across session turns, traces, graph context and agent guidance). `3 from past sessions` is the part of that Claude could not have known from this conversation: knowledge-graph passages that came from an earlier session (or from a `remember`-ed document) rather than from this session's own cache — omitted when zero. `12/40 turns had hits this session` is the running total — 40 prompts so far, memory fired on 12 of them. A session that has not had a single hit yet shows `memory warming up (7 turns)` instead of a bare `0/7`: the graph is usually still filling up. `UserPromptSubmit` writes these to `~/.cognee-plugin/claude-code/recall/<session>.json`, so the renderer stays network-free, and the counts are stamped with the session that produced them so a second terminal's numbers never show up here. The per-scope breakdown (`recall 4s/5t/0g/1a · saved 2p/41t/2a` — `s`ession turns, `t`races, `g`raph context, `a`gent guidance; saves as `p`rompts, `t`races, `a`nswers) is still available with `COGNEE_STATUSLINE_COUNTS=full`; hide the segment with `false`.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Show the trailing `recall …/saved …` counts |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | `true`: `N memory hits · H/T turns had hits this session`; `full`: per-scope `recall …/saved …` strip; `false`: hidden |
 
 **Per-terminal status.** Every signal in the line answers *for this terminal*, not for the machine. That matters because terminals legitimately disagree: one shell exported `LLM_API_KEY` and another didn't, or two hold different `COGNEE_API_KEY`s against the same server. Both sessions show the truth at the same time:
 
@@ -422,7 +410,7 @@ The entry sets `refreshInterval: 2`, so Claude re-runs the (network-free, local-
 
 The status line reads only local state — no network calls on every refresh:
 1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
-2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/claude-code/config.json` (`base_url`)
+2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then `COGNEE_BASE_URL` env var
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
 5. LLM key: `llm-state/<session>.json`, then `llm-state.json`
@@ -455,6 +443,24 @@ tail -f ~/.cognee-plugin/claude-code/watcher.log
 tail -f ~/.cognee-plugin/claude-code/exit-watcher.log
 tail -f ~/.cognee-plugin/claude-code/recall-audit.log
 ```
+
+Every log is capped: when one passes `COGNEE_PLUGIN_LOG_MAX_BYTES` (default 20 MiB) it
+is rotated to `<name>.1` and started fresh, so a log is never bigger than twice
+the cap and the stretch just before a failure survives in the `.1` file. Set the
+variable (in `~/.cognee/.env` or the shell) to change the ceiling; `0` disables
+rotation. The local server's own log lives under `~/.cognee/logs/` (rotated by
+cognee, ten files kept); `bootstrap.log` holds only the plugin's bootstrap
+worker output, and `server-console.log` the first megabyte of the server's
+console output for the current boot (previous boot in `server-console.log.1`) —
+where a boot that failed before the server could open its own log explains itself.
+
+At every SessionStart the plugin also sweeps its own state directory: per-session
+files whose session is over (status markers, bridge caches and pending buffers
+untouched for a week; launch records a week after their host process died, or
+after 30 days), improve locks whose owner is gone, an expired
+`improve-unsupported.json`, and directories older versions left behind. It
+never touches another plugin's subdirectory. One `state_sweep` line in
+`hook.log` records what was removed.
 
 Shared state (used by both Claude Code and Codex plugins):
 
@@ -571,10 +577,11 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 Config precedence:
 1. env vars (shell exports)
 2. `~/.cognee/.env` (one-time setup file, shared with the Codex plugin; loaded into the environment at process start, so every env var below can live here)
-3. `~/.cognee-plugin/claude-code/config.json`
-4. defaults
+3. defaults
 
-One exception sits above all four layers: the `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` mode switch. When exported, it pins the mode regardless of where the connection variables are defined — forced local ignores a configured `COGNEE_BASE_URL` entirely (it is scrubbed from the process environment), and forced cloud stays cloud even when the URL is missing. See [Which mode wins](#which-mode-wins-and-how-to-switch).
+There is no `config.json`. Older versions wrote `~/.cognee-plugin/claude-code/config.json` and SessionStart read a `base_url` from it while the per-turn hooks did not, so a stale URL there could point the two halves of the plugin at different servers. SessionStart now deletes a leftover file; put everything in `~/.cognee/.env` instead.
+
+One exception sits above all three layers: the `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` mode switch. When exported, it pins the mode regardless of where the connection variables are defined — forced local ignores a configured `COGNEE_BASE_URL` entirely (it is scrubbed from the process environment), and forced cloud stays cloud even when the URL is missing. See [Which mode wins](#which-mode-wins-and-how-to-switch).
 
 `~/.cognee/.env` is created with a commented template on first session start (permissions `0600`; the path can be overridden with `COGNEE_ENV_FILE`). Run `doctor.py` to see which keys the file defines, which are overridden by shell exports, and — in the mode row — whether a backend switch forced the mode decision.
 
