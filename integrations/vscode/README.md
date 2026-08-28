@@ -1,3 +1,10 @@
+<div align="center">
+  <a href="https://www.cognee.ai">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="cognee" width="220">
+  </a>
+  <p><strong>Cognee memory for VS Code</strong> — persistent, citable project memory you can remember, recall, and ask from your editor, with answers linked back to source files.</p>
+</div>
+
 # Cognee — Project Memory (VS Code)
 
 Give your editor a persistent, **citable memory** of the project. Remember and recall
