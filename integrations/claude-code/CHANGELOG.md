@@ -12,6 +12,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.4.1]
 
+### Fixed
+- **Status line: a stale red ✕ now heals itself while you are idle.** Recovery
+  from a recorded failure verdict (`unreachable`, `server_error`,
+  `not_responding`, `auth_failed`) was prompt-driven: nothing re-checked the
+  shared marker until a hook ran, so a server that came back while the terminal
+  sat idle kept a red glyph on the bar for up to the 30-minute fade — long
+  enough to tempt a needless restart. The session-long exit watcher now
+  re-probes about once a minute (`COGNEE_CONN_REPROBE_INTERVAL`) while, and
+  only while, the marker holds a failure state for this session's own
+  `base_url`, and writes `ready` on success. Only a positive verdict is ever
+  written — timeouts stay no-verdict, so this can clear a wrong red but never
+  paint one — and `auth_failed` clears only on an authenticated success, since
+  `/health` answering 200 says nothing about the key.
+
 ### Changed
 - **Status line: memory hits in plain words, plus a per-session total.** The
   `recall 4s/5t/0g/1a · saved 2p/41t/2a` strip is replaced by

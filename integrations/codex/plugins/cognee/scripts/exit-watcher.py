@@ -115,6 +115,85 @@ def _refresh_credits_marker(service_url: str) -> None:
         _log("credits_check_error", error=str(exc)[:200])
 
 
+# Connection self-heal. Recovery of a red status-line verdict is
+# otherwise prompt-driven: once the shared marker says unreachable /
+# server_error / not_responding / auth_failed, nothing re-checks it until a
+# hook runs, so a server that recovers while the user is idle leaves a stale
+# ✕ on the bar for up to the renderer's 30-minute fade. This process lives as
+# long as the host session (see _refresh_credits_marker), so it is the right
+# place for a slow background re-probe.
+_CONN_REPROBE_STATES = ("unreachable", "server_error", "not_responding", "auth_failed")
+_last_conn_reprobe_at = 0.0
+
+
+def _conn_reprobe_interval() -> float:
+    try:
+        return float(os.environ.get("COGNEE_CONN_REPROBE_INTERVAL", "") or 60.0)
+    except ValueError:
+        return 60.0
+
+
+def _reprobe_connection(service_url: str, api_key: str = "") -> None:
+    """Re-probe a recorded failure state and mark ready if the server is back.
+
+    Contract, in order:
+      * Only acts while the shared marker holds a failure state — a healthy or
+        absent marker costs one file read and nothing else.
+      * Same-base_url guard: the marker is machine-wide (Claude and Codex, local
+        and cloud, share it), so a verdict about a different server than this
+        session's is not ours to overwrite.
+      * Throttled to one probe per interval (default 60s) per watcher process.
+      * ONLY a positive "ready" is ever written. Timeouts / unknown are no
+        verdict and leave the marker untouched — the re-probe can heal a wrong
+        red but can never paint one.
+      * auth_failed heals only on an AUTHENTICATED success: /health answering
+        200 says nothing about the key. Other failure states heal on either
+        probe, with the authed one preferred because it is the stronger signal.
+    """
+    global _last_conn_reprobe_at
+    try:
+        from _plugin_common import (
+            _local_api_url,
+            _normalize_service_url,
+            authed_liveness,
+            mark_server_ready,
+            probe_health,
+            read_connection_state,
+        )
+
+        marker = read_connection_state()
+        state = str(marker.get("state") or "")
+        if state not in _CONN_REPROBE_STATES:
+            return
+        base_url = _normalize_service_url(str(service_url or "") or _local_api_url())
+        if not base_url:
+            return
+        marker_url = _normalize_service_url(str(marker.get("base_url") or ""))
+        if marker_url and marker_url != base_url:
+            return  # someone else's server
+        now = time.time()
+        last_seen = max(_last_conn_reprobe_at, float(marker.get("checked_at", 0) or 0))
+        if now - last_seen < _conn_reprobe_interval():
+            return
+        _last_conn_reprobe_at = now
+
+        verdict = authed_liveness(base_url, api_key, timeout=2.0)
+        authed = verdict != "unknown"
+        if not authed:
+            verdict = probe_health(base_url, timeout=2.0)
+        if verdict != "ready":
+            _log("connection_reprobe_no_heal", state=state, verdict=verdict, base_url=base_url)
+            return
+        if state == "auth_failed" and not authed:
+            # /health is unauthenticated: a 200 cannot clear an auth verdict.
+            _log("connection_reprobe_no_heal", state=state, verdict="ready_unauthed")
+            return
+        mark_server_ready(base_url)
+        _log("connection_self_healed", prior=state, base_url=base_url, authed=authed)
+    except Exception as exc:
+        _log("connection_reprobe_error", error=str(exc)[:200])
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         _log("fatal_missing_args")
@@ -173,6 +252,8 @@ def main() -> None:
     while _owns_pidfile(pidfile) and _pid_alive(parent_pid):
         # Session-long steady-state credits refresh (throttled internally).
         _refresh_credits_marker(service_url)
+        # Self-heal a stale red connection verdict (throttled internally).
+        _reprobe_connection(service_url, api_key)
         time.sleep(_POLL_SECONDS)
 
     if not _owns_pidfile(pidfile):
