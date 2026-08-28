@@ -1,3 +1,10 @@
+<div align="center">
+  <a href="https://www.cognee.ai">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="cognee" width="220">
+  </a>
+  <p><strong>Cognee memory for OpenClaw</strong> — persistent, multi-scope memory with automatic recall and capture for your OpenClaw agents.</p>
+</div>
+
 # @cognee/cognee-openclaw
 
 OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (company/user/agent), session tracking, and automatic recall.

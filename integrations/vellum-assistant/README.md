@@ -1,3 +1,10 @@
+<div align="center">
+  <a href="https://www.cognee.ai">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="cognee" width="220">
+  </a>
+  <p><strong>Cognee memory for Vellum Assistant</strong> — session-aware knowledge-graph memory with auto-routing recall and persistent learning across sessions.</p>
+</div>
+
 # Cognee Plugin for Vellum Assistant
 
 Cognee knowledge graph memory for Vellum Assistant. Session-aware storage, auto-routing recall, and persistent learning across sessions. Supports local mode (self-hosted Cognee server) and Cognee Cloud.
