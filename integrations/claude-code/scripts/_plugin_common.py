@@ -1427,11 +1427,23 @@ def pop_pending_prompt(session_id: str, *, turn_id: str = "") -> dict:
     """Return and remove the prompt saved for this Codex turn."""
     if not session_id:
         return {"prompt": "", "context": ""}
-    data = _load_json_file(_pending_file(session_id))
+    pending_path = _pending_file(session_id)
+    data = _load_json_file(pending_path)
     turn_key, session_key = _pending_keys(session_id, turn_id)
     entry = data.pop(turn_key, None) or data.get(session_key) or {}
     data.pop(session_key, None)
-    _write_json_file(_pending_file(session_id), data)
+    if data:
+        _write_json_file(pending_path, data)
+    else:
+        # Last entry consumed: remove the file rather than write ``{}`` back.
+        # Writing the emptied dict left one 2-byte husk per session, forever
+        # (80 of 88 files in one pending/ dir were husks — SDK-469).
+        try:
+            pending_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            hook_log("pending_unlink_failed", {"path": str(pending_path), "error": str(exc)[:200]})
     if not isinstance(entry, dict):
         return {"prompt": "", "context": ""}
     return {
@@ -4130,6 +4142,22 @@ def _sweep_dir_by_age(directory: Path, max_age: float, now: float, counts: dict,
             _sweep_remove(path, counts, key)
 
 
+def _sweep_pending_husks(counts: dict) -> None:
+    """Empty ``{}`` pending files left by older versions of ``pop_pending_prompt``.
+    Nothing is in flight for an empty buffer, so age is irrelevant; a live
+    session that needs the file again simply recreates it."""
+    try:
+        entries = list(_PENDING_DIR.glob("*.json"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            if path.stat().st_size <= 2 and not _load_json_file(path):
+                _sweep_remove(path, counts, "pending_husks")
+        except OSError:
+            continue
+
+
 def _sweep_launch_records(now: float, counts: dict) -> None:
     try:
         entries = list(_SESSIONS_MAP_DIR.glob("*.json"))
@@ -4211,6 +4239,7 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             (_PENDING_DIR, "pending"),
         ):
             _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
+        _sweep_pending_husks(counts)
         _sweep_launch_records(now, counts)
         _sweep_improve_locks(now, counts)
         _sweep_expired_improve_marker(now, counts)
