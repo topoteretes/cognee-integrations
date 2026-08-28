@@ -162,6 +162,25 @@ export type CogneePluginConfig = {
    */
   datasetSwitchTool?: boolean;
 
+  // --- Memory-hit visibility ---
+  /**
+   * Append a one-line footer to the agent's final reply on turns where
+   * auto-recall injected >= 1 memory (e.g. "[cognee: 3 memories]"). Turns
+   * with no hits get no footer. Default: true.
+   */
+  memoryHitFooter?: boolean;
+  /**
+   * Footer template. Placeholders: {count}, {memories} (singular/plural),
+   * {sources} (comma-joined source labels). Default: "[cognee: {count} {memories}]"
+   */
+  memoryHitFooterFormat?: string;
+  /**
+   * Once per 7 days, append a digest to the agent's next reply summarizing
+   * turns-with-hits, total turns and top memory sources. Suppressed when the
+   * week had zero hits. Default: true.
+   */
+  weeklyDigest?: boolean;
+
   // --- Harness-noise filter ---
   /**
    * ctx.trigger values treated as harness-generated turns: their prompts are

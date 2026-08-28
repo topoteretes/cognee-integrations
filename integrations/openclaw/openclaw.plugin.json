@@ -239,6 +239,18 @@
         "type": "boolean",
         "description": "On session_end, call /improve with the session id to bridge session-cache QAs into the permanent graph (default: true)"
       },
+      "memoryHitFooter": {
+        "type": "boolean",
+        "description": "Append a one-line footer to the agent's final reply on turns where auto-recall injected at least one memory, e.g. \"[cognee: 3 memories]\". No footer on turns without hits (default: true)"
+      },
+      "memoryHitFooterFormat": {
+        "type": "string",
+        "description": "Footer template. Placeholders: {count}, {memories} (\"memory\"/\"memories\"), {sources} (default: \"[cognee: {count} {memories}]\")"
+      },
+      "weeklyDigest": {
+        "type": "boolean",
+        "description": "Once per 7 days, append a digest to the agent's next reply with turns-with-hits, total turns and top memory sources. Suppressed when the week had zero hits (default: true)"
+      },
       "autoIndex": {
         "type": "boolean",
         "description": "Auto-sync memory files to Cognee on plugin startup (default: true)"
@@ -396,6 +408,16 @@
     },
     "improveOnSessionEnd": {
       "label": "Improve on Session End"
+    },
+    "memoryHitFooter": {
+      "label": "Memory-Hit Footer"
+    },
+    "memoryHitFooterFormat": {
+      "label": "Memory-Hit Footer Format",
+      "placeholder": "[cognee: {count} {memories}]"
+    },
+    "weeklyDigest": {
+      "label": "Weekly Digest"
     },
     "autoIndex": {
       "label": "Auto-Index on Startup"

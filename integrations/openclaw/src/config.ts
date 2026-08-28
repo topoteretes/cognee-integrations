@@ -44,6 +44,10 @@ export const DEFAULT_MEMORY_STEER_TEXT =
   "To look up or verify durable knowledge use the memory_search / memory_get tools; when the user asks to forget something use memory_forget; " +
   "to work in a different dataset use memory_switch_dataset. Do not duplicate durable knowledge into MEMORY.md — Cognee is the source of truth.";
 
+export const DEFAULT_MEMORY_HIT_FOOTER = true;
+export const DEFAULT_MEMORY_HIT_FOOTER_FORMAT = "[cognee: {count} {memories}]";
+export const DEFAULT_WEEKLY_DIGEST = true;
+
 export const DEFAULT_NOISE_TRIGGERS: string[] = ["heartbeat", "cron"];
 export const DEFAULT_NOISE_PATTERNS: string[] = [
   // OpenClaw's default heartbeat prompt: "Read HEARTBEAT.md if it exists …"
@@ -163,6 +167,14 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   // Recall layers
   const recallSessionLayers = typeof raw.recallSessionLayers === "boolean" ? raw.recallSessionLayers : DEFAULT_RECALL_SESSION_LAYERS;
 
+  // Memory-hit visibility
+  const memoryHitFooter = typeof raw.memoryHitFooter === "boolean" ? raw.memoryHitFooter : DEFAULT_MEMORY_HIT_FOOTER;
+  const memoryHitFooterFormat =
+    typeof raw.memoryHitFooterFormat === "string" && raw.memoryHitFooterFormat.trim()
+      ? raw.memoryHitFooterFormat
+      : DEFAULT_MEMORY_HIT_FOOTER_FORMAT;
+  const weeklyDigest = typeof raw.weeklyDigest === "boolean" ? raw.weeklyDigest : DEFAULT_WEEKLY_DIGEST;
+
   // Harness-noise filter
   const noiseTriggers = Array.isArray(raw.noiseTriggers) ? raw.noiseTriggers : DEFAULT_NOISE_TRIGGERS;
   const noisePatterns = Array.isArray(raw.noisePatterns) ? raw.noisePatterns : DEFAULT_NOISE_PATTERNS;
@@ -176,7 +188,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,
+    recallInjectionPosition, memoryHitFooter, memoryHitFooterFormat, weeklyDigest, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,
     enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,

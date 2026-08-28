@@ -11,6 +11,7 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Agent lifecycle registration**: Registers/unregisters each agent session with the Cognee server on every prompt turn; combined with `COGNEE_AGENT_MODE=true` on the server, Cognee shuts down automatically when all agents disconnect
 - **14 search types**: From simple semantic search (CHUNKS) to chain-of-thought graph reasoning (GRAPH_COMPLETION_COT) to auto-selection (FEELING_LUCKY)
 - **Lazy dataset resolution**: On first prompt, if a dataset UUID is not cached locally, the plugin queries the Cognee server by name so you can connect to any pre-existing dataset without manual configuration
+- **Memory-hit visibility**: a `[cognee: N memories]` footer on replies where recall actually injected memories, plus a once-a-week digest of turns-with-hits and top sources — no extra LLM calls
 - **Health check**: Verifies Cognee API connectivity before operations
 - **Auto-index**: Syncs memory markdown files to Cognee via `/remember` (add new, update changed, forget removed, skip unchanged). The `/remember` endpoint runs ingest, graph build, and graph enrichment in one server-side call.
 - **In-session memory**: Every tool call is stored as a `TraceEntry` and every prompt/answer pair as a `QAEntry` in Cognee's session cache (`captureSession`, on by default); with `AUTO_FEEDBACK=true` set on the Cognee container, follow-up messages are auto-classified as feedback and attached to the previous QA; `session_end` triggers `/improve` to bridge the session cache into the graph
@@ -465,6 +466,21 @@ Move **one conversation** to another Cognee dataset — the OpenClaw counterpart
 In multi-scope mode only the **agent** scope is repointed; `company`/`user` memory stays shared. Memory-file sync keeps following `scopeRouting` — the switch moves the conversation's memory, not the agent's files. Overrides persist across gateway restarts in `~/.openclaw/memory/cognee/dataset-overrides.json`. Set `datasetSwitchTool: false` to not register it.
 
 The plugin's bundled server pin is `cognee==1.5.3` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.5.3`.
+
+### Memory-hit visibility
+
+Recall's cost (latency, injected tokens) is felt on every turn, but a recall that actually helped is invisible in the reply. Two features make it visible, at zero extra LLM calls and no hot-path I/O:
+
+- **Per-turn footer** — when auto-recall injected at least one memory into a turn, the agent's *final* reply gets a one-line trailer, e.g. `[cognee: 3 memories]`. Turns with no hits (and heartbeat/cron turns, which never recall) get nothing. Streamed/tool chunks are never footered — only the final payload, once.
+- **Weekly digest** — the plugin keeps a rolling 7-day count per agent of non-noise turns, turns with hits, and which memory sources produced them. When the week closes, the next final reply carries one summary line, e.g. `[cognee weekly digest] This week cognee found relevant memories on 47 of your agent's 120 turns (top sources: session summaries, MEMORY.md).` A week with zero hits posts nothing. Counters live in `~/.openclaw/memory/cognee/digest-stats.json`.
+
+Both ride the outbound `reply_payload_sending` hook, which is not a conversation hook and therefore needs no `allowConversationAccess` grant.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `memoryHitFooter` | boolean | `true` | Append the footer on turns with ≥1 injected memory |
+| `memoryHitFooterFormat` | string | `[cognee: {count} {memories}]` | Footer template. `{count}`, `{memories}` (memory/memories), `{sources}` (comma-joined source labels) |
+| `weeklyDigest` | boolean | `true` | Append the weekly summary to the first final reply after a 7-day window closes |
 
 ### Harness-noise filter
 
