@@ -48,6 +48,18 @@ from _recall_http import DOWN, SLOW, classify_transport_exception
 from cognee_statusline_render import render_status_for_host
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
+#: Per-field caps for recall-audit.log lines (characters).
+_AUDIT_PROMPT_CHARS = 2000
+_AUDIT_CONTEXT_CHARS = 4000
+
+
+def _audit_clip(value, limit: int) -> str:
+    """Head of ``value`` for the audit log, marked when clipped."""
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"…[+{len(text) - limit} chars]"
+
 
 def _float_env(name: str, default: float) -> float:
     try:
@@ -753,22 +765,26 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
+        from _logfiles import append_line as _append_log_line
+
         _audit = _Path.home() / ".cognee-plugin" / "codex" / "recall-audit.log"
-        _audit.parent.mkdir(parents=True, exist_ok=True)
-        with _audit.open("a", encoding="utf-8") as fh:
-            fh.write(
-                json.dumps(
-                    {
-                        "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
-                        "session_id": session_id,
-                        "prompt": prompt,
-                        "hits": counts,
-                        "per_scope": per_scope,
-                        "context": full_context,
-                    }
-                )
-                + "\n"
-            )
+        # Full prompt + full injected context per line averaged ~9 KB a turn and
+        # made this the fastest-growing file in the state dir. The audit is for
+        # seeing *what* was recalled, which the head of each field shows; the
+        # complete context still reaches the model via additionalContext.
+        _append_log_line(
+            _audit,
+            json.dumps(
+                {
+                    "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
+                    "session_id": session_id,
+                    "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
+                    "hits": counts,
+                    "per_scope": per_scope,
+                    "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                }
+            ),
+        )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 

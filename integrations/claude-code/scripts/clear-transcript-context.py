@@ -12,6 +12,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from _logfiles import append_line as _append_log_line
+
 ENV_NAME = "COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE"
 TRUTHY = {"1", "true", "yes", "on"}
 PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
@@ -24,7 +26,6 @@ def _enabled() -> bool:
 
 def _log(event: str, detail: dict | None = None) -> None:
     try:
-        PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         line = {
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "pid": os.getpid(),
@@ -32,8 +33,7 @@ def _log(event: str, detail: dict | None = None) -> None:
         }
         if detail:
             line["detail"] = detail
-        with LOG_FILE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+        _append_log_line(LOG_FILE, json.dumps(line, default=str))
     except Exception:
         pass
 

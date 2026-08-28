@@ -203,7 +203,10 @@ esac
 # $DATASET is resolved above (COGNEE_PLUGIN_DATASET → default)
 # and scopes the search to the plugin's dataset so unrelated datasets don't bleed in.
 # Logic lives in _recall_http.py (stdlib-only, unit-tested); stderr is surfaced.
-export COGNEE_PLUGIN_STATE_DIR="$PLUGIN_DIR"
+# No COGNEE_PLUGIN_STATE_DIR override here: the circuit breaker must be the ONE
+# at ~/.cognee-plugin/recall-breaker.json that the per-prompt hooks, doctor and
+# the status line use. Pointing it at the per-plugin dir gave this skill its own
+# breaker, so a server the hooks had already given up on looked healthy here.
 RECALL_JSON="$(python3 "${SELF_DIR}/_cognee_client.py" "$SERVICE_URL" "$API_KEY" "$QUERY" "$SESSION_ID" "$SCOPE" "$TOP_K" "$DATASET" "$CODE_QUERY" || true)"
 
 if [ -n "$RECALL_JSON" ] && [ "$RECALL_JSON" != "UNREACHABLE" ]; then

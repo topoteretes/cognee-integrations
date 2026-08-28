@@ -18,6 +18,7 @@ from pathlib import Path
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _plugin_common import (
     bump_save_counter,
     drain_warmup_entries,
@@ -98,6 +99,7 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
     log_path = _STATE_DIR / "watcher.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("prompt_watcher_log_open_failed", {"error": str(exc)[:200]})

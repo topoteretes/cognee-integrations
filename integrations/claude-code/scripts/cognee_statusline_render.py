@@ -3,8 +3,8 @@
 
 Invoked by Claude Code's ``statusLine`` (via ``cognee-statusline.sh``), which
 pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
-only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
-``_plugin_common`` import.
+only env vars (``~/.cognee/.env`` included) and the plugin's own state files —
+no network calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
 """
@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,7 +25,6 @@ from _env_file import forced_backend, load_env_file
 load_env_file()
 
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
-_CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
@@ -34,7 +32,6 @@ _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
 # (or a marketplace auto-update) installs a new version, which makes it the
 # only signal that clears the update nudge mid-session (see _update_segment).
 _INSTALLED_PLUGINS_PATH = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-_PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "claude-code" / "llm-state.json"
 _RECALL_PATH = _SHARED_ROOT / "claude-code" / "last_recall.json"
 _RECALL_DIR = _SHARED_ROOT / "claude-code" / "recall"
@@ -53,16 +50,6 @@ _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 # there is no periodic re-check — so a verdict this old came from a session that is
 # gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
 _LLM_STATE_STALE_SECONDS = 30 * 60
-
-# Passive, app-closed-safe mitigation for the pipeline-health sweep (Layer 1, a
-# Windows Scheduled Task) -- PushNotification (Layer 2) only fires while the app
-# is open, so this is what lets Mike see a stuck-pipeline finding the INSTANT he
-# next opens any terminal running the plugin, even after a period the app was
-# closed. Older than this many seconds, treat the file as stale/unknown rather
-# than showing a possibly-outdated warning -- the sweep runs every 2-5 minutes,
-# so anything older than that means the sweep itself has stopped, which is its
-# own separate (unmonitored-by-this-glyph) problem, not something to imply here.
-_PIPELINE_HEALTH_STALE_SECONDS = 30 * 60
 
 # TTL for the credits balance. Written per turn (async prompt hook), after
 # improve/remember, and by the idle watcher every ~5 minutes — so a marker
@@ -130,16 +117,7 @@ def _active_mode() -> str:
     forced = forced_backend()
     if forced == "local":
         return "local"
-    # 1. env var
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
-    # 2. config file
-    if not url:
-        try:
-            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                url = str(data.get("base_url") or "").strip()
-        except Exception:
-            pass
     if not url:
         return "cloud" if forced == "cloud" else "local"
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
@@ -194,14 +172,6 @@ def _active_base_url() -> str:
         url = os.environ.get(var, "").strip()
         if url:
             return url.rstrip("/")
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            url = str(data.get("base_url") or "").strip()
-            if url:
-                return url.rstrip("/")
-    except Exception:
-        pass
     return _DEFAULT_LOCAL_BASE_URL
 
 
@@ -468,41 +438,6 @@ def _recorded_install_version() -> str:
             if parsed and parsed > best:
                 best, best_str = parsed, version
     return best_str
-
-
-def _pipeline_health_glyph() -> str:
-    """ "⚠ N " when the pipeline sweep (scripts/pipeline_sweep.py) has a fresh,
-    non-stale finding of one or more stuck runs or a down server; "" otherwise
-    (no file yet, stale, or everything's clean). See
-    docs/KB/pipeline-monitor-notify-policy.md for the full monitoring design this
-    is one small passive piece of.
-    """
-    try:
-        raw = json.loads(_PIPELINE_HEALTH_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    if not isinstance(raw, dict):
-        return ""
-    try:
-        generated_at = datetime.fromisoformat(str(raw.get("generated_at", "")))
-        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
-        if age_seconds > _PIPELINE_HEALTH_STALE_SECONDS:
-            return ""
-    except (ValueError, TypeError):
-        return ""
-    server = raw.get("server") or {}
-    if server.get("up") is False:
-        return "⚠ server-down "
-    summary = raw.get("summary") or {}
-    worst = str(summary.get("worst_classification") or "ok")
-    flagged = (
-        sum((summary.get("by_classification") or {}).values())
-        if isinstance(summary.get("by_classification"), dict)
-        else 0
-    )
-    if worst in ("alert", "critical") and flagged > 0:
-        return f"⚠ {flagged} pipeline(s) stuck "
-    return ""
 
 
 def _read_json(path: Path) -> dict:
@@ -784,19 +719,11 @@ def _credits_segment() -> str:
 def _forced_cloud_unconfigured() -> bool:
     """Forced cloud (backend switch) with no URL anywhere: nothing to connect
     to — a definitive misconfiguration this renderer can see directly from
-    env + config.json, without waiting for a hook to record a failed attempt.
+    the environment, without waiting for a hook to record a failed attempt.
     """
     if forced_backend() != "cloud":
         return False
-    if os.environ.get("COGNEE_BASE_URL", "").strip():
-        return False
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and str(data.get("base_url") or "").strip():
-            return False
-    except Exception:
-        pass
-    return True
+    return not os.environ.get("COGNEE_BASE_URL", "").strip()
 
 
 def _status_prefix(session_id: str = "") -> str:
@@ -863,7 +790,7 @@ def main() -> None:
     # mode; the update nudge stays last because it is a transient banner, not part
     # of the steady-state line.
     sys.stdout.write(
-        f"{_pipeline_health_glyph()}{_status_prefix(_session_id)}"
+        f"{_status_prefix(_session_id)}"
         f"cognee: {_active_dataset(_session_id)} · {_mode_label()}{_switched_marker(_session_id)}"
         f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
     )
