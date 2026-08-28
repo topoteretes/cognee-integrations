@@ -25,12 +25,12 @@ capabilities — as tools, not slash-command skills.
   (`corpus=memory`), the session cache (`corpus=sessions`) or both (`all`), returning
   `cognee://` references; get resolves a reference to full text with provenance or reads a
   bounded excerpt of `MEMORY.md` / `memory/*.md`. Unavailability is signalled with
-  `disabled: true`, never thrown. Declared in `contracts.tools`. (SDK-343)
+  `disabled: true`, never thrown. Declared in `contracts.tools`.
 - **`memory_forget` tool** — user-directed, per-document deletion ("forget what we said
   about tennis"). Two-phase: `action=find` lists candidates with raw-text previews, session
   ids and matched terms; `action=forget` deletes only the listed `dataIds`, one
   `POST /forget` each, and only with `confirm: true`. Whole-dataset and everything wipes
-  stay CLI-only by construction. (parity with SDK-340)
+  stay CLI-only by construction.
 - **`memory_switch_dataset` tool** — move **one conversation** (keyed by `sessionKey`,
   falling back to `sessionId`) to another dataset: `list` / `current` / `switch` / `reset`.
   A switch syncs the current session strictly (`force` to override), ensures the target and
@@ -40,7 +40,7 @@ capabilities — as tools, not slash-command skills.
   `force` after a failed sync is recorded and re-synced into its own dataset at session
   end (and by `reset`, which refuses without `force` while any retired session is still
   unsynced), so the escape hatch defers the sync instead of dropping turns. Overrides
-  persist in `~/.openclaw/memory/cognee/dataset-overrides.json`. (parity with SDK-400)
+  persist in `~/.openclaw/memory/cognee/dataset-overrides.json`.
 - **Code graph.** `openclaw cognee index-repo <path|url> [--dataset] [--index-vectors]
   [--wait <s>]` indexes a repository into a deterministic code graph (enola pipeline, one
   `codebase-<repo>-<digest>` dataset per repo); `memory_code_search` answers structural
@@ -49,7 +49,7 @@ capabilities — as tools, not slash-command skills.
   identifier-shaped token **and** a code graph is indexed or listed in `codeDatasets`.
   Autoindex and per-turn re-ingest are intentionally not ported — OpenClaw agents are
   rarely launched inside a checkout. Indexed repos are recorded in
-  `~/.openclaw/memory/cognee/code-graphs.json`. (parity with SDK-384)
+  `~/.openclaw/memory/cognee/code-graphs.json`.
 - **Recall session layers.** With `dataset_ids` + `search_type` in the request the
   server's default `auto` scope is graph-only, so cached Q&A turns, tool-call lessons and
   distilled agent guidance never reached the prompt. Recall now runs one extra call with
@@ -64,7 +64,7 @@ capabilities — as tools, not slash-command skills.
   `openclaw cognee status`, with an "update available" hint when the rate-limited,
   fail-silent background npm check (cached in `update-check.json`; `COGNEE_UPDATE_CHECK`,
   `COGNEE_UPDATE_CHECK_INTERVAL`) finds a newer release. `--check-updates` forces a live
-  check. (SDK-305, from community PR #291)
+  check. Based on community PR #291 by @Akshats-git.
 - Config keys: `memoryTools`, `memoryForgetTool`, `datasetSwitchTool`, `codeSearchTool`,
   `codeGraphRecall`, `codeDatasets`, `recallSessionLayers`, `memorySteer`,
   `memorySteerText` — all on by default except `codeDatasets` (empty).
@@ -74,7 +74,7 @@ capabilities — as tools, not slash-command skills.
   per-dataset map (`{ "<dataset_uuid>": { status, pipeline_run_id } }`); the plugin read
   `.status` off the top level and logged `status=?` on every session end. The response is
   now normalized (single map unwrapped, multi-dataset summarized as `mixed`, legacy flat
-  shape kept). (SDK-465, part 1)
+  shape kept).
 - **`improveOnSessionEnd` could not be set.** `resolveConfig` honoured it but
   `openclaw.plugin.json` (`additionalProperties: false`) omitted it, so valid config was
   rejected. Added to the manifest schema.
@@ -91,7 +91,7 @@ capabilities — as tools, not slash-command skills.
 ### Known limitations
 - Sessions are never marked `completed` server-side: `mark_ended` exists in the server but
   has no HTTP route, so every integration's sessions read as `running` → `abandoned`.
-  Observability only; tracked as SDK-482 (server route first, plugin follow-up after).
+  Observability only; a server-side endpoint is needed first, then the plugins will call it at session end.
 - `time` provenance on `memory_search` results depends on the server populating
   `created_at`/`timestamp` in result metadata.
 - State under `~/.openclaw/memory/cognee/` (dataset ids, sync indexes, dataset overrides,
@@ -102,7 +102,6 @@ capabilities — as tools, not slash-command skills.
 ## [2026.8.20] and earlier
 
 Pre-changelog releases. See the git history of `integrations/openclaw/` — notable earlier
-work includes the harness-noise filter (SDK-439), the recall budget + shared circuit
-breaker (SDK-215), multi-scope memory with per-agent datasets, session capture via
-`/remember/entry`, the test harness with mock server and live tier (SDK-111), and
-ClawHub publication (SDK-358).
+work includes the harness-noise filter, the recall budget + shared circuit breaker,
+multi-scope memory with per-agent datasets, session capture via `/remember/entry`, the
+test harness with mock server and live tier, and ClawHub publication.
