@@ -159,7 +159,8 @@ describe("harness-noise filtering", () => {
     await emit("llm_output", { assistantTexts: ["we ship on Friday"] }, ctx);
     await flush();
 
-    expect(mockRecall).toHaveBeenCalledTimes(1);
+    // Graph lane + the explicit session-layers lane (sessions are on here).
+    expect(mockRecall).toHaveBeenCalledTimes(2);
     const qas = qaCalls();
     expect(qas).toHaveLength(1);
     expect(qas[0]).toMatchObject({
@@ -189,7 +190,7 @@ describe("harness-noise filtering", () => {
     await emit("llm_output", { assistantTexts: ["HEARTBEAT_OK"] }, ctx);
     await flush();
 
-    expect(mockRecall).toHaveBeenCalledTimes(1);
+    expect(mockRecall).toHaveBeenCalledTimes(2); // graph lane + session-layers lane
     expect(qaCalls()).toHaveLength(1);
   });
 
@@ -206,6 +207,6 @@ describe("harness-noise filtering", () => {
     // heartbeat runs in this configuration.
     await emit("before_prompt_build", { prompt: HEARTBEAT_PROMPT }, { ...ctx, sessionId: "s2" });
     await flush();
-    expect(mockRecall).toHaveBeenCalledTimes(1);
+    expect(mockRecall).toHaveBeenCalledTimes(2); // graph lane + session-layers lane
   });
 });

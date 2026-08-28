@@ -118,9 +118,11 @@ describe("registration", () => {
       "health",
       "improve",
       "index",
+      "index-repo",
       "scopes",
       "setup",
       "status",
+      "version",
       "visualise",
     ]);
   });
