@@ -48,6 +48,18 @@ from _plugin_common import (
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
+#: Per-field caps for recall-audit.log lines (characters).
+_AUDIT_PROMPT_CHARS = 2000
+_AUDIT_CONTEXT_CHARS = 4000
+
+
+def _audit_clip(value, limit: int) -> str:
+    """Head of ``value`` for the audit log, marked when clipped."""
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"…[+{len(text) - limit} chars]"
+
 
 def _float_env(name: str, default: float) -> float:
     try:
@@ -125,6 +137,29 @@ def _format_entry(entry: dict) -> str:
         a_short = a[:TRUNCATE_ANSWER] + "..." if len(a) > TRUNCATE_ANSWER else a
         lines.append(f"A: {a_short}")
     return "\n".join(lines)
+
+
+def _count_cross_session_hits(by_source: dict, session_id: str) -> int:
+    """How many injected results came from outside this session.
+
+    The session, trace and agent-guidance scopes are queried by ``session_id``,
+    so everything they return is this session's own. Only the knowledge graph
+    reaches across sessions: the bridge stamps every synced session document
+    with a ``Session ID: <id>`` header (and distilled learnings keep the id in
+    their heading), so a graph passage that does not mention the current id
+    came from an earlier session — or from a ``remember``-ed document, which is
+    knowledge this conversation never produced either. That is the number the
+    status line shows as ``N from past sessions``: what memory contributed that
+    Claude could not have known from this conversation alone.
+    """
+    count = 0
+    for entry in by_source.get("graph_context") or []:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("content", "") or entry.get("text", "") or "")
+        if not session_id or session_id not in text:
+            count += 1
+    return count
 
 
 def _has_entry_content(entry: dict) -> bool:
@@ -550,6 +585,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
 
     counts = {k: len(v) for k, v in by_source.items()}
     total = sum(counts.values())
+    cross_session_hits = _count_cross_session_hits(by_source, session_id)
 
     # Write last-turn counts so the status line script can render them.
     # Best-effort; failure here must not break the hook output.
@@ -558,19 +594,43 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
 
         _state = _Path.home() / ".cognee-plugin" / "claude-code" / "last_recall.json"
         _state.parent.mkdir(parents=True, exist_ok=True)
+        _key = get_session_key()
+        _key_safe = bool(_key) and all(c.isalnum() or c in "._-" for c in _key)
+        _per = _state.parent / "recall" / f"{_key}.json" if _key_safe else None
+        # Session-cumulative counter, carried forward from this session's own
+        # per-session marker: how many prompts this session has seen and on how
+        # many of them memory actually injected something. This is the
+        # "memory fired on 12 of 40 turns" activation number the status line
+        # shows next to the per-turn count — no extra calls, just the turn that
+        # was already counted. Keyed by host session, so /clear starts over and
+        # --resume continues.
+        _totals = {"turns": 0, "turns_with_hits": 0}
+        if _per is not None and _per.exists():
+            try:
+                _prev = json.loads(_per.read_text(encoding="utf-8")).get("session_totals")
+                if isinstance(_prev, dict):
+                    _totals["turns"] = max(0, int(_prev.get("turns", 0) or 0))
+                    _totals["turns_with_hits"] = max(0, int(_prev.get("turns_with_hits", 0) or 0))
+            except Exception:
+                pass
+        _totals["turns"] += 1
+        if total > 0:
+            _totals["turns_with_hits"] += 1
         _payload = json.dumps(
             {
                 "session_id": session_id,
                 # Host session key too: the marker is per-integration, so the
                 # status line needs this to tell "my counts" from another live
                 # session's before rendering them.
-                "session_key": get_session_key(),
+                "session_key": _key,
                 "ts": __import__("datetime")
                 .datetime.now(__import__("datetime").timezone.utc)
                 .isoformat(timespec="seconds"),
                 "hits": counts,
+                "cross_session_hits": cross_session_hits,
                 "per_scope": per_scope,
                 "saves_last_turn": saves_last_turn,
+                "session_totals": _totals,
             }
         )
         # Machine-wide copy: kept because cognee_plugin.py resolves the active
@@ -580,9 +640,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         # terminals open the single shared file only ever holds the counts of
         # whoever prompted last, so every other bar would show nothing (or, worse,
         # a neighbour's numbers).
-        _key = get_session_key()
-        if _key and all(c.isalnum() or c in "._-" for c in _key):
-            _per = _state.parent / "recall" / f"{_key}.json"
+        if _per is not None:
             _per.parent.mkdir(parents=True, exist_ok=True)
             _per.write_text(_payload, encoding="utf-8")
     except Exception as exc:
@@ -637,6 +695,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             "context_lookup_hit",
             {
                 "counts": counts,
+                "cross_session_hits": cross_session_hits,
                 "per_scope": per_scope,
                 "saves_last_turn": saves_last_turn,
                 "elapsed_ms": elapsed_ms(recall_start),
@@ -678,22 +737,26 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
+        from _logfiles import append_line as _append_log_line
+
         _audit = _Path.home() / ".cognee-plugin" / "claude-code" / "recall-audit.log"
-        _audit.parent.mkdir(parents=True, exist_ok=True)
-        with _audit.open("a", encoding="utf-8") as fh:
-            fh.write(
-                json.dumps(
-                    {
-                        "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
-                        "session_id": session_id,
-                        "prompt": prompt,
-                        "hits": counts,
-                        "per_scope": per_scope,
-                        "context": full_context,
-                    }
-                )
-                + "\n"
-            )
+        # Full prompt + full injected context per line averaged ~9 KB a turn and
+        # made this the fastest-growing file in the state dir. The audit is for
+        # seeing *what* was recalled, which the head of each field shows; the
+        # complete context still reaches the model via additionalContext.
+        _append_log_line(
+            _audit,
+            json.dumps(
+                {
+                    "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
+                    "session_id": session_id,
+                    "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
+                    "hits": counts,
+                    "per_scope": per_scope,
+                    "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                }
+            ),
+        )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 

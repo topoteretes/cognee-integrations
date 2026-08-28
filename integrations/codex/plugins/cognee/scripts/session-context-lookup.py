@@ -48,6 +48,18 @@ from _recall_http import DOWN, SLOW, classify_transport_exception
 from cognee_statusline_render import render_status_for_host
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
+#: Per-field caps for recall-audit.log lines (characters).
+_AUDIT_PROMPT_CHARS = 2000
+_AUDIT_CONTEXT_CHARS = 4000
+
+
+def _audit_clip(value, limit: int) -> str:
+    """Head of ``value`` for the audit log, marked when clipped."""
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"…[+{len(text) - limit} chars]"
+
 
 def _float_env(name: str, default: float) -> float:
     try:
@@ -125,6 +137,75 @@ def _format_entry(entry: dict) -> str:
         a_short = a[:TRUNCATE_ANSWER] + "..." if len(a) > TRUNCATE_ANSWER else a
         lines.append(f"A: {a_short}")
     return "\n".join(lines)
+
+
+def _count_cross_session_hits(by_source: dict, session_id: str) -> int:
+    """How many injected results came from outside this session.
+
+    The session, trace and agent-guidance scopes are queried by ``session_id``,
+    so everything they return is this session's own. Only the knowledge graph
+    reaches across sessions: the bridge stamps every synced session document
+    with a ``Session ID: <id>`` header (and distilled learnings keep the id in
+    their heading), so a graph passage that does not mention the current id
+    came from an earlier session — or from a ``remember``-ed document, which is
+    knowledge this conversation never produced either. That is the number the
+    memory header shows as ``N from past sessions``: what memory contributed
+    that the model could not have known from this conversation alone.
+    """
+    count = 0
+    for entry in by_source.get("graph_context") or []:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("content", "") or entry.get("text", "") or "")
+        if not session_id or session_id not in text:
+            count += 1
+    return count
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _memory_summary(
+    total: int, cross_session: int, totals: dict, saves: dict, code_facts: int | None = None
+) -> str:
+    """The one-line ``Cognee memory: …`` header, in plain words.
+
+    Codex has no glanceable status bar — this header, injected with the recalled
+    context, is where the user sees what memory did — so it carries the same
+    two numbers the Claude Code bar shows: this turn's hits (with the share
+    that came from past sessions) and the session's running hit ratio, plus
+    what the previous turn persisted::
+
+        Cognee memory: 5 memory hits (3 from past sessions) · 12/40 turns had
+        hits this session · saved last turn 1 prompt / 3 trace / 1 answer
+
+    A session with no hit yet reads ``memory warming up (7 turns)`` instead of
+    a bare ``0/7``. When the repo code lane is armed, ``N code facts`` follows
+    the hit count (they are part of the total) so an indexed repo is visibly in
+    play even at zero.
+    """
+    parts = [_plural(total, "memory hit")]
+    if code_facts is not None:
+        parts[0] += f", {_plural(int(code_facts or 0), 'code fact')}"
+    cross = min(max(int(cross_session or 0), 0), total)
+    if cross == 1:
+        parts[0] += " (1 from a past session)"
+    elif cross > 1:
+        parts[0] += f" ({cross} from past sessions)"
+    turns = int(totals.get("turns", 0) or 0)
+    with_hits = int(totals.get("turns_with_hits", 0) or 0)
+    if turns > 0:
+        if with_hits > 0:
+            parts.append(f"{with_hits}/{turns} turns had hits this session")
+        else:
+            parts.append(f"memory warming up ({_plural(turns, 'turn')})")
+    parts.append(
+        "saved last turn "
+        f"{saves.get('prompt', 0)} prompt / {saves.get('trace', 0)} trace / "
+        f"{saves.get('answer', 0)} answer"
+    )
+    return "Cognee memory: " + " · ".join(parts)
 
 
 def _has_entry_content(entry: dict) -> bool:
@@ -538,24 +619,60 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
 
     counts = {k: len(v) for k, v in by_source.items()}
     total = sum(counts.values())
+    cross_session_hits = _count_cross_session_hits(by_source, session_id)
 
-    # Write last-turn counts so the status line script can render them.
-    # Best-effort; failure here must not break the hook output.
+    # Session-cumulative counter: how many prompts this session has seen and on
+    # how many of them memory actually injected something — the "memory fired
+    # on 12 of 40 turns" activation number in the header. Carried forward from
+    # the marker only when the marker is ours (codex keeps a single shared
+    # file, so another terminal may have prompted last); keyed by host session,
+    # so a new session starts over and a resumed one continues.
+    _session_key = get_session_key()
+    _totals = {"turns": 0, "turns_with_hits": 0}
+    _state = None
     try:
         from pathlib import Path as _Path
 
         _state = _Path.home() / ".cognee-plugin" / "codex" / "last_recall.json"
+        if _state.exists():
+            _prev = json.loads(_state.read_text(encoding="utf-8"))
+            _prev_totals = _prev.get("session_totals") if isinstance(_prev, dict) else None
+            if (
+                isinstance(_prev_totals, dict)
+                and _session_key
+                and str(_prev.get("session_key") or "") == _session_key
+            ):
+                _totals["turns"] = max(0, int(_prev_totals.get("turns", 0) or 0))
+                _totals["turns_with_hits"] = max(
+                    0, int(_prev_totals.get("turns_with_hits", 0) or 0)
+                )
+    except Exception:
+        pass
+    _totals["turns"] += 1
+    if total > 0:
+        _totals["turns_with_hits"] += 1
+
+    # Write last-turn counts so the status line script can render them.
+    # Best-effort; failure here must not break the hook output.
+    try:
+        if _state is None:
+            from pathlib import Path as _Path
+
+            _state = _Path.home() / ".cognee-plugin" / "codex" / "last_recall.json"
         _state.parent.mkdir(parents=True, exist_ok=True)
         _state.write_text(
             json.dumps(
                 {
                     "session_id": session_id,
+                    "session_key": _session_key,
                     "ts": __import__("datetime")
                     .datetime.now(__import__("datetime").timezone.utc)
                     .isoformat(timespec="seconds"),
                     "hits": counts,
+                    "cross_session_hits": cross_session_hits,
                     "per_scope": per_scope,
                     "saves_last_turn": saves_last_turn,
+                    "session_totals": _totals,
                 }
             ),
             encoding="utf-8",
@@ -566,16 +683,13 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # Build a visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
-    status_line = render_status_for_host(get_session_key())
-    header = (
-        f"{status_line}\n"
-        "Cognee memory: recall "
-        f"{counts['session']} session / {counts['trace']} trace / "
-        f"{counts['graph_context']} graph / {counts['session_context']} agent"
-        + (f" / {counts['code']} code" if code_lane else "")
-        + "; saved last turn "
-        f"{saves_last_turn['prompt']} prompt / {saves_last_turn['trace']} trace / "
-        f"{saves_last_turn['answer']} answer"
+    status_line = render_status_for_host(_session_key)
+    header = f"{status_line}\n" + _memory_summary(
+        total,
+        cross_session_hits,
+        _totals,
+        saves_last_turn,
+        code_facts=counts.get("code", 0) if code_lane else None,
     )
 
     section_lines = []
@@ -612,7 +726,13 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         )
         hook_log(
             "context_lookup_hit",
-            {"counts": counts, "per_scope": per_scope, "saves_last_turn": saves_last_turn},
+            {
+                "counts": counts,
+                "cross_session_hits": cross_session_hits,
+                "session_totals": _totals,
+                "per_scope": per_scope,
+                "saves_last_turn": saves_last_turn,
+            },
         )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
@@ -645,22 +765,26 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
+        from _logfiles import append_line as _append_log_line
+
         _audit = _Path.home() / ".cognee-plugin" / "codex" / "recall-audit.log"
-        _audit.parent.mkdir(parents=True, exist_ok=True)
-        with _audit.open("a", encoding="utf-8") as fh:
-            fh.write(
-                json.dumps(
-                    {
-                        "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
-                        "session_id": session_id,
-                        "prompt": prompt,
-                        "hits": counts,
-                        "per_scope": per_scope,
-                        "context": full_context,
-                    }
-                )
-                + "\n"
-            )
+        # Full prompt + full injected context per line averaged ~9 KB a turn and
+        # made this the fastest-growing file in the state dir. The audit is for
+        # seeing *what* was recalled, which the head of each field shows; the
+        # complete context still reaches the model via additionalContext.
+        _append_log_line(
+            _audit,
+            json.dumps(
+                {
+                    "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
+                    "session_id": session_id,
+                    "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
+                    "hits": counts,
+                    "per_scope": per_scope,
+                    "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                }
+            ),
+        )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 

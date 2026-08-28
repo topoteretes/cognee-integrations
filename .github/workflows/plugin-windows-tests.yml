@@ -33,7 +33,11 @@ on:
 jobs:
   test-plugins-windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    # The full suite runs ~20 minutes on this runner (19:21 on main at the time
+    # this was raised): absence-confirmation shells out to netstat and every
+    # probe of a closed loopback port waits its full timeout, because Windows
+    # Firewall drops the SYN instead of refusing. 20 left no headroom at all.
+    timeout-minutes: 30
     steps:
       # The repo has deeply-nested committed artifacts (n8n_workflows LanceDB
       # files) whose paths exceed Windows' MAX_PATH; sparse-checkout the trees

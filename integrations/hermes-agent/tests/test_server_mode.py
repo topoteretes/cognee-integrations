@@ -144,6 +144,54 @@ class TestEnsureLocalServer(unittest.TestCase):
                 sb.ensure_local_server(8000, boot_timeout=600.0, log_path="/var/log/cognee.log")
 
 
+class TestServerLogRotation(unittest.TestCase):
+    """server.log is capped by rotation at spawn — it cannot be silenced (the
+    overflow scan reads it), but it must not grow without bound either."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.log = Path(self.tmp.name) / "server.log"
+
+    def test_small_log_is_left_alone(self):
+        self.log.write_bytes(b"x" * 100)
+        self.assertFalse(sb.rotate_oversized_log(str(self.log), max_bytes=1000))
+        self.assertTrue(self.log.exists())
+        self.assertFalse((self.log.parent / "server.log.1").exists())
+
+    def test_oversized_log_rotates_to_one_kept_generation(self):
+        self.log.write_bytes(b"old" * 400)
+        self.assertTrue(sb.rotate_oversized_log(str(self.log), max_bytes=1000))
+        self.assertFalse(self.log.exists())
+        self.assertEqual((self.log.parent / "server.log.1").read_bytes(), b"old" * 400)
+        # A second rotation replaces the previous generation rather than stacking.
+        self.log.write_bytes(b"new" * 400)
+        self.assertTrue(sb.rotate_oversized_log(str(self.log), max_bytes=1000))
+        self.assertEqual((self.log.parent / "server.log.1").read_bytes(), b"new" * 400)
+
+    def test_missing_log_and_zero_cap_are_noops(self):
+        self.assertFalse(sb.rotate_oversized_log(str(self.log), max_bytes=1000))
+        self.log.write_bytes(b"x" * 5000)
+        self.assertFalse(sb.rotate_oversized_log(str(self.log), max_bytes=0))
+        self.assertTrue(self.log.exists())
+
+    def test_cap_comes_from_env(self):
+        with mock.patch.dict("os.environ", {sb.SERVER_LOG_MAX_BYTES_ENV: "1000"}):
+            self.assertEqual(sb._server_log_cap(), 1000)
+        with mock.patch.dict("os.environ", {sb.SERVER_LOG_MAX_BYTES_ENV: "nonsense"}):
+            self.assertEqual(sb._server_log_cap(), sb.SERVER_LOG_MAX_BYTES)
+
+    def test_spawn_rotates_before_handing_the_log_to_the_child(self):
+        self.log.write_bytes(b"x" * 5000)
+        with (
+            mock.patch.dict("os.environ", {sb.SERVER_LOG_MAX_BYTES_ENV: "1000"}),
+            mock.patch.object(sb.subprocess, "Popen", return_value=mock.MagicMock()),
+        ):
+            sb._spawn(8000, None, None, str(self.log))
+        self.assertTrue((self.log.parent / "server.log.1").exists())
+        self.assertLess(self.log.stat().st_size, 1000)  # fresh file for the new server
+
+
 class TestSpawnEnvironment(unittest.TestCase):
     """The spawned server's environment — where the session cache lives or dies."""
 

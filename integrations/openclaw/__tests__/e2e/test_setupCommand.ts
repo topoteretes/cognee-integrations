@@ -9,6 +9,7 @@ function createFakeProgram(actions: Map<string, CliAction>) {
       command: (sub: string) => makeCommand(sub),
       description: () => cmd,
       option: () => cmd,
+      argument: () => cmd,
       action: (fn: CliAction) => {
         actions.set(name, fn);
         return cmd;
