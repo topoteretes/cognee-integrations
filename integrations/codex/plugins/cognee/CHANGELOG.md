@@ -13,6 +13,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [1.5.1]
 
 ### Fixed
+- **Cloud: creating a dataset through the API no longer fails on a redirect.**
+  Cloud tenants answer `POST /api/v1/datasets` with a 307 to the trailing-slash
+  path, and the stdlib HTTP client will not replay a POST body across a 307, so
+  ensuring the target dataset (setup, and switching datasets mid-session) failed
+  against cloud with a redirect status. The client now posts to
+  `/api/v1/datasets/` directly.
 - **Status line: a stale red ✕ now heals itself while you are idle.** Recovery
   from a recorded failure verdict (`unreachable`, `server_error`,
   `not_responding`, `auth_failed`) was prompt-driven: nothing re-checked the
