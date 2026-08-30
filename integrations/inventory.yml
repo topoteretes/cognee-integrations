@@ -173,6 +173,18 @@ integrations:
     source_repo: https://github.com/topoteretes/cognee-integration-crewai
     notes: "CrewAI agent tools – add, search, session management"
 
+  - slug: tapes-cassette
+    name: "Cognee Cassette for Paper's Tapes"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-tapes-cassette"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee-integrations
+    notes: "Tapes cassette (cassette/v1alpha1) – syncs recorded agent sessions into cognee and exposes sync/search as MCP tools proxied under /v1/cassettes/cognee/."
+
   # ── Chat bots & editor (memory over the cognee HTTP API) ───────────
 
   - slug: chat-memory
