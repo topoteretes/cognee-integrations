@@ -98,9 +98,7 @@ def test_search_returns_results(app, fake_cognee):
 
 
 def test_search_rejects_unknown_search_type(app):
-    response = client(app).post(
-        "/api/search", json={"query": "q", "search_type": "NOT_A_TYPE"}
-    )
+    response = client(app).post("/api/search", json={"query": "q", "search_type": "NOT_A_TYPE"})
     assert response.status_code == 400
     assert "NOT_A_TYPE" in response.json()["detail"]
 

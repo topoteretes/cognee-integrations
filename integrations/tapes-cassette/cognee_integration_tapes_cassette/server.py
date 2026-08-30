@@ -75,9 +75,7 @@ def create_app(config: Config | None = None, tapes: TapesClient | None = None) -
     @app.post("/api/search")
     async def search(request: SearchRequest) -> dict:
         try:
-            results = await ingest.search(
-                config, request.query, request.search_type, request.top_k
-            )
+            results = await ingest.search(config, request.query, request.search_type, request.top_k)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"results": results}

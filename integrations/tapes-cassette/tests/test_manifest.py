@@ -29,9 +29,7 @@ def test_manifest_api_block_matches_served_routes(config, app):
 
 def test_every_manifest_path_is_served(config, app):
     served = {
-        (route.path, method)
-        for route in app.routes
-        for method in getattr(route, "methods", set())
+        (route.path, method) for route in app.routes for method in getattr(route, "methods", set())
     }
     for path, operations in spec(config)["paths"].items():
         for method in operations:
