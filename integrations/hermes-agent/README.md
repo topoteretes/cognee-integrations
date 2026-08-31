@@ -133,21 +133,21 @@ tenant, authenticated with your API key via `X-Api-Key`.
 
 ## How the pip install works
 
-Hermes has no entry-point plugin discovery (yet) — it scans
-`$HERMES_HOME/plugins/` for directories with a `plugin.yaml`. The wheel
-therefore ships the plugin-root files as package data and provides the
-`cognee-hermes-install` console script, which materializes the exact directory
-shape the scanner expects. Because Hermes runs that *copy*, upgrading is always
-two steps: `pip install -U cognee-integration-hermes-agent`, then
-`cognee-hermes-install` again.
+Hermes discovers memory providers two ways, and the package serves both:
 
-The package also declares the entry point Hermes would use if it grows native
-discovery, at which point the copy step becomes unnecessary:
+- **Pip entry point** — the wheel declares
+  `[project.entry-points."hermes_agent.memory_providers"]`, the group Hermes'
+  memory loader scans, so the provider activates from a plain `pip install`.
+- **Directory install** — `cognee-hermes-install` copies the plugin into
+  `$HERMES_HOME/plugins/cognee/` in the exact shape the directory scanner
+  expects; the load-bearing file is the root `__init__.py` (Hermes silently
+  skips a plugin directory without one). The directory install is the
+  recommended path: it carries the `hermes cognee` subcommands and the
+  dashboard config panel at full fidelity.
 
-```toml
-[project.entry-points."hermes_agent.plugins"]
-cognee = "cognee_integration_hermes"
-```
+Because Hermes runs the directory *copy*, upgrading it is always two steps:
+`pip install -U cognee-integration-hermes-agent`, then `cognee-hermes-install`
+again (`hermes cognee status` reminds you when the copy is stale).
 
 Releases are published from CI on `hermes-agent-v*` tags
 (`.github/workflows/hermes-agent-publish.yml`).
