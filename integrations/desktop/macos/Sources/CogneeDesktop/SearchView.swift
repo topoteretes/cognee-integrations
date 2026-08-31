@@ -92,7 +92,11 @@ struct SearchView: View {
             }
         }
         .frame(width: 680)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // regularMaterial, not thin: over a dark wallpaper the thin variant
+        // is translucent enough to melt into the background, and the panel
+        // reads as dark-on-dark mush. Regular keeps the frosted look with a
+        // real backing in both modes.
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(
