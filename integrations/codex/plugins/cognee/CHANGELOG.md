@@ -10,6 +10,40 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.2]
+
+### Fixed
+- **Recall no longer reports an error for a graph that simply doesn't exist yet.**
+  A dataset nobody has cognified yet has no graph, and the server answers the
+  graph recall scope with 404 until the first sync lands — on a fresh install
+  that is every prompt of the first session. That expected answer was logged as
+  `recall_error` and counted against connection health alongside real failures.
+  It is now logged as `recall_graph_not_built` (debug, not error) and kept out
+  of the health accounting, so genuine failures stay visible.
+- **The pending-prompt buffer no longer leaves an empty file behind per session.**
+  Consuming the last buffered prompt wrote `{}` back instead of removing the
+  file, so `pending/` collected one 2-byte husk per session forever. The buffer
+  file is now deleted when its last entry is consumed, and the session-start
+  sweep clears the husks older versions already left.
+- **Cloud: creating a dataset through the API no longer fails on a redirect.**
+  Cloud tenants answer `POST /api/v1/datasets` with a 307 to the trailing-slash
+  path, and the stdlib HTTP client will not replay a POST body across a 307, so
+  ensuring the target dataset (setup, and switching datasets mid-session) failed
+  against cloud with a redirect status. The client now posts to
+  `/api/v1/datasets/` directly.
+- **Status line: a stale red ✕ now heals itself while you are idle.** Recovery
+  from a recorded failure verdict (`unreachable`, `server_error`,
+  `not_responding`, `auth_failed`) was prompt-driven: nothing re-checked the
+  shared marker until a hook ran, so a server that came back while the terminal
+  sat idle kept a red glyph on the bar for up to the 30-minute fade — long
+  enough to tempt a needless restart. The session-long exit watcher now
+  re-probes about once a minute (`COGNEE_CONN_REPROBE_INTERVAL`) while, and
+  only while, the marker holds a failure state for this session's own
+  `base_url`, and writes `ready` on success. Only a positive verdict is ever
+  written — timeouts stay no-verdict, so this can clear a wrong red but never
+  paint one — and `auth_failed` clears only on an authenticated success, since
+  `/health` answering 200 says nothing about the key.
+
 ## [1.5.1]
 
 ### Changed

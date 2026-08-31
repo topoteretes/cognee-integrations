@@ -301,7 +301,7 @@ async def ensure_dataset_ready_via_api(service_url: str, api_key: str, dataset: 
 
     base = service_url.rstrip("/")
     status, text = _cloud_http_request(
-        f"{base}/api/v1/datasets",
+        f"{base}/api/v1/datasets/",  # trailing slash: cloud tenants 307-redirect the bare path
         method="POST",
         api_key=api_key,
         json_body={"name": dataset},

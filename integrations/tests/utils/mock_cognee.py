@@ -33,6 +33,11 @@ def _json(status: int, body: Any) -> Response:
     return Response(json.dumps(body), status=status, content_type="application/json")
 
 
+def _norm_path(path: str) -> str:
+    """Canonical request path: trailing slash dropped (except for the root)."""
+    return path.rstrip("/") or "/"
+
+
 class MockCogneeServer:
     """Registers Cognee routes on a pytest-httpserver ``HTTPServer``.
 
@@ -140,14 +145,14 @@ class MockCogneeServer:
         JSON-encoded. The request is still recorded. Clear with
         ``clear_forced``.
         """
-        self._forced[(method, path)] = (status, body if body is not None else {})
+        self._forced[(method, _norm_path(path))] = (status, body if body is not None else {})
 
     def clear_forced(self, method: str | None = None, path: str | None = None) -> None:
         """Drop forced responses (all of them, or one method+path pair)."""
         if method is None and path is None:
             self._forced.clear()
         else:
-            self._forced.pop((method, path), None)
+            self._forced.pop((method, _norm_path(path)), None)
 
     def assert_called(self, method: str, path: str, **json_fields: Any) -> dict[str, Any]:
         """Assert a matching request was recorded; return the call entry.
@@ -176,7 +181,9 @@ class MockCogneeServer:
     def _record(self, req: Request) -> None:
         entry: dict[str, Any] = {
             "method": req.method,
-            "path": req.path,
+            # Trailing slash normalized: clients may send either spelling (see the
+            # POST /api/v1/datasets route), tests key on the bare path.
+            "path": _norm_path(req.path),
             "query": dict(req.args),
             "headers": dict(req.headers),
         }
@@ -199,7 +206,7 @@ class MockCogneeServer:
 
         def route(uri, method, handler):
             def dispatch(req: Request, _handler=handler) -> Response:
-                forced = self._forced.get((req.method, req.path))
+                forced = self._forced.get((req.method, _norm_path(req.path)))
                 if forced is not None:
                     self._record(req)
                     status, body = forced
@@ -231,7 +238,10 @@ class MockCogneeServer:
         route("/api/v1/remember/entry", "POST", self._remember_entry)
         route("/api/v1/recall", "POST", self._recall)
         route("/api/v1/improve", "POST", self._improve)
-        route("/api/v1/datasets", "POST", self._datasets)
+        # POST accepts both spellings: the clients send the trailing slash because
+        # cloud tenants 307-redirect the bare path, and urllib will not replay a
+        # POST across a 307.
+        route(re.compile(r"^/api/v1/datasets/?$"), "POST", self._datasets)
         route("/api/v1/datasets", "GET", self._datasets_list)
         route("/api/v1/datasets/status", "GET", self._datasets_status)
 
