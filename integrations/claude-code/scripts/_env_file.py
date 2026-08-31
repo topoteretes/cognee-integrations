@@ -73,6 +73,15 @@ _TEMPLATE = """\
 # LLM_API_KEY="sk-..."
 # LLM_MODEL="openai/gpt-4o-mini"
 
+## Local mode backends (optional) — the defaults (sqlite/lancedb/openai) need
+## nothing here. Configuring a provider below makes session start install the
+## matching cognee driver extra into the plugin venv automatically:
+# DB_PROVIDER="postgres"
+# VECTOR_DB_PROVIDER="pgvector"
+# GRAPH_DATABASE_PROVIDER="neo4j"
+# EMBEDDING_PROVIDER="fastembed"
+# LLM_PROVIDER="ollama"
+
 ## Optional:
 # COGNEE_PLUGIN_DATASET="agent_sessions"
 """
