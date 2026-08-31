@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -38,9 +39,10 @@ from _plugin_common import (
     resolve_session_key_from_payload,
     resolve_user,
     run_session_improve,
-    server_ready_hint,
+    server_usable,
     set_session_key,
     touch_activity,
+    write_outcome_ambiguous,
 )
 from config import (
     ensure_cognee_ready,
@@ -207,11 +209,14 @@ async def _store_tool_call(payload: dict) -> None:
         "generate_feedback_with_llm": False,
     }
 
-    if not server_ready_hint(runtime.get("base_url", "")):
-        # Server still warming: don't block the tool call and don't lose the
-        # trace. Buffer the structured entry for a later /remember/entry replay
-        # (improve bridges only what the server session cache holds), and keep
-        # the legacy text mirror for the document-bridge fallback path.
+    if not server_usable(runtime.get("base_url", "")):
+        # Server unreachable (stale marker AND a failed probe — a stale marker
+        # alone no longer buffers; this hook fires per tool call, so its probe
+        # keeps the ready marker fresh through long turns, #298): don't block
+        # the tool call and don't lose the trace. Buffer the structured entry
+        # for a later /remember/entry replay (improve bridges only what the
+        # server session cache holds), and keep the legacy text mirror for the
+        # document-bridge fallback path.
         append_warmup_entry(dataset, session_id, entry)
         trace_text = (
             f"{tool_name} [{status}]\n"
@@ -242,8 +247,43 @@ async def _store_tool_call(payload: dict) -> None:
                 user=user,
             )
     except Exception as exc:
-        hook_log("trace_store_error", {"tool": tool_name, "error": str(exc)[:200]})
-        notify(f"trace store failed ({exc})")
+        # Same reasoning as the Stop path: the server_usable() guard above only
+        # catches an outage already known about, so a server that dies inside the
+        # ready marker's 30s TTL lands here with a real, failed write. Buffer the
+        # retryable cases so the trace survives; drop a 4xx loudly, because the
+        # drain stops at the first entry it cannot send and a permanently
+        # rejected one would block every entry behind it.
+        status_code = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+        retryable = status_code is None or status_code >= 500
+        if retryable:
+            # A timeout or gateway error may have landed server-side; mark the
+            # buffered copy so the drain verifies before re-sending —
+            # /remember/entry has no idempotency, and a blind replay of a
+            # committed write duplicates the trace into the next improve.
+            append_warmup_entry(dataset, session_id, entry, ambiguous=write_outcome_ambiguous(exc))
+            trace_text = (
+                f"{tool_name} [{status}]\n"
+                f"Params: {json.dumps(params, ensure_ascii=False)}\n"
+                f"Return: {return_value}"
+            )
+            append_http_bridge_entry(dataset, session_id, trace=trace_text)
+            bump_save_counter(session_id, "trace")
+            hook_log(
+                "trace_buffered_after_error",
+                {"tool": tool_name, "status": status_code, "error": str(exc)[:200]},
+            )
+            notify(f"trace store failed, buffered for replay ({exc})")
+        else:
+            hook_log(
+                "trace_store_error",
+                {
+                    "tool": tool_name,
+                    "error": str(exc)[:200],
+                    "status": status_code,
+                    "buffered": False,
+                },
+            )
+            notify(f"trace store failed ({exc})")
         return
 
     if result:
@@ -321,11 +361,11 @@ async def _store_assistant_stop(payload: dict) -> None:
         "context": pending.get("context", ""),
     }
 
-    if not server_ready_hint(runtime.get("base_url", "")):
-        # Server still warming: buffer the structured entry for a later
-        # /remember/entry replay (improve bridges only what the server session
-        # cache holds), and keep the legacy text mirror for the document-bridge
-        # fallback path.
+    if not server_usable(runtime.get("base_url", "")):
+        # Server unreachable (stale marker AND a failed probe): buffer the
+        # structured entry for a later /remember/entry replay (improve bridges
+        # only what the server session cache holds), and keep the legacy text
+        # mirror for the document-bridge fallback path.
         append_warmup_entry(dataset, session_id, entry)
         append_http_bridge_entry(
             dataset,
@@ -356,8 +396,44 @@ async def _store_assistant_stop(payload: dict) -> None:
                 user=user,
             )
     except Exception as exc:
-        hook_log("stop_store_error", {"error": str(exc)[:200]})
-        notify(f"stop store failed ({exc})")
+        # A write that FAILED must still be buffered, or the turn is simply lost.
+        # The `server_usable()` guard above only catches an outage the plugin
+        # already knows about: the ready marker has a 30s TTL, so a server that
+        # dies inside that window leaves server_usable() returning True, the write
+        # is attempted for real, and this is where it lands. Logging alone here is
+        # what the warmup spillway exists to prevent.
+        #
+        # Not every failure is worth replaying, though. The drain stops at the
+        # first entry it cannot send and only trims what it drained, so an entry
+        # that can never succeed would sit at the head of the queue and block
+        # everything behind it forever. A 4xx is exactly that: the same bytes will
+        # be rejected the same way next time. Transport failures and 5xx are
+        # retryable, so those are buffered and anything else is dropped loudly.
+        status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+        retryable = status is None or status >= 500
+        if retryable:
+            # Ambiguous outcomes (timeout / gateway error after the request
+            # went out) are verified against the server before replay — see
+            # write_outcome_ambiguous.
+            append_warmup_entry(dataset, session_id, entry, ambiguous=write_outcome_ambiguous(exc))
+            append_http_bridge_entry(
+                dataset,
+                session_id,
+                question=pending.get("prompt", ""),
+                answer=msg,
+            )
+            bump_save_counter(session_id, "answer")
+            hook_log(
+                "store_buffered_after_error",
+                {"hook": "stop", "status": status, "error": str(exc)[:200]},
+            )
+            notify(f"stop store failed, buffered for replay ({exc})")
+        else:
+            hook_log(
+                "stop_store_error",
+                {"error": str(exc)[:200], "status": status, "buffered": False},
+            )
+            notify(f"stop store failed ({exc})")
         return
 
     if result:
@@ -381,6 +457,45 @@ async def _store_assistant_stop(payload: dict) -> None:
         count, should_improve = bump_turn_counter(session_id)
         if should_improve:
             await _fire_improve_background(dataset, session_id, user, reason=f"turn_{count}")
+
+
+def _maybe_reingest_code_repo(payload: dict) -> None:
+    """Freshness pass for indexed code repos (runs on the Stop hook only).
+
+    When this turn's cwd sits inside a repo indexed via cognee-index-repo.sh
+    and the working tree's git fingerprint changed since the last index, the
+    repo is re-submitted (background) so the code graph reflects the turn's
+    edits by the next prompt. The fingerprint is only a cheap client-side
+    gate — the server re-hashes every covered file anyway, so a false
+    positive costs one skipped submission. Repos indexed by git URL are NOT
+    re-submitted here: the server's clone only sees pushed commits, so local
+    edits cannot reach it. Never raises: this must not disturb the hook.
+    """
+    try:
+        from _code_graph import reingest_if_changed
+
+        cwd = str(payload.get("cwd") or "") or os.getcwd()
+        runtime = resolve_runtime_mode()
+        service_url = runtime.get("base_url", "")
+        if not service_url:
+            return
+        if not server_usable(service_url):
+            # Down server: skip quietly. The stale fingerprint is kept, so the
+            # next Stop retries once the server is back.
+            hook_log("code_reingest_skipped_server", {"base_url": service_url})
+            return
+        outcome = reingest_if_changed(cwd, service_url, os.environ.get("COGNEE_API_KEY", ""))
+        if not outcome:
+            return
+        if outcome.get("changed") and outcome.get("submitted"):
+            hook_log("code_reingest_submitted", outcome)
+            notify(f"code graph re-index submitted ({outcome.get('dataset', '')})")
+        elif outcome.get("changed"):
+            hook_log("code_reingest_failed", outcome)
+        else:
+            hook_log("code_reingest_unchanged", {"repo_root": outcome.get("repo_root", "")})
+    except Exception as exc:
+        hook_log("code_reingest_error", {"error": str(exc)[:200]})
 
 
 def main():
@@ -407,6 +522,9 @@ def main():
         with quiet_hook_output("store-to-session"):
             if is_stop:
                 asyncio.run(_store_assistant_stop(payload))
+                # End-of-turn code-graph freshness: independent of whether an
+                # assistant message was stored (edits happen either way).
+                _maybe_reingest_code_repo(payload)
             else:
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:

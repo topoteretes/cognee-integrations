@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognee-integration-hermes-agent"
-version = "0.1.0"
+version = "1.2.1"
 description = "Standalone Cognee memory provider plugin for Hermes Agent."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,19 +12,60 @@ authors = [
     {name = "Cognee team"}
 ]
 dependencies = [
-    "cognee>=1.0.0,<2.0.0",
+    # Exact pin: the installed package doubles as the local server this plugin
+    # spawns, and 1.5.3 is both the floor (code graph, per-document forget
+    # invalidation) and the newest version verified against the test suite and
+    # a live server.
+    "cognee==1.5.3",
 ]
 
+# The group Hermes' memory-provider loader actually scans
+# (plugins/memory ENTRY_POINTS_GROUP): with this, a plain pip install activates
+# the provider via `register(ctx)` even before cognee-hermes-install runs.
+# 1.0.0–1.2.0 declared only the generic group below, which the memory loader
+# never reads (issue #382).
+[project.entry-points."hermes_agent.memory_providers"]
+cognee = "cognee_integration_hermes"
+
+# Hermes' generic plugin system; kept so existing `plugins.enabled` entries
+# keep resolving.
 [project.entry-points."hermes_agent.plugins"]
 cognee = "cognee_integration_hermes"
+
+[project.scripts]
+# Copies the installed package into $HERMES_HOME/plugins/cognee, which gets the
+# directory-scan discovery path plus the plugin-root cli.py/plugin.yaml
+# (dashboard config panel, `hermes cognee` subcommands). See installer.py.
+cognee-hermes-install = "cognee_integration_hermes.installer:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cognee_integration_hermes*"]
 
+[tool.setuptools.package-data]
+# The plugin-root files (plugin.yaml, cli.py shim, after-install.md, and
+# plugin_init.py — installed as the plugin root's __init__.py) that the
+# installer lays down next to the package. Kept byte-identical to the repo-root
+# canonical copies by tests/test_installer.py.
+cognee_integration_hermes = ["_plugin_root/*"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-timeout>=2.3",
     "ruff>=0.14.6",
 ]
 
+[tool.pytest.ini_options]
+# Without a pytest section here, rootdir resolution walks up to the monorepo
+# root's pyproject.toml and this suite adopts its `asyncio_mode = "auto"` — an
+# option pytest-asyncio owns and hermes does not install, so every run, local
+# and CI alike, printed a PytestConfigWarning about it.
+testpaths = ["tests"]
+
+# A hung run is the failure mode this suite was reported for (SDK-454), and a
+# hang has no natural bound: a socket that never answers or a child that is
+# never reaped just sits there until CI's 6h default gives up. The slowest
+# honest test here is the exit-watcher's ~2s poll, so 60s only ever fires on a
+# genuine hang — and fires as a named, stack-dumping failure instead of silence.
+timeout = 60

@@ -24,6 +24,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
+from _logfiles import append_line as _append_log_line
+
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
 # threshold means you have to actively pause a full minute, and the 10-minute
 # improve cooldown prevents back-to-back improve runs when activity is sporadic.
@@ -43,12 +45,10 @@ _should_stop = False
 
 def _log(event: str, **detail) -> None:
     try:
-        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         line = {"ts": time.time(), "pid": os.getpid(), "event": event}
         if detail:
             line["detail"] = detail
-        with _LOGFILE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+        _append_log_line(_LOGFILE, json.dumps(line, default=str))
     except Exception:
         pass
 
@@ -155,7 +155,7 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
 
 
 def _run_update_check() -> None:
-    """Fire the background, daily-guarded plugin update check (best-effort)."""
+    """Fire the background, interval-guarded plugin update check (best-effort)."""
     try:
         sys.path.insert(0, os.path.dirname(__file__))
         from _plugin_common import maybe_check_for_update  # type: ignore
@@ -163,6 +163,111 @@ def _run_update_check() -> None:
         maybe_check_for_update()
     except Exception as exc:
         _log("update_check_error", error=str(exc)[:200])
+
+
+def _check_llm_key(config: dict) -> None:
+    """Provider-agnostic LLM-key validation for the status line (local mode).
+
+    Runs in this BACKGROUND watcher — never a hot-path hook — because it imports
+    cognee/litellm (heavy) and makes one tiny real LLM call. That real call is the
+    only way to validate a key that works across ALL providers: litellm normalizes
+    every provider's rejection into ``AuthenticationError``, so we don't hardcode
+    any provider's endpoint/auth. (recall can't be used — the plugin passes
+    only_context=True, which skips the LLM entirely.)
+
+    ``max_tokens=1`` is a floor on cost, not a guarantee: providers differ on whether
+    it caps reasoning tokens or only content, so a reasoning model may bill more than
+    one token (or reject the request outright — see the classifier below). That is
+    acceptable here because the call is infrequent, off the hot path, bounded by a
+    15s timeout, and its response is discarded unread.
+
+    Writes the shared llm-state marker: ``ok`` / ``auth_failed`` / ``not_set``.
+    Local mode only (LLM_API_KEY is unused against a remote server). Throttled via
+    the marker's ``checked_at``. Honors COGNEE_LLM_KEY_CHECK=off.
+    """
+    try:
+        if os.environ.get("COGNEE_LLM_KEY_CHECK", "").strip().lower() in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
+            return
+        sys.path.insert(0, os.path.dirname(__file__))
+        from _plugin_common import (
+            get_session_key,
+            read_llm_state,
+            service_url_is_local,
+            write_llm_state,
+        )
+
+        base_url = str(config.get("base_url") or "")
+        if base_url and not service_url_is_local(base_url):
+            return  # cloud: the remote server owns its own LLM key
+
+        # Throttle against OUR OWN last verdict only. The marker is machine-wide, so
+        # honouring another session's timestamp would let a keyless launch's verdict
+        # stand in for ours and leave this session permanently unvalidated.
+        interval = float(os.environ.get("COGNEE_LLM_CHECK_INTERVAL", "") or 300.0)
+        prior = read_llm_state()
+        if str(prior.get("session_key") or "") == get_session_key() and (
+            time.time() - float(prior.get("checked_at", 0) or 0) < interval
+        ):
+            return
+
+        from cognee.infrastructure.llm.config import get_llm_config
+
+        cfg = get_llm_config()
+        key = str(getattr(cfg, "llm_api_key", "") or "").strip()
+        if not key:
+            # Logged, not silent: this write is what puts ✕ (incorrect_llm_api_key) on the bar,
+            # and tracking down an unexplained one cost real time.
+            write_llm_state("not_set")
+            _log("llm_key_not_set")
+            return
+
+        import litellm
+
+        try:
+            litellm.completion(
+                model=cfg.llm_model,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+                api_key=cfg.llm_api_key,
+                api_base=getattr(cfg, "llm_endpoint", None) or None,
+                custom_llm_provider=(getattr(cfg, "llm_provider", None) or None),
+                timeout=15,
+            )
+            write_llm_state("ok")
+            _log("llm_key_ok")
+        except Exception as exc:
+            # Classify by the provider's HTTP status, NOT by "did a completion
+            # succeed": `max_tokens=1` legitimately 400s on reasoning models (the
+            # single token goes to reasoning, leaving no room for content), so
+            # demanding a clean 200 leaves a good key permanently unverified and an
+            # earlier "not_set" unclearable. Providers authenticate BEFORE they
+            # validate anything else, so any status other than 401/403 already
+            # proves the key was accepted.
+            status = getattr(exc, "status_code", None)
+            try:
+                status = int(status) if status is not None else None
+            except (TypeError, ValueError):
+                status = None
+            if exc.__class__.__name__ == "AuthenticationError" or status in (401, 403):
+                write_llm_state("auth_failed", detail=str(exc)[:200])
+                _log("llm_key_auth_failed")
+            elif status is not None:
+                # Reached the provider and got a non-auth rejection (400 output
+                # limit, 404 unknown model, 429, 5xx): the key itself works.
+                write_llm_state("ok")
+                _log("llm_key_ok", status=status)
+            else:
+                # No HTTP status → local/transport failure (timeout, DNS, bad
+                # api_base): not a key verdict either way, so leave the marker
+                # untouched rather than falsely accuse or falsely clear.
+                _log("llm_key_check_inconclusive", error=str(exc)[:200])
+    except Exception as exc:
+        _log("llm_key_check_error", error=str(exc)[:200])
 
 
 async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
@@ -177,9 +282,31 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
     # Runs once per watcher launch (≈ once per session); the check itself is
     # internally rate-limited to ≤ once per COGNEE_UPDATE_CHECK_INTERVAL.
     _run_update_check()
+    # Validate the LLM key once at session start (background, provider-agnostic).
+    _check_llm_key(config)
     last_improved_at = 0.0
     exit_reason = "loop_complete"
     bridge_disabled = False
+
+    def _current_pair() -> tuple[str, str]:
+        """The launch's live (session_id, dataset), re-read before every bridge.
+
+        A dataset switch rewrites the launch record mid-session; the bootstrap
+        values this watcher was spawned with would otherwise bridge the retired
+        session into the old dataset. Falls back to the bootstrap pair when the
+        record is unavailable.
+        """
+        try:
+            from _plugin_common import resolve_active_dataset, resolve_cognee_session_id
+
+            sid = resolve_cognee_session_id() or session_id
+            ds = resolve_active_dataset() or dataset
+            if (sid, ds) != (session_id, dataset):
+                _log("bridge_target_switched", session=sid, dataset=ds)
+            return sid, ds
+        except Exception as exc:
+            _log("bridge_target_resolve_failed", error=str(exc)[:200])
+            return session_id, dataset
 
     while not _should_stop:
         if _STOPFILE.exists():
@@ -205,7 +332,7 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
             and time_since_improve >= IMPROVE_COOLDOWN
         ):
             _log("idle_trigger", idle_for=round(idle_for, 1))
-            ok = await _improve_once(session_id, dataset, config)
+            ok = await _improve_once(*_current_pair(), config)
             if ok:
                 last_improved_at = time.time()
                 _log("bridge_done")
@@ -227,7 +354,7 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         and ts > last_improved_at
     ):
         _log("shutdown_trigger", reason=exit_reason, activity_age=round(time.time() - ts, 1))
-        ok = await _improve_once(session_id, dataset, config)
+        ok = await _improve_once(*_current_pair(), config)
         if ok:
             last_improved_at = time.time()
             _log("shutdown_bridge_done")

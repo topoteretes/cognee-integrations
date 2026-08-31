@@ -1,6 +1,6 @@
 <div align="center">
-  <a href="https://github.com/topoteretes/cognee">
-    <img src="https://raw.githubusercontent.com/topoteretes/cognee/refs/heads/dev/assets/cognee-logo-transparent.png" alt="Cognee Logo" height="60">
+  <a href="https://www.cognee.ai">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="Cognee" width="260">
   </a>
 
   <br />
@@ -49,7 +49,7 @@ Install these from their public registries — you do **not** need to clone this
 | Google ADK | `cognee-integration-google-adk` | `pip install cognee-integration-google-adk` |
 | Claude Agent SDK | `cognee-integration-claude` | `pip install cognee-integration-claude` |
 | Hermes Agent | `cognee-integration-hermes-agent` | `pip install cognee-integration-hermes-agent` |
-| OpenClaw | `@cognee/cognee-openclaw` | `npm install @cognee/cognee-openclaw` |
+| OpenClaw | `@cognee/cognee-openclaw` | `npm install @cognee/cognee-openclaw` or install from clawhub.ai|
 | n8n | `n8n-nodes-cognee` | install via n8n community nodes |
 | Dify (Cloud) | `cognee` | install from the Dify marketplace |
 | Dify (self-hosted) | `cognee-sdk` | install from the Dify marketplace |
@@ -74,13 +74,22 @@ Memory apps and editor tooling that talk to a running **cognee server**
 | Second brain | `cognee-integration-second-brain` | cross-transport personal memory (Telegram + web), `/link` identity merge |
 | VS Code | `cognee-vscode` | remember/recall + "ask my project memory" with source-file citations |
 
-## Quickstart
+### Community integrations
+
+Maintained by the community in their own repos — tracked here in
+[`integrations/inventory.yml`](integrations/inventory.yml) so they're easy to find.
+
+| Integration | Package | Install |
+|---|---|---|
+| [Pi coding agent](https://github.com/kerryhatcher/pi-cognee) | `@kerryhatcher/pi-cognee` | `pi install npm:@kerryhatcher/pi-cognee` |
+
+## Claude Code Quickstart
 
 The Claude Code integration is a **plugin** — it gives Claude Code persistent memory
 across sessions with no code to write. It auto-captures your prompts, tool traces, and
 responses, and auto-recalls relevant context on every prompt.
 
-**1. Install the plugin**
+**1. Install the Claude Code plugin**
 
 Run these slash commands directly in the Claude Code chat:
 
@@ -93,14 +102,26 @@ Run these slash commands directly in the Claude Code chat:
 
 In local mode (the default), the plugin bootstraps a local Cognee API on
 `http://localhost:8011`. Cognee extracts knowledge with an LLM, so set `LLM_API_KEY`
-in the shell that launches Claude Code:
+**once** in `~/.cognee/.env` (shared by the Claude Code and Codex plugins) — one
+paste, no editor needed:
 
 ```bash
-export LLM_API_KEY="sk-..."
+mkdir -p ~/.cognee
+cat >> ~/.cognee/.env <<'EOF'
+LLM_API_KEY="sk-..."
+EOF
+chmod 600 ~/.cognee/.env
 ```
 
+A plain `export` in the launching shell also works and overrides the file. Re-pasting
+the block with a new value is safe — the last value wins.
+
 To target Cognee Cloud or a remote server instead, set `COGNEE_BASE_URL` and
-`COGNEE_API_KEY`. On startup you should see a **"Cognee Memory Connected"** message.
+`COGNEE_API_KEY` there. The file may hold **both modes' variables at once** — cloud
+wins by default, and `export COGNEE_BACKEND=local` (or `=cloud`) flips a single
+terminal without touching the file; see
+[Which mode wins, and how to switch](integrations/claude-code/README.md#which-mode-wins-and-how-to-switch).
+On startup you should see a **"Cognee Memory Connected"** message.
 
 **3. Use Claude Code as usual**
 
@@ -169,11 +190,11 @@ source documents yourself with `cognee.add(...)` + `cognee.cognify()` before sea
 
 ```python
 import cognee
-from cognee_integration_crewai import add_tool, search_tool   # CrewAI / Google ADK
+from cognee_integration_crewai import add_tool, search_tool  # CrewAI / Google ADK
 from crewai import Agent
 
 await cognee.add("Meditech Solutions — healthcare industry, contract worth £1.2M.")
-await cognee.cognify()                                        # build the knowledge graph
+await cognee.cognify()  # build the knowledge graph
 
 agent = Agent(role="Analyst", goal="…", backstory="…", tools=[add_tool, search_tool])
 print(agent.kickoff("Which contracts are in the healthcare industry?"))

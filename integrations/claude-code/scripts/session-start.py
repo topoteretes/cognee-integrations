@@ -26,25 +26,36 @@ from pathlib import Path
 
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
+from _logfiles import console_capture_tail as _console_capture_tail
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
+from _logfiles import start_console_capture as _start_console_capture
 from _plugin_common import (
     _COGNEE_CACHE_DIR,
     _COGNEE_DATA_DIR,
+    _COGNEE_HOME,
     _COGNEE_SYSTEM_DIR,
     _VENV_DIR,
     _VENV_PYTHON,
     _VENV_READY_MARKER,
+    PRESENCE_ABSENT,
+    PRESENCE_READY,
     _https_context,
     _reexec_into_venv,
     apply_cognee_env,
+    clear_server_pidfile,
     ensure_launch_record,
+    get_session_key,
     hook_log,
-    mark_server_ready,
+    probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
-    server_health_ok,
+    server_presence,
     server_ready_hint,
+    service_url_is_local,
     set_session_key,
     touch_activity,
+    write_connection_state,
+    write_server_pidfile,
 )
 from _proc import find_host_ancestor_windows
 from _proc import pid_alive as _pid_alive
@@ -58,7 +69,6 @@ from config import (
     get_dataset,
     is_cloud_mode,
     load_config,
-    save_config,
 )
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
@@ -98,51 +108,8 @@ _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.2.2.dev3"
+_PINNED_COGNEE_VERSION = "1.5.3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
-
-# Maps a configured backend provider env var to the cognee package "extra" that
-# provides its driver. A bare `cognee==<version>` install has none of these, so
-# the server crashes on first use of any non-default backend (#232): Postgres
-# needs psycopg2/asyncpg (via `postgres-binary`), Neo4j needs its driver, a
-# local Ollama LLM needs the `ollama` extra, and `fastembed` embeddings need
-# their own extra (fastembed is not cognee's own pydantic default -- openai is
-# -- but it's the plugin's documented zero-external-dependency local setup, and
-# is missing its extra just as much as the self-hosted-DB path is -- confirmed
-# independently on macOS, issue #232 comment). `postgres`/`pgvector` share one
-# driver, so VECTOR_DB_PROVIDER=pgvector maps to the same extra as DB_PROVIDER=
-# postgres rather than a separate one.
-_PROVIDER_EXTRAS = (
-    ("DB_PROVIDER", {"postgres": "postgres-binary", "postgresql": "postgres-binary"}),
-    ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
-    ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
-    ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
-    ("LLM_PROVIDER", {"ollama": "ollama"}),
-)
-
-
-def _detect_required_extras() -> str:
-    """Detect the cognee extras actually needed from the configured backend
-    providers, so the install below brings in exactly what's needed instead of
-    either a bare install (missing drivers) or unconditionally installing every
-    possible extra regardless of what's actually configured."""
-    extras: list[str] = []
-    for env_var, mapping in _PROVIDER_EXTRAS:
-        value = os.environ.get(env_var, "").strip().lower()
-        extra = mapping.get(value)
-        if extra and extra not in extras:
-            extras.append(extra)
-    return ",".join(extras)
-
-
-def _cognee_install_spec() -> str:
-    extras = _detect_required_extras()
-    return (
-        f"cognee[{extras}]=={_PINNED_COGNEE_VERSION}"
-        if extras
-        else f"cognee=={_PINNED_COGNEE_VERSION}"
-    )
-
 
 # Install single-flight. Distinct from the server boot lock (which is short, on
 # the assumption a boot completes in ~a minute): a cold cognee install can take
@@ -224,9 +191,12 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
     """Ensure the plugin venv exists and holds the pinned cognee version.
 
     Called from the server-boot critical section (so it is already
-    single-flighted) and only at boot points — i.e. when no healthy server is
-    serving. Always installs the exact pinned version (_PINNED_COGNEE_VERSION) so the
-    server's FastAPI lifespan migrations run on a known-good release.
+    single-flighted) and only at boot points where the server is POSITIVELY
+    absent (see server_presence) — a merely unresponsive server may be busy and
+    still holding the graph store's file lock, and upgrading the venv under it
+    corrupts the databases. Always installs the exact pinned version
+    (_PINNED_COGNEE_VERSION) so the server's FastAPI lifespan migrations run on
+    a known-good release.
 
     Fails soft: if the install can't run (e.g. offline) but a usable cognee is
     already present, returns True with whatever version is there. Returns False
@@ -280,6 +250,18 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     return bool(_venv_cognee_version())
                 time.sleep(_VENV_INSTALL_POLL_SECONDS)
 
+        # Already at the pin: there is nothing to install, so do not touch the
+        # venv. The install used to run unconditionally at every cold boot; on
+        # a machine where two plugins with different pins share this venv that
+        # made each boot flip the version back and forth — and a `pip install`
+        # is a mutation window the shared runtime is better off without. The
+        # marker is (re)written so every plugin reading it sees the truth.
+        current = _venv_cognee_version()
+        if current == _PINNED_COGNEE_VERSION:
+            _write_venv_ready(current)
+            hook_log("cognee_install_skipped_at_pin", {"version": current})
+            return True
+
         uv = _find_uv() or _install_uv()
         venv_present = _VENV_PYTHON.exists()
 
@@ -304,7 +286,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "--upgrade",
                         "--python",
                         str(_VENV_PYTHON),
-                        _cognee_install_spec(),
+                        f"cognee=={_PINNED_COGNEE_VERSION}",
                     ],
                     env=env,
                     check=True,
@@ -332,7 +314,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "pip",
                         "install",
                         "--upgrade",
-                        _cognee_install_spec(),
+                        f"cognee=={_PINNED_COGNEE_VERSION}",
                     ],
                     check=True,
                     capture_output=True,
@@ -404,36 +386,6 @@ def _wait_for_health(deadline_seconds: float, health_url: str = _HEALTH_URL) -> 
         time.sleep(_HEALTH_POLL_SECONDS)
 
 
-def _build_server_env(config: dict) -> dict:
-    """Build the environment for the spawned local Cognee server.
-
-    Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
-    so os.environ.copy() carries them to the server process fine. LLM
-    credentials are NOT already in os.environ when they came from the config
-    FILE rather than a live env var: ensure_cognee_ready() applies them only
-    in-process via cognee.config.set_llm_api_key()/set_llm_model(), and
-    save_config() deliberately never persists them back to a place a fresh
-    process's environment would pick up ("transient_keys" -- by design, so a
-    secret never lands in the config file). The spawned server is a SEPARATE
-    process that reads its own LLM config from its own environment, so without
-    this it silently gets no key and every extraction fails with
-    LLMAPIKeyNotSetError -- writes report success (the document is stored) but
-    nothing is ever extracted into the graph, so recall keeps returning empty.
-    `setdefault` so an explicit LLM_API_KEY/LLM_MODEL already in the
-    environment always wins over config.
-
-    Run in agent mode: the server tears itself down once all registered
-    agents disconnect.
-    """
-    server_env = os.environ.copy()
-    if config.get("llm_api_key"):
-        server_env.setdefault("LLM_API_KEY", config["llm_api_key"])
-    if config.get("llm_model"):
-        server_env.setdefault("LLM_MODEL", config["llm_model"])
-    server_env["COGNEE_AGENT_MODE"] = "true"
-    return server_env
-
-
 def _ensure_local_server_running(
     config: dict, health_timeout: float = _HEALTH_TIMEOUT_SECONDS
 ) -> None:
@@ -451,12 +403,46 @@ def _ensure_local_server_running(
         _ready()
         return
 
-    # No server is serving and we're at a boot point: ensure the venv holds the
-    # latest cognee BEFORE booting, so the server's lifespan migrations run on
-    # the upgraded code. Single-flighted on its own (long) lock, separate from
-    # the short boot lock below, since a cold install can take minutes.
+    # A missed probe is NOT absence: a server that is busy (cognifying, event
+    # loop saturated) misses the health deadline exactly like a dead one, but
+    # only a dead one may be installed/booted over — a busy server still holds
+    # the graph store's file lock, and upgrading + migrating under it corrupts
+    # the databases (2026-08-13 incident). Only a positively-absent verdict
+    # from the full-evidence presence check licenses going further.
+    def _require_absent(stage: str) -> bool:
+        """True when the server turned out to be serving (caller returns);
+        raises unless it is positively absent."""
+        verdict, evidence = server_presence(service_url, confirm_absent=(stage == "pre_install"))
+        if verdict == PRESENCE_READY:
+            return True
+        if verdict != PRESENCE_ABSENT:
+            hook_log(
+                "boot_refused_server_present",
+                {"stage": stage, "verdict": verdict, **evidence},
+            )
+            raise RuntimeError(
+                f"server at {service_url} is present but not serving "
+                f"(verdict={verdict}, stage={stage}); refusing to install or boot over it"
+            )
+        return False
+
+    if _require_absent("pre_install"):
+        _ready()
+        return
+
+    # The server is positively absent and we're at a boot point: ensure the
+    # venv holds the latest cognee BEFORE booting, so the server's lifespan
+    # migrations run on the upgraded code. Single-flighted on its own (long)
+    # lock, separate from the short boot lock below, since a cold install can
+    # take minutes.
     if not ensure_cognee_installed():
         raise RuntimeError("cognee runtime unavailable (install/upgrade failed)")
+
+    # A cold install can take minutes — long enough for the world to change.
+    # Re-verify the premise before proceeding to the boot lock.
+    if _require_absent("post_install"):
+        _ready()
+        return
 
     owner = f"session-start:{os.getpid()}"
     acquired = False
@@ -498,26 +484,71 @@ def _ensure_local_server_running(
                     raise RuntimeError("server bootstrap lock timeout")
                 time.sleep(_SERVER_BOOT_LOCK_POLL_SECONDS)
 
-        if _health_ok(health_url):
+        # Final re-check under the lock: waiting for it may have taken a while,
+        # and only a still-absent server may be spawned over the port.
+        if _require_absent("in_lock"):
             _ready()
             return
 
-        server_env = _build_server_env(config)
-        subprocess.Popen(
+        server_env = os.environ.copy()
+        # Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
+        # so the copy carries them to the server process.
+        # Run in agent mode: the server tears itself down once all registered
+        # agents disconnect.
+        server_env["COGNEE_AGENT_MODE"] = "true"
+        # The server's console output must not inherit this worker's stdio
+        # (bootstrap.log — that is how it reached gigabytes: every line the
+        # server printed for as long as it ran), but it must not vanish either:
+        # a boot that dies before cognee opens its own log (import error,
+        # broken venv, port bind) explains itself only on stderr. So it goes to
+        # a capture pump that keeps the first megabyte of each boot in
+        # server-console.log (previous boot in .1) and discards the rest.
+        console_log = _STATE_DIR / "server-console.log"
+        pump = _start_console_capture(console_log)
+        if pump is None:
+            hook_log("server_console_capture_unavailable", {"path": str(console_log)})
+        server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
+            stdin=subprocess.DEVNULL,
+            stdout=pump.stdin if pump else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if pump else subprocess.DEVNULL,
             start_new_session=True,
         )
+        if pump is not None and pump.stdin is not None:
+            pump.stdin.close()  # the server holds the write end now
+        # Presence evidence for future boot points: covers the spawn-to-bind
+        # window where neither the health probe nor the TCP listener sees it.
+        write_server_pidfile(port, server_proc.pid, version=_PINNED_COGNEE_VERSION)
 
         health_deadline = time.monotonic() + health_timeout
         while time.monotonic() < health_deadline:
             if _health_ok(health_url):
                 _ready()
                 return
+            exit_code = server_proc.poll()
+            if exit_code is not None:
+                clear_server_pidfile(port)
+                # An immediate exit is usually a failed port bind — something
+                # claimed the port between our absence check and the spawn. If
+                # that something is serving, connect to it instead of failing.
+                if _health_ok(health_url):
+                    _ready()
+                    return
+                tail = _console_capture_tail(console_log)
+                hook_log(
+                    "server_exited_before_healthy", {"rc": exit_code, "console_tail": tail[-600:]}
+                )
+                raise RuntimeError(
+                    f"server process exited (rc={exit_code}) before becoming "
+                    f"healthy at {health_url}; console: {console_log}"
+                    + (f"\n{tail}" if tail else "")
+                )
             time.sleep(_HEALTH_POLL_SECONDS)
 
         raise RuntimeError(
-            f"Cognee server did not become healthy at {health_url} within {health_timeout}s"
+            f"Cognee server did not become healthy at {health_url} within {health_timeout}s; "
+            f"console: {console_log}; server log: newest file in {_COGNEE_HOME / 'logs'}"
         )
     finally:
         if acquired:
@@ -711,6 +742,7 @@ def _spawn_idle_watcher(
     log_path = _STATE_DIR / "watcher.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -830,6 +862,7 @@ def _spawn_exit_watcher(
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _EXIT_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("exit_watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -864,6 +897,17 @@ def _spawn_exit_watcher(
 def _purge_legacy_resolved_files() -> None:
     legacy = _STATE_DIR / "resolved.json"
     scoped_dir = _STATE_DIR / "resolved"
+    # config.json: an older config layer that SessionStart read but the per-turn
+    # hooks never did, so a stale base_url in it split the plugin across two
+    # servers (SDK-466). Nothing reads it any more; remove it so it cannot be
+    # mistaken for live configuration. ~/.cognee/.env is the one setup file.
+    legacy_config = _STATE_DIR / "config.json"
+    try:
+        if legacy_config.exists():
+            legacy_config.unlink()
+            hook_log("legacy_config_json_removed", {"path": str(legacy_config)})
+    except Exception as exc:
+        hook_log("legacy_config_json_unlink_failed", {"error": str(exc)[:200]})
     try:
         if legacy.exists():
             legacy.unlink()
@@ -937,6 +981,7 @@ def _spawn_bootstrap(
     log_path = _STATE_DIR / "bootstrap.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("bootstrap_log_open_failed", {"error": str(exc)[:200]})
@@ -957,6 +1002,28 @@ def _spawn_bootstrap(
         hook_log("bootstrap_spawned", {"session_id": session_id})
     except Exception as exc:
         hook_log("bootstrap_spawn_failed", {"error": str(exc)[:300]})
+
+
+def _status_from_error(message: str) -> int:
+    """Extract an HTTP status embedded as ``(<status>: ...)`` in an error string.
+
+    ``ensure_cognee_ready`` and ``ensure_dataset_ready_via_api`` both format their
+    RuntimeError as ``... (<status>: <body>)``; return 0 when none is present
+    (e.g. a connection error carries no HTTP status).
+    """
+    import re
+
+    m = re.search(r"\((\d{3})[:\s)]", str(message or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _classify_conn_status(status: int) -> str:
+    """Map an HTTP status to a connection-failure state."""
+    if status in (401, 403):
+        return "auth_failed"
+    if status >= 500:
+        return "server_error"
+    return "unreachable"
 
 
 async def _run_heavy(
@@ -991,11 +1058,21 @@ async def _run_heavy(
     # we are already inside it (warm start).
     _reexec_into_venv()
 
+    # Track the cloud connection outcome so the status line can show a precise
+    # "✕ (<reason>)". Stays None in local mode (handled by the health probe at
+    # the tail).
+    _conn_state = None
+    _conn_detail = ""
+
     # Configure cognee (cloud or local)
     try:
         await ensure_cognee_ready(config)
     except Exception as e:
         print(f"cognee-plugin: init warning ({e})", file=sys.stderr)
+        if is_cloud_mode(config):
+            status = _status_from_error(e)
+            _conn_state = _classify_conn_status(status) if status else "unreachable"
+            _conn_detail = str(e)[:200]
 
     # Register agent identity.
     user_id = ""
@@ -1022,6 +1099,31 @@ async def _run_heavy(
             message = str(exc)[:300]
             hook_log("agent_lifecycle_error", {"error": message})
             print(f"cognee-plugin: agent lifecycle failed ({message})", file=sys.stderr)
+            # Classify for the status line. Preserve an earlier health-derived
+            # state; otherwise a reachable server rejecting registration is almost
+            # always auth, while a positively-absent one is a connection failure.
+            # A timed-out probe is NO verdict (busy != down): keep the prior
+            # recorded state rather than stamp a false "unreachable".
+            if _conn_state is None:
+                try:
+                    health = probe_health(
+                        _normalize_service_url(str(config.get("base_url", "") or "")), timeout=1.5
+                    )
+                except Exception:
+                    health = "unknown"
+                if health == "ready":
+                    _conn_state, _conn_detail = "auth_failed", message
+                elif health == "down":
+                    _conn_state, _conn_detail = "unreachable", message
+            if _conn_state:
+                write_connection_state(
+                    _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
+                )
+            else:
+                hook_log(
+                    "conn_state_unverified",
+                    {"reason": "probe returned no verdict after registration failure"},
+                )
             return "", "", False
     else:
         # Local SDK fallback path.
@@ -1053,16 +1155,59 @@ async def _run_heavy(
             await ensure_dataset_ready(dataset, user)
     except Exception as e:
         print(f"cognee-plugin: dataset warning ({e})", file=sys.stderr)
+        if is_cloud_mode(config):
+            status = _status_from_error(e)
+            # An authed 401/403 here is a definitive auth failure — let it win.
+            if status in (401, 403):
+                _conn_state, _conn_detail = "auth_failed", str(e)[:200]
+            elif status >= 500 and _conn_state is None:
+                _conn_state, _conn_detail = "server_error", str(e)[:200]
     if user_id:
         os.environ["COGNEE_USER_ID"] = user_id
 
-    # Mark the server ready so hot-path recall can engage — only once it is
-    # actually serving (or managed) so we never advertise a half-migrated DB.
+    # Record the connection outcome so the status line shows "● " (ready) or
+    # "✕ (<reason>)". Cloud: use the classified state gathered above, else confirm
+    # ready. Local/managed: a health probe decides ready-vs-unreachable.
     service_url = _normalize_service_url(str(config.get("base_url", "") or ""))
     if not service_url and not managed_endpoint:
         service_url = _LOCAL_SERVICE_URL
-    if service_url and server_health_ok(service_url, timeout=1.5):
-        mark_server_ready(service_url)
+    if is_cloud_mode(config):
+        if _conn_state and _conn_state != "ready":
+            write_connection_state(
+                _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
+            )
+        elif service_url:
+            health = probe_health(service_url, timeout=1.5)
+            if health == "ready":
+                write_connection_state("ready", service_url)
+            elif health == "down":
+                write_connection_state(
+                    "unreachable", str(config.get("base_url", "") or service_url)
+                )
+            else:
+                # "slow"/"unknown": no verdict — keep whatever state is already
+                # recorded instead of branding a busy server unreachable.
+                hook_log("conn_state_unverified", {"base_url": service_url, "health": health})
+    elif service_url and probe_health(service_url, timeout=1.5) == "ready":
+        write_connection_state("ready", service_url)
+
+    # Code graph: index the repository this session opened in, or refresh it if
+    # the tree moved while the agent was away. Deliberately last and inside the
+    # detached worker — it must never delay the first prompt — and best-effort:
+    # a failure here costs code facts, not the session.
+    try:
+        from _code_graph import autoindex_on_session_start
+
+        code_outcome = autoindex_on_session_start(
+            cwd,
+            service_url,
+            os.environ.get("COGNEE_API_KEY", ""),
+            is_local_server=service_url_is_local(service_url),
+        )
+        if code_outcome:
+            hook_log("code_autoindex", code_outcome)
+    except Exception as exc:
+        hook_log("code_autoindex_error", {"error": str(exc)[:200]})
 
     return user_id, agent_api_key, True
 
@@ -1188,6 +1333,18 @@ def _ensure_statusline_configured() -> None:
     # linger but the plugin is disabled, the renderer self-evicts this entry.)
     guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
     desired = {"type": "command", "command": guarded_command}
+    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
+    # to Claude's event-driven updates, so the connection glyph reflects a change
+    # (e.g. a bad key detected at SessionStart, or the server dying) while the
+    # session is idle — event triggers go quiet when idle, and settings changes
+    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
+    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
+    try:
+        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
+    except ValueError:
+        _interval = 2
+    if _interval >= 1:
+        desired["refreshInterval"] = _interval
 
     try:
         settings: dict = {}
@@ -1316,17 +1473,39 @@ async def _start(payload: dict | None = None) -> dict:
     # never claims ownership of its teardown.
     configured_url = _with_scheme(str(config.get("base_url", "") or "").strip())
     api_key = str(config.get("api_key", "") or "").strip()
-    target_url = configured_url or _LOCAL_SERVICE_URL
+    # Forced cloud (backend switch) with no URL configured: there is nothing to
+    # boot and nothing to fall back to — keep the target empty so no local
+    # server is spawned, let the connection attempt fail, and let the status
+    # line report the missing URL. Everything else keeps the localhost default.
+    forced_cloud_unconfigured = not configured_url and config.get("_forced_backend") == "cloud"
+    target_url = configured_url or ("" if forced_cloud_unconfigured else _LOCAL_SERVICE_URL)
     config["base_url"] = target_url
     os.environ["COGNEE_BASE_URL"] = target_url
     if api_key:
         os.environ["COGNEE_API_KEY"] = api_key
+
+    # NOTE: the local server's LLM_API_KEY health is deliberately NOT judged here.
+    # A hook-env read (config's llm_api_key / OPENAI_API_KEY) is blind to a key that
+    # lives in cognee's own config or a .env the server loads, so a session launched
+    # from a shell without the export wrote "not_set" into a marker that EVERY
+    # session's status line reads — a false ✕ (incorrect_llm_api_key) for sessions whose key is
+    # fine. The idle watcher is the sole authority instead: it resolves the key the
+    # same way the server does (cognee's get_llm_config) and validates it against
+    # the provider, so the verdict matches reality. It runs at session start, so the
+    # signal still appears within seconds of launch.
 
     # The host (Claude) session id is a local correlation key only: it keeps every
     # hook process of this launch resolving the SAME Cognee session id (via the
     # host-keyed map). It is never sent to Cognee as an identity.
     session_candidate, session_source = resolve_session_key_from_payload(payload)
     session_key = set_session_key(session_candidate)
+    if not session_key:
+        # The mid-bootstrap venv re-exec (_run_heavy) replays this script after
+        # stdin was already consumed, so the payload is gone — but the pre-exec
+        # run exported COGNEE_SESSION_KEY, which execv preserves.
+        session_key = get_session_key()
+        if session_key:
+            session_source = "env_session_key"
     if not session_key:
         hook_log("missing_payload_session_id", {"cwd": cwd, "payload": payload})
         print(
@@ -1344,9 +1523,22 @@ async def _start(payload: dict | None = None) -> dict:
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
     # synchronously here so prompt hooks read back the identical ids before any run.
-    session_id, conn_uuid = ensure_launch_record(session_key, cwd)
+    # The record also seeds the launch's active dataset (env/default) and stores
+    # the host pid + cwd so switch-dataset.py, which runs under the shell tool
+    # with no hook payload, can find this launch. A resumed record keeps the
+    # dataset it already has — including one chosen by a switch.
+    session_id, conn_uuid = ensure_launch_record(
+        session_key,
+        cwd,
+        dataset=str(config.get("dataset", "") or "").strip(),
+        host_pid=_find_claude_parent_pid(),
+    )
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
+    dataset = get_dataset(config)
+    # Registration and the bootstrap worker read the dataset off config: keep it
+    # in step with the record so a resumed, switched launch re-binds correctly.
+    config["dataset"] = dataset
     hook_log(
         "session_resolved",
         {
@@ -1354,9 +1546,9 @@ async def _start(payload: dict | None = None) -> dict:
             "session_key": session_key,
             "session_id": session_id,
             "conn_uuid": conn_uuid,
+            "dataset": dataset,
         },
     )
-    dataset = get_dataset(config)
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)
@@ -1365,11 +1557,34 @@ async def _start(payload: dict | None = None) -> dict:
     #   * down + remote URL -> can't boot a remote host; connect and degrade
     user_id = ""
     agent_api_key = ""
-    server_live = _health_ok(_health_url(target_url))
-    will_boot = (not server_live) and _is_local_url(target_url)
+    # An empty target (forced cloud, no URL) must never boot: _is_local_url("")
+    # parses to localhost, so gate on the URL being present at all.
+    # Local endpoints get the full-evidence presence check (quick form — the
+    # boot path re-verifies rigorously before any install), so the recorded
+    # decision distinguishes a busy server from an absent one. Remote endpoints
+    # keep the plain HTTP probe: there is no local evidence for them, and they
+    # are never booted. will_boot means "enter the local bootstrap path" — the
+    # actual install/boot license is enforced inside _ensure_local_server_running,
+    # so a busy server still gets a worker that waits for it instead of a boot.
+    presence_verdict, presence_evidence = "", {}
+    if target_url and _is_local_url(target_url):
+        presence_verdict, presence_evidence = server_presence(target_url, confirm_absent=False)
+        server_live = presence_verdict == PRESENCE_READY
+    else:
+        server_live = bool(target_url) and _health_ok(_health_url(target_url))
+    will_boot = (not server_live) and bool(target_url) and _is_local_url(target_url)
     hook_log(
         "endpoint_mode_selected",
-        {"base_url": target_url, "server_live": server_live, "will_boot": will_boot},
+        {
+            "base_url": target_url,
+            "server_live": server_live,
+            "will_boot": will_boot,
+            **(
+                {"presence": presence_verdict, "evidence": presence_evidence}
+                if presence_verdict
+                else {}
+            ),
+        },
     )
     if will_boot and _LAZY_BOOTSTRAP:
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
@@ -1386,7 +1601,7 @@ async def _start(payload: dict | None = None) -> dict:
             boot_timeout=_HEALTH_TIMEOUT_SECONDS,
         )
         if not ok:
-            if _LAZY_BOOTSTRAP and _is_local_url(target_url):
+            if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url):
                 # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:
@@ -1394,11 +1609,11 @@ async def _start(payload: dict | None = None) -> dict:
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
     _purge_legacy_resolved_files()
+    # Per-session files nothing else deletes (launch records, status markers,
+    # bridge caches, pending buffers, dead improve locks) and oversized logs.
+    from _plugin_common import sweep_stale_state
 
-    # Create config file on first run if it doesn't exist
-    config_file = _STATE_DIR / "config.json"
-    if not config_file.exists():
-        save_config(config)
+    sweep_stale_state()
 
     # Reset the idle clock for this Claude process before the watcher
     # starts, otherwise a stale timestamp from a prior session can cause
@@ -1436,6 +1651,14 @@ async def _start(payload: dict | None = None) -> dict:
 
 
 def main():
+    # First run: leave a commented ~/.cognee/.env template so one-time config
+    # has a documented file to land in. Values (if any) were already loaded
+    # into os.environ when _plugin_common was imported.
+    from _env_file import ensure_env_file_template, env_file_path
+
+    if ensure_env_file_template():
+        hook_log("env_file_template_created", {"path": str(env_file_path())})
+
     # Detached bootstrap mode: run the slow server boot + registration out of
     # band so the SessionStart hook itself returns fast.
     if _BOOTSTRAP_ARG in sys.argv:

@@ -1,6 +1,10 @@
-"""Tests for the embedding-dimension probe in the Hermes provider.
+"""Tests for the embedding-dimension probe in the SDK transport.
 
-``_dimension_mismatch_hint`` returns a one-line actionable diagnostic naming both
+The probe lives with ``SdkBackend`` because it introspects the in-process vector
+engine — see ``backend.py``. The provider only asks for a hint when a recall comes
+back empty; the transport decides whether it can answer.
+
+``dimension_mismatch_hint`` returns a one-line actionable diagnostic naming both
 dims and the active model on a confirmed mismatch, and None in every other case
 (matching dims, no data, or any error) so recall keeps its normal empty-result
 behavior. A fake vector engine is injected so cognee is not required.
@@ -17,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from cognee_integration_hermes import provider as provider_mod  # noqa: E402
+from cognee_integration_hermes import backend as backend_mod  # noqa: E402
 
 
 class _FakeEmbed:
@@ -83,7 +87,7 @@ class _FakeErrorEngine:
 
 
 def _hint(engine):
-    return asyncio.run(provider_mod._dimension_mismatch_hint(engine))
+    return asyncio.run(backend_mod.dimension_mismatch_hint(engine))
 
 
 class TestDimensionMismatchHint(unittest.TestCase):
@@ -122,26 +126,26 @@ class TestDimensionMismatchHint(unittest.TestCase):
         self.assertIsNone(_hint(_Broken()))
 
 
-class TestProviderGate(unittest.TestCase):
-    def test_remote_mode_skips_check(self):
-        provider = provider_mod.CogneeMemoryProvider()
-        provider._remote_mode = True
-        self.assertIsNone(provider._embedding_dimension_mismatch_hint())
+class TestBackendGate(unittest.TestCase):
+    def test_served_mode_skips_the_check(self):
+        backend = backend_mod.SdkBackend()
+        backend.served = True
+        self.assertIsNone(backend.empty_recall_hint())
 
-    def test_embedded_mode_runs_check_via_bridge(self):
-        provider = provider_mod.CogneeMemoryProvider()
-        provider._remote_mode = False
+    def test_in_process_mode_runs_the_check(self):
+        backend = backend_mod.SdkBackend()
+        backend.served = False
 
         async def _fake_hint():
             return "DIM MISMATCH"
 
-        original = provider_mod._dimension_mismatch_hint
-        provider_mod._dimension_mismatch_hint = _fake_hint
+        original = backend_mod.dimension_mismatch_hint
+        backend_mod.dimension_mismatch_hint = _fake_hint
         try:
-            self.assertEqual(provider._embedding_dimension_mismatch_hint(), "DIM MISMATCH")
+            self.assertEqual(backend.empty_recall_hint(), "DIM MISMATCH")
         finally:
-            provider_mod._dimension_mismatch_hint = original
-            provider._bridge.shutdown()
+            backend_mod.dimension_mismatch_hint = original
+            backend.close()
 
 
 if __name__ == "__main__":

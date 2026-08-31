@@ -1,6 +1,6 @@
 {
   "name": "cognee",
-  "version": "1.1.0",
+  "version": "1.5.2",
   "description": "CLI-first Cognee workflows for memory, knowledge graphs, codebase ingestion, and local UI launch.",
   "author": {
     "name": "Topoteretes",
@@ -35,6 +35,6 @@
       "Use Cognee CLI to recall what we know about this feature.",
       "Check that Codex session events are reaching Cognee."
     ],
-    "brandColor": "#6510F4"
+    "brandColor": "#BC9BFF"
   }
 }

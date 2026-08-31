@@ -3,26 +3,41 @@
 #
 # Usage:
 #   cognee-remember.sh <content> [--node-set <node_set>] [--dataset <dataset>]
+#   cognee-remember.sh --file <path> [--node-set <node_set>] [--dataset <dataset>]
 #
 # --node-set: node set for categorization (default: user_context)
 #             user_context | project_docs | agent_actions
-# --dataset:  dataset name (default: COGNEE_PLUGIN_DATASET or agent_sessions)
+# --dataset:  dataset name (default: this launch's active dataset)
+# --file:     upload a file under its REAL filename instead of inline text.
+#             The extension is the server's routing signal: code files
+#             (.py/.ts/.go/...) ride the zero-LLM code-graph route on
+#             cognee >= 1.5.x; anything else flows through its normal loader.
+#             With --file, positional <content> is not required.
 #
 # Configuration:
 #   Resolves auth from env/api_key.json.
-#   Dataset is env-driven: COGNEE_PLUGIN_DATASET, then agent_sessions.
+#   Dataset comes from this launch's record (follows a dataset switch), then
+#   COGNEE_PLUGIN_DATASET, then agent_sessions.
 #   Falls back to cognee-cli only if the server is unreachable.
 
 set -euo pipefail
 
 PLUGIN_DIR="${HOME}/.cognee-plugin/codex"
-runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" 2>/dev/null || true
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
 import json
 import pathlib
 import sys
 
 plugin_dir = pathlib.Path(sys.argv[1])
 import os
+# One-time config from ~/.cognee/.env (shell exports still win).
+sys.path.insert(0, sys.argv[2])
+try:
+    from _env_file import load_env_file
+    load_env_file()
+except Exception:
+    pass
 service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
@@ -40,6 +55,15 @@ if not api_key:
             pass
 
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+# The launch record wins: it carries the dataset chosen with switch-dataset.py.
+try:
+    from _plugin_common import _read_map_record, resolve_host_key_outside_hook
+    _host_key, _ = resolve_host_key_outside_hook()
+    _rec = _read_map_record(_host_key) if _host_key else {}
+    if str(_rec.get("dataset") or "").strip():
+        dataset = str(_rec["dataset"]).strip()
+except Exception:
+    pass
 
 print(json.dumps({"service_url": service_url, "api_key": api_key, "dataset": dataset}))
 PY
@@ -74,11 +98,15 @@ PY
 [ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 [ -z "$DATASET" ] && DATASET="${COGNEE_PLUGIN_DATASET:-agent_sessions}"
 
-# Parse arguments: content is first positional; flags follow
-CONTENT="${1:-}"
+# Parse arguments: content is first positional (unless --file leads); flags follow
+CONTENT=""
 NODE_SET="user_context"
+FILE_PATH=""
 
-shift || true
+if [ "${1:-}" != "--file" ]; then
+    CONTENT="${1:-}"
+    shift || true
+fi
 while [ $# -gt 0 ]; do
     case "$1" in
         --node-set)
@@ -89,13 +117,21 @@ while [ $# -gt 0 ]; do
             shift
             DATASET="${1:-$DATASET}"
             ;;
+        --file)
+            shift
+            FILE_PATH="${1:-}"
+            ;;
         *)
             ;;
     esac
     shift || true
 done
 
-if [ -z "$CONTENT" ]; then
+if [ -n "$FILE_PATH" ] && [ ! -f "$FILE_PATH" ]; then
+    echo "Error: --file path not found: $FILE_PATH" >&2
+    exit 1
+fi
+if [ -z "$CONTENT" ] && [ -z "$FILE_PATH" ]; then
     echo "Error: no content provided" >&2
     exit 1
 fi
@@ -103,11 +139,16 @@ fi
 # Server-first: POST to /api/v1/remember via _remember_http.py.
 # UNREACHABLE → fall back to cognee-cli and warn.
 # Any other result (ok or error) → authoritative; do not fall back.
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
-RESULT="$(python3 "${SELF_DIR}/_remember_http.py" "$SERVICE_URL" "$API_KEY" "$CONTENT" "$DATASET" "$NODE_SET" || true)"
+RESULT="$(python3 "${SELF_DIR}/_remember_http.py" "$SERVICE_URL" "$API_KEY" "$CONTENT" "$DATASET" "$NODE_SET" "$FILE_PATH" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
     printf '%s\n' "$RESULT"
+elif [ -n "$FILE_PATH" ]; then
+    # No CLI fallback for file uploads: the CLI path would re-read and rename
+    # the content, losing the extension-based code routing this mode exists for.
+    echo "[cognee-remember] server unreachable — file upload NOT stored; retry once the server is back" >&2
+    echo "UNREACHABLE"
+    exit 1
 else
     echo "[cognee-remember] falling back to cognee-cli (degraded — server unreachable; verify the store succeeded once the server is back)" >&2
     uv run cognee-cli remember "$CONTENT" -d "$DATASET" --node-set "$NODE_SET" 2>/dev/null || true

@@ -16,6 +16,7 @@ runs them rather than improvising.
 | Skill | Directory | What it sets up |
 |-------|-----------|-----------------|
 | `cognee-falkor-setup` | [`falkor/`](./falkor/SKILL.md) | Cognee with **FalkorDB** as the vector + graph store (custom image + adapter), running alongside FalkorDB, with per-agent graphs. |
+| `cognee-memory` | [`cognee-memory/`](./cognee-memory/SKILL.md) | Usage skill (not a setup generator): teaches an agent the Cognee memory API — the remember/recall/forget/improve loop via the `cognee` Python library and CLI, plus OpenClaw plugin wiring. Community contribution by [@smseow001](https://clawhub.ai/user/smseow001) (MIT-0). |
 
 _More setups will be added here over time (e.g. other vector/graph backends,
 cloud deployments, alternative LLM providers)._

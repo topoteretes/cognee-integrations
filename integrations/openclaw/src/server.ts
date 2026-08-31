@@ -25,7 +25,7 @@ const ENSURE_SCRIPT_CONTENT = [
   "UV_BIN = os.path.join(UV_DIR, 'uv' + _ext)",
   "READY_MARKER = os.path.join(BASE, '.venv-ready.json')",
   "INSTALL_LOCK = os.path.join(BASE, 'venv-install.lock')",
-  "COGNEE_VERSION = '1.2.2.dev3'",
+  "COGNEE_VERSION = '1.5.3'",
   "",
   "# Self-daemonize so the caller returns immediately.",
   "if '--daemon' not in sys.argv:",
@@ -174,7 +174,9 @@ async function saveApiKeyCache(baseUrl: string, key: string): Promise<void> {
 /**
  * Resolve a permanent Cognee API key for this deployment, using the same
  * strategy as the claude-code and codex integrations:
- *   1. COGNEE_API_KEY env
+ *   1. Explicitly configured key (config apiKey / COGNEE_API_KEY, both
+ *      resolved by the config layer and passed in as configuredApiKey —
+ *      this module deliberately does not read credential env vars itself)
  *   2. Cached key in ~/.cognee-plugin/api_key.json
  *   3. Existing key returned by GET /api/v1/auth/api-keys
  *   4. Mint a new one via POST /api/v1/auth/api-keys and cache it
@@ -186,9 +188,10 @@ async function saveApiKeyCache(baseUrl: string, key: string): Promise<void> {
 export async function resolveOrMintApiKey(
   client: ApiKeyClient,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
+  configuredApiKey = "",
 ): Promise<string> {
-  const envKey = (process.env["COGNEE_API_KEY"] ?? "").trim();
-  if (envKey) return envKey;
+  const configuredKey = configuredApiKey.trim();
+  if (configuredKey) return configuredKey;
 
   try {
     const cache = JSON.parse(await readFile(API_KEY_CACHE_PATH, "utf-8")) as Record<string, unknown>;
@@ -258,6 +261,11 @@ export async function bootServerIfNeeded(
   const result = await runPluginCommandWithTimeout({
     argv: [python, ENSURE_SCRIPT_PATH, String(port)],
     timeoutMs: 5_000,
+    // The script derives every path from `~`, this module from `homedir()`.
+    // Pin the two together: identical in production, and the only way a
+    // redirected homedir (the test suite's sandbox) also redirects the venv
+    // and server state instead of landing them in the real home.
+    env: { ...process.env, HOME: homedir() },
   });
   if (result.code !== 0) {
     logger.warn?.(`cognee-openclaw: boot script exited ${result.code}: ${result.stderr}`);
@@ -281,9 +289,15 @@ const EXIT_WATCHER_CONTENT = [
   "",
   "POLL = 2.0",
   "LOG_PATH = os.path.join(os.path.expanduser('~'), '.openclaw', 'cognee', 'exit-watcher.log')",
+  "# Same ceiling as the Python plugins' logs (COGNEE_PLUGIN_LOG_MAX_BYTES, default 20 MiB):",
+  "# rotate to .1 when over it, so a watcher that logs for months stays readable.",
+  "try: LOG_MAX = max(0, int(float(os.environ.get('COGNEE_PLUGIN_LOG_MAX_BYTES', '') or 20 * 1024 * 1024)))",
+  "except ValueError: LOG_MAX = 20 * 1024 * 1024",
   "",
   "def log(msg):",
   "    try:",
+  "        if LOG_MAX and os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX:",
+  "            os.replace(LOG_PATH, LOG_PATH + '.1')",
   "        with open(LOG_PATH, 'a') as f:",
   "            f.write(time.strftime('%Y-%m-%dT%H:%M:%S') + ' ' + str(msg) + '\\n')",
   "    except Exception: pass",

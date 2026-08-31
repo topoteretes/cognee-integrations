@@ -1,11 +1,18 @@
 name: Plugin Windows Tests
 
-# The claude-code and codex plugins ship platform-specific process helpers
-# (_proc.py: Windows liveness via OpenProcess/WaitForSingleObject, process
-# ancestry via CreateToolhelp32Snapshot) and a status-line renderer whose stdio
-# encoding is Windows-sensitive (cp1252 cannot encode the health glyphs). Those
-# paths never run on the ubuntu-only integration matrix, so exercise them on a
-# real Windows runner.
+# The claude-code and codex plugins carry genuinely platform-specific paths:
+# _proc.py (Windows liveness via OpenProcess/WaitForSingleObject, process
+# ancestry via CreateToolhelp32Snapshot), a status-line renderer whose stdio
+# encoding is Windows-sensitive (cp1252 cannot encode the health glyphs), and
+# state directories resolved from USERPROFILE rather than HOME. None of that is
+# exercised by the ubuntu-only matrix in ci.yml, so the shared suite runs again
+# here on a real Windows runner.
+#
+# This runs the SAME suite as ci.yml (integrations/tests), not a hand-listed set
+# of scripts. The previous version invoked five files directly as
+# `python <file>`, which meant those files ran only on Windows and never on
+# Linux, and that any test added to the shared suite was silently never checked
+# on Windows at all.
 
 on:
   pull_request:
@@ -13,44 +20,58 @@ on:
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'
+      - 'integrations/tests/**'
       - '.github/workflows/plugin-windows-tests.yml'
   push:
     branches: [main]
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'
+      - 'integrations/tests/**'
       - '.github/workflows/plugin-windows-tests.yml'
 
 jobs:
   test-plugins-windows:
     runs-on: windows-latest
+    # The full suite runs ~20 minutes on this runner (19:21 on main at the time
+    # this was raised): absence-confirmation shells out to netstat and every
+    # probe of a closed loopback port waits its full timeout, because Windows
+    # Firewall drops the SYN instead of refusing. 20 left no headroom at all.
+    timeout-minutes: 30
     steps:
       # The repo has deeply-nested committed artifacts (n8n_workflows LanceDB
-      # files) whose paths exceed Windows' MAX_PATH; sparse-checkout the plugin
-      # trees this job needs and allow long paths so checkout cannot break.
+      # files) whose paths exceed Windows' MAX_PATH; sparse-checkout the trees
+      # this job needs and allow long paths so checkout cannot break.
       - name: Allow long paths for checkout
         run: git config --global core.longpaths true
 
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          # integrations/tests holds the shared suite; the other two hold the
+          # hook scripts it imports and runs as subprocesses.
           sparse-checkout: |
             integrations/claude-code
             integrations/codex
+            integrations/tests
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: integrations/tests/.python-version
 
-      - name: claude-code process-helper tests
-        run: python integrations/claude-code/tests/test_proc.py
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
 
-      - name: codex process-helper tests
-        run: python integrations/codex/tests/test_proc.py
+      - name: Install dependencies
+        working-directory: integrations/tests
+        run: uv sync --locked --dev
 
-      - name: claude-code status-line renderer tests
-        run: python integrations/claude-code/tests/test_statusline_render.py
-
-      - name: codex status-line renderer tests
-        run: python integrations/codex/tests/test_statusline_render.py
+      # The suite's addopts already exclude the live tier (`-m 'not live'`), so
+      # this never needs a server or an LLM key. Tests that encode POSIX-only
+      # semantics (file mode bits) skip themselves via `os.name == "nt"`.
+      - name: Run the shared suite
+        working-directory: integrations/tests
+        run: uv run pytest tests/ -v

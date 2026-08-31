@@ -56,7 +56,8 @@ def _resolve_local_cognee_version() -> str:
 def _resolve_mode() -> str:
     """Return the resolved operating mode: Local, Local Managed, or Cloud.
 
-    - No base_url configured → Local
+    - No base_url configured → Local (or Cloud when the backend switch forces
+      cloud — the mode is pinned even though there is nothing to connect to)
     - base_url pointing to localhost / 127.0.0.1 / ::1 → Local Managed
     - Remote base_url → Cloud
     """
@@ -68,7 +69,7 @@ def _resolve_mode() -> str:
     base_url = str(cfg.get("base_url") or "").strip()
 
     if not base_url:
-        return "Local"
+        return "Cloud" if cfg.get("_forced_backend") == "cloud" else "Local"
 
     hostname = urllib.parse.urlparse(base_url).hostname or ""
     if hostname in ("localhost", "127.0.0.1", "::1"):
@@ -77,21 +78,34 @@ def _resolve_mode() -> str:
     return "Cloud"
 
 
-_DEFAULT_LOCAL_SERVICE_URL = "http://localhost:8011"
+def _mode_annotation() -> str:
+    """Suffix for the mode row when the backend switch forced the decision."""
+    from _env_file import forced_backend_with_source
+    from config import load_config
+
+    forced, var = forced_backend_with_source()
+    if not forced:
+        return ""
+    note = f" — forced by {var}={forced}"
+    if forced == "cloud" and not str(load_config().get("base_url") or "").strip():
+        note += " (missing COGNEE_BASE_URL — nothing to connect to)"
+    return note
 
 
 def _resolve_server_url() -> tuple:
     """Return (display_url, raw_url).
 
-    Codex's _plugin_common does not expose _local_api_url_with_source,
-    so we inline the same resolution logic here (env → default).
-    In local mode the display value is "-".
+    In local mode the display value is "-", while the raw URL remains
+    available for the health probe. Forced cloud with no URL configured has
+    nothing to probe at all.
     """
-    raw_url = (
-        os.environ.get("COGNEE_LOCAL_API_URL") or os.environ.get("COGNEE_BASE_URL") or ""
-    ).strip() or _DEFAULT_LOCAL_SERVICE_URL
+    from _plugin_common import _local_api_url_with_source
+    from config import load_config
 
     mode = _resolve_mode()
+    if mode == "Cloud" and not str(load_config().get("base_url") or "").strip():
+        return "-", ""
+    raw_url, _source = _local_api_url_with_source()
     display = "-" if mode == "Local" else raw_url
     return display, raw_url
 
@@ -108,6 +122,13 @@ def _resolve_api_key_source() -> str:
     """
     env_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
     if env_key:
+        # The env layer is fed by both real exports and ~/.cognee/.env
+        # (setdefault); tell them apart for debuggability.
+        from _env_file import env_file_path, parse_env_file
+
+        file_key = parse_env_file(env_file_path()).get("COGNEE_API_KEY", "")
+        if file_key and file_key == env_key:
+            return "Env file"
         return "ENV"
 
     # Check the single cached key file.
@@ -183,6 +204,26 @@ def _resolve_embedding() -> tuple[str, str]:
     return model, dims
 
 
+def _resolve_env_file() -> str:
+    """One-time config file (~/.cognee/.env): presence, key names, overrides.
+
+    Values are never shown — only which keys the file defines, and which of
+    them are shadowed by a real shell export (exports win over the file).
+    """
+    from _env_file import env_file_status
+
+    status = env_file_status()
+    path = status.get("path", "")
+    if not status.get("exists"):
+        return f"Not found ({path})"
+    keys = status.get("keys") or []
+    desc = f"{path} ({len(keys)} key{'s' if len(keys) != 1 else ''}: {', '.join(keys)})"
+    overridden = status.get("overridden") or []
+    if overridden:
+        desc += f" — overridden by shell env: {', '.join(overridden)}"
+    return desc
+
+
 def collect_report() -> dict:
     """Gather all diagnostic fields into an ordered dict."""
     mode = _resolve_mode()
@@ -195,7 +236,8 @@ def collect_report() -> dict:
     embedding_model, embedding_dimensions = _resolve_embedding()
 
     return {
-        "mode": mode,
+        "mode": mode + _mode_annotation(),
+        "env_file": _resolve_env_file(),
         "server_url": display_url if display_url != "-" else None,
         "api_key_source": api_key_source,
         "reachable": health["reachable"],
@@ -210,6 +252,7 @@ def collect_report() -> dict:
 
 _DISPLAY_ORDER = [
     ("Mode", "mode"),
+    ("Env File", "env_file"),
     ("Server URL", "server_url"),
     ("API Key Source", "api_key_source"),
     ("Reachable", "reachable"),

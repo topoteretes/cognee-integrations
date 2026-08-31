@@ -51,6 +51,18 @@ uv run cognee-cli serve --url http://localhost:8000
 For a hosted instance with an API key, do not paste the key into the transcript.
 Use an environment variable or an already configured credential.
 
+For the plugin itself, durable configuration (`COGNEE_BASE_URL`,
+`COGNEE_API_KEY`, `LLM_API_KEY`, ...) belongs in `~/.cognee/.env` — a one-time
+setup file shared with the Claude Code plugin, loaded at session start. Shell
+exports still override it per terminal. Guide the user to edit that file
+rather than exporting in every shell; never echo its secret values.
+
+The file may hold both modes' variables at once: with nothing exported, cloud
+wins (`COGNEE_BASE_URL` routes the connection). To pin one terminal to a mode,
+the user exports `COGNEE_BACKEND=local` or `COGNEE_BACKEND=cloud` before
+launching — that beats the URL rule, and `unset COGNEE_BASE_URL` is NOT a way
+to go local (the file re-injects the URL on the next launch).
+
 To disconnect:
 
 ```bash

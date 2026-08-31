@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/session-start.py\"",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/session-start.py\" || python \"${PLUGIN_ROOT}/scripts/session-start.py\"",
             "timeout": 120,
             "statusMessage": "Initializing Cognee memory..."
           }
@@ -18,13 +18,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/session-context-lookup.py\"",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/session-context-lookup.py\" || python \"${PLUGIN_ROOT}/scripts/session-context-lookup.py\"",
             "timeout": 120,
             "statusMessage": "Searching session memory..."
           },
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/store-user-prompt.py\"",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/store-user-prompt.py\" || python \"${PLUGIN_ROOT}/scripts/store-user-prompt.py\"",
             "timeout": 120,
             "statusMessage": "Saving user prompt..."
           }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/store-to-session.py\"",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/store-to-session.py\" || python \"${PLUGIN_ROOT}/scripts/store-to-session.py\"",
             "timeout": 120,
             "statusMessage": "Saving tool trace..."
           }
@@ -49,9 +49,14 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/store-to-session.py\" --stop || python \"${PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
             "timeout": 120,
             "statusMessage": "Saving assistant response..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/credits-refresh.py\" || python \"${PLUGIN_ROOT}/scripts/credits-refresh.py\"",
+            "timeout": 10
           }
         ]
       }
@@ -61,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/pre-compact.py\"",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/pre-compact.py\" || python \"${PLUGIN_ROOT}/scripts/pre-compact.py\"",
             "timeout": 120,
             "statusMessage": "Building memory anchor..."
           }
@@ -73,8 +78,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end",
-            "timeout": 120,
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end || python \"${PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end",
             "statusMessage": "Syncing session memory..."
           }
         ]

@@ -95,3 +95,9 @@ node_modules/
 dify-plugin
 *.difypkg
 .aider*
+
+# Jest/vitest coverage output (integrations/*/coverage)
+coverage/
+
+# enola code-graph snapshots (written into an indexed repo by the cognee code pipeline)
+.enola/

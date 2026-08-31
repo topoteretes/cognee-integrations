@@ -1,26 +1,51 @@
 {
   "name": "@cognee/cognee-openclaw",
-  "version": "2026.7.9",
+  "version": "2026.8.27",
   "type": "module",
   "description": "OpenClaw Cognee-backed memory plugin with auto-recall/capture",
+  "author": {
+    "name": "Cognee",
+    "url": "https://www.cognee.ai"
+  },
+  "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/openclaw#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/topoteretes/cognee-integrations.git",
+    "directory": "integrations/openclaw"
+  },
+  "bugs": {
+    "url": "https://github.com/topoteretes/cognee-integrations/issues"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "openclaw": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "compat": {
+      "pluginApi": ">=2026.6.5"
+    },
+    "build": {
+      "openclawVersion": "2026.7.1-2"
+    }
   },
   "files": [
     "dist",
     "openclaw.plugin.json",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "jest"
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:unit": "jest __tests__/unit",
+    "test:integration": "jest __tests__/integration",
+    "test:e2e": "jest __tests__/e2e",
+    "test:live": "jest __tests__/live --testPathIgnorePatterns=/node_modules/ --runInBand"
   },
   "jest": {
     "preset": "ts-jest",
@@ -29,14 +54,27 @@
       "^.+\\.ts$": [
         "ts-jest",
         {
-          "useESM": true
+          "tsconfig": {
+            "module": "CommonJS"
+          }
         }
       ]
     },
     "moduleNameMapper": {
       "^openclaw/plugin-sdk/sandbox$": "<rootDir>/__mocks__/openclaw-sandbox.cjs",
       "^(\\.\\.?/.*)\\.js$": "$1"
-    }
+    },
+    "collectCoverageFrom": [
+      "src/**/*.ts"
+    ],
+    "coverageProvider": "v8",
+    "setupFilesAfterEnv": [
+      "<rootDir>/jest.setup.ts"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/__tests__/live/"
+    ]
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.5"
@@ -45,7 +83,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
     "jest": "^30.2.0",
-    "openclaw": "^2026.6.10",
+    "openclaw": "^2026.7.1-2",
     "ts-jest": "^29.4.6",
     "typescript": "^5.3.0"
   },

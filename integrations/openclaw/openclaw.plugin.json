@@ -2,6 +2,38 @@
   "id": "cognee-openclaw",
   "name": "Memory (Cognee)",
   "kind": "memory",
+  "contracts": {
+    "tools": [
+      "memory_search",
+      "memory_get",
+      "memory_forget",
+      "memory_switch_dataset",
+      "memory_code_search"
+    ]
+  },
+  "toolMetadata": {
+    "memory_get": {
+      "replaySafe": true
+    },
+    "memory_forget": {
+      "optional": true
+    },
+    "memory_switch_dataset": {
+      "optional": true
+    },
+    "memory_code_search": {
+      "optional": true,
+      "replaySafe": true
+    }
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        { "path": "apiKey", "expected": "string" },
+        { "path": "password", "expected": "string" }
+      ]
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -166,6 +198,59 @@
         "type": "boolean",
         "description": "Inject memories before each agent run (default: true)"
       },
+      "codeSearchTool": {
+        "type": "boolean",
+        "description": "Register the memory_code_search agent tool for deterministic structural queries against repositories indexed with `openclaw cognee index-repo` (default: true)"
+      },
+      "codeGraphRecall": {
+        "type": "boolean",
+        "description": "Add a deterministic code-graph recall lane when a prompt names an identifier and at least one code graph is indexed or listed in codeDatasets (default: true)"
+      },
+      "codeDatasets": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Extra code-graph dataset names to query in addition to repositories indexed on this machine"
+      },
+      "memorySteer": {
+        "type": "boolean",
+        "description": "Append a static system-prompt line on each agent run asserting Cognee as the preferred long-term memory and naming the memory tools (default: true)"
+      },
+      "memorySteerText": {
+        "type": "string",
+        "description": "Replace the default memory-steer text"
+      },
+      "recallSessionLayers": {
+        "type": "boolean",
+        "description": "Alongside the graph search, recall this conversation's session layers (cached Q&A, tool-call lessons, distilled agent guidance) and inject them as separate sections. Requires enableSessions (default: true)"
+      },
+      "memoryTools": {
+        "type": "boolean",
+        "description": "Register the memory_search / memory_get agent tools OpenClaw's memory slot expects (used by active-memory). Independent of autoRecall (default: true)"
+      },
+      "memoryForgetTool": {
+        "type": "boolean",
+        "description": "Also register the memory_forget agent tool: user-directed deletion of individual documents, two-phase (find candidates, then forget listed data ids with confirm=true). Whole-dataset wipes stay CLI-only. Requires Cognee >= 1.5.3 (default: true)"
+      },
+      "datasetSwitchTool": {
+        "type": "boolean",
+        "description": "Also register the memory_switch_dataset agent tool: move one conversation to another dataset (list / current / switch / reset). Syncs the current session first; later capture, recall and session-end improve for that conversation target the new dataset (default: true)"
+      },
+      "improveOnSessionEnd": {
+        "type": "boolean",
+        "description": "On session_end, call /improve with the session id to bridge session-cache QAs into the permanent graph (default: true)"
+      },
+      "memoryHitFooter": {
+        "type": "boolean",
+        "description": "Append a one-line footer to the agent's final reply on turns where auto-recall injected at least one memory, e.g. \"[cognee: 3 memories]\". No footer on turns without hits (default: true)"
+      },
+      "memoryHitFooterFormat": {
+        "type": "string",
+        "description": "Footer template. Placeholders: {count}, {memories} (\"memory\"/\"memories\"), {sources} (default: \"[cognee: {count} {memories}]\")"
+      },
+      "weeklyDigest": {
+        "type": "boolean",
+        "description": "Once per 7 days, append a digest to the agent's next reply with turns-with-hits, total turns and top memory sources. Suppressed when the week had zero hits (default: true)"
+      },
       "autoIndex": {
         "type": "boolean",
         "description": "Auto-sync memory files to Cognee on plugin startup (default: true)"
@@ -293,6 +378,46 @@
     },
     "autoRecall": {
       "label": "Auto-Recall"
+    },
+    "recallSessionLayers": {
+      "label": "Recall Session Layers"
+    },
+    "codeSearchTool": {
+      "label": "Code Search Tool (memory_code_search)"
+    },
+    "codeGraphRecall": {
+      "label": "Code-Graph Recall Lane"
+    },
+    "codeDatasets": {
+      "label": "Extra Code-Graph Datasets"
+    },
+    "memorySteer": {
+      "label": "Memory Steer (system prompt)"
+    },
+    "memorySteerText": {
+      "label": "Memory Steer Text"
+    },
+    "memoryTools": {
+      "label": "Memory Tools (memory_search / memory_get)"
+    },
+    "memoryForgetTool": {
+      "label": "Memory Forget Tool (memory_forget)"
+    },
+    "datasetSwitchTool": {
+      "label": "Dataset Switch Tool (memory_switch_dataset)"
+    },
+    "improveOnSessionEnd": {
+      "label": "Improve on Session End"
+    },
+    "memoryHitFooter": {
+      "label": "Memory-Hit Footer"
+    },
+    "memoryHitFooterFormat": {
+      "label": "Memory-Hit Footer Format",
+      "placeholder": "[cognee: {count} {memories}]"
+    },
+    "weeklyDigest": {
+      "label": "Weekly Digest"
     },
     "autoIndex": {
       "label": "Auto-Index on Startup"
