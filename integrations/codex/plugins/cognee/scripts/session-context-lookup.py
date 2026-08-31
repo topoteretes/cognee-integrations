@@ -473,20 +473,29 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 verdict = SLOW  # pre-3.11 asyncio.TimeoutError isn't TimeoutError
             else:
                 verdict = classify_transport_exception(exc)
-            if isinstance(exc, _urlerr.HTTPError):
-                scopes_answered_err += 1
-                if exc.code in (401, 403):
-                    auth_rejected = True
-                elif exc.code >= 500:
-                    server_errors += 1
-            elif verdict == SLOW:
-                scope_timeouts += 1
-            elif verdict == DOWN:
-                server_down = True
-            hook_log(
-                "recall_error",
-                {"scope": scope_list, "error": str(exc)[:200], "verdict": verdict},
-            )
+            if isinstance(exc, _urlerr.HTTPError) and exc.code == 404 and scope_list == ["graph"]:
+                # A dataset nobody has written to yet has no graph, and the
+                # server answers the graph scope with 404 (DatasetNotFound)
+                # until the first cognify lands. On a fresh install that is
+                # every prompt of the first session — expected, not an error:
+                # keep it out of recall_error and the health accounting
+                # (scopes_answered_err) so real failures stay visible (SDK-469).
+                hook_log("recall_graph_not_built", {"scope": scope_list, "dataset": scope_dataset})
+            else:
+                if isinstance(exc, _urlerr.HTTPError):
+                    scopes_answered_err += 1
+                    if exc.code in (401, 403):
+                        auth_rejected = True
+                    elif exc.code >= 500:
+                        server_errors += 1
+                elif verdict == SLOW:
+                    scope_timeouts += 1
+                elif verdict == DOWN:
+                    server_down = True
+                hook_log(
+                    "recall_error",
+                    {"scope": scope_list, "error": str(exc)[:200], "verdict": verdict},
+                )
         finally:
             # hits = raw count from this scope's call (pre-bucketing/filtering);
             # elapsed_ms measured around the call, recorded even when it errored.
