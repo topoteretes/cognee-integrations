@@ -111,6 +111,54 @@ _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
 _PINNED_COGNEE_VERSION = "1.5.3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
+# Maps a configured backend provider env var to the cognee package "extra" that
+# provides its driver. A bare `cognee==<version>` install has none of these, so
+# the server crashes on first use of any non-default backend (#232): Postgres
+# needs psycopg2/asyncpg (via `postgres-binary`), Neo4j needs its driver, a
+# local Ollama LLM needs the `ollama` extra, and `fastembed` embeddings need
+# their own extra. The env var names are the ones cognee's own config classes
+# read (verified against 1.5.3's infrastructure/*/config.py field names, which
+# pydantic-settings matches case-insensitively; GRAPH_DATABASE_PROVIDER is even
+# explicit there). Values already sit in os.environ by the time the install
+# runs: ensure_cognee_installed() calls apply_cognee_env() first, and the
+# ~/.cognee/.env file is injected at process start (_env_file.py), so both
+# exported and file-configured providers are seen. `postgres`/`pgvector` share
+# one driver set, so VECTOR_DB_PROVIDER=pgvector maps to the same extra as
+# DB_PROVIDER=postgres rather than a separate one.
+_PROVIDER_EXTRAS = (
+    ("DB_PROVIDER", {"postgres": "postgres-binary", "postgresql": "postgres-binary"}),
+    ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
+    ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
+    ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
+    ("LLM_PROVIDER", {"ollama": "ollama"}),
+)
+
+
+def _detect_required_extras() -> list:
+    """Detect the cognee extras actually needed from the configured backend
+    providers, so the install below brings in exactly what's needed instead of
+    either a bare install (missing drivers, #232) or unconditionally installing
+    every possible extra regardless of what's actually configured."""
+    extras: list[str] = []
+    for env_var, mapping in _PROVIDER_EXTRAS:
+        value = os.environ.get(env_var, "").strip().lower()
+        extra = mapping.get(value)
+        if extra and extra not in extras:
+            extras.append(extra)
+    return extras
+
+
+def _cognee_install_spec() -> str:
+    """The pip requirement to install: the pinned cognee, plus the extras the
+    configured providers need."""
+    extras = ",".join(_detect_required_extras())
+    return (
+        f"cognee[{extras}]=={_PINNED_COGNEE_VERSION}"
+        if extras
+        else f"cognee=={_PINNED_COGNEE_VERSION}"
+    )
+
+
 # Install single-flight. Distinct from the server boot lock (which is short, on
 # the assumption a boot completes in ~a minute): a cold cognee install can take
 # minutes, so concurrent sessions must NOT install into the same venv at once.
@@ -196,7 +244,8 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
     still holding the graph store's file lock, and upgrading the venv under it
     corrupts the databases. Always installs the exact pinned version
     (_PINNED_COGNEE_VERSION) so the server's FastAPI lifespan migrations run on
-    a known-good release.
+    a known-good release, plus the extras the configured backend providers
+    need (_cognee_install_spec, #232).
 
     Fails soft: if the install can't run (e.g. offline) but a usable cognee is
     already present, returns True with whatever version is there. Returns False
@@ -286,7 +335,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "--upgrade",
                         "--python",
                         str(_VENV_PYTHON),
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     env=env,
                     check=True,
@@ -314,7 +363,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "pip",
                         "install",
                         "--upgrade",
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     check=True,
                     capture_output=True,
