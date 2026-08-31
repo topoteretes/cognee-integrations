@@ -338,6 +338,11 @@ jobs:
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
+          # Unlike the other tiers, this job never runs uv itself — only the
+          # plugin's cold venv build does. On a plugin-venv cache hit uv is never
+          # invoked, so an empty uv cache is the normal case here, not an error;
+          # without this the post-job cache save fails an otherwise green run.
+          ignore-nothing-to-cache: true
 
       # The venv the plugin builds, keyed on the file that pins its cognee version
       # so a bump rebuilds. The ready marker sits next to the venv, not inside it;
