@@ -64,10 +64,23 @@ def pytest_collection_modifyitems(items):
 
 
 @pytest.fixture(autouse=True)
-def hermetic_env(request, monkeypatch):
-    """Drop every ambient cognee variable, for every test but the live ones."""
+def hermetic_env(request, monkeypatch, tmp_path):
+    """Drop every ambient cognee variable, for every test but the live ones.
+
+    The shared state files under ``~/.cognee-plugin/hermes/`` are re-pointed at
+    the test's tmp dir for the same reason the env is scrubbed: the dataset
+    overrides a developer switched, the repos they indexed for code recall and
+    their cached update check would otherwise leak into (and be written by)
+    the hermetic suite.
+    """
     if request.module.__name__.rsplit(".", 1)[-1] in _LIVE_MODULES:
         return
     for name in list(os.environ):
         if name.startswith(_SCRUBBED_PREFIXES):
             monkeypatch.delenv(name, raising=False)
+
+    from cognee_integration_hermes import code_graph, dataset_overrides, update_check
+
+    monkeypatch.setattr(code_graph, "_STATE_DIR", tmp_path / "code-graph")
+    monkeypatch.setattr(dataset_overrides, "_OVERRIDES_PATH", tmp_path / "dataset-overrides.json")
+    monkeypatch.setattr(update_check, "_CACHE_PATH", tmp_path / "update-check.json")

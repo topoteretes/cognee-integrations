@@ -1,14 +1,14 @@
 name: cognee
 kind: exclusive
-version: 1.1.0
+version: 1.2.0
 description: "Cognee memory provider for Hermes Agent: session-aware graph memory, recall, forget, and session-end improvement."
 pip_dependencies:
-  # Floor 1.2.1: the HTTP wire contract this plugin depends on
-  # (/api/v1/remember/entry, improve(session_ids)) first shipped there.
-  # Cap 1.4.0: the newest version verified against the test suite and a live
-  # server boot. Repo policy (scripts/check_version_pins.py) requires a bounded
-  # range rather than an exact pin; the lockfile resolves to 1.4.0.
-  - cognee>=1.2.1,<=1.4.0
+  # Exact pin: the installed package doubles as the local server this plugin
+  # spawns, and 1.5.3 is both the floor — content_type="code" repo indexing,
+  # the "code" recall scope, and targeted session invalidation on document
+  # delete all first shipped there — and the newest version verified against
+  # the test suite and a live server.
+  - cognee==1.5.3
 hooks:
   - on_session_end
   - on_memory_write

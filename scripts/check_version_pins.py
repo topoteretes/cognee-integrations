@@ -2,7 +2,8 @@
 """Check that all Python integrations pin the cognee dependency with a bounded range.
 
 Policy: Every Python integration that depends on cognee must declare it with both
-a lower bound (>=) and an upper bound (< or <=). For example: cognee>=0.5.1,<0.6.0
+a lower bound (>=) and an upper bound (< or <=), e.g. cognee>=0.5.1,<0.6.0 — or
+an exact pin (==), which bounds both sides by definition, e.g. cognee==1.5.3.
 
 Handles:
   - Simple deps:        "cognee>=0.5.1,<0.6.0"
@@ -36,6 +37,10 @@ LOWER_BOUND_PATTERN = re.compile(r">=?\s*\d")
 # Check for upper bound (< or <=, but not !=)
 UPPER_BOUND_PATTERN = re.compile(r"(?<!=)<=?\s*\d")
 
+# Exact pin (==): bounds both sides by definition. (`!=` has a single `=`,
+# so it can never match this.)
+EXACT_PIN_PATTERN = re.compile(r"==\s*\d")
+
 
 def check_pyproject(pyproject_path: Path) -> list[str]:
     """Check a single integration's pyproject.toml for proper cognee pinning."""
@@ -65,6 +70,10 @@ def check_pyproject(pyproject_path: Path) -> list[str]:
                 f"{integration_name}: cognee dependency has no version constraint. "
                 f"Found: {dep_name} (unpinned)"
             )
+            continue
+
+        if EXACT_PIN_PATTERN.search(version_spec):
+            # An exact pin is the tightest bound there is.
             continue
 
         if not LOWER_BOUND_PATTERN.search(version_spec):
