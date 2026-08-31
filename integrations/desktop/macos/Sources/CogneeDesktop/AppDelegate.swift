@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 @MainActor
@@ -8,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panelController: SearchPanelController!
     private var hotKey: GlobalHotKey?
+    private var captureHotKey: GlobalHotKey?
+    private var capturePanelController: CapturePanelController?
     private var settingsWindow: NSWindow?
     private var inboxWindow: NSWindow?
     private var shareWindow: NSWindow?
@@ -25,6 +28,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotKey = GlobalHotKey { [weak self] in
             self?.panelController.toggle()
+        }
+
+        // ⌥⇧Space: quick capture — one line straight into memory.
+        capturePanelController = CapturePanelController()
+        captureHotKey = GlobalHotKey(
+            modifiers: UInt32(optionKey | shiftKey), id: 2
+        ) { [weak self] in
+            self?.capturePanelController?.toggle()
         }
 
         notifier.onUnseenCount = { [weak self] unseen in

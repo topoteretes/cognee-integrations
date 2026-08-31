@@ -257,6 +257,10 @@ struct BackendClient {
         try await post("feedback", body: ["query": query, "answer": answer, "rating": rating])
     }
 
+    func capture(text: String, title: String = "", source: String = "") async throws {
+        try await post("capture", body: ["text": text, "title": title, "source": source])
+    }
+
     func health() async throws -> Health {
         try await get(baseURL.appendingPathComponent("health"))
     }
