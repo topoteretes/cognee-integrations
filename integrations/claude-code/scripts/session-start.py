@@ -221,6 +221,65 @@ def _venv_cognee_version() -> str:
     return ""
 
 
+# One distribution per extra whose presence in the venv proves that extra's
+# drivers are installed (verified against cognee 1.5.3's optional-dependencies).
+# Probing the venv is deliberately preferred over recording installed extras in
+# venv-ready.json: that marker is shared with plugins that don't know about
+# extras (codex/openclaw), whose rewrites would wipe the record and force a
+# reinstall on every cold boot after theirs — the exact churn skip-at-pin
+# exists to avoid. `asyncpg` is common to the `postgres` and `postgres-binary`
+# extras, so either variant satisfies the postgres-binary requirement.
+_EXTRA_SENTINEL_DISTS = {
+    "postgres-binary": "asyncpg",
+    "neo4j": "neo4j",
+    "fastembed": "fastembed",
+    "ollama": "transformers",
+}
+
+
+def _venv_missing_extras(extras: list) -> list:
+    """Which of the required extras' driver packages are absent from the venv.
+
+    Ground truth for the skip-at-pin gate: the venv being at the pinned cognee
+    version says nothing about extras — a provider configured AFTER the venv
+    was built (or a bare install done by an extras-unaware plugin sharing this
+    venv) leaves the pin satisfied but the drivers missing, and #232 comes
+    right back. Fails soft (reports nothing missing, logged) on probe errors:
+    a venv broken enough to fail this probe also fails the version probe, and
+    the install path handles that.
+    """
+    if not extras:
+        return []
+    if not _VENV_PYTHON.exists():
+        return list(extras)
+    dists = [_EXTRA_SENTINEL_DISTS[extra] for extra in extras]
+    try:
+        out = subprocess.run(
+            [
+                str(_VENV_PYTHON),
+                "-c",
+                "import importlib.metadata as m, sys\n"
+                "for d in sys.argv[1:]:\n"
+                "    try:\n"
+                "        m.version(d)\n"
+                "    except Exception:\n"
+                "        print(d)",
+                *dists,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if out.returncode != 0:
+            hook_log("extras_probe_failed", {"stderr": out.stderr[:200]})
+            return []
+        missing_dists = set(out.stdout.split())
+        return [extra for extra, dist in zip(extras, dists) if dist in missing_dists]
+    except Exception as exc:
+        hook_log("extras_probe_failed", {"error": str(exc)[:200]})
+        return []
+
+
 def _write_venv_ready(version: str) -> None:
     try:
         payload = {
@@ -292,24 +351,40 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 break
             except FileExistsError:
                 # Another process owns the install. Don't install concurrently —
-                # wait for it to produce a usable venv, then reuse it.
-                if _venv_cognee_version() == _PINNED_COGNEE_VERSION:
+                # wait for it to produce a usable venv, then reuse it. The venv
+                # must satisfy our extras too: the other installer may be an
+                # extras-unaware plugin doing a bare install, in which case we
+                # keep waiting for the lock and add the drivers ourselves.
+                if _venv_cognee_version() == _PINNED_COGNEE_VERSION and not _venv_missing_extras(
+                    _detect_required_extras()
+                ):
                     return True
                 if time.monotonic() >= deadline:
                     return bool(_venv_cognee_version())
                 time.sleep(_VENV_INSTALL_POLL_SECONDS)
 
-        # Already at the pin: there is nothing to install, so do not touch the
-        # venv. The install used to run unconditionally at every cold boot; on
-        # a machine where two plugins with different pins share this venv that
-        # made each boot flip the version back and forth — and a `pip install`
-        # is a mutation window the shared runtime is better off without. The
-        # marker is (re)written so every plugin reading it sees the truth.
+        # Already at the pin AND holding the configured providers' drivers:
+        # there is nothing to install, so do not touch the venv. The install
+        # used to run unconditionally at every cold boot; on a machine where
+        # two plugins with different pins share this venv that made each boot
+        # flip the version back and forth — and a `pip install` is a mutation
+        # window the shared runtime is better off without. The version alone
+        # is not enough, though: a provider configured after the venv was
+        # built leaves the pin satisfied with its drivers missing (#232), so
+        # extras are probed too and a miss falls through to the install.
+        # The marker is (re)written so every plugin reading it sees the truth.
         current = _venv_cognee_version()
+        required_extras = _detect_required_extras()
+        missing_extras = _venv_missing_extras(required_extras)
         if current == _PINNED_COGNEE_VERSION:
-            _write_venv_ready(current)
-            hook_log("cognee_install_skipped_at_pin", {"version": current})
-            return True
+            if not missing_extras:
+                _write_venv_ready(current)
+                hook_log(
+                    "cognee_install_skipped_at_pin",
+                    {"version": current, "extras": required_extras},
+                )
+                return True
+            hook_log("cognee_extras_missing_at_pin", {"missing": missing_extras})
 
         uv = _find_uv() or _install_uv()
         venv_present = _VENV_PYTHON.exists()
@@ -378,7 +453,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
             hook_log("cognee_venv_unusable", {"venv_python": str(_VENV_PYTHON)})
             return False
         _write_venv_ready(version)
-        hook_log("cognee_install_ready", {"version": version})
+        hook_log("cognee_install_ready", {"version": version, "extras": required_extras})
         return True
     finally:
         if acquired:
