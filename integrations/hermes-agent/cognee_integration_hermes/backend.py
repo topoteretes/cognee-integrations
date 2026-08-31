@@ -95,11 +95,16 @@ class MemoryBackend:
         top_k: int,
         auto_route: bool,
         query_type: Optional[str],
-        scope: Optional[str] = None,
+        scope: Any = None,
+        context_profile: Optional[str] = None,
+        code_query: Optional[dict[str, Any]] = None,
+        only_context: bool = False,
         timeout: float,
     ) -> list[Any]:
         """Search memory. ``scope`` is the provider's routing decision by name —
-        ``session``, ``graph`` or ``auto`` — alongside the targets it implies.
+        ``session``, ``graph`` or ``auto``, or an explicit list of server scopes
+        (e.g. ``["session", "trace", "session_context"]``) — alongside the
+        targets it implies.
 
         A transport that can state the scope outright should say it rather than
         leave the server to infer it from which targets happen to be set: that
@@ -133,6 +138,48 @@ class MemoryBackend:
     ) -> Any:
         """Bridge session-cache content into the permanent graph."""
         raise NotImplementedError
+
+    # -- inspection / targeted deletion / code graph -------------------------
+    #
+    # These operations exist only on the server's REST API — the SDK's client
+    # objects have no equivalents — so only the HTTP transport implements them.
+    # The shared default raises a uniform, actionable error instead of
+    # NotImplementedError so a tool envelope can carry it verbatim.
+
+    def _http_only(self, operation: str) -> RuntimeError:
+        return RuntimeError(
+            f"{operation} requires the HTTP transport to a cognee server. "
+            "Unset COGNEE_TRANSPORT/COGNEE_EMBEDDED (local-server mode is the "
+            "default) or set COGNEE_TRANSPORT=http."
+        )
+
+    def list_datasets(self, *, timeout: float) -> list[dict[str, Any]]:
+        raise self._http_only("listing datasets")
+
+    def list_dataset_data(self, *, dataset_id: str, timeout: float) -> list[dict[str, Any]]:
+        raise self._http_only("listing dataset documents")
+
+    def read_raw_data(self, *, dataset_id: str, data_id: str, timeout: float) -> str:
+        raise self._http_only("reading a stored document")
+
+    def forget_document(self, *, dataset_id: str, data_id: str, timeout: float) -> dict[str, Any]:
+        raise self._http_only("per-document deletion")
+
+    def index_repository(
+        self,
+        *,
+        repo: str,
+        dataset: str,
+        index_vectors: bool = False,
+        run_in_background: bool = True,
+        timeout: float,
+    ) -> dict[str, Any]:
+        raise self._http_only("code-graph indexing")
+
+    def dataset_pipeline_status(
+        self, *, dataset_id: str, pipeline: str = "code_graph_pipeline", timeout: float
+    ) -> str:
+        raise self._http_only("pipeline status polling")
 
     # -- diagnostics -------------------------------------------------------
 
@@ -278,16 +325,23 @@ class SdkBackend(MemoryBackend):
         auto_route,
         query_type,
         scope=None,
+        context_profile=None,
+        code_query=None,
+        only_context=False,
         timeout,
     ) -> list[Any]:
         # ``scope`` is accepted but not forwarded. ``cognee.recall`` grew a
-        # ``scope`` parameter after this plugin's 1.2.1 floor, and passing an
-        # unknown keyword to the older SDK is a TypeError, not a degraded search.
-        # Nothing is lost by leaving it out: the in-process path passes
-        # ``auto_route`` and ``query_type`` natively, so cognee resolves the same
-        # sources from them. Only the HTTP transport needs to say it explicitly,
-        # because the endpoint defaults ``search_type`` where the SDK does not.
-        del scope
+        # ``scope`` parameter only after this plugin's original 1.2.1 floor, and
+        # passing an unknown keyword to an older SDK is a TypeError, not a
+        # degraded search. Nothing is lost by leaving it out: the in-process
+        # path passes ``auto_route`` and ``query_type`` natively, so cognee
+        # resolves the same sources from them. Only the HTTP transport needs to
+        # say it explicitly, because the endpoint defaults ``search_type`` where
+        # the SDK does not.
+        # ``context_profile`` / ``code_query`` / ``only_context`` are dropped for
+        # the same reason: they are HTTP-endpoint fields, and every feature that
+        # sets them is HTTP-only anyway.
+        del scope, context_profile, code_query, only_context
         return self._bridge.run(
             self._do_recall(query, session_id, datasets, top_k, auto_route, query_type),
             timeout=timeout,

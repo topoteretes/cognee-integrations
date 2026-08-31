@@ -221,6 +221,28 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         "recall_timeout": str_to_int(os.environ.get("COGNEE_RECALL_TIMEOUT"), 120),
         "write_timeout": str_to_int(os.environ.get("COGNEE_WRITE_TIMEOUT"), 120),
         "improve_timeout": str_to_int(os.environ.get("COGNEE_IMPROVE_TIMEOUT"), 300),
+        # Layered recall (parity with the claude-code/codex per-prompt lookup and
+        # openclaw's recallSessionLayers): fan recall out over the session cache,
+        # trace lessons, distilled agent guidance and the graph, each rendered as
+        # its own block. The budget bounds the whole fan-out, cheap scopes first.
+        "recall_session_layers": str_to_bool(os.environ.get("COGNEE_RECALL_LAYERS"), True),
+        "recall_budget": str_to_int(os.environ.get("COGNEE_RECALL_BUDGET"), 20),
+        # Memory steer: one system-prompt line asserting Cognee as the preferred,
+        # authoritative long-term memory (the COGNEE_PREFER_MEMORY counterpart).
+        "memory_steer": str_to_bool(os.environ.get("COGNEE_MEMORY_STEER"), True),
+        "memory_steer_text": os.environ.get("COGNEE_MEMORY_STEER_TEXT", ""),
+        # Per-turn memory-hit visibility in the injected recall block.
+        "memory_hits": str_to_bool(os.environ.get("COGNEE_MEMORY_HITS"), True),
+        # Agent tools beyond the recall/remember/forget trio.
+        "dataset_switch_tool": str_to_bool(os.environ.get("COGNEE_DATASET_SWITCH_TOOL"), True),
+        "code_search_tool": str_to_bool(os.environ.get("COGNEE_CODE_SEARCH_TOOL"), True),
+        # The identifier-gated code recall lane, plus extra always-on code
+        # datasets (comma-separated) for repos indexed from another machine.
+        "code_graph_recall": str_to_bool(os.environ.get("COGNEE_CODE_GRAPH_RECALL"), True),
+        "code_datasets": os.environ.get("COGNEE_CODE_DATASETS", ""),
+        # PyPI update check (CLI only, never on the session path).
+        "update_check": str_to_bool(os.environ.get("COGNEE_UPDATE_CHECK"), True),
+        "update_check_interval": str_to_int(os.environ.get("COGNEE_UPDATE_CHECK_INTERVAL"), 3600),
     }
 
     path = config_path(hermes_home)
@@ -247,6 +269,15 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     config["auto_route"] = str_to_bool(config.get("auto_route"), True)
     config["improve_on_end"] = str_to_bool(config.get("improve_on_end"), True)
     config["embedded"] = str_to_bool(config.get("embedded"), False)
+    config["recall_session_layers"] = str_to_bool(config.get("recall_session_layers"), True)
+    config["recall_budget"] = max(1, str_to_int(config.get("recall_budget"), 20))
+    config["memory_steer"] = str_to_bool(config.get("memory_steer"), True)
+    config["memory_hits"] = str_to_bool(config.get("memory_hits"), True)
+    config["dataset_switch_tool"] = str_to_bool(config.get("dataset_switch_tool"), True)
+    config["code_search_tool"] = str_to_bool(config.get("code_search_tool"), True)
+    config["code_graph_recall"] = str_to_bool(config.get("code_graph_recall"), True)
+    config["update_check"] = str_to_bool(config.get("update_check"), True)
+    config["update_check_interval"] = max(60, str_to_int(config.get("update_check_interval"), 3600))
     return config
 
 

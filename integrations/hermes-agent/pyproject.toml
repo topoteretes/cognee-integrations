@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognee-integration-hermes-agent"
-version = "1.1.0"
+version = "1.2.0"
 description = "Standalone Cognee memory provider plugin for Hermes Agent."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,11 @@ authors = [
     {name = "Cognee team"}
 ]
 dependencies = [
-    "cognee>=1.2.1,<=1.4.0",
+    # Exact pin: the installed package doubles as the local server this plugin
+    # spawns, and 1.5.3 is both the floor (code graph, per-document forget
+    # invalidation) and the newest version verified against the test suite and
+    # a live server.
+    "cognee==1.5.3",
 ]
 
 [project.entry-points."hermes_agent.plugins"]

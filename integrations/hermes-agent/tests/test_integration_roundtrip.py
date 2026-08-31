@@ -204,16 +204,29 @@ class TestHttpRoundTrip(unittest.TestCase):
         finally:
             provider.shutdown()
 
-    def test_forget_clears_the_dataset(self):
+    def test_forget_finds_and_deletes_the_stored_document(self):
         import json
 
         provider = self._provider()
         try:
-            provider.handle_tool_call("cognee_remember", {"content": "Disposable fact."})
+            provider.handle_tool_call(
+                "cognee_remember", {"content": "Disposable fact about zebras."}
+            )
+            found = json.loads(
+                provider.handle_tool_call("cognee_forget", {"action": "find", "terms": "zebras"})
+            )
+            self.assertNotIn("error", found, found)
+            candidates = found.get("candidates") or []
+            self.assertTrue(candidates, f"the stored document was not listed: {found}")
+            data_ids = [candidate["data_id"] for candidate in candidates]
             result = json.loads(
-                provider.handle_tool_call("cognee_forget", {"dataset": self.dataset})
+                provider.handle_tool_call(
+                    "cognee_forget",
+                    {"action": "forget", "data_ids": data_ids, "confirm": True},
+                )
             )
             self.assertNotIn("error", result, result)
+            self.assertEqual(result["count"], len(data_ids), result)
         finally:
             provider.shutdown()
 
