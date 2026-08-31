@@ -10,9 +10,21 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.5.1]
+## [1.5.2]
 
 ### Fixed
+- **Recall no longer reports an error for a graph that simply doesn't exist yet.**
+  A dataset nobody has cognified yet has no graph, and the server answers the
+  graph recall scope with 404 until the first sync lands — on a fresh install
+  that is every prompt of the first session. That expected answer was logged as
+  `recall_error` and counted against connection health alongside real failures.
+  It is now logged as `recall_graph_not_built` (debug, not error) and kept out
+  of the health accounting, so genuine failures stay visible.
+- **The pending-prompt buffer no longer leaves an empty file behind per session.**
+  Consuming the last buffered prompt wrote `{}` back instead of removing the
+  file, so `pending/` collected one 2-byte husk per session forever. The buffer
+  file is now deleted when its last entry is consumed, and the session-start
+  sweep clears the husks older versions already left.
 - **Cloud: creating a dataset through the API no longer fails on a redirect.**
   Cloud tenants answer `POST /api/v1/datasets` with a 307 to the trailing-slash
   path, and the stdlib HTTP client will not replay a POST body across a 307, so
@@ -31,6 +43,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   written — timeouts stay no-verdict, so this can clear a wrong red but never
   paint one — and `auth_failed` clears only on an authenticated success, since
   `/health` answering 200 says nothing about the key.
+
+## [1.5.1]
 
 ### Changed
 - **Memory header in plain words, plus a per-session total.** The
