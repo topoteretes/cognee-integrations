@@ -3,13 +3,22 @@
 Hermes discovers memory providers by scanning ``$HERMES_HOME/plugins/`` — a pip
 install alone puts this package in site-packages, where Hermes never looks. The
 ``cognee-hermes-install`` console script bridges that gap: it lays down the
-exact directory shape the scanner expects (``plugin.yaml`` and the ``cli.py``
-shim at the plugin root, this package beside them), copied from the installed
-wheel. The full flow:
+exact directory shape the scanner expects, copied from the installed wheel.
+The full flow:
 
     pip install cognee-integration-hermes-agent
     cognee-hermes-install
     hermes memory setup
+
+The one file the scanner actually keys on is the plugin root's ``__init__.py``:
+Hermes' ``plugins.memory._is_memory_provider_dir`` skips — silently — any
+directory without one (it must mention ``MemoryProvider`` or
+``register_memory_provider`` in its first 8KB). Versions 1.0.0–1.2.0 of this
+installer never laid that file down, so a pip install produced a plugin Hermes
+ignored while everything reported success (issue #382). It ships in the wheel
+as ``_plugin_root/plugin_init.py`` — naming it ``__init__.py`` in place would
+turn ``_plugin_root`` into an importable subpackage and change how setuptools
+treats its data files — and is written to the target under its real name.
 
 Because Hermes runs the *copy*, ``pip install -U`` alone changes nothing —
 re-run ``cognee-hermes-install`` after upgrading. ``hermes cognee status``
@@ -28,7 +37,14 @@ from pathlib import Path
 
 from .config import resolve_hermes_home
 
-_ROOT_FILES = ("plugin.yaml", "cli.py", "after-install.md")
+# Packaged name -> name at the plugin root. plugin_init.py becomes the
+# __init__.py that makes the directory discoverable as a memory provider.
+_ROOT_FILES = {
+    "plugin.yaml": "plugin.yaml",
+    "cli.py": "cli.py",
+    "after-install.md": "after-install.md",
+    "plugin_init.py": "__init__.py",
+}
 
 
 def install(hermes_home: str | Path | None = None) -> Path:
@@ -48,8 +64,8 @@ def install(hermes_home: str | Path | None = None) -> Path:
 
     target = home / "plugins" / "cognee"
     target.mkdir(parents=True, exist_ok=True)
-    for name in _ROOT_FILES:
-        shutil.copyfile(root_src / name, target / name)
+    for source_name, target_name in _ROOT_FILES.items():
+        shutil.copyfile(root_src / source_name, target / target_name)
 
     # Replace the package wholesale so removed modules never linger.
     dest_package = target / package_src.name

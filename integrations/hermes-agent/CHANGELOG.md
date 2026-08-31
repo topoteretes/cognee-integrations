@@ -10,6 +10,47 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.1]
+
+Fixes [#382](https://github.com/topoteretes/cognee-integrations/issues/382):
+**every pip install of 1.0.0–1.2.0 produced a plugin Hermes silently ignored.**
+`pip install` + `cognee-hermes-install` reported success, `hermes plugins show
+cognee` said "enabled", but the memory provider — recall, remember, forget,
+the session-end bridge — was never wired up; `hermes memory status` ("Plugin:
+NOT installed") was the only symptom. Installs copied from a repo checkout
+(the path the plugin was developed and live-tested through) were unaffected,
+which is how this shipped three times.
+
+### Fixed
+
+- **`cognee-hermes-install` now lays down the plugin root's `__init__.py`.**
+  Hermes' memory-provider loader (`plugins.memory._is_memory_provider_dir`)
+  skips — silently — any plugin directory without an `__init__.py` naming
+  `MemoryProvider` or `register_memory_provider`. The repo always had the
+  right file (it is what made checkout installs work); the installer's file
+  list simply never included it. It ships in the wheel as
+  `_plugin_root/plugin_init.py` (an `__init__.py` inside `_plugin_root/`
+  would make it an importable subpackage) and is installed under its real
+  name. After `pip install -U`, re-run `cognee-hermes-install` — that now
+  also repairs an existing broken install in place.
+- **The pip entry point is now in the group Hermes actually reads.** The
+  memory loader scans `hermes_agent.memory_providers`; the package declared
+  only the generic `hermes_agent.plugins` group (kept for compatibility),
+  which is why Hermes reported the plugin "enabled" with nothing registered.
+  With the correct group, a plain `pip install` activates the provider via
+  `register(ctx)` even before `cognee-hermes-install` runs — the installer
+  remains recommended (the directory install carries the `hermes cognee` CLI
+  and the dashboard config panel at full fidelity).
+- Regression tests: the installer's output directory must pass Hermes'
+  discovery heuristic verbatim, and the pyproject must declare the
+  `hermes_agent.memory_providers` entry point.
+
+### Corrections to earlier notes
+
+- 1.0.0's known-limitations claim that "Hermes discovers memory providers by
+  directory scan only" was wrong: Hermes has always had a pip entry-point
+  path for memory providers — this package was registered in the wrong group.
+
 ## [1.2.0]
 
 Parity release: brings the Hermes plugin up to the claude-code/codex
