@@ -10,6 +10,33 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.3]
+
+### Fixed
+- **Local mode: configured backend providers now get their drivers installed
+  (#232).** The shared self-managed install ran a bare `cognee==<pin>`, which
+  carries no Postgres/Neo4j/Ollama/fastembed drivers, so pointing the plugin
+  at any non-default backend (`DB_PROVIDER=postgres`,
+  `VECTOR_DB_PROVIDER=pgvector`, `GRAPH_DATABASE_PROVIDER=neo4j`,
+  `EMBEDDING_PROVIDER=fastembed`, `LLM_PROVIDER=ollama`) crashed the spawned
+  server on its first use of that backend. The install now detects the
+  configured providers from the same env vars cognee's own config classes
+  read — exports and `~/.cognee/.env` alike — and installs exactly the
+  matching cognee extras. Mirrors the Claude Code plugin fix (both plugins
+  share the venv); continues @GrowDev1's work in #271.
+- **A backend configured after the venv was built no longer stays broken.**
+  The at-pin install skip checked only the cognee version, so the drivers for
+  a provider configured later never arrived — the pin was satisfied and the
+  install never re-ran. The skip now also probes the venv for the required
+  drivers and falls through to the install only when one is missing; a bare
+  install done by another plugin sharing the venv can no longer strand a
+  configured backend either.
+
+### Changed
+- The `~/.cognee/.env` template now lists the backend provider variables, so a
+  local Postgres/Neo4j/Ollama/fastembed setup is discoverable in the same file
+  that already holds the LLM key.
+
 ## [1.5.2]
 
 ### Fixed
