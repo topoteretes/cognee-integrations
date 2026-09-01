@@ -33,6 +33,8 @@ class Catalog:
         # explicitly forgotten paths: a re-sync of a still-watched folder
         # must not resurrect them
         self._ignored: set[str] = set()
+        # roots with live sync switched off: stay searchable, stop updating
+        self._paused: set[str] = set()
         self._load()
 
     # -- persistence ---------------------------------------------------
@@ -44,9 +46,10 @@ class Catalog:
             self._root_filters = data.get("root_filters", {})
             self._root_labels = data.get("root_labels", {})
             self._ignored = set(data.get("ignored", []))
+            self._paused = set(data.get("paused", []))
         except (OSError, ValueError):
             self._entries, self._roots, self._root_filters = {}, [], {}
-            self._root_labels, self._ignored = {}, set()
+            self._root_labels, self._ignored, self._paused = {}, set(), set()
 
     def save(self) -> None:
         with self._lock:
@@ -60,6 +63,7 @@ class Catalog:
                         "root_filters": self._root_filters,
                         "root_labels": self._root_labels,
                         "ignored": sorted(self._ignored),
+                        "paused": sorted(self._paused),
                     }
                 )
             )
@@ -94,6 +98,7 @@ class Catalog:
             self._roots = [r for r in self._roots if r != root]
             self._root_filters.pop(root, None)
             self._root_labels.pop(root, None)
+            self._paused.discard(root)
             # a re-added root starts fresh: old tombstones go with it
             self._ignored = {p for p in self._ignored if not (p == root or p.startswith(prefix))}
         return len(doomed)
@@ -127,6 +132,18 @@ class Catalog:
         with self._lock:
             self._ignored -= set(paths)
 
+    def set_paused(self, root: str, paused: bool) -> None:
+        with self._lock:
+            if paused:
+                self._paused.add(root)
+            else:
+                self._paused.discard(root)
+
+    @property
+    def paused_roots(self) -> list[str]:
+        with self._lock:
+            return sorted(self._paused)
+
     @property
     def root_labels(self) -> dict[str, str]:
         with self._lock:
@@ -150,9 +167,8 @@ class Catalog:
         """Register roots; ``extensions`` (e.g. [".pdf", ".docx"]) restricts
         what indexes under these roots, now and on every future re-sync;
         ``label`` tags everything under them (personal / work)."""
-        normalized = [
-            e.lower() if e.startswith(".") else f".{e.lower()}" for e in (extensions or []) if e
-        ]
+        cleaned = [e.strip().lstrip("*").lower() for e in (extensions or [])]
+        normalized = [e if e.startswith(".") else f".{e}" for e in cleaned if e.strip(".")]
         with self._lock:
             for root in roots:
                 if root not in self._roots:

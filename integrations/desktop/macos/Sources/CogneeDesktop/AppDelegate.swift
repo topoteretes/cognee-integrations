@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var captureHotKey: GlobalHotKey?
     private var capturePanelController: CapturePanelController?
     private var settingsWindow: NSWindow?
+    private var statusWindow: NSWindow?
     private var inboxWindow: NSWindow?
     private var shareWindow: NSWindow?
     private var onboardingWindow: NSWindow?
@@ -164,6 +165,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         graphItem.target = self
         menu.addItem(graphItem)
 
+        let statusMenuItem = NSMenuItem(
+            title: "Status…", action: #selector(openStatus), keyEquivalent: "u"
+        )
+        statusMenuItem.target = self
+        menu.addItem(statusMenuItem)
+
         let shareItem = NSMenuItem(
             title: "Share a Learning…", action: #selector(openShareEmpty), keyEquivalent: "s"
         )
@@ -188,6 +195,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         setupItem.target = self
         menu.addItem(setupItem)
+
+        let supportItem = NSMenuItem(
+            title: "Support Cognee ♥", action: #selector(openSupport), keyEquivalent: ""
+        )
+        supportItem.target = self
+        menu.addItem(supportItem)
 
         let profileItem = NSMenuItem(title: "Profile", action: nil, keyEquivalent: "")
         let profileMenu = NSMenu(title: "Profile")
@@ -346,6 +359,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isReleasedWhenClosed = false
         window.center()
         return window
+    }
+
+    @objc private func openStatus() {
+        if statusWindow == nil {
+            let window = NSWindow(
+                contentRect: .zero,
+                styleMask: [.titled, .closable, .miniaturizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Cognee Status"
+            window.contentViewController = NSHostingController(
+                rootView: StatusView(model: settingsModel)
+            )
+            window.isReleasedWhenClosed = false
+            window.center()
+            statusWindow = window
+        }
+        settingsModel.refresh()
+        NSApp.activate(ignoringOtherApps: true)
+        statusWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The ask, made explicit: three ways to help the project, and cloud
+    /// credit for supporters is on the way.
+    @objc private func openSupport() {
+        let alert = NSAlert()
+        alert.messageText = "Support Cognee"
+        alert.informativeText =
+            "If cognee earns its place on your Mac, a star, a follow, or a share genuinely helps. Cloud credit for supporters is on the way."
+        alert.addButton(withTitle: "Star on GitHub ★")
+        alert.addButton(withTitle: "Follow on X")
+        alert.addButton(withTitle: "Follow on LinkedIn")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            NSWorkspace.shared.open(URL(string: "https://github.com/topoteretes/cognee")!)
+        case .alertSecondButtonReturn:
+            NSWorkspace.shared.open(URL(string: "https://x.com/cognee_")!)
+        case .alertThirdButtonReturn:
+            NSWorkspace.shared.open(URL(string: "https://www.linkedin.com/company/cognee")!)
+        default:
+            break
+        }
     }
 
     @objc private func openSettings() {

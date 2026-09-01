@@ -139,7 +139,20 @@ final class SearchPanelController: NSObject, NSWindowDelegate {
                 return true
             }
             let reveal = event.modifierFlags.contains(.command)
-            if model.openSelected(revealInFinder: reveal) { hide() }
+            if reveal {
+                if model.openSelected(revealInFinder: true) { hide() }
+                return true
+            }
+            // Ask is the primary action: plain Return asks the graph unless
+            // the user has arrowed onto a result (then they mean "open it").
+            if model.primaryAsk && !model.userNavigated {
+                model.ask()
+                return true
+            }
+            if model.openSelected(revealInFinder: false) { hide() }
+            return true
+        case 48:  // tab flips Ask ⇄ Files as the primary action
+            model.togglePrimaryMode()
             return true
         case 1 where event.modifierFlags.contains(.command):
             if event.modifierFlags.contains(.shift) {  // ⌘⇧S: full share sheet

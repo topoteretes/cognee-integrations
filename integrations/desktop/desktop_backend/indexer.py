@@ -128,7 +128,9 @@ class Indexer:
 
     async def _run(self, roots: list[str]) -> None:
         try:
-            files = discover_files(roots, self._settings, self._catalog.root_filters)
+            paused = set(self._catalog.paused_roots)
+            live_roots = [r for r in roots if r not in paused]
+            files = discover_files(live_roots, self._settings, self._catalog.root_filters)
             stats = {p: p.stat() for p in files}
             todo = [
                 p

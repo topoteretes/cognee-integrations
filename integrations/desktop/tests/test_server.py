@@ -480,3 +480,83 @@ async def test_agents_relays_and_labels_connections(tmp_path):
 
 async def test_agents_empty_without_a_tenant(client):
     assert (await client.get("/agents")).json() == {"agents": []}
+
+
+async def test_pause_stops_resync_resume_restarts(client, workspace):
+    await index_and_wait(client, workspace)
+    response = (
+        await client.post("/roots/pause", json={"path": str(workspace), "paused": True})
+    ).json()
+    assert response["ok"] and str(workspace) in response["paused"]
+
+    # a new file lands while paused: the re-sync must not pick it up
+    (workspace / "while-paused.md").write_text("added while paused")
+    await index_and_wait(client, workspace)
+    names = {f["name"] for f in (await client.get("/files")).json()["files"]}
+    assert "while-paused.md" not in names
+    # still searchable though
+    hits = (await client.get("/search", params={"q": "roadmap", "semantic": "0"})).json()
+    assert hits["results"]
+
+    # resume → the file arrives on the next run
+    await client.post("/roots/pause", json={"path": str(workspace), "paused": False})
+    await index_and_wait(client, workspace)
+    names = {f["name"] for f in (await client.get("/files")).json()["files"]}
+    assert "while-paused.md" in names
+
+
+async def test_changes_feed_filters_and_maps(tmp_path):
+    class TenantDouble:
+        class _Response:
+            def __init__(self, payload):
+                self.status_code = 200
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        dataset = "main"
+
+        async def chunks(self, query, top_k=8):
+            return []
+
+        async def _request(self, method, path, **kwargs):
+            assert path.startswith("/api/v1/activity/pipeline-runs")
+            return self._Response(
+                [
+                    {
+                        "pipeline_name": "cognify_pipeline",
+                        "status": "completed",
+                        "dataset_name": "team-core-memory",
+                        "owner_email": "boris@example.com",
+                        "created_at": "2026-09-01T10:00:00Z",
+                    },
+                    {
+                        "pipeline_name": "add_pipeline",
+                        "status": "failed",
+                        "dataset_name": "spotlight",
+                        "owner_email": "vasilije@example.com",
+                        "created_at": "2026-09-01T09:59:00Z",
+                    },
+                    {
+                        "pipeline_name": "old_run",
+                        "status": "completed",
+                        "dataset_name": "spotlight",
+                        "owner_email": "vasilije@example.com",
+                        "created_at": "2026-08-01T00:00:00Z",
+                    },
+                ]
+            )
+
+    settings = Settings()
+    settings.data_dir = tmp_path / "state"
+    app = create_app(settings, adapter=TenantDouble())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        data = (await client.get("/changes", params={"since": 1787000000})).json()
+    # failed runs and rows older than since (2026-08-17) are dropped
+    assert len(data["changes"]) == 1
+    change = data["changes"][0]
+    assert change["who"] == "boris@example.com"
+    assert change["dataset"] == "team-core-memory"
+    assert change["what"] == "cognify_pipeline"

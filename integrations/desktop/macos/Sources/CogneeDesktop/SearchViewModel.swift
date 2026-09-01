@@ -58,6 +58,17 @@ final class SearchViewModel: ObservableObject {
     @Published var hoveredConnection: SourceConnection?
     /// The current proactive suggestion (repeat-lookup nudge, expert share).
     @Published var assistantHint: AssistantHint?
+    /// What plain Return does: ask the knowledge graph (default) or open the
+    /// selected file. ⇥ or the mode chips flip it; the choice persists.
+    @Published var primaryAsk: Bool = Preferences.searchDefault == "ask"
+    /// Set once the user arrows through results — then Return means "open
+    /// what I picked", regardless of the primary mode.
+    var userNavigated = false
+
+    func togglePrimaryMode() {
+        primaryAsk.toggle()
+        Preferences.searchDefault = primaryAsk ? "ask" : "files"
+    }
     /// This backend's identity, so expert suggestions skip yourself.
     private var ownUser = ""
 
@@ -172,6 +183,7 @@ final class SearchViewModel: ObservableObject {
         connectionDetail = nil
         hoveredConnection = nil
         assistantHint = nil
+        userNavigated = false
         threadID = UUID().uuidString  // a fresh panel is a fresh conversation
         focusGeneration += 1
         Task { [weak self] in
@@ -197,6 +209,7 @@ final class SearchViewModel: ObservableObject {
         answer = nil
         answerSources = []
         assistantHint = nil
+        userNavigated = false
         searchTask?.cancel()
         instantTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
@@ -408,6 +421,7 @@ final class SearchViewModel: ObservableObject {
     // -- keyboard navigation -------------------------------------------------
     func moveSelection(by delta: Int) {
         guard !results.isEmpty else { return }
+        userNavigated = true
         selectedIndex = min(max(selectedIndex + delta, 0), results.count - 1)
     }
 

@@ -263,6 +263,7 @@ final class HandoverNotifier {
     private func poll() {
         Task {
             await checkDigest()
+            await checkChanges()
             guard let response = try? await BackendClient().inbox() else { return }
             onUnseenCount?(response.unseen)
             var notified = Set(UserDefaults.standard.stringArray(forKey: notifiedKey) ?? [])
@@ -280,6 +281,45 @@ final class HandoverNotifier {
             }
             UserDefaults.standard.set(Array(notified), forKey: notifiedKey)
         }
+    }
+
+    /// Change notifications, v1: every poll, ask the backend what was
+    /// written to the shared memory since we last looked, and raise one
+    /// notification naming what changed and by whom. Writes to this
+    /// backend's own dataset are skipped (you know what you just indexed),
+    /// and inbox datasets are skipped (the handover notifier owns those).
+    private let changesKey = "lastChangesCheck"
+
+    private func checkChanges() async {
+        let now = Date().timeIntervalSince1970
+        let last = UserDefaults.standard.double(forKey: changesKey)
+        if last == 0 {
+            UserDefaults.standard.set(now, forKey: changesKey)  // baseline, no notify
+            return
+        }
+        guard let health = try? await BackendClient().health(),
+            let response = try? await BackendClient().changes(since: last)
+        else { return }
+        UserDefaults.standard.set(now, forKey: changesKey)
+        let interesting = response.changes.filter { change in
+            change.dataset != health.dataset && !change.dataset.hasPrefix("handover-inbox-")
+        }
+        guard let first = interesting.first else { return }
+        let content = UNMutableNotificationContent()
+        let who = first.who.isEmpty ? "someone" : first.who.components(separatedBy: "@")[0]
+        content.title =
+            interesting.count == 1
+            ? "Memory updated by \(who)"
+            : "\(interesting.count) memory updates"
+        let where_ = first.dataset.isEmpty ? "shared memory" : first.dataset
+        content.body =
+            "\(first.what.replacingOccurrences(of: "_", with: " ")) on \(where_)"
+            + (interesting.count > 1 ? " — and \(interesting.count - 1) more" : "")
+        try? await UNUserNotificationCenter.current().add(
+            UNNotificationRequest(
+                identifier: "changes-\(Int(now))", content: content, trigger: nil
+            )
+        )
     }
 
     /// Every ~6 hours: "your agents learned N new things" — the passive

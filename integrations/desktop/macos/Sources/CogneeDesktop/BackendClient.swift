@@ -54,6 +54,7 @@ struct IndexProgress: Decodable {
     let roots: [String]?
     let root_filters: [String: [String]]?
     let root_labels: [String: String]?
+    let paused_roots: [String]?
     let indexed_files: Int?
 }
 
@@ -139,6 +140,21 @@ struct PluginStatus: Decodable, Identifiable, Equatable {
 struct AgentsResponse: Decodable {
     let agents: [AgentConnection]
     let plugins: [PluginStatus]?
+}
+
+/// One write to the shared memory: what ran, where, and by whom.
+struct ChangeItem: Decodable, Identifiable, Equatable {
+    let what: String
+    let dataset: String
+    let who: String
+    let at: Double
+    let status: String
+
+    var id: String { "\(what)-\(dataset)-\(at)" }
+}
+
+struct ChangesResponse: Decodable {
+    let changes: [ChangeItem]
 }
 
 /// Memory's reaction to a note being typed: closest known facts + conflicts.
@@ -273,6 +289,21 @@ struct BackendClient {
         try await get(baseURL.appendingPathComponent("agents"))
     }
 
+    func changes(since: Double, limit: Int = 20) async throws -> ChangesResponse {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("changes"), resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "since", value: String(since)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        return try await get(components.url!)
+    }
+
+    func pauseRoot(path: String, paused: Bool) async throws {
+        try await post("roots/pause", body: ["path": path, "paused": paused])
+    }
+
     func whisper(_ text: String) async throws -> WhisperResponse {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("whisper"), resolvingAgainstBaseURL: false
@@ -375,6 +406,12 @@ enum Preferences {
                 ?? ["boris", "alex", "priya", "team:core", "org"]
         }
         set { UserDefaults.standard.set(newValue, forKey: "shareRecipients") }
+    }
+
+    /// What plain Return does in the panel: "ask" (default) or "files".
+    static var searchDefault: String {
+        get { UserDefaults.standard.string(forKey: "searchDefault") ?? "ask" }
+        set { UserDefaults.standard.set(newValue, forKey: "searchDefault") }
     }
 
     static var backendURL: URL {
