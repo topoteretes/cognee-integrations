@@ -724,11 +724,28 @@ class TestProviderOverHttp(unittest.TestCase):
         self.assertTrue(provider._is_breaker_open())
 
     def test_forget_reaches_the_endpoint_and_reports_details(self):
-        opener = FakeOpener({"/api/v1/forget": {"deleted": 2}})
-        out = json.loads(
-            self._provider(opener).handle_tool_call("cognee_forget", {"dataset": "hermes"})
+        dataset_id = "11111111-1111-1111-1111-111111111111"
+        data_id = "22222222-2222-2222-2222-222222222222"
+        opener = FakeOpener(
+            {
+                "/api/v1/datasets": [{"id": dataset_id, "name": "hermes"}],
+                "/api/v1/forget": {"deleted": 1},
+            }
         )
-        self.assertEqual(out, {"result": "Cognee memory deleted.", "details": {"deleted": 2}})
+        out = json.loads(
+            self._provider(opener).handle_tool_call(
+                "cognee_forget",
+                {"action": "forget", "data_ids": [data_id], "confirm": True},
+            )
+        )
+        self.assertEqual(out["deleted"], [data_id])
+        self.assertEqual(out["count"], 1)
+        # The wire body is the single-document shape — the only deletion this
+        # tool path can express.
+        self.assertEqual(
+            opener.json_body("/api/v1/forget"),
+            {"datasetId": dataset_id, "dataId": data_id},
+        )
 
 
 if __name__ == "__main__":

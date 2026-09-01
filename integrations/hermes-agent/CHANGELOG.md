@@ -10,6 +10,150 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.1]
+
+Fixes [#382](https://github.com/topoteretes/cognee-integrations/issues/382):
+**every pip install of 1.0.0–1.2.0 produced a plugin Hermes silently ignored.**
+`pip install` + `cognee-hermes-install` reported success, `hermes plugins show
+cognee` said "enabled", but the memory provider — recall, remember, forget,
+the session-end bridge — was never wired up; `hermes memory status` ("Plugin:
+NOT installed") was the only symptom. Installs copied from a repo checkout
+(the path the plugin was developed and live-tested through) were unaffected,
+which is how this shipped three times.
+
+### Fixed
+
+- **`cognee-hermes-install` now lays down the plugin root's `__init__.py`.**
+  Hermes' memory-provider loader (`plugins.memory._is_memory_provider_dir`)
+  skips — silently — any plugin directory without an `__init__.py` naming
+  `MemoryProvider` or `register_memory_provider`. The repo always had the
+  right file (it is what made checkout installs work); the installer's file
+  list simply never included it. It ships in the wheel as
+  `_plugin_root/plugin_init.py` (an `__init__.py` inside `_plugin_root/`
+  would make it an importable subpackage) and is installed under its real
+  name. After `pip install -U`, re-run `cognee-hermes-install` — that now
+  also repairs an existing broken install in place.
+- **The pip entry point is now in the group Hermes actually reads.** The
+  memory loader scans `hermes_agent.memory_providers`; the package declared
+  only the generic `hermes_agent.plugins` group (kept for compatibility),
+  which is why Hermes reported the plugin "enabled" with nothing registered.
+  With the correct group, a plain `pip install` activates the provider via
+  `register(ctx)` even before `cognee-hermes-install` runs — the installer
+  remains recommended (the directory install carries the `hermes cognee` CLI
+  and the dashboard config panel at full fidelity).
+- Regression tests: the installer's output directory must pass Hermes'
+  discovery heuristic verbatim, and the pyproject must declare the
+  `hermes_agent.memory_providers` entry point.
+
+### Corrections to earlier notes
+
+- 1.0.0's known-limitations claim that "Hermes discovers memory providers by
+  directory scan only" was wrong: Hermes has always had a pip entry-point
+  path for memory providers — this package was registered in the wrong group.
+
+## [1.2.0]
+
+Parity release: brings the Hermes plugin up to the claude-code/codex
+integrations (and the OpenClaw 2026.8.27 parity release) on every user-facing
+memory operation, expressed the way Hermes consumes capabilities — as memory
+provider tools plus `hermes cognee` CLI commands.
+
+### Added
+
+- **Recall session layers.** The per-prompt recall used a single
+  `scope: auto` call, and with `datasets` + an explicit `search_type` in the
+  request the server resolves that to graph-only — so cached Q&A turns,
+  tool-call trace lessons and distilled agent guidance never reached the
+  prompt. Recall now fans out one bounded call per scope, cheap lanes first
+  (`session → trace → session_context → graph`, the graph lane on
+  `HYBRID_COMPLETION` with `only_context`), each rendered as its own block
+  (`<session_memory>`, `<trace_lessons>`, `<agent_guidance>`,
+  `<graph_memory>`), under a shared budget (`COGNEE_RECALL_BUDGET`, 20s) so a
+  slow graph search can never starve the cheap lanes. A failure in one lane
+  never discards the others; a 404 on the graph lane (dataset not yet
+  cognified — routine on a fresh install) is benign, not a breaker failure.
+  The `cognee_recall` tool's `scope=session` now covers all three session
+  layers. Opt out with `COGNEE_RECALL_LAYERS=false`.
+- **Per-document forget.** `cognee_forget` is now two-phase and user-directed
+  ("forget what we said about tennis"): `action=find` lists candidate
+  documents with raw-text previews and matched terms; `action=forget` deletes
+  only the listed `data_ids`, one `POST /forget` (`datasetId`/`dataId`) each,
+  and only with `confirm=true`. Ids are validated as UUIDs before they touch a
+  request; whole-dataset deletion requires an explicit
+  `everything_in_dataset=true`, and the all-datasets wipe is not expressible
+  from the tool by construction. Targeted session-cache invalidation on delete
+  needs cognee >= 1.5.3.
+- **`cognee_switch_dataset` tool** — move one conversation to another dataset:
+  `list` / `current` / `switch` / `reset`. A switch flushes the pending turn,
+  bridges the current session into its old dataset (`improve` on the server's
+  background pipeline — strict: it aborts on failure unless `force=true`, in
+  which case the un-bridged session is recorded and re-submitted at session
+  end), ensures the target, then re-points capture, recall and the session-end
+  improve (and the crash-safe exit watcher) under a fresh cognee session id
+  (`hermes_<id>__N`). Overrides persist per conversation in
+  `~/.cognee-plugin/hermes/dataset-overrides.json` and are re-applied when the
+  same Hermes session initializes again. `COGNEE_DATASET_SWITCH_TOOL=false`
+  removes the tool.
+- **Code graph.** `hermes cognee index-repo <path|url> [--dataset]
+  [--index-vectors] [--wait <s>]` indexes a repository into cognee's
+  deterministic code graph (enola pipeline, no LLM/embedding calls, one
+  `codebase-<repo>-<digest>` dataset per repo — the path digest keeps
+  same-basename checkouts from sharing a graph); `cognee_code_search` answers
+  structural questions exactly (`query_facts`, `explore`, `traverse`,
+  `find_path`, `impact_analysis`, `delta`); an additive `code` recall lane
+  fires only when a prompt names an identifier-shaped token AND the launch
+  directory sits inside an indexed repo (or `COGNEE_CODE_DATASETS` names one).
+  Autoindex and per-turn re-ingest are deliberately not ported — Hermes is
+  rarely launched inside a checkout (the OpenClaw plugin made the same call).
+  Indexed repos are recorded under `~/.cognee-plugin/hermes/code-graph/`.
+  Requires cognee >= 1.5.3. `COGNEE_CODE_SEARCH_TOOL` / `COGNEE_CODE_GRAPH_RECALL`
+  opt out.
+- **Memory steer.** The system-prompt block now asserts Cognee as the
+  preferred, authoritative long-term memory over Hermes' built-in memory — the
+  counterpart of claude-code's `COGNEE_PREFER_MEMORY` and openclaw's
+  `memorySteer`. `COGNEE_MEMORY_STEER=false` disables it,
+  `COGNEE_MEMORY_STEER_TEXT` replaces the wording.
+- **Memory-hit visibility.** The injected recall block opens with plain words
+  on what memory just did — `4 memory hits this turn (2 beyond this session) ·
+  3/7 turns had hits this session` — with per-session totals that reset when a
+  conversation resets. `COGNEE_MEMORY_HITS=false` hides it.
+- **Version display + update check.** `hermes cognee version`, and both it and
+  `hermes cognee status` now carry an "update available" hint from a
+  rate-limited, fail-silent PyPI check (cached in
+  `~/.cognee-plugin/hermes/update-check.json`; `COGNEE_UPDATE_CHECK`,
+  `COGNEE_UPDATE_CHECK_INTERVAL`, `--check-updates` forces a live check).
+  CLI-only — the session path never checks. The nudge stays two-step on
+  purpose: `pip install -U` then `cognee-hermes-install`, because Hermes runs
+  the installed copy.
+
+### Changed
+
+- **Breaking — cognee is now pinned to exactly 1.5.3** (`cognee==1.5.3`; the
+  repo's pin checker accepts exact pins as bounding both sides). The installed
+  package doubles as the local server this plugin spawns, and this release's
+  features set a hard floor there: `content_type="code"` repo indexing, the
+  `code` recall scope, and targeted session invalidation on document delete
+  all first shipped in 1.5.3, so a 1.4.x resolve would silently strip the code
+  graph and let a later sync re-persist forgotten content. The claude-code,
+  codex and openclaw plugins pin their server to exactly 1.5.3 for the same
+  reason; a *remote* server (`COGNEE_BASE_URL`) is unaffected by the pin but
+  needs >= 1.5.3 for the same features, and an older one now gets clear
+  errors on the code paths instead of quiet degradation.
+- The HTTP transport grew the endpoints the new features stand on:
+  `GET /datasets`, `GET /datasets/{id}/data`, `GET /datasets/{id}/data/{id}/raw`,
+  single-document `POST /forget`, code indexing via `POST /remember`
+  (`content_type=code`), `GET /datasets/status`, and `recall` now carries
+  `scope` lists, `context_profile`, `code_query` and `only_context`. The SDK
+  transport reports these operations as HTTP-only instead of failing obscurely.
+
+### Known limitations
+
+- Turns from the live conversation become deletable documents only after the
+  session is bridged to the graph; `cognee_forget` says so in its envelope.
+- The dataset listing in `cognee_switch_dataset` cannot tell read-only
+  datasets apart client-side; a switch to one fails at the ensure step with a
+  clear error instead.
+
 ## [1.1.0]
 
 Hardens the plugin against silently corrupted search indexes with local Ollama

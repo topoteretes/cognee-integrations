@@ -67,7 +67,7 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
     cognee_dependency: http-api
-    current_version: "1.1.0"
+    current_version: "1.2.1"
     migration_status: done
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: >-

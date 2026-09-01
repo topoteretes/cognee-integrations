@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from utils import config_dir, plugin_root, state_dir
+from utils import plugin_root, state_dir
 from utils.isolation import DETERMINISTIC_ENV, build_env
 
 
@@ -31,8 +31,8 @@ def test_isolated_modules_bind_to_temp_home(
     suite, temp_home, isolated_modules, assert_clean_real_home
 ):
     config = isolated_modules(suite, "config")
-    assert str(config._CONFIG_DIR).startswith(str(temp_home))
-    assert config._CONFIG_DIR == config_dir(suite, temp_home)
+    assert str(config._STATE_DIR).startswith(str(temp_home))
+    assert config._STATE_DIR == state_dir(suite, temp_home)
 
     common = isolated_modules(suite, "_plugin_common")
     assert common._PLUGIN_DIR == state_dir(suite, temp_home)

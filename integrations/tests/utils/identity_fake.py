@@ -215,8 +215,28 @@ class IdentityFake:
         }
         return 200, {"agent": agent}
 
+    @property
+    def principal_id(self) -> str:
+        """The user id the authenticated key resolves to (mirrors connections/me)."""
+        owner = next(iter(self.users), "")
+        return str(self.users.get(owner, {}).get("id", "user"))
+
+    def seed_dataset(self, name: str, owner_id: str | None = None) -> dict[str, str]:
+        """Pre-create a dataset; ``owner_id`` other than the principal makes it
+        readable-but-not-writable for the plugin (the switch must hide it)."""
+        self.datasets[name] = {
+            "id": self._new_id("ds"),
+            "name": name,
+            "ownerId": owner_id if owner_id is not None else self.principal_id,
+        }
+        return self.datasets[name]
+
     def datasets_create(self, name: str) -> tuple[int, dict[str, Any]]:
         new = name not in self.datasets
         if new:
-            self.datasets[name] = {"id": self._new_id("ds"), "name": name}
+            self.seed_dataset(name)
         return (201 if new else 200), self.datasets[name]
+
+    def datasets_list(self) -> tuple[int, list[dict[str, Any]]]:
+        """GET /datasets: every seeded dataset, camelCase like the real OutDTO."""
+        return 200, [dict(d) for d in self.datasets.values()]

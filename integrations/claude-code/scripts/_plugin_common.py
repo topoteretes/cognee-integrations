@@ -10,6 +10,7 @@ import errno
 import hashlib
 import json
 import os
+import shutil
 import socket
 import ssl
 import subprocess
@@ -27,6 +28,8 @@ from typing import Optional
 
 import _proc
 from _env_file import load_env_file
+from _logfiles import append_line as _append_log_line
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _recall_http import DOWN, SLOW, UNKNOWN, classify_transport_exception
 
 # One-time config: ~/.cognee/.env acts like shell exports (setdefault — a real
@@ -211,9 +214,18 @@ def _session_map_path(host_key: str) -> Path:
 def _read_map_record(host_key: str) -> dict:
     """Return the launch record for a host session id, or {}.
 
-    Record shape: ``{conn_uuid, session_id, host_key, created_at, touched: [...]}``.
-    ``session_id`` = current Cognee session (switchable); ``conn_uuid`` = the
-    per-launch liveness handle used for registration/counting (never switched).
+    Record shape::
+
+        {conn_uuid, session_id, dataset, host_key, host_pid, cwd, created_at,
+         switched_at, touched: [{session_id, dataset, conn_uuid, from, to}, ...]}
+
+    ``session_id`` / ``dataset`` / ``conn_uuid`` describe the CURRENT Cognee
+    session of this launch. A dataset switch (``switch-dataset.py``) replaces all
+    three at once — a Cognee session never spans two datasets, and each session
+    is registered under its own connection handle — and appends the retired
+    triple to ``touched`` so the final sync/unregister still covers it.
+    Legacy records store ``touched`` as a list of session-id strings; see
+    ``touched_pairs``.
     """
     if not host_key:
         return {}
@@ -264,17 +276,23 @@ def resolve_cognee_session_id(host_key: str = "", cwd: str = "") -> str:
     """Resolve the Cognee session id that scopes all saves/recalls this launch.
 
     Precedence:
-      1. ``COGNEE_SESSION_ID`` env — explicit launch-time override.
-      2. host-keyed map record — the current session for this launch (stable
-         across the launch's separate hook processes; updated by the picker).
-      3. freshly generated id (new launch), persisted to the map.
+      1. host-keyed map record AFTER a dataset switch (``switched_at`` set) —
+         the user explicitly moved this launch, which beats a shell export
+         that would otherwise pin every hook to the pre-switch session.
+      2. ``COGNEE_SESSION_ID`` env — explicit launch-time override.
+      3. host-keyed map record — the current session for this launch (stable
+         across the launch's separate hook processes).
+      4. freshly generated id (new launch), persisted to the map.
     """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    rec = _read_map_record(host_key)
+    if rec.get("switched_at") and rec.get("session_id"):
+        return _sanitize_session_key(str(rec["session_id"]))
+
     explicit = _sanitize_session_key(str(os.environ.get("COGNEE_SESSION_ID", "") or "").strip())
     if explicit:
         return explicit
 
-    host_key = _sanitize_session_key(host_key) or get_session_key()
-    rec = _read_map_record(host_key)
     if rec.get("session_id"):
         return _sanitize_session_key(str(rec["session_id"]))
 
@@ -293,15 +311,29 @@ def resolve_cognee_session_id(host_key: str = "", cwd: str = "") -> str:
     return str(winner.get("session_id") or new_id)
 
 
-def ensure_launch_record(host_key: str = "", cwd: str = "") -> tuple[str, str]:
+def ensure_launch_record(
+    host_key: str = "",
+    cwd: str = "",
+    *,
+    dataset: str = "",
+    host_pid: int = 0,
+) -> tuple[str, str]:
     """Create (first-writer-wins) and return this launch's (session_id, conn_uuid).
 
     Called by SessionStart. The session id honors an explicit ``COGNEE_SESSION_ID``
     override, else the existing/generated id; the conn_uuid is minted once.
+
+    ``dataset`` seeds the record's active dataset (from the env/default at launch)
+    the first time it is seen; a record that already carries one — a resume, or
+    a launch that was switched — keeps it, so the switch survives hook restarts
+    and is not undone by the shell's ``COGNEE_PLUGIN_DATASET``. ``cwd`` and
+    ``host_pid`` are stored so a process that has no hook payload (the switch
+    command running under the host's shell tool) can find its own record.
     """
     host_key = _sanitize_session_key(host_key) or get_session_key()
     rec = _read_map_record(host_key)
     if rec.get("session_id") and rec.get("conn_uuid"):
+        _backfill_launch_record(host_key, rec, dataset=dataset, cwd=cwd, host_pid=host_pid)
         return str(rec["session_id"]), str(rec["conn_uuid"])
 
     explicit = _sanitize_session_key(str(os.environ.get("COGNEE_SESSION_ID", "") or "").strip())
@@ -315,6 +347,12 @@ def ensure_launch_record(host_key: str = "", cwd: str = "") -> tuple[str, str]:
         or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "touched": rec.get("touched") or [session_id],
     }
+    if dataset:
+        record["dataset"] = str(rec.get("dataset") or dataset)
+    if cwd:
+        record["cwd"] = str(rec.get("cwd") or cwd)
+    if host_pid:
+        record["host_pid"] = int(rec.get("host_pid") or host_pid)
     if not host_key:
         return session_id, conn_uuid
     winner = _create_map_record_if_absent(host_key, record)
@@ -327,7 +365,306 @@ def ensure_launch_record(host_key: str = "", cwd: str = "") -> tuple[str, str]:
         merged.setdefault("host_key", host_key)
         _write_map_record(host_key, merged)
         winner = _read_map_record(host_key) or merged
+    _backfill_launch_record(host_key, winner, dataset=dataset, cwd=cwd, host_pid=host_pid)
     return str(winner.get("session_id") or session_id), str(winner.get("conn_uuid") or conn_uuid)
+
+
+def _backfill_launch_record(
+    host_key: str, rec: dict, *, dataset: str = "", cwd: str = "", host_pid: int = 0
+) -> None:
+    """Add launch metadata a pre-existing record lacks (never overwrites)."""
+    if not host_key or not isinstance(rec, dict):
+        return
+    updates = {}
+    if dataset and not rec.get("dataset"):
+        updates["dataset"] = dataset
+    if cwd and not rec.get("cwd"):
+        updates["cwd"] = cwd
+    if host_pid and not rec.get("host_pid"):
+        updates["host_pid"] = int(host_pid)
+    if not updates:
+        return
+    merged = dict(_read_map_record(host_key) or rec)
+    for key, value in updates.items():
+        merged.setdefault(key, value)
+    _write_map_record(host_key, merged)
+
+
+# ── Dataset switching ──────────────────────────────────────────────────────
+#
+# A launch's active dataset lives in its launch record. Every hook reads it from
+# there (via config.get_dataset -> resolve_active_dataset); the shell's
+# COGNEE_PLUGIN_DATASET only seeds the record at SessionStart. The switch command
+# (switch-dataset.py) rewrites session_id + dataset + conn_uuid atomically and
+# retires the previous triple into ``touched``.
+
+_DEFAULT_DATASET_NAME = "agent_sessions"
+
+
+def resolve_active_dataset(host_key: str = "") -> str:
+    """The dataset this launch writes to: launch record → env → default.
+
+    Without a host key (a process outside any launch, e.g. a bare CLI call) the
+    env/default rule applies unchanged.
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    if host_key:
+        rec = _read_map_record(host_key)
+        ds = str(rec.get("dataset") or "").strip()
+        if ds:
+            return ds
+    return str(os.environ.get("COGNEE_PLUGIN_DATASET", "") or "").strip() or _DEFAULT_DATASET_NAME
+
+
+def touched_pairs(host_key: str = "") -> list[dict]:
+    """Every (session_id, dataset, conn_uuid) this launch has used, oldest first.
+
+    The current triple is always last. Legacy records hold ``touched`` as plain
+    session-id strings — those are paired with the record's current dataset (a
+    pre-switch record only ever had one).
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    rec = _read_map_record(host_key)
+    if not rec:
+        return []
+    current = {
+        "session_id": str(rec.get("session_id") or ""),
+        "dataset": str(rec.get("dataset") or "") or resolve_active_dataset(host_key),
+        "conn_uuid": str(rec.get("conn_uuid") or ""),
+    }
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in rec.get("touched") or []:
+        if isinstance(item, dict):
+            entry = {
+                "session_id": str(item.get("session_id") or ""),
+                "dataset": str(item.get("dataset") or current["dataset"]),
+                "conn_uuid": str(item.get("conn_uuid") or ""),
+            }
+        else:
+            entry = {
+                "session_id": str(item or ""),
+                "dataset": current["dataset"],
+                "conn_uuid": "",
+            }
+        key = (entry["session_id"], entry["dataset"])
+        if (
+            not entry["session_id"]
+            or key in seen
+            or key == (current["session_id"], current["dataset"])
+        ):
+            continue
+        seen.add(key)
+        out.append(entry)
+    if current["session_id"]:
+        out.append(current)
+    return out
+
+
+def mint_switch_session_id(host_key: str = "") -> str:
+    """A new, self-describing Cognee session id for a switched launch.
+
+    ``_generate_session_id`` is deterministic per host session (``{agent}_{host}``),
+    so a switch appends an ordinal: ``{agent}_{host}__2``, ``__3``, ... — never
+    colliding with the pre-switch id while staying readable in the dashboard.
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    base = _generate_session_id("", host_key)
+    used = {p["session_id"] for p in touched_pairs(host_key)}
+    n = max(2, len(used) + 1)
+    candidate = f"{base}__{n}"
+    while candidate in used:
+        n += 1
+        candidate = f"{base}__{n}"
+    return candidate
+
+
+def switch_launch_record(
+    host_key: str,
+    *,
+    session_id: str,
+    dataset: str,
+    conn_uuid: str,
+) -> dict:
+    """Atomically point the launch at a new (session, dataset, connection).
+
+    The previous triple is appended to ``touched`` (with ``to`` stamped) so the
+    final sync and unregister still cover it; ``switched_at`` marks the record as
+    user-moved (see ``resolve_cognee_session_id`` precedence). Returns the record
+    now on disk.
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    if not host_key:
+        raise ValueError("switch_launch_record: no host session key")
+    rec = _read_map_record(host_key)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    touched = touched_pairs(host_key)
+    # touched_pairs() returns the current triple last; stamp it as retired.
+    if touched:
+        touched[-1] = {**touched[-1], "to": now}
+        touched[-1].setdefault("from", str(rec.get("switched_at") or rec.get("created_at") or ""))
+    touched.append(
+        {"session_id": session_id, "dataset": dataset, "conn_uuid": conn_uuid, "from": now}
+    )
+    merged = dict(rec)
+    merged.update(
+        {
+            "host_key": host_key,
+            "session_id": _sanitize_session_key(session_id),
+            "dataset": str(dataset).strip(),
+            "conn_uuid": str(conn_uuid),
+            "switched_at": now,
+            "touched": touched,
+        }
+    )
+    merged.setdefault("created_at", now)
+    _write_map_record(host_key, merged)
+    hook_log(
+        "dataset_switched",
+        {
+            "host_key": host_key,
+            "session_id": merged["session_id"],
+            "dataset": merged["dataset"],
+            "conn_uuid": conn_uuid,
+            "touched": len(touched),
+        },
+    )
+    return _read_map_record(host_key) or merged
+
+
+def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:
+    """Find this launch's host session key from a process that got no hook payload.
+
+    The switch command runs under the host's shell tool, which has no hook stdin.
+    Resolution, in order — returns ``(host_key, source)``, ``("", reason)`` when
+    nothing matched:
+      1. ``COGNEE_SESSION_KEY`` — already inside a hook.
+      2. The host's own session-id export (Claude Code: ``CLAUDE_CODE_SESSION_ID``).
+      3. The host's pid export or our process ancestry, matched against the
+         ``host_pid`` each SessionStart stores in its record.
+      4. A single live record whose ``cwd`` equals ours.
+    """
+    key = get_session_key()
+    if key:
+        return key, "env_session_key"
+
+    for var in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+        val = _sanitize_session_key(str(os.environ.get(var, "") or "").strip())
+        if val and _session_map_path(val).exists():
+            return val, var
+
+    records = _live_launch_records()
+    pids = _candidate_host_pids()
+    if pids:
+        by_pid = [r for r in records if int(r.get("host_pid") or 0) in pids]
+        if len(by_pid) == 1:
+            return str(by_pid[0].get("host_key") or ""), "host_pid"
+
+    cwd = str(cwd or os.getcwd())
+    by_cwd = [r for r in records if str(r.get("cwd") or "") == cwd]
+    if len(by_cwd) == 1:
+        return str(by_cwd[0].get("host_key") or ""), "cwd"
+    if len(by_cwd) > 1:
+        return "", "ambiguous_cwd"
+    return "", "not_found"
+
+
+def _live_launch_records() -> list[dict]:
+    """Launch records whose host process is still alive (or whose pid is unknown)."""
+    from _proc import pid_alive
+
+    out: list[dict] = []
+    try:
+        paths = sorted(_SESSIONS_MAP_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    except Exception:
+        return out
+    for path in paths:
+        rec = _load_json_file(path)
+        if not rec or not rec.get("session_id"):
+            continue
+        rec.setdefault("host_key", path.stem)
+        pid = int(rec.get("host_pid") or 0)
+        if pid and not pid_alive(pid):
+            continue
+        out.append(rec)
+    return out
+
+
+def _candidate_host_pids() -> set[int]:
+    """Pids that could be this process's host: the host's pid export + ancestry."""
+    pids: set[int] = set()
+    for var in ("CLAUDE_PID", "CODEX_PID"):
+        try:
+            v = int(str(os.environ.get(var, "") or "0").strip() or 0)
+        except ValueError:
+            v = 0
+        if v > 1:
+            pids.add(v)
+    if sys.platform != "win32":
+        try:
+            raw = subprocess.check_output(
+                ["ps", "-axo", "pid=,ppid="], text=True, stderr=subprocess.DEVNULL
+            )
+            table: dict[int, int] = {}
+            for line in raw.splitlines():
+                parts = line.split()
+                if len(parts) == 2:
+                    try:
+                        table[int(parts[0])] = int(parts[1])
+                    except ValueError:
+                        continue
+            pid = os.getppid()
+            seen: set[int] = set()
+            while pid > 1 and pid not in seen:
+                seen.add(pid)
+                pids.add(pid)
+                pid = table.get(pid, 0)
+        except Exception:
+            pass
+    return pids
+
+
+def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
+    """Datasets this principal can switch to, from ``GET /api/v1/datasets``.
+
+    The endpoint lists datasets the caller can READ; only those it OWNS are
+    guaranteed writable (creation grants read/write/share/delete). Returns::
+
+        {"datasets": [{"name", "id", "owner_id", "writable": True|None}],
+         "hidden_readonly": N, "filtered": bool}
+
+    A dataset owned by someone else is dropped (counted in ``hidden_readonly``).
+    ``writable`` is None — and the row kept — when ownership cannot be judged:
+    no ``user_id`` to compare against, or a server whose DTO carries no owner
+    (pre-1.6 releases). ``filtered`` is True only when every row was judged, so
+    the caller can say whether the list is proven-writable or merely readable;
+    the switch itself still rejects a non-writable dataset loudly.
+    """
+    raw = _json_http_request("/api/v1/datasets", method="GET", timeout=timeout)
+    items = raw if isinstance(raw, list) else []
+    rows = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        # OutDTO serialises camelCase on the wire (ownerId); accept both spellings.
+        owner = str(item.get("owner_id") or item.get("ownerId") or "").strip()
+        writable = None
+        if owner and user_id:
+            writable = owner == str(user_id)
+        rows.append(
+            {"name": name, "id": str(item.get("id") or ""), "owner_id": owner, "writable": writable}
+        )
+    rows.sort(key=lambda r: r["name"].lower())
+    kept = [r for r in rows if r["writable"] is not False]
+    return {
+        "datasets": kept,
+        "readonly": [r["name"] for r in rows if r["writable"] is False],
+        "hidden_readonly": len(rows) - len(kept),
+        "filtered": bool(rows) and all(r["writable"] is not None for r in rows),
+    }
 
 
 def resolve_conn_uuid(host_key: str = "") -> str:
@@ -422,6 +759,9 @@ def load_resolved(session_key: str = "") -> dict:
     cognee_session_id = resolve_cognee_session_id(active_session_key)
     if cognee_session_id:
         resolved["session_id"] = cognee_session_id
+    # The launch's active dataset (switchable) — read from the record so every
+    # hook and worker follows a switch, not the shell it was launched from.
+    resolved["dataset"] = resolve_active_dataset(active_session_key)
     conn_uuid = resolve_conn_uuid(active_session_key)
     if conn_uuid:
         resolved["agent_session_name"] = conn_uuid
@@ -859,8 +1199,7 @@ def hook_log(event: str, detail: Optional[dict] = None) -> None:
         serialized = json.dumps(line, default=str)
         if len(serialized) > _LOG_LINE_CAP:
             serialized = serialized[: _LOG_LINE_CAP - 3] + "..."
-        with _HOOK_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(serialized + "\n")
+        _append_log_line(_HOOK_LOG, serialized)
     except Exception:
         pass
 
@@ -969,10 +1308,8 @@ def notify(msg: str) -> None:
     print(line, file=sys.stderr)
     if _verbose_enabled():
         try:
-            _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            with _ACTIVITY_LOG.open("a", encoding="utf-8") as fh:
-                fh.write(f"{ts} {line}\n")
+            _append_log_line(_ACTIVITY_LOG, f"{ts} {line}")
         except Exception as exc:
             hook_log("activity_log_write_failed", {"error": str(exc)[:200]})
 
@@ -988,6 +1325,8 @@ def quiet_hook_output(label: str):
     _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
     saved_stdout_fd = os.dup(1)
     saved_stderr_fd = os.dup(2)
+    # The child writes this fd itself, so the cap can only be applied here.
+    _rotate_log_if_oversized(_SUBPROCESS_LOG)
     log_fd = os.open(_SUBPROCESS_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         marker = (
@@ -1096,11 +1435,23 @@ def pop_pending_prompt(session_id: str, *, turn_id: str = "") -> dict:
     """Return and remove the prompt saved for this Codex turn."""
     if not session_id:
         return {"prompt": "", "context": ""}
-    data = _load_json_file(_pending_file(session_id))
+    pending_path = _pending_file(session_id)
+    data = _load_json_file(pending_path)
     turn_key, session_key = _pending_keys(session_id, turn_id)
     entry = data.pop(turn_key, None) or data.get(session_key) or {}
     data.pop(session_key, None)
-    _write_json_file(_pending_file(session_id), data)
+    if data:
+        _write_json_file(pending_path, data)
+    else:
+        # Last entry consumed: remove the file rather than write ``{}`` back.
+        # Writing the emptied dict left one 2-byte husk per session, forever
+        # (80 of 88 files in one pending/ dir were husks — SDK-469).
+        try:
+            pending_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            hook_log("pending_unlink_failed", {"path": str(pending_path), "error": str(exc)[:200]})
     if not isinstance(entry, dict):
         return {"prompt": "", "context": ""}
     return {
@@ -2959,6 +3310,7 @@ def recall_via_http(
     search_type: str | None = None,
     context_profile: str | None = None,
     dataset: str = "",
+    code_query: dict | None = None,
     timeout: float = 10.0,
 ) -> list:
     payload = {
@@ -2968,6 +3320,10 @@ def recall_via_http(
         "scope": scope,
         "only_context": only_context,
     }
+    # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
+    # the scope includes "code": the server rejects code_query without it.
+    if code_query:
+        payload["code_query"] = code_query
     # Always scope to the plugin's dataset. Without it the server resolves EVERY
     # readable dataset and then reconciles against the session's binding, so the
     # graph scope depends on that binding existing: an unbound session with more
@@ -3837,3 +4193,197 @@ def _run_session_improve_locked(dataset: str, session_id: str) -> bool:
         )
         return False
     return bool(outcome.get("ok"))
+
+
+# ---------------------------------------------------------------------------
+# State sweep — the per-session files nothing else ever deletes.
+# ---------------------------------------------------------------------------
+#
+# Every launch writes one file into several directories (a launch record, a
+# connection marker, an LLM-key verdict, last-recall counts, a bridge cache, a
+# pending-prompt buffer, maybe an improve lock). Nothing removed them, so a
+# machine in daily use accumulated ~1,200 of them in two months. Each is
+# useless once its session is over; the sweep runs at SessionStart and removes
+# the ones whose session is provably gone. The rules are deliberately lazy —
+# days, not minutes — because the only cost of a stale file is clutter, while
+# a premature delete can lose a final sync. Same ownership rule as everywhere
+# else in the state dir: this touches only THIS plugin's subdirectory, plus the
+# one shared marker this plugin itself writes.
+
+#: Status markers (conn-state, llm-state, recall) and the per-session bridge
+#: cache / pending-prompt buffer: gone after a week without a write. A live
+#: session rewrites its markers on every hook, so age alone is a safe signal.
+_SWEEP_SESSION_FILE_MAX_AGE_SECONDS = 7 * 24 * 3600
+#: Launch records: removed a week after their host pid is dead, or after 30
+#: days regardless (a record with no pid is treated as alive, so that is the
+#: only bound for those). The functional reader — the exit-watcher's final
+#: sync — needs the record for seconds after the host exits, but a human
+#: debugging a Friday crash on Monday needs it for days; a week matches the
+#: marker rule above so there is one number to remember. Costs nothing:
+#: `_live_launch_records` already ignores dead-pid records at read time.
+_SWEEP_LAUNCH_RECORD_DEAD_GRACE_SECONDS = 7 * 24 * 3600
+_SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS = 30 * 24 * 3600
+#: Logs the sweep rotates when over the cap. Most are also rotated by their own
+#: writer; this catches files that predate the cap and logs only ever written
+#: by a child process.
+_SWEEP_LOG_FILES = (
+    "hook.log",
+    "bootstrap.log",
+    "watcher.log",
+    "exit-watcher.log",
+    "subprocess.log",
+    "recall-audit.log",
+    "activity.log",
+)
+#: Directories older plugin versions created here and nothing reads any more.
+_SWEEP_LEGACY_DIRS = ("statusline",)
+#: Files likewise. recall-breaker.json: cognee-search.sh used to redirect the
+#: circuit breaker into this dir, splitting it from the one the hooks use.
+_SWEEP_LEGACY_FILES = ("recall-breaker.json",)
+
+
+def _sweep_remove(path: Path, counts: dict, key: str) -> None:
+    try:
+        path.unlink()
+        counts[key] = counts.get(key, 0) + 1
+    except FileNotFoundError:
+        pass  # a concurrent SessionStart swept it first
+    except OSError as exc:
+        counts.setdefault("errors", []).append(f"{path.name}: {str(exc)[:80]}")
+
+
+def _sweep_dir_by_age(directory: Path, max_age: float, now: float, counts: dict, key: str) -> None:
+    try:
+        entries = list(directory.glob("*.json"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age > max_age:
+            _sweep_remove(path, counts, key)
+
+
+def _sweep_pending_husks(counts: dict) -> None:
+    """Empty ``{}`` pending files left by older versions of ``pop_pending_prompt``.
+    Nothing is in flight for an empty buffer, so age is irrelevant; a live
+    session that needs the file again simply recreates it."""
+    try:
+        entries = list(_PENDING_DIR.glob("*.json"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            if path.stat().st_size <= 2 and not _load_json_file(path):
+                _sweep_remove(path, counts, "pending_husks")
+        except OSError:
+            continue
+
+
+def _sweep_launch_records(now: float, counts: dict) -> None:
+    try:
+        entries = list(_SESSIONS_MAP_DIR.glob("*.json"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age > _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS:
+            _sweep_remove(path, counts, "launch_records")
+            continue
+        if age <= _SWEEP_LAUNCH_RECORD_DEAD_GRACE_SECONDS:
+            continue
+        rec = _load_json_file(path)
+        try:
+            pid = int((rec or {}).get("host_pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0 and not _proc.pid_alive(pid):
+            _sweep_remove(path, counts, "launch_records")
+
+
+def _sweep_improve_locks(now: float, counts: dict) -> None:
+    """Dead-pid or over-age locks. ``improve_session_lock`` clears such a lock
+    only when the *same* session locks again, which for an ended session is
+    never — so a crash left a lock file behind for good."""
+    try:
+        entries = list(_IMPROVE_LOCK_DIR.glob("*.lock"))
+    except OSError:
+        return
+    for path in entries:
+        stale = False
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+            pid = int(current.get("pid", 0) or 0)
+            created_at = float(current.get("created_at", 0) or 0)
+            stale = (
+                not (pid > 0 and _proc.pid_alive(pid)) or now - created_at > SYNC_LOCK_STALE_SECONDS
+            )
+        except Exception:
+            stale = True  # unreadable lock: nothing can release it either
+        if stale:
+            _sweep_remove(path, counts, "improve_locks")
+
+
+def _sweep_expired_improve_marker(now: float, counts: dict) -> None:
+    """The shared improve-unsupported marker outlives its TTL as a file; drop it
+    once expired so it stops looking like live state. Shared root, but this
+    plugin is one of its writers, so removing an expired one is in bounds."""
+    data = _load_json_file(_IMPROVE_UNSUPPORTED_MARKER)
+    if not isinstance(data, dict) or not data:
+        return
+    try:
+        marked_at = float(data.get("marked_at", 0) or 0)
+    except (TypeError, ValueError):
+        marked_at = 0.0
+    if now - marked_at >= _IMPROVE_UNSUPPORTED_TTL_SECONDS:
+        _sweep_remove(_IMPROVE_UNSUPPORTED_MARKER, counts, "expired_markers")
+
+
+def sweep_stale_state(now: Optional[float] = None) -> dict:
+    """Remove this plugin's dead per-session files and legacy leftovers.
+
+    Returns a count per category (only non-zero ones, plus ``errors`` when
+    something could not be removed). Never raises: a sweep that fails must
+    never cost a SessionStart. Logs one ``state_sweep`` event when it did
+    anything.
+    """
+    counts: dict = {}
+    now = datetime.now(timezone.utc).timestamp() if now is None else float(now)
+    try:
+        for directory, key in (
+            (_CONN_STATE_DIR, "conn_state"),
+            (_LLM_STATE_DIR, "llm_state"),
+            (_PLUGIN_DIR / "recall", "recall"),
+            (_BRIDGE_DIR, "bridge"),
+            (_PENDING_DIR, "pending"),
+        ):
+            _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
+        _sweep_pending_husks(counts)
+        _sweep_launch_records(now, counts)
+        _sweep_improve_locks(now, counts)
+        _sweep_expired_improve_marker(now, counts)
+        for name in _SWEEP_LEGACY_FILES:
+            legacy_file = _PLUGIN_DIR / name
+            if legacy_file.is_file():
+                _sweep_remove(legacy_file, counts, "legacy_files")
+        for name in _SWEEP_LEGACY_DIRS:
+            legacy = _PLUGIN_DIR / name
+            if legacy.is_dir():
+                try:
+                    shutil.rmtree(legacy)
+                    counts["legacy_dirs"] = counts.get("legacy_dirs", 0) + 1
+                except OSError as exc:
+                    counts.setdefault("errors", []).append(f"{name}/: {str(exc)[:80]}")
+        for name in _SWEEP_LOG_FILES:
+            if _rotate_log_if_oversized(_PLUGIN_DIR / name):
+                counts["logs_rotated"] = counts.get("logs_rotated", 0) + 1
+    except Exception as exc:  # pragma: no cover - defensive
+        counts.setdefault("errors", []).append(str(exc)[:120])
+    if counts:
+        hook_log("state_sweep", counts)
+    return counts

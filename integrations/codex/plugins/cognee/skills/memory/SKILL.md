@@ -25,7 +25,15 @@ memory.
 ${CODEX_PLUGIN_ROOT}/scripts/cognee-remember.sh "<text>" --node-set user_context
 ```
 
-Use `--node-set project_docs` for project/code content, `--node-set agent_actions` for agent notes. The script POSTs directly to `/api/v1/remember`. A `{"ok": true}` response means the server accepted the data. An error response means the server rejected or failed the request — check `COGNEE_API_KEY` and server logs; do **not** re-run or conclude the data wasn't stored without confirming against the server.
+Use `--node-set project_docs` for project/code content, `--node-set agent_actions` for agent notes.
+
+To store a **file** under its real filename (so code files ride the zero-LLM code path instead of being ingested as prose), pass `--file`:
+
+```bash
+${CODEX_PLUGIN_ROOT}/scripts/cognee-remember.sh --file src/payments.py --node-set project_docs
+```
+
+For a whole repository (cross-file calls/imports, impact analysis), use the **codebase** skill instead. The script POSTs directly to `/api/v1/remember`. A `{"ok": true}` response means the server accepted the data. An error response means the server rejected or failed the request — check `COGNEE_API_KEY` and server logs; do **not** re-run or conclude the data wasn't stored without confirming against the server.
 
 **Background by default + eventual consistency**: the wrapper submits with `run_in_background=true` (so a large cognify never holds one request open past the cloud's ~10-min request ceiling). The POST returns once the work is **enqueued**, with `dataset_id` and `pipeline_run_id`; `status: "running"` means *submitted, not yet in the permanent graph*. The session cache is searchable immediately, but the graph is queryable only after the cognify pipeline **completes**.
 
@@ -113,11 +121,28 @@ uv run cognee-cli improve -d <dataset-name> --node-name <entity-name>
 
 ## Forget
 
-Use the narrowest deletion command possible and confirm first:
+When the user asks to forget or delete something from memory, follow the
+**cognee-forget** skill — it walks the full guided flow: sync the live session,
+find the dataset id, judge candidate documents by raw content (grouped by
+session), confirm, then delete each match through the wrapper:
 
 ```bash
-uv run cognee-cli forget --dataset <dataset-name>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh sync
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh datasets
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh data <dataset_id>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh raw <dataset_id> <data_id>
+${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh forget <dataset_id> <data_id>
+```
+
+The wrapper always authenticates (env → `~/.cognee/.env` → the auto-minted
+local `api_key.json`) and prints an `HTTP <status>` trailer per call. Deletion
+is irreversible — use the narrowest scope possible and confirm first.
+
+**Fallback only — server unreachable:**
+
+```bash
 uv run cognee-cli forget --dataset <dataset-name> --data-id <data-uuid>
+uv run cognee-cli forget --dataset <dataset-name>
 ```
 
 Avoid `uv run cognee-cli forget --everything` unless the user explicitly asks

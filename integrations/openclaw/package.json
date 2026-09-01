@@ -1,8 +1,21 @@
 {
   "name": "@cognee/cognee-openclaw",
-  "version": "2026.8.20",
+  "version": "2026.8.27",
   "type": "module",
   "description": "OpenClaw Cognee-backed memory plugin with auto-recall/capture",
+  "author": {
+    "name": "Cognee",
+    "url": "https://www.cognee.ai"
+  },
+  "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/openclaw#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/topoteretes/cognee-integrations.git",
+    "directory": "integrations/openclaw"
+  },
+  "bugs": {
+    "url": "https://github.com/topoteretes/cognee-integrations/issues"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "openclaw": {
@@ -19,7 +32,8 @@
   "files": [
     "dist",
     "openclaw.plugin.json",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",

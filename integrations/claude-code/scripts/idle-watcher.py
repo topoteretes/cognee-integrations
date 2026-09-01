@@ -24,6 +24,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
+from _logfiles import append_line as _append_log_line
+
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
 # threshold means you have to actively pause a full minute, and the 10-minute
 # improve cooldown prevents back-to-back improve runs when activity is sporadic.
@@ -43,12 +45,10 @@ _should_stop = False
 
 def _log(event: str, **detail) -> None:
     try:
-        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         line = {"ts": time.time(), "pid": os.getpid(), "event": event}
         if detail:
             line["detail"] = detail
-        with _LOGFILE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+        _append_log_line(_LOGFILE, json.dumps(line, default=str))
     except Exception:
         pass
 
@@ -289,6 +289,26 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
     exit_reason = "loop_complete"
     bridge_disabled = False
 
+    def _current_pair() -> tuple[str, str]:
+        """The launch's live (session_id, dataset), re-read before every bridge.
+
+        A dataset switch rewrites the launch record mid-session; the bootstrap
+        values this watcher was spawned with would otherwise bridge the retired
+        session into the old dataset. Falls back to the bootstrap pair when the
+        record is unavailable.
+        """
+        try:
+            from _plugin_common import resolve_active_dataset, resolve_cognee_session_id
+
+            sid = resolve_cognee_session_id() or session_id
+            ds = resolve_active_dataset() or dataset
+            if (sid, ds) != (session_id, dataset):
+                _log("bridge_target_switched", session=sid, dataset=ds)
+            return sid, ds
+        except Exception as exc:
+            _log("bridge_target_resolve_failed", error=str(exc)[:200])
+            return session_id, dataset
+
     while not _should_stop:
         if _STOPFILE.exists():
             _log("stop_sentinel_seen")
@@ -313,7 +333,7 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
             and time_since_improve >= IMPROVE_COOLDOWN
         ):
             _log("idle_trigger", idle_for=round(idle_for, 1))
-            ok = await _improve_once(session_id, dataset, config)
+            ok = await _improve_once(*_current_pair(), config)
             if ok:
                 last_improved_at = time.time()
                 _log("bridge_done")
@@ -335,7 +355,7 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         and ts > last_improved_at
     ):
         _log("shutdown_trigger", reason=exit_reason, activity_age=round(time.time() - ts, 1))
-        ok = await _improve_once(session_id, dataset, config)
+        ok = await _improve_once(*_current_pair(), config)
         if ok:
             last_improved_at = time.time()
             _log("shutdown_bridge_done")

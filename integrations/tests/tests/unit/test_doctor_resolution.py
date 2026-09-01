@@ -6,10 +6,11 @@ vs Local Managed (loopback URL) vs Cloud, which endpoint won, whether the API ke
 came from the environment or the cached file, the embedding settings, and the
 circuit-breaker state.
 
-The endpoint-resolution precedence (env > config file > localhost default) is
-asserted for both suites here. The config-file layer is only wired into codex's
-`config.py`, so those cases skip on claude-code — and codex's `doctor.py` keeps
-its own `_API_KEY_CACHE` constant, which the fixture accounts for.
+The endpoint-resolution precedence (env > localhost default) is asserted for
+both suites here. There is no config-file layer any more — a `config.json` that
+only SessionStart honoured is how a stale URL split the plugin across two servers
+(SDK-466) — and codex's `doctor.py` keeps its own `_API_KEY_CACHE` constant,
+which the API-key fixture accounts for.
 
 The `/health` probe and the full report live in integration/test_doctor.py.
 Migrated from claude-code/tests/test_doctor.py and
@@ -34,27 +35,6 @@ def doctor(suite, isolated_modules):
 @pytest.fixture
 def pc(suite, isolated_modules):
     return isolated_modules(suite, "_plugin_common")
-
-
-@pytest.fixture
-def config_file(suite, isolated_modules, pc):
-    """The suite's config.json path, or skip if its endpoint layer ignores it."""
-    config = isolated_modules(suite, "config")
-    url, source = pc._local_api_url_with_source()
-    if source != "default_local":
-        pytest.skip("unexpected ambient endpoint resolution")
-    path = config._CONFIG_FILE
-
-    def _write(payload: dict):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload), encoding="utf-8")
-        return path
-
-    _write({"base_url": "http://probe-config-support:8012"})
-    if pc._local_api_url_with_source()[1] != "config_base_url":
-        pytest.skip(f"{suite.name}: the endpoint layer does not read config.json")
-    path.unlink()
-    return _write
 
 
 # ── mode resolution ────────────────────────────────────────────────────────
@@ -92,18 +72,15 @@ def test_server_url_shown_in_server_mode(doctor, monkeypatch):
     assert "custom:9999" in raw
 
 
-# ── endpoint precedence: env > config file > localhost default ─────────────
+# ── endpoint precedence: env > localhost default ───────────────────────────
 
 
-def test_server_url_falls_back_to_config_file(doctor, pc, config_file):
-    configured = "http://managed-cognee.internal:8012"
-    config_file({"base_url": configured})
-    assert pc._local_api_url_with_source() == (configured, "config_base_url")
-    assert doctor._resolve_server_url() == (configured, configured)
+def test_endpoint_defaults_to_localhost(pc):
+    """The harness scrubs COGNEE_*, so nothing configured means the local default."""
+    assert pc._local_api_url_with_source() == ("http://localhost:8011", "default_local")
 
 
-def test_endpoint_env_vars_keep_precedence_over_config(pc, config_file, monkeypatch):
-    config_file({"backend": "http", "base_url": "http://from-config:8012"})
+def test_endpoint_env_vars_precedence(pc, monkeypatch):
     monkeypatch.setenv("COGNEE_BASE_URL", "http://from-base-env:8013")
     assert pc._local_api_url_with_source() == ("http://from-base-env:8013", "env_service_url")
 
@@ -111,16 +88,21 @@ def test_endpoint_env_vars_keep_precedence_over_config(pc, config_file, monkeypa
     assert pc._local_api_url_with_source() == ("http://from-local-env:8014", "env_local_api_url")
 
 
-def test_local_backend_ignores_stale_config_endpoint(pc, config_file):
-    """`backend: local` means local, whatever endpoint the file still remembers."""
-    config_file({"backend": "local", "base_url": "http://stale-managed:8012"})
-    assert pc._local_api_url_with_source() == ("http://localhost:8011", "default_local")
+def test_legacy_config_json_is_ignored(pc, suite, isolated_modules, temp_home):
+    """A leftover config.json must not steer the endpoint — that file is exactly
+    how a stale cloud URL used to disable memory (SDK-466). Both historical
+    locations are planted: the shared root (codex) and the suite's state dir."""
+    from utils.suites import plugin_root, state_dir
 
-
-def test_malformed_config_falls_back_to_localhost(pc, config_file):
-    path = config_file({})
-    path.write_text("{not-json", encoding="utf-8")
+    config = isolated_modules(suite, "config")
+    for path in (
+        plugin_root(temp_home) / "config.json",
+        state_dir(suite, temp_home) / "config.json",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"base_url": "http://stale-managed:8012"}), encoding="utf-8")
     assert pc._local_api_url_with_source() == ("http://localhost:8011", "default_local")
+    assert config.load_config().get("base_url") == ""
 
 
 # ── API key source ─────────────────────────────────────────────────────────
@@ -141,10 +123,10 @@ def test_api_key_source_config(doctor, pc, tmp_path, monkeypatch):
     assert doctor._resolve_api_key_source() == "Config"
 
 
-def test_cached_api_key_remains_scoped_to_its_endpoint(pc, config_file, tmp_path, monkeypatch):
+def test_cached_api_key_remains_scoped_to_its_endpoint(pc, tmp_path, monkeypatch):
     """A key cached for another server must never be sent to this one."""
     configured = "http://managed-cognee.internal:8012"
-    config_file({"base_url": configured})
+    monkeypatch.setenv("COGNEE_BASE_URL", configured)
     cache_file = tmp_path / "runtime-api-key.json"
     monkeypatch.setattr(pc, "_API_KEY_CACHE", cache_file)
 

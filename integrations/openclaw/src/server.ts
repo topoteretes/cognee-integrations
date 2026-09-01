@@ -25,7 +25,7 @@ const ENSURE_SCRIPT_CONTENT = [
   "UV_BIN = os.path.join(UV_DIR, 'uv' + _ext)",
   "READY_MARKER = os.path.join(BASE, '.venv-ready.json')",
   "INSTALL_LOCK = os.path.join(BASE, 'venv-install.lock')",
-  "COGNEE_VERSION = '1.5.0'",
+  "COGNEE_VERSION = '1.5.3'",
   "",
   "# Self-daemonize so the caller returns immediately.",
   "if '--daemon' not in sys.argv:",
@@ -261,6 +261,11 @@ export async function bootServerIfNeeded(
   const result = await runPluginCommandWithTimeout({
     argv: [python, ENSURE_SCRIPT_PATH, String(port)],
     timeoutMs: 5_000,
+    // The script derives every path from `~`, this module from `homedir()`.
+    // Pin the two together: identical in production, and the only way a
+    // redirected homedir (the test suite's sandbox) also redirects the venv
+    // and server state instead of landing them in the real home.
+    env: { ...process.env, HOME: homedir() },
   });
   if (result.code !== 0) {
     logger.warn?.(`cognee-openclaw: boot script exited ${result.code}: ${result.stderr}`);
@@ -284,9 +289,15 @@ const EXIT_WATCHER_CONTENT = [
   "",
   "POLL = 2.0",
   "LOG_PATH = os.path.join(os.path.expanduser('~'), '.openclaw', 'cognee', 'exit-watcher.log')",
+  "# Same ceiling as the Python plugins' logs (COGNEE_PLUGIN_LOG_MAX_BYTES, default 20 MiB):",
+  "# rotate to .1 when over it, so a watcher that logs for months stays readable.",
+  "try: LOG_MAX = max(0, int(float(os.environ.get('COGNEE_PLUGIN_LOG_MAX_BYTES', '') or 20 * 1024 * 1024)))",
+  "except ValueError: LOG_MAX = 20 * 1024 * 1024",
   "",
   "def log(msg):",
   "    try:",
+  "        if LOG_MAX and os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX:",
+  "            os.replace(LOG_PATH, LOG_PATH + '.1')",
   "        with open(LOG_PATH, 'a') as f:",
   "            f.write(time.strftime('%Y-%m-%dT%H:%M:%S') + ' ' + str(msg) + '\\n')",
   "    except Exception: pass",

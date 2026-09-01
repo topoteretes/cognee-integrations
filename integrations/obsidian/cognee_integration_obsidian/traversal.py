@@ -1,18 +1,19 @@
-import os
-import re
-import yaml
+import asyncio
 import hashlib
 import json
-import asyncio
-import cognee
-from pathlib import Path
+import os
+import re
 from collections import Counter
+from pathlib import Path
+
+import cognee
+import yaml
 
 VAULT_PATH: str = os.environ.get("VAULT", "")
 if not VAULT_PATH:
     raise SystemExit(
         "VAULT environment variable is required — set it to the path of your Obsidian vault, "
-        "e.g. export VAULT=\"/path/to/your/vault\""
+        'e.g. export VAULT="/path/to/your/vault"'
     )
 EXCLUDED_DIRS = {".obsidian", ".trash", "Templates"}
 dataset_name = Path(VAULT_PATH).name
@@ -33,15 +34,17 @@ def load_manifest():
             return {}
     return {}
 
+
 def save_manifest(manifest):
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=4))
 
+
 def split_frontmatter(text):
-    frontmatter_pattern = r'^---\n(.*?)\n---\n'
+    frontmatter_pattern = r"^---\n(.*?)\n---\n"
     match = re.match(frontmatter_pattern, text, re.DOTALL)
     if match:
         frontmatter = match.group(1)
-        content = text[match.end():]
+        content = text[match.end() :]
         try:
             frontmatter_data = yaml.safe_load(frontmatter) if frontmatter else {}
         except yaml.YAMLError:
@@ -52,11 +55,13 @@ def split_frontmatter(text):
     else:
         return None, text
 
+
 def clean_link_target(raw):
-    target = raw.split('|', 1)[0]
-    target = target.split('#', 1)[0]
-    target = target.split('^', 1)[0]
+    target = raw.split("|", 1)[0]
+    target = target.split("#", 1)[0]
+    target = target.split("^", 1)[0]
     return target
+
 
 async def main():
     manifest = load_manifest()
@@ -76,9 +81,11 @@ async def main():
             try:
                 text = Path(full_path).read_text(encoding="utf-8")
                 frontmatter, content = split_frontmatter(text)
-                headings = re.findall(r'^(#{1,6})\s+(.*)', content, re.MULTILINE)
-                links = Counter(clean_link_target(link) for link in re.findall(r'\[\[([^\]]+)\]\]', text))
-                tags = [t for t in re.findall(r'(?<!\w)#([\w/-]+)', content) if not t.isdigit()]
+                headings = re.findall(r"^(#{1,6})\s+(.*)", content, re.MULTILINE)
+                links = Counter(
+                    clean_link_target(link) for link in re.findall(r"\[\[([^\]]+)\]\]", text)
+                )
+                tags = [t for t in re.findall(r"(?<!\w)#([\w/-]+)", content) if not t.isdigit()]
 
                 frontmatter_tags = (frontmatter or {}).get("tags", []) or []
                 if isinstance(frontmatter_tags, str):
@@ -89,7 +96,7 @@ async def main():
                 header = "\n".join(header_lines)
                 data = f"{header}\n\n{content}" if header else content
 
-                digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+                digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
                 if manifest.get(key) == digest:
                     print("SKIP (unchanged):", key)
@@ -111,12 +118,19 @@ async def main():
                 print("Key:", key)
 
             except Exception as e:
-                print(f"ERROR processing {key}: {e} — skipping this note, continuing with the rest of the vault.")
+                print(
+                    f"ERROR processing {key}: {e} — "
+                    f"skipping this note, continuing with the rest of the vault."
+                )
                 continue
 
     deleted_keys = set(manifest.keys()) - found_keys
     if deleted_keys:
-        print(f"Pruning {len(deleted_keys)} manifest entr{'y' if len(deleted_keys)==1 else 'ies'} for notes no longer found in the vault:")
+        print(
+            f"Pruning {len(deleted_keys)} manifest "
+            f"entr{'y' if len(deleted_keys) == 1 else 'ies'} "
+            f"for notes no longer found in the vault:"
+        )
         for k in deleted_keys:
             print("  -", k)
             del manifest[k]
@@ -124,7 +138,11 @@ async def main():
 
     if any_ingested:
         await cognee.cognify(datasets=[dataset_name])
-        await cognee.visualize_graph(destination_file_path=os.path.abspath(GRAPH_OUTPUT_PATH), dataset=dataset_name, full=True)
+        await cognee.visualize_graph(
+            destination_file_path=os.path.abspath(GRAPH_OUTPUT_PATH),
+            dataset=dataset_name,
+            full=True,
+        )
     else:
         print("No new or changed notes this run — skipping cognify and graph visualization.")
 

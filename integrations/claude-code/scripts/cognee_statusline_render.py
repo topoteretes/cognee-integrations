@@ -3,8 +3,8 @@
 
 Invoked by Claude Code's ``statusLine`` (via ``cognee-statusline.sh``), which
 pipes a JSON context on stdin. Deliberately standalone and pure-local: reads
-only env vars and ``~/.cognee-plugin/config.json`` — no network calls, no
-``_plugin_common`` import.
+only env vars (``~/.cognee/.env`` included) and the plugin's own state files —
+no network calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
 """
@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,7 +25,6 @@ from _env_file import forced_backend, load_env_file
 load_env_file()
 
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
-_CONFIG_PATH = _SHARED_ROOT / "claude-code" / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
@@ -34,7 +32,6 @@ _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
 # (or a marketplace auto-update) installs a new version, which makes it the
 # only signal that clears the update nudge mid-session (see _update_segment).
 _INSTALLED_PLUGINS_PATH = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-_PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "claude-code" / "llm-state.json"
 _RECALL_PATH = _SHARED_ROOT / "claude-code" / "last_recall.json"
 _RECALL_DIR = _SHARED_ROOT / "claude-code" / "recall"
@@ -53,16 +50,6 @@ _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 # there is no periodic re-check — so a verdict this old came from a session that is
 # gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
 _LLM_STATE_STALE_SECONDS = 30 * 60
-
-# Passive, app-closed-safe mitigation for the pipeline-health sweep (Layer 1, a
-# Windows Scheduled Task) -- PushNotification (Layer 2) only fires while the app
-# is open, so this is what lets Mike see a stuck-pipeline finding the INSTANT he
-# next opens any terminal running the plugin, even after a period the app was
-# closed. Older than this many seconds, treat the file as stale/unknown rather
-# than showing a possibly-outdated warning -- the sweep runs every 2-5 minutes,
-# so anything older than that means the sweep itself has stopped, which is its
-# own separate (unmonitored-by-this-glyph) problem, not something to imply here.
-_PIPELINE_HEALTH_STALE_SECONDS = 30 * 60
 
 # TTL for the credits balance. Written per turn (async prompt hook), after
 # improve/remember, and by the idle watcher every ~5 minutes — so a marker
@@ -84,13 +71,39 @@ _USER_SETTINGS = Path.home() / ".claude" / "settings.json"
 _OWNED_STATUSLINE_MARKER = "cognee-statusline"
 
 
-def _active_dataset() -> str:
-    # 1. env var (inherited from the shell that launched Claude Code)
+_SESSIONS_DIR = _SHARED_ROOT / "claude-code" / "sessions"
+
+
+def _launch_record(session_id: str) -> dict:
+    """This launch's record (``sessions/<host id>.json``), or {}.
+
+    The host session id in the statusline context is the same key SessionStart
+    files the record under, so the bar reads the dataset the launch is actually
+    writing to — including one chosen with ``/cognee-memory:cognee-switch-datasets``.
+    """
+    if not _path_safe(session_id):
+        return {}
+    return _read_json(_SESSIONS_DIR / f"{session_id}.json")
+
+
+def _active_dataset(session_id: str = "") -> str:
+    # 1. the launch record (authoritative once SessionStart has run; switchable)
+    recorded = str(_launch_record(session_id).get("dataset") or "").strip()
+    if recorded:
+        return recorded
+    # 2. env var (inherited from the shell that launched Claude Code)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. default
+    # 3. default
     return _DEFAULT_DATASET
+
+
+def _switched_marker(session_id: str = "") -> str:
+    """A faint ``· switched`` tag once the launch left its launch-time dataset."""
+    if _launch_record(session_id).get("switched_at"):
+        return " \033[2m· switched\033[0m"
+    return ""
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
@@ -104,16 +117,7 @@ def _active_mode() -> str:
     forced = forced_backend()
     if forced == "local":
         return "local"
-    # 1. env var
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
-    # 2. config file
-    if not url:
-        try:
-            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                url = str(data.get("base_url") or "").strip()
-        except Exception:
-            pass
     if not url:
         return "cloud" if forced == "cloud" else "local"
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
@@ -168,14 +172,6 @@ def _active_base_url() -> str:
         url = os.environ.get(var, "").strip()
         if url:
             return url.rstrip("/")
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            url = str(data.get("base_url") or "").strip()
-            if url:
-                return url.rstrip("/")
-    except Exception:
-        pass
     return _DEFAULT_LOCAL_BASE_URL
 
 
@@ -444,41 +440,6 @@ def _recorded_install_version() -> str:
     return best_str
 
 
-def _pipeline_health_glyph() -> str:
-    """ "⚠ N " when the pipeline sweep (scripts/pipeline_sweep.py) has a fresh,
-    non-stale finding of one or more stuck runs or a down server; "" otherwise
-    (no file yet, stale, or everything's clean). See
-    docs/KB/pipeline-monitor-notify-policy.md for the full monitoring design this
-    is one small passive piece of.
-    """
-    try:
-        raw = json.loads(_PIPELINE_HEALTH_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    if not isinstance(raw, dict):
-        return ""
-    try:
-        generated_at = datetime.fromisoformat(str(raw.get("generated_at", "")))
-        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
-        if age_seconds > _PIPELINE_HEALTH_STALE_SECONDS:
-            return ""
-    except (ValueError, TypeError):
-        return ""
-    server = raw.get("server") or {}
-    if server.get("up") is False:
-        return "⚠ server-down "
-    summary = raw.get("summary") or {}
-    worst = str(summary.get("worst_classification") or "ok")
-    flagged = (
-        sum((summary.get("by_classification") or {}).values())
-        if isinstance(summary.get("by_classification"), dict)
-        else 0
-    )
-    if worst in ("alert", "critical") and flagged > 0:
-        return f"⚠ {flagged} pipeline(s) stuck "
-    return ""
-
-
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -583,53 +544,111 @@ def _llm_prefix(session_id: str = "") -> str:
     return ""
 
 
-def _recall_segment(session_id: str) -> str:
-    """Dim 'what memory did on the last turn' counts, or '' — read from the marker.
-
-    ``session-context-lookup`` already writes ``last_recall.json`` on every prompt
-    (hits per scope + what the previous turn persisted) precisely so the status line
-    can show them; this is the Claude Code counterpart of the ``Cognee memory:
-    recall …`` header Codex injects into model context.
+def _recall_marker(session_id: str) -> dict:
+    """This session's recall marker, or {} when nothing attributable exists.
 
     Per session: ``recall/<session_key>.json`` is this session's own copy, so with
     several terminals open each bar shows its own numbers. The machine-wide
     ``last_recall.json`` (written for ``cognee_plugin.py``) is the fallback for hooks
     that predate the per-session copy, and is only trusted when it is unattributed or
-    stamped with our session — a neighbour's counts must never appear here.
-
-    Faint (`\\033[2m`) so it sits below the health glyph and dataset in the visual
-    hierarchy; the reset prevents color bleed.
+    stamped with our session — a neighbour's counts must never appear here. The
+    fallback carries no ``session_totals``: a cumulative number is only meaningful
+    from the session that accumulated it.
     """
-    if os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower() in (
-        "0",
-        "false",
-        "no",
-        "off",
-    ):
-        return ""
     marker = _read_json(_RECALL_DIR / f"{session_id}.json") if _path_safe(session_id) else {}
-    if not isinstance(marker.get("hits"), dict):
-        marker = _read_json(_RECALL_PATH)
-        marked_key = str(marker.get("session_key") or "")
-        if session_id and marked_key and session_id != marked_key:
-            return ""
+    if isinstance(marker.get("hits"), dict):
+        return marker
+    marker = _read_json(_RECALL_PATH)
+    marked_key = str(marker.get("session_key") or "")
+    if session_id and marked_key and session_id != marked_key:
+        return {}
+    marker.pop("session_totals", None)
+    return marker
+
+
+def _int(mapping, key) -> int:
+    try:
+        return int(mapping.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _recall_segment(session_id: str) -> str:
+    """What memory did — this turn and over the session — or '' when unknown.
+
+    ``session-context-lookup`` writes the recall marker on every prompt (hits per
+    scope, what the previous turn persisted, and a per-session running total)
+    precisely so the status line can show it without any network call.
+
+    Default rendering, per turn at normal weight and the session total faint::
+
+        · 5 memory hits (3 from past sessions) · 12/40 turns had hits this session
+
+    ``from past sessions`` counts the graph passages not stamped with this
+    session's id (see ``_count_cross_session_hits`` in the lookup hook) —
+    the part of the hit that no amount of scrolling back would have given
+    Claude. It is omitted when zero.
+
+    A session that has not had a single hit yet says so instead of showing a
+    bare ``0/7`` (the graph is usually still filling up)::
+
+        · 0 memory hits · memory warming up (7 turns)
+
+    The per-turn number is the sum over every scope that returned something and
+    was injected (session turns, traces, graph context, agent guidance, code).
+    The per-scope diagnostic strip ``recall 4s/5t/0g/1a · saved 2p/41t/2a`` is
+    still available with ``COGNEE_STATUSLINE_COUNTS=full``; ``false`` hides the
+    segment entirely.
+    """
+    mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
+    if mode in ("0", "false", "no", "off"):
+        return ""
+    marker = _recall_marker(session_id)
     hits = marker.get("hits")
     if not isinstance(hits, dict):
         return ""
+    if mode == "full":
+        return _recall_diagnostic_segment(marker, hits)
 
-    def _n(mapping, key) -> int:
-        try:
-            return int(mapping.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            return 0
+    total = sum(_int(hits, key) for key in hits)
+    out = f" · {_plural(total, 'memory hit')}"
+    # Of those, the ones this conversation could not have produced: graph
+    # passages from earlier sessions (or remembered documents). This is the
+    # plugin's distinctive contribution, so it rides along at normal weight.
+    cross = min(_int(marker, "cross_session_hits"), total)
+    if cross == 1:
+        out += " (1 from a past session)"
+    elif cross > 1:
+        out += f" ({cross} from past sessions)"
 
+    totals = marker.get("session_totals")
+    if isinstance(totals, dict):
+        turns = _int(totals, "turns")
+        with_hits = _int(totals, "turns_with_hits")
+        if turns > 0:
+            if with_hits > 0:
+                cumulative = f"{with_hits}/{turns} turns had hits this session"
+            else:
+                cumulative = f"memory warming up ({_plural(turns, 'turn')})"
+            out += f" \033[2m· {cumulative}\033[0m"
+    return out
+
+
+def _recall_diagnostic_segment(marker: dict, hits: dict) -> str:
+    """The per-scope strip (``COGNEE_STATUSLINE_COUNTS=full``): hits per scope and
+    what the previous turn persisted, faint so it sits below the health glyph and
+    dataset in the visual hierarchy; the reset prevents color bleed."""
     recall = (
-        f"{_n(hits, 'session')}s/{_n(hits, 'trace')}t/"
-        f"{_n(hits, 'graph_context')}g/{_n(hits, 'session_context')}a"
+        f"{_int(hits, 'session')}s/{_int(hits, 'trace')}t/"
+        f"{_int(hits, 'graph_context')}g/{_int(hits, 'session_context')}a"
     )
     saves = marker.get("saves_last_turn")
     if isinstance(saves, dict):
-        saved = f"{_n(saves, 'prompt')}p/{_n(saves, 'trace')}t/{_n(saves, 'answer')}a"
+        saved = f"{_int(saves, 'prompt')}p/{_int(saves, 'trace')}t/{_int(saves, 'answer')}a"
         return f" \033[2m· recall {recall} · saved {saved}\033[0m"
     return f" \033[2m· recall {recall}\033[0m"
 
@@ -700,19 +719,11 @@ def _credits_segment() -> str:
 def _forced_cloud_unconfigured() -> bool:
     """Forced cloud (backend switch) with no URL anywhere: nothing to connect
     to — a definitive misconfiguration this renderer can see directly from
-    env + config.json, without waiting for a hook to record a failed attempt.
+    the environment, without waiting for a hook to record a failed attempt.
     """
     if forced_backend() != "cloud":
         return False
-    if os.environ.get("COGNEE_BASE_URL", "").strip():
-        return False
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and str(data.get("base_url") or "").strip():
-            return False
-    except Exception:
-        pass
-    return True
+    return not os.environ.get("COGNEE_BASE_URL", "").strip()
 
 
 def _status_prefix(session_id: str = "") -> str:
@@ -779,8 +790,8 @@ def main() -> None:
     # mode; the update nudge stays last because it is a transient banner, not part
     # of the steady-state line.
     sys.stdout.write(
-        f"{_pipeline_health_glyph()}{_status_prefix(_session_id)}"
-        f"cognee: {_active_dataset()} · {_mode_label()}"
+        f"{_status_prefix(_session_id)}"
+        f"cognee: {_active_dataset(_session_id)} · {_mode_label()}{_switched_marker(_session_id)}"
         f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
     )
 

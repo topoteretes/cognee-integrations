@@ -88,10 +88,14 @@ class TestRecallBodyMeansWhatWeIntend(unittest.TestCase):
 
     def test_omitting_search_type_is_what_broke_auto_routing(self):
         # Characterizes the old wire format: same request minus the key, parsed
-        # by the same DTO, silently means GRAPH_COMPLETION.
+        # by the same DTO, silently means a *pinned* search type instead of the
+        # query classifier. Which type the DTO defaults to has itself moved
+        # (GRAPH_COMPLETION on 1.4, HYBRID_COMPLETION on 1.5.3); the harm this
+        # test pins is that it is not None — auto-routing and the session fold
+        # are conditional on an explicit null.
         body = _sent_body()
         body.pop("search_type")
-        self.assertEqual(str(self._parse(body).search_type), "SearchType.GRAPH_COMPLETION")
+        self.assertIsNotNone(self._parse(body).search_type)
 
     def test_auto_route_false_still_pins_graph_completion(self):
         dto = self._parse(_sent_body(auto_route=False))

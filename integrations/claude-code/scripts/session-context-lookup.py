@@ -48,6 +48,18 @@ from _plugin_common import (
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
+#: Per-field caps for recall-audit.log lines (characters).
+_AUDIT_PROMPT_CHARS = 2000
+_AUDIT_CONTEXT_CHARS = 4000
+
+
+def _audit_clip(value, limit: int) -> str:
+    """Head of ``value`` for the audit log, marked when clipped."""
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"…[+{len(text) - limit} chars]"
+
 
 def _float_env(name: str, default: float) -> float:
     try:
@@ -93,6 +105,12 @@ def _format_entry(entry: dict) -> str:
         content = str(entry.get("content", "") or entry.get("text", ""))[:TRUNCATE_GRAPH_CTX]
         return f"[agent-guidance]\n{content}"
 
+    if source == "code":
+        # Deterministic code-graph facts (ResponseCodeEntry): `text` is the
+        # normalized renderable field; raw payloads keep full structure.
+        content = str(entry.get("text", "") or entry.get("content", ""))[:TRUNCATE_GRAPH_CTX]
+        return f"[code-graph]\n{content}"
+
     if source == "trace":
         origin = entry.get("origin_function", "?")
         status = entry.get("status", "")
@@ -121,6 +139,29 @@ def _format_entry(entry: dict) -> str:
     return "\n".join(lines)
 
 
+def _count_cross_session_hits(by_source: dict, session_id: str) -> int:
+    """How many injected results came from outside this session.
+
+    The session, trace and agent-guidance scopes are queried by ``session_id``,
+    so everything they return is this session's own. Only the knowledge graph
+    reaches across sessions: the bridge stamps every synced session document
+    with a ``Session ID: <id>`` header (and distilled learnings keep the id in
+    their heading), so a graph passage that does not mention the current id
+    came from an earlier session — or from a ``remember``-ed document, which is
+    knowledge this conversation never produced either. That is the number the
+    status line shows as ``N from past sessions``: what memory contributed that
+    Claude could not have known from this conversation alone.
+    """
+    count = 0
+    for entry in by_source.get("graph_context") or []:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("content", "") or entry.get("text", "") or "")
+        if not session_id or session_id not in text:
+            count += 1
+    return count
+
+
 def _has_entry_content(entry: dict) -> bool:
     """Return True when a recall entry has useful content to inject."""
     source = entry.get("source", "")
@@ -128,6 +169,8 @@ def _has_entry_content(entry: dict) -> bool:
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
+    if source == "code":
+        return bool(str(entry.get("text", "") or entry.get("content", "")).strip())
     if source == "trace":
         fields = ("origin_function", "status", "session_feedback", "method_return_value")
     else:
@@ -170,7 +213,7 @@ async def _recent_trace_fallback(session_id: str, user_id: str, top_k: int) -> l
     return normalized
 
 
-async def _run(prompt: str) -> dict | None:
+async def _run(prompt: str, cwd: str = "") -> dict | None:
     config = load_config()
     runtime = resolve_runtime_mode()
     cloud_mode = runtime["mode"] == "http"
@@ -265,6 +308,29 @@ async def _run(prompt: str) -> dict | None:
         (["session_context"], None, "agent"),
         (["graph"], "HYBRID_COMPLETION", None),
     ]
+    # Additive code-graph lane (cognee >= 1.5.3). Fires only when the prompt
+    # carries an identifier-shaped token AND the cwd sits inside a repo the
+    # user indexed via cognee-index-repo.sh — never on conversational prompts,
+    # never as a replacement for the semantic scopes. The server keeps this
+    # scope explicit-only (scope=auto never implies it), so the gate lives
+    # here. Placed before graph: the code lane is the cheapest call when its
+    # snapshot is warm, and graph is the long pole that must stay last.
+    code_lane = {}
+    try:
+        from _code_graph import auto_code_lane
+
+        code_lane = auto_code_lane(prompt, cwd) or {}
+    except Exception as exc:
+        hook_log("code_lane_gate_error", {"error": str(exc)[:200]})
+    if code_lane:
+        scope_specs.insert(3, (["code"], None, None))
+        hook_log(
+            "code_lane_armed",
+            {
+                "identifier": code_lane.get("identifier", ""),
+                "dataset": code_lane.get("dataset", ""),
+            },
+        )
     if not cloud_mode:
         import cognee
         from cognee.modules.search.types import SearchType
@@ -322,6 +388,11 @@ async def _run(prompt: str) -> dict | None:
             hook_log("recall_budget_exceeded", {"collected": len(results)})
             break
         scope_timeout = min(recall_timeout, remaining)
+        # The code lane searches the indexed repo's own (narrow) dataset with
+        # a structured query; every other scope keeps the session dataset.
+        is_code_scope = bool(code_lane) and scope_list == ["code"]
+        scope_dataset = code_lane["dataset"] if is_code_scope else get_dataset(config)
+        scope_code_query = code_lane["code_query"] if is_code_scope else None
         part = None
         t0 = time.monotonic()
         try:
@@ -334,7 +405,8 @@ async def _run(prompt: str) -> dict | None:
                     only_context=True,
                     search_type=qtype,
                     context_profile=context_profile,
-                    dataset=get_dataset(config),
+                    dataset=scope_dataset,
+                    code_query=scope_code_query,
                     timeout=scope_timeout,
                 )
             else:
@@ -349,6 +421,11 @@ async def _run(prompt: str) -> dict | None:
                         query_type=query_type,
                         user=user,
                         **({"context_profile": context_profile} if context_profile else {}),
+                        **(
+                            {"datasets": [scope_dataset], "code_query": scope_code_query}
+                            if is_code_scope
+                            else {}
+                        ),
                     ),
                     timeout=scope_timeout,
                 )
@@ -362,20 +439,29 @@ async def _run(prompt: str) -> dict | None:
                 verdict = SLOW  # pre-3.11 asyncio.TimeoutError isn't TimeoutError
             else:
                 verdict = classify_transport_exception(exc)
-            if isinstance(exc, _urlerr.HTTPError):
-                scopes_answered_err += 1
-                if exc.code in (401, 403):
-                    auth_rejected = True
-                elif exc.code >= 500:
-                    server_errors += 1
-            elif verdict == SLOW:
-                scope_timeouts += 1
-            elif verdict == DOWN:
-                server_down = True
-            hook_log(
-                "recall_error",
-                {"scope": scope_list, "error": str(exc)[:200], "verdict": verdict},
-            )
+            if isinstance(exc, _urlerr.HTTPError) and exc.code == 404 and scope_list == ["graph"]:
+                # A dataset nobody has written to yet has no graph, and the
+                # server answers the graph scope with 404 (DatasetNotFound)
+                # until the first cognify lands. On a fresh install that is
+                # every prompt of the first session — expected, not an error:
+                # keep it out of recall_error and the health accounting
+                # (scopes_answered_err) so real failures stay visible (SDK-469).
+                hook_log("recall_graph_not_built", {"scope": scope_list, "dataset": scope_dataset})
+            else:
+                if isinstance(exc, _urlerr.HTTPError):
+                    scopes_answered_err += 1
+                    if exc.code in (401, 403):
+                        auth_rejected = True
+                    elif exc.code >= 500:
+                        server_errors += 1
+                elif verdict == SLOW:
+                    scope_timeouts += 1
+                elif verdict == DOWN:
+                    server_down = True
+                hook_log(
+                    "recall_error",
+                    {"scope": scope_list, "error": str(exc)[:200], "verdict": verdict},
+                )
         finally:
             # hits = raw count from this scope's call (pre-bucketing/filtering);
             # elapsed_ms measured around the call, recorded even when it errored.
@@ -478,6 +564,7 @@ async def _run(prompt: str) -> dict | None:
         "trace": [],
         "graph_context": [],
         "session_context": [],
+        "code": [],
     }
     for r in results or []:
         if hasattr(r, "model_dump"):
@@ -507,6 +594,7 @@ async def _run(prompt: str) -> dict | None:
 
     counts = {k: len(v) for k, v in by_source.items()}
     total = sum(counts.values())
+    cross_session_hits = _count_cross_session_hits(by_source, session_id)
 
     # Write last-turn counts so the status line script can render them.
     # Best-effort; failure here must not break the hook output.
@@ -515,19 +603,43 @@ async def _run(prompt: str) -> dict | None:
 
         _state = _Path.home() / ".cognee-plugin" / "claude-code" / "last_recall.json"
         _state.parent.mkdir(parents=True, exist_ok=True)
+        _key = get_session_key()
+        _key_safe = bool(_key) and all(c.isalnum() or c in "._-" for c in _key)
+        _per = _state.parent / "recall" / f"{_key}.json" if _key_safe else None
+        # Session-cumulative counter, carried forward from this session's own
+        # per-session marker: how many prompts this session has seen and on how
+        # many of them memory actually injected something. This is the
+        # "memory fired on 12 of 40 turns" activation number the status line
+        # shows next to the per-turn count — no extra calls, just the turn that
+        # was already counted. Keyed by host session, so /clear starts over and
+        # --resume continues.
+        _totals = {"turns": 0, "turns_with_hits": 0}
+        if _per is not None and _per.exists():
+            try:
+                _prev = json.loads(_per.read_text(encoding="utf-8")).get("session_totals")
+                if isinstance(_prev, dict):
+                    _totals["turns"] = max(0, int(_prev.get("turns", 0) or 0))
+                    _totals["turns_with_hits"] = max(0, int(_prev.get("turns_with_hits", 0) or 0))
+            except Exception:
+                pass
+        _totals["turns"] += 1
+        if total > 0:
+            _totals["turns_with_hits"] += 1
         _payload = json.dumps(
             {
                 "session_id": session_id,
                 # Host session key too: the marker is per-integration, so the
                 # status line needs this to tell "my counts" from another live
                 # session's before rendering them.
-                "session_key": get_session_key(),
+                "session_key": _key,
                 "ts": __import__("datetime")
                 .datetime.now(__import__("datetime").timezone.utc)
                 .isoformat(timespec="seconds"),
                 "hits": counts,
+                "cross_session_hits": cross_session_hits,
                 "per_scope": per_scope,
                 "saves_last_turn": saves_last_turn,
+                "session_totals": _totals,
             }
         )
         # Machine-wide copy: kept because cognee_plugin.py resolves the active
@@ -537,9 +649,7 @@ async def _run(prompt: str) -> dict | None:
         # terminals open the single shared file only ever holds the counts of
         # whoever prompted last, so every other bar would show nothing (or, worse,
         # a neighbour's numbers).
-        _key = get_session_key()
-        if _key and all(c.isalnum() or c in "._-" for c in _key):
-            _per = _state.parent / "recall" / f"{_key}.json"
+        if _per is not None:
             _per.parent.mkdir(parents=True, exist_ok=True)
             _per.write_text(_payload, encoding="utf-8")
     except Exception as exc:
@@ -551,7 +661,9 @@ async def _run(prompt: str) -> dict | None:
     header = (
         "Cognee memory: recall "
         f"{counts['session']} session / {counts['trace']} trace / "
-        f"{counts['graph_context']} graph / {counts['session_context']} agent; saved last turn "
+        f"{counts['graph_context']} graph / {counts['session_context']} agent"
+        + (f" / {counts['code']} code" if code_lane else "")
+        + "; saved last turn "
         f"{saves_last_turn['prompt']} prompt / {saves_last_turn['trace']} trace / "
         f"{saves_last_turn['answer']} answer"
     )
@@ -560,6 +672,11 @@ async def _run(prompt: str) -> dict | None:
     if by_source.get("session_context"):
         section_lines.append("=== Active agent guidance ===")
         for e in by_source["session_context"]:
+            section_lines.append(_format_entry(e))
+            section_lines.append("")
+    if by_source.get("code"):
+        section_lines.append("=== Code graph facts ===")
+        for e in by_source["code"]:
             section_lines.append(_format_entry(e))
             section_lines.append("")
     if by_source.get("graph_context"):
@@ -587,6 +704,7 @@ async def _run(prompt: str) -> dict | None:
             "context_lookup_hit",
             {
                 "counts": counts,
+                "cross_session_hits": cross_session_hits,
                 "per_scope": per_scope,
                 "saves_last_turn": saves_last_turn,
                 "elapsed_ms": elapsed_ms(recall_start),
@@ -628,22 +746,26 @@ async def _run(prompt: str) -> dict | None:
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
+        from _logfiles import append_line as _append_log_line
+
         _audit = _Path.home() / ".cognee-plugin" / "claude-code" / "recall-audit.log"
-        _audit.parent.mkdir(parents=True, exist_ok=True)
-        with _audit.open("a", encoding="utf-8") as fh:
-            fh.write(
-                json.dumps(
-                    {
-                        "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
-                        "session_id": session_id,
-                        "prompt": prompt,
-                        "hits": counts,
-                        "per_scope": per_scope,
-                        "context": full_context,
-                    }
-                )
-                + "\n"
-            )
+        # Full prompt + full injected context per line averaged ~9 KB a turn and
+        # made this the fastest-growing file in the state dir. The audit is for
+        # seeing *what* was recalled, which the head of each field shows; the
+        # complete context still reaches the model via additionalContext.
+        _append_log_line(
+            _audit,
+            json.dumps(
+                {
+                    "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
+                    "session_id": session_id,
+                    "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
+                    "hits": counts,
+                    "per_scope": per_scope,
+                    "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                }
+            ),
+        )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 
@@ -680,11 +802,12 @@ def main():
     prompt = payload.get("prompt", "")
     if not prompt or len(prompt) < 5:
         return
+    cwd = str(payload.get("cwd") or "") or os.getcwd()
 
     output = None
     try:
         with quiet_hook_output("session-context-lookup"):
-            output = asyncio.run(_run(prompt))
+            output = asyncio.run(_run(prompt, cwd))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
     if output:
