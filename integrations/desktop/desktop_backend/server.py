@@ -59,6 +59,11 @@ class ForgetRequest(BaseModel):
     path: str  # an indexed file, or a whole watched root
 
 
+class PauseRequest(BaseModel):
+    path: str
+    paused: bool
+
+
 def create_app(
     settings: Optional[Settings] = None,
     adapter: Any = None,
@@ -205,6 +210,44 @@ def create_app(
             except Exception as exc:
                 detail = f"graph copy kept ({type(exc).__name__})"
         return {"ok": True, "removed": 1, "graph": graph, "detail": detail}
+
+    @app.get("/changes")
+    async def changes(since: float = 0, limit: int = 20) -> dict:
+        """What changed in the shared memory, and by whom — cognee's activity
+        feed (pipeline runs + operation records), filtered to writes newer
+        than ``since``. Backs the change notifications; older servers
+        without the feed yield an empty list."""
+        if not hasattr(adapter, "_request"):
+            return {"changes": []}
+        try:
+            response = await adapter._request(
+                "GET", f"/api/v1/activity/pipeline-runs?limit={max(limit * 3, 60)}"
+            )
+            if response.status_code >= 400:
+                return {"changes": []}
+            payload = response.json()
+            rows = payload if isinstance(payload, list) else payload.get("items", [])
+        except Exception:
+            return {"changes": []}
+        out = []
+        for row in rows:
+            created = _iso_to_unix(str(row.get("created_at", "")))
+            if created <= since:
+                continue
+            name = str(row.get("pipeline_name", "") or row.get("kind", "") or "change")
+            if str(row.get("status", "")).lower() in {"failed", "errored"}:
+                continue
+            out.append(
+                {
+                    "what": name,
+                    "dataset": str(row.get("dataset_name") or ""),
+                    "who": str(row.get("owner_email") or ""),
+                    "at": created,
+                    "status": str(row.get("status", "")),
+                }
+            )
+        out.sort(key=lambda c: c["at"], reverse=True)
+        return {"changes": out[:limit]}
 
     @app.get("/agents")
     async def agents() -> dict:
@@ -444,6 +487,17 @@ def create_app(
         started = indexer.start(request.paths, extensions=request.extensions, label=request.label)
         return {"started": started, "roots": catalog.roots}
 
+    @app.post("/roots/pause")
+    async def pause_root(request: PauseRequest) -> dict:
+        """Pause or resume live sync for one watched root. Paused roots stay
+        searchable but stop picking up changes — connecting a folder is no
+        longer a one-way door."""
+        if request.path not in catalog.roots:
+            return {"ok": False, "detail": "not a watched root"}
+        catalog.set_paused(request.path, request.paused)
+        catalog.save()
+        return {"ok": True, "paused": catalog.paused_roots}
+
     @app.get("/index/status")
     async def index_status() -> dict:
         return {
@@ -451,6 +505,7 @@ def create_app(
             "roots": catalog.roots,
             "root_filters": catalog.root_filters,
             "root_labels": catalog.root_labels,
+            "paused_roots": catalog.paused_roots,
             "indexed_files": len(catalog),
         }
 

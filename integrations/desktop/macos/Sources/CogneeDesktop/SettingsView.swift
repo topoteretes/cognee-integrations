@@ -115,9 +115,11 @@ final class SettingsModel: ObservableObject {
         let scopeLabel = NSTextField(labelWithString: "Label:")
         scopeLabel.font = .systemFont(ofSize: 11)
         scopeLabel.textColor = .secondaryLabelColor
-        let scopePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        scopePopup.addItems(withTitles: ["No label", "Personal", "Work"])
-        let row = NSStackView(views: [filterLabel, filterField, scopeLabel, scopePopup])
+        let scopeBox = NSComboBox(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        scopeBox.addItems(withObjectValues: ["personal", "work"])
+        scopeBox.placeholderString = "no label"
+        scopeBox.completes = true
+        let row = NSStackView(views: [filterLabel, filterField, scopeLabel, scopeBox])
         row.orientation = .horizontal
         row.spacing = 6
         row.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
@@ -130,12 +132,23 @@ final class SettingsModel: ObservableObject {
             .split(whereSeparator: { ", ".contains($0) })
             .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: ". ")) }
             .filter { !$0.isEmpty }
-        let scope = ["", "personal", "work"][max(scopePopup.indexOfSelectedItem, 0)]
+        let scope = scopeBox.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
         startIndex(paths: panel.urls.map(\.path), extensions: extensions, label: scope)
     }
 
     func reindex() {
         startIndex(paths: [])  // empty list = re-run over the roots the backend knows
+    }
+
+    func togglePause(root: String, pause: Bool) {
+        Task {
+            do {
+                try await BackendClient().pauseRoot(path: root, paused: pause)
+                refresh()
+            } catch {
+                statusText = "Could not change sync for \(root)"
+            }
+        }
     }
 
     /// Remove a file or a whole root from the index, after a confirmation
@@ -192,23 +205,6 @@ final class SettingsModel: ObservableObject {
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
 
-    private var skippedSuffix: String {
-        let skipped = model.progress?.skipped ?? 0
-        return skipped > 0 ? " · \(skipped) skipped" : ""
-    }
-
-    /// The done/total counter only tracks the "adding" phase; cognify is one
-    /// long opaque LLM pipeline, so give it words instead of a stuck counter.
-    private func progressLabel(_ p: IndexProgress) -> String {
-        switch p.state {
-        case "scanning": return "scanning folders…"
-        case "adding": return "adding \(p.done)/\(p.total)\(skippedSuffix)"
-        case "cognifying":
-            return "building knowledge graph for \(p.total) files\(skippedSuffix) — this can take a while"
-        default: return p.state
-        }
-    }
-
     var body: some View {
         Form {
             Section("Backend") {
@@ -234,240 +230,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Indexed folders") {
-                let roots = model.progress?.roots ?? []
-                if roots.isEmpty {
-                    Text("Nothing indexed yet. Add a folder to get started.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(roots, id: \.self) { root in
-                    HStack {
-                        Text((root as NSString).abbreviatingWithTildeInPath)
-                            .font(.system(.body, design: .monospaced))
-                        if let scope = model.progress?.root_labels?[root], !scope.isEmpty {
-                            Text(scope)
-                                .font(.system(size: 10, weight: .semibold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(
-                                    (scope == "work" ? Color.blue : Color.green).opacity(0.15),
-                                    in: Capsule()
-                                )
-                                .foregroundStyle(scope == "work" ? Color.blue : Color.green)
-                        }
-                        if let filter = model.progress?.root_filters?[root], !filter.isEmpty {
-                            Text(filter.joined(separator: " "))
-                                .font(.system(size: 10, weight: .semibold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(Color.cognee.opacity(0.12), in: Capsule())
-                                .foregroundStyle(Color.cognee)
-                                .help("Only these types index under this folder")
-                        }
-                        Spacer()
-                        Button {
-                            model.forget(path: root, isRoot: true)
-                        } label: {
-                            Image(systemName: "xmark.circle")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("Stop watching this folder")
-                    }
-                }
-                HStack {
-                    Button("Add Files or Folders…") { model.addPaths() }
-                    Button("Reindex") { model.reindex() }
-                        .disabled(roots.isEmpty)
-                    Spacer()
-                    if let p = model.progress, p.state != "idle" {
-                        if p.state == "error" {
-                            Text("Error: \(p.error)").foregroundStyle(.red).font(.callout)
-                        } else {
-                            ProgressView().controlSize(.small)
-                            Text(progressLabel(p))
-                                .font(.callout).foregroundStyle(.secondary)
-                        }
-                    } else if let p = model.progress, (p.skipped ?? 0) > 0 {
-                        Text("\(p.skipped!) unsupported files skipped")
-                            .font(.callout).foregroundStyle(.orange)
-                            .help(p.last_skip ?? "")
-                    }
-                }
-                Text("Tip: you can also drop files or folders anywhere on this window.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Section("Indexed files") {
-                HStack {
-                    TextField("Filter by name or path…", text: $model.filesFilter)
-                        .textFieldStyle(.roundedBorder)
-                    Text(
-                        model.filesFilter.isEmpty
-                            ? "\(model.filesTotal) files"
-                            : "\(model.filesMatched) of \(model.filesTotal)"
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                }
-                if model.indexedFiles.isEmpty {
-                    Text(model.filesFilter.isEmpty ? "No files indexed yet." : "No matches.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 3) {
-                            ForEach(model.indexedFiles) { file in
-                                HStack(spacing: 7) {
-                                    Image(
-                                        nsImage: NSWorkspace.shared.icon(forFile: file.path)
-                                    )
-                                    .resizable()
-                                    .frame(width: 14, height: 14)
-                                    Text(file.name)
-                                        .font(.system(size: 11.5))
-                                        .lineLimit(1)
-                                    Text(
-                                        (file.path as NSString).abbreviatingWithTildeInPath
-                                    )
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    Spacer(minLength: 0)
-                                    Button {
-                                        model.forget(path: file.path, isRoot: false)
-                                    } label: {
-                                        Image(systemName: "xmark.circle")
-                                            .font(.system(size: 11))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.tertiary)
-                                    .help("Remove from index")
-                                }
-                                .contentShape(Rectangle())
-                                .onTapGesture(count: 2) {
-                                    NSWorkspace.shared.activateFileViewerSelecting(
-                                        [URL(fileURLWithPath: file.path)])
-                                }
-                                .help("Double-click to reveal in Finder")
-                            }
-                        }
-                    }
-                    .frame(height: 150)
-                }
-            }
-
-            Section("Connections") {
-                if model.connections.isEmpty {
-                    Text("No data sources configured.").foregroundStyle(.secondary)
-                }
-                ForEach(model.connections) { connection in
-                    HStack(spacing: 9) {
-                        Image(systemName: connection.icon)
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.cognee)
-                            .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 1) {
-                            HStack(spacing: 6) {
-                                Text(connection.label)
-                                    .font(.system(size: 12.5, weight: .medium))
-                                Circle()
-                                    .fill(connection.ok == true ? Color.green : Color.orange)
-                                    .frame(width: 6, height: 6)
-                            }
-                            Text(
-                                (connection.scope ?? []).map {
-                                    ($0 as NSString).abbreviatingWithTildeInPath
-                                }.joined(separator: " · ")
-                            )
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        }
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 1) {
-                            if let count = connection.count {
-                                Text("\(count) item\(count == 1 ? "" : "s")")
-                                    .font(.system(size: 11))
-                            }
-                            Text(connection.lastSyncText)
-                                .font(.system(size: 10))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .padding(.vertical, 1)
-                }
-                Text(
-                    "Sources are configured in the backend's env file for now — Slack (SLACK_TOKEN), Google Drive (GDRIVE_ACCESS_TOKEN), GitHub (GITHUB_REPOS)."
-                )
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            }
-
-            Section("Connected agents") {
-                ForEach(model.plugins) { plugin in
-                    HStack(spacing: 9) {
-                        Image(systemName: "key.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.cognee)
-                            .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 1) {
-                            HStack(spacing: 6) {
-                                Text(plugin.label)
-                                    .font(.system(size: 12.5, weight: .medium))
-                                Circle().fill(Color.green).frame(width: 6, height: 6)
-                            }
-                            Text("own identity (\(plugin.source))")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 1)
-                }
-                if model.agents.isEmpty, model.plugins.isEmpty {
-                    Text("No coding agents connected. Claude Code and Codex sessions using the cognee plugin appear here.")
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                }
-                ForEach(model.agents.prefix(6)) { agent in
-                    HStack(spacing: 9) {
-                        Image(systemName: "cpu")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.cognee)
-                            .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 1) {
-                            HStack(spacing: 6) {
-                                Text(agent.label)
-                                    .font(.system(size: 12.5, weight: .medium))
-                                Circle()
-                                    .fill(agent.status == "active" ? Color.green : Color.gray)
-                                    .frame(width: 6, height: 6)
-                            }
-                            Text(agent.datasets.isEmpty
-                                ? agent.session
-                                : "writes to " + agent.datasets.joined(separator: ", "))
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        Spacer()
-                        Text(agent.lastActiveText)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.vertical, 1)
-                }
-                if model.agents.count > 6 {
-                    Text("… and \(model.agents.count - 6) more sessions")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
             Section("Finder") {
                 Toggle(
                     "Right-click files → “Index in Cognee”",
@@ -488,23 +250,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 700)
+        .frame(width: 500, height: 420)
         .onAppear { model.refresh() }
-        // Drag files/folders from Finder anywhere onto the window to index them.
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            Task { @MainActor in
-                var paths: [String] = []
-                for provider in providers {
-                    if let data = try? await provider.loadItem(
-                        forTypeIdentifier: "public.file-url", options: nil) as? Data,
-                        let url = URL(dataRepresentation: data, relativeTo: nil)
-                    {
-                        paths.append(url.path)
-                    }
-                }
-                if !paths.isEmpty { model.startIndex(paths: paths) }
-            }
-            return true
-        }
     }
 }

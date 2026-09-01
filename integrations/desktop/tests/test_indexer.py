@@ -82,3 +82,14 @@ def test_walk_skips_symlinks_escaping_the_root(tmp_path):
     found = {p.name for p in discover_files([str(root)], settings)}
     assert "mine.md" in found and "alias.md" in found
     assert "secret.md" not in found and "escape.md" not in found
+
+
+def test_double_suffix_files_match_the_extension_filter(tmp_path):
+    """A 'report.docx.pdf' IS a pdf — the filter must catch it."""
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "report.docx.pdf").write_bytes(b"%PDF fake")
+    (root / "notes.docx").write_bytes(b"PK fake")
+    settings = Settings()
+    found = {p.name for p in discover_files([str(root)], settings, {str(root): [".pdf"]})}
+    assert found == {"report.docx.pdf"}

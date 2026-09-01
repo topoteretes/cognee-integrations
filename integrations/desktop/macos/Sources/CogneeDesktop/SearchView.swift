@@ -458,17 +458,44 @@ struct SearchView: View {
     }
 
     private var hintBar: some View {
-        HStack(spacing: 16) {
-            hint("↩", "Open")
+        HStack(spacing: 14) {
+            modeChips
+            hint("↩", model.primaryAsk ? "Ask" : "Open")
             hint("⌘↩", "Reveal")
-            hint("⇧↩", "Ask")
+            hint(model.primaryAsk ? "↓↩" : "⇧↩", model.primaryAsk ? "Open" : "Ask")
             hint("⌘S", "Share")
-            hint("⌘⇧S", "Share with note…")
             Spacer()
             hint("esc", "Close")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 8)
+    }
+
+    /// The primary-action switch: what plain Return does. Click or ⇥ flips.
+    private var modeChips: some View {
+        HStack(spacing: 2) {
+            modeChip("✦ Ask", active: model.primaryAsk)
+            modeChip("⌘ Files", active: !model.primaryAsk)
+        }
+        .padding(2)
+        .background(.quaternary.opacity(0.4), in: Capsule())
+        .help("What Return does — click or press ⇥ to switch")
+    }
+
+    private func modeChip(_ title: String, active: Bool) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: active ? .semibold : .regular))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                active ? AnyShapeStyle(Color.cognee.opacity(0.25)) : AnyShapeStyle(.clear),
+                in: Capsule()
+            )
+            .foregroundStyle(active ? Color.primary : Color.secondary)
+            .contentShape(Capsule())
+            .onTapGesture {
+                if active == false { model.togglePrimaryMode() }
+            }
     }
 
     private func hint(_ key: String, _ label: String) -> some View {
@@ -610,11 +637,8 @@ private struct ResultRow: View {
                             .font(.system(size: 9, weight: .semibold))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1.5)
-                            .background(
-                                (scope == "work" ? Color.blue : Color.green).opacity(0.14),
-                                in: Capsule()
-                            )
-                            .foregroundStyle(scope == "work" ? Color.blue : Color.green)
+                            .background(MemoryLabel.color(scope).opacity(0.14), in: Capsule())
+                            .foregroundStyle(MemoryLabel.color(scope))
                     }
                 }
                 if !result.snippet.isEmpty {
