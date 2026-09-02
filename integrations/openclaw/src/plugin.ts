@@ -1494,13 +1494,17 @@ const memoryCogneePlugin = {
     // Memory steer: one static system-prompt line asserting Cognee as the
     // preferred long-term memory and naming the memory tools (claude-code's
     // COGNEE_PREFER_MEMORY equivalent). Goes into appendSystemContext so
-    // providers cache it; skipped on harness-noise turns. before_agent_start
+    // providers cache it; skipped on harness-noise turns. before_prompt_build
     // is a prompt-injection hook — `openclaw cognee setup` grants
-    // allowPromptInjection (it defaults to allowed anyway).
+    // allowPromptInjection (it defaults to allowed anyway). Registered as its
+    // own handler (OpenClaw concatenates system-context from every
+    // before_prompt_build result) rather than on before_agent_start, which
+    // was deprecated in 2026.7 and removed from the plugin hook API in
+    // 2026.9.1-beta.1.
     // ------------------------------------------------------------------
 
     if (cfg.memorySteer) {
-      api.on("before_agent_start", (event, ctx) => {
+      api.on("before_prompt_build", (event, ctx) => {
         if (event.prompt && isNoisePrompt(event.prompt, ctx)) return;
         return { appendSystemContext: cfg.memorySteerText };
       });
