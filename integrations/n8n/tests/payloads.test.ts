@@ -5,6 +5,7 @@ import {
   buildForgetPayload,
   buildRecallPayload,
   buildRememberEntryPayload,
+  parseGraphModel,
   simplifyRecallResult,
 } from '../nodes/Cognee/payloads';
 
@@ -246,5 +247,27 @@ describe('buildForgetPayload', () => {
   it('refuses to forget everything without explicit confirmation', () => {
     expect(() => buildForgetPayload({ mode: 'everything' })).toThrow(/Enable the confirmation toggle/);
     expect(buildForgetPayload({ mode: 'everything', confirmEverything: true })).toEqual({ everything: true });
+  });
+});
+
+describe('parseGraphModel', () => {
+  it('returns undefined for empty input', () => {
+    expect(parseGraphModel(undefined)).toBeUndefined();
+    expect(parseGraphModel('')).toBeUndefined();
+    expect(parseGraphModel('  {}  ')).toBeUndefined();
+    expect(parseGraphModel({})).toBeUndefined();
+  });
+
+  it('parses a JSON string or passes an object through', () => {
+    const model = { title: 'CompanyGraph', type: 'object', properties: {} };
+    expect(parseGraphModel(JSON.stringify(model))).toEqual(model);
+    expect(parseGraphModel(model)).toEqual(model);
+  });
+
+  it('rejects invalid JSON, non-objects and a missing title', () => {
+    expect(() => parseGraphModel('{bad')).toThrow(/Graph Model must be valid JSON/);
+    expect(() => parseGraphModel('[1]')).toThrow(/must be a JSON object/);
+    expect(() => parseGraphModel('{"type": "object"}')).toThrow(/top-level "title"/);
+    expect(() => parseGraphModel({ title: '' })).toThrow(/top-level "title"/);
   });
 });

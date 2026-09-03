@@ -27,6 +27,7 @@ import {
   buildForgetPayload,
   buildRecallPayload,
   buildRememberEntryPayload,
+  parseGraphModel,
   simplifyRecallResult,
 } from './payloads';
 import type { ForgetMode, MemoryEntryType, RecallOptions } from './payloads';
@@ -98,10 +99,13 @@ export async function buildRememberBody(
   const datasetName = this.getNodeParameter('rememberDatasetName') as string;
   const additional = this.getNodeParameter('rememberAdditionalFields', {}) as {
     chunkSize?: number;
+    chunksPerBatch?: number;
     customPrompt?: string;
     datasetId?: string;
     fileNamePrefix?: string;
+    graphModel?: unknown;
     nodeSet?: string[];
+    ontologyKeys?: string[];
     runInBackground?: boolean;
     sessionId?: string;
   };
@@ -153,6 +157,14 @@ export async function buildRememberBody(
   if (typeof additional.chunkSize === 'number' && additional.chunkSize > 0) {
     parts.push({ name: 'chunk_size', value: String(Math.floor(additional.chunkSize)) });
   }
+  if (typeof additional.chunksPerBatch === 'number' && additional.chunksPerBatch > 0) {
+    parts.push({ name: 'chunks_per_batch', value: String(Math.floor(additional.chunksPerBatch)) });
+  }
+  for (const key of additional.ontologyKeys ?? []) {
+    if (key && key.trim()) parts.push({ name: 'ontology_key', value: key.trim() });
+  }
+  const graphModel = withNodeError(this, () => parseGraphModel(additional.graphModel));
+  if (graphModel) parts.push({ name: 'graph_model', value: JSON.stringify(graphModel) });
 
   const boundary = createMultipartBoundary();
   requestOptions.body = encodeMultipart(parts, boundary);
@@ -160,6 +172,24 @@ export async function buildRememberBody(
     ...requestOptions.headers,
     'Content-Type': multipartContentType(boundary),
   };
+  return requestOptions;
+}
+
+/**
+ * preSend hook for Cognify: the Graph Model option arrives as a JSON string
+ * from the field routing; parse and validate it so the API receives an object.
+ */
+export async function parseCognifyGraphModel(
+  this: IExecuteSingleFunctions,
+  requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+  const body = (requestOptions.body ?? {}) as Record<string, unknown>;
+  if ('graph_model' in body) {
+    const graphModel = withNodeError(this, () => parseGraphModel(body.graph_model));
+    if (graphModel) body.graph_model = graphModel;
+    else delete body.graph_model;
+    requestOptions.body = body;
+  }
   return requestOptions;
 }
 
@@ -468,6 +498,9 @@ export class Cognee implements INodeType {
                   'Content-Type': 'application/json',
                 },
                 timeout: 600000, // 10 minutes
+              },
+              send: {
+                preSend: [parseCognifyGraphModel],
               },
             },
           },
@@ -1132,6 +1165,23 @@ export class Cognee implements INodeType {
             },
           },
           {
+            displayName: 'Chunks Per Batch',
+            name: 'chunksPerBatch',
+            type: 'number',
+            typeOptions: {
+              minValue: 1,
+            },
+            default: 36,
+            description: 'Number of chunks processed per cognify task batch. Controls parallelism; rarely needs changing.',
+            routing: {
+              request: {
+                body: {
+                  chunks_per_batch: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
             displayName: 'Custom Prompt',
             name: 'customPrompt',
             type: 'string',
@@ -1150,6 +1200,23 @@ export class Cognee implements INodeType {
             },
           },
           {
+            displayName: 'Data Per Batch',
+            name: 'dataPerBatch',
+            type: 'number',
+            typeOptions: {
+              minValue: 1,
+            },
+            default: 1,
+            description: 'Maximum number of data items processed concurrently within a dataset',
+            routing: {
+              request: {
+                body: {
+                  data_per_batch: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
             displayName: 'Dataset IDs',
             name: 'datasetIds',
             type: 'string',
@@ -1163,6 +1230,21 @@ export class Cognee implements INodeType {
               request: {
                 body: {
                   dataset_ids: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Graph Model (JSON)',
+            name: 'graphModel',
+            type: 'json',
+            default: '',
+            description:
+              'JSON schema of the graph to extract, e.g. {"title": "CompanyGraph", "type": "object", "properties": {...}}. Must include a top-level "title". Leave empty for the default KnowledgeGraph model.',
+            routing: {
+              request: {
+                body: {
+                  graph_model: '={{$value}}',
                 },
               },
             },
@@ -1308,6 +1390,25 @@ export class Cognee implements INodeType {
           },
         },
         options: [
+          {
+            displayName: 'Context Format',
+            name: 'contextFormat',
+            type: 'options',
+            options: [
+              { name: 'Context', value: 'context' },
+              { name: 'Prompt', value: 'prompt' },
+            ],
+            default: 'context',
+            description:
+              'Only Context mode. Context returns the bare retrieval context; Prompt returns the full envelope a completion would receive.',
+            routing: {
+              request: {
+                body: {
+                  context_format: '={{$value}}',
+                },
+              },
+            },
+          },
           {
             displayName: 'Dataset IDs',
             name: 'datasetIds',
@@ -2047,6 +2148,16 @@ export class Cognee implements INodeType {
             description: 'Maximum tokens per text chunk during graph building',
           },
           {
+            displayName: 'Chunks Per Batch',
+            name: 'chunksPerBatch',
+            type: 'number',
+            typeOptions: {
+              minValue: 1,
+            },
+            default: 36,
+            description: 'Number of chunks processed per cognify task batch. Controls parallelism; rarely needs changing.',
+          },
+          {
             displayName: 'Custom Prompt',
             name: 'customPrompt',
             type: 'string',
@@ -2071,6 +2182,14 @@ export class Cognee implements INodeType {
             description: 'Text mode only. Item N is uploaded as PREFIX-N.txt; Cognee uses the file name as the data item name.',
           },
           {
+            displayName: 'Graph Model (JSON)',
+            name: 'graphModel',
+            type: 'json',
+            default: '',
+            description:
+              'JSON schema of the graph to extract, e.g. {"title": "CompanyGraph", "type": "object", "properties": {...}}. Must include a top-level "title". Leave empty for the default KnowledgeGraph model; a restrictive schema can produce an empty graph.',
+          },
+          {
             displayName: 'Node Set',
             name: 'nodeSet',
             type: 'string',
@@ -2079,6 +2198,16 @@ export class Cognee implements INodeType {
             },
             default: [],
             description: 'Tag the memory with named node sets (e.g. per-agent or per-project groups) so Recall can be restricted to them',
+          },
+          {
+            displayName: 'Ontology Keys',
+            name: 'ontologyKeys',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description: 'Keys of previously uploaded ontologies (see /api/v1/ontologies) used to ground entity extraction',
           },
           {
             displayName: 'Run in Background',

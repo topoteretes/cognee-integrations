@@ -320,3 +320,32 @@ export function buildForgetPayload(params: ForgetParams): Record<string, unknown
   if (params.memoryOnly) payload.memory_only = true;
   return payload;
 }
+
+// ---------------------------------------------------------------------------
+// Graph model (shared by Remember and Cognify)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a user-supplied graph model schema. Accepts an object or a JSON
+ * string and returns the parsed object. Cognee requires a top-level "title"
+ * key and rejects anything else with a 400, so check it here for a clearer
+ * message. Returns undefined for empty input.
+ */
+export function parseGraphModel(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) return undefined;
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === '{}') return undefined;
+    parsed = parseJsonField(trimmed, 'Graph Model');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Graph Model must be a JSON object');
+  }
+  const model = parsed as Record<string, unknown>;
+  if (Object.keys(model).length === 0) return undefined;
+  if (typeof model.title !== 'string' || !model.title.trim()) {
+    throw new Error('Graph Model must include a top-level "title" string');
+  }
+  return model;
+}

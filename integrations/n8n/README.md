@@ -62,7 +62,7 @@ The memory-oriented API. **Remember** is the one-call path (add + cognify); **Re
 
 - **Operation: Remember** — `POST /api/v1/remember` (multipart/form-data)
   - Fields: Input Type (Text or Binary File), Text (multiple) or Input Binary Field, Dataset Name
-  - Additional Fields: Dataset ID, Session ID, Node Set, Run in Background, Custom Prompt, Chunk Size, File Name Prefix
+  - Additional Fields: Dataset ID, Session ID, Node Set, Run in Background, Custom Prompt, Chunk Size, Chunks Per Batch, Ontology Keys, Graph Model (JSON schema with a top-level `title`), File Name Prefix
   - Text items are uploaded as `memory-N.txt` file parts; a binary input keeps its original file name and MIME type (PDF, DOCX, ...). Returns `status`, `dataset_id`, `pipeline_run_id` and per-file `items`.
 - **Operation: Remember Entry** — `POST /api/v1/remember/entry`
   - Fields: Entry Type (Question and Answer / Trace / Feedback), Session ID, Dataset Name, plus the type's fields (Question + Answer; Origin Function + Status; QA ID)
@@ -118,7 +118,7 @@ The node builds the multipart body itself (no extra dependencies): one `data` fi
 - **Fields**:
   - Datasets (`datasets`, required, multiple): One or more dataset names to cognify
   - Run in Background (`run_in_background`): Return immediately with a `pipeline_run_id`; poll `GET /api/v1/datasets/status` for completion
-  - Additional Options: Dataset IDs (`dataset_ids`), Custom Prompt (`custom_prompt`), Chunk Size (`chunk_size`), Ontology Keys (`ontology_key`)
+  - Additional Options: Dataset IDs (`dataset_ids`), Custom Prompt (`custom_prompt`), Chunk Size (`chunk_size`), Chunks Per Batch (`chunks_per_batch`), Data Per Batch (`data_per_batch`), Ontology Keys (`ontology_key`), Graph Model (`graph_model`, JSON schema with a top-level `title`)
 
 Example body sent by the node:
 
@@ -138,7 +138,7 @@ Example body sent by the node:
   - Datasets (`datasets`, required, multiple): Dataset names (resolve only to datasets you own)
   - Query (`query`, required)
   - Top K (`top_k`, optional number): Defaults to 10
-  - Additional Options: Dataset IDs (`dataset_ids`, for shared datasets), System Prompt (`system_prompt`), Only Context (`only_context`), Node Sets (`node_name`), Session ID (`session_id`), Include References (`include_references`), Verbose (`verbose`)
+  - Additional Options: Dataset IDs (`dataset_ids`, for shared datasets), System Prompt (`system_prompt`), Only Context (`only_context`), Context Format (`context_format`), Node Sets (`node_name`), Session ID (`session_id`), Include References (`include_references`), Verbose (`verbose`)
 
 Example body sent by the node:
 

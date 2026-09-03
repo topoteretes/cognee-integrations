@@ -6,6 +6,7 @@ import {
   buildRecallBody,
   buildRememberBody,
   buildRememberEntryBody,
+  parseCognifyGraphModel,
   simplifyRecallOutput,
 } from '../nodes/Cognee/Cognee.node';
 
@@ -99,6 +100,60 @@ describe('buildRememberBody', () => {
         { url: '/v1/remember' },
       ),
     ).rejects.toThrow(/at least one non-empty text item/);
+  });
+});
+
+describe('buildRememberBody graph-building options', () => {
+  it('forwards chunks_per_batch, ontology keys and a validated graph model', async () => {
+    const model = { title: 'PeopleGraph', type: 'object', properties: {} };
+    const ctx = fakeContext({
+      rememberInputType: 'text',
+      rememberText: 'Ada met Charles.',
+      rememberDatasetName: 'facts',
+      rememberAdditionalFields: {
+        chunksPerBatch: 12.9,
+        ontologyKeys: ['people-v1', ' ', 'orgs'],
+        graphModel: JSON.stringify(model),
+      },
+    });
+    const form = await parseMultipart(await buildRememberBody.call(ctx, { url: '/v1/remember' }));
+    expect(form.get('chunks_per_batch')).toBe('12');
+    expect(form.getAll('ontology_key')).toEqual(['people-v1', 'orgs']);
+    expect(JSON.parse(String(form.get('graph_model')))).toEqual(model);
+  });
+
+  it('rejects a graph model without a title', async () => {
+    const ctx = fakeContext({
+      rememberInputType: 'text',
+      rememberText: 't',
+      rememberDatasetName: 'd',
+      rememberAdditionalFields: { graphModel: '{"type": "object"}' },
+    });
+    await expect(buildRememberBody.call(ctx, { url: '/v1/remember' })).rejects.toThrow(/top-level "title"/);
+  });
+});
+
+describe('parseCognifyGraphModel', () => {
+  it('parses the routed graph_model string into an object and drops it when empty', async () => {
+    const parsed = await parseCognifyGraphModel.call(fakeContext({}), {
+      url: '/v1/cognify',
+      body: { datasets: ['d'], graph_model: '{"title": "G", "type": "object"}' },
+    });
+    expect(parsed.body).toEqual({ datasets: ['d'], graph_model: { title: 'G', type: 'object' } });
+
+    const dropped = await parseCognifyGraphModel.call(fakeContext({}), {
+      url: '/v1/cognify',
+      body: { datasets: ['d'], graph_model: '' },
+    });
+    expect(dropped.body).toEqual({ datasets: ['d'] });
+  });
+
+  it('leaves bodies without graph_model untouched and rejects invalid schemas', async () => {
+    const untouched = await parseCognifyGraphModel.call(fakeContext({}), { url: '/v1/cognify', body: { datasets: ['d'] } });
+    expect(untouched.body).toEqual({ datasets: ['d'] });
+    await expect(
+      parseCognifyGraphModel.call(fakeContext({}), { url: '/v1/cognify', body: { graph_model: '{"no": "title"}' } }),
+    ).rejects.toThrow(/top-level "title"/);
   });
 });
 
