@@ -1,4 +1,5 @@
 import {
+  IAuthenticateGeneric,
   ICredentialType,
   INodeProperties,
   ICredentialTestRequest,
@@ -32,6 +33,17 @@ export class CogneeApi implements ICredentialType {
         'Your Cognee API key, sent in the `X-Api-Key` header for authentication.',
     },
   ];
+
+  // Attach the API key to every request made with this credential, including
+  // loadOptions lookups that run outside the node's declarative routing.
+  authenticate: IAuthenticateGeneric = {
+    type: 'generic',
+    properties: {
+      headers: {
+        'X-Api-Key': '={{$credentials.apiKey}}',
+      },
+    },
+  };
 
   // Test the credential by making a simple API request
   test: ICredentialTestRequest = {

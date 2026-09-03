@@ -2,13 +2,20 @@ import type {
   IDataObject,
   IExecuteSingleFunctions,
   IHttpRequestOptions,
+  ILoadOptionsFunctions,
   IN8nHttpFullResponse,
   INodeExecutionData,
+  INodePropertyOptions,
   INodeType,
   INodeTypeDescription,
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
-import { parseReviewJson, unwrapSearchAnswer } from './helpers';
+import {
+  datasetsToOptions,
+  flattenStatusMap,
+  parseReviewJson,
+  unwrapSearchAnswer,
+} from './helpers';
 import {
   buildTextIngestionParts,
   createMultipartBoundary,
@@ -245,6 +252,72 @@ export async function buildForgetBody(
 }
 
 /**
+ * preSend hook for Memory → Update: PATCH /v1/update (multipart). Replaces one
+ * existing data item with new text or a binary file; data_id and dataset_id
+ * travel as query parameters set by the field routing.
+ */
+export async function buildUpdateBody(
+  this: IExecuteSingleFunctions,
+  requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+  const inputType = this.getNodeParameter('updateInputType', 'text') as string;
+  const additional = this.getNodeParameter('updateAdditionalFields', {}) as {
+    fileName?: string;
+    nodeSet?: string[];
+  };
+  const parts: MultipartPart[] = [];
+
+  if (inputType === 'binary') {
+    const propertyName = (this.getNodeParameter('updateBinaryProperty', 'data') as string) || 'data';
+    const binary = this.getInputData().binary?.[propertyName];
+    if (!binary) {
+      throw new NodeOperationError(
+        this.getNode(),
+        `No binary data found in property "${propertyName}" on the input item`,
+      );
+    }
+    parts.push({
+      name: 'data',
+      filename: additional.fileName?.trim() || binary.fileName || `${propertyName}.bin`,
+      contentType: binary.mimeType || 'application/octet-stream',
+      data: await this.helpers.getBinaryDataBuffer(propertyName),
+    });
+  } else {
+    const text = this.getNodeParameter('updateText', '') as string;
+    if (!text || !text.trim()) {
+      throw new NodeOperationError(this.getNode(), 'Provide the new text for the data item');
+    }
+    parts.push({
+      name: 'data',
+      filename: additional.fileName?.trim() || 'update.txt',
+      contentType: 'text/plain; charset=utf-8',
+      data: Buffer.from(text, 'utf8'),
+    });
+  }
+
+  for (const nodeSet of additional.nodeSet ?? []) {
+    if (nodeSet && nodeSet.trim()) parts.push({ name: 'node_set', value: nodeSet.trim() });
+  }
+
+  const boundary = createMultipartBoundary();
+  requestOptions.body = encodeMultipart(parts, boundary);
+  requestOptions.headers = {
+    ...requestOptions.headers,
+    'Content-Type': multipartContentType(boundary),
+  };
+  return requestOptions;
+}
+
+/** postReceive hook for Dataset → Get Status / Get Progress: one item per dataset. */
+export async function flattenStatusOutput(
+  this: IExecuteSingleFunctions,
+  _items: INodeExecutionData[],
+  response: IN8nHttpFullResponse,
+): Promise<INodeExecutionData[]> {
+  return flattenStatusMap(response.body).map((row) => ({ json: row as IDataObject }));
+}
+
+/**
  * postReceive transform for the Review Skill operation: turns the raw search
  * response into a flat item exposing { score, missing_instruction,
  * result_summary, dimensions, review } so the workflow's IF gate can branch on
@@ -280,6 +353,22 @@ async function parseReviewScore(
 }
 
 export class Cognee implements INodeType {
+  methods = {
+    loadOptions: {
+      /** Dataset dropdown: names shown, UUIDs stored. Backed by GET /v1/datasets. */
+      async getDatasets(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+        const credentials = await this.getCredentials('cogneeApi');
+        const baseUrl = String(credentials.baseUrl ?? '').replace(/\/+$/, '');
+        const datasets = await this.helpers.httpRequestWithAuthentication.call(this, 'cogneeApi', {
+          method: 'GET',
+          url: `${baseUrl}/api/v1/datasets`,
+          json: true,
+        });
+        return datasetsToOptions(datasets);
+      },
+    },
+  };
+
   description: INodeTypeDescription = {
     displayName: 'Cognee',
     name: 'cognee',
@@ -316,9 +405,11 @@ export class Cognee implements INodeType {
         options: [
           { name: 'Add Data', value: 'addData' },
           { name: 'Cognify', value: 'cognify' },
+          { name: 'Dataset', value: 'dataset' },
           { name: 'Delete', value: 'delete' },
           { name: 'Memory', value: 'memory' },
           { name: 'Search', value: 'search' },
+          { name: 'Session', value: 'session' },
           { name: 'Skill', value: 'skill' },
         ],
         default: 'memory',
@@ -373,6 +464,23 @@ export class Cognee implements INodeType {
               request: {
                 method: 'POST',
                 url: '/v1/cognify',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                timeout: 600000, // 10 minutes
+              },
+            },
+          },
+          {
+            name: 'Memify',
+            value: 'memify',
+            action: 'Enrich an existing dataset graph with memify',
+            description:
+              'Run Cognee enrichment tasks over an existing dataset graph (or over custom data with custom extraction/enrichment tasks)',
+            routing: {
+              request: {
+                method: 'POST',
+                url: '/v1/memify',
                 headers: {
                   'Content-Type': 'application/json',
                 },
@@ -509,6 +617,32 @@ export class Cognee implements INodeType {
                   },
                 },
                 timeout: 300000, // 5 minutes
+              },
+            },
+          },
+          {
+            name: 'Delete Skill',
+            value: 'deleteSkill',
+            action: 'Delete a skill from a dataset',
+            description: 'Delete one skill (graph node and embeddings) from a dataset',
+            routing: {
+              request: {
+                method: 'DELETE',
+                url: '=/v1/skills/{{$parameter["skillId"]}}',
+                timeout: 60000, // 1 minute
+              },
+            },
+          },
+          {
+            name: 'Get Many',
+            value: 'getMany',
+            action: 'Get many skills',
+            description: 'List the skills ingested into a dataset',
+            routing: {
+              request: {
+                method: 'GET',
+                url: '/v1/skills/',
+                timeout: 60000, // 1 minute
               },
             },
           },
@@ -699,8 +833,163 @@ export class Cognee implements INodeType {
               },
             },
           },
+          {
+            name: 'Update',
+            value: 'update',
+            action: 'Replace a remembered data item',
+            description:
+              'Replace an existing data item with new text or a file; the old version is deleted and the new one is ingested into the graph',
+            routing: {
+              request: {
+                method: 'PATCH',
+                url: '/v1/update',
+                timeout: 600000, // 10 minutes
+              },
+              send: {
+                preSend: [buildUpdateBody],
+              },
+            },
+          },
         ],
         default: 'remember',
+      },
+      {
+        displayName: 'Operation',
+        name: 'operation',
+        type: 'options',
+        noDataExpression: true,
+        displayOptions: {
+          show: {
+            resource: ['dataset'],
+          },
+        },
+        options: [
+          {
+            name: 'Create',
+            value: 'create',
+            action: 'Create a dataset',
+            description: 'Create a dataset by name (returns the existing one if the name is already taken)',
+            routing: {
+              request: {
+                method: 'POST',
+                url: '/v1/datasets',
+                headers: { 'Content-Type': 'application/json' },
+                timeout: 60000, // 1 minute
+              },
+            },
+          },
+          {
+            name: 'Get Data Items',
+            value: 'getData',
+            action: 'Get the data items of a dataset',
+            description: 'List the documents/files stored in a dataset, including their UUIDs for Forget, Update and Delete Data',
+            routing: {
+              request: {
+                method: 'GET',
+                url: '=/v1/datasets/{{$parameter["datasetResourceId"]}}/data',
+                timeout: 60000, // 1 minute
+              },
+            },
+          },
+          {
+            name: 'Get Many',
+            value: 'getMany',
+            action: 'Get many datasets',
+            description: 'List the datasets you have access to',
+            routing: {
+              request: {
+                method: 'GET',
+                url: '/v1/datasets',
+                timeout: 60000, // 1 minute
+              },
+            },
+          },
+          {
+            name: 'Get Progress',
+            value: 'getProgress',
+            action: 'Get dataset processing progress',
+            description: 'Pipeline status together with in-flight progress (files completed / total, current stage), one item per dataset',
+            routing: {
+              request: {
+                method: 'GET',
+                url: '/v1/datasets/status/progress',
+                arrayFormat: 'repeat',
+                timeout: 60000, // 1 minute
+              },
+              output: {
+                postReceive: [flattenStatusOutput],
+              },
+            },
+          },
+          {
+            name: 'Get Status',
+            value: 'getStatus',
+            action: 'Get dataset processing status',
+            description: 'Pipeline status per dataset (pending, running, completed, failed). Use it to poll after Run in Background.',
+            routing: {
+              request: {
+                method: 'GET',
+                url: '/v1/datasets/status',
+                arrayFormat: 'repeat',
+                timeout: 60000, // 1 minute
+              },
+              output: {
+                postReceive: [flattenStatusOutput],
+              },
+            },
+          },
+        ],
+        default: 'getMany',
+      },
+      {
+        displayName: 'Operation',
+        name: 'operation',
+        type: 'options',
+        noDataExpression: true,
+        displayOptions: {
+          show: {
+            resource: ['session'],
+          },
+        },
+        options: [
+          {
+            name: 'Get',
+            value: 'get',
+            action: 'Get a session',
+            description: 'Get one session with its Q&A and trace entries, usage and cost',
+            routing: {
+              request: {
+                method: 'GET',
+                url: '=/v1/sessions/{{$parameter["sessionResourceId"]}}',
+                timeout: 60000, // 1 minute
+              },
+            },
+          },
+          {
+            name: 'Get Many',
+            value: 'getMany',
+            action: 'Get many sessions',
+            description: 'List sessions with activity, status and cost, newest first',
+            routing: {
+              request: {
+                method: 'GET',
+                url: '/v1/sessions',
+                timeout: 60000, // 1 minute
+              },
+              output: {
+                postReceive: [
+                  {
+                    type: 'rootProperty',
+                    properties: {
+                      property: 'sessions',
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        default: 'getMany',
       },
       // Add action fields
       {
@@ -1135,12 +1424,15 @@ export class Cognee implements INodeType {
       },
       // Delete action fields
       {
-        displayName: 'Dataset ID',
+        displayName: 'Dataset Name or ID',
         name: 'datasetId',
-        type: 'string',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getDatasets',
+        },
         default: '',
         required: true,
-        description: 'The unique identifier (UUID) of the dataset',
+        description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
         displayOptions: {
           show: {
             resource: ['delete'],
@@ -1160,6 +1452,513 @@ export class Cognee implements INodeType {
             operation: ['deleteData'],
           },
         },
+      },
+      // Cognify → Memify fields
+      {
+        displayName: 'Dataset Name',
+        name: 'memifyDatasetName',
+        type: 'string',
+        default: '',
+        description: 'Name of the dataset whose graph to enrich. Required unless a Dataset ID is given in Additional Options.',
+        displayOptions: {
+          show: {
+            resource: ['cognify'],
+            operation: ['memify'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              dataset_name: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Run in Background',
+        name: 'memifyRunInBackground',
+        type: 'boolean',
+        default: false,
+        description: 'Whether to return immediately with pipeline metadata while enrichment continues server-side. Poll Dataset → Get Status to track completion.',
+        displayOptions: {
+          show: {
+            resource: ['cognify'],
+            operation: ['memify'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              run_in_background: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Additional Options',
+        name: 'memifyAdditionalOptions',
+        type: 'collection',
+        placeholder: 'Add Option',
+        default: {},
+        displayOptions: {
+          show: {
+            resource: ['cognify'],
+            operation: ['memify'],
+          },
+        },
+        options: [
+          {
+            displayName: 'Data',
+            name: 'data',
+            type: 'string',
+            typeOptions: {
+              rows: 4,
+            },
+            default: '',
+            description: 'Custom text data forwarded to the first extraction task instead of reading the existing graph',
+            routing: {
+              request: {
+                body: {
+                  data: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Dataset Name or ID',
+            name: 'datasetId',
+            type: 'options',
+            typeOptions: {
+              loadOptionsMethod: 'getDatasets',
+            },
+            default: '',
+            description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+            routing: {
+              request: {
+                body: {
+                  dataset_id: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Enrichment Tasks',
+            name: 'enrichmentTasks',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description: 'Names of built-in Cognee tasks that enrich the extracted graph. Leave empty for the default enrichment.',
+            routing: {
+              request: {
+                body: {
+                  enrichment_tasks: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Extraction Tasks',
+            name: 'extractionTasks',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description: 'Names of built-in Cognee tasks that extract graph/data. Leave empty for the default extraction.',
+            routing: {
+              request: {
+                body: {
+                  extraction_tasks: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Node Sets',
+            name: 'nodeName',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description: 'Restrict enrichment to these node sets (used when no custom Data is provided)',
+            routing: {
+              request: {
+                body: {
+                  node_name: '={{$value}}',
+                },
+              },
+            },
+          },
+        ],
+      },
+      // Dataset fields
+      {
+        displayName: 'Name',
+        name: 'datasetCreateName',
+        type: 'string',
+        default: '',
+        required: true,
+        description: 'Name of the dataset to create',
+        displayOptions: {
+          show: {
+            resource: ['dataset'],
+            operation: ['create'],
+          },
+        },
+        routing: {
+          request: {
+            body: {
+              name: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Dataset Name or ID',
+        name: 'datasetResourceId',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getDatasets',
+        },
+        default: '',
+        required: true,
+        description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+        displayOptions: {
+          show: {
+            resource: ['dataset'],
+            operation: ['getData'],
+          },
+        },
+      },
+      {
+        displayName: 'Dataset Names or IDs',
+        name: 'statusDatasetIds',
+        type: 'multiOptions',
+        typeOptions: {
+          loadOptionsMethod: 'getDatasets',
+        },
+        default: [],
+        description: 'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+        hint: 'Leave empty to report on every dataset you can read',
+        displayOptions: {
+          show: {
+            resource: ['dataset'],
+            operation: ['getStatus', 'getProgress'],
+          },
+        },
+        routing: {
+          request: {
+            qs: {
+              dataset: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Pipelines',
+        name: 'statusPipelines',
+        type: 'multiOptions',
+        options: [
+          { name: 'Add Pipeline', value: 'add_pipeline' },
+          { name: 'Code Graph Pipeline', value: 'code_graph_pipeline' },
+          { name: 'Cognify Pipeline', value: 'cognify_pipeline' },
+        ],
+        default: [],
+        description: 'Pipelines to report on. Leave empty for the cognify pipeline only; pick several to get one item per dataset and pipeline.',
+        displayOptions: {
+          show: {
+            resource: ['dataset'],
+            operation: ['getStatus', 'getProgress'],
+          },
+        },
+        routing: {
+          request: {
+            qs: {
+              pipeline: '={{$value}}',
+            },
+          },
+        },
+      },
+      // Session fields
+      {
+        displayName: 'Session ID',
+        name: 'sessionResourceId',
+        type: 'string',
+        default: '',
+        required: true,
+        description: 'The client-supplied session identifier, the same value used as Session ID in Remember and Remember Entry',
+        displayOptions: {
+          show: {
+            resource: ['session'],
+            operation: ['get'],
+          },
+        },
+      },
+      {
+        displayName: 'Time Range',
+        name: 'sessionRange',
+        type: 'options',
+        options: [
+          { name: 'All Time', value: 'all' },
+          { name: 'Last 7 Days', value: '7d' },
+          { name: 'Last 24 Hours', value: '24h' },
+          { name: 'Last 30 Days', value: '30d' },
+        ],
+        default: '7d',
+        description: 'Time window filtered on the session\'s last activity',
+        displayOptions: {
+          show: {
+            resource: ['session'],
+            operation: ['getMany'],
+          },
+        },
+        routing: {
+          request: {
+            qs: {
+              range: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Limit',
+        name: 'sessionLimit',
+        type: 'number',
+        typeOptions: {
+          minValue: 1,
+        },
+        default: 50,
+        description: 'Max number of results to return',
+        displayOptions: {
+          show: {
+            resource: ['session'],
+            operation: ['getMany'],
+          },
+        },
+        routing: {
+          request: {
+            qs: {
+              limit: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Options',
+        name: 'sessionListOptions',
+        type: 'collection',
+        placeholder: 'Add Option',
+        default: {},
+        displayOptions: {
+          show: {
+            resource: ['session'],
+            operation: ['getMany'],
+          },
+        },
+        options: [
+          {
+            displayName: 'Descending',
+            name: 'descending',
+            type: 'boolean',
+            default: true,
+            description: 'Whether to sort descending (newest or largest first)',
+            routing: {
+              request: {
+                qs: {
+                  descending: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Offset',
+            name: 'offset',
+            type: 'number',
+            typeOptions: {
+              minValue: 0,
+            },
+            default: 0,
+            description: 'Rows to skip for pagination',
+            routing: {
+              request: {
+                qs: {
+                  offset: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Order By',
+            name: 'orderBy',
+            type: 'options',
+            options: [
+              { name: 'Cost (USD)', value: 'cost_usd' },
+              { name: 'Ended At', value: 'ended_at' },
+              { name: 'Last Activity At', value: 'last_activity_at' },
+              { name: 'Started At', value: 'started_at' },
+            ],
+            default: 'last_activity_at',
+            description: 'Column to sort by',
+            routing: {
+              request: {
+                qs: {
+                  order_by: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Status',
+            name: 'status',
+            type: 'options',
+            options: [
+              { name: 'Abandoned', value: 'abandoned' },
+              { name: 'Completed', value: 'completed' },
+              { name: 'Failed', value: 'failed' },
+              { name: 'Running', value: 'running' },
+            ],
+            default: 'running',
+            description: 'Filter by effective status. Abandoned means a running session with no recent activity.',
+            routing: {
+              request: {
+                qs: {
+                  status: '={{$value}}',
+                },
+              },
+            },
+          },
+        ],
+      },
+      // Memory → Update fields
+      {
+        displayName: 'Dataset Name or ID',
+        name: 'updateDatasetId',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getDatasets',
+        },
+        default: '',
+        required: true,
+        description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['update'],
+          },
+        },
+        routing: {
+          request: {
+            qs: {
+              dataset_id: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Data ID',
+        name: 'updateDataId',
+        type: 'string',
+        default: '',
+        required: true,
+        description: 'UUID of the data item to replace (see Dataset → Get Data Items)',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['update'],
+          },
+        },
+        routing: {
+          request: {
+            qs: {
+              data_id: '={{$value}}',
+            },
+          },
+        },
+      },
+      {
+        displayName: 'Input Type',
+        name: 'updateInputType',
+        type: 'options',
+        options: [
+          { name: 'Binary File', value: 'binary' },
+          { name: 'Text', value: 'text' },
+        ],
+        default: 'text',
+        description: 'Whether the replacement is text entered here or a binary file from the input item',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['update'],
+          },
+        },
+      },
+      {
+        displayName: 'Text',
+        name: 'updateText',
+        type: 'string',
+        typeOptions: {
+          rows: 4,
+        },
+        default: '',
+        required: true,
+        description: 'New content of the data item',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['update'],
+            updateInputType: ['text'],
+          },
+        },
+      },
+      {
+        displayName: 'Input Binary Field',
+        name: 'updateBinaryProperty',
+        type: 'string',
+        default: 'data',
+        required: true,
+        description: 'Name of the binary property on the input item that holds the replacement file',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['update'],
+            updateInputType: ['binary'],
+          },
+        },
+      },
+      {
+        displayName: 'Update Fields',
+        name: 'updateAdditionalFields',
+        type: 'collection',
+        placeholder: 'Add Field',
+        default: {},
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['update'],
+          },
+        },
+        options: [
+          {
+            displayName: 'File Name',
+            name: 'fileName',
+            type: 'string',
+            default: '',
+            description: 'File name to upload the replacement under. Defaults to the binary file name, or update.txt for text.',
+          },
+          {
+            displayName: 'Node Set',
+            name: 'nodeSet',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description: 'Node sets to tag the replacement with',
+          },
+        ],
       },
       // Memory → Remember fields
       {
@@ -1773,12 +2572,15 @@ export class Cognee implements INodeType {
         },
       },
       {
-        displayName: 'Dataset ID',
+        displayName: 'Dataset Name or ID',
         name: 'forgetDatasetId',
-        type: 'string',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getDatasets',
+        },
         default: '',
         required: true,
-        description: 'UUID of the dataset',
+        description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
         displayOptions: {
           show: {
             resource: ['memory'],
@@ -2008,25 +2810,28 @@ export class Cognee implements INodeType {
         type: 'string',
         default: '',
         required: true,
-        description: 'The skill identifier returned by Get Skill / list',
+        description: 'The skill identifier returned by Get Many / Get Skill',
         displayOptions: {
           show: {
             resource: ['skill'],
-            operation: ['getSkill'],
+            operation: ['getSkill', 'deleteSkill'],
           },
         },
       },
       {
-        displayName: 'Dataset ID',
+        displayName: 'Dataset Name or ID',
         name: 'getDatasetId',
-        type: 'string',
+        type: 'options',
+        typeOptions: {
+          loadOptionsMethod: 'getDatasets',
+        },
         default: '',
         required: true,
-        description: 'UUID of the dataset the skill/proposal is scoped to (returned by Ingest Skill)',
+        description: 'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
         displayOptions: {
           show: {
             resource: ['skill'],
-            operation: ['getSkill', 'getProposal'],
+            operation: ['getSkill', 'getProposal', 'getMany', 'deleteSkill'],
           },
         },
         routing: {
@@ -2036,6 +2841,69 @@ export class Cognee implements INodeType {
             },
           },
         },
+      },
+      {
+        displayName: 'Options',
+        name: 'skillListOptions',
+        type: 'collection',
+        placeholder: 'Add Option',
+        default: {},
+        displayOptions: {
+          show: {
+            resource: ['skill'],
+            operation: ['getMany'],
+          },
+        },
+        options: [
+          {
+            displayName: 'Include Inactive',
+            name: 'includeInactive',
+            type: 'boolean',
+            default: false,
+            description: 'Whether to include skills whose is_active flag is false',
+            routing: {
+              request: {
+                qs: {
+                  include_inactive: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Limit',
+            name: 'limit',
+            type: 'number',
+            typeOptions: {
+              minValue: 1,
+            },
+            default: 50,
+            description: 'Max number of results to return',
+            routing: {
+              request: {
+                qs: {
+                  limit: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Offset',
+            name: 'offset',
+            type: 'number',
+            typeOptions: {
+              minValue: 0,
+            },
+            default: 0,
+            description: 'Number of skills to skip',
+            routing: {
+              request: {
+                qs: {
+                  offset: '={{$value}}',
+                },
+              },
+            },
+          },
+        ],
       },
     ],
   };

@@ -90,3 +90,69 @@ export function parseReviewJson(text: string): Record<string, unknown> {
   return {};
 }
 
+
+/** Shape of one entry returned by GET /v1/datasets. */
+export interface DatasetSummary {
+  id: string;
+  name: string;
+  created_at?: string;
+  updated_at?: string | null;
+  owner_id?: string;
+}
+
+/**
+ * Turn the dataset list into n8n dropdown options (name shown, UUID as
+ * value), sorted by name. Tolerates unexpected shapes by skipping entries
+ * without an id.
+ */
+export function datasetsToOptions(
+  datasets: unknown,
+): Array<{ name: string; value: string; description?: string }> {
+  if (!Array.isArray(datasets)) return [];
+  return datasets
+    .filter(
+      (dataset): dataset is DatasetSummary =>
+        !!dataset && typeof dataset === 'object' && typeof (dataset as DatasetSummary).id === 'string',
+    )
+    .map((dataset) => ({
+      name: dataset.name || dataset.id,
+      value: dataset.id,
+      description: dataset.id,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Flatten the GET /v1/datasets/status and /status/progress responses into one
+ * row per dataset (and per pipeline when several pipelines were requested).
+ *
+ * Accepted shapes:
+ *   { datasetId: "completed" }
+ *   { datasetId: { status: "running", progress: {...} } }
+ *   { datasetId: { cognify_pipeline: "completed", add_pipeline: {...} } }
+ */
+export function flattenStatusMap(body: unknown): Array<Record<string, unknown>> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return [];
+  const rows: Array<Record<string, unknown>> = [];
+
+  for (const [datasetId, value] of Object.entries(body as Record<string, unknown>)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      if ('status' in record) {
+        rows.push({ dataset_id: datasetId, ...record });
+        continue;
+      }
+      for (const [pipeline, pipelineValue] of Object.entries(record)) {
+        if (pipelineValue && typeof pipelineValue === 'object' && !Array.isArray(pipelineValue)) {
+          rows.push({ dataset_id: datasetId, pipeline, ...(pipelineValue as Record<string, unknown>) });
+        } else {
+          rows.push({ dataset_id: datasetId, pipeline, status: pipelineValue });
+        }
+      }
+      continue;
+    }
+    rows.push({ dataset_id: datasetId, status: value });
+  }
+
+  return rows;
+}
