@@ -50,80 +50,73 @@ Create credentials of type `Cognee API` in n8n. The node uses these values to au
 
 ## Operations
 
-The node exposes five resources. Each operation maps to a Cognee API endpoint.
-
-> **Two API surfaces.** The **Add Data / Cognify / Search / Delete** resources call Cognee Cloud's `/api/*` endpoints. The **Skill** resource (self-improving loop) calls the `/api/v1/*` endpoints — available on a self-hosted cognee server today, and on Cognee Cloud as its `/api/v1` surface rolls out. Point the credential **Base URL** at whichever backend exposes the routes you need (e.g. `http://localhost:8000` for a self-hosted server). The connection test hits `GET /health`.
+The node exposes five resources. Each operation maps to a Cognee `/api/v1` endpoint, the same API served by Cognee Cloud tenants and by a self-hosted cognee server (e.g. `http://localhost:8000`). Point the credential **Base URL** at whichever backend you use. The connection test hits `GET /health`.
 
 ### Resource: Add Data
 
 - **Operation**: Add
-- **Endpoint**: `POST /api/add_text`
+- **Endpoint**: `POST /api/v1/add` (multipart/form-data)
 - **Fields**:
-  - Dataset Name (`datasetName`, required): Name of the Cognee dataset to add text to
-  - Text Data (`textData`, required, multiple): Array of strings to store
+  - Dataset Name (`datasetName`, required): Name of the Cognee dataset to add text to (created if it does not exist)
+  - Text Data (`textData`, required, multiple): Strings to store. Each item is uploaded as its own `text-N.txt` file part.
+  - Additional Fields: Node Set (`node_set`, multiple) to tag the data for filtered search; Run in Background (`run_in_background`) to return immediately with a `pipeline_run_id`
 
-Example body sent by the node:
-
-```json
-{
-  "datasetName": "support_docs",
-  "textData": [
-    "FAQ: Reset password via account settings.",
-    "Guide: Export data as CSV from dashboard."
-  ]
-}
-```
+The node builds the multipart body itself (no extra dependencies): one `data` file part per text item plus the `datasetName` and optional form fields.
 
 ### Resource: Cognify
 
 - **Operation**: Cognify
-- **Endpoint**: `POST /api/cognify`
+- **Endpoint**: `POST /api/v1/cognify`
 - **Fields**:
   - Datasets (`datasets`, required, multiple): One or more dataset names to cognify
+  - Run in Background (`run_in_background`): Return immediately with a `pipeline_run_id`; poll `GET /api/v1/datasets/status` for completion
+  - Additional Options: Dataset IDs (`dataset_ids`), Custom Prompt (`custom_prompt`), Chunk Size (`chunk_size`), Ontology Keys (`ontology_key`)
 
 Example body sent by the node:
 
 ```json
 {
-  "datasets": ["support_docs"]
+  "datasets": ["support_docs"],
+  "run_in_background": false
 }
 ```
 
 ### Resource: Search
 
 - **Operation**: Search
-- **Endpoint**: `POST /api/search`
+- **Endpoint**: `POST /api/v1/search`
 - **Fields**:
-  - Search Type (`searchType`): One of `GRAPH_COMPLETION`, `GRAPH_COMPLETION_COT`, `RAG_COMPLETION`
-  - Datasets (`datasets`, required, multiple)
+  - Search Type (`search_type`): Any Cognee search type, e.g. `GRAPH_COMPLETION` (default), `HYBRID_COMPLETION`, `GRAPH_COMPLETION_COT`, `RAG_COMPLETION`, `CHUNKS`, `SUMMARIES`, `TEMPORAL`, `FEELING_LUCKY`, `CODE`, `AGENTIC_COMPLETION`
+  - Datasets (`datasets`, required, multiple): Dataset names (resolve only to datasets you own)
   - Query (`query`, required)
-  - Top K (`topK`, optional number): Defaults to 10
+  - Top K (`top_k`, optional number): Defaults to 10
+  - Additional Options: Dataset IDs (`dataset_ids`, for shared datasets), System Prompt (`system_prompt`), Only Context (`only_context`), Node Sets (`node_name`), Session ID (`session_id`), Include References (`include_references`), Verbose (`verbose`)
 
 Example body sent by the node:
 
 ```json
 {
-  "searchType": "GRAPH_COMPLETION",
+  "search_type": "GRAPH_COMPLETION",
   "datasets": ["support_docs"],
   "query": "How do I export my data?",
-  "topK": 5
+  "top_k": 5
 }
 ```
 
 ### Resource: Delete
 
 - **Operation**: Delete Dataset
-- **Endpoint**: `DELETE /api/datasets/{datasetId}`
+- **Endpoint**: `DELETE /api/v1/datasets/{datasetId}`
 - **Fields**:
   - Dataset ID (`datasetId`, required): The UUID of the dataset to delete
 
 - **Operation**: Delete Data
-- **Endpoint**: `DELETE /api/datasets/{datasetId}/data/{dataId}`
+- **Endpoint**: `DELETE /api/v1/datasets/{datasetId}/data/{dataId}`
 - **Fields**:
   - Dataset ID (`datasetId`, required): The UUID of the dataset
   - Data ID (`dataId`, required): The UUID of the data item to remove
 
-### Resource: Skill (`/api/v1`)
+### Resource: Skill
 
 The self-improving skill loop. A weak run becomes a reviewable, approvable edit to a skill's instructions.
 
@@ -187,6 +180,8 @@ The node depends on `n8n-workflow` at runtime (peer dependency). It should work 
 - [Package homepage](https://github.com/topoteretes/cognee-n8n)
 
 ## Version history
+
+- **Unreleased**: Move Add Data, Cognify, Search and Delete to the `/api/v1` endpoints (the legacy `/api/add_text`, `/api/cognify`, `/api/search` routes are no longer served). Add Data now uploads text as multipart file parts and gains Node Set / Run in Background. Search exposes all Cognee search types plus Dataset IDs, System Prompt, Only Context, Node Sets, Session ID, Include References and Verbose. Cognify gains Dataset IDs, Custom Prompt, Chunk Size and Ontology Keys. Icons now have light/dark variants; toolchain upgraded to `@n8n/node-cli` 0.46 with vitest unit tests.
 
 - **0.5.0**: Add the **Skill** resource (self-improving skill loop) targeting the `/api/v1` API: Ingest Skill, Review Skill (agentic), Propose Improvement, Apply Improvement, Get Skill, Get Proposal. Existing Add/Cognify/Search/Delete operations are unchanged.
 

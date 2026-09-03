@@ -1,12 +1,55 @@
 import type {
   IExecuteSingleFunctions,
+  IHttpRequestOptions,
   IN8nHttpFullResponse,
   INodeExecutionData,
   INodeType,
   INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeConnectionTypes } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import { parseReviewJson, unwrapSearchAnswer } from './helpers';
+import {
+  buildTextIngestionParts,
+  createMultipartBoundary,
+  encodeMultipart,
+  multipartContentType,
+} from './multipart';
+
+/**
+ * preSend hook for Add Data: POST /v1/add only accepts content as uploaded
+ * files, so each text item is encoded as a multipart file part together with
+ * the dataset and optional fields. Replaces the JSON body n8n would send.
+ */
+export async function buildAddDataBody(
+  this: IExecuteSingleFunctions,
+  requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+  const rawText = this.getNodeParameter('textData', []) as string | string[];
+  const texts = Array.isArray(rawText) ? rawText : [rawText];
+  const additional = this.getNodeParameter('addAdditionalFields', {}) as {
+    nodeSet?: string[];
+    runInBackground?: boolean;
+  };
+
+  const parts = buildTextIngestionParts({
+    texts,
+    datasetName: this.getNodeParameter('datasetName') as string,
+    nodeSet: additional.nodeSet,
+    runInBackground: additional.runInBackground,
+  });
+
+  if (!parts.some((part) => 'filename' in part)) {
+    throw new NodeOperationError(this.getNode(), 'Provide at least one non-empty Text Data item');
+  }
+
+  const boundary = createMultipartBoundary();
+  requestOptions.body = encodeMultipart(parts, boundary);
+  requestOptions.headers = {
+    ...requestOptions.headers,
+    'Content-Type': multipartContentType(boundary),
+  };
+  return requestOptions;
+}
 
 /**
  * postReceive transform for the Review Skill operation: turns the raw search
@@ -52,7 +95,7 @@ export class Cognee implements INodeType {
     usableAsTool: true,
     version: 1,
     subtitle: '={{$parameter["resource"] + ": " + $parameter["operation"]}}',
-    description: 'Add text data to a Cognee dataset, build a knowledge graph, search Cognee memory, manage datasets, and run the self-improving skill loop (ingest, review, propose, apply)',
+    description: 'Add text data to a Cognee dataset, build a knowledge graph, search Cognee memory, delete datasets or data items, and run the self-improving skill loop (ingest, review, propose, apply) via the Cognee /api/v1 API',
     defaults: {
       name: 'Cognee',
     },
@@ -105,11 +148,11 @@ export class Cognee implements INodeType {
             routing: {
               request: {
                 method: 'POST',
-                url: '/add_text',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
+                url: '/v1/add',
                 timeout: 300000, // 5 minutes
+              },
+              send: {
+                preSend: [buildAddDataBody],
               },
             },
           },
@@ -135,7 +178,7 @@ export class Cognee implements INodeType {
             routing: {
               request: {
                 method: 'POST',
-                url: '/cognify',
+                url: '/v1/cognify',
                 headers: {
                   'Content-Type': 'application/json',
                 },
@@ -165,7 +208,7 @@ export class Cognee implements INodeType {
             routing: {
               request: {
                 method: 'POST',
-                url: '/search',
+                url: '/v1/search',
                 headers: {
                   'Content-Type': 'application/json',
                 },
@@ -195,7 +238,7 @@ export class Cognee implements INodeType {
             routing: {
               request: {
                 method: 'DELETE',
-                url: '=/datasets/{{$parameter["datasetId"]}}',
+                url: '=/v1/datasets/{{$parameter["datasetId"]}}',
                 timeout: 300000, // 5 minutes
               },
               output: {
@@ -218,7 +261,7 @@ export class Cognee implements INodeType {
             routing: {
               request: {
                 method: 'DELETE',
-                url: '=/datasets/{{$parameter["datasetId"]}}/data/{{$parameter["dataId"]}}',
+                url: '=/v1/datasets/{{$parameter["datasetId"]}}/data/{{$parameter["dataId"]}}',
                 timeout: 300000, // 5 minutes
               },
               output: {
@@ -384,18 +427,11 @@ export class Cognee implements INodeType {
         type: 'string',
         default: '',
         required: true,
-        description: 'Name of the cognee dataset that textData will be added to',
+        description: 'Name of the Cognee dataset the text will be added to (created if it does not exist)',
         displayOptions: {
           show: {
             resource: ['addData'],
             operation: ['add'],
-          },
-        },
-        routing: {
-          request: {
-            body: {
-              datasetName: '={{$value}}',
-            },
           },
         },
       },
@@ -408,20 +444,47 @@ export class Cognee implements INodeType {
         },
         default: [],
         required: true,
-        description: 'The text content to store in the cognee dataset',
+        description: 'The text content to store in the Cognee dataset. Each item is uploaded as its own text file.',
         displayOptions: {
           show: {
             resource: ['addData'],
             operation: ['add'],
           },
         },
-        routing: {
-          request: {
-            body: {
-              textData: '={{$value}}',
-            },
+      },
+      {
+        displayName: 'Additional Fields',
+        name: 'addAdditionalFields',
+        type: 'collection',
+        placeholder: 'Add Field',
+        default: {},
+        displayOptions: {
+          show: {
+            resource: ['addData'],
+            operation: ['add'],
           },
         },
+        options: [
+          {
+            displayName: 'Node Set',
+            name: 'nodeSet',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description:
+              'Tag the ingested data with named node sets (e.g. per-agent or per-project groups). Search and Recall can later be restricted to them.',
+          },
+          {
+            displayName: 'Run in Background',
+            name: 'runInBackground',
+            type: 'boolean',
+            default: false,
+            description:
+              'Whether to return immediately with a pipeline_run_id while ingestion continues server-side. Poll GET /api/v1/datasets/status to track completion.',
+          },
+        ],
       },
       // Cognify action fields
       {
@@ -464,10 +527,94 @@ export class Cognee implements INodeType {
         routing: {
           request: {
             body: {
-              runInBackground: '={{$value}}',
+              run_in_background: '={{$value}}',
             },
           },
         },
+      },
+      {
+        displayName: 'Additional Options',
+        name: 'cognifyAdditionalOptions',
+        type: 'collection',
+        placeholder: 'Add Option',
+        default: {},
+        displayOptions: {
+          show: {
+            resource: ['cognify'],
+            operation: ['cognify'],
+          },
+        },
+        options: [
+          {
+            displayName: 'Chunk Size',
+            name: 'chunkSize',
+            type: 'number',
+            default: 4096,
+            description:
+              'Maximum tokens per text chunk during graph building. Larger chunks give more context per extraction; smaller chunks give finer-grained extraction at higher LLM cost.',
+            routing: {
+              request: {
+                body: {
+                  chunk_size: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Custom Prompt',
+            name: 'customPrompt',
+            type: 'string',
+            typeOptions: {
+              rows: 4,
+            },
+            default: '',
+            description:
+              'Replaces the default entity-extraction prompt. Use it to steer which entities and relationships get extracted.',
+            routing: {
+              request: {
+                body: {
+                  custom_prompt: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Dataset IDs',
+            name: 'datasetIds',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description:
+              'Dataset UUIDs to cognify. Required for datasets shared with you; names only resolve to datasets you own.',
+            routing: {
+              request: {
+                body: {
+                  dataset_ids: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Ontology Keys',
+            name: 'ontologyKeys',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description:
+              'Keys of previously uploaded ontologies (see /api/v1/ontologies) used to ground entity extraction',
+            routing: {
+              request: {
+                body: {
+                  ontology_key: '={{$value}}',
+                },
+              },
+            },
+          },
+        ],
       },
       // Search action fields
       {
@@ -475,12 +622,29 @@ export class Cognee implements INodeType {
         name: 'searchType',
         type: 'options',
         options: [
-          { name: 'GraphCompletion', value: 'GRAPH_COMPLETION' },
-          { name: 'ChainOfThought', value: 'GRAPH_COMPLETION_COT' },
-          { name: 'RagCompletion', value: 'RAG_COMPLETION' },
+          { name: 'Agentic Completion', value: 'AGENTIC_COMPLETION' },
+          { name: 'Chain of Thought', value: 'GRAPH_COMPLETION_COT' },
+          { name: 'Chunks', value: 'CHUNKS' },
+          { name: 'Chunks (Lexical)', value: 'CHUNKS_LEXICAL' },
+          { name: 'Code', value: 'CODE' },
+          { name: 'Coding Rules', value: 'CODING_RULES' },
+          { name: 'Cypher', value: 'CYPHER' },
+          { name: 'Feeling Lucky', value: 'FEELING_LUCKY' },
+          { name: 'Graph Completion', value: 'GRAPH_COMPLETION' },
+          { name: 'Graph Completion (Context Extension)', value: 'GRAPH_COMPLETION_CONTEXT_EXTENSION' },
+          { name: 'Graph Completion (Decomposition)', value: 'GRAPH_COMPLETION_DECOMPOSITION' },
+          { name: 'Graph Report', value: 'GRAPH_REPORT' },
+          { name: 'Graph Summary Completion', value: 'GRAPH_SUMMARY_COMPLETION' },
+          { name: 'Hybrid Completion', value: 'HYBRID_COMPLETION' },
+          { name: 'Natural Language', value: 'NATURAL_LANGUAGE' },
+          { name: 'RAG Completion', value: 'RAG_COMPLETION' },
+          { name: 'Summaries', value: 'SUMMARIES' },
+          { name: 'Temporal', value: 'TEMPORAL' },
+          { name: 'Triplet Completion', value: 'TRIPLET_COMPLETION' },
         ],
         default: 'GRAPH_COMPLETION',
-        description: 'Selection of search types to query the cognee memory engine',
+        description:
+          'Retrieval strategy. Completion types return an LLM answer grounded in memory; Chunks, Summaries and Code return raw retrieval results.',
         displayOptions: {
           show: {
             resource: ['search'],
@@ -490,7 +654,7 @@ export class Cognee implements INodeType {
         routing: {
           request: {
             body: {
-              searchType: '={{$value}}',
+              search_type: '={{$value}}',
             },
           },
         },
@@ -504,7 +668,7 @@ export class Cognee implements INodeType {
         },
         default: [],
         required: true,
-        description: 'Datasets to search in the cognee memory engine',
+        description: 'Dataset names to search. Names only resolve to datasets you own; use Dataset IDs for shared datasets.',
         displayOptions: {
           show: {
             resource: ['search'],
@@ -555,10 +719,137 @@ export class Cognee implements INodeType {
         routing: {
           request: {
             body: {
-              topK: '={{$value}}',
+              top_k: '={{$value}}',
             },
           },
         },
+      },
+      {
+        displayName: 'Additional Options',
+        name: 'searchAdditionalOptions',
+        type: 'collection',
+        placeholder: 'Add Option',
+        default: {},
+        displayOptions: {
+          show: {
+            resource: ['search'],
+            operation: ['search'],
+          },
+        },
+        options: [
+          {
+            displayName: 'Dataset IDs',
+            name: 'datasetIds',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description:
+              'Dataset UUIDs to search. Required for datasets shared with you. When set, the Datasets names are ignored.',
+            routing: {
+              request: {
+                body: {
+                  dataset_ids: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Include References',
+            name: 'includeReferences',
+            type: 'boolean',
+            default: false,
+            description: 'Whether to attach source/provenance references to completion results',
+            routing: {
+              request: {
+                body: {
+                  include_references: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Node Sets',
+            name: 'nodeName',
+            type: 'string',
+            typeOptions: {
+              multipleValues: true,
+            },
+            default: [],
+            description:
+              'Restrict results to these node sets (the Node Set values used when adding data)',
+            routing: {
+              request: {
+                body: {
+                  node_name: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Only Context',
+            name: 'onlyContext',
+            type: 'boolean',
+            default: false,
+            description:
+              'Whether to return only the retrieved context Cognee would send to the LLM, skipping the completion step',
+            routing: {
+              request: {
+                body: {
+                  only_context: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Session ID',
+            name: 'sessionId',
+            type: 'string',
+            default: '',
+            description:
+              'Session whose history and guidance feed the completion. Omit to use the default session.',
+            routing: {
+              request: {
+                body: {
+                  session_id: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'System Prompt',
+            name: 'systemPrompt',
+            type: 'string',
+            typeOptions: {
+              rows: 3,
+            },
+            default: '',
+            description: 'System prompt used by completion-type searches',
+            routing: {
+              request: {
+                body: {
+                  system_prompt: '={{$value}}',
+                },
+              },
+            },
+          },
+          {
+            displayName: 'Verbose',
+            name: 'verbose',
+            type: 'boolean',
+            default: false,
+            description:
+              'Whether to return detailed result information, including the graph representation when available',
+            routing: {
+              request: {
+                body: {
+                  verbose: '={{$value}}',
+                },
+              },
+            },
+          },
+        ],
       },
       // Delete action fields
       {
