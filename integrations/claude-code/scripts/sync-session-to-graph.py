@@ -333,9 +333,12 @@ async def _sync(
                 return
 
             incomplete: list[str] = []
+            # The final (strict) sync must always run; a manual /cognee-sync too.
+            # Only the idle and auto triggers honour the improve cooldown.
+            trigger = "final" if strict else "manual"
             if api_mode:
                 for sid, ds in targets:
-                    wrote = run_session_improve(ds, sid)
+                    wrote = run_session_improve(ds, sid, trigger=trigger)
                     if not wrote:
                         incomplete.append(f"{ds}:{sid}")
                     hook_log(
@@ -365,7 +368,7 @@ async def _sync(
             user = await resolve_user(user_id)
             for sid, ds in targets:
                 await ensure_dataset_ready(ds, user)
-                result = await improve_session_local(ds, sid, user)
+                result = await improve_session_local(ds, sid, user, trigger=trigger)
                 if not result.get("ok"):
                     incomplete.append(f"{ds}:{sid}")
                 hook_log(

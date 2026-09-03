@@ -104,7 +104,7 @@ def test_run_session_improve_skips_when_claim_is_held(pc, monkeypatch):
     monkeypatch.setattr(
         pc,
         "_run_session_improve_locked",
-        lambda ds, sid: called.append((ds, sid)) or True,
+        lambda ds, sid, **kw: called.append((ds, sid)) or True,
     )
 
     assert pc.run_session_improve("ds", "sess-A") is True

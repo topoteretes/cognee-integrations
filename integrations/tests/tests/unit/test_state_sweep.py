@@ -5,8 +5,8 @@ Every launch leaves a file in half a dozen directories and nothing removed them
 sessions that are provably over, and only that: age alone for the status
 markers and per-session caches a live session keeps rewriting, pid death plus a
 grace period for launch records the exit-watcher still reads after the host
-exits, dead-pid for improve locks, TTL for the shared improve-unsupported
-marker. It also rotates oversized logs that predate the cap or are only ever
+exits, dead-pid for improve locks, age for the per-session improve state the
+cooldown reads. It also rotates oversized logs that predate the cap or are only ever
 written by a child process, and removes directories older versions left behind.
 """
 
@@ -128,25 +128,32 @@ def test_dead_pid_and_overaged_improve_locks_are_cleared_live_ones_kept(pc):
     assert counts["improve_locks"] == 3
 
 
-# ── shared improve-unsupported marker: TTL ─────────────────────────────────
+# ── per-session improve state (cooldown) ───────────────────────────────────
 
 
-def test_expired_improve_marker_is_removed_but_a_fresh_one_kept(pc):
-    marker = pc._IMPROVE_UNSUPPORTED_MARKER
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(
-        json.dumps({"base_url": "x", "marked_at": time.time() - 3600}), encoding="utf-8"
+def test_stale_improve_state_is_removed_and_fresh_kept(pc):
+    now = time.time()
+    fresh = _write(
+        pc._IMPROVE_STATE_DIR / "fresh.json",
+        {"session_id": "a", "last_improved_at": now - 60, "turn_count_at_improve": 3},
+        60,
     )
-    pc.sweep_stale_state()
-    assert marker.exists(), "still inside its 24h TTL"
-    marker.write_text(
-        json.dumps(
-            {"base_url": "x", "marked_at": time.time() - pc._IMPROVE_UNSUPPORTED_TTL_SECONDS - 1}
-        ),
-        encoding="utf-8",
+    stale = _write(
+        pc._IMPROVE_STATE_DIR / "stale.json",
+        {"session_id": "b", "last_improved_at": now - 9 * DAY, "turn_count_at_improve": 3},
+        9 * DAY,
     )
-    assert pc.sweep_stale_state()["expired_markers"] == 1
-    assert not marker.exists()
+    counts = pc.sweep_stale_state()
+    assert fresh.exists() and not stale.exists()
+    assert counts["improve_state"] == 1
+
+
+def test_no_improve_unsupported_marker_exists_any_more(pc):
+    # The 24h "server lacks improve" marker used to switch every sync to the
+    # legacy full-document bridge. Both the marker and the bridge are gone.
+    assert not hasattr(pc, "_IMPROVE_UNSUPPORTED_MARKER")
+    assert not hasattr(pc, "_sweep_expired_improve_marker")
+    assert "expired_markers" not in pc.sweep_stale_state()
 
 
 # ── legacy dirs and oversized logs ─────────────────────────────────────────
