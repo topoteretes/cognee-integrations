@@ -7,7 +7,7 @@ import {
 export class CogneeApi implements ICredentialType {
   name = 'cogneeApi';
   displayName = 'Cognee API';
-  icon = 'file:cognee.svg' as const;
+  icon = { light: 'file:cognee.svg', dark: 'file:cognee.dark.svg' } as const;
   documentationUrl = 'https://docs.cognee.ai/how-to-guides/cognee-cloud';
 
   properties: INodeProperties[] = [
