@@ -4,6 +4,8 @@ Use Cognee Cloud's AI memory and context engineering directly in your n8n workfl
 
 This community node lets you:
 
+- **Remember** text or files, **Recall** with knowledge-graph search, and **Forget** data — Cognee's memory API in three operations
+- Store session **Q&A, trace and feedback entries** so an AI Agent's conversation becomes searchable memory
 - Add text data to a Cognee dataset
 - Turn data into AI memory with cognify to build knowledge-graph-based memory
 - Run search over your AI memory datasets
@@ -50,7 +52,41 @@ Create credentials of type `Cognee API` in n8n. The node uses these values to au
 
 ## Operations
 
-The node exposes five resources. Each operation maps to a Cognee `/api/v1` endpoint, the same API served by Cognee Cloud tenants and by a self-hosted cognee server (e.g. `http://localhost:8000`). Point the credential **Base URL** at whichever backend you use. The connection test hits `GET /health`.
+The node exposes six resources. Each operation maps to a Cognee `/api/v1` endpoint, the same API served by Cognee Cloud tenants and by a self-hosted cognee server (e.g. `http://localhost:8000`). Point the credential **Base URL** at whichever backend you use. The connection test hits `GET /health`.
+
+### Resource: Memory
+
+The memory-oriented API. **Remember** is the one-call path (add + cognify); **Recall** is a superset of Search that can also read session memory; **Forget** replaces the two Delete operations and adds memory-only clearing.
+
+- **Operation: Remember** — `POST /api/v1/remember` (multipart/form-data)
+  - Fields: Input Type (Text or Binary File), Text (multiple) or Input Binary Field, Dataset Name
+  - Additional Fields: Dataset ID, Session ID, Node Set, Run in Background, Custom Prompt, Chunk Size, File Name Prefix
+  - Text items are uploaded as `memory-N.txt` file parts; a binary input keeps its original file name and MIME type (PDF, DOCX, ...). Returns `status`, `dataset_id`, `pipeline_run_id` and per-file `items`.
+- **Operation: Remember Entry** — `POST /api/v1/remember/entry`
+  - Fields: Entry Type (Question and Answer / Trace / Feedback), Session ID, Dataset Name, plus the type's fields (Question + Answer; Origin Function + Status; QA ID)
+  - Additional Fields: Context, Feedback Text, Feedback Score, Method Params, Method Return Value, Memory Query, Memory Context, Error Message, Dataset ID
+  - Returns `entry_type` and `entry_id`; pass a Q&A's `entry_id` as QA ID to attach feedback later.
+- **Operation: Recall** — `POST /api/v1/recall`
+  - Fields: Query, Search Type (any Cognee search type, or **Auto** to let the server route the query), Datasets (empty = all you can read), Top K, Simplify
+  - Additional Options: Session ID, Scope (graph / session / trace / session_context / all / tools / code), Only Context, Context Format, Context Profile, Dataset IDs, Node Sets, System Prompt, Include References, Verbose
+  - With Simplify on (default) each hit becomes one item with `source` and `text` plus a few source-specific fields; the original entry is kept under `raw`.
+- **Operation: Forget** — `POST /api/v1/forget`
+  - Fields: Forget (Dataset / Data Item / Everything), Identify Dataset By (Name or ID), Dataset Name or Dataset ID, Data ID, Memory Only
+  - Memory Only clears graph and vector data but keeps raw files, so the dataset can be re-cognified. **Everything** requires the explicit confirmation toggle and permanently deletes all datasets and data you own.
+
+Example Recall body sent by the node:
+
+```json
+{
+  "query": "Where was Einstein born?",
+  "search_type": null,
+  "datasets": ["facts"],
+  "top_k": 5,
+  "session_id": "chat-42",
+  "scope": ["graph", "session"],
+  "only_context": true
+}
+```
 
 ### Resource: Add Data
 
@@ -143,7 +179,19 @@ Loop wiring: **Ingest Skill** → **Review Skill** → (score in n8n) → **Prop
 
 ## Usage examples
 
-End-to-end example workflow:
+Chat memory for an AI Agent:
+
+1. **Recall** (Cognee) before the agent
+   - Resource: Memory → Operation: Recall
+   - Query: `{{ $json.chatInput }}`, Session ID (Additional Options): `{{ $json.sessionId }}`, Scope: Graph + Session, Only Context: on
+   - Feed the returned `text` fields into the agent's system prompt as remembered context
+2. **AI Agent** answers the user
+3. **Remember Entry** (Cognee) after the agent
+   - Resource: Memory → Operation: Remember Entry, Entry Type: Question and Answer
+   - Session ID: `{{ $json.sessionId }}`, Question: the user message, Answer: the agent output
+4. Optionally **Remember** documents the agent should know (Resource: Memory → Remember, Input Type: Binary File) from a Drive or email trigger.
+
+End-to-end dataset workflow:
 
 1. **Add Data** (Cognee)
    - Resource: Add Data → Operation: Add
@@ -181,7 +229,7 @@ The node depends on `n8n-workflow` at runtime (peer dependency). It should work 
 
 ## Version history
 
-- **Unreleased**: Move Add Data, Cognify, Search and Delete to the `/api/v1` endpoints (the legacy `/api/add_text`, `/api/cognify`, `/api/search` routes are no longer served). Add Data now uploads text as multipart file parts and gains Node Set / Run in Background. Search exposes all Cognee search types plus Dataset IDs, System Prompt, Only Context, Node Sets, Session ID, Include References and Verbose. Cognify gains Dataset IDs, Custom Prompt, Chunk Size and Ontology Keys. Icons now have light/dark variants; toolchain upgraded to `@n8n/node-cli` 0.46 with vitest unit tests.
+- **Unreleased**: Add the **Memory** resource: Remember (text or binary file, multipart), Remember Entry (qa / trace / feedback session entries), Recall (all search types plus Auto routing, session scope, Simplify output) and Forget (dataset, data item, memory-only, or everything behind a confirmation toggle). Move Add Data, Cognify, Search and Delete to the `/api/v1` endpoints (the legacy `/api/add_text`, `/api/cognify`, `/api/search` routes are no longer served). Add Data now uploads text as multipart file parts and gains Node Set / Run in Background. Search exposes all Cognee search types plus Dataset IDs, System Prompt, Only Context, Node Sets, Session ID, Include References and Verbose. Cognify gains Dataset IDs, Custom Prompt, Chunk Size and Ontology Keys. Icons now have light/dark variants; toolchain upgraded to `@n8n/node-cli` 0.46 with vitest unit tests.
 
 - **0.5.0**: Add the **Skill** resource (self-improving skill loop) targeting the `/api/v1` API: Ingest Skill, Review Skill (agentic), Propose Improvement, Apply Improvement, Get Skill, Get Proposal. Existing Add/Cognify/Search/Delete operations are unchanged.
 
