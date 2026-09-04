@@ -10,6 +10,42 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.4]
+
+### Fixed
+- **The improve cooldown now actually works.** `COGNEE_IMPROVE_COOLDOWN` (600 s)
+  was kept as a variable inside the idle-watcher process, and that process
+  exits after every bridge and is respawned on the next prompt with the
+  variable reset to zero — so since 2026-05-07 the cooldown gated nothing and
+  a server-side improve ran after essentially every prompt followed by a
+  minute of quiet (one real log: 62 improves on a single session). The last
+  successful improve is now recorded per session on disk
+  (`~/.cognee-plugin/claude-code/improve-state/<sha1(session)>.json`, written by the improve functions
+  themselves on a confirmed submit), and both automatic triggers — the idle
+  watcher and the every-`COGNEE_AUTO_IMPROVE_EVERY`-entries fire — consult it:
+  no automatic improve runs inside the cooldown, and none runs at all until a
+  new prompt, tool call or answer has been stored since the last one. A
+  throttled watcher keeps polling instead of exiting, so a quiet stretch that
+  outlasts the cooldown still gets exactly one bridge. The session-end final
+  sync, `/cognee-memory:cognee-sync` and the dataset-switch sync always run.
+- `COGNEE_AUTO_IMPROVE_EVERY=0` now disables the every-N trigger, as the
+  README always claimed; it used to fall back to the default of 150.
+- The watcher's shutdown bridge (SIGTERM from the SessionEnd sync) now runs
+  only when activity is newer than the last recorded improve, instead of
+  always — it used to double the final sync.
+
+### Removed
+- **The legacy full-document bridges.** Any 404/405/422 from
+  `/api/v1/improve` used to mark the server "improve-unsupported" for 24 hours
+  and switch every sync to re-posting the whole accumulated session — every
+  prompt, answer and raw tool output — through `/remember` for a complete
+  re-cognify, per sync. The local-SDK path had a sibling fallback on
+  `TypeError`. Both are gone, along with the `improve-unsupported.json`
+  marker, the per-session qa/trace text mirror in the bridge buffer, and the
+  `COGNEE_BRIDGE_POLL_DEADLINE` / `COGNEE_BRIDGE_SUBMIT_TIMEOUT` knobs. A
+  server without session-aware improve is now logged as `improve_unsupported`
+  and the session is reported as not synced.
+
 ## [1.4.3]
 
 ### Fixed

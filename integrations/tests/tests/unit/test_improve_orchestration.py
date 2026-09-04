@@ -1,15 +1,19 @@
 """Orchestration around the improve bridge (_plugin_common.run_session_improve).
 
 These stay at the seam: what is under test is the decision sequence — drain the
-warmup buffer, improve, fall back to the legacy document bridge only when the
-server genuinely lacks the endpoint, retry while the per-session improve lock is
-busy, and report failure when entries were left undelivered. The wire-level
-submit is covered in integration/test_improve_http.py.
+warmup buffer, improve, retry while the per-session improve lock is busy, report
+failure when entries were left undelivered, and record the session's improve
+state on success. There is deliberately no fallback any more: a server without
+session-aware improve is reported as not synced, never bridged by re-posting the
+whole transcript. The wire-level submit is covered in
+integration/test_improve_http.py.
 
 Migrated from {claude-code,codex}/tests/test_improve_sync.py.
 """
 
 from __future__ import annotations
+
+import time
 
 import pytest
 
@@ -25,8 +29,8 @@ def pc(suite, isolated_modules, monkeypatch):
 def run_improve(pc, monkeypatch):
     """Drive run_session_improve with every seam mocked; return (wrote, calls)."""
 
-    def _run(improve_result, *, unsupported_marker=False, drain_results=None, improve_results=None):
-        calls = {"drain": 0, "improve": 0, "legacy": 0}
+    def _run(improve_result, *, drain_results=None, improve_results=None, trigger=None):
+        calls = {"drain": 0, "improve": 0}
 
         def _drain(dataset, session, **kwargs):
             calls["drain"] += 1
@@ -40,20 +44,15 @@ def run_improve(pc, monkeypatch):
                 return improve_results[min(calls["improve"] - 1, len(improve_results) - 1)]
             return improve_result
 
-        def _legacy(dataset, session):
-            calls["legacy"] += 1
-            return True
-
         monkeypatch.setattr(pc, "_local_api_url", lambda: "http://x")
         monkeypatch.setattr(pc, "_backend_reachable", lambda url: True)
         monkeypatch.setattr(pc, "drain_warmup_entries", _drain)
         monkeypatch.setattr(pc, "ensure_dataset_via_http", lambda d: None)
-        monkeypatch.setattr(pc, "improve_unsupported", lambda url: unsupported_marker)
         monkeypatch.setattr(pc, "improve_session_via_http", _improve)
-        monkeypatch.setattr(pc, "persist_session_cache_to_graph_via_http", _legacy)
         monkeypatch.setattr(pc, "_DRAIN_RETRY_PAUSE_SECONDS", 0.0)
 
-        return pc.run_session_improve("ds", "sid"), calls
+        kwargs = {} if trigger is None else {"trigger": trigger}
+        return pc.run_session_improve("ds", "sid", **kwargs), calls
 
     return _run
 
@@ -61,27 +60,54 @@ def run_improve(pc, monkeypatch):
 def test_happy_path_drains_then_improves(run_improve):
     wrote, calls = run_improve({"ok": True})
     assert wrote is True
-    assert calls == {"drain": 1, "improve": 1, "legacy": 0}
+    assert calls == {"drain": 1, "improve": 1}
 
 
-def test_falls_back_when_unsupported_response(run_improve):
+def test_unsupported_response_returns_false_without_sync(run_improve, pc):
+    # A server without session-aware improve is reported, never worked around:
+    # the old fallback re-posted the whole transcript for a full re-cognify.
     wrote, calls = run_improve({"ok": False, "unsupported": True, "status": 404})
+    assert wrote is False
+    assert calls["improve"] == 1
+    assert not hasattr(pc, "persist_session_cache_to_graph_via_http")
+    assert not hasattr(pc, "improve_unsupported")
+    assert pc.read_improve_state("sid") == {}  # nothing succeeded, nothing recorded
+
+
+def test_error_returns_false(run_improve, pc):
+    wrote, _calls = run_improve({"ok": False, "status": 500, "error": "boom"})
+    assert wrote is False
+    assert pc.read_improve_state("sid") == {}
+
+
+def test_success_records_improve_state(run_improve, pc):
+    # The improve function itself stamps the session's improve state, so every
+    # trigger (idle, auto, final, manual) feeds the cooldown the idle/auto
+    # triggers read — recording in the watcher would stamp lock-refused runs.
+    before = time.time()
+    wrote, _calls = run_improve({"ok": True}, trigger="idle")
+    assert wrote is True
+    state = pc.read_improve_state("sid")
+    assert state["session_id"] == "sid"
+    assert state["dataset"] == "ds"
+    assert state["trigger"] == "idle"
+    assert state["last_improved_at"] >= before
+    assert state["turn_count_at_improve"] == pc.read_turn_count("sid")
+
+
+def test_default_trigger_is_final(run_improve, pc):
+    run_improve({"ok": True})
+    assert pc.read_improve_state("sid")["trigger"] == "final"
+
+
+def test_final_trigger_ignores_cooldown(run_improve, pc):
+    # run_session_improve never throttles itself: the cooldown is the caller's
+    # decision (idle watcher, auto-every-N), and the final sync must always run.
+    pc.record_improve_success("sid", "ds", "idle")
+    assert pc.improve_throttle_reason("sid") == "cooldown"
+    wrote, calls = run_improve({"ok": True}, trigger="final")
     assert wrote is True
     assert calls["improve"] == 1
-    assert calls["legacy"] == 1
-
-
-def test_skips_improve_when_marker_set(run_improve):
-    wrote, calls = run_improve({"ok": True}, unsupported_marker=True)
-    assert wrote is True
-    assert calls["improve"] == 0  # marker short-circuits straight to legacy
-    assert calls["legacy"] == 1
-
-
-def test_error_returns_false_without_legacy(run_improve):
-    wrote, calls = run_improve({"ok": False, "status": 500, "error": "boom"})
-    assert wrote is False
-    assert calls["legacy"] == 0  # a transient server error is not an unsupported server
 
 
 def test_retries_busy_until_lock_frees(run_improve, monkeypatch):
@@ -104,7 +130,7 @@ def test_busy_deadline_gives_up(run_improve, monkeypatch):
     assert calls["improve"] >= 2  # at least one retry happened
 
 
-def test_incomplete_drain_returns_false_but_improve_still_runs(run_improve):
+def test_incomplete_drain_returns_false_but_improve_still_runs(run_improve, pc):
     # Undelivered warmup entries mean the improve persisted an incomplete
     # session: the improve must still run (partial persist beats none), but the
     # sync must report failure so the caller's retry loop re-drives it.
@@ -112,7 +138,8 @@ def test_incomplete_drain_returns_false_but_improve_still_runs(run_improve):
     assert wrote is False
     assert calls["improve"] == 1  # improve ran despite the incomplete drain
     assert calls["drain"] == 2  # one in-place retry happened
-    assert calls["legacy"] == 0
+    # The improve itself succeeded, so the cooldown still starts here.
+    assert pc.read_improve_state("sid")["trigger"] == "final"
 
 
 def test_drain_retry_recovers_and_sync_succeeds(run_improve):
