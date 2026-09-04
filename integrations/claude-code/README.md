@@ -538,7 +538,7 @@ configuration needed to receive them:
 - **Status line:** an amber `⬆ Cognee update available <installed>→<latest>`
   segment appears, and disappears once you update.
 - **SessionStart:** a one-time message per new version, e.g. *"Cognee update
-  available 1.0.0 → 1.2.0 — run `/plugin update cognee-memory@cognee`."*
+  available 1.0.0 → 1.1.0 — run `/plugin update cognee-memory@cognee`."*
 
 A background check in the idle watcher runs **at most once per day** and fetches a
 single public file — the marketplace manifest on the tracked git ref, via
