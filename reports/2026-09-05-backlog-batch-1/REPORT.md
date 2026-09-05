@@ -1,3 +1,5 @@
+> Implementation update: see [EXECUTION.md](EXECUTION.md) for merged changes, closures, validation and remaining gates. The audit below is the original snapshot.
+
 # Cognee integrations backlog review — batch 1
 
 Reviewed **10 issues and 10 pull requests**, selected as the oldest open items by creation date on **2026-09-05**. The repository had 18 open issues and 44 open PRs at collection time. The checkout matched `origin/main` at [`ccfc3a0`](https://github.com/topoteretes/cognee-integrations/commit/ccfc3a074374461dd74e77c6883e0b894c869cfc). Exact PR heads, file lists, dates, and validation results are in [snapshot.json](snapshot.json).
