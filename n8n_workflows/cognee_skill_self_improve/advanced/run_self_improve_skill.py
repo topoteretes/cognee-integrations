@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-
 ROOT = Path(__file__).resolve().parent
 SKILLS_ROOT = ROOT / "my_skills"
 SKILL_NAME = os.environ.get("COGNEE_SKILL_NAME", "code-review")

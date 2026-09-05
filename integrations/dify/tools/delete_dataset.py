@@ -17,7 +17,7 @@ class DeleteDatasetTool(Tool):
             response = httpx.delete(
                 f"{base_url}/datasets/{dataset_id}",
                 headers={"X-Api-Key": api_key},
-                timeout=30,
+                timeout=120,
             )
             response.raise_for_status()
 

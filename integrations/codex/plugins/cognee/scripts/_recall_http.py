@@ -7,9 +7,13 @@ plugin venv (the same constraint ``cognee-search.sh`` already works under).
 Contract — what gets printed to stdout:
   * a JSON **list** on a 2xx response. An **empty list is authoritative**:
     the server searched and found nothing.
-  * the sentinel ``UNREACHABLE`` ONLY when the server cannot be reached
-    (connection refused, timeout, DNS). The caller may then fall back to the
-    local CLI as a degraded path.
+  * the sentinel ``UNREACHABLE`` ONLY when the server is positively absent
+    (connection refused, DNS failure, unroutable host). The caller may then
+    fall back to the local CLI as a degraded path. A **timeout is NOT
+    unreachable**: a dead server refuses in milliseconds, a busy one times
+    out — so timeouts return a *transient* error envelope instead (see below),
+    and the caller keeps its prior view of the server rather than declaring
+    it down.
   * a JSON **error object** ``{"error", "status", "authoritative": false}`` on
     any HTTP error (5xx, 4xx, and especially **401/403** auth rejections) or an
     error-shaped 2xx body. The caller MUST NOT fall back to the local CLI here:
@@ -21,8 +25,10 @@ Contract — what gets printed to stdout:
 Diagnostics also go to stderr so the caller can surface them.
 """
 
+import errno
 import json
 import os
+import socket
 import ssl
 import sys
 import urllib.error
@@ -30,6 +36,46 @@ import urllib.parse
 import urllib.request
 
 UNREACHABLE = "UNREACHABLE"
+
+# Transport-exception verdicts (classify_transport_exception). Only DOWN is
+# evidence the server is absent; SLOW means it exists but did not answer in
+# time, and UNKNOWN is anything we cannot classify. The distinction matters:
+# a dead local server refuses connections in milliseconds, while a busy one
+# times out — conflating the two is what painted false "unreachable" states.
+DOWN = "down"
+SLOW = "slow"
+UNKNOWN = "unknown"
+
+# Errnos that positively identify an absent/unroutable server.
+_DOWN_ERRNOS = {errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH}
+
+
+def classify_transport_exception(exc) -> str:
+    """Classify a transport failure as DOWN, SLOW, or UNKNOWN.
+
+    Unwraps ``urllib.error.URLError`` (the real cause lives in ``.reason``, and
+    can be an exception *or* a plain string). Order matters below:
+    ``TimeoutError`` and ``ConnectionRefusedError`` are OSError subclasses, and
+    ``ssl.SSLError`` is too, so the generic errno check must come last.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        # The server answered; HTTP statuses are the caller's business.
+        return UNKNOWN
+    if isinstance(exc, urllib.error.URLError):
+        exc = exc.reason
+    if isinstance(exc, str):
+        return SLOW if "timed out" in exc else UNKNOWN
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return SLOW
+    if isinstance(exc, socket.gaierror):
+        return DOWN
+    if isinstance(exc, ConnectionRefusedError):
+        return DOWN
+    if isinstance(exc, ssl.SSLError):
+        return UNKNOWN
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in _DOWN_ERRNOS:
+        return DOWN
+    return UNKNOWN
 
 
 # macOS Python installations often lack root CA certs in the default bundle.
@@ -69,12 +115,6 @@ def _build_https_opener():
 _HTTPS_OPENER = _build_https_opener()
 
 
-def _is_local(url):
-    """True for a localhost/loopback target (where a cloud API key is meaningless)."""
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
-
-
 def coerce_top_k(value, default=5):
     """Best-effort positive int; never raises (a bad value must not look like a server failure)."""
     try:
@@ -94,12 +134,35 @@ def coerce_scope(value, default="auto"):
         return default
 
 
-def _error(status, message):
-    """An error envelope — reachable server, but the request was rejected/failed.
+def _error(status, message, *, transient=False):
+    """An error envelope — the request failed, but the server is NOT known dead.
 
     Distinct from UNREACHABLE so the caller does NOT fall back to the local CLI.
+    ``transient=True`` marks a no-verdict failure (timeout / unclassifiable
+    transport error): the breaker must count it as neither success nor failure,
+    and no connection state should be rewritten because of it.
     """
-    return {"error": message, "status": status, "authoritative": False}
+    envelope = {"error": message, "status": status, "authoritative": False}
+    if transient:
+        envelope["transient"] = True
+    return envelope
+
+
+def coerce_code_query(value):
+    """Parse the JSON code_query arg; None on anything empty or malformed.
+
+    A malformed code_query must degrade to "no code lane", never to a server
+    422 that would read as a recall failure.
+    """
+    if not value:
+        return None
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def do_recall(
@@ -111,9 +174,10 @@ def do_recall(
     top_k,
     dataset="",
     context_profile="",
+    code_query=None,
     *,
     opener=None,
-    timeout=20.0,
+    timeout=120.0,
 ):
     """Query the server. Return results (list), an error envelope (dict), or ``UNREACHABLE``."""
     url = service_url.rstrip("/") + "/api/v1/recall"
@@ -123,10 +187,15 @@ def do_recall(
         "only_context": True,
         "scope": coerce_scope(scope),
     }
+    # Deterministic code-graph lane (cognee >= 1.5.3): only meaningful when
+    # the scope includes "code" — the server rejects code_query without it.
+    parsed_code_query = coerce_code_query(code_query)
+    if parsed_code_query is not None:
+        body["code_query"] = parsed_code_query
     if session_id:
         body["session_id"] = session_id
     # Scope the search to the caller's plugin dataset (resolved by the shell from
-    # connections/me → COGNEE_PLUGIN_DATASET → default). All plugin writes target
+    # COGNEE_PLUGIN_DATASET → default). All plugin writes target
     # that single dataset, so searching elsewhere only adds noise from unrelated
     # sessions or SDK calls (e.g. client.py defaulting to 'default_dataset').
     # Server-side RBAC is still enforced: the named dataset must be owned by the
@@ -138,10 +207,10 @@ def do_recall(
     if context_profile:
         body["context_profile"] = context_profile
     headers = {"Content-Type": "application/json"}
-    # COGNEE_API_KEY is a *cloud* credential; the local single-user server needs no
-    # auth and ignores it. Only attach it for a remote/cloud target, so we don't send
-    # a meaningless (and confusing) cloud key to localhost.
-    if api_key and not _is_local(service_url):
+    # Always attach the key when present: cognee >=1.2.2 enforces auth on its
+    # API routes even on localhost (the local key is auto-minted at bootstrap),
+    # and a server running with auth disabled simply ignores the header.
+    if api_key:
         headers["X-Api-Key"] = api_key
 
     req = urllib.request.Request(
@@ -160,11 +229,21 @@ def do_recall(
             msg = "server returned HTTP %s for /api/v1/recall" % e.code
         sys.stderr.write("[cognee-search] %s — NOT falling back to local CLI\n" % msg)
         return _error(e.code, msg)
-    except Exception as e:  # URLError / timeout / OSError → genuinely unreachable
+    except Exception as e:
+        verdict = classify_transport_exception(e)
+        if verdict == DOWN:  # refused / DNS / unroutable → positively absent
+            sys.stderr.write(
+                "[cognee-search] server unreachable at %s: %s\n" % (service_url, str(e)[:160])
+            )
+            return UNREACHABLE
+        # SLOW (timed out — alive but busy) or UNKNOWN (SSL / reset / a bug in
+        # our own request building): no verdict on the server. Not UNREACHABLE
+        # (no CLI fallback, no "down" marker) and flagged transient so the
+        # breaker counts it as neither success nor failure.
         sys.stderr.write(
-            "[cognee-search] server unreachable at %s: %s\n" % (service_url, str(e)[:160])
+            "[cognee-search] no verdict (%s) from %s: %s\n" % (verdict, service_url, str(e)[:160])
         )
-        return UNREACHABLE
+        return _error(0, "recall %s: %s" % (verdict, str(e)[:160]), transient=True)
 
     # The server responded. A body we can't parse is a SERVER-side bug, not an
     # unreachable server — report it as an error (do NOT trigger the CLI fallback).
@@ -185,9 +264,12 @@ def do_recall(
 
 
 def main(argv):
-    # argv: service_url, api_key, query, session_id, scope, top_k[, dataset[, context_profile]]
-    a = list(argv) + [""] * 8
-    result = do_recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
+    # argv: service_url, api_key, query, session_id, scope, top_k[, dataset
+    #        [, context_profile[, code_query]]]
+    # code_query (arg 9): JSON dict for the deterministic "code" scope, e.g.
+    # '{"operation": "impact_analysis", "targets": ["process_payment"]}'.
+    a = list(argv) + [""] * 9
+    result = do_recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8])
     # UNREACHABLE → caller falls back to CLI; a list (results) or an error
     # object → caller prints as-is and does NOT fall back.
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))

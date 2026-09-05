@@ -42,7 +42,7 @@ class AddDataTool(Tool):
                     "X-Api-Key": api_key,
                     "Content-Type": "application/json",
                 },
-                timeout=60,
+                timeout=120,
             )
             response.raise_for_status()
             result = response.json()

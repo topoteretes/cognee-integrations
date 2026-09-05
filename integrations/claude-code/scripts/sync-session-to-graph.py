@@ -27,10 +27,10 @@ from _plugin_common import (
     hook_log,
     http_api_ready,
     load_resolved,
-    persist_session_cache_to_graph_via_http,
     resolve_session_key_from_payload,
     resolve_user,
     resolved_http_endpoint_auth,
+    run_session_improve,
     set_session_key,
     sync_lock,
     unregister_agent_via_http,
@@ -40,9 +40,8 @@ from config import (
     ensure_dataset_ready,
     get_dataset,
     get_session_id,
+    improve_session_local,
     load_config,
-    persist_session_cache_to_graph,
-    sync_graph_context_to_session,
 )
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
@@ -50,6 +49,7 @@ _WATCHER_PID = _STATE_DIR / "watcher.pid"
 _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _DETACHED_ARG = "--detached-final"
 _SESSION_END_ARG = "--session-end"
+_STRICT_ARG = "--strict"
 _FINAL_SYNC_ONCE_DIR = _STATE_DIR / "final-sync-once"
 _FINAL_SYNC_ONCE_TTL_SECONDS = 3600
 _DETACHED_RETRIES_DEFAULT = 3
@@ -216,7 +216,10 @@ def _load_resolved() -> tuple:
             os.environ["COGNEE_USER_ID"] = str(data.get("user_id"))
         return (
             env_session_id or data.get("session_id", ""),
-            env_dataset or data.get("dataset", ""),
+            # load_resolved() carries no dataset key, so without the env
+            # override (only the exit watcher sets it) this must fall back to
+            # config, or the SessionEnd worker syncs with an empty dataset.
+            env_dataset or data.get("dataset", "") or get_dataset(load_config()),
             data.get("user_id", ""),
             env_agent_session_name or data.get("agent_session_name", ""),
             bool(data.get("registered", False)),
@@ -240,16 +243,69 @@ def _load_resolved() -> tuple:
     )
 
 
-async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
+def _sync_targets(
+    session_id: str, dataset: str, session_key: str, include_touched: bool
+) -> list[tuple[str, str]]:
+    """(session_id, dataset) pairs to bridge, current pair last.
+
+    A launch that switched datasets has retired sessions in its record's
+    ``touched`` list. The final sync covers them too — a write that raced the
+    switch (landing in the old session after its switch-time sync) is otherwise
+    lost. Re-bridging an already-synced pair is cheap: the bridge state is keyed
+    by (dataset, session) and the server's improve is idempotent per session.
+    """
+    pairs: list[tuple[str, str]] = []
+    if include_touched and session_key:
+        try:
+            from _plugin_common import touched_pairs
+
+            for entry in touched_pairs(session_key):
+                pair = (str(entry.get("session_id") or ""), str(entry.get("dataset") or ""))
+                if pair[0] and pair[1] and pair not in pairs:
+                    pairs.append(pair)
+        except Exception as exc:
+            hook_log("sync_touched_pairs_failed", {"error": str(exc)[:200]})
+    current = (session_id, dataset)
+    if session_id:
+        pairs = [p for p in pairs if p != current] + [current]
+    return pairs
+
+
+def _unregister_handles(session_key: str, agent_session_name: str) -> list[str]:
+    """Connection handles to release at the end: the live one plus any retired
+    by a switch (the switch unregisters those itself; this is the safety net)."""
+    handles: list[str] = []
+    if session_key:
+        try:
+            from _plugin_common import touched_pairs
+
+            for entry in touched_pairs(session_key):
+                cu = str(entry.get("conn_uuid") or "").strip()
+                if cu and cu not in handles:
+                    handles.append(cu)
+        except Exception as exc:
+            hook_log("sync_touched_handles_failed", {"error": str(exc)[:200]})
+    live = str(agent_session_name or "").strip()
+    if live:
+        handles = [h for h in handles if h != live] + [live]
+    return handles
+
+
+async def _sync(
+    stop_watcher: bool,
+    unregister_on_finish: bool = False,
+    strict: bool = False,
+    include_touched: bool = False,
+):
     session_id, dataset, user_id, agent_session_name, was_registered, has_api_key, session_key = (
         _load_resolved()
     )
-    target_sessions = [session_id] if session_id else []
+    targets = _sync_targets(session_id, dataset, session_key, include_touched)
     hook_log(
         "sync_start",
         {
             "session": session_id,
-            "targets": target_sessions,
+            "targets": [f"{ds}:{sid}" for sid, ds in targets],
             "dataset": dataset,
             "user_id": user_id,
             "stop_watcher": stop_watcher,
@@ -268,52 +324,70 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
             if not acquired:
                 hook_log("sync_skipped_lock_busy", {"session": session_id, "dataset": dataset})
                 print("cognee-sync: skipped, another sync is running", file=sys.stderr)
+                if strict:
+                    raise RuntimeError("another sync is running")
                 return
 
-            if not target_sessions:
+            if not targets:
                 hook_log("sync_no_target_sessions", {"dataset": dataset})
                 return
 
+            incomplete: list[str] = []
+            # The final (strict) sync must always run; a manual /cognee-sync too.
+            # Only the idle and auto triggers honour the improve cooldown.
+            trigger = "final" if strict else "manual"
             if api_mode:
-                for sid in target_sessions:
-                    wrote = persist_session_cache_to_graph_via_http(dataset, sid)
+                for sid, ds in targets:
+                    wrote = run_session_improve(ds, sid, trigger=trigger)
+                    if not wrote:
+                        incomplete.append(f"{ds}:{sid}")
                     hook_log(
                         "sync_bridge_done",
                         {
                             "session": sid,
-                            "dataset": dataset,
-                            "via": "http_remember",
+                            "dataset": ds,
+                            "via": "http_improve",
                             "wrote": wrote,
                         },
                     )
                     print(
-                        f"cognee-sync: dataset={dataset} session={sid} "
-                        f"via=http_remember wrote={wrote}",
+                        f"cognee-sync: dataset={ds} session={sid} via=http_improve wrote={wrote}",
                         file=sys.stderr,
+                    )
+                if strict and incomplete:
+                    # The detached final worker retries on exceptions only. This
+                    # is the session's LAST sync — an incomplete one (failed
+                    # improve or undelivered warmup entries) must re-drive the
+                    # whole drain+improve, not silently report success.
+                    raise RuntimeError(
+                        f"final session sync incomplete for: {', '.join(incomplete)}"
                     )
                 return
 
             await ensure_cognee_ready(config)
             user = await resolve_user(user_id)
-            await ensure_dataset_ready(dataset, user)
-            for sid in target_sessions:
-                wrote = await persist_session_cache_to_graph(dataset, sid, user)
-                graph_result = await sync_graph_context_to_session(dataset, sid, user)
+            for sid, ds in targets:
+                await ensure_dataset_ready(ds, user)
+                result = await improve_session_local(ds, sid, user, trigger=trigger)
+                if not result.get("ok"):
+                    incomplete.append(f"{ds}:{sid}")
                 hook_log(
                     "sync_bridge_done",
                     {
                         "session": sid,
-                        "dataset": dataset,
+                        "dataset": ds,
                         "user_id": str(getattr(user, "id", "")),
-                        "wrote": wrote,
-                        "graph_synced": graph_result.get("synced", 0),
+                        "via": "local_improve",
+                        "ok": bool(result.get("ok")),
                     },
                 )
                 print(
-                    f"cognee-sync: dataset={dataset} session={sid} wrote={wrote} "
-                    f"graph_synced={graph_result.get('synced', 0)}",
+                    f"cognee-sync: dataset={ds} session={sid} "
+                    f"via=local_improve ok={result.get('ok')}",
                     file=sys.stderr,
                 )
+            if strict and incomplete:
+                raise RuntimeError(f"final session sync incomplete for: {', '.join(incomplete)}")
     finally:
         if unregister_on_finish:
             if not (was_registered or has_api_key):
@@ -322,25 +396,27 @@ async def _sync(stop_watcher: bool, unregister_on_finish: bool = False):
                     {"session": session_id, "dataset": dataset},
                 )
             else:
-                unregister_name = str(agent_session_name or session_key or "").strip()
-                if not unregister_name:
+                handles = _unregister_handles(
+                    session_key, str(agent_session_name or session_key or "").strip()
+                )
+                if not handles:
                     hook_log(
                         "agent_unregister_skipped_no_session_name",
                         {"session": session_id, "dataset": dataset},
                     )
-                    return
-                ok, active = unregister_agent_via_http(agent_session_name=unregister_name)
-                hook_log(
-                    "agent_unregister_result",
-                    {
-                        "session": session_id,
-                        "dataset": dataset,
-                        "agent_session_name": unregister_name,
-                        "ok": ok,
-                        "active_agents": active,
-                        "cached_registered": was_registered,
-                    },
-                )
+                for unregister_name in handles:
+                    ok, active = unregister_agent_via_http(agent_session_name=unregister_name)
+                    hook_log(
+                        "agent_unregister_result",
+                        {
+                            "session": session_id,
+                            "dataset": dataset,
+                            "agent_session_name": unregister_name,
+                            "ok": ok,
+                            "active_agents": active,
+                            "cached_registered": was_registered,
+                        },
+                    )
 
 
 def main():
@@ -401,16 +477,29 @@ def main():
             os.environ.get("COGNEE_SYNC_RETRY_DELAY", str(_DETACHED_RETRY_DELAY_DEFAULT))
         )
 
+    # --strict: the caller (switch-dataset.py, syncing the session it is about
+    # to retire) needs a verdict — exit non-zero when the bridge is incomplete
+    # instead of the hook-friendly swallow below.
+    strict_cli = _STRICT_ARG in sys.argv
+
+    last_error: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         try:
             asyncio.run(
                 _sync(
                     stop_watcher=False,
                     unregister_on_finish=unregister_on_finish,
+                    # The detached-final run is the session's last sync: an
+                    # incomplete result raises so this loop retries it.
+                    strict=detached_final or strict_cli,
+                    # ...and it covers every session this launch touched (a
+                    # dataset switch retires sessions mid-launch).
+                    include_touched=detached_final,
                 )
             )
             return
         except Exception as exc:
+            last_error = exc
             # Non-fatal: session sync failure should not crash Codex.
             hook_log(
                 "sync_failed",
@@ -420,6 +509,8 @@ def main():
             if attempt < attempts:
                 hook_log("sync_retry_scheduled", {"attempt": attempt + 1, "delay": retry_delay})
                 time.sleep(retry_delay)
+    if strict_cli and last_error is not None:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

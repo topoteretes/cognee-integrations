@@ -4,9 +4,9 @@ import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, Sco
 // Defaults
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_BASE_URL = "http://localhost:8000";
-export const DEFAULT_DATASET_NAME = "openclaw";
-export const DEFAULT_SEARCH_TYPE: CogneeSearchType = "GRAPH_COMPLETION";
+export const DEFAULT_BASE_URL = "http://localhost:8011";
+export const DEFAULT_DATASET_NAME = "agent_sessions";
+export const DEFAULT_SEARCH_TYPE: CogneeSearchType = "HYBRID_COMPLETION";
 export const DEFAULT_DELETE_MODE = "soft" as const;
 export const DEFAULT_MAX_RESULTS = 3;
 export const DEFAULT_MIN_SCORE = 0.3;
@@ -17,8 +17,46 @@ export const DEFAULT_AUTO_INDEX = true;
 export const DEFAULT_AUTO_COGNIFY = true;
 export const DEFAULT_AUTO_MEMIFY = false;
 export const DEFAULT_IMPROVE_ON_SESSION_END = true;
-export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
+
+// Recall hot path — same defaults as the claude-code/codex integrations
+// (COGNEE_RECALL_TIMEOUT=2.5s, COGNEE_RECALL_BUDGET=4s,
+//  COGNEE_BREAKER_THRESHOLD=5, COGNEE_BREAKER_COOLDOWN=120s).
+export const DEFAULT_RECALL_TIMEOUT_MS = 2_500;
+export const DEFAULT_RECALL_BUDGET_MS = 4_000;
+export const DEFAULT_RECALL_BREAKER_THRESHOLD = 5;
+export const DEFAULT_RECALL_BREAKER_COOLDOWN_MS = 120_000;
+
+// Harness-noise filter (see noise.ts). Triggers match ctx.trigger verbatim;
+// patterns are regex sources matched against the prompt (leading whitespace
+// stripped). Overriding either with [] disables that layer.
+export const DEFAULT_MEMORY_TOOLS = true;
+export const DEFAULT_MEMORY_FORGET_TOOL = true;
+export const DEFAULT_DATASET_SWITCH_TOOL = true;
+export const DEFAULT_RECALL_SESSION_LAYERS = true;
+export const DEFAULT_CODE_SEARCH_TOOL = true;
+export const DEFAULT_CODE_GRAPH_RECALL = true;
+export const DEFAULT_MEMORY_STEER = true;
+export const DEFAULT_MEMORY_STEER_TEXT =
+  "Memory policy: Cognee is the preferred, authoritative long-term memory for this agent. " +
+  "Relevant Cognee memories are recalled and injected into your context before each turn — consult that recalled context first. " +
+  "To look up or verify durable knowledge use the memory_search / memory_get tools; when the user asks to forget something use memory_forget; " +
+  "to work in a different dataset use memory_switch_dataset. Do not duplicate durable knowledge into MEMORY.md — Cognee is the source of truth.";
+
+export const DEFAULT_MEMORY_HIT_FOOTER = true;
+export const DEFAULT_MEMORY_HIT_FOOTER_FORMAT = "[cognee: {count} {memories}]";
+export const DEFAULT_WEEKLY_DIGEST = true;
+
+export const DEFAULT_NOISE_TRIGGERS: string[] = ["heartbeat", "cron"];
+export const DEFAULT_NOISE_PATTERNS: string[] = [
+  // OpenClaw's default heartbeat prompt: "Read HEARTBEAT.md if it exists …"
+  String.raw`^Read HEARTBEAT\.md`,
+  // Cron system events / exec notices are injected as "System: …" lines.
+  String.raw`^System:\s`,
+  // Cron-tagged payloads ("[cron:job-id] …").
+  String.raw`^\[cron\b`,
+];
 
 export const DEFAULT_RECALL_SCOPES: MemoryScope[] = ["agent", "user", "company"];
 export const DEFAULT_WRITE_SCOPE: MemoryScope = "agent";
@@ -61,7 +99,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
 
   const mode: CogneeMode = raw.mode === "cloud" || process.env.COGNEE_MODE === "cloud" ? "cloud" : "local";
   const baseUrl = raw.baseUrl?.trim() || process.env.COGNEE_BASE_URL?.trim() || DEFAULT_BASE_URL;
-  const datasetName = raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
+  const datasetName = process.env.COGNEE_PLUGIN_DATASET?.trim() || raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
   const searchPrompt = raw.searchPrompt || "";
   const deleteMode = raw.deleteMode === "hard" ? "hard" : DEFAULT_DELETE_MODE;
@@ -75,11 +113,16 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const improveOnSessionEnd = typeof raw.improveOnSessionEnd === "boolean" ? raw.improveOnSessionEnd : DEFAULT_IMPROVE_ON_SESSION_END;
   const requestTimeoutMs = typeof raw.requestTimeoutMs === "number" ? raw.requestTimeoutMs : DEFAULT_REQUEST_TIMEOUT_MS;
   const ingestionTimeoutMs = typeof raw.ingestionTimeoutMs === "number" ? raw.ingestionTimeoutMs : DEFAULT_INGESTION_TIMEOUT_MS;
+  const recallTimeoutMs = typeof raw.recallTimeoutMs === "number" ? raw.recallTimeoutMs : DEFAULT_RECALL_TIMEOUT_MS;
+  const recallBudgetMs = typeof raw.recallBudgetMs === "number" ? raw.recallBudgetMs : DEFAULT_RECALL_BUDGET_MS;
+  const recallBreakerThreshold = typeof raw.recallBreakerThreshold === "number" ? raw.recallBreakerThreshold : DEFAULT_RECALL_BREAKER_THRESHOLD;
+  const recallBreakerCooldownMs = typeof raw.recallBreakerCooldownMs === "number" ? raw.recallBreakerCooldownMs : DEFAULT_RECALL_BREAKER_COOLDOWN_MS;
 
+  // All credential env reads live here, in the network-free config layer;
+  // downstream modules receive resolved values (see resolveOrMintApiKey).
   const apiKey =
     raw.apiKey && raw.apiKey.length > 0 ? resolveEnvVars(raw.apiKey)
-    : mode === "cloud" ? process.env.COGNEE_API_KEY || ""
-    : "";
+    : process.env.COGNEE_API_KEY?.trim() || "";
   const username = raw.username?.trim() || process.env.COGNEE_USERNAME || "";
   const password = raw.password?.trim() || process.env.COGNEE_PASSWORD || "";
 
@@ -94,10 +137,11 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const defaultWriteScope = raw.defaultWriteScope || DEFAULT_WRITE_SCOPE;
   const scopeRouting = Array.isArray(raw.scopeRouting) ? raw.scopeRouting : DEFAULT_SCOPE_ROUTING;
 
-  // Per-agent memory: opt-in. Explicit config wins. When unset, it defaults to
-  // false here and is auto-enabled in plugin.ts only when the gateway hosts
-  // multiple agents (agents.list.length > 1) — so single-agent installs keep
-  // the legacy shared behavior and are unaffected by the upgrade.
+  // Per-agent memory: strictly opt-in, never auto-enabled. All agents share
+  // one dataset by default (matching the claude-code/codex integrations).
+  // Note that isolation also requires multi-scope to be active: plugin.ts
+  // gates on `multiScope && cfg.perAgentMemory`, so users must set an
+  // agentDatasetPrefix/agentDatasetTemplate alongside this flag.
   const perAgentMemory = typeof raw.perAgentMemory === "boolean" ? raw.perAgentMemory : false;
 
   // Recall injection
@@ -106,19 +150,50 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     ? raw.recallInjectionPosition
     : DEFAULT_RECALL_INJECTION_POSITION;
 
+  // Agent tools
+  const memoryTools = typeof raw.memoryTools === "boolean" ? raw.memoryTools : DEFAULT_MEMORY_TOOLS;
+  const memoryForgetTool = typeof raw.memoryForgetTool === "boolean" ? raw.memoryForgetTool : DEFAULT_MEMORY_FORGET_TOOL;
+  const datasetSwitchTool = typeof raw.datasetSwitchTool === "boolean" ? raw.datasetSwitchTool : DEFAULT_DATASET_SWITCH_TOOL;
+
+  // Code graph
+  const codeSearchTool = typeof raw.codeSearchTool === "boolean" ? raw.codeSearchTool : DEFAULT_CODE_SEARCH_TOOL;
+  const codeGraphRecall = typeof raw.codeGraphRecall === "boolean" ? raw.codeGraphRecall : DEFAULT_CODE_GRAPH_RECALL;
+  const codeDatasets = Array.isArray(raw.codeDatasets) ? raw.codeDatasets.filter((d): d is string => typeof d === "string" && d.trim().length > 0).map((d) => d.trim()) : [];
+
+  // Memory steer
+  const memorySteer = typeof raw.memorySteer === "boolean" ? raw.memorySteer : DEFAULT_MEMORY_STEER;
+  const memorySteerText = typeof raw.memorySteerText === "string" && raw.memorySteerText.trim() ? raw.memorySteerText.trim() : DEFAULT_MEMORY_STEER_TEXT;
+
+  // Recall layers
+  const recallSessionLayers = typeof raw.recallSessionLayers === "boolean" ? raw.recallSessionLayers : DEFAULT_RECALL_SESSION_LAYERS;
+
+  // Memory-hit visibility
+  const memoryHitFooter = typeof raw.memoryHitFooter === "boolean" ? raw.memoryHitFooter : DEFAULT_MEMORY_HIT_FOOTER;
+  const memoryHitFooterFormat =
+    typeof raw.memoryHitFooterFormat === "string" && raw.memoryHitFooterFormat.trim()
+      ? raw.memoryHitFooterFormat
+      : DEFAULT_MEMORY_HIT_FOOTER_FORMAT;
+  const weeklyDigest = typeof raw.weeklyDigest === "boolean" ? raw.weeklyDigest : DEFAULT_WEEKLY_DIGEST;
+
+  // Harness-noise filter
+  const noiseTriggers = Array.isArray(raw.noiseTriggers) ? raw.noiseTriggers : DEFAULT_NOISE_TRIGGERS;
+  const noisePatterns = Array.isArray(raw.noisePatterns) ? raw.noisePatterns : DEFAULT_NOISE_PATTERNS;
+
   // Session
   const enableSessions = typeof raw.enableSessions === "boolean" ? raw.enableSessions : true;
   const persistSessionsAfterEnd = typeof raw.persistSessionsAfterEnd === "boolean" ? raw.persistSessionsAfterEnd : true;
+  const captureSession = typeof raw.captureSession === "boolean" ? raw.captureSession : true;
 
   return {
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition,
-    enableSessions, persistSessionsAfterEnd,
+    recallInjectionPosition, memoryHitFooter, memoryHitFooterFormat, weeklyDigest, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,
+    enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify, improveOnSessionEnd,
     requestTimeoutMs, ingestionTimeoutMs,
+    recallTimeoutMs, recallBudgetMs, recallBreakerThreshold, recallBreakerCooldownMs,
   };
 }

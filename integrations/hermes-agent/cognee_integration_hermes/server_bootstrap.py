@@ -15,11 +15,19 @@ the port, so concurrent spawns simply lose the bind and then observe health.
 
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+
+from .config import (
+    DEFAULT_SERVER_BOOT_TIMEOUT,
+    SHARED_COGNEE_HOME,
+    SHARED_PLUGIN_STATE_DIR,
+    ollama_embedding_pins,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +42,99 @@ def health_ok(url, timeout=2.0):
         return False
 
 
+def port_bound(port, timeout=1.0):
+    """True when something accepts TCP connections on the local port.
+
+    Weaker than :func:`health_ok` on purpose: uvicorn binds the port well before
+    the app is ready, so this distinguishes "a server is coming up" from "nothing
+    is there at all".
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+#: Rotate the server log when it is this big at the next spawn. It holds the
+#: server's console output for the process lifetime and is read back by the
+#: overflow scan (http_backend), so it cannot go to /dev/null like the other
+#: plugins' server output — but nothing needs more than the recent past, and an
+#: unbounded file is how one looping traceback turned into gigabytes.
+SERVER_LOG_MAX_BYTES = 20 * 1024 * 1024
+SERVER_LOG_MAX_BYTES_ENV = "COGNEE_SERVER_LOG_MAX_BYTES"
+
+
+def _server_log_cap():
+    raw = os.environ.get(SERVER_LOG_MAX_BYTES_ENV, "").strip()
+    if not raw:
+        return SERVER_LOG_MAX_BYTES
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return SERVER_LOG_MAX_BYTES
+
+
+def rotate_oversized_log(log_path, max_bytes=None):
+    """Move ``log_path`` to ``<log_path>.1`` when it exceeds ``max_bytes``.
+
+    One generation is kept: the interesting part of a failure is usually the
+    stretch right before the cap hit, and that survives in ``.1``. Best-effort —
+    a rotation that cannot happen must never stop the server from booting.
+    Returns True when a rotation happened. The overflow scan tolerates this: it
+    treats a shrunk log as rotated and rescans from the top.
+    """
+    cap = _server_log_cap() if max_bytes is None else max_bytes
+    if cap <= 0:
+        return False
+    try:
+        if os.path.getsize(log_path) <= cap:
+            return False
+        os.replace(log_path, str(log_path) + ".1")
+        return True
+    except OSError:
+        return False
+
+
 def _spawn(port, data_root, system_root, log_path):
     env = dict(os.environ)
     env["COGNEE_AGENT_MODE"] = "true"  # server tears itself down once idle / no clients
     env["HTTP_API_PORT"] = str(port)
+    # The server must behave identically no matter which cognee plugin booted it,
+    # so this mirrors the env the claude-code/codex/openclaw bootstraps set
+    # (claude-code's apply_cognee_env). setdefault: an explicit user value wins.
+    #
+    # CACHING gates the session cache: without it cognee's session manager reports
+    # ``is_available = False`` and a session write is *silently dropped* while the
+    # API still answers ``status: "session_stored"`` — so every turn vanished and
+    # improve() had nothing to promote into the graph (live-diagnosed).
+    # LLM_INSTRUCTOR_MODE=json_schema_mode uses grammar-constrained decoding for
+    # structured output — small local models fail schema-in-prompt mode so often
+    # that every improve() timed out (diagnosed in the claude-code plugin).
+    for key, value in (
+        ("CACHING", "true"),
+        ("AUTO_FEEDBACK", "true"),
+        ("CACHE_ROOT_DIRECTORY", str(SHARED_COGNEE_HOME / "cache")),
+        ("LLM_INSTRUCTOR_MODE", "json_schema_mode"),
+        ("COGNEE_IMPROVE_SUBMIT_TIMEOUT", "420"),
+    ):
+        env.setdefault(key, value)
+    # A local Ollama embedder inherits a token ceiling far above its real
+    # context and silently mean-pools every overflowing text into a lossy
+    # vector — see ollama_embedding_pins for the incident this pins away.
+    for key, value in ollama_embedding_pins(env).items():
+        env.setdefault(key, value)
     if data_root:
         env["DATA_ROOT_DIRECTORY"] = data_root
     if system_root:
         env["SYSTEM_ROOT_DIRECTORY"] = system_root
+    rotate_oversized_log(log_path)
     try:
         log = open(log_path, "ab", buffering=0)  # noqa: SIM115 — handed to the child
     except Exception:
         log = subprocess.DEVNULL
     try:
-        subprocess.Popen(
+        return subprocess.Popen(
             [
                 sys.executable,
                 "-m",
@@ -70,35 +157,75 @@ def _spawn(port, data_root, system_root, log_path):
             log.close()
 
 
+def default_server_log_path() -> str:
+    """Where the spawned server's output lands when no log path is given.
+
+    Same state root as the other cognee plugins (they keep per-host logs in
+    ~/.cognee-plugin/<host>/), so diagnostics live in one predictable place.
+    Also read back by the HTTP transport's overflow scan.
+    """
+    log_dir = SHARED_PLUGIN_STATE_DIR / "hermes"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # _spawn falls back to DEVNULL if the file cannot be opened
+    return str(log_dir / "server.log")
+
+
 def ensure_local_server(
     port,
     *,
     data_root="",
     system_root="",
     log_path=None,
-    boot_timeout=30.0,
+    boot_timeout=float(DEFAULT_SERVER_BOOT_TIMEOUT),
 ):
     """Return the URL of a healthy local cognee server, starting one if needed.
 
-    Raises RuntimeError if the server does not become healthy within boot_timeout.
+    The deadline is generous (matching the other plugins' 600s) because a *first*
+    boot runs migrations and can take minutes — but it is only ever waited out
+    for a server that is actually coming up. A dead spawn with nothing listening
+    on the port raises immediately: waiting cannot fix a missing dependency or a
+    crash, and a 10-minute hang would stall every Hermes session start.
+
+    Raises RuntimeError when the spawn is dead and the port unowned, or when the
+    server does not become healthy within boot_timeout.
     """
     url = "http://127.0.0.1:%d" % int(port)
     if health_ok(url):
         return url
     if log_path is None:
-        log_path = os.path.join(os.path.expanduser("~"), ".cognee-hermes-server.log")
+        log_path = default_server_log_path()
+    proc = None
+    spawn_error = None
     try:
-        _spawn(port, data_root, system_root, log_path)
+        proc = _spawn(port, data_root, system_root, log_path)
     except Exception as exc:
         # A spawn failure may just be a port-bind race with another starter, in
         # which case health polling below will still succeed. But it may also be a
         # real problem (missing uvicorn, permission denied) — log it for diagnostics.
+        spawn_error = exc
         logger.warning("cognee server spawn attempt failed (will still poll /health): %s", exc)
     deadline = time.monotonic() + float(boot_timeout)
     while time.monotonic() < deadline:
         if health_ok(url):
             return url
+        # Our spawn being gone is not itself fatal — losing a port-bind race to a
+        # concurrent starter looks exactly like this, and then the port has an
+        # owner worth waiting for. Dead spawn AND a silent port is fatal.
+        spawn_is_gone = spawn_error is not None or (proc is not None and proc.poll() is not None)
+        if spawn_is_gone and not port_bound(port):
+            cause = (
+                "failed to launch (%s)" % spawn_error
+                if spawn_error is not None
+                else "exited with code %s" % proc.returncode
+            )
+            raise RuntimeError(
+                "cognee local server %s and nothing is listening on port %s. "
+                "See %s for the server output." % (cause, port, log_path)
+            )
         time.sleep(1.0)
     raise RuntimeError(
-        "cognee local server did not become healthy at %s within %ss" % (url, boot_timeout)
+        "cognee local server did not become healthy at %s within %ss. "
+        "See %s for the server output." % (url, boot_timeout, log_path)
     )

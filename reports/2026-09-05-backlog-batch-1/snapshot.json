@@ -1,0 +1,333 @@
+{
+  "repository": "topoteretes/cognee-integrations",
+  "review_date": "2026-09-05",
+  "selection": "10 oldest open issues and 10 oldest open PRs by creation time, ascending",
+  "base_commit": "ccfc3a074374461dd74e77c6883e0b894c869cfc",
+  "core_api_commit": "78ff576559a7f75f65884c5bd90b22cdc790016e",
+  "open_totals": {
+    "issues": 18,
+    "pull_requests": 44
+  },
+  "issues": [
+    {
+      "number": 135,
+      "title": "Observability: add elapsed_ms to recall / bridge / improve events",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/135",
+      "createdAt": "2026-06-29T14:54:39Z",
+      "updatedAt": "2026-07-09T12:04:10Z"
+    },
+    {
+      "number": 136,
+      "title": "Release: fix inventory.yml version drift + CI version-consistency check",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/136",
+      "createdAt": "2026-06-29T14:54:41Z",
+      "updatedAt": "2026-07-04T04:24:47Z"
+    },
+    {
+      "number": 138,
+      "title": "Observability: standardize + namespace structured hook event names",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/138",
+      "createdAt": "2026-06-29T14:54:44Z",
+      "updatedAt": "2026-07-09T12:03:18Z"
+    },
+    {
+      "number": 171,
+      "title": "Local-mode LLM: support Claude Sonnet 5 and reusing the Claude Code subscription via OAuth token (no separate API key)",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/171",
+      "createdAt": "2026-07-01T14:31:52Z",
+      "updatedAt": "2026-07-01T14:31:52Z"
+    },
+    {
+      "number": 314,
+      "title": "Feature request: optional per-project `node_set` tagging for Claude Code session syncs",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/314",
+      "createdAt": "2026-07-30T18:07:37Z",
+      "updatedAt": "2026-07-30T18:07:37Z"
+    },
+    {
+      "number": 319,
+      "title": "feat(opencode): add native Cognee persistent-memory plugin",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/319",
+      "createdAt": "2026-08-02T17:03:02Z",
+      "updatedAt": "2026-08-02T17:06:49Z"
+    },
+    {
+      "number": 320,
+      "title": "Hardening: watcher passes the session key on argv (visible to local process observers) \u2014 pass via environment or file handle instead",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/320",
+      "createdAt": "2026-08-03T22:47:25Z",
+      "updatedAt": "2026-08-03T22:47:25Z"
+    },
+    {
+      "number": 332,
+      "title": "Claude Code plugin: auto-capture has no redaction or opt-out, so secrets in tool traces reach the graph",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/332",
+      "createdAt": "2026-08-07T10:19:25Z",
+      "updatedAt": "2026-08-07T10:19:25Z"
+    },
+    {
+      "number": 335,
+      "title": "claude-code: UserPromptSubmit hook can hit its full timeout \u2014 ensure_cognee_ready() awaits setup() outside every budget",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/335",
+      "createdAt": "2026-08-09T16:33:54Z",
+      "updatedAt": "2026-08-11T08:38:13Z"
+    },
+    {
+      "number": 350,
+      "title": "fix(claude-code,codex): tolerate HTTP backends without optional control-plane routes",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/350",
+      "createdAt": "2026-08-19T22:07:53Z",
+      "updatedAt": "2026-08-19T22:11:38Z"
+    }
+  ],
+  "pull_requests": [
+    {
+      "number": 116,
+      "title": "feat: Add `remember` and `recall` operations to n8n node",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/116",
+      "createdAt": "2026-06-27T19:08:26Z",
+      "updatedAt": "2026-06-27T19:15:36Z",
+      "headRefOid": "d5120be7c55ce9c6acb407922a151606adb8029f",
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/n8n/README.md",
+        "integrations/n8n/nodes/Cognee/Cognee.node.ts"
+      ]
+    },
+    {
+      "number": 169,
+      "title": "test(integrations): config precedence tests + matrix for all four integrations (#3559)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/169",
+      "createdAt": "2026-07-01T13:32:48Z",
+      "updatedAt": "2026-07-12T09:39:21Z",
+      "headRefOid": "41a71f283d707d0842dca689272cfad5011ceda3",
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "reviewDecision": "",
+      "reviews": [
+        {
+          "state": "COMMENTED",
+          "author": "ArmagedonFlamer"
+        },
+        {
+          "state": "COMMENTED",
+          "author": "mohitjeswani01"
+        },
+        {
+          "state": "COMMENTED",
+          "author": "mohitjeswani01"
+        }
+      ],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/claude-code/README.md",
+        "integrations/claude-code/tests/test_config_precedence.py",
+        "integrations/codex/README.md",
+        "integrations/codex/tests/test_config_precedence.py",
+        "integrations/hermes-agent/README.md",
+        "integrations/hermes-agent/tests/test_config_precedence.py",
+        "integrations/openclaw/README.md",
+        "integrations/openclaw/__tests__/test_configPrecedence.ts"
+      ]
+    },
+    {
+      "number": 175,
+      "title": "fix(release): correct inventory.yml version drift + add CI version-consistency check",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/175",
+      "createdAt": "2026-07-01T16:48:25Z",
+      "updatedAt": "2026-07-04T13:36:18Z",
+      "headRefOid": "262fe4b9ba93823e824db56b25f042274e75b452",
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "BLOCKED",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        ".github/workflows/check-version-consistency.yml",
+        "integrations/inventory.yml",
+        "scripts/check_version_consistency.py"
+      ]
+    },
+    {
+      "number": 183,
+      "title": "feat(openclaw): cold-start warmup + first-recall retry in the TS client (#3546)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/183",
+      "createdAt": "2026-07-01T20:33:39Z",
+      "updatedAt": "2026-07-12T11:39:03Z",
+      "headRefOid": "4c7ea5dacf2858a36a52d2232cc96c5752325366",
+      "mergeable": "CONFLICTING",
+      "mergeStateStatus": "DIRTY",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/openclaw/README.md",
+        "integrations/openclaw/__tests__/test_coldStart.ts",
+        "integrations/openclaw/src/client.ts",
+        "integrations/openclaw/src/plugin.ts"
+      ]
+    },
+    {
+      "number": 185,
+      "title": "feat(claude-code): add project-level dataset picker (#3686)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/185",
+      "createdAt": "2026-07-02T02:57:28Z",
+      "updatedAt": "2026-07-10T12:45:06Z",
+      "headRefOid": "e3b24347c3dd63ce84b6c4c0748e88fe6841333c",
+      "mergeable": "CONFLICTING",
+      "mergeStateStatus": "DIRTY",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/claude-code/README.md",
+        "integrations/claude-code/scripts/cognee_statusline_render.py",
+        "integrations/claude-code/scripts/config.py",
+        "integrations/claude-code/scripts/pre-compact.py",
+        "integrations/claude-code/scripts/session-start.py",
+        "integrations/claude-code/scripts/store-to-session.py",
+        "integrations/claude-code/scripts/store-user-prompt.py",
+        "integrations/claude-code/scripts/sync-session-to-graph.py",
+        "integrations/claude-code/tests/test_session_picker.py",
+        "integrations/claude-code/tests/test_sync_picker_propagation.py"
+      ]
+    },
+    {
+      "number": 186,
+      "title": "feat(claude-code): mid-session dataset switch (seal bridge + re-register)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/186",
+      "createdAt": "2026-07-02T04:41:39Z",
+      "updatedAt": "2026-07-10T12:45:09Z",
+      "headRefOid": "b15d703438a5d3c30710d8b08d3276d09f7f9b55",
+      "mergeable": "CONFLICTING",
+      "mergeStateStatus": "DIRTY",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/claude-code/README.md",
+        "integrations/claude-code/scripts/_plugin_common.py",
+        "integrations/claude-code/scripts/config.py",
+        "integrations/claude-code/scripts/dataset-switch.py",
+        "integrations/claude-code/skills/cognee-dataset-switch/SKILL.md",
+        "integrations/claude-code/tests/test_dataset_switch.py"
+      ]
+    },
+    {
+      "number": 192,
+      "title": "feat(integrations): re-register agent session on mid-session COGNEE_BASE_URL change",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/192",
+      "createdAt": "2026-07-02T10:40:54Z",
+      "updatedAt": "2026-07-10T12:44:40Z",
+      "headRefOid": "3598f2a86f43be97d0edbbc8c51c12d999df735d",
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/claude-code/scripts/_plugin_common.py",
+        "integrations/claude-code/tests/test_mid_session_reregister.py",
+        "integrations/codex/plugins/cognee/scripts/_plugin_common.py"
+      ]
+    },
+    {
+      "number": 193,
+      "title": "feat(claude-code): standardize and namespace hook event names (#3679)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/193",
+      "createdAt": "2026-07-02T10:41:16Z",
+      "updatedAt": "2026-07-10T12:44:59Z",
+      "headRefOid": "33838200788cc2de02545da0f37e5edd1fa458aa",
+      "mergeable": "CONFLICTING",
+      "mergeStateStatus": "DIRTY",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/claude-code/EVENTS.md",
+        "integrations/claude-code/scripts/_plugin_common.py",
+        "integrations/claude-code/scripts/event_names.py",
+        "integrations/claude-code/scripts/pre-compact.py",
+        "integrations/claude-code/scripts/session-context-lookup.py",
+        "integrations/claude-code/scripts/session-start.py",
+        "integrations/claude-code/scripts/store-to-session.py",
+        "integrations/claude-code/scripts/store-user-prompt.py",
+        "integrations/claude-code/scripts/sync-session-to-graph.py",
+        "integrations/claude-code/tests/test_event_names.py"
+      ]
+    },
+    {
+      "number": 202,
+      "title": "feat(n8n): add Recall and Remember resources (closes topoteretes/cogn\u2026",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/202",
+      "createdAt": "2026-07-02T17:29:06Z",
+      "updatedAt": "2026-07-02T17:29:06Z",
+      "headRefOid": "2a2bcd4c3f9264cca2a98d6c2b9fa350674b170e",
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/n8n/README.md",
+        "integrations/n8n/nodes/Cognee/Cognee.node.ts",
+        "integrations/n8n/package.json"
+      ]
+    },
+    {
+      "number": 211,
+      "title": "feat(datasets): add companion sessions dataset option",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/211",
+      "createdAt": "2026-07-04T14:46:30Z",
+      "updatedAt": "2026-07-10T12:45:05Z",
+      "headRefOid": "056386822441b5b15fe9fd39f0a8075354f8fcba",
+      "mergeable": "CONFLICTING",
+      "mergeStateStatus": "DIRTY",
+      "reviewDecision": "",
+      "reviews": [],
+      "statusCheckRollup": [],
+      "changed_files": [
+        "integrations/claude-code/README.md",
+        "integrations/claude-code/scripts/_plugin_common.py",
+        "integrations/claude-code/scripts/_recall_http.py",
+        "integrations/claude-code/scripts/cognee-remember.sh",
+        "integrations/claude-code/scripts/config.py",
+        "integrations/claude-code/scripts/pre-compact.py",
+        "integrations/claude-code/scripts/session-context-lookup.py",
+        "integrations/claude-code/scripts/session-start.py",
+        "integrations/claude-code/scripts/store-to-session.py",
+        "integrations/claude-code/scripts/sync-session-to-graph.py",
+        "integrations/claude-code/tests/test_companion_dataset.py",
+        "integrations/codex/README.md",
+        "integrations/codex/plugins/cognee/scripts/_plugin_common.py",
+        "integrations/codex/plugins/cognee/scripts/_recall_http.py",
+        "integrations/codex/plugins/cognee/scripts/cognee-remember.sh",
+        "integrations/codex/plugins/cognee/scripts/config.py",
+        "integrations/codex/plugins/cognee/scripts/pre-compact.py",
+        "integrations/codex/plugins/cognee/scripts/session-context-lookup.py",
+        "integrations/codex/plugins/cognee/scripts/session-start.py",
+        "integrations/codex/plugins/cognee/scripts/store-to-session.py",
+        "integrations/codex/plugins/cognee/scripts/sync-session-to-graph.py"
+      ]
+    }
+  ],
+  "validation": {
+    "shared_pytest": "1473 passed, 91 skipped, 36 deselected, 2 xfailed in 51.45s",
+    "new_regressions": 12,
+    "version_guard_unittest": "7 passed",
+    "ruff": "All checks passed; 394 files formatted",
+    "python_pin_check": "16 Python integrations passed",
+    "pr_169_on_current_main": {
+      "claude_code": "5 failed, 1 xfailed (_CONFIG_FILE removed)",
+      "codex": "5 failed (_CONFIG_FILE removed)",
+      "hermes_agent": "5 passed, 2 failed (stale dataset and port defaults)",
+      "openclaw": "static review only"
+    },
+    "pr_175_on_current_main": "3 drift violations: claude-code, codex, openclaw",
+    "pr_202_on_current_main": "npm ci, build, lint, tsc and direct request/multipart smoke checks passed; Node 26.8.1, no live Cognee calls"
+  }
+}

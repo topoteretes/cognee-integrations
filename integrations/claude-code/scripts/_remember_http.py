@@ -31,12 +31,6 @@ import uuid
 UNREACHABLE = "UNREACHABLE"
 
 
-def _is_local(url):
-    """True for a localhost/loopback target (where a cloud API key is meaningless)."""
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
-
-
 def _multipart_body(fields, files):
     boundary = f"----cogneeRemember{uuid.uuid4().hex}"
     chunks = []
@@ -135,7 +129,9 @@ def _poll_status(
         + "&pipeline=cognify_pipeline"
     )
     headers = {}
-    if api_key and not _is_local(service_url):
+    # Always attach the key when present: cognee >=1.2.2 enforces auth even on
+    # localhost; a server with auth disabled ignores the header.
+    if api_key:
         headers["X-Api-Key"] = api_key
     deadline = time.monotonic() + max(0.0, deadline_seconds)
     while True:
@@ -174,12 +170,29 @@ def do_remember(
     dataset,
     node_set,
     *,
+    file_path=None,
     opener=urllib.request.urlopen,
-    timeout=60.0,
+    timeout=120.0,
 ):
-    """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE."""
+    """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.
+
+    With ``file_path``, the file's bytes are uploaded under its REAL basename
+    instead of the synthetic ``{node_set}.txt``. The filename extension is the
+    server's loader-routing signal: a ``.py``/``.ts``/... upload rides the
+    zero-LLM code-graph route (cognify CODE route, cognee >= 1.5.x), while the
+    ``.txt`` rename would silently ingest code as prose through the LLM
+    pipeline. Reading the file here (not in the shell) also avoids ARG_MAX
+    limits on large sources.
+    """
     url = service_url.rstrip("/") + "/api/v1/remember"
     filename = f"{node_set or 'content'}.txt"
+    if file_path:
+        try:
+            with open(file_path, "rb") as fh:
+                content = fh.read()
+        except OSError as e:
+            return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
+        filename = os.path.basename(str(file_path).rstrip("/")) or filename
     body, boundary = _multipart_body(
         {
             "datasetName": dataset,
@@ -189,9 +202,10 @@ def do_remember(
         [("data", filename, content.encode("utf-8") if isinstance(content, str) else content)],
     )
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-    # COGNEE_API_KEY is a cloud credential; local single-user servers need no
-    # auth and ignore it. Only attach it for a remote/cloud target.
-    if api_key and not _is_local(service_url):
+    # Always attach the key when present: cognee >=1.2.2 enforces auth on its
+    # API routes even on localhost (the local key is auto-minted at bootstrap),
+    # and a server running with auth disabled simply ignores the header.
+    if api_key:
         headers["X-Api-Key"] = api_key
 
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
@@ -267,10 +281,26 @@ def do_remember(
 
 
 def main(argv):
-    # argv: service_url, api_key, content, dataset, node_set
-    a = list(argv) + [""] * 5
-    result = do_remember(a[0], a[1], a[2], a[3], a[4])
+    # argv: service_url, api_key, content, dataset, node_set[, file_path]
+    # With file_path set (arg 6), content (arg 3) is ignored: the file's bytes
+    # are uploaded under their real basename so code files route as code.
+    a = list(argv) + [""] * 6
+    result = do_remember(a[0], a[1], a[2], a[3], a[4], file_path=a[5] or None)
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
+    if result != UNREACHABLE:
+        # Refresh the status-line credits marker, attributing the spend delta
+        # to this remember (cloud-only; the fetch itself no-ops on a local
+        # server). Lazy, guarded import: this module is standalone by design,
+        # and the opt-out env stops _plugin_common's venv re-exec — an execv
+        # here would re-run main() and double-submit the remember.
+        try:
+            os.environ.setdefault("COGNEE_PLUGIN_IN_VENV", "1")
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _plugin_common import refresh_credits
+
+            refresh_credits("remember")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

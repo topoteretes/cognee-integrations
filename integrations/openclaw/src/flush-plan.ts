@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 const SILENT_REPLY_TOKEN = "NO_REPLY";
 const DEFAULT_MEMORY_FLUSH_SOFT_TOKENS = 4_000;
@@ -185,9 +185,13 @@ export function buildMemoryFlushPlan(
   const forceFlushTranscriptBytes =
     parseNonNegativeByteSize(defaults?.forceFlushTranscriptBytes) ??
     DEFAULT_MEMORY_FLUSH_FORCE_TRANSCRIPT_BYTES;
+  // reserveTokensFloor was dropped from the AgentCompactionConfig type in
+  // OpenClaw 2026.7.2; read it loosely so configs that still set it are honored.
   const reserveTokensFloor =
-    normalizeNonNegativeInt(cfg?.agents?.defaults?.compaction?.reserveTokensFloor) ??
-    DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR;
+    normalizeNonNegativeInt(
+      (cfg?.agents?.defaults?.compaction as { reserveTokensFloor?: unknown } | undefined)
+        ?.reserveTokensFloor,
+    ) ?? DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR;
 
   const { timeLine, userTimezone } = resolveCronStyleNow(cfg ?? {}, nowMs);
   const dateStamp = formatDateStampInTimezone(nowMs, userTimezone);
