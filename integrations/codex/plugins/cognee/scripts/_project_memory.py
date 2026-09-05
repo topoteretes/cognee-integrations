@@ -45,6 +45,9 @@ def begin(dataset: str, session_id: str, cwd: str) -> None:
         "yes",
         "on",
     )
+    companion = (
+        companion and dataset != "agent_sessions" and not dataset.endswith("-agent_sessions")
+    )
     tag = project_tag(cwd, setting)
     if not tag and not companion:
         return

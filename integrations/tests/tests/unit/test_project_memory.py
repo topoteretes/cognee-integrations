@@ -96,3 +96,11 @@ def test_old_server_never_silently_drops_project_tags(
     pm.prepare("primary", "s")
     with pytest.raises(RuntimeError, match="does not support"):
         common.remember_entry_via_http("primary", "s", {"type": "qa"})
+
+
+def test_default_session_dataset_needs_no_companion(suite, isolated_modules, monkeypatch, tmp_path):
+    pm, common = prepare_env(suite, isolated_modules, monkeypatch, tmp_path)
+    monkeypatch.setenv("COGNEE_SESSION_COMPANION_DATASET", "true")
+    pm.begin("agent_sessions", "s", str(tmp_path))
+    assert pm.route("agent_sessions", "s")["write"] == "agent_sessions"
+    assert not pm._path("agent_sessions", "s").exists()
