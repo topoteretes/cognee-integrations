@@ -72,7 +72,13 @@ def test_shared_uuid_is_used_by_write_and_registration(suite, isolated_modules, 
     ident = str(uuid4())
     calls = []
     monkeypatch.setattr(
-        pc, "_json_http_request", lambda path, payload, **kw: calls.append(payload) or {}
+        pc,
+        "_json_http_request",
+        lambda path, payload=None, **kw: (
+            {"paths": {"/api/v1/remember/entry": {"post": {"x-cognee-session-dataset-ids": True}}}}
+            if path == "/openapi.json"
+            else calls.append(payload) or {}
+        ),
     )
     pc.remember_entry_via_http(ident, "session", {"type": "qa", "question": "q", "answer": "a"})
     assert calls[-1]["dataset_id"] == ident and "dataset_name" not in calls[-1]
@@ -155,3 +161,73 @@ def test_permission_rejection_never_falls_back_to_ownership(
     with pytest.raises(HTTPError) as error:
         pc.list_writable_datasets("user")
     assert error.value.code == status
+
+
+def test_old_sdk_cannot_accept_uuid_session_writes(suite, isolated_modules, monkeypatch):
+    from uuid import uuid4
+
+    pc = isolated_modules(suite, "_plugin_common")
+    calls = []
+
+    def request(path, *args, **kwargs):
+        calls.append(path)
+        # The old SDK has a dataset_id schema field but rejects it in remember().
+        return {"paths": {"/api/v1/remember/entry": {"post": {}}}}
+
+    monkeypatch.setattr(pc, "_json_http_request", request)
+    with pytest.raises(RuntimeError, match="cannot safely store"):
+        pc.remember_entry_via_http(
+            str(uuid4()), "session", {"type": "qa", "question": "q", "answer": "a"}
+        )
+    assert calls == ["/openapi.json"]
+
+
+def test_unsupported_shared_switch_aborts_before_sync(suite, hook_module, monkeypatch):
+    from uuid import uuid4
+
+    switch = hook_module(suite, "switch-dataset.py")
+    import _plugin_common as pc
+
+    ident = str(uuid4())
+    monkeypatch.setattr(switch, "load_resolved", lambda **kw: {"user_id": "writer"})
+    monkeypatch.setattr(
+        switch,
+        "list_writable_datasets",
+        lambda *args: {
+            "datasets": [{"id": ident, "name": "shared", "owner_id": "other", "writable": True}],
+            "readonly": [],
+        },
+    )
+    monkeypatch.setattr(pc, "_json_http_request", lambda *args, **kw: {"paths": {}})
+    calls = []
+    monkeypatch.setattr(switch, "_sync_current", lambda *args: calls.append("sync"))
+    with pytest.raises(RuntimeError, match="cannot safely store"):
+        switch._switch("host", {"session_id": "old", "dataset": "owned"}, ident, force=False)
+    assert calls == []
+
+
+def test_owned_uuid_selection_uses_compatible_owned_name(suite, hook_module, monkeypatch):
+    from uuid import uuid4
+
+    switch = hook_module(suite, "switch-dataset.py")
+    ident = str(uuid4())
+    monkeypatch.setattr(switch, "load_resolved", lambda **kw: {"user_id": "writer"})
+    monkeypatch.setattr(
+        switch,
+        "list_writable_datasets",
+        lambda *args: {
+            "datasets": [{"id": ident, "name": "owned", "owner_id": "writer", "writable": True}],
+            "readonly": [],
+        },
+    )
+    monkeypatch.setattr(switch, "_sync_current", lambda *args: None)
+    chosen = []
+
+    def inspect(target):
+        chosen.append(target)
+        raise RuntimeError("inspection complete")
+
+    monkeypatch.setattr(switch, "_ensure_dataset", inspect)
+    with pytest.raises(RuntimeError, match="inspection complete"):
+        switch._switch("host", {"session_id": "old", "dataset": "previous"}, ident, force=False)
+    assert chosen == ["owned"]
