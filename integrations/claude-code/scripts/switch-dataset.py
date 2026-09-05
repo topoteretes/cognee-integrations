@@ -264,15 +264,19 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     # guaranteed writable; anything else is refused up front rather than failing
     # half-way through.
     listing = list_writable_datasets(user_id)
-    if target in listing["readonly"]:
-        raise SwitchError(
-            EXIT_NOT_WRITABLE,
-            f"dataset {target!r} is readable but owned by someone else (not writable); "
-            "run --list to see the options",
-            hidden_readonly=listing["hidden_readonly"],
-        )
-    # A name that is not listed at all is created for this principal by the
-    # ensure step below (owner = us, hence writable).
+    from _dataset_access import dataset_id
+
+    matches = [row for row in listing["datasets"] if target in (row["id"], row["name"])]
+    if len(matches) > 1:
+        raise SwitchError(EXIT_NOT_WRITABLE, "Dataset name is ambiguous; select its UUID")
+    if (not matches and target in listing["readonly"]) or (dataset_id(target) and not matches):
+        raise SwitchError(EXIT_NOT_WRITABLE, "Selected dataset is not writable")
+    if matches:
+        row = matches[0]
+        if row["owner_id"] != user_id or dataset_id(target):
+            target = row["id"]
+        if row["writable"] is not True:
+            raise SwitchError(EXIT_NOT_WRITABLE, "Write permission could not be verified")
 
     # 1. Sync the session we are leaving. Abort on failure unless forced — the
     #    retired triple stays in `touched`, so the final sync retries it.
@@ -294,7 +298,11 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     new_conn = _register_new(new_session, target)
 
     # 4. ... repoint the launch record (atomic) ...
-    switch_launch_record(host_key, session_id=new_session, dataset=target, conn_uuid=new_conn)
+    try:
+        switch_launch_record(host_key, session_id=new_session, dataset=target, conn_uuid=new_conn)
+    except Exception:
+        unregister_agent_via_http(agent_session_name=new_conn)
+        raise
 
     # 5. ... then release the old handle. Best-effort: a lingering active
     #    connection is harmless and the final unregister sweeps `touched`.

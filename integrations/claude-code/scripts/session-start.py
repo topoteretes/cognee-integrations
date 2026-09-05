@@ -108,7 +108,7 @@ _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.5.3"
+_PINNED_COGNEE_VERSION = "1.5.4"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Maps a configured backend provider env var to the cognee package "extra" that
@@ -397,6 +397,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     subprocess.run(
                         [uv, "venv", str(_VENV_DIR), "--python", _PINNED_PYTHON],
                         env=env,
+                        cwd=str(_GLOBAL_STATE_DIR),
                         check=True,
                         capture_output=True,
                         text=True,
@@ -413,6 +414,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         _cognee_install_spec(),
                     ],
                     env=env,
+                    cwd=str(_GLOBAL_STATE_DIR),
                     check=True,
                     capture_output=True,
                     text=True,
@@ -633,6 +635,8 @@ def _ensure_local_server_running(
             hook_log("server_console_capture_unavailable", {"path": str(console_log)})
         server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
+            # Import the installed runtime even when the host opened a Cognee checkout.
+            cwd=str(_VENV_DIR),
             env=server_env,
             stdin=subprocess.DEVNULL,
             stdout=pump.stdin if pump else subprocess.DEVNULL,
@@ -776,7 +780,7 @@ async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
     if agent_key and api_key == agent_key:
         api_key = ""
     if not api_key:
-        api_key = load_cached_api_key(service_url)
+        api_key = os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or load_cached_api_key(service_url)
     if not api_key:
         api_key = await _login_default_user_for_owner_api_key(service_url, config)
         if api_key:
@@ -785,60 +789,47 @@ async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
 
 
 async def _ensure_plugin_identity(service_url: str, config: dict, principal_key: str) -> str:
-    """Resolve the plugin's dedicated agent key, provisioning when appropriate.
-
-    Provisioning policy (data-continuity over attribution):
-      - A cached agent key for this service_url wins outright. Never re-provision
-        while one exists — the server ROTATES on every provision call, which
-        would revoke the key any other machine of this user still holds.
-      - No agent key + fresh install (no principal existed before this
-        bootstrap) -> provision: all data lives under the plugin identity from
-        day one, auto-shared to the parent user.
-      - No agent key + existing install -> stay on the principal unless the
-        user opts in (``plugin_identity: true`` / COGNEE_PLUGIN_IDENTITY).
-        Switching silently would strand datasets the principal already owns:
-        the parent->agent share is one-directional (agent-created datasets are
-        shared up; parent-owned ones are NOT shared down).
-
-    Returns the agent key, or "" when the plugin runs as the principal.
-    """
+    """Explicit opt-in; never rotate or silently fall back to the owner."""
     from _plugin_common import (
-        hook_log,
+        _AGENT_KEY_CACHE,
+        _load_json_file,
+        _principal_fingerprint,
         load_cached_agent_key,
+        plugin_identity_lock,
+        plugin_identity_mode,
         provision_plugin_agent_via_http,
         save_cached_agent_key,
     )
 
-    agent_key = load_cached_agent_key(service_url)
-    if agent_key:
-        return agent_key
-
-    fresh_install = bool(config.get("_fresh_install"))
-    opted_in = str(config.get("plugin_identity", "") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-    if not (fresh_install or opted_in):
+    mode = plugin_identity_mode(config)
+    if mode == "disabled":
         return ""
-
-    status, body = provision_plugin_agent_via_http(principal_key=principal_key)
-    if status == "provisioned":
-        agent_key = str(body.get("api_key") or "").strip()
-        save_cached_agent_key(service_url, agent_key, str(body.get("agent_id") or ""))
-        hook_log(
-            "plugin_agent_provisioned",
-            {
-                "agent_id": str(body.get("agent_id") or ""),
-                "created": bool(body.get("created")),
-                "reason": "fresh_install" if fresh_install else "opt_in",
-            },
+    with plugin_identity_lock():
+        key = load_cached_agent_key(service_url)
+        record = _load_json_file(_AGENT_KEY_CACHE)
+        if key:
+            if record.get("blocked"):
+                raise RuntimeError(
+                    "Plugin identity is disconnected; explicit reconnect is required"
+                )
+            if record.get("principal_fingerprint") != _principal_fingerprint(principal_key):
+                raise RuntimeError(
+                    "Cached plugin identity does not match this principal; reconnect explicitly"
+                )
+            return key
+        if mode != "enabled":
+            return ""
+        status, body = provision_plugin_agent_via_http(principal_key=principal_key)
+        if status != "provisioned":
+            raise RuntimeError(
+                f"Plugin provisioning {status}; owner fallback is disabled. "
+                "Safe create-only SDK support is required."
+            )
+        key = str(body.get("api_key") or "").strip()
+        save_cached_agent_key(
+            service_url, key, str(body.get("agent_id") or ""), principal_key=principal_key
         )
-        return agent_key
-
-    hook_log("plugin_provision_skipped", {"status": status})
-    return ""
+        return key
 
 
 async def _ensure_agent_credentials_and_register(
@@ -848,27 +839,13 @@ async def _ensure_agent_credentials_and_register(
     if not service_url:
         return "", "", "", False
 
-    from _plugin_common import (
-        clear_cached_agent_key,
-        load_cached_agent_key,
-        load_cached_api_key,
-        provision_plugin_agent_via_http,
-        register_agent_via_http,
-        save_cached_agent_key,
-    )
-
-    # Fresh install = no identity of any kind existed before this bootstrap.
-    # Recorded BEFORE the principal chain below mints one.
-    config["_fresh_install"] = not (
-        str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
-        or load_cached_api_key(service_url)
-        or load_cached_agent_key(service_url)
-    )
+    from _plugin_common import block_cached_agent_key, register_agent_via_http
 
     principal_key = await _resolve_single_principal_key(service_url, config)
     if not principal_key:
         return "", "", "", False
 
+    os.environ["COGNEE_PRINCIPAL_API_KEY"] = principal_key
     agent_key = await _ensure_plugin_identity(service_url, config, principal_key)
     api_key = agent_key or principal_key
 
@@ -888,29 +865,9 @@ async def _ensure_agent_credentials_and_register(
         dataset_names=[str(config.get("dataset", "") or "").strip()],
     )
     if not registered and registration.get("auth_failed") and agent_key:
-        # The provisioned key was revoked out-of-band (dashboard disconnect or
-        # a re-provision elsewhere rotated it). Re-provision once as the
-        # principal; if the server refuses, fall back to the principal key.
-        clear_cached_agent_key()
-        status, body = provision_plugin_agent_via_http(principal_key=principal_key)
-        if status == "provisioned":
-            agent_key = str(body.get("api_key") or "").strip()
-            save_cached_agent_key(service_url, agent_key, str(body.get("agent_id") or ""))
-            api_key = agent_key
-        else:
-            agent_key = ""
-            api_key = principal_key
-        hook_log(
-            "plugin_agent_rekeyed",
-            {"recovered": bool(agent_key), "provision_status": status},
-        )
-        os.environ["COGNEE_API_KEY"] = api_key
-        config["api_key"] = api_key
-        user_id = await _user_id_via_api(service_url, api_key)
-        registered, registration = register_agent_via_http(
-            agent_session_name=agent_session_name,
-            session_id=session_id,
-            dataset_names=[str(config.get("dataset", "") or "").strip()],
+        block_cached_agent_key()
+        raise RuntimeError(
+            "Plugin identity rejected; automatic re-provision and owner fallback are disabled"
         )
     if not registered:
         raise RuntimeError(f"Failed to register session '{session_id}' on {service_url}.")

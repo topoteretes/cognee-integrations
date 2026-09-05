@@ -159,7 +159,9 @@ class IdentityFake:
             self.current_agent = ""
         return 200, {"activeAgents": len(self.registered_agents)}
 
-    def plugins_provision(self, plugin_key: str, api_key: str | None) -> tuple[int, dict[str, Any]]:
+    def plugins_provision(
+        self, plugin_key: str, api_key: str | None, *, create_only: bool = False
+    ) -> tuple[int, dict[str, Any]]:
         """POST /api/v1/integrations/plugins/{plugin_key}/provision.
 
         Mirrors the real endpoint: idempotent get-or-create of an agent
@@ -173,6 +175,8 @@ class IdentityFake:
             return 401, {"detail": "invalid api key"}
 
         record = self.plugin_agents.get(plugin_key)
+        if record and create_only:
+            return 409, {"detail": "Identity already exists"}
         created = record is None
         if record is None:
             owner_id = self.users.get(entry["owner"], {}).get("id", "user")

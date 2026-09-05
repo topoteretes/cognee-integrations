@@ -97,14 +97,11 @@ def test_provision_requires_a_principal_key(suite, pc, mock_server):
     mock_server.assert_not_called("POST", PROVISION_PATH[suite.name])
 
 
-def test_reprovision_rotates_and_revokes_the_old_key(suite, pc, mock_server):
+def test_reprovision_does_not_rotate_the_old_key(suite, pc, mock_server):
     _, first = pc.provision_plugin_agent_via_http(principal_key=PRINCIPAL_KEY)
-    _, second = pc.provision_plugin_agent_via_http(principal_key=PRINCIPAL_KEY)
-    assert second["created"] is False
-    assert first["agent_id"] == second["agent_id"]
-    assert first["api_key"] != second["api_key"]
-    assert mock_server.identity.valid_keys[first["api_key"]]["valid"] is False
-    assert mock_server.identity.valid_keys[second["api_key"]]["valid"] is True
+    status, _ = pc.provision_plugin_agent_via_http(principal_key=PRINCIPAL_KEY)
+    assert status == "failed"
+    assert mock_server.identity.valid_keys[first["api_key"]]["valid"] is True
 
 
 # ── agent-key cache + key resolution ────────────────────────────────────────
@@ -119,7 +116,7 @@ def test_agent_key_cache_roundtrip_is_url_scoped(suite, pc):
 
 
 def test_api_key_resolution_prefers_the_plugin_identity(suite, pc, mock_server):
-    pc.save_cached_agent_key(mock_server.url, "agent-key-1", "agent-1")
+    pc.save_cached_agent_key(mock_server.url, "agent-key-1", "agent-1", principal_key=PRINCIPAL_KEY)
     key, source = pc._api_key_with_source(mock_server.url)
     assert (key, source) == ("agent-key-1", "plugin_agent_key")
 
@@ -157,9 +154,9 @@ def bootstrap(suite, hook_module, mock_server, monkeypatch):
     return module, run
 
 
-def test_fresh_install_provisions_a_plugin_identity(suite, bootstrap, mock_server):
+def test_fresh_install_requires_explicit_identity_opt_in(suite, bootstrap, mock_server):
     module, run = bootstrap
-    _user_id, api_key, _name, ok = run({})
+    _user_id, api_key, _name, ok = run({"plugin_identity": True})
     assert ok
     assert api_key.startswith("agentkey-")
     mock_server.assert_called("POST", PROVISION_PATH[suite.name])
@@ -187,7 +184,7 @@ def test_existing_install_provisions_on_opt_in(suite, bootstrap, mock_server, mo
 
 def test_cached_agent_key_is_reused_not_reprovisioned(suite, bootstrap, mock_server):
     module, run = bootstrap
-    _u, first_key, _n, _ok = run({})
+    _u, first_key, _n, _ok = run({"plugin_identity": True})
     mock_server.calls.clear()
     _u, second_key, _n, ok = run({})
     assert ok
@@ -195,9 +192,9 @@ def test_cached_agent_key_is_reused_not_reprovisioned(suite, bootstrap, mock_ser
     mock_server.assert_not_called("POST", PROVISION_PATH[suite.name])
 
 
-def test_revoked_agent_key_reprovisions_once(suite, pc, bootstrap, mock_server):
+def test_revoked_agent_key_stays_disconnected(suite, pc, bootstrap, mock_server):
     module, run = bootstrap
-    _u, first_key, _n, _ok = run({})
+    _u, first_key, _n, _ok = run({"plugin_identity": True})
     mock_server.calls.clear()
 
     # Revoke out-of-band (dashboard disconnect / rotation on another machine):
@@ -211,5 +208,35 @@ def test_revoked_agent_key_reprovisions_once(suite, pc, bootstrap, mock_server):
     with pytest.raises(RuntimeError):
         run({})
     calls = [c for c in mock_server.calls if c["path"] == PROVISION_PATH[suite.name]]
+    assert len(calls) == 0
+    with pytest.raises(RuntimeError, match="rejected"):
+        pc._api_key_with_source(mock_server.url)
+
+
+def test_concurrent_startups_provision_only_once(suite, bootstrap, mock_server):
+    from concurrent.futures import ThreadPoolExecutor
+
+    module, _ = bootstrap
+
+    def connect():
+        return asyncio.run(
+            module._ensure_plugin_identity(
+                mock_server.url, {"plugin_identity": True}, PRINCIPAL_KEY
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        keys = list(workers.map(lambda _: connect(), range(2)))
+    assert keys[0] == keys[1]
+    calls = [call for call in mock_server.calls if call["path"] == PROVISION_PATH[suite.name]]
     assert len(calls) == 1
-    assert pc.load_cached_agent_key(mock_server.url) not in ("", first_key)
+
+
+def test_enabled_identity_does_not_fall_back_when_server_is_unsupported(
+    suite, bootstrap, mock_server
+):
+    _, run = bootstrap
+    mock_server.identity.plugin_provisioning = False
+    with pytest.raises(RuntimeError, match="fallback is disabled"):
+        run({"plugin_identity": True, "api_key": PRINCIPAL_KEY})
+    mock_server.assert_not_called("POST", "/api/v1/agents/register")

@@ -67,7 +67,7 @@ _DEFAULTS = {
     # attributes its traffic per plugin. Fresh installs do this automatically;
     # existing installs keep the principal key (their datasets are owned by it)
     # unless this opt-in is set.
-    "plugin_identity": False,
+    "plugin_identity": "auto",
     # Background remember + cognify status polling. Remember runs in the background
     # (so a large cognify never holds one request open past the cloud's ~10-min
     # request ceiling); these tune how completion is polled afterwards.
@@ -315,6 +315,21 @@ async def ensure_dataset_ready_via_api(service_url: str, api_key: str, dataset: 
         return
 
     base = service_url.rstrip("/")
+    from _dataset_access import dataset_id
+
+    ident = dataset_id(dataset)
+    if ident:
+        user_id = await _user_id_via_api(service_url, api_key)
+        if not user_id:
+            raise RuntimeError("Cannot authorize dataset ID without authenticated identity")
+        status, text = _cloud_http_request(
+            f"{base}/api/v1/permissions/principals/{user_id}/datasets?permission_name=write",
+            api_key=api_key,
+            timeout=15.0,
+        )
+        if status != 200 or not any(str(row.get("id")) == ident for row in json.loads(text)):
+            raise RuntimeError("403: no verified write permission on selected dataset")
+        return
     status, text = _cloud_http_request(
         f"{base}/api/v1/datasets/",  # trailing slash: cloud tenants 307-redirect the bare path
         method="POST",

@@ -202,8 +202,12 @@ def do_recall(
     # authenticated user or the server returns DatasetNotFoundError.
     # When dataset is empty (standalone invocation without shell), fall back to
     # the original search-all behaviour to avoid breaking direct callers.
-    if dataset:
-        body["datasets"] = [dataset]
+    from _dataset_access import recall_fields
+
+    fields, federated = recall_fields(dataset, body["scope"])
+    body.update(fields)
+    if federated:
+        body.pop("session_id", None)
     if context_profile:
         body["context_profile"] = context_profile
     headers = {"Content-Type": "application/json"}

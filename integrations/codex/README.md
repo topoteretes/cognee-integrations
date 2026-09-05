@@ -131,13 +131,19 @@ Key resolution order for data-plane traffic:
 4. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
 
 Provisioning policy:
-- **Fresh installs** (no key of any kind yet) provision a plugin identity automatically.
-- **Existing installs** keep the principal key — your datasets are owned by it, and
-  switching identities would hide them from the plugin. Opt in explicitly with
-  `"plugin_identity": true` in `config.json` or `COGNEE_PLUGIN_IDENTITY=true`.
-- A key revoked from the dashboard (disconnect / re-provision elsewhere) is detected
-  at the next session start and re-provisioned once; servers without the endpoint
-  fall back to the principal silently.
+- Identity provisioning is explicit: set `COGNEE_PLUGIN_IDENTITY=true` in
+  `~/.cognee/.env`. Fresh and existing installations otherwise retain their principal.
+- Provisioning requires the SDK's `create_only` capability. Unsupported servers,
+  existing server identities without a cached key, and rejected credentials stop
+  with an error; they never rotate keys or silently fall back to the owner.
+- A cached credential is bound to its server and principal. Changing accounts or
+  reconnecting a revoked identity requires explicit reconnection. Setting
+  `COGNEE_PLUGIN_IDENTITY=false` explicitly selects principal mode.
+- Use dataset UUIDs for shared write targets. Dataset switching checks effective
+  write permissions. Set `COGNEE_PLUGIN_READ_DATASET_IDS` to a JSON array of allowed
+  UUIDs for graph recall across datasets; session history stays scoped to its own
+  dataset. Grants must be configured separately by an authorized owner.
+
 
 ## Mode selection rules
 
