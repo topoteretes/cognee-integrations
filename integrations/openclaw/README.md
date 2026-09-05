@@ -25,7 +25,7 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Multi-scope recall**: Before each agent run, searches across all configured scopes and injects labeled context
 - **Session tracking**: Multi-turn conversation context via Cognee's session system
 - **Agent lifecycle registration**: Registers/unregisters each agent session with the Cognee server on every prompt turn; combined with `COGNEE_AGENT_MODE=true` on the server, Cognee shuts down automatically when all agents disconnect
-- **14 search types**: From simple semantic search (CHUNKS) to chain-of-thought graph reasoning (GRAPH_COMPLETION_COT) to auto-selection (FEELING_LUCKY)
+- **Search types**: Supports Cognee’s configured search types, including semantic search (CHUNKS), chain-of-thought graph reasoning (GRAPH_COMPLETION_COT), and automatic routing.
 - **Lazy dataset resolution**: On first prompt, if a dataset UUID is not cached locally, the plugin queries the Cognee server by name so you can connect to any pre-existing dataset without manual configuration
 - **Memory-hit visibility**: a `[cognee: N memories]` footer on replies where recall actually injected memories, plus a once-a-week digest of turns-with-hits and top sources — no extra LLM calls
 - **Health check**: Verifies Cognee API connectivity before operations

@@ -713,8 +713,12 @@ def _resolve_agent_name() -> str:
     return _normalize("codex-agent")
 
 
-def load_resolved(session_key: str = "") -> dict:
-    """Load runtime state from Cognee HTTP endpoints (no file cache)."""
+def load_resolved(session_key: str = "", *, identity: bool = True) -> dict:
+    """Resolve local session state, optionally enriching identity over HTTP.
+
+    Prompt recall only needs local fields. Passing ``identity=False`` keeps
+    identity probes outside that latency-sensitive path.
+    """
     resolved: dict = {}
 
     active_session_key = _sanitize_session_key(session_key) or get_session_key()
@@ -739,6 +743,9 @@ def load_resolved(session_key: str = "") -> dict:
     api_key = _api_key().strip()
     if api_key:
         resolved["api_key"] = api_key
+
+    if not identity:
+        return resolved
 
     # Resolve active connection details FIRST — it doubles as the primary
     # identity source. The connection is registered under the per-launch

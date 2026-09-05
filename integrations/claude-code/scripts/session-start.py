@@ -978,7 +978,6 @@ def _spawn_exit_watcher(
         "dataset": dataset,
         "session_key": session_key,
         "agent_session_name": agent_session_name,
-        "api_key": api_key,
         "base_url": service_url,
         "pidfile": str(watcher_pidfile),
     }
@@ -994,6 +993,9 @@ def _spawn_exit_watcher(
 
     try:
         env = os.environ.copy()
+        # Credentials must not be serialized into process arguments.
+        if api_key:
+            env["COGNEE_API_KEY"] = api_key
         if session_key:
             env["COGNEE_SESSION_KEY"] = session_key
         subprocess.Popen(

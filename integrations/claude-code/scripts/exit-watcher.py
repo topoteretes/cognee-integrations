@@ -209,7 +209,7 @@ def main() -> None:
     dataset = str(bootstrap.get("dataset") or "agent_sessions")
     session_key = str(bootstrap.get("session_key") or "")
     agent_session_name = str(bootstrap.get("agent_session_name") or "")
-    api_key = str(bootstrap.get("api_key") or "")
+    api_key = os.environ.get("COGNEE_API_KEY", "")
     service_url = str(bootstrap.get("base_url") or "")
     pidfile_raw = str(bootstrap.get("pidfile") or "").strip()
     pidfile = Path(pidfile_raw) if pidfile_raw else _PIDFILE
