@@ -3411,6 +3411,26 @@ def unregister_agent_via_http(
         return False, 0
 
 
+def graph_read_scope_path(host_key: str) -> Path:
+    digest = hashlib.sha256(host_key.encode()).hexdigest()
+    return _PLUGIN_DIR / "read-scopes" / f"{digest}.json"
+
+
+def load_graph_read_scope():
+    host_key = get_session_key()
+    if not host_key:
+        return None
+    path = graph_read_scope_path(host_key)
+    if not path.exists():
+        return None
+    record = _load_json_file(path)
+    if record.get("base_url") != _normalize_service_url(_local_api_url()) or record.get(
+        "credential_fingerprint"
+    ) != _principal_fingerprint(_api_key()):
+        raise RuntimeError("Read scope belongs to a different identity or server; select it again")
+    return record.get("dataset_ids", [])
+
+
 def recall_via_http(
     query: str,
     *,
