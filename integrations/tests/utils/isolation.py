@@ -38,6 +38,7 @@ ISOLATED_MODULES = (
     "_file_lock",
     "_deadlines",
     "_capture_policy",
+    "event_names",
     "_proc",
     "_recall_http",
     "_remember_http",

@@ -31,6 +31,7 @@ from _env_file import load_env_file
 from _logfiles import append_line as _append_log_line
 from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _recall_http import DOWN, SLOW, UNKNOWN, classify_transport_exception
+from event_names import event_fields
 
 # One-time config: ~/.cognee/.env acts like shell exports (setdefault — a real
 # export still wins). Loaded before any env read below or in importers.
@@ -1164,6 +1165,7 @@ def hook_log(event: str, detail: Optional[dict] = None) -> None:
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "pid": os.getpid(),
             "event": event,
+            **event_fields(event, "hook"),
         }
         if detail:
             line["detail"] = detail

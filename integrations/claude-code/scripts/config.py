@@ -36,6 +36,7 @@ from typing import Optional
 
 from _env_file import load_env_file
 from _logfiles import append_line as _append_log_line
+from event_names import event_fields
 
 # Must run before the _ENV_MAP scan in load_config() and before any importer's
 # module-level os.environ reads.
@@ -82,6 +83,7 @@ def _config_log(event: str, detail: dict | None = None) -> None:
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "pid": os.getpid(),
             "event": event,
+            **event_fields(event, "config"),
         }
         if detail:
             line["detail"] = detail
