@@ -38,6 +38,17 @@ integrations:
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
+  - slug: antigravity
+    name: "Cognee Plugin for Antigravity"
+    owner: cognee
+    language: python
+    registry: none
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "1.4.3"
+    migration_status: done
+    notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
+
   - slug: vellum-assistant
     name: "Cognee Plugin for Vellum Assistant"
     owner: vellum

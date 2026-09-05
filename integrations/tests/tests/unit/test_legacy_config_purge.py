@@ -29,7 +29,9 @@ def test_session_start_removes_legacy_config_json(suite, hook_module, temp_home)
 
     # The suite's own location is gone; the other suite's is not this suite's to touch.
     own = (
-        plugin_root(temp_home) if suite.name == "codex" else state_dir(suite, temp_home)
+        plugin_root(temp_home)
+        if suite.name in ("codex", "antigravity")
+        else state_dir(suite, temp_home)
     ) / "config.json"
     assert not own.exists()
     # Idempotent: a second run with nothing to remove must not raise.
