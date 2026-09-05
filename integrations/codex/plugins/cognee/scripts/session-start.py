@@ -890,7 +890,20 @@ def _spawn_idle_watcher(
 
 
 def _find_codex_parent_pid() -> int:
-    """Find the nearest live Codex ancestor, skipping hook shells."""
+    """Find the live Codex host process for this hook.
+
+    Codex exports its own pid as ``CODEX_PID`` to subprocesses; when that pid
+    is alive it IS the host, so use it before walking the process tree. The
+    walk stops at the *nearest* ``codex`` ancestor, which can be a short-lived
+    hook-runner rather than the session runtime (see the claude-code twin,
+    topoteretes/cognee-integrations#391).
+    """
+    try:
+        host_pid = int(str(os.environ.get("CODEX_PID", "") or "0").strip() or 0)
+    except ValueError:
+        host_pid = 0
+    if host_pid > 1 and _pid_alive(host_pid):
+        return host_pid
     fallback = os.getppid()
     if sys.platform == "win32":
         return find_host_ancestor_windows(fallback, "codex")

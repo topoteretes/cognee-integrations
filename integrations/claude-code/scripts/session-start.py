@@ -891,7 +891,22 @@ def _spawn_idle_watcher(
 
 
 def _find_claude_parent_pid() -> int:
-    """Find the nearest live Claude ancestor, skipping hook shells."""
+    """Find the live Claude host process for this hook.
+
+    Claude Code exports its own pid as ``CLAUDE_PID`` to every subprocess; when
+    that pid is alive it IS the host, so use it before walking the process tree.
+    The walk below stops at the *nearest* ``claude`` ancestor, which on the
+    Windows desktop app is the short-lived hook-runner rather than the session
+    runtime: the exit watcher then sees ``parent_exited`` within a second of
+    session start, runs the final sync early and unregisters the live connection
+    (topoteretes/cognee-integrations#391).
+    """
+    try:
+        host_pid = int(str(os.environ.get("CLAUDE_PID", "") or "0").strip() or 0)
+    except ValueError:
+        host_pid = 0
+    if host_pid > 1 and _pid_alive(host_pid):
+        return host_pid
     fallback = os.getppid()
     if sys.platform == "win32":
         return find_host_ancestor_windows(fallback, "claude")
