@@ -56,7 +56,8 @@ test('404 lifecycle is optional but authentication failures propagate', async ()
 test('the host entry point exports only plugin initializers', async () => {
  const module=await import('../dist/index.js');
  assert.deepEqual(Object.keys(module),['default']);
- const hooks=await module.default({directory:'/tmp/host-entry-test',project:{id:'p'},client:{}},{cognee:{autoCapture:false,autoRecall:false}});
- assert.equal(typeof hooks.dispose,'function');
- await hooks.dispose();
+ const root=mkdtempSync(join(tmpdir(),'opencode-entry-'));
+ const hooks=await module.default({directory:root,project:{id:'p'},client:{}},{cognee:{stateDir:root,autoCapture:false,autoRecall:false}});
+ try { assert.equal(typeof hooks.dispose,'function'); }
+ finally { await hooks.dispose(); rmSync(root,{recursive:true,force:true}); }
 });

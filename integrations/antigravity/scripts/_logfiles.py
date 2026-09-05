@@ -51,7 +51,7 @@ def max_bytes(default: int | None = None) -> int:
         return fallback
     try:
         return max(0, int(float(raw)))
-    except ValueError:
+    except (ValueError, OverflowError):
         return fallback
 
 
@@ -60,7 +60,7 @@ def rotated_path(path) -> Path:
     return path.with_name(path.name + ROTATED_SUFFIX)
 
 
-def rotate_if_oversized(path, cap: int | None = None) -> bool:
+def _rotate_unlocked(path, cap: int | None = None) -> bool:
     """Move ``path`` to ``path.1`` when it is larger than the cap.
 
     Replaces any previous ``.1`` (one generation, not a growing chain). Returns
@@ -81,6 +81,20 @@ def rotate_if_oversized(path, cap: int | None = None) -> bool:
         return False
 
 
+def rotate_if_oversized(path, cap: int | None = None) -> bool:
+    """Rotate only while holding the file's lock; another writer may have rotated."""
+    from _file_lock import file_lock
+
+    path = Path(path)
+    if not path.exists():
+        return False
+    try:
+        with file_lock(path.with_name(path.name + ".lock")) as acquired:
+            return _rotate_unlocked(path, cap) if acquired else False
+    except OSError:
+        return False
+
+
 def append_line(path, text: str, cap: int | None = None) -> bool:
     """Append ``text`` (a newline is added if missing) to a capped log.
 
@@ -90,12 +104,18 @@ def append_line(path, text: str, cap: int | None = None) -> bool:
     path = Path(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        rotate_if_oversized(path, cap)
-        if not text.endswith("\n"):
-            text += "\n"
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(text)
-        return True
+        from _file_lock import file_lock
+
+        # A small bound keeps diagnostics from holding up a prompt on contention.
+        with file_lock(path.with_name(path.name + ".lock"), timeout=0.05) as acquired:
+            if not acquired:
+                return False
+            _rotate_unlocked(path, cap)
+            if not text.endswith("\n"):
+                text += "\n"
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(text)
+            return True
     except Exception:
         return False
 

@@ -59,11 +59,18 @@ export class Outbox {
     try { mkdirSync(path, { mode: 0o700 }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      // Do not steal a lock from a live process, or one whose owner is unknown.
-      const owner = Number(readFileSync(join(path, "pid"), "utf8"));
-      try { process.kill(owner, 0); throw new Error("Outbox busy"); }
-      catch (probe) { if ((probe as NodeJS.ErrnoException).code !== "ESRCH") throw probe; }
-      rmSync(path, { recursive: true }); mkdirSync(path, { mode: 0o700 });
+      // Serialize stale-owner recovery, then re-read the owner under that lock.
+      // Two recoverers must never remove a lock that the other just acquired.
+      const recovery = path + ".recovery";
+      mkdirSync(recovery, { mode: 0o700 });
+      try {
+        const owner = Number(readFileSync(join(path, "pid"), "utf8"));
+        if (!Number.isSafeInteger(owner) || owner <= 0) throw new Error("Outbox lock owner unknown");
+        try { process.kill(owner, 0); throw new Error("Outbox busy"); }
+        catch (probe) { if ((probe as NodeJS.ErrnoException).code !== "ESRCH") throw probe; }
+        rmSync(path, { recursive: true }); mkdirSync(path, { mode: 0o700 });
+        writeFileSync(join(path, "pid"), String(process.pid), { mode: 0o600 });
+      } finally { rmSync(recovery, { recursive: true }); }
     }
     writeFileSync(join(path, "pid"), String(process.pid), { mode: 0o600 });
     try { return run(); } finally { rmSync(path, { recursive: true }); }
@@ -91,7 +98,7 @@ export class Outbox {
           try { await send(item); }
           catch (error) {
             // An explicit validation/auth rejection proves this request was not stored.
-            if (/request failed \((?:400|401|403|404|422|429)\)/.test(String(error))) {
+            if (/(?:request|login) failed \((?:400|401|403|404|422|429)\)/.test(String(error))) {
               this.lock(() => { const state = this.read(); const pending = state.pending.find((p) => p.id === item.id); if (pending) pending.uncertain = false; this.write(state); });
             }
             throw error;

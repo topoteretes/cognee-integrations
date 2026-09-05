@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from _logfiles import append_line as _append_log_line
+from event_names import event_fields
 
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
 # threshold means you have to actively pause a full minute. The improve cooldown
@@ -48,7 +49,12 @@ _should_stop = False
 
 def _log(event: str, **detail) -> None:
     try:
-        line = {"ts": time.time(), "pid": os.getpid(), "event": event}
+        line = {
+            "ts": time.time(),
+            "pid": os.getpid(),
+            "event": event,
+            **event_fields(event, "idle-watcher"),
+        }
         if detail:
             line["detail"] = detail
         _append_log_line(_LOGFILE, json.dumps(line, default=str))

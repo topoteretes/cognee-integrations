@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {spawn, spawnSync} from 'node:child_process';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -47,5 +48,35 @@ test('a definite authentication rejection can retry after credentials are fixed'
     assert.equal(queue.status().uncertain,0);
     await queue.flush(async()=>{},async()=>false);
     assert.equal(queue.status().saved,1);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+
+test('concurrent processes recover one abandoned lock without losing journal entries', async () => {
+  const root=mkdtempSync(join(tmpdir(),'opencode-lock-'));
+  const url=new URL('../dist/src/runtime.js',import.meta.url).href;
+  try {
+    const abandoned=spawnSync(process.execPath,['--input-type=module','-e',`
+      import {mkdirSync,writeFileSync} from 'node:fs';
+      import {Outbox} from ${JSON.stringify(url)};
+      const q=new Outbox('shared',${JSON.stringify(root)});
+      mkdirSync(q.file+'.lock'); writeFileSync(q.file+'.lock/pid',String(process.pid));
+    `]);
+    assert.equal(abandoned.status,0);
+    await Promise.all(['a','b'].map(label=>new Promise((resolve,reject)=>{
+      const child=spawn(process.execPath,['--input-type=module','-e',`
+        import {Outbox} from ${JSON.stringify(url)};
+        const q=new Outbox('shared',${JSON.stringify(root)});
+        for(let i=0;i<20;i++) {
+          for(let attempt=0;;attempt++) {
+            try {q.enqueue(${JSON.stringify(label)}+i,'s',{type:'qa',question:'q',answer:'a'});break;}
+            catch(error) {if(attempt===200)throw error;await new Promise(r=>setTimeout(r,5));}
+          }
+        }
+      `],{stdio:'pipe'});
+      let stderr='';child.stderr.on('data',chunk=>stderr+=chunk);
+      child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error(stderr)));
+    })));
+    assert.equal(new Outbox('shared',root).status().pending,40);
   } finally {rmSync(root,{recursive:true,force:true});}
 });

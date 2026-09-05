@@ -85,3 +85,5 @@ npm run typecheck
 No real LLM or paid backend is required by the tests. They cover request contracts,
 per-turn scopes, structured QA/trace capture, lifecycle, exclusions, redaction,
 restart recovery, ambiguous commits, and duplicate host events.
+
+Programmatic HTTP clients are exported from `@cognee/cognee-opencode/client`. The root export is the host plugin initializer.

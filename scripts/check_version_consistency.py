@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Check inventory and release versions for Claude Code, Codex, OpenClaw and n8n.
+"""Check inventory and release versions for the six in-repository plugin release surfaces.
 
 Run ``python scripts/check_version_consistency.py`` from any directory.
 The inventory scanner supports its existing flat ``slug``/``current_version``
 schema, including quoted values and comments; it is not a general YAML parser.
-This guard deliberately covers the four release surfaces proposed in PR #175,
-not Python package versions or integrations maintained outside this repository.
+This guard covers plugin release manifests, including OpenCode and Antigravity;
+it does not compare unrelated Python packages or externally maintained integrations.
 """
 
 import json
@@ -19,6 +19,8 @@ MANIFESTS = {
     "codex": "integrations/codex/plugins/cognee/.codex-plugin/plugin.json",
     "openclaw": "integrations/openclaw/package.json",
     "n8n": "integrations/n8n/package.json",
+    "opencode": "integrations/opencode/package.json",
+    "antigravity": "integrations/antigravity/plugin.json",
 }
 MARKETPLACE = ".claude-plugin/marketplace.json"
 

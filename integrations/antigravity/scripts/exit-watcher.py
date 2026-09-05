@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 from _logfiles import append_line as _append_log_line
 from _proc import pid_alive as _pid_alive
+from event_names import event_fields
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "antigravity"
 _EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"
@@ -30,7 +31,12 @@ _SYNC_START_DELAY = 2.0
 
 def _log(event: str, **detail) -> None:
     try:
-        line = {"ts": time.time(), "pid": os.getpid(), "event": event}
+        line = {
+            "ts": time.time(),
+            "pid": os.getpid(),
+            "event": event,
+            **event_fields(event, "exit-watcher"),
+        }
         if detail:
             line["detail"] = detail
         _append_log_line(_LOGFILE, json.dumps(line, default=str))
@@ -209,7 +215,7 @@ def main() -> None:
     dataset = str(bootstrap.get("dataset") or "agent_sessions")
     session_key = str(bootstrap.get("session_key") or "")
     agent_session_name = str(bootstrap.get("agent_session_name") or "")
-    api_key = str(bootstrap.get("api_key") or "")
+    api_key = os.environ.get("COGNEE_API_KEY", "")
     service_url = str(bootstrap.get("base_url") or "")
     pidfile_raw = str(bootstrap.get("pidfile") or "").strip()
     pidfile = Path(pidfile_raw) if pidfile_raw else _PIDFILE

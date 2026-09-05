@@ -313,3 +313,14 @@ integrations:
     migration_status: pending
     source_repo: https://github.com/topoteretes/cognee-integration-openai-agents
     notes: "Repo currently private."
+
+  - slug: opencode
+    name: "Cognee Plugin for OpenCode"
+    owner: cognee
+    language: typescript
+    registry: npm
+    package_name: "@cognee/cognee-opencode"
+    cognee_dependency: http-api
+    current_version: "2026.9.5"
+    migration_status: done
+    notes: "Native OpenCode plugin: per-turn recall, typed QA/tool capture, durable outbox and lifecycle hooks. Registry release pending."
