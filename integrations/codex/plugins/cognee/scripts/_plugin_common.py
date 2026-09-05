@@ -1786,7 +1786,8 @@ def plugin_identity_lock(timeout: float = 25.0):
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     locked = False
     try:
-        os.write(fd, b"0")
+        # Windows permits locking beyond EOF. Writing here would fail when
+        # another process holds the byte lock, before our retry loop runs.
         deadline = time.monotonic() + timeout
         while not locked:
             try:

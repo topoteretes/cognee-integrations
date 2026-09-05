@@ -231,3 +231,32 @@ def test_owned_uuid_selection_uses_compatible_owned_name(suite, hook_module, mon
     with pytest.raises(RuntimeError, match="inspection complete"):
         switch._switch("host", {"session_id": "old", "dataset": "previous"}, ident, force=False)
     assert chosen == ["owned"]
+
+
+def test_windows_lock_contention_retries_without_writing_locked_byte(
+    suite, isolated_modules, monkeypatch
+):
+    import os
+    import sys
+    from types import SimpleNamespace
+
+    pc = isolated_modules(suite, "_plugin_common")
+    modes = []
+
+    def lock(fd, mode, size):
+        modes.append(mode)
+        if len(modes) == 1:
+            raise OSError("Another process holds the byte lock")
+
+    def write(fd, content):
+        raise PermissionError("Cannot write a byte locked by another process")
+
+    fake_os = SimpleNamespace(**{name: getattr(os, name) for name in dir(os)})
+    fake_os.name, fake_os.write = "nt", write
+    monkeypatch.setattr(pc, "os", fake_os)
+    monkeypatch.setitem(
+        sys.modules, "msvcrt", SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=lock)
+    )
+    with pc.plugin_identity_lock(timeout=1):
+        assert modes == [1, 1]
+    assert modes == [1, 1, 2]
