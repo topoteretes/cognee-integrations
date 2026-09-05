@@ -9,7 +9,7 @@ export function resolveConfig(options: CogneePluginConfig = {}) {
   const mode = options.mode ?? (process.env.COGNEE_MODE === "cloud" ? "cloud" : "local");
   return {
     ...options, mode,
-    baseUrl: process.env.COGNEE_BASE_URL || process.env.COGNEE_SERVICE_URL || options.baseUrl || "http://localhost:8011",
+    baseUrl: process.env.COGNEE_BASE_URL || process.env.COGNEE_SERVICE_URL || options.baseUrl || (mode === "cloud" ? "https://api.cognee.ai" : "http://localhost:8011"),
     apiKey: process.env.COGNEE_API_KEY || options.apiKey || "",
     datasetName: process.env.COGNEE_PLUGIN_DATASET || options.datasetName || "agent_sessions",
     autoCapture: bool(process.env.COGNEE_CAPTURE, options.autoCapture !== false) && options.enableSessions !== false,

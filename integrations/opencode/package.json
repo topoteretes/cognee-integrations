@@ -29,5 +29,15 @@
   },
   "dependencies": {
     "@opencode-ai/plugin": ">=1.18.28 <=1.18.29"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/src/client.d.ts",
+      "import": "./dist/src/client.js"
+    }
   }
 }

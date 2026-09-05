@@ -52,3 +52,11 @@ test('404 lifecycle is optional but authentication failures propagate', async ()
  globalThis.fetch=async()=>json({},401); await assert.rejects(client.lifecycle('s','d'),/401/);
  } finally {globalThis.fetch=original;}
 });
+
+test('the host entry point exports only plugin initializers', async () => {
+ const module=await import('../dist/index.js');
+ assert.deepEqual(Object.keys(module),['default']);
+ const hooks=await module.default({directory:'/tmp/host-entry-test',project:{id:'p'},client:{}},{cognee:{autoCapture:false,autoRecall:false}});
+ assert.equal(typeof hooks.dispose,'function');
+ await hooks.dispose();
+});
