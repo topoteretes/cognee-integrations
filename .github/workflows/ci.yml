@@ -163,6 +163,7 @@ jobs:
   # core-team PRs only, advisory (continue-on-error — never blocks a merge).
   claude-review:
     name: Claude Code Review
+    timeout-minutes: 15
     needs: [ detect-changes, test-python, test-typescript ]
     if: >-
       ${{ !cancelled()
@@ -235,7 +236,7 @@ jobs:
           prompt: "/pr-review"
           claude_args: >-
             --allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob,Grep"
-            --max-turns 20
+            --max-turns 50
             --model claude-sonnet-4-5-20250929
 
       - name: DM review summary to PR author on Slack
