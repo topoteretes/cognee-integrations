@@ -37,3 +37,15 @@ test('outbox survives restart, deduplicates IDs, and never retries an ambiguous 
     assert.deepEqual(queue.status(),{pending:0,uncertain:0,saved:1});
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
+
+test('a definite authentication rejection can retry after credentials are fixed', async () => {
+  const root = mkdtempSync(join(tmpdir(),'opencode-retry-'));
+  try {
+    const queue = new Outbox('scope',root);
+    queue.enqueue('id','s',{type:'qa',question:'q',answer:'a'});
+    await assert.rejects(queue.flush(async () => {throw new Error('Cognee request failed (401)');},async()=>false));
+    assert.equal(queue.status().uncertain,0);
+    await queue.flush(async()=>{},async()=>false);
+    assert.equal(queue.status().saved,1);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
