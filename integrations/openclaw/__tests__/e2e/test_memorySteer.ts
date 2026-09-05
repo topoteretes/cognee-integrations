@@ -1,6 +1,6 @@
 /**
  * Memory steer + version surface through the plugin: the steer rides
- * before_agent_start as cached system context on real turns only, honours
+ * before_prompt_build as cached system context on real turns only, honours
  * its off-switch and text override; `cognee version` prints the installed
  * version and an update hint only when the cached npm check is newer.
  */
@@ -53,8 +53,13 @@ beforeEach(() => {
 });
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
+// The steer is the only synchronous before_prompt_build handler; autoRecall
+// and QA capture register async ones. Filtering on that keeps the tests
+// pointed at the steer even though all three share a hook name.
 function steerHandlers(api: Record<string, unknown>): Handler[] {
-  return (api.on as jest.Mock).mock.calls.filter((c) => c[0] === "before_agent_start").map((c) => c[1] as Handler);
+  return (api.on as jest.Mock).mock.calls
+    .filter((c) => c[0] === "before_prompt_build" && c[1].constructor.name === "Function")
+    .map((c) => c[1] as Handler);
 }
 
 describe("memory steer", () => {

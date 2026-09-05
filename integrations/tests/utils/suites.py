@@ -52,16 +52,15 @@ class Suite:
     #: session, and nothing keeps them equal.
     host_stem: str
     #: Capability: has the background-remember + cognify-poll refactor. Submits
-    #: writes with run_in_background=true, returns an {"ok": ...} envelope from
-    #: _post_remember_document instead of raising, exposes
-    #: _plugin_common.wait_for_cognify, and honours the bounded wait in
-    #: _remember_http. The improve path has its own flag below — that part of the
-    #: refactor did not travel with the rest.
+    #: writes with run_in_background=true, exposes _plugin_common.wait_for_cognify,
+    #: and honours the bounded wait in _remember_http. The improve path has its
+    #: own flag below — that part of the refactor did not travel with the rest.
+    #: (The legacy document bridge that first carried this contract is gone.)
     #:
     #: True for BOTH suites as of the port that landed in main: codex previously
-    #: had the older synchronous, raise-on-error path, which meant one document's
-    #: HTTP error aborted its sibling. Kept as a flag rather than deleted because
-    #: it names a real contract that a future integration may not satisfy.
+    #: had the older synchronous, raise-on-error path. Kept as a flag rather than
+    #: deleted because it names a real contract that a future integration may not
+    #: satisfy.
     has_background_remember: bool
     #: Capability: ``improve_session_via_http`` polls the cognify and memify
     #: pipelines and reports ``cognify_status``/``memify_status``.
@@ -76,8 +75,8 @@ class Suite:
     #: async hooks entirely and has no StopFailure, so its entry must be a plain
     #: sync Stop hook with a tight timeout.
     has_async_hooks: bool
-    #: Capability: exposes the shared ``_plugin_common.elapsed_ms`` helper (#3676),
-    #: and logs it on the bridge's ``http_bridge_poll`` / failed-submit events.
+    #: Capability: exposes the shared ``_plugin_common.elapsed_ms`` helper (#3676)
+    #: and logs it on the remember/improve events.
     has_elapsed_ms_helper: bool
     #: Capability: logs an *aggregate* ``elapsed_ms`` on the ``context_lookup_*``
     #: events. Split from the helper flag because codex now has the helper but

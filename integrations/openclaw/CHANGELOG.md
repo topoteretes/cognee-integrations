@@ -11,6 +11,19 @@ reports an update only when the published npm version changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Versions are
 date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
+## [2026.9.2]
+
+### Fixed
+- **Memory steer moved off the removed `before_agent_start` hook.** OpenClaw deprecated
+  `before_agent_start` in 2026.7 ("Use before_model_resolve and before_prompt_build") and
+  dropped it from the plugin hook API in 2026.9.1-beta.1, so ClawHub's
+  `clawhub package validate --openclaw-version 2026.9.1-beta.1` flagged the steer
+  registration in `dist/src/plugin.js`. The steer now rides `before_prompt_build`, which
+  carries the same `appendSystemContext` result field on every supported OpenClaw version
+  and is likewise a prompt-injection hook, so `allowPromptInjection` behaviour is unchanged.
+  OpenClaw concatenates system context across all `before_prompt_build` results, so the
+  steer, auto-recall and QA capture coexist as separate handlers.
+
 ## [2026.8.27]
 
 Parity release: brings the OpenClaw plugin up to the claude-code/codex integrations on

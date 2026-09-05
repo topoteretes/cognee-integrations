@@ -53,7 +53,7 @@ def _resolve(module, monkeypatch, *, agent_session_name="agent1", session_key="k
 
 
 def _improve(module, monkeypatch, wrote):
-    monkeypatch.setattr(module, "run_session_improve", lambda d, s: wrote)
+    monkeypatch.setattr(module, "run_session_improve", lambda d, s, **kw: wrote)
 
 
 def test_strict_raises_on_incomplete_sync(sync_mod, monkeypatch):

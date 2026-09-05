@@ -27,7 +27,6 @@ Supports three modes:
   - Server: Legacy — direct base_url (kept for backward compat)
 """
 
-import hashlib
 import json
 import os
 import subprocess
@@ -43,7 +42,6 @@ from _logfiles import append_line as _append_log_line
 load_env_file()
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
-_BRIDGE_STATE_FILE = _STATE_DIR / "bridge_state.json"
 _HOOK_LOG = _STATE_DIR / "hook.log"
 
 _DEFAULTS = {
@@ -121,8 +119,6 @@ _ENV_MAP = {
     # Background remember + cognify polling (read at the call sites via _float_env;
     # registered here for config-file support and discoverability).
     "COGNEE_COGNIFY_POLL_INTERVAL": "cognify_poll_interval",
-    "COGNEE_BRIDGE_POLL_DEADLINE": "bridge_poll_deadline",
-    "COGNEE_BRIDGE_SUBMIT_TIMEOUT": "bridge_submit_timeout",
     "COGNEE_REMEMBER_WAIT_SECONDS": "remember_wait_seconds",
     "COGNEE_STATUS_REQUEST_TIMEOUT": "status_request_timeout",
     # Legacy compat
@@ -414,44 +410,19 @@ async def ensure_dataset_ready(dataset: str, user) -> None:
     await resolve_authorized_user_datasets(dataset, user=user)
 
 
-async def sync_graph_context_to_session(dataset: str, session_id: str, user) -> dict:
-    """Sync permanent graph context into one session without full improve().
-
-    ``cognee.improve(session_ids=[...])`` also persists session cache
-    entries. The integration already does that explicitly via
-    ``persist_session_cache_to_graph()``, so call only Cognee's final
-    graph-context sync step to keep recall working without duplicating
-    session documents or holding the DB lock for the full improve path.
-    """
-    if not session_id or not user:
-        return {"synced": 0}
-
-    from cognee.modules.pipelines.layers.resolve_authorized_user_datasets import (
-        resolve_authorized_user_datasets,
-    )
-    from cognee.tasks.memify.sync_graph_to_session import sync_graph_to_session
-
-    _, authorized_datasets = await resolve_authorized_user_datasets(dataset, user=user)
-    if not authorized_datasets:
-        return {"synced": 0}
-
-    return await sync_graph_to_session(
-        user_id=str(user.id),
-        session_id=session_id,
-        dataset_id=authorized_datasets[0].id,
-        dataset_name=dataset,
-    )
-
-
-async def improve_session_local(dataset: str, session_id: str, user) -> dict:
+async def improve_session_local(
+    dataset: str, session_id: str, user, *, trigger: str = "final"
+) -> dict:
     """Bridge one session into the graph via the SDK's session-aware improve.
 
     ``cognee.improve(session_ids=[...])`` reads the session cache itself and
     runs feedback weights, QA persist, trace-feedback persist (the compact
     per-step feedback lines — not raw tool output), distillation, enrichment,
-    and (in foreground mode) the graph→session sync — so the explicit
-    persist+sync pair below is only kept as a fallback for older cognee
-    versions without session-aware improve.
+    and (in foreground mode) the graph→session sync. A cognee without it is
+    reported as ``unsupported`` — there is no client-side fallback (the old
+    persist path re-cognified the whole session cache on every run).
+    ``trigger`` names the caller and is recorded with the session's improve
+    state on success, for the idle/auto cooldown.
 
     Serialized per session by ``improve_session_lock``, matching the HTTP path in
     ``run_session_improve``. ``store-to-session``'s background fire takes no outer
@@ -462,7 +433,7 @@ async def improve_session_local(dataset: str, session_id: str, user) -> dict:
         return {"ok": False, "error": "missing session/user"}
 
     import cognee
-    from _plugin_common import improve_session_lock
+    from _plugin_common import improve_session_lock, record_improve_success
 
     with improve_session_lock(session_id, "improve_session_local") as claimed:
         if not claimed:
@@ -475,142 +446,13 @@ async def improve_session_local(dataset: str, session_id: str, user) -> dict:
                 user=user,
                 run_in_background=False,
             )
-            return {"ok": True, "result": result}
         except TypeError as exc:
-            # Older cognee without session-aware improve: legacy persist + sync.
+            # cognee without session-aware improve. Not worked around: the old
+            # persist fallback re-cognified the whole session cache every run.
             _config_log("improve_local_unsupported", {"error": str(exc)[:200]})
-            wrote = await persist_session_cache_to_graph(dataset, session_id, user)
-            graph_result = await sync_graph_context_to_session(dataset, session_id, user)
-            return {"ok": wrote, "legacy": True, "graph_synced": graph_result.get("synced", 0)}
-
-
-def _read_field(entry, field: str) -> str:
-    if isinstance(entry, dict):
-        return str(entry.get(field) or "")
-    return str(getattr(entry, field, "") or "")
-
-
-def _load_bridge_state() -> dict:
-    try:
-        return json.loads(_BRIDGE_STATE_FILE.read_text(encoding="utf-8"))
-    except Exception as exc:
-        _config_log(
-            "bridge_state_load_failed", {"path": str(_BRIDGE_STATE_FILE), "error": str(exc)[:200]}
-        )
-        return {}
-
-
-def _save_bridge_state(state: dict) -> None:
-    try:
-        _BRIDGE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _BRIDGE_STATE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
-    except Exception as exc:
-        _config_log(
-            "bridge_state_save_failed", {"path": str(_BRIDGE_STATE_FILE), "error": str(exc)[:200]}
-        )
-
-
-def _bridge_state_key(dataset: str, session_id: str, user_id: str, kind: str) -> str:
-    return hashlib.sha256(f"{user_id}:{dataset}:{session_id}:{kind}".encode()).hexdigest()
-
-
-def _content_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-async def persist_session_cache_to_graph(dataset: str, session_id: str, user) -> bool:
-    """Persist cached session QA/trace text to the permanent graph.
-
-    This is a local-mode compatibility bridge for Cognee 1.0.8. The SDK's
-    built-in session persistence can complete without extracting entries
-    from the file-system cache in the plugin setup. Reading the same
-    cache directly here keeps the integration useful while still using
-    cognee.remember() for the actual add+cognify pipeline.
-    """
-    if not session_id or not user:
-        return False
-
-    import cognee
-    from cognee.infrastructure.session.get_session_manager import get_session_manager
-
-    await ensure_dataset_ready(dataset, user)
-
-    user_id = str(user.id)
-    session_manager = get_session_manager()
-    if not session_manager.is_available:
-        return False
-
-    wrote = False
-    bridge_state = _load_bridge_state()
-    state_changed = False
-
-    qa_entries = await session_manager.get_session(
-        user_id=user_id,
-        session_id=session_id,
-        formatted=False,
-    )
-    qa_lines: list[str] = []
-    for entry in qa_entries or []:
-        question = _read_field(entry, "question").strip()
-        answer = _read_field(entry, "answer").strip()
-        if question:
-            qa_lines.append(f"Question: {question}")
-        if answer:
-            qa_lines.append(f"Answer: {answer}")
-        if question or answer:
-            qa_lines.append("")
-    qa_text = "\n".join(qa_lines).strip()
-    if qa_text:
-        qa_document = f"Session ID: {session_id}\n\n{qa_text}"
-        qa_key = _bridge_state_key(dataset, session_id, user_id, "qa")
-        qa_hash = _content_hash(qa_document)
-        if bridge_state.get(qa_key) == qa_hash:
-            qa_text = ""
-        else:
-            bridge_state[qa_key] = qa_hash
-            state_changed = True
-
-    if qa_text:
-        await cognee.remember(
-            qa_document,
-            dataset_name=dataset,
-            node_set=["user_sessions_from_cache"],
-            self_improvement=False,
-            run_in_background=False,
-            user=user,
-        )
-        wrote = True
-
-    trace_values = await session_manager.get_agent_trace_feedback(
-        user_id=user_id,
-        session_id=session_id,
-    )
-    trace_text = "\n".join(str(value).strip() for value in trace_values or [] if str(value).strip())
-    if trace_text:
-        trace_document = f"Session ID: {session_id}\n\n{trace_text}"
-        trace_key = _bridge_state_key(dataset, session_id, user_id, "trace")
-        trace_hash = _content_hash(trace_document)
-        if bridge_state.get(trace_key) == trace_hash:
-            trace_text = ""
-        else:
-            bridge_state[trace_key] = trace_hash
-            state_changed = True
-
-    if trace_text:
-        await cognee.remember(
-            trace_document,
-            dataset_name=dataset,
-            node_set=["agent_trace_feedbacks"],
-            self_improvement=False,
-            run_in_background=False,
-            user=user,
-        )
-        wrote = True
-
-    if state_changed:
-        _save_bridge_state(bridge_state)
-
-    return wrote
+            return {"ok": False, "unsupported": True, "error": str(exc)[:200]}
+        record_improve_success(session_id, dataset, trigger)
+        return {"ok": True, "result": result}
 
 
 def _get_git_branch(cwd: str) -> str:

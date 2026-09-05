@@ -158,18 +158,6 @@ def test_append_fails_open_when_lock_held(pc, monkeypatch):
     assert entries and entries[0]["origin_function"] == "X"
 
 
-def test_drain_leaves_legacy_shadow_untouched(pc, monkeypatch):
-    # The qa/trace text mirrors (legacy document-bridge data) must survive a drain.
-    pc.append_http_bridge_entry("ds", "sid", trace="Bash [success]")
-    pc.append_warmup_entry("ds", "sid", {"type": "trace", "origin_function": "Bash"})
-    monkeypatch.setattr(pc, "remember_entry_via_http", lambda *a, **k: {})
-    pc.drain_warmup_entries("ds", "sid")
-
-    state = _session_state(pc)
-    assert state.get("trace") == ["Bash [success]"]
-    assert state.get("pending_entries") == []
-
-
 def test_drain_budget_exceeded_preserves_tail(pc, events, monkeypatch):
     """#298: the replay stops once its time budget is spent — the unreplayed
     tail stays buffered and a warmup_drain_budget_exceeded event is logged."""
