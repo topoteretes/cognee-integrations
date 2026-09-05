@@ -193,9 +193,15 @@ def do_remember(
         except OSError as e:
             return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
         filename = os.path.basename(str(file_path).rstrip("/")) or filename
+    from _dataset_access import dataset_id
+
     body, boundary = _multipart_body(
         {
-            "datasetName": dataset,
+            **(
+                {"datasetId": dataset_id(dataset)}
+                if dataset_id(dataset)
+                else {"datasetName": dataset}
+            ),
             "node_set": node_set,
             "run_in_background": _background_flag(),
         },

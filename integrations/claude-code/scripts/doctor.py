@@ -111,6 +111,7 @@ def _resolve_server_url() -> tuple:
 
 
 _KEY_SOURCE_LABELS = {
+    "plugin_agent_key": "Plugin identity",
     "env_api_key": "ENV",
     "cache_single_key": "Config",
     "missing": "Default",

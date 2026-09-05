@@ -10,6 +10,25 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0]
+
+### Added
+- Opt-in per-plugin identities, with credentials bound to the server and principal.
+- Safe create-only SDK provisioning: no automatic rotation, owner fallback, or
+  reconnection after authentication rejection. Local startup is serialized with
+  an OS lock; credential files are atomically written with owner-only permissions.
+- Dataset UUIDs throughout registration, remember, improve, recall, and switching.
+  Effective write permissions determine selectable shared datasets.
+- Explicit graph read datasets through `COGNEE_PLUGIN_READ_DATASET_IDS`, separate
+  from the session's single write dataset. Failed switch persistence keeps the
+  previous session and unregisters the unused new connection.
+
+### Changed
+- Native plugin connection types replace the generic API type.
+- Identity provisioning requires `COGNEE_PLUGIN_IDENTITY=true` in `~/.cognee/.env`.
+  `false` explicitly disables cached identities; there is no config.json setting.
+- Safe identity provisioning requires an SDK exposing the `create_only` parameter.
+
 ## [1.5.4]
 
 ### Fixed

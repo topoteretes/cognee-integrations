@@ -108,7 +108,7 @@ _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.5.3"
+_PINNED_COGNEE_VERSION = "1.5.4"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Maps a configured backend provider env var to the cognee package "extra" that
@@ -397,6 +397,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     subprocess.run(
                         [uv, "venv", str(_VENV_DIR), "--python", _PINNED_PYTHON],
                         env=env,
+                        cwd=str(_GLOBAL_STATE_DIR),
                         check=True,
                         capture_output=True,
                         text=True,
@@ -413,6 +414,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         _cognee_install_spec(),
                     ],
                     env=env,
+                    cwd=str(_GLOBAL_STATE_DIR),
                     check=True,
                     capture_output=True,
                     text=True,
@@ -633,6 +635,8 @@ def _ensure_local_server_running(
             hook_log("server_console_capture_unavailable", {"path": str(console_log)})
         server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
+            # Import the installed runtime even when the host opened a Cognee checkout.
+            cwd=str(_VENV_DIR),
             env=server_env,
             stdin=subprocess.DEVNULL,
             stdout=pump.stdin if pump else subprocess.DEVNULL,
@@ -755,21 +759,79 @@ def _resolve_agent_name(config: dict, cwd: str) -> str:
 
 
 async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
-    """Resolve the one API key for this deployment.
+    """Resolve the PRINCIPAL key for this deployment.
 
     Order: env ``COGNEE_API_KEY`` -> single cached key -> mint once from the
-    default user (and cache it). No per-agent users or keys.
-    """
-    from _plugin_common import load_cached_api_key, save_cached_api_key
+    default user (and cache it).
 
+    The provisioned plugin-agent key is explicitly NOT a principal: earlier
+    steps in this same process may have stamped it into the env / config (see
+    ``_api_key_with_source``), and provisioning authenticated as the agent
+    would nest a new agent under the agent. Skip it wherever it leaked in.
+    """
+    from _plugin_common import (
+        load_cached_agent_key,
+        load_cached_api_key,
+        save_cached_api_key,
+    )
+
+    agent_key = load_cached_agent_key(service_url)
     api_key = str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
+    if agent_key and api_key == agent_key:
+        api_key = ""
     if not api_key:
-        api_key = load_cached_api_key(service_url)
+        api_key = os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or load_cached_api_key(service_url)
     if not api_key:
         api_key = await _login_default_user_for_owner_api_key(service_url, config)
         if api_key:
             save_cached_api_key(service_url, api_key)
     return api_key
+
+
+async def _ensure_plugin_identity(service_url: str, config: dict, principal_key: str) -> str:
+    """Explicit opt-in; never rotate or silently fall back to the owner."""
+    from _plugin_common import (
+        _AGENT_KEY_CACHE,
+        _load_json_file,
+        _principal_fingerprint,
+        load_cached_agent_key,
+        plugin_identity_lock,
+        plugin_identity_mode,
+        provision_plugin_agent_via_http,
+        save_cached_agent_key,
+    )
+
+    mode = plugin_identity_mode(config)
+    if mode == "disabled":
+        return ""
+    with plugin_identity_lock():
+        key = load_cached_agent_key(service_url)
+        record = _load_json_file(_AGENT_KEY_CACHE)
+        if key:
+            if record.get("blocked"):
+                raise RuntimeError(
+                    "Plugin identity is disconnected; explicit reconnect is required"
+                )
+            if record.get("principal_fingerprint") != _principal_fingerprint(principal_key):
+                raise RuntimeError(
+                    "Cached plugin identity does not match this principal; reconnect explicitly"
+                )
+            return key
+        if mode != "enabled":
+            return ""
+        status, body = provision_plugin_agent_via_http(
+            principal_key=principal_key, service_url=service_url
+        )
+        if status != "provisioned":
+            raise RuntimeError(
+                f"Plugin provisioning {status}; owner fallback is disabled. "
+                "Safe create-only SDK support is required."
+            )
+        key = str(body.get("api_key") or "").strip()
+        save_cached_agent_key(
+            service_url, key, str(body.get("agent_id") or ""), principal_key=principal_key
+        )
+        return key
 
 
 async def _ensure_agent_credentials_and_register(
@@ -779,25 +841,36 @@ async def _ensure_agent_credentials_and_register(
     if not service_url:
         return "", "", "", False
 
-    api_key = await _resolve_single_principal_key(service_url, config)
-    if not api_key:
+    from _plugin_common import block_cached_agent_key, register_agent_via_http
+
+    principal_key = await _resolve_single_principal_key(service_url, config)
+    if not principal_key:
         return "", "", "", False
+
+    os.environ["COGNEE_PRINCIPAL_API_KEY"] = principal_key
+    agent_key = await _ensure_plugin_identity(service_url, config, principal_key)
+    api_key = agent_key or principal_key
 
     os.environ["COGNEE_API_KEY"] = api_key
     config["api_key"] = api_key
 
-    # The principal user id (best-effort) — used for dataset readiness + watchers.
+    # The effective identity's user id (best-effort) — used for dataset
+    # readiness + watchers. Under a plugin identity this is the agent
+    # sub-user, which is exactly the user the data plane operates as.
     user_id = await _user_id_via_api(service_url, api_key)
 
-    from _plugin_common import register_agent_via_http
-
-    # Registration is now purely a lifecycle counter + connection registry under
-    # the single principal. The connection handle IS the Cognee session id.
+    # Registration is a lifecycle counter + connection registry under the
+    # effective identity. The connection handle IS the Cognee session id.
     registered, registration = register_agent_via_http(
         agent_session_name=agent_session_name,
         session_id=session_id,
         dataset_names=[str(config.get("dataset", "") or "").strip()],
     )
+    if not registered and registration.get("auth_failed") and agent_key:
+        block_cached_agent_key(agent_key)
+        raise RuntimeError(
+            "Plugin identity rejected; automatic re-provision and owner fallback are disabled"
+        )
     if not registered:
         raise RuntimeError(f"Failed to register session '{session_id}' on {service_url}.")
 

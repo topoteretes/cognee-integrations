@@ -100,12 +100,33 @@ On startup you should see a "Cognee Memory Connected" system message.
 
 ## Auth
 
-The integration uses a **single auth principal** — one API key, one user.
+The integration authenticates with **one principal** (one API key, one user), and —
+on servers that support it — a **plugin identity** derived from that principal: a
+dedicated agent sub-user with its own labeled API key, provisioned via
+`POST /api/v1/integrations/plugins/claude-code/provision`. Running under a plugin
+identity lets the cognee dashboard attribute sessions, traces and datasets to this
+plugin; datasets the plugin creates are automatically shared with your user.
 
-Key resolution order:
-1. `COGNEE_API_KEY` env var
-2. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
-3. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
+Key resolution order for data-plane traffic:
+1. `~/.cognee-plugin/claude-code/agent_key.json` (the provisioned plugin identity)
+2. `COGNEE_API_KEY` env var
+3. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
+4. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
+
+Provisioning policy:
+- Identity provisioning is explicit: set `COGNEE_PLUGIN_IDENTITY=true` in
+  `~/.cognee/.env`. Fresh and existing installations otherwise retain their principal.
+- Provisioning requires the SDK's `create_only` capability. Unsupported servers,
+  existing server identities without a cached key, and rejected credentials stop
+  with an error; they never rotate keys or silently fall back to the owner.
+- A cached credential is bound to its server and principal. Changing accounts or
+  reconnecting a revoked identity requires explicit reconnection. Setting
+  `COGNEE_PLUGIN_IDENTITY=false` explicitly selects principal mode.
+- Use dataset UUIDs for shared write targets. Dataset switching checks effective
+  write permissions. Set `COGNEE_PLUGIN_READ_DATASET_IDS` to a JSON array of allowed
+  UUIDs for graph recall across datasets; session history stays scoped to its own
+  dataset. Grants must be configured separately by an authorized owner.
+
 
 ## Mode selection rules
 

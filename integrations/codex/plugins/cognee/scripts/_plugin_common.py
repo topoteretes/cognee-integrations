@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Optional
 
 import _proc
+from _dataset_access import dataset_id as parse_dataset_id
+from _dataset_access import recall_fields, write_fields
 from _env_file import load_env_file
 from _logfiles import append_line as _append_log_line
 from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
@@ -64,6 +66,15 @@ _SUBPROCESS_LOG = _PLUGIN_DIR / "subprocess.log"
 # Single-principal model: one API key (user-provided COGNEE_API_KEY or one minted
 # from the default user) is cached here. Replaces the old per-agent agent_keys.json.
 _API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"
+# Plugin identity (server-side agent sub-user). Servers that expose
+# POST /api/v1/integrations/plugins/{key}/provision mint a dedicated agent
+# sub-user + API key per plugin, so cognee can attribute traffic to this
+# plugin instead of the shared principal. The key is per-plugin state (the
+# Claude Code plugin has its own identity), hence _PLUGIN_DIR, not the shared
+# root the principal key lives at.
+PLUGIN_KEY = "codex"
+CONNECTION_TYPE = "codex"
+_AGENT_KEY_CACHE = _PLUGIN_DIR / "agent_key.json"
 # Host-session-id -> generated Cognee session-id map. The host (Claude/Codex)
 # session id is used ONLY as a local correlation key so every hook process of a
 # single launch resolves the SAME Cognee session id; it is never sent to Cognee
@@ -485,6 +496,9 @@ def switch_launch_record(
     )
     merged.setdefault("created_at", now)
     _write_map_record(host_key, merged)
+    saved = _read_map_record(host_key)
+    if any(saved.get(key) != merged[key] for key in ("session_id", "dataset", "conn_uuid")):
+        raise RuntimeError("Dataset switch was not persisted; previous session remains active")
     hook_log(
         "dataset_switched",
         {
@@ -591,45 +605,50 @@ def _candidate_host_pids() -> set[int]:
 
 
 def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
-    """Datasets this principal can switch to, from ``GET /api/v1/datasets``.
-
-    The endpoint lists datasets the caller can READ; only those it OWNS are
-    guaranteed writable (creation grants read/write/share/delete). Returns::
-
-        {"datasets": [{"name", "id", "owner_id", "writable": True|None}],
-         "hidden_readonly": N, "filtered": bool}
-
-    A dataset owned by someone else is dropped (counted in ``hidden_readonly``).
-    ``writable`` is None — and the row kept — when ownership cannot be judged:
-    no ``user_id`` to compare against, or a server whose DTO carries no owner
-    (pre-1.6 releases). ``filtered`` is True only when every row was judged, so
-    the caller can say whether the list is proven-writable or merely readable;
-    the switch itself still rejects a non-writable dataset loudly.
-    """
-    raw = _json_http_request("/api/v1/datasets", method="GET", timeout=timeout)
+    """Use effective permissions. Ownership cannot prove absence of write access."""
+    raw = _json_http_request("/api/v1/datasets/", method="GET", timeout=timeout)
     items = raw if isinstance(raw, list) else []
+    if not user_id:
+        me = _json_http_request("/api/v1/users/me", method="GET", timeout=timeout)
+        user_id = str(me.get("id") or "") if isinstance(me, dict) else ""
+    writable_ids = None
+    if user_id:
+        try:
+            allowed = _json_http_request(
+                f"/api/v1/permissions/principals/{urllib.parse.quote(user_id, safe='')}/datasets"
+                "?permission_name=write",
+                method="GET",
+                timeout=timeout,
+            )
+            if isinstance(allowed, list):
+                writable_ids = {str(row.get("id")) for row in allowed}
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (404, 405):
+                raise
     rows = []
     for item in items:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()
-        if not name:
-            continue
-        # OutDTO serialises camelCase on the wire (ownerId); accept both spellings.
-        owner = str(item.get("owner_id") or item.get("ownerId") or "").strip()
-        writable = None
-        if owner and user_id:
-            writable = owner == str(user_id)
-        rows.append(
-            {"name": name, "id": str(item.get("id") or ""), "owner_id": owner, "writable": writable}
+        owner = str(item.get("owner_id") or item.get("ownerId") or "")
+        ident = str(item.get("id") or "")
+        writable = (
+            ident in writable_ids
+            if writable_ids is not None
+            else (True if owner and owner == user_id else None)
         )
-    rows.sort(key=lambda r: r["name"].lower())
-    kept = [r for r in rows if r["writable"] is not False]
+        rows.append(
+            {
+                "name": str(item.get("name") or ""),
+                "id": ident,
+                "owner_id": owner,
+                "writable": writable,
+            }
+        )
+    rows.sort(key=lambda row: (row["name"].lower(), row["id"]))
     return {
-        "datasets": kept,
-        "readonly": [r["name"] for r in rows if r["writable"] is False],
-        "hidden_readonly": len(rows) - len(kept),
-        "filtered": bool(rows) and all(r["writable"] is not None for r in rows),
+        "datasets": [row for row in rows if row["writable"] is not False],
+        "readonly": [row["name"] for row in rows if row["writable"] is False],
+        "readonly_ids": [row["id"] for row in rows if row["writable"] is False],
+        "hidden_readonly": sum(row["writable"] is False for row in rows),
+        "filtered": writable_ids is not None,
     }
 
 
@@ -1699,39 +1718,182 @@ def save_cached_api_key(service_url: str, key: str) -> None:
     )
 
 
-def _api_key() -> str:
-    """Resolve the single principal API key.
+def load_cached_agent_key(service_url: str = "") -> str:
+    """Return the provisioned plugin-agent key (matching service_url if recorded).
 
-    Single-principal model: one key for everything. Order:
-      1. ``COGNEE_API_KEY`` env (user-provided, or set in-process after minting).
-      2. The single cached key (``api_key.json``), minted once from the default
-         user by SessionStart when no key was provided.
-    No per-agent keys, no agent-name keying.
+    Empty string when the plugin has no provisioned identity — callers fall
+    back to the principal-key chain.
     """
+    data = _load_json_file(_AGENT_KEY_CACHE)
+    if not isinstance(data, dict):
+        return ""
+    key = str(data.get("api_key") or "").strip()
+    if not key:
+        return ""
+    cached_url = _normalize_service_url(str(data.get("base_url") or ""))
+    wanted = _normalize_service_url(service_url)
+    if wanted and cached_url and cached_url != wanted:
+        return ""
+    return key
+
+
+def save_cached_agent_key(
+    service_url: str, key: str, agent_id: str = "", *, principal_key: str = ""
+) -> None:
+    if not str(key or "").strip():
+        return
+    _write_credential(
+        {
+            "base_url": _normalize_service_url(service_url),
+            "api_key": str(key).strip(),
+            "agent_id": str(agent_id or ""),
+            "plugin_key": PLUGIN_KEY,
+            "principal_fingerprint": _principal_fingerprint(principal_key),
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
+
+
+def clear_cached_agent_key() -> None:
+    """Drop the provisioned identity (revoked key / dashboard disconnect)."""
+    try:
+        _AGENT_KEY_CACHE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def plugin_identity_mode(config: dict | None = None) -> str:
+    value = (config or {}).get("plugin_identity", os.environ.get("COGNEE_PLUGIN_IDENTITY", "auto"))
+    if value is None or str(value).strip().lower() == "auto":
+        return "auto"
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return "enabled"
+    if normalized in ("0", "false", "no", "off"):
+        return "disabled"
+    raise ValueError("COGNEE_PLUGIN_IDENTITY must be auto, true, or false")
+
+
+def _principal_fingerprint(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest() if key else ""
+
+
+@contextmanager
+def plugin_identity_lock(timeout: float = 25.0):
+    """Fail closed; an OS lock is released even if a bootstrap process dies."""
+    path = _AGENT_KEY_CACHE.with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
+    try:
+        # Windows permits locking beyond EOF. Writing here would fail when
+        # another process holds the byte lock, before our retry loop runs.
+        deadline = time.monotonic() + timeout
+        while not locked:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out waiting for plugin identity bootstrap") from None
+                time.sleep(0.05)
+        yield
+    finally:
+        if locked:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def block_cached_agent_key(expected_key: str) -> None:
+    with plugin_identity_lock():
+        data = _load_json_file(_AGENT_KEY_CACHE)
+        # A concurrent explicit reconnect may already have replaced this key.
+        if data.get("api_key") == expected_key:
+            data["blocked"] = True
+            _write_credential(data)
+
+
+def _write_credential(data: dict) -> None:
+    _AGENT_KEY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _AGENT_KEY_CACHE.with_name(f"agent_key.{uuid.uuid4().hex}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, _AGENT_KEY_CACHE)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
+    """Select a bound agent credential without replacing the principal in env."""
+    service_url = _normalize_service_url(service_url or _local_api_url())
+    agent_key = load_cached_agent_key(service_url)
     env_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
-    if env_key:
-        return env_key
+    principal = str(os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or "").strip()
+    if env_key and env_key != agent_key:
+        principal = env_key
+    principal = principal or load_cached_api_key(service_url)
+    mode = plugin_identity_mode()
+    if agent_key and mode != "disabled":
+        record = _load_json_file(_AGENT_KEY_CACHE)
+        if record.get("blocked"):
+            raise RuntimeError(
+                "Plugin identity was rejected; reconnect explicitly (no automatic rotation)"
+            )
+        if not principal or record.get("principal_fingerprint") != _principal_fingerprint(
+            principal
+        ):
+            raise RuntimeError(
+                "Plugin identity belongs to another or unverified principal; run SessionStart"
+            )
+        return agent_key, "plugin_agent_key"
+    if mode == "enabled":
+        raise RuntimeError("Plugin identity is enabled but not connected; run SessionStart")
+    if principal:
+        return principal, "env_api_key" if principal in (
+            env_key,
+            os.environ.get("COGNEE_PRINCIPAL_API_KEY"),
+        ) else "cache_single_key"
+    return "", "missing"
 
-    service_url = _normalize_service_url(_local_api_url())
-    cached = load_cached_api_key(service_url)
-    if cached:
-        os.environ["COGNEE_API_KEY"] = cached
-        return cached
 
-    return ""
+def _api_key() -> str:
+    return _api_key_with_source()[0]
 
 
 def resolved_http_endpoint_auth() -> tuple[str, str]:
     """Return (service_url, api_key) for runtime HTTP calls.
 
-    Service URL falls back through plugin config before localhost. API key is
-    the single principal key: env first, then the single cached key.
+    Service URL falls back through plugin config before localhost. Export the
+    effective key for child processes while preserving the explicit principal.
     """
     service_url = _normalize_service_url(_local_api_url())
     api_key = _api_key().strip()
     if service_url:
         os.environ["COGNEE_BASE_URL"] = service_url
     if api_key:
+        previous = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
+        if previous and previous != api_key:
+            os.environ["COGNEE_PRINCIPAL_API_KEY"] = previous
         os.environ["COGNEE_API_KEY"] = api_key
     return service_url, api_key
 
@@ -2903,12 +3065,15 @@ def _json_http_request(
     method: str = "POST",
     timeout: float = 30.0,
     base_url: str | None = None,
+    api_key: str | None = None,
 ):
     # base_url overrides the resolved service URL for calls that target a
     # different host than the memory data plane (e.g. the cloud platform API's
-    # billing routes); the same principal X-Api-Key is attached either way.
+    # billing routes). api_key overrides the resolved key for calls that must
+    # authenticate as a specific identity (e.g. plugin provisioning runs as
+    # the principal, never as the provisioned agent).
     base_url = (base_url or _local_api_url()).rstrip("/")
-    api_key = _api_key()
+    api_key = api_key if api_key is not None else _api_key()
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-Api-Key"] = api_key
@@ -3011,6 +3176,31 @@ def wait_for_cognify(
         time.sleep(max(0.1, interval_seconds))  # floor avoids a tight spin if misconfigured to 0
 
 
+_TYPED_DATASET_CAPABILITIES = {}
+
+
+def require_typed_dataset_id_support(*, service_url: str = "", api_key=None) -> None:
+    """Old SDKs advertise dataset_id but reject typed entries at runtime."""
+    url = _normalize_service_url(service_url or _local_api_url())
+    cached = _TYPED_DATASET_CAPABILITIES.get(url)
+    supported = cached[1] if cached else False
+    if cached is None or time.monotonic() - cached[0] > 60.0:
+        spec = _json_http_request("/openapi.json", method="GET", base_url=url, api_key=api_key)
+        supported = (
+            spec.get("paths", {})
+            .get("/api/v1/remember/entry", {})
+            .get("post", {})
+            .get("x-cognee-session-dataset-ids")
+            is True
+        )
+        _TYPED_DATASET_CAPABILITIES[url] = (time.monotonic(), supported)
+    if not supported:
+        raise RuntimeError(
+            "This Cognee server cannot safely store typed session memory by dataset UUID. "
+            "Update the SDK before selecting a shared write dataset."
+        )
+
+
 def remember_entry_via_http(
     dataset: str,
     session_id: str,
@@ -3025,12 +3215,14 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    if parse_dataset_id(dataset):
+        require_typed_dataset_id_support()
     entry = _sanitize_value(entry)
     return _json_http_request(
         "/api/v1/remember/entry",
         {
             "entry": entry,
-            "dataset_name": dataset,
+            **write_fields(dataset),
             "session_id": session_id,
         },
         timeout=timeout,
@@ -3090,6 +3282,74 @@ def write_outcome_ambiguous(exc: Exception) -> bool:
     return True
 
 
+def provision_plugin_agent_via_http(
+    *,
+    principal_key: str,
+    service_url: str = "",
+    timeout: float = 20.0,
+) -> tuple[str, dict]:
+    """Create this plugin's identity without rotating an existing key.
+
+    Authenticate as the user principal and require the server's advertised
+    create_only contract before POSTing. OpenAPI is a capability declaration;
+    its enforcement is covered by the SDK's provisioning regression tests.
+    Unsupported/failed provisioning must fail closed in the caller.
+    """
+    if not str(principal_key or "").strip():
+        return "failed", {}
+    try:
+        # Older servers ignore unknown query parameters and rotate keys. Verify
+        # the create-only contract BEFORE sending any provisioning request.
+        spec = _json_http_request(
+            "/openapi.json",
+            method="GET",
+            api_key=principal_key,
+            base_url=service_url or _local_api_url(),
+            timeout=timeout,
+        )
+        operation = (
+            spec.get("paths", {})
+            .get("/api/v1/integrations/plugins/{plugin_key}/provision", {})
+            .get("post", {})
+        )
+        if not any(
+            p.get("name") == "create_only" and p.get("in") == "query"
+            for p in operation.get("parameters", [])
+        ):
+            return "unsupported", {}
+        result = _json_http_request(
+            f"/api/v1/integrations/plugins/{PLUGIN_KEY}/provision?create_only=true",
+            {},
+            method="POST",
+            timeout=timeout,
+            api_key=principal_key,
+            base_url=service_url or _local_api_url(),
+        )
+        if isinstance(result, dict):
+            body = {
+                "api_key": str(result.get("api_key") or result.get("apiKey") or "").strip(),
+                "agent_id": str(result.get("agent_id") or result.get("agentId") or ""),
+                "created": bool(result.get("created")),
+            }
+            if body["api_key"] and body["created"]:
+                return "provisioned", body
+        hook_log(
+            "plugin_provision_bad_response",
+            {"keys": sorted(result) if isinstance(result, dict) else str(type(result))},
+        )
+        return "failed", {}
+    except urllib.error.HTTPError as exc:
+        # 404/405: the server predates plugin provisioning (or the route set
+        # differs) — a capability verdict, not a fault.
+        if exc.code in (404, 405):
+            return "unsupported", {}
+        hook_log("plugin_provision_failed", {"status": exc.code, "error": str(exc)[:200]})
+        return "failed", {}
+    except Exception as exc:
+        hook_log("plugin_provision_failed", {"error": str(exc)[:200]})
+        return "failed", {}
+
+
 def register_agent_via_http(
     *,
     agent_session_name: str,
@@ -3099,14 +3359,21 @@ def register_agent_via_http(
 ) -> tuple[bool, dict]:
     payload = {
         "agent_session_name": agent_session_name,
-        "type": "api",
+        # Self-declared connection type (the server keeps a free-form registry;
+        # "codex" is one of its documented KNOWN_AGENT_CONNECTION_TYPES).
+        "type": CONNECTION_TYPE,
         "memory_mode": "hybrid",
         "source": "api",
     }
     if session_id:
         payload["session_id"] = session_id
     if dataset_names:
-        payload["dataset_names"] = [str(name) for name in dataset_names if str(name).strip()]
+        payload["dataset_names"] = [
+            str(name) for name in dataset_names if str(name).strip() and not parse_dataset_id(name)
+        ]
+        ids = [parse_dataset_id(name) for name in dataset_names if parse_dataset_id(name)]
+        if ids:
+            payload["dataset_ids"] = ids
 
     try:
         result = _json_http_request(
@@ -3115,6 +3382,11 @@ def register_agent_via_http(
         if isinstance(result, dict):
             return True, result
         return True, {}
+    except urllib.error.HTTPError as exc:
+        hook_log("agent_register_failed", {"status": exc.code, "error": str(exc)[:200]})
+        # Surface auth rejection so SessionStart can drop a revoked plugin-agent
+        # key and re-provision instead of failing the whole bootstrap.
+        return False, {"auth_failed": exc.code in (401, 403)}
     except Exception as exc:
         hook_log("agent_register_failed", {"error": str(exc)[:200]})
         return False, {}
@@ -3169,8 +3441,10 @@ def recall_via_http(
     # than one readable dataset is rejected as ambiguous rather than searched.
     # The value must be the dataset the session's entries were written under — a
     # different one is a binding mismatch server-side, a real error worth surfacing.
-    if dataset:
-        payload["datasets"] = [dataset]
+    fields, federated = recall_fields(dataset, scope)
+    payload.update(fields)
+    if federated:
+        payload.pop("session_id", None)
     if search_type:
         payload["search_type"] = search_type
     if context_profile:
@@ -3552,7 +3826,7 @@ def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = 
         result = _json_http_request(
             "/api/v1/improve",
             {
-                "dataset_name": dataset,
+                **write_fields(dataset),
                 "session_ids": [session_id],
                 "run_in_background": True,
             },
@@ -3609,6 +3883,11 @@ def ensure_dataset_via_http(dataset: str) -> None:
     whole session's sync. Failures are logged and never block the improve —
     if the dataset truly cannot be created, the improve outcome reports it.
     """
+    if parse_dataset_id(dataset):
+        listing = list_writable_datasets()
+        if not any(row["id"] == dataset and row["writable"] is True for row in listing["datasets"]):
+            raise RuntimeError("Write permission for the selected dataset could not be verified")
+        return
     if not dataset:
         return
     try:

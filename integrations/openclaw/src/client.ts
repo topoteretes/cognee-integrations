@@ -664,7 +664,10 @@ export class CogneeHttpClient {
   }): Promise<{ ok: boolean; connectionId?: string }> {
     const body: Record<string, unknown> = {
       agent_session_name: params.agentSessionName,
-      type: "api",
+      // Self-declared connection type: "openclaw" is one of the server's
+      // documented KNOWN_AGENT_CONNECTION_TYPES, so the dashboard attributes
+      // this connection to the Openclaw plugin instead of generic API usage.
+      type: "openclaw",
       memory_mode: "hybrid",
       source: "api",
     };

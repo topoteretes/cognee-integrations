@@ -149,7 +149,18 @@ def test_mint_switch_session_id_never_collides(suite, pc):
 
 
 def _serve(pc, monkeypatch, rows):
-    monkeypatch.setattr(pc, "_json_http_request", lambda *a, **k: rows)
+    def response(path, **kwargs):
+        if "/permissions/" in path:
+            if not any("ownerId" in row or "owner_id" in row for row in rows):
+                import urllib.error
+
+                raise urllib.error.HTTPError(path, 404, "unsupported", {}, None)
+            return [row for row in rows if row.get("ownerId", row.get("owner_id")) == "me"]
+        if path.endswith("/users/me"):
+            return {}
+        return rows
+
+    monkeypatch.setattr(pc, "_json_http_request", response)
 
 
 def test_list_writable_filters_by_owner_camelcase(pc, monkeypatch):

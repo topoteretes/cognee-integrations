@@ -323,7 +323,10 @@ class HttpBackend(MemoryBackend):
                 timeout=timeout,
                 json_body={
                     "agent_session_name": self._agent_session_name,
-                    "type": "api",
+                    # Self-declared connection type (the server's registry is
+                    # free-form: clients outside KNOWN_AGENT_CONNECTION_TYPES
+                    # use their own lowercase name).
+                    "type": "hermes_agent",
                     "source": "api",
                 },
             )

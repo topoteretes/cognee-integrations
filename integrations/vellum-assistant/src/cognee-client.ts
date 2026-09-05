@@ -363,7 +363,9 @@ export async function registerAgent(
       body: JSON.stringify({
         agent_session_name: handle,
         dataset_names: datasets,
-        type: "api",
+        // Self-declared connection type (the server's registry is free-form:
+        // clients not in KNOWN_AGENT_CONNECTION_TYPES use their own name).
+        type: "vellum_assistant",
         memory_mode: "hybrid",
       }),
       signal: ctrl.signal,
