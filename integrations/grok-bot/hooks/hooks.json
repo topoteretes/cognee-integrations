@@ -1,0 +1,106 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/session-start.py\" || python \"$P/scripts/session-start.py\"",
+            "timeout": 120,
+            "statusMessage": "Initializing Cognee memory..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/session-context-lookup.py\" || python \"$P/scripts/session-context-lookup.py\"",
+            "timeout": 120,
+            "statusMessage": "Searching session memory..."
+          },
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/store-user-prompt.py\" || python \"$P/scripts/store-user-prompt.py\"",
+            "timeout": 60,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/store-to-session.py\" || python \"$P/scripts/store-to-session.py\"",
+            "timeout": 60,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/store-to-session.py\" --stop || python \"$P/scripts/store-to-session.py\" --stop",
+            "timeout": 60,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/credits-refresh.py\" || python \"$P/scripts/credits-refresh.py\"",
+            "timeout": 30,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/clear-transcript-context.py\" || python \"$P/scripts/clear-transcript-context.py\"",
+            "timeout": 5,
+            "statusMessage": "Clearing transcript context..."
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/credits-refresh.py\" || python \"$P/scripts/credits-refresh.py\"",
+            "timeout": 30,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/pre-compact.py\" || python \"$P/scripts/pre-compact.py\"",
+            "timeout": 120,
+            "statusMessage": "Building memory anchor..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"; python3 \"$P/scripts/sync-session-to-graph.py\" --session-end || python \"$P/scripts/sync-session-to-graph.py\" --session-end",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

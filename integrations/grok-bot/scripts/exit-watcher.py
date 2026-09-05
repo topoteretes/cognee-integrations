@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""Run Cognee graph sync after the owning Codex process exits.
+
+Codex CLI currently may not invoke plugin SessionEnd on normal shutdown.
+SessionStart launches this watcher with the hook parent PID. The watcher
+does nothing while Codex is alive; once that PID disappears, it starts the
+normal detached graph sync worker and exits.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(__file__))
+from _logfiles import append_line as _append_log_line
+from _proc import pid_alive as _pid_alive
+
+_PLUGIN_DIR = Path.home() / ".cognee-plugin" / "grok-bot"
+_EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"
+_PIDFILE = _PLUGIN_DIR / "exit-watcher.pid"
+_LOGFILE = _PLUGIN_DIR / "exit-watcher.log"
+_SYNC_SCRIPT = Path(__file__).with_name("sync-session-to-graph.py")
+_DETACHED_SYNC_ARG = "--detached-final"
+_POLL_SECONDS = 2.0
+_SYNC_START_DELAY = 2.0
+
+
+def _log(event: str, **detail) -> None:
+    try:
+        line = {"ts": time.time(), "pid": os.getpid(), "event": event}
+        if detail:
+            line["detail"] = detail
+        _append_log_line(_LOGFILE, json.dumps(line, default=str))
+    except Exception:
+        pass
+
+
+def _owns_pidfile(pidfile: Path) -> bool:
+    try:
+        return int(pidfile.read_text(encoding="utf-8").strip()) == os.getpid()
+    except Exception as exc:
+        _log("pidfile_read_failed", pidfile=str(pidfile), error=str(exc)[:200])
+        return False
+
+
+def _spawn_sync(
+    session_id: str,
+    dataset: str,
+    *,
+    session_key: str = "",
+    agent_session_name: str = "",
+    api_key: str = "",
+    service_url: str = "",
+) -> None:
+    try:
+        env = os.environ.copy()
+        env.setdefault("COGNEE_SYNC_START_DELAY", str(_SYNC_START_DELAY))
+        env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
+        if session_id:
+            env["COGNEE_SYNC_SESSION_ID"] = session_id
+        if dataset:
+            env["COGNEE_SYNC_DATASET"] = dataset
+        if session_key:
+            env["COGNEE_SESSION_KEY"] = session_key
+        if agent_session_name:
+            env["COGNEE_AGENT_SESSION_NAME"] = agent_session_name
+        if api_key:
+            env["COGNEE_API_KEY"] = api_key
+        if service_url:
+            env["COGNEE_BASE_URL"] = service_url
+        subprocess.Popen(
+            [sys.executable, str(_SYNC_SCRIPT), _DETACHED_SYNC_ARG],
+            cwd=os.getcwd(),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _log("exit_sync_deferred", session=session_id, dataset=dataset)
+    except Exception as exc:
+        _log("exit_sync_detach_failed", error=str(exc)[:300])
+
+
+def _refresh_credits_marker(service_url: str) -> None:
+    """Keep the status-line credits marker fresh for the WHOLE session.
+
+    This is the only plugin process whose lifetime matches the host session —
+    the idle watcher exits at ``bridge_complete``, minutes after the last
+    activity, so a credits poll there dies with it and the segment ages out
+    of its 15-minute TTL during any longer idle stretch. Cloud only,
+    throttled against our tenant's own entry, best-effort by contract.
+    """
+    try:
+        from _plugin_common import (
+            _credits_entry_for_url,
+            _local_api_url,
+            read_credits_marker,
+            refresh_credits,
+            service_url_is_local,
+        )
+
+        base_url = str(service_url or "") or _local_api_url()
+        if service_url_is_local(base_url):
+            return  # local server: no credits concept
+        interval = float(os.environ.get("COGNEE_CREDITS_CHECK_INTERVAL", "") or 300.0)
+        _tid, prior = _credits_entry_for_url(read_credits_marker(), base_url)
+        if time.time() - float(prior.get("checked_at", 0) or 0) < interval:
+            return
+        refresh_credits()
+    except Exception as exc:
+        _log("credits_check_error", error=str(exc)[:200])
+
+
+# Connection self-heal. Recovery of a red status-line verdict is
+# otherwise prompt-driven: once the shared marker says unreachable /
+# server_error / not_responding / auth_failed, nothing re-checks it until a
+# hook runs, so a server that recovers while the user is idle leaves a stale
+# ✕ on the bar for up to the renderer's 30-minute fade. This process lives as
+# long as the host session (see _refresh_credits_marker), so it is the right
+# place for a slow background re-probe.
+_CONN_REPROBE_STATES = ("unreachable", "server_error", "not_responding", "auth_failed")
+_last_conn_reprobe_at = 0.0
+
+
+def _conn_reprobe_interval() -> float:
+    try:
+        return float(os.environ.get("COGNEE_CONN_REPROBE_INTERVAL", "") or 60.0)
+    except ValueError:
+        return 60.0
+
+
+def _reprobe_connection(service_url: str, api_key: str = "") -> None:
+    """Re-probe a recorded failure state and mark ready if the server is back.
+
+    Contract, in order:
+      * Only acts while the shared marker holds a failure state — a healthy or
+        absent marker costs one file read and nothing else.
+      * Same-base_url guard: the marker is machine-wide (Grok, Claude and Codex, local
+        and cloud, share it), so a verdict about a different server than this
+        session's is not ours to overwrite.
+      * Throttled to one probe per interval (default 60s) per watcher process.
+      * ONLY a positive "ready" is ever written. Timeouts / unknown are no
+        verdict and leave the marker untouched — the re-probe can heal a wrong
+        red but can never paint one.
+      * auth_failed heals only on an AUTHENTICATED success: /health answering
+        200 says nothing about the key. Other failure states heal on either
+        probe, with the authed one preferred because it is the stronger signal.
+    """
+    global _last_conn_reprobe_at
+    try:
+        from _plugin_common import (
+            _local_api_url,
+            _normalize_service_url,
+            authed_liveness,
+            mark_server_ready,
+            probe_health,
+            read_connection_state,
+        )
+
+        marker = read_connection_state()
+        state = str(marker.get("state") or "")
+        if state not in _CONN_REPROBE_STATES:
+            return
+        base_url = _normalize_service_url(str(service_url or "") or _local_api_url())
+        if not base_url:
+            return
+        marker_url = _normalize_service_url(str(marker.get("base_url") or ""))
+        if marker_url and marker_url != base_url:
+            return  # someone else's server
+        now = time.time()
+        last_seen = max(_last_conn_reprobe_at, float(marker.get("checked_at", 0) or 0))
+        if now - last_seen < _conn_reprobe_interval():
+            return
+        _last_conn_reprobe_at = now
+
+        verdict = authed_liveness(base_url, api_key, timeout=2.0)
+        authed = verdict != "unknown"
+        if not authed:
+            verdict = probe_health(base_url, timeout=2.0)
+        if verdict != "ready":
+            _log("connection_reprobe_no_heal", state=state, verdict=verdict, base_url=base_url)
+            return
+        if state == "auth_failed" and not authed:
+            # /health is unauthenticated: a 200 cannot clear an auth verdict.
+            _log("connection_reprobe_no_heal", state=state, verdict="ready_unauthed")
+            return
+        mark_server_ready(base_url)
+        _log("connection_self_healed", prior=state, base_url=base_url, authed=authed)
+    except Exception as exc:
+        _log("connection_reprobe_error", error=str(exc)[:200])
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        _log("fatal_missing_args")
+        return
+    try:
+        bootstrap = json.loads(sys.argv[1])
+    except Exception as exc:
+        _log("fatal_bad_args", error=str(exc)[:200])
+        return
+
+    parent_pid = int(bootstrap.get("parent_pid") or 0)
+    session_id = str(bootstrap.get("session_id") or "")
+    dataset = str(bootstrap.get("dataset") or "agent_sessions")
+    session_key = str(bootstrap.get("session_key") or "")
+    agent_session_name = str(bootstrap.get("agent_session_name") or "")
+    api_key = str(bootstrap.get("api_key") or "")
+    service_url = str(bootstrap.get("base_url") or "")
+    pidfile_raw = str(bootstrap.get("pidfile") or "").strip()
+    pidfile = Path(pidfile_raw) if pidfile_raw else _PIDFILE
+    if not parent_pid:
+        _log("fatal_no_parent_pid", session=session_id, dataset=dataset)
+        return
+
+    try:
+        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+        _EXIT_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
+
+        if pidfile.exists():
+            try:
+                existing = int(pidfile.read_text(encoding="utf-8").strip())
+                if _pid_alive(existing):
+                    _log(
+                        "already_running_for_parent",
+                        parent_pid=parent_pid,
+                        session=session_id,
+                        dataset=dataset,
+                        pidfile=str(pidfile),
+                        existing_pid=existing,
+                    )
+                    return
+            except Exception:
+                pass
+
+        pidfile.write_text(str(os.getpid()), encoding="utf-8")
+    except Exception as exc:
+        _log("pidfile_write_failed", pidfile=str(pidfile), error=str(exc)[:200])
+        return
+
+    _log(
+        "started",
+        parent_pid=parent_pid,
+        session=session_id,
+        dataset=dataset,
+        pidfile=str(pidfile),
+    )
+    while _owns_pidfile(pidfile) and _pid_alive(parent_pid):
+        # Session-long steady-state credits refresh (throttled internally).
+        _refresh_credits_marker(service_url)
+        # Self-heal a stale red connection verdict (throttled internally).
+        _reprobe_connection(service_url, api_key)
+        time.sleep(_POLL_SECONDS)
+
+    if not _owns_pidfile(pidfile):
+        _log("pidfile_replaced", parent_pid=parent_pid, pidfile=str(pidfile))
+        return
+
+    # A dataset switch mid-session replaced the session, dataset and connection
+    # handle this watcher was spawned with. Re-read the launch record so the
+    # final sync targets the live triple (the sync worker itself also covers the
+    # retired sessions in the record's ``touched`` list).
+    if session_key:
+        try:
+            from _plugin_common import _read_map_record
+
+            rec = _read_map_record(session_key)
+            if rec.get("switched_at"):
+                session_id = str(rec.get("session_id") or session_id)
+                dataset = str(rec.get("dataset") or dataset)
+                agent_session_name = str(rec.get("conn_uuid") or agent_session_name)
+                _log("exit_target_switched", session=session_id, dataset=dataset)
+        except Exception as exc:
+            _log("exit_target_resolve_failed", error=str(exc)[:200])
+
+    _log("parent_exited", parent_pid=parent_pid, session=session_id, dataset=dataset)
+    _spawn_sync(
+        session_id,
+        dataset,
+        session_key=session_key,
+        agent_session_name=agent_session_name,
+        api_key=api_key,
+        service_url=service_url,
+    )
+
+    try:
+        if _owns_pidfile(pidfile):
+            pidfile.unlink()
+    except Exception as exc:
+        _log("pidfile_unlink_failed", pidfile=str(pidfile), error=str(exc)[:200])
+    _log("exiting", parent_pid=parent_pid, pidfile=str(pidfile))
+
+
+if __name__ == "__main__":
+    main()
