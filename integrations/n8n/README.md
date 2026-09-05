@@ -4,9 +4,13 @@ Use Cognee Cloud's AI memory and context engineering directly in your n8n workfl
 
 This community node lets you:
 
+- **Remember** text or files, **Recall** with knowledge-graph search, and **Forget** data — Cognee's memory API in three operations
+- Store session **Q&A, trace and feedback entries** so an AI Agent's conversation becomes searchable memory
 - Add text data to a Cognee dataset
-- Turn data into AI memory with cognify to build knowledge-graph-based memory
+- Turn data into AI memory with cognify, and enrich an existing graph with memify
 - Run search over your AI memory datasets
+- Manage datasets: create, list, inspect data items, poll processing status
+- Inspect sessions and their usage
 - Delete datasets or individual data items
 - Run the self-improving skill loop: ingest a SKILL.md, review a task with the skill loaded, propose an improvement, review the before/after diff, and apply it
 
@@ -50,80 +54,132 @@ Create credentials of type `Cognee API` in n8n. The node uses these values to au
 
 ## Operations
 
-The node exposes five resources. Each operation maps to a Cognee API endpoint.
+The node exposes eight resources. Each operation maps to a Cognee `/api/v1` endpoint, the same API served by Cognee Cloud tenants and by a self-hosted cognee server (e.g. `http://localhost:8000`). Point the credential **Base URL** at whichever backend you use. The connection test hits `GET /health`.
 
-> **Two API surfaces.** The **Add Data / Cognify / Search / Delete** resources call Cognee Cloud's `/api/*` endpoints. The **Skill** resource (self-improving loop) calls the `/api/v1/*` endpoints — available on a self-hosted cognee server today, and on Cognee Cloud as its `/api/v1` surface rolls out. Point the credential **Base URL** at whichever backend exposes the routes you need (e.g. `http://localhost:8000` for a self-hosted server). The connection test hits `GET /health`.
+### Resource: Memory
+
+The memory-oriented API. **Remember** is the one-call path (add + cognify); **Recall** is a superset of Search that can also read session memory; **Forget** replaces the two Delete operations and adds memory-only clearing.
+
+- **Operation: Remember** — `POST /api/v1/remember` (multipart/form-data)
+  - Fields: Input Type (Text or Binary File), Text (multiple) or Input Binary Field, Dataset Name
+  - Additional Fields: Dataset ID, Session ID, Node Set, Run in Background, Custom Prompt, Chunk Size, Chunks Per Batch, Ontology Keys, Graph Model (JSON schema with a top-level `title`), File Name Prefix
+  - Text items are uploaded as `memory-N.txt` file parts; a binary input keeps its original file name and MIME type (PDF, DOCX, ...). Returns `status`, `dataset_id`, `pipeline_run_id` and per-file `items`.
+- **Operation: Remember Entry** — `POST /api/v1/remember/entry`
+  - Fields: Entry Type (Question and Answer / Trace / Feedback), Session ID, Dataset Name, plus the type's fields (Question + Answer; Origin Function + Status; QA ID)
+  - Additional Fields: Context, Feedback Text, Feedback Score, Method Params, Method Return Value, Memory Query, Memory Context, Error Message, Dataset ID
+  - Returns `entry_type` and `entry_id`; pass a Q&A's `entry_id` as QA ID to attach feedback later.
+- **Operation: Recall** — `POST /api/v1/recall`
+  - Fields: Query, Search Type (any Cognee search type, or **Auto** to let the server route the query), Datasets (empty = all you can read), Top K, Simplify
+  - Additional Options: Session ID, Scope (graph / session / trace / session_context / all / tools / code), Only Context, Context Format, Context Profile, Dataset IDs, Node Sets, System Prompt, Include References, Verbose
+  - With Simplify on (default) each hit becomes one item with `source` and `text` plus a few source-specific fields; the original entry is kept under `raw`.
+- **Operation: Forget** — `POST /api/v1/forget`
+  - Fields: Forget (Dataset / Data Item / Everything), Identify Dataset By (Name or ID), Dataset Name or Dataset ID, Data ID, Memory Only
+  - Memory Only clears graph and vector data but keeps raw files, so the dataset can be re-cognified. **Everything** requires the explicit confirmation toggle and permanently deletes all datasets and data you own.
+
+- **Operation: Update** — `PATCH /api/v1/update` (multipart/form-data)
+  - Fields: Dataset Name or ID (dropdown), Data ID, Input Type (Text or Binary File), Text or Input Binary Field
+  - Update Fields: File Name, Node Set
+  - Replaces one data item: the old version is deleted and the new content is ingested into the graph.
+
+Example Recall body sent by the node:
+
+```json
+{
+  "query": "Where was Einstein born?",
+  "search_type": null,
+  "datasets": ["facts"],
+  "top_k": 5,
+  "session_id": "chat-42",
+  "scope": ["graph", "session"],
+  "only_context": true
+}
+```
 
 ### Resource: Add Data
 
 - **Operation**: Add
-- **Endpoint**: `POST /api/add_text`
+- **Endpoint**: `POST /api/v1/add` (multipart/form-data)
 - **Fields**:
-  - Dataset Name (`datasetName`, required): Name of the Cognee dataset to add text to
-  - Text Data (`textData`, required, multiple): Array of strings to store
+  - Dataset Name (`datasetName`, required): Name of the Cognee dataset to add text to (created if it does not exist)
+  - Text Data (`textData`, required, multiple): Strings to store. Each item is uploaded as its own `text-N.txt` file part.
+  - Additional Fields: Node Set (`node_set`, multiple) to tag the data for filtered search; Run in Background (`run_in_background`) to return immediately with a `pipeline_run_id`
 
-Example body sent by the node:
-
-```json
-{
-  "datasetName": "support_docs",
-  "textData": [
-    "FAQ: Reset password via account settings.",
-    "Guide: Export data as CSV from dashboard."
-  ]
-}
-```
+The node builds the multipart body itself (no extra dependencies): one `data` file part per text item plus the `datasetName` and optional form fields.
 
 ### Resource: Cognify
 
+- **Operation**: Memify
+- **Endpoint**: `POST /api/v1/memify`
+- **Fields**: Dataset Name, Run in Background; Additional Options: Dataset Name or ID, Extraction Tasks, Enrichment Tasks, Data, Node Sets
+- Runs Cognee enrichment tasks over an existing dataset graph, or over custom Data with custom extraction/enrichment tasks.
+
 - **Operation**: Cognify
-- **Endpoint**: `POST /api/cognify`
+- **Endpoint**: `POST /api/v1/cognify`
 - **Fields**:
   - Datasets (`datasets`, required, multiple): One or more dataset names to cognify
+  - Run in Background (`run_in_background`): Return immediately with a `pipeline_run_id`; poll `GET /api/v1/datasets/status` for completion
+  - Additional Options: Dataset IDs (`dataset_ids`), Custom Prompt (`custom_prompt`), Chunk Size (`chunk_size`), Chunks Per Batch (`chunks_per_batch`), Data Per Batch (`data_per_batch`), Ontology Keys (`ontology_key`), Graph Model (`graph_model`, JSON schema with a top-level `title`)
 
 Example body sent by the node:
 
 ```json
 {
-  "datasets": ["support_docs"]
+  "datasets": ["support_docs"],
+  "run_in_background": false
 }
 ```
 
 ### Resource: Search
 
 - **Operation**: Search
-- **Endpoint**: `POST /api/search`
+- **Endpoint**: `POST /api/v1/search`
 - **Fields**:
-  - Search Type (`searchType`): One of `GRAPH_COMPLETION`, `GRAPH_COMPLETION_COT`, `RAG_COMPLETION`
-  - Datasets (`datasets`, required, multiple)
+  - Search Type (`search_type`): Any Cognee search type, e.g. `GRAPH_COMPLETION` (default), `HYBRID_COMPLETION`, `GRAPH_COMPLETION_COT`, `RAG_COMPLETION`, `CHUNKS`, `SUMMARIES`, `TEMPORAL`, `FEELING_LUCKY`, `CODE`, `AGENTIC_COMPLETION`
+  - Datasets (`datasets`, required, multiple): Dataset names (resolve only to datasets you own)
   - Query (`query`, required)
-  - Top K (`topK`, optional number): Defaults to 10
+  - Top K (`top_k`, optional number): Defaults to 10
+  - Additional Options: Dataset IDs (`dataset_ids`, for shared datasets), System Prompt (`system_prompt`), Only Context (`only_context`), Context Format (`context_format`), Node Sets (`node_name`), Session ID (`session_id`), Include References (`include_references`), Verbose (`verbose`)
 
 Example body sent by the node:
 
 ```json
 {
-  "searchType": "GRAPH_COMPLETION",
+  "search_type": "GRAPH_COMPLETION",
   "datasets": ["support_docs"],
   "query": "How do I export my data?",
-  "topK": 5
+  "top_k": 5
 }
 ```
+
+### Resource: Dataset
+
+- **Operation: Get Many** — `GET /api/v1/datasets`: one item per dataset (`id`, `name`, `created_at`, `owner_id`)
+- **Operation: Create** — `POST /api/v1/datasets`: Name (returns the existing dataset if the name is taken)
+- **Operation: Get Data Items** — `GET /api/v1/datasets/{datasetId}/data`: Dataset Name or ID (dropdown); one item per stored document with its UUID
+- **Operation: Get Status** — `GET /api/v1/datasets/status`: Dataset Names or IDs (empty = all), Pipelines (add / cognify / code graph). Returns one item per dataset (and per pipeline when several are chosen) with `dataset_id` and `status`. Poll this after **Run in Background**.
+- **Operation: Get Progress** — `GET /api/v1/datasets/status/progress`: same selection, each item also carries `progress` (files completed / total, current stage)
+
+Every "Dataset Name or ID" field is a dropdown loaded from your datasets; an expression can still supply a UUID.
+
+### Resource: Session
+
+- **Operation: Get Many** — `GET /api/v1/sessions`: Time Range (24h / 7d / 30d / all), Limit; Options: Status, Order By, Descending, Offset. One item per session.
+- **Operation: Get** — `GET /api/v1/sessions/{sessionId}`: full session detail including Q&A and trace entries, usage and cost
 
 ### Resource: Delete
 
 - **Operation**: Delete Dataset
-- **Endpoint**: `DELETE /api/datasets/{datasetId}`
+- **Endpoint**: `DELETE /api/v1/datasets/{datasetId}`
 - **Fields**:
   - Dataset ID (`datasetId`, required): The UUID of the dataset to delete
 
 - **Operation**: Delete Data
-- **Endpoint**: `DELETE /api/datasets/{datasetId}/data/{dataId}`
+- **Endpoint**: `DELETE /api/v1/datasets/{datasetId}/data/{dataId}`
 - **Fields**:
   - Dataset ID (`datasetId`, required): The UUID of the dataset
   - Data ID (`dataId`, required): The UUID of the data item to remove
 
-### Resource: Skill (`/api/v1`)
+### Resource: Skill
 
 The self-improving skill loop. A weak run becomes a reviewable, approvable edit to a skill's instructions.
 
@@ -143,14 +199,32 @@ The self-improving skill loop. A weak run becomes a reviewable, approvable edit 
   - Fields: Skill Name, Dataset Name, Proposal ID
   - Applies the approved proposal, writing the new procedure into the skill.
 - **Operation: Get Skill** — `GET /api/v1/skills/{skillId}`
-  - Fields: Skill ID, Dataset ID
+  - Fields: Skill ID, Dataset Name or ID
   - Returns one skill including its full `procedure` body (useful to confirm the applied change).
+- **Operation: Get Many** — `GET /api/v1/skills/`
+  - Fields: Dataset Name or ID; Options: Include Inactive, Limit, Offset
+  - Lists the skills ingested into a dataset.
+- **Operation: Delete Skill** — `DELETE /api/v1/skills/{skillId}`
+  - Fields: Skill ID, Dataset Name or ID
+  - Removes the skill node and its embeddings from the dataset.
 
 Loop wiring: **Ingest Skill** → **Review Skill** → (score in n8n) → **Propose Improvement** → **Get Proposal** (show diff for approval) → **Apply Improvement** → **Get Skill**.
 
 ## Usage examples
 
-End-to-end example workflow:
+Chat memory for an AI Agent:
+
+1. **Recall** (Cognee) before the agent
+   - Resource: Memory → Operation: Recall
+   - Query: `{{ $json.chatInput }}`, Session ID (Additional Options): `{{ $json.sessionId }}`, Scope: Graph + Session, Only Context: on
+   - Feed the returned `text` fields into the agent's system prompt as remembered context
+2. **AI Agent** answers the user
+3. **Remember Entry** (Cognee) after the agent
+   - Resource: Memory → Operation: Remember Entry, Entry Type: Question and Answer
+   - Session ID: `{{ $json.sessionId }}`, Question: the user message, Answer: the agent output
+4. Optionally **Remember** documents the agent should know (Resource: Memory → Remember, Input Type: Binary File) from a Drive or email trigger.
+
+End-to-end dataset workflow:
 
 1. **Add Data** (Cognee)
    - Resource: Add Data → Operation: Add
@@ -187,6 +261,8 @@ The node depends on `n8n-workflow` at runtime (peer dependency). It should work 
 - [Package homepage](https://github.com/topoteretes/cognee-n8n)
 
 ## Version history
+
+- **Unreleased**: Add the **Dataset** resource (Get Many, Create, Get Data Items, Get Status, Get Progress) and **Session** resource (Get Many, Get); Memify under Cognify; Update under Memory; Get Many and Delete Skill under Skill. Dataset ID fields become dropdowns loaded from your datasets. Add the **Memory** resource: Remember (text or binary file, multipart), Remember Entry (qa / trace / feedback session entries), Recall (all search types plus Auto routing, session scope, Simplify output) and Forget (dataset, data item, memory-only, or everything behind a confirmation toggle). Move Add Data, Cognify, Search and Delete to the `/api/v1` endpoints (the legacy `/api/add_text`, `/api/cognify`, `/api/search` routes are no longer served). Add Data now uploads text as multipart file parts and gains Node Set / Run in Background. Search exposes all Cognee search types plus Dataset IDs, System Prompt, Only Context, Node Sets, Session ID, Include References and Verbose. Cognify gains Dataset IDs, Custom Prompt, Chunk Size and Ontology Keys. Icons now have light/dark variants; toolchain upgraded to `@n8n/node-cli` 0.46 with vitest unit tests.
 
 - **0.5.0**: Add the **Skill** resource (self-improving skill loop) targeting the `/api/v1` API: Ingest Skill, Review Skill (agentic), Propose Improvement, Apply Improvement, Get Skill, Get Proposal. Existing Add/Cognify/Search/Delete operations are unchanged.
 

@@ -27,7 +27,9 @@
     "lintfix": "n8n-node lint --fix",
     "format": "prettier nodes credentials --write",
     "release": "n8n-node release",
-    "prepublishOnly": "npm run build && npm run lint"
+    "prepublishOnly": "npm run build && npm run lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "files": [
     "dist"
@@ -42,11 +44,12 @@
     ]
   },
   "devDependencies": {
-    "@n8n/node-cli": "^0.23.1",
+    "@n8n/node-cli": "^0.46.2",
     "@typescript-eslint/typescript-estree": "^8.57.2",
     "eslint": "^9.39.4",
     "prettier": "^3.5.3",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "n8n-workflow": "*"
