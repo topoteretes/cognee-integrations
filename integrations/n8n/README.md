@@ -145,7 +145,7 @@ Example body sent by the node:
 
 ### Resource: Remember (`/api/v1`)
 
-One-shot add + cognify: ingest text and build the knowledge graph in a single call, with session attribution and node-set tagging.
+Without a Session ID, Remember ingests text and builds the knowledge graph in one call. With a Session ID, it writes to the session cache; the server bridges that session into the graph separately. Node-set tags are included in the request.
 
 - **Operation**: Remember
 - **Endpoint**: `POST /api/v1/remember` (multipart form)
@@ -153,7 +153,7 @@ One-shot add + cognify: ingest text and build the knowledge graph in a single ca
   - Dataset Name (`datasetName`, required): created if it does not exist
   - Dataset ID (`datasetId`, optional): UUID of an existing dataset, used instead of resolving by name
   - Text (`rememberText`, required): sent as an uploaded `.txt` file part
-  - Session ID (`session_id`, optional): attribute the memory to a session (tracked in the sessions dashboard)
+  - Session ID (`session_id`, optional): store the memory in the session cache (tracked in the sessions dashboard); this does not promise immediate graph ingestion
   - Node Sets (`node_set`, optional, multiple): tag the data so Recall/Search can later filter to it
   - Run in Background (`run_in_background`, default on): the request returns as soon as the work is enqueued. Disable to wait synchronously; note the Cognee Cloud gateway closes long-running connections around the 4-minute mark, so non-trivial texts fail with ECONNRESET in sync mode.
 

@@ -27,7 +27,8 @@
     "lintfix": "n8n-node lint --fix",
     "format": "prettier nodes credentials --write",
     "release": "n8n-node release",
-    "prepublishOnly": "npm run build && npm run lint"
+    "prepublishOnly": "npm run build && npm run lint",
+    "test": "npm run build && node --test tests/requests.test.cjs"
   },
   "files": [
     "dist"

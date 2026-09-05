@@ -145,14 +145,18 @@ jobs:
       # TS test in the repo was decorative — openclaw alone had 128 passing tests
       # that no CI job ever ran.
       #
-      # --if-present: n8n, opencode and vellum-assistant have no test script and
+      # --if-present: integrations without a test script, such as vellum-assistant,
       # must not fail for lacking one.
       # --passWithNoTests: openclaw-skills HAS a jest script but no test files, and
       # bare `jest` exits 1 on "no tests found". Both jest and vitest accept the
       # flag, so it works across the matrix.
       - name: Test
         working-directory: integrations/${{ matrix.integration }}
-        run: npm test --if-present -- --passWithNoTests
+        run: |
+          case "${{ matrix.integration }}" in
+            n8n|opencode) npm test --if-present ;;
+            *) npm test --if-present -- --passWithNoTests ;;
+          esac
 
       - name: Type check
         working-directory: integrations/${{ matrix.integration }}
