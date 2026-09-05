@@ -3224,8 +3224,12 @@ def register_agent_via_http(
             return True, result
         return True, {}
     except Exception as exc:
-        hook_log("agent_register_failed", {"error": str(exc)[:200]})
-        return False, {}
+        status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+        if status == 404:
+            hook_log("agent_lifecycle_unsupported", {"operation": "register", "status": status})
+            return False, {"lifecycle_supported": False}
+        hook_log("agent_register_failed", {"error": str(exc)[:200], "status": status})
+        return False, {"status_code": status}
 
 
 def unregister_agent_via_http(
@@ -3243,6 +3247,9 @@ def unregister_agent_via_http(
             return True, count
         return True, 0
     except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+            hook_log("agent_lifecycle_unsupported", {"operation": "unregister", "status": 404})
+            return True, 0
         hook_log("agent_unregister_failed", {"error": str(exc)[:200]})
         return False, 0
 
@@ -3285,14 +3292,18 @@ def recall_via_http(
         payload["search_type"] = search_type
     if context_profile:
         payload["context_profile"] = context_profile
-    result = _json_http_request("/api/v1/recall", payload, timeout=timeout)
+    from _deadlines import bounded_call
+
+    result = bounded_call(
+        lambda: _json_http_request("/api/v1/recall", payload, timeout=timeout), timeout
+    )
     return result if isinstance(result, list) else []
 
 
 def _backend_reachable(base_url: str, timeout: float = 1.5) -> bool:
     try:
         with urllib.request.urlopen(
-            f"{base_url.rstrip('/')}/docs", timeout=timeout, context=_https_context()
+            f"{base_url.rstrip('/')}/health", timeout=timeout, context=_https_context()
         ) as resp:
             return 200 <= resp.status < 500
     except (urllib.error.URLError, TimeoutError, OSError):
@@ -3478,6 +3489,11 @@ def drain_warmup_entries(
     ``deduped``). If the detail read fails, everything replays as before: a
     rare duplicate beats a lost turn.
     """
+    from _capture_policy import allow_tool, capture_enabled, redact
+
+    if not capture_enabled():
+        return 0, 0
+
     if not dataset or not session_id:
         return 0, 0
     path = _bridge_file(session_id)
@@ -3552,6 +3568,12 @@ def drain_warmup_entries(
                 deduped += 1
                 continue
             try:
+                if send_entry.get("type") == "trace" and not allow_tool(
+                    str(send_entry.get("origin_function", "")), send_entry.get("method_params", {})
+                ):
+                    deduped += 1
+                    continue
+                send_entry = redact(send_entry)
                 remember_entry_via_http(
                     dataset,
                     session_id,

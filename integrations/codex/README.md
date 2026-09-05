@@ -549,3 +549,21 @@ curl -sS http://localhost:8011/health
 **Final sync diagnostics**
 - Check `~/.cognee-plugin/codex/hook.log` and `~/.cognee-plugin/codex/exit-watcher.log`.
 - Relevant logs: `sync_deferred_to_shutdown_worker`, `final_sync_once_*`, `agent_unregister_result`.
+
+### Automatic capture controls and compatible HTTP backends
+
+The plugin supports the same automatic capture policy as Claude Code: set
+`COGNEE_CAPTURE=false` in the host environment or `~/.cognee/.env` to keep recall
+and explicit remember while stopping prompt, answer and trace capture and buffered
+replay. `COGNEE_CAPTURE_TOOLS` is a pipe-separated allowlist of tool names/globs.
+`COGNEE_CAPTURE_DENY_PATHS` extends the default credential/private-key path patterns.
+`COGNEE_CAPTURE_REDACT=true` is the default; common secrets are redacted before
+truncation and storage. `COGNEE_CAPTURE_REDACT_PATTERNS` accepts a JSON array of
+additional regexes. Invalid expressions prevent affected content from being stored.
+Redaction is best effort; the master switch is the strict opt-out. This does not
+erase existing memory or buffers, and path exclusions inspect structured tool path
+arguments rather than arbitrary shell commands.
+
+Backend reachability uses `/health`. Missing optional lifecycle routes (404) do
+not prevent startup; 401/403, transport failures and server failures remain errors.
+Prompt recall enforces an elapsed-time deadline as well as socket timeouts.

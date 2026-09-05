@@ -132,6 +132,12 @@ def _prompt_context(payload: dict) -> str:
 
 
 async def _store(prompt: str, payload: dict):
+    from _capture_policy import capture_enabled, redact
+
+    if not capture_enabled():
+        return
+    prompt = redact(prompt)
+    payload = redact(payload)
     session_id, dataset, user_id, tenant_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"event": "prompt"})

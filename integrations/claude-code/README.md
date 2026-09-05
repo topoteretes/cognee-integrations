@@ -660,3 +660,30 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `180` | Read timeout for the improve POST |
 | improve poll deadline | `COGNEE_IMPROVE_POLL_DEADLINE` | `600` | Best-effort wait for pipeline completion after submit |
+
+### Automatic capture controls
+
+Set these in `~/.cognee/.env` or the host environment. Shell environment values
+win over the shared file. Changes apply when a new hook process starts.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `COGNEE_CAPTURE` | `true` | Set `false` to disable automatic prompt, answer and tool capture, including buffered replay. Recall and explicit remember remain available. |
+| `COGNEE_CAPTURE_TOOLS` | all registered tools | Pipe-separated tool names or globs, e.g. `Grep|Glob`; excludes other tools from capture. |
+| `COGNEE_CAPTURE_DENY_PATHS` | sensitive file patterns | Comma-separated patterns or a JSON array extending the built-in `.env`, credential and private-key exclusions. |
+| `COGNEE_CAPTURE_REDACT` | `true` | Redacts common credentials, authorization values, database URLs and private-key blocks before truncation, persistence or upload. |
+| `COGNEE_CAPTURE_REDACT_PATTERNS` | empty | JSON array of additional regular expressions. Invalid expressions prevent the affected content from being captured. |
+
+Redaction is best effort. The master switch is the strict control for repositories
+where automatic content capture is inappropriate. Disabling capture does not erase
+existing memory or retained buffers; use the forget workflow to remove stored data.
+Sensitive-path exclusions inspect structured tool path arguments, not arbitrary
+shell command syntax.
+
+### HTTP backend compatibility
+
+The memory data plane uses `/health` for reachability. A 404 from optional agent
+registration/unregistration is logged as an unsupported lifecycle API and does not
+prevent session startup. Authentication errors (401/403), transport failures and
+server errors remain failures. Prompt recall has an elapsed-time deadline in
+addition to socket timeouts; late read results are discarded.
