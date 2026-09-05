@@ -3271,6 +3271,31 @@ def wait_for_cognify(
         time.sleep(max(0.1, interval_seconds))  # floor avoids a tight spin if misconfigured to 0
 
 
+_TYPED_DATASET_CAPABILITIES = {}
+
+
+def require_typed_dataset_id_support(*, service_url: str = "", api_key=None) -> None:
+    """Old SDKs advertise dataset_id but reject typed entries at runtime."""
+    url = _normalize_service_url(service_url or _local_api_url())
+    cached = _TYPED_DATASET_CAPABILITIES.get(url)
+    supported = cached[1] if cached else False
+    if cached is None or time.monotonic() - cached[0] > 60.0:
+        spec = _json_http_request("/openapi.json", method="GET", base_url=url, api_key=api_key)
+        supported = (
+            spec.get("paths", {})
+            .get("/api/v1/remember/entry", {})
+            .get("post", {})
+            .get("x-cognee-session-dataset-ids")
+            is True
+        )
+        _TYPED_DATASET_CAPABILITIES[url] = (time.monotonic(), supported)
+    if not supported:
+        raise RuntimeError(
+            "This Cognee server cannot safely store typed session memory by dataset UUID. "
+            "Update the SDK before selecting a shared write dataset."
+        )
+
+
 def remember_entry_via_http(
     dataset: str,
     session_id: str,
@@ -3285,6 +3310,8 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    if parse_dataset_id(dataset):
+        require_typed_dataset_id_support()
     entry = _sanitize_value(entry)
     return _json_http_request(
         "/api/v1/remember/entry",

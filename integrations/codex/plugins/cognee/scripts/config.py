@@ -307,6 +307,9 @@ async def ensure_dataset_ready_via_api(service_url: str, api_key: str, dataset: 
 
     ident = dataset_id(dataset)
     if ident:
+        from _plugin_common import require_typed_dataset_id_support
+
+        require_typed_dataset_id_support(service_url=service_url, api_key=api_key)
         user_id = await _user_id_via_api(service_url, api_key)
         if not user_id:
             raise RuntimeError("Cannot authorize dataset ID without authenticated identity")
