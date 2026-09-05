@@ -23,7 +23,16 @@ def recall_fields(value, scope):
     # Session history remains bound to ONE dataset. Federated graph recall is
     # a separate read: never send the active session's binding with it.
     if scope == ["graph"]:
-        raw = os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip()
+        from _plugin_common import load_graph_read_scope
+
+        selected = load_graph_read_scope()
+        raw = (
+            json.dumps(selected)
+            if selected is not None
+            else os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip()
+        )
+        if selected == []:
+            return fields, False
         if raw:
             values = json.loads(raw)
             if not isinstance(values, list) or not values or not all(dataset_id(v) for v in values):
