@@ -1474,11 +1474,11 @@ const memoryCogneePlugin = {
               baseUrl: cfg.baseUrl,
               apiKey: resolvedApiKey || cfg.apiKey,
               pidfilePath: exitWatcherPidfilePath(agentSessionName),
-              // On unclean gateway death, bridge this session's cache into the
-              // graph before unregistering. The gateway anchor watcher has no
-              // session and stays unregister-only.
-              datasetName: captureDatasetName(ctx.agentId),
-              cogneeSessionId: cogneeSessionId(ctx.sessionId),
+              // On unclean gateway death, bridge this session's cache only when
+              // session persistence is enabled. The gateway anchor watcher has
+              // no session and stays unregister-only.
+              datasetName: cfg.persistSessionsAfterEnd ? captureDatasetName(ctx.agentId) : undefined,
+              cogneeSessionId: cfg.persistSessionsAfterEnd ? cogneeSessionId(ctx.sessionId) : undefined,
               logger: api.logger,
             }).catch(() => {});
           } catch (e: unknown) {
@@ -1989,7 +1989,7 @@ const memoryCogneePlugin = {
         // into THIS session's agent dataset. Must complete BEFORE unregister:
         // unregister can drop activeAgents to 0 and, in COGNEE_AGENT_MODE,
         // shut the server down mid-pipeline.
-        if (cfg.improveOnSessionEnd && endSessionId) {
+        if (cfg.persistSessionsAfterEnd && cfg.improveOnSessionEnd && endSessionId) {
           // Let this session's in-flight capture writes land first; improve
           // only bridges what is already in the session cache.
           await awaitPendingStores(endSessionId);
