@@ -11,6 +11,7 @@ a non-200 answer, a live spawned pid — vetoes installing or booting.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -82,7 +83,7 @@ def test_erroring_server_is_busy_not_absent(pc, mock_server):
 
 def test_refused_port_is_absent_after_confirmation(pc, closed_port_url):
     verdict, evidence = pc.server_presence(closed_port_url, probe_timeout=0.2)
-    assert verdict == pc.PRESENCE_ABSENT
+    assert verdict == pc.PRESENCE_ABSENT, evidence
     assert evidence["tcp"] == "refused"
     # Absence was confirmed by the delayed second probe, not assumed from one.
     assert "http_retry" in evidence
@@ -90,7 +91,7 @@ def test_refused_port_is_absent_after_confirmation(pc, closed_port_url):
 
 def test_quick_form_skips_the_confirming_reprobe(pc, closed_port_url):
     verdict, evidence = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
-    assert verdict == pc.PRESENCE_ABSENT
+    assert verdict == pc.PRESENCE_ABSENT, evidence
     assert "http_retry" not in evidence
 
 
@@ -116,8 +117,8 @@ def test_dead_pidfile_cannot_veto_and_is_reaped(pc, closed_port_url):
     dead_pid.wait()
     port = _port_of(closed_port_url)
     pc.write_server_pidfile(port, dead_pid.pid)
-    verdict, _ = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
-    assert verdict == pc.PRESENCE_ABSENT
+    verdict, evidence = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
+    assert verdict == pc.PRESENCE_ABSENT, evidence
     assert not pc._server_pidfile(port).exists()
 
 
@@ -127,8 +128,8 @@ def test_reused_pid_running_something_else_is_ignored(pc, closed_port_url, monke
     port = _port_of(closed_port_url)
     pc.write_server_pidfile(port, os.getpid())
     monkeypatch.setattr(pc, "_pid_looks_like_server", lambda pid: False)
-    verdict, _ = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
-    assert verdict == pc.PRESENCE_ABSENT
+    verdict, evidence = pc.server_presence(closed_port_url, probe_timeout=0.2, confirm_absent=False)
+    assert verdict == pc.PRESENCE_ABSENT, evidence
     assert not pc._server_pidfile(port).exists()
 
 
@@ -171,3 +172,161 @@ def test_boot_point_proceeds_when_positively_absent(session_start, closed_port_u
             {"base_url": closed_port_url}, health_timeout=1.0
         )
     assert installs
+
+
+def test_spawned_server_does_not_inherit_the_worker_stdio(
+    session_start, closed_port_url, monkeypatch
+):
+    """The server's console output must not land in bootstrap.log — nor vanish.
+
+    The bootstrap worker runs with stdout/stderr redirected to bootstrap.log; a
+    server spawned without its own stdio inherits those, and then every line the
+    server prints for its whole lifetime accumulates there — the file reached
+    gigabytes that way. /dev/null would lose the traceback of a boot that dies
+    before cognee opens its own log, so the output goes to the capture pump.
+    """
+    captured: dict = {}
+
+    class _FakeProc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    # Only the server spawn is faked. Everything else must reach the real Popen:
+    # the capture pump, and — on Windows — `netstat -ano`, which server_presence
+    # runs through subprocess.run to confirm the port is free. A blanket fake made
+    # netstat "fail", the verdict came back UNKNOWN, and the boot point refused
+    # to spawn at all (Windows CI only; POSIX confirms absence with a socket).
+    real_popen = subprocess.Popen
+
+    def fake_popen(argv, **kwargs):
+        if "uvicorn" not in [str(a) for a in argv]:
+            return real_popen(argv, **kwargs)
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return _FakeProc()
+
+    monkeypatch.setattr(session_start, "ensure_cognee_installed", lambda *a, **k: True)
+    monkeypatch.setattr(session_start.subprocess, "Popen", fake_popen)
+    # Healthy as soon as the spawn happened, so the boot point returns.
+    monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: "argv" in captured)
+    monkeypatch.setattr(session_start, "write_server_pidfile", lambda *a, **k: None)
+
+    # With the fakes installed the port must still be provably free — this is the
+    # check that broke on Windows when the fake swallowed netstat. The quick form
+    # (no confirming reprobe) is enough to exercise that path.
+    verdict, _ = session_start.server_presence(closed_port_url, confirm_absent=False)
+    assert verdict == session_start.PRESENCE_ABSENT
+    # The spawn is what this test is about; skip the (slow on Windows) presence
+    # dance in front of it now that it has been checked once above.
+    monkeypatch.setattr(
+        session_start, "server_presence", lambda *a, **k: (session_start.PRESENCE_ABSENT, {})
+    )
+
+    session_start._ensure_local_server_running({"base_url": closed_port_url}, health_timeout=2.0)
+
+    assert "uvicorn" in captured["argv"]
+    # Not the worker's stdio, not /dev/null either: a pipe into the capture pump,
+    # with stderr folded into it, so an early boot failure is kept.
+    assert captured["stdin"] is subprocess.DEVNULL
+    assert captured["stderr"] is subprocess.STDOUT
+    sink = captured["stdout"]
+    assert sink is not subprocess.DEVNULL and sink is not None and hasattr(sink, "fileno")
+
+
+# --- The install step is skipped when the venv is already at the pin --------------
+
+
+def test_install_is_skipped_when_venv_already_holds_the_pin(session_start, monkeypatch):
+    """No pip run, marker refreshed. The unconditional reinstall was a mutation
+    window on a venv shared with other plugins — and, with differing pins, the
+    mechanism that flipped its version at every cold boot."""
+    pin = session_start._PINNED_COGNEE_VERSION
+    monkeypatch.setattr(session_start, "_venv_cognee_version", lambda: pin)
+
+    def no_install(*a, **k):
+        raise AssertionError(f"install ran although the venv is already at {pin}: {a[0]}")
+
+    monkeypatch.setattr(session_start.subprocess, "run", no_install)
+    monkeypatch.setattr(session_start, "_find_uv", no_install)
+    assert session_start.ensure_cognee_installed() is True
+    marker = json.loads(session_start._VENV_READY_MARKER.read_text(encoding="utf-8"))
+    assert marker["cognee_version"] == pin
+
+
+def test_install_runs_when_venv_holds_another_version(session_start, monkeypatch):
+    pin = session_start._PINNED_COGNEE_VERSION
+    versions = iter(["1.0.0", pin])  # before the install / after it
+    monkeypatch.setattr(session_start, "_venv_cognee_version", lambda: next(versions))
+    monkeypatch.setattr(session_start, "_find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr(session_start, "_install_uv", lambda: None)
+    runs: list[list[str]] = []
+
+    def record(argv, **kwargs):
+        runs.append([str(a) for a in argv])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(session_start.subprocess, "run", record)
+    assert session_start.ensure_cognee_installed() is True
+    assert any(f"cognee=={pin}" in " ".join(argv) for argv in runs), runs
+
+
+def test_boot_failure_message_carries_the_console_tail(session_start, closed_port_url, monkeypatch):
+    """An import error or bad port bind shows up in the RuntimeError, not only
+    in a file the user has to know about."""
+
+    class _DeadProc:
+        pid = 4243
+
+        def poll(self):
+            return 1
+
+    # Only the server spawn is faked. Everything else must reach the real Popen:
+    # the capture pump, and — on Windows — `netstat -ano`, which server_presence
+    # runs through subprocess.run to confirm the port is free. A blanket fake made
+    # netstat "fail", the verdict came back UNKNOWN, and the boot point refused
+    # to spawn at all (Windows CI only; POSIX confirms absence with a socket).
+    real_popen = subprocess.Popen
+
+    def fake_popen(argv, **kwargs):
+        if "uvicorn" not in [str(a) for a in argv]:
+            return real_popen(argv, **kwargs)
+        sink = kwargs.get("stdout")
+        if sink is not None and sink is not subprocess.DEVNULL:
+            sink.write(
+                b"Traceback (most recent call last):\n  "
+                b"ModuleNotFoundError: No module named 'kuzu'\n"
+            )
+            sink.flush()
+        return _DeadProc()
+
+    monkeypatch.setattr(session_start, "ensure_cognee_installed", lambda *a, **k: True)
+    monkeypatch.setattr(session_start.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: False)
+    monkeypatch.setattr(session_start, "write_server_pidfile", lambda *a, **k: None)
+    monkeypatch.setattr(session_start, "clear_server_pidfile", lambda *a, **k: None)
+    # Presence is covered elsewhere; on Windows the real check costs seconds.
+    monkeypatch.setattr(
+        session_start, "server_presence", lambda *a, **k: (session_start.PRESENCE_ABSENT, {})
+    )
+
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError"):
+        # The pump is asynchronous; give it a moment to land the bytes before the
+        # tail is read. _console_capture_tail reads the file, so retry briefly.
+        original_tail = session_start._console_capture_tail
+
+        def patient_tail(path, max_bytes=2000):
+            import time as _t
+
+            for _ in range(50):
+                text = original_tail(path, max_bytes)
+                if text:
+                    return text
+                _t.sleep(0.05)
+            return original_tail(path, max_bytes)
+
+        monkeypatch.setattr(session_start, "_console_capture_tail", patient_tail)
+        session_start._ensure_local_server_running(
+            {"base_url": closed_port_url}, health_timeout=2.0
+        )

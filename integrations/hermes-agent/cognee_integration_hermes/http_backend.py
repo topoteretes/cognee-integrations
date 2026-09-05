@@ -7,12 +7,13 @@ own REST API and own the request bodies. The alternative, routing through
 most importantly ``session_ids`` on ``improve()``, which is what bridges session
 memory into the permanent graph.
 
-**Wire contract** (verified against cognee 1.2.1's routers, live-checked on the
-pinned 1.4.0):
+**Wire contract** (first verified against cognee 1.2.1's routers, live-checked
+on the pinned 1.5.3):
 
 ===================  =========================================================
 ``recall``           ``POST /api/v1/recall``   JSON: ``query``, ``search_type``,
-                     ``scope``, ``datasets``, ``top_k``, ``session_id``
+                     ``scope``, ``datasets``, ``top_k``, ``session_id``,
+                     ``context_profile``, ``code_query``, ``only_context``
 ``remember_session`` ``POST /api/v1/remember`` multipart: ``data``,
                      ``datasetName``, ``session_id``
 ``remember_permanent`` ``POST /api/v1/remember`` multipart: ``data``,
@@ -21,6 +22,16 @@ pinned 1.4.0):
                      ``session_ids``, ``run_in_background``
 ``forget``           ``POST /api/v1/forget``   JSON: ``dataset``, ``everything``,
                      ``memory_only``
+``forget_document``  ``POST /api/v1/forget``   JSON: ``datasetId``, ``dataId``
+                     (single-document delete; cognee >= 1.5.3 for targeted
+                     session invalidation)
+``list_datasets``    ``GET /api/v1/datasets``
+``list_dataset_data`` ``GET /api/v1/datasets/{id}/data``
+``read_raw_data``    ``GET /api/v1/datasets/{id}/data/{id}/raw``
+``index_repository`` ``POST /api/v1/remember`` multipart: ``datasetName``,
+                     ``content_type=code``, ``repositories``,
+                     ``run_in_background``, ``index_vectors`` (cognee >= 1.5.3)
+``dataset_pipeline_status`` ``GET /api/v1/datasets/status?dataset=&pipeline=``
 ===================  =========================================================
 
 Note the field-name differences from the SDK: the endpoint calls them ``query``
@@ -121,6 +132,19 @@ def _is_local_url(url: str) -> bool:
     return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
+def _require_uuid(value: str, label: str) -> str:
+    """Refuse anything that is not a canonical UUID before it is used.
+
+    Dataset and data ids travel in the request URL and the JSON body; the
+    claude-code forget helper validates them for the same reason — a crafted
+    value could otherwise redirect the request to a different endpoint.
+    """
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError(f"invalid {label} (expected a UUID): {str(value)[:80]!r}") from None
+
+
 class RememberResponse:
     """A remember result that exposes ``.status`` like the SDK's ``RememberResult``.
 
@@ -213,8 +237,14 @@ class HttpBackend(MemoryBackend):
         multipart: Optional[tuple[str, bytes]] = None,
         cookies: Optional[dict[str, str]] = None,
         base_url: str = "",
+        parse_json: bool = True,
     ) -> Any:
-        """Make one request and return its parsed JSON body (``None`` if empty)."""
+        """Make one request and return its parsed JSON body (``None`` if empty).
+
+        With ``parse_json=False`` the raw text body is returned instead — for
+        endpoints like ``/raw`` whose response is the stored document itself,
+        not JSON.
+        """
         url = (base_url or self.url).rstrip("/") + path
         headers: dict[str, str] = {}
         data: Optional[bytes] = None
@@ -251,6 +281,8 @@ class HttpBackend(MemoryBackend):
         except Exception as exc:  # URLError / timeout / OSError
             raise CogneeUnreachable(f"cognee unreachable at {url}: {str(exc)[:200]}") from exc
 
+        if not parse_json:
+            return raw
         if not raw:
             return None
         try:
@@ -532,6 +564,9 @@ class HttpBackend(MemoryBackend):
         auto_route,
         query_type,
         scope=None,
+        context_profile=None,
+        code_query=None,
+        only_context=False,
         timeout,
     ) -> list[Any]:
         if not auto_route and not query_type:
@@ -552,8 +587,23 @@ class HttpBackend(MemoryBackend):
             # State the scope outright. Without it the server infers sources from
             # the other fields, and that inference requires a null search_type —
             # so a caller who set COGNEE_AUTO_ROUTE=false would lose the session
-            # cache as a side effect of choosing a search strategy.
+            # cache as a side effect of choosing a search strategy. A list scope
+            # (e.g. ["session", "trace", "session_context"]) travels as-is: the
+            # endpoint accepts a name or a list of names.
             body["scope"] = scope
+        if context_profile:
+            # "agent" selects the distilled agent-guidance rendering for the
+            # session_context scope, matching the claude-code/codex recall.
+            body["context_profile"] = context_profile
+        if code_query is not None:
+            # Deterministic code-graph lane (cognee >= 1.5.3): only meaningful
+            # when the scope includes "code" — the server rejects it otherwise.
+            body["code_query"] = code_query
+        if only_context:
+            # Skip the server-side LLM completion and return raw context. The
+            # layered per-scope recall uses this: it renders results itself, so
+            # paying an LLM call per scope would only add latency.
+            body["only_context"] = True
         # Always sent, null included: the endpoint defaults a *missing*
         # search_type to GRAPH_COMPLETION for backward compatibility, and only an
         # explicit null opts into the query classifier. Omitting the key would
@@ -637,3 +687,110 @@ class HttpBackend(MemoryBackend):
         if session_ids:
             body["session_ids"] = session_ids
         return self._request("POST", "/api/v1/improve", timeout=timeout, json_body=body)
+
+    # -- inspection / targeted deletion (cognee-forget parity) ---------------
+
+    def list_datasets(self, *, timeout: float) -> list[dict[str, Any]]:
+        """Every dataset visible to this principal (server-side RBAC applies)."""
+        result = self._request("GET", "/api/v1/datasets", timeout=timeout)
+        return [row for row in result if isinstance(row, dict)] if isinstance(result, list) else []
+
+    def list_dataset_data(self, *, dataset_id: str, timeout: float) -> list[dict[str, Any]]:
+        """The data items (documents) stored in one dataset."""
+        dataset_id = _require_uuid(dataset_id, "dataset id")
+        result = self._request("GET", f"/api/v1/datasets/{dataset_id}/data", timeout=timeout)
+        return [row for row in result if isinstance(row, dict)] if isinstance(result, list) else []
+
+    def read_raw_data(self, *, dataset_id: str, data_id: str, timeout: float) -> str:
+        """One data item's raw stored content, as text."""
+        dataset_id = _require_uuid(dataset_id, "dataset id")
+        data_id = _require_uuid(data_id, "data id")
+        raw = self._request(
+            "GET",
+            f"/api/v1/datasets/{dataset_id}/data/{data_id}/raw",
+            timeout=timeout,
+            parse_json=False,
+        )
+        text = str(raw or "")
+        # The endpoint may answer with a JSON-encoded string; unwrap that one
+        # shape so previews read as the document, not as an escaped literal.
+        if text.startswith('"') and text.endswith('"'):
+            try:
+                decoded = json.loads(text)
+                if isinstance(decoded, str):
+                    return decoded
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return text
+
+    def forget_document(self, *, dataset_id: str, data_id: str, timeout: float) -> dict[str, Any]:
+        """Delete exactly one data item — the only deletion shape this method
+        can express, by construction (both ids must be UUIDs; there is no
+        ``everything`` field in the body it builds). Dataset-wide deletion
+        stays on :meth:`forget`. Requires cognee >= 1.5.3 for the targeted
+        session-cache invalidation that keeps a later sync from re-persisting
+        the deleted content."""
+        body = {
+            "datasetId": _require_uuid(dataset_id, "dataset id"),
+            "dataId": _require_uuid(data_id, "data id"),
+        }
+        result = self._request("POST", "/api/v1/forget", timeout=timeout, json_body=body)
+        return result if isinstance(result, dict) else {}
+
+    # -- code graph (cognee >= 1.5.3) ----------------------------------------
+
+    def index_repository(
+        self,
+        *,
+        repo: str,
+        dataset: str,
+        index_vectors: bool = False,
+        run_in_background: bool = True,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Submit one repository for deterministic code-graph indexing."""
+        multipart = _multipart_body(
+            {
+                "datasetName": dataset,
+                "content_type": "code",
+                "repositories": str(repo),
+                "run_in_background": "true" if run_in_background else "false",
+                "index_vectors": "true" if index_vectors else "false",
+            },
+            {},
+        )
+        try:
+            payload = self._request(
+                "POST", "/api/v1/remember", timeout=timeout, multipart=multipart
+            )
+        except CogneeHttpError as exc:
+            if exc.status == 400 and "content_type" in str(exc):
+                # An older server (< 1.5.3) rejects content_type='code' outright.
+                raise CogneeHttpError(
+                    exc.status,
+                    "the cognee server rejected content_type='code' — repo indexing "
+                    "requires cognee >= 1.5.3; upgrade the server and retry. "
+                    f"Detail: {exc}",
+                ) from exc
+            raise
+        return payload if isinstance(payload, dict) else {}
+
+    def dataset_pipeline_status(
+        self, *, dataset_id: str, pipeline: str = "code_graph_pipeline", timeout: float
+    ) -> str:
+        """The named pipeline's status for one dataset, uppercased ("" if unknown).
+
+        The plugins' cognify poll targets ``cognify_pipeline``, which never sees
+        code runs — this variant exists for the code route.
+        """
+        dataset_id = _require_uuid(dataset_id, "dataset id")
+        query = urllib.parse.urlencode({"dataset": dataset_id, "pipeline": pipeline})
+        parsed = self._request("GET", f"/api/v1/datasets/status?{query}", timeout=timeout)
+        if not isinstance(parsed, dict) or not parsed:
+            return ""
+        value = parsed.get(dataset_id)
+        if value is None and len(parsed) == 1:
+            value = next(iter(parsed.values()))
+        if isinstance(value, dict):
+            value = value.get(pipeline)
+        return str(value or "").upper()

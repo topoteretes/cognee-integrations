@@ -5,11 +5,22 @@ name: Live E2E (real backends, no mocks)
 # Nightly plus on-demand is enough to catch regressions in the memory chain that
 # the hermetic suite cannot see.
 #
-# Two jobs, ONE test suite. The same 36 scenarios run against a locally booted
-# server and against a cloud tenant; the backend is chosen by a single env var
-# (COGNEE_LIVE_BASE_URL). Separate jobs rather than one, so a cloud outage cannot
-# discredit the local signal — and because they need different setup: the local
-# job builds/caches the plugin venv, the cloud job needs no venv at all.
+# Three jobs, two test suites. `local` and `cloud` run ONE suite — the same 36
+# claude-code/codex scenarios — against a locally booted server and against a
+# cloud tenant; the backend is chosen by a single env var (COGNEE_LIVE_BASE_URL).
+# Separate jobs rather than one, so a cloud outage cannot discredit the local
+# signal — and because they need different setup: the local job builds/caches
+# the plugin venv, the cloud job needs no venv at all.
+#
+# `hermes` and `openclaw` each run a different suite entirely — one SDK-based
+# Python plugin, one TypeScript plugin, both out of scope for the shared harness
+# in integrations/tests (see its README) and both carrying their own live tests
+# inside their own package. Same tier, same nightly, their own jobs.
+#
+# Neither of those two shares the cloud tenant. Both name their datasets
+# `live_<uuid>` and wipe every `live_` dataset either side of a run, exactly as
+# the shared harness does, so pointing two of these jobs at one tenant in
+# parallel would have each one's cleanup delete the other's in-flight data.
 on:
   workflow_dispatch:
     inputs:
@@ -41,6 +52,8 @@ jobs:
     # seeded venv, and a cache-miss run also pays the full plugin-venv build
     # before any test.
     timeout-minutes: 75
+    outputs:
+      failed_tests: ${{ steps.failures.outputs.list }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,7 +98,24 @@ jobs:
             echo "::error::LIVE_E2E_LLM_API_KEY is not set — the local live tier cannot run."
             exit 1
           fi
-          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }}
+          # tee keeps the log visible in the run while giving the Slack report
+          # step a file to pull failed-test names from; pipefail keeps pytest's
+          # exit code as the step's.
+          set -o pipefail
+          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }} 2>&1 | tee pytest-live.log
+
+      # Feeds the notify job. Only the short-summary FAILED/ERROR lines — the
+      # full context belongs in the run log, the DM just names what broke.
+      - name: Record failed tests for the Slack report
+        id: failures
+        if: failure()
+        working-directory: integrations/tests
+        run: |
+          {
+            echo 'list<<GITHUB_OUTPUT_EOF'
+            grep -E '^(FAILED|ERROR) ' pytest-live.log 2>/dev/null | cut -c1-200 | head -20 || true
+            echo 'GITHUB_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       # A live failure is only actionable with the plugin's own logs, and the
       # temp HOMEs are gone by the time anyone looks at the run.
@@ -107,6 +137,8 @@ jobs:
     timeout-minutes: 45
     # Independent of the local job on purpose: a cloud outage should not hide a
     # local regression, and vice versa. Both still serialise via `concurrency`.
+    outputs:
+      failed_tests: ${{ steps.failures.outputs.list }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -143,7 +175,19 @@ jobs:
           fi
           # No LLM_API_KEY: cognify runs server-side on the tenant, so the run
           # never uses one. The 8 server-killing scenarios are auto-deselected.
-          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }}
+          set -o pipefail
+          uv run pytest tests/e2e/live -m live -v ${{ inputs.pytest_args }} 2>&1 | tee pytest-live.log
+
+      - name: Record failed tests for the Slack report
+        id: failures
+        if: failure()
+        working-directory: integrations/tests
+        run: |
+          {
+            echo 'list<<GITHUB_OUTPUT_EOF'
+            grep -E '^(FAILED|ERROR) ' pytest-live.log 2>/dev/null | cut -c1-200 | head -20 || true
+            echo 'GITHUB_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Collect plugin logs on failure
         if: failure()
@@ -173,3 +217,311 @@ jobs:
               deleted, failures = delete_test_datasets(url, cloud_api_key())
               print(f'cleanup: deleted {deleted} test dataset(s); failures={failures[:5]}')
           "
+
+  # hermes-agent boots its own cognee server and drives the plugin's provider
+  # API directly — no hooks, no temp HOME, no plugin venv to seed. So this job
+  # shares the tier's shape (nightly, real LLM, Slack on failure) but none of the
+  # other two's setup: its own package dir, its own pytest invocation, and the
+  # opt-in gate its tests already ship with (COGNEE_RUN_INTEGRATION).
+  hermes:
+    name: live tier (hermes-agent)
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    # Seven tests, but LLM-bound ones: the suite budgets 120s for a cold server
+    # boot, 600s for a graph write and 900s for an improve. Its own per-test
+    # ceiling is 30m (tests/conftest.py), so this is the outer bound on a run
+    # where several tests stall rather than fail.
+    timeout-minutes: 60
+    outputs:
+      failed_tests: ${{ steps.failures.outputs.list }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: integrations/hermes-agent/.python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # cognee is a direct dependency of the plugin, so this single sync gives
+      # the job both the test runner and the server it boots. Nothing to cache
+      # beyond uv's own wheel cache.
+      - name: Install dependencies
+        working-directory: integrations/hermes-agent
+        run: uv sync --locked --dev
+
+      - name: Run the live round trip against a self-booted server
+        working-directory: integrations/hermes-agent
+        env:
+          # The gate the tests read at import time. Without it all seven skip and
+          # the job would pass while proving nothing.
+          COGNEE_RUN_INTEGRATION: '1'
+          LLM_API_KEY: ${{ secrets.LIVE_E2E_LLM_API_KEY }}
+          # Same model the local tier pins, for the same reason: graph extraction
+          # is the only model spend here. The spawned server inherits this env.
+          LLM_MODEL: openai/gpt-4o-mini
+        run: |
+          if [ -z "${LLM_API_KEY}" ]; then
+            echo "::error::LIVE_E2E_LLM_API_KEY is not set — the hermes live tier cannot run."
+            exit 1
+          fi
+          set -o pipefail
+          uv run pytest \
+            tests/test_integration_roundtrip.py \
+            tests/test_integration_concurrency.py \
+            -v ${{ inputs.pytest_args }} 2>&1 | tee pytest-live.log
+
+      - name: Record failed tests for the Slack report
+        id: failures
+        if: failure()
+        working-directory: integrations/hermes-agent
+        run: |
+          {
+            echo 'list<<GITHUB_OUTPUT_EOF'
+            grep -E '^(FAILED|ERROR) ' pytest-live.log 2>/dev/null | cut -c1-200 | head -20 || true
+            echo 'GITHUB_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # The server the tests spawn is detached and logs to the shared plugin
+      # state dir (server_bootstrap.default_server_log_path), so unlike the hook
+      # tiers its output survives the run — but only on the runner.
+      - name: Collect server logs on failure
+        if: failure()
+        run: |
+          {
+            echo "### hermes server log"
+            tail -200 "$HOME/.cognee-plugin/hermes/server.log" 2>/dev/null \
+              || echo "(no server log — the boot never got that far)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # openclaw boots its own server, the way the other two tiers do: the plugin's
+  # `gateway_start` first-run path (`ensure_and_boot.py` → venv → the cognee pinned
+  # in src/server.ts → uvicorn), driven by the suite's beforeAll when
+  # COGNEE_LIVE_ALLOW_BUILD is set and nothing answers at the loopback URL. That
+  # makes the version under test the one the plugin ships. This job used to borrow
+  # hermes-agent's venv for a server instead, which quietly tested a different,
+  # older cognee than openclaw installs for its users — and failed on a bug that
+  # only existed there.
+  #
+  # Loopback, not the cloud tenant: `liveConfig()` derives its mode from the URL,
+  # and only the local mode has a boot path (and the `/api/v1` prefix the tenant
+  # does not serve). Port 9100 is the tier's documented example and nothing else on
+  # the runner is near it.
+  openclaw:
+    name: live tier (openclaw)
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    # Three scenarios, each allowed 15m by the suite itself, and a graph write is
+    # polled for up to 10m before it gives up. A cache-miss run also pays the venv
+    # build (the plugin allows 600s) before any test.
+    timeout-minutes: 60
+    outputs:
+      failed_tests: ${{ steps.failures.outputs.list }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ensure_and_boot.py prefers `uv` when it is on PATH (`uv venv --python 3.12`
+      # + `uv pip install`), falling back to the system python's venv module.
+      # Giving it uv keeps the cold build to a couple of minutes.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          # Unlike the other tiers, this job never runs uv itself — only the
+          # plugin's cold venv build does. On a plugin-venv cache hit uv is never
+          # invoked, so an empty uv cache is the normal case here, not an error;
+          # without this the post-job cache save fails an otherwise green run.
+          ignore-nothing-to-cache: true
+
+      # The venv the plugin builds, keyed on the file that pins its cognee version
+      # so a bump rebuilds. The ready marker sits next to the venv, not inside it;
+      # cached too, or every hit would re-run the (fast, but not free) install
+      # check. COGNEE_LIVE_SERVER_HOME points the boot at the runner's real home
+      # because the suite otherwise sandboxes it into a temp dir the cache step
+      # would never see.
+      - name: Cache the plugin runtime venv
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cognee-plugin/venv
+            ~/.cognee-plugin/.venv-ready.json
+          key: cognee-openclaw-venv-${{ runner.os }}-${{ hashFiles('integrations/openclaw/src/server.ts') }}
+          restore-keys: |
+            cognee-openclaw-venv-${{ runner.os }}-
+
+      - name: Install openclaw dependencies
+        working-directory: integrations/openclaw
+        run: npm install
+
+      - name: Run the live tier against a self-booted server
+        working-directory: integrations/openclaw
+        env:
+          COGNEE_RUN_LIVE: '1'
+          COGNEE_LIVE_BASE_URL: http://127.0.0.1:9100
+          COGNEE_LIVE_ALLOW_BUILD: '1'
+          # No COGNEE_LIVE_API_KEY: the plugin mints one against the server it
+          # boots, exactly as it does for a first-time user, and the suite reads it
+          # back from the plugin's own cache.
+          # Mirrored into the CI log so a failure names what the plugin saw; the
+          # harness logger is otherwise a silent jest.fn().
+          COGNEE_LIVE_VERBOSE: '1'
+          LLM_API_KEY: ${{ secrets.LIVE_E2E_LLM_API_KEY }}
+          # Graph extraction is the only model spend here; the server inherits this.
+          LLM_MODEL: openai/gpt-4o-mini
+        run: |
+          if [ -z "${LLM_API_KEY}" ]; then
+            echo "::error::LIVE_E2E_LLM_API_KEY is not set — the openclaw live tier cannot run."
+            exit 1
+          fi
+          # The runner's real home, so the venv the plugin builds is the path the
+          # cache step saves. (`$HOME` is not in the workflow `env` context, hence
+          # here rather than above.)
+          export COGNEE_LIVE_SERVER_HOME="$HOME"
+          set -o pipefail
+          npm run test:live 2>&1 | tee jest-live.log
+          # The tier is `describe.skip` when its two variables are not both set, and
+          # a skipped suite exits 0. Without this the job's green would mean
+          # "nothing ran" just as readily as "everything passed".
+          if grep -q '\[live\] skipped' jest-live.log; then
+            echo "::error::the live suite skipped itself — it ran nothing."
+            exit 1
+          fi
+
+      - name: Record failed tests for the Slack report
+        id: failures
+        if: failure()
+        working-directory: integrations/openclaw
+        run: |
+          {
+            echo 'list<<GITHUB_OUTPUT_EOF'
+            grep -E '^(FAIL |  ● )' jest-live.log 2>/dev/null | cut -c1-200 | head -20 || true
+            echo 'GITHUB_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # ensure_and_boot.py detaches uvicorn with its stdio on /dev/null; what the
+      # server says lands in cognee's own log directory under the HOME it was
+      # booted with. Newest file first — one per server start.
+      - name: Collect server logs on failure
+        if: failure()
+        run: |
+          {
+            echo "### cognee server log (openclaw tier)"
+            latest="$(ls -t "$HOME"/.cognee/logs/*.log 2>/dev/null | head -1)"
+            if [ -n "$latest" ]; then tail -200 "$latest"; else echo "(no server log — the boot never got that far)"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Slack failure report
+    runs-on: ubuntu-latest
+    needs: [local, cloud, hermes, openclaw]
+    # Failure-only by design: silence means green. `always()` is required for
+    # the condition to be evaluated at all — without it a failed dependency
+    # skips this job before the contains() is ever read.
+    if: always() && contains(needs.*.result, 'failure')
+    steps:
+      # Secrets, both already-or-easily provisioned:
+      #   SLACK_BOT_TOKEN     — the same bot ci.yml uses for PR-review DMs,
+      #     and deliberately the same delivery pattern: the target ID goes
+      #     straight into chat.postMessage (a U…/W… id DMs the user), so the
+      #     only scopes needed are chat:write, plus users:read.email when the
+      #     target is an email address. No conversations.open, no im:write.
+      #   SLACK_NIGHTLY_NOTIFY — where the DM goes: an email address (resolved
+      #     via users.lookupByEmail), a Slack member ID (U…/W…), or a channel
+      #     ID (C…) if a channel is ever preferred (invite the bot to it).
+      #     Kept in a secret rather than in this public file so the address is
+      #     not scrapable.
+      - name: DM the nightly failure summary
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_NIGHTLY_NOTIFY: ${{ secrets.SLACK_NIGHTLY_NOTIFY }}
+          LOCAL_RESULT: ${{ needs.local.result }}
+          CLOUD_RESULT: ${{ needs.cloud.result }}
+          LOCAL_FAILED: ${{ needs.local.outputs.failed_tests }}
+          CLOUD_FAILED: ${{ needs.cloud.outputs.failed_tests }}
+          HERMES_RESULT: ${{ needs.hermes.result }}
+          HERMES_FAILED: ${{ needs.hermes.outputs.failed_tests }}
+          OPENCLAW_RESULT: ${{ needs.openclaw.result }}
+          OPENCLAW_FAILED: ${{ needs.openclaw.outputs.failed_tests }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TRIGGER: ${{ github.event_name }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+          target = os.environ.get("SLACK_NIGHTLY_NOTIFY", "").strip()
+          if not token or not target:
+              print("::error::SLACK_BOT_TOKEN / SLACK_NIGHTLY_NOTIFY are not set — cannot send the failure DM.")
+              sys.exit(1)
+
+          def slack(method: str, params: dict) -> dict:
+              req = urllib.request.Request(
+                  f"https://slack.com/api/{method}",
+                  data=urllib.parse.urlencode(params).encode(),
+                  headers={"Authorization": f"Bearer {token}"},
+              )
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  out = json.load(resp)
+              if not out.get("ok"):
+                  err = out.get("error")
+                  hint = ""
+                  if err == "missing_scope":
+                      needed = {
+                          "users.lookupByEmail": "users:read.email",
+                          "chat.postMessage": "chat:write",
+                      }.get(method, "")
+                      if needed:
+                          hint = (
+                              f" — add the `{needed}` bot scope at api.slack.com"
+                              " (OAuth & Permissions) and reinstall the app"
+                          )
+                  print(f"::error::Slack {method} failed: {err}{hint}")
+                  sys.exit(1)
+              return out
+
+          if "@" in target:
+              target = slack("users.lookupByEmail", {"email": target})["user"]["id"]
+          # chat.postMessage accepts a user ID (U…/W…) directly as `channel` and
+          # delivers to the bot's DM with that user — same pattern as the
+          # PR-review notifier, and it needs only chat:write (conversations.open
+          # would additionally require im:write). Channel IDs post as-is.
+          channel = target
+
+          def tier(name: str, result: str, failed: str) -> str:
+              icon = {"success": ":white_check_mark:", "failure": ":red_circle:"}.get(result, ":white_circle:")
+              lines = [f"{icon} *{name}*: {result}"]
+              if result == "failure":
+                  tests = [t for t in failed.splitlines() if t.strip()]
+                  lines += [f"> `{t}`" for t in tests]
+                  if not tests:
+                      lines.append("> no per-test summary — the job likely crashed or timed out; see the run log")
+              return "\n".join(lines)
+
+          text = "\n".join(
+              [
+                  f":rotating_light: *Nightly live e2e failed* ({os.environ.get('TRIGGER', '?')})",
+                  tier("local tier", os.environ.get("LOCAL_RESULT", ""), os.environ.get("LOCAL_FAILED", "")),
+                  tier("cloud tier", os.environ.get("CLOUD_RESULT", ""), os.environ.get("CLOUD_FAILED", "")),
+                  tier("hermes tier", os.environ.get("HERMES_RESULT", ""), os.environ.get("HERMES_FAILED", "")),
+                  tier("openclaw tier", os.environ.get("OPENCLAW_RESULT", ""), os.environ.get("OPENCLAW_FAILED", "")),
+                  f"<{os.environ.get('RUN_URL', '')}|Open the run>",
+              ]
+          )
+          slack("chat.postMessage", {"channel": channel, "text": text, "unfurl_links": "false"})
+          print("failure DM sent")
+          PYEOF

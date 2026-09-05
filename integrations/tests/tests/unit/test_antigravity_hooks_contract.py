@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import io
 import json
@@ -253,6 +254,25 @@ def test_nonfinal_worker_cannot_inherit_unregister_authority(hook_module, monkey
     assert launches[1][1]["env"]["COGNEE_UNREGISTER_ON_FINISH"] == "1"
 
 
+@pytest.mark.parametrize("reason", ["cooldown", "no_new_entries"])
+def test_execution_sync_honors_cooldown_but_final_sync_still_runs(hook_module, monkeypatch, reason):
+    sync = hook_module(ANTIGRAVITY, "sync-session-to-graph.py")
+    monkeypatch.setattr(
+        sync, "_load_resolved", lambda: ("sid", "ds", "u", "a", False, False, "host")
+    )
+    monkeypatch.setattr(sync, "_sync_targets", lambda *_: [("sid", "ds")])
+    monkeypatch.setattr(sync, "improve_throttle_reason", lambda _: reason)
+    monkeypatch.setattr(sync, "http_api_ready", lambda: True)
+    monkeypatch.setattr(sync, "hook_log", lambda *args: None)
+    calls = []
+    monkeypatch.setattr(sync, "run_session_improve", lambda *args, **kw: calls.append(kw) or True)
+
+    asyncio.run(sync._sync(False, strict=True, automatic=True))
+    assert calls == []
+    asyncio.run(sync._sync(False, strict=True))
+    assert calls == [{"trigger": "final"}]
+
+
 def test_failed_execution_dispatch_is_retryable_without_adapter_done_marker(
     hook_module, monkeypatch, tmp_path
 ):
@@ -318,7 +338,9 @@ def test_detached_execution_worker_retries_strictly_without_final_authority(
     attempts = []
     sleeps = []
 
-    async def flaky_sync(*, stop_watcher, unregister_on_finish, strict):
+    async def flaky_sync(*, stop_watcher, unregister_on_finish, strict, include_touched, automatic):
+        assert automatic is True
+        assert include_touched is False
         attempts.append((stop_watcher, unregister_on_finish, strict))
         if len(attempts) < 3:
             raise RuntimeError("busy or ambiguous improve")
@@ -347,7 +369,11 @@ def test_detached_execution_worker_returns_nonzero_after_retry_exhaustion(hook_m
     sync = hook_module(ANTIGRAVITY, "sync-session-to-graph.py")
     attempts = []
 
-    async def failed_sync(*, stop_watcher, unregister_on_finish, strict):
+    async def failed_sync(
+        *, stop_watcher, unregister_on_finish, strict, include_touched, automatic
+    ):
+        assert automatic is True
+        assert include_touched is False
         attempts.append((stop_watcher, unregister_on_finish, strict))
         raise RuntimeError("busy")
 
@@ -448,22 +474,19 @@ def test_private_hook_state_and_shared_runtime_roots_are_used(monkeypatch, tmp_p
         assert not (private_root / "server-8123.pid").exists()
 
 
-def test_shared_config_file_is_resolved_outside_private_state(monkeypatch, tmp_path):
-    """Catches config.json moving into the Antigravity-private state directory."""
+def test_legacy_config_cannot_override_shared_env_configuration(monkeypatch, tmp_path):
+    """Bootstrap and per-turn hooks must resolve the same endpoint and identity."""
     with _isolated_plugin_scripts(monkeypatch, tmp_path) as home:
+        legacy = home / ".cognee-plugin" / "config.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"agent_name": "stale-agent", "base_url": "https://stale"}))
+        env_file = home / ".cognee" / ".env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text('COGNEE_AGENT_NAME="configured-agent"\n')
         config = _load_script_module("config", "config.py")
-        settings = dict(config._DEFAULTS)
-        settings["agent_name"] = "configured-agent"
-        config.save_config(settings)
-
-        shared_config = home / ".cognee-plugin" / "config.json"
-        private_config = home / ".cognee-plugin" / "antigravity" / "config.json"
-        assert (
-            json.loads(shared_config.read_text(encoding="utf-8"))["agent_name"]
-            == "configured-agent"
-        )
         assert config.load_config()["agent_name"] == "configured-agent"
-        assert not private_config.exists()
+        assert config.load_config()["base_url"] != "https://stale"
+        assert not (home / ".cognee-plugin" / "antigravity" / "config.json").exists()
 
 
 def test_shared_venv_path_is_resolved_outside_private_state(monkeypatch, tmp_path):
@@ -489,6 +512,17 @@ def test_shared_cognee_database_dirs_are_resolved_outside_private_state(monkeypa
         assert Path(os.environ["CACHE_ROOT_DIRECTORY"]) == expected / "cache"
 
 
+def test_resumed_launch_renews_dead_host_owner_and_preserves_dataset(isolated_modules, monkeypatch):
+    common = isolated_modules(ANTIGRAVITY, "_plugin_common")
+    monkeypatch.setattr(common._proc, "pid_alive", lambda pid: pid == 202)
+    original = common.ensure_launch_record("resumed", dataset="chosen-dataset", host_pid=101)
+    resumed = common.ensure_launch_record("resumed", dataset="default-dataset", host_pid=202)
+    record = common._read_map_record("resumed")
+    assert resumed == original
+    assert record["dataset"] == "chosen-dataset"
+    assert record["host_pid"] == 202
+
+
 def test_posix_shell_guard_disables_bash_fixture_on_windows(monkeypatch):
     """Catches removing the Windows guard before the POSIX shell subprocess runs."""
     monkeypatch.setattr(sys, "platform", "win32")
@@ -496,8 +530,8 @@ def test_posix_shell_guard_disables_bash_fixture_on_windows(monkeypatch):
 
 
 @pytest.mark.skipif(not _has_posix_bash(), reason="requires POSIX bash; Windows uses cmd /c")
-def test_search_shell_exports_the_private_antigravity_state_dir(monkeypatch, tmp_path):
-    """Catches cognee-search.sh regressing its exported breaker state to another host."""
+def test_search_shell_keeps_the_shared_recall_breaker(monkeypatch, tmp_path):
+    """The CLI and hooks must use the same shared recall circuit breaker."""
     home = tmp_path / "home"
     home.mkdir()
     bin_dir = tmp_path / "bin"
@@ -535,7 +569,7 @@ def test_search_shell_exports_the_private_antigravity_state_dir(monkeypatch, tmp
     )
 
     assert result.stdout.strip() == "[]"
-    assert capture.read_text(encoding="utf-8") == str(home / ".cognee-plugin" / "antigravity")
+    assert capture.read_text(encoding="utf-8") == ""
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process ancestry fixture")

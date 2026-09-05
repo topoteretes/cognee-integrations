@@ -67,6 +67,155 @@ def test_adapter_module_exists_at_the_antigravity_plugin_path():
     assert ADAPTER_PATH.is_file(), f"missing Antigravity payload adapter: {ADAPTER_PATH}"
 
 
+def test_resuming_a_conversation_after_host_exit_bootstraps_again(adapter, tmp_path, monkeypatch):
+    payload = {"session_id": "resumed"}
+    root = tmp_path / "adapter-once"
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    record = sessions / "resumed.json"
+    record.write_text(json.dumps({"host_pid": 101}))
+    proc = ModuleType("_proc")
+    alive = {101}
+    proc.pid_alive = lambda pid: pid in alive
+    monkeypatch.setitem(sys.modules, "_proc", proc)
+    calls = []
+
+    def run(*_args):
+        calls.append("start")
+        return {}
+
+    for _ in range(2):
+        adapter.run_inner_hook(payload, "session-start.py", runner=run, marker_dir=root)
+    assert calls == ["start"]
+    alive.remove(101)
+    alive.add(202)
+    record.write_text(json.dumps({"host_pid": 202}))
+    for _ in range(2):
+        adapter.run_inner_hook(payload, "session-start.py", runner=run, marker_dir=root)
+    assert calls == ["start", "start"]
+
+
+def test_documented_stop_numbers_preserve_prompt_pairing_and_deduplicate(adapter, tmp_path):
+    calls = []
+    transcript = tmp_path / "documented.jsonl"
+    for turn in (0, 8):
+        _write_transcript(
+            transcript,
+            {
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "step_index": turn,
+                "content": f"question {turn}",
+            },
+            {
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "step_index": turn + 1,
+                "content": f"answer {turn}",
+            },
+        )
+        payload = {"conversationId": "documented", "transcriptPath": str(transcript)}
+        prompt = adapter.normalize_payload(payload, "store-user-prompt.py")
+        for script in ("store-to-session.py", "sync-session-to-graph.py"):
+            stop = adapter.normalize_payload(
+                {**payload, "executionNum": 0, "fullyIdle": True}, script, stop=True
+            )
+            assert stop["turn_id"] == prompt["turn_id"] == str(turn)
+            for _retry in range(2):
+                adapter.run_inner_hook(
+                    stop,
+                    script,
+                    marker_dir=tmp_path / "markers",
+                    runner=lambda data, name: calls.append((data["turn_id"], name)),
+                )
+    assert len(calls) == 4
+    assert [turn for turn, _script in calls] == ["0", "0", "8", "8"]
+
+
+def test_retried_tool_step_is_stored_once_but_distinct_steps_are_preserved(adapter, tmp_path):
+    calls = []
+    for step in (0, 0, 1, 1):
+        payload = adapter.normalize_payload(
+            {
+                "conversationId": "tools",
+                "stepIdx": step,
+                "toolCall": {"name": "run_command", "args": {"CommandLine": "pwd"}},
+            },
+            "store-to-session.py",
+        )
+        adapter.run_inner_hook(
+            payload,
+            "store-to-session.py",
+            marker_dir=tmp_path,
+            runner=lambda data, _script: calls.append(data["tool_step_id"]),
+        )
+    assert calls == ["0", "1"]
+
+
+def test_busy_stop_does_not_consume_the_final_answer_marker(adapter, tmp_path):
+    calls = []
+    for idle in (False, True, True):
+        payload = adapter.normalize_payload(
+            {
+                "conversationId": "background",
+                "executionId": "attempt",
+                "fullyIdle": idle,
+                "finalModelOutput": "complete" if idle else "still working",
+            },
+            "store-to-session.py",
+            stop=True,
+        )
+        adapter.run_inner_hook(
+            payload,
+            "store-to-session.py",
+            marker_dir=tmp_path,
+            runner=lambda data, _script: calls.append(data["assistant_message"]),
+        )
+    assert calls == ["complete"]
+
+
+def test_out_of_order_tool_completion_matches_its_original_call(adapter, tmp_path):
+    transcript = _write_transcript(
+        tmp_path / "parallel.jsonl",
+        {
+            "source": "MODEL",
+            "step_index": 1,
+            "tool_calls": [{"id": "slow", "name": "run_command", "args": {"CommandLine": "test"}}],
+        },
+        {
+            "source": "MODEL",
+            "step_index": 2,
+            "tool_calls": [{"id": "fast", "name": "view_file", "args": {}}],
+        },
+        {"source": "MODEL", "step_index": 3, "tool_call_id": "slow", "content": "passed"},
+    )
+    result = adapter.normalize_payload(
+        {"transcriptPath": str(transcript), "stepIdx": 3}, "store-to-session.py"
+    )
+    assert result["tool_name"] == "run_command"
+    assert result["tool_input"] == {"CommandLine": "test"}
+    assert result["tool_response"] == "passed"
+
+
+def test_tool_output_survives_when_the_original_call_is_outside_the_tail(adapter, tmp_path):
+    transcript = _write_transcript(
+        tmp_path / "tail.jsonl",
+        {
+            "source": "MODEL",
+            "step_index": 9,
+            "tool_calls": [{"id": "unrelated", "name": "view_file", "args": {}}],
+        },
+        {"source": "MODEL", "step_index": 10, "tool_call_id": "missing", "content": "output"},
+    )
+    result = adapter.normalize_payload(
+        {"transcriptPath": str(transcript), "stepIdx": 10}, "store-to-session.py"
+    )
+    assert result["tool_response"] == "output"
+    assert "tool_name" not in result
+
+
 def test_normalize_payload_maps_antigravity_common_fields(adapter, tmp_path):
     transcript = _write_transcript(tmp_path / "turn.jsonl")
     normalized = adapter.normalize_payload(

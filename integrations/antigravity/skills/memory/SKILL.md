@@ -22,7 +22,7 @@ memory.
 **Server-first (one-step ingestion):**
 
 ```bash
-${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}/scripts/cognee-remember.sh "<text>" --node-set user_context
+"${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}/scripts/cognee-remember.sh" "<text>" --node-set user_context
 ```
 
 Use `--node-set project_docs` for project/code content, `--node-set agent_actions` for agent notes. The script POSTs directly to `/api/v1/remember`. A `{"ok": true}` response means the server accepted the data. An error response means the server rejected or failed the request — check `COGNEE_API_KEY` and server logs; do **not** re-run or conclude the data wasn't stored without confirming against the server.
@@ -75,7 +75,12 @@ Search modes (CLI only):
 ```bash
 uv run cognee-cli search "<question>" -d <dataset-name> -t GRAPH_COMPLETION -f pretty
 uv run cognee-cli search "<exact passage or citation need>" -d <dataset-name> -t CHUNKS -k 10 -f pretty
-uv run cognee-cli search "<code question>" -d <dataset-name> -t CODE -k 10 -f pretty
+```
+
+For code structure, use the codebase skill and the server's code graph:
+
+```bash
+"${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}/scripts/cognee-search.sh" "<symbol>" 10 --code
 ```
 
 ### The server is the source of truth

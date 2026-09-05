@@ -41,7 +41,6 @@ the integration exists in the checkout.
 | | `claude-code` | `codex` | `antigravity` |
 |---|---|---|---|
 | Scripts dir | `claude-code/scripts/` | `codex/plugins/cognee/scripts/` | `antigravity/scripts/` |
-| config.json | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/` (shared root) | `~/.cognee-plugin/` (shared root) |
 | State dir | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/codex/` | `~/.cognee-plugin/antigravity/` |
 | Default dataset | `agent_sessions` | `agent_sessions` | `agent_sessions` |
 | `agent_name` default | `claude-code-agent` | `codex-agent` | `antigravity-agent` |
@@ -103,7 +102,7 @@ injected into the model's context and must stay plain. Shared tests therefore
 assert through `utils.statusline` (`ok_glyph`, `fail_glyph`, `mode_label`,
 `strip_ansi`); the styling rules and the plain-text guards live in per-suite
 sections that skip on the other suite. Segments codex simply does not have
-(`_mode_label`, `_recall_segment`, `_pipeline_health_glyph`) are gated on the
+(`_mode_label`, `_recall_segment`) are gated on the
 function's presence, as is claude-code's install registry
 (`_INSTALLED_PLUGINS_PATH`, which codex has no equivalent of).
 

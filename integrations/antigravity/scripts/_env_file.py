@@ -6,7 +6,7 @@ in every shell. This module makes that a one-time step: values placed in
 existing Cognee plugins) are injected into ``os.environ`` at process
 start with **setdefault** semantics, so:
 
-  real exported env vars  >  ~/.cognee/.env  >  config.json  >  defaults
+  real exported env vars  >  ~/.cognee/.env  >  defaults
 
 Every existing ``os.environ.get(...)`` call site — and every child process the
 hooks spawn (the local cognee server, idle/exit watchers) — picks the values up
@@ -72,6 +72,15 @@ _TEMPLATE = """\
 ## local Cognee API; only an LLM key is required:
 # LLM_API_KEY="sk-..."
 # LLM_MODEL="openai/gpt-4o-mini"
+
+## Local mode backends (optional) — the defaults (sqlite/lancedb/openai) need
+## nothing here. Configuring a provider below makes session start install the
+## matching cognee driver extra into the plugin venv automatically:
+# DB_PROVIDER="postgres"
+# VECTOR_DB_PROVIDER="pgvector"
+# GRAPH_DATABASE_PROVIDER="neo4j"
+# EMBEDDING_PROVIDER="fastembed"
+# LLM_PROVIDER="ollama"
 
 ## Optional:
 # COGNEE_PLUGIN_DATASET="agent_sessions"

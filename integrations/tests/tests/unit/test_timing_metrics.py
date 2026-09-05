@@ -1,27 +1,25 @@
-"""``elapsed_ms`` on the recall and bridge events (#3676).
+"""``elapsed_ms`` on the recall events (#3676).
 
 Latency is the plugin's main user-visible cost: it sits on every prompt, and the
 only record of how long it took is what the hooks log. These pin the timing
 fields so a latency regression is diagnosable from hook.log alone, and — just as
-important — that the *failure* paths carry timings too. A submit that fails slowly
-is exactly what one wants to find in a latency log, and it is the case most
-easily left out.
+important — that a miss carries a timing too.
 
 Contract:
   * ``elapsed_ms`` is monotonic-based, whole-integer, never negative;
-  * the bridge's poll event carries it, and so does the failed-submit event;
   * ``context_lookup_hit`` and ``context_lookup_empty`` both carry it, without
     dropping the fields they already had.
 
-Gated by capability rather than by probe, and the two halves now differ:
+(The legacy document bridge's ``http_bridge_poll`` / failed-submit timings used
+to be pinned here too; that bridge is gone.)
 
-* the **helper** and the **bridge** halves run on all registered suites — Codex
-  gained ``elapsed_ms`` and the cognify poll in the port that landed in main,
-  Antigravity inherits that current core, and ``http_bridge_poll`` times the
-  submit and the confirm together;
-* the **recall** half stays Claude Code only: Codex and Antigravity log no
-  aggregate per-prompt total, timing each scope inline instead. That per-scope
-  breakdown is asserted for all registered suites in test_recall_per_scope.py.
+Gated by capability rather than by probe, and the two halves differ:
+
+* the **helper** half runs on all registered suites — codex gained ``elapsed_ms`` in the
+  port that landed in main;
+* the **recall** half stays claude-code only: codex logs no aggregate per-prompt
+  total, timing each scope inline instead. That per-scope breakdown is asserted
+  for all registered suites in test_recall_per_scope.py.
 
 Migrated from claude-code/tests/test_hook_timing.py, which ran in no CI job on any
 platform.
@@ -67,69 +65,6 @@ def test_elapsed_ms_measures_the_delta_in_milliseconds(pc, monkeypatch):
     """
     monkeypatch.setattr(pc.time, "monotonic", lambda: 100.25)
     assert pc.elapsed_ms(100.0) == 250
-
-
-# ── the bridge ────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def run_bridge(pc, suite, tmp_path, monkeypatch):
-    """Drive the bridge with its HTTP seams mocked, capturing hook_log events."""
-    if not suite.has_background_remember:
-        pytest.skip(f"{suite.name}: the bridge submits synchronously and never polls")
-
-    def _run(outcome="completed", *, post_result=None):
-        events: list[tuple[str, dict]] = []
-        monkeypatch.setattr(pc, "_local_api_url", lambda: "http://x")
-        monkeypatch.setattr(pc, "_backend_reachable", lambda url: True)
-        monkeypatch.setattr(pc, "_api_key", lambda: "k")
-        monkeypatch.setattr(pc, "_format_cached_bridge_document", lambda ds, sid: ("qa text", ""))
-        monkeypatch.setattr(pc, "_bridge_file", lambda sid: tmp_path / "bridge.json")
-        monkeypatch.setattr(pc, "_load_json_file", lambda p: {})
-        monkeypatch.setattr(pc, "_write_json_file", lambda p, data: None)
-        monkeypatch.setattr(
-            pc,
-            "_post_remember_document",
-            lambda *a, **k: (
-                post_result or {"ok": True, "dataset_id": "d1", "pipeline_run_id": "p1"}
-            ),
-        )
-        monkeypatch.setattr(pc, "wait_for_cognify", lambda *a, **k: outcome)
-        monkeypatch.setattr(
-            pc, "hook_log", lambda event, detail=None: events.append((event, detail or {}))
-        )
-
-        pc.persist_session_cache_to_graph_via_http("ds", "sid")
-        return events
-
-    return _run
-
-
-def _detail(events, name):
-    for event, detail in events:
-        if event == name:
-            return detail
-    return None
-
-
-def test_the_bridge_poll_carries_its_elapsed_ms(run_bridge):
-    detail = _detail(run_bridge("completed"), "http_bridge_poll")
-    assert detail is not None, "expected an http_bridge_poll event"
-    assert isinstance(detail.get("elapsed_ms"), int), detail
-    assert detail["elapsed_ms"] >= 0
-
-    # The timing field is additive — what was already logged must still be there.
-    assert detail["outcome"] == "completed"
-    assert detail["dataset_id"] == "d1"
-
-
-def test_a_failed_submit_still_carries_its_elapsed_ms(run_bridge):
-    """A slow failure is the most useful thing in a latency log, not the least."""
-    events = run_bridge("completed", post_result={"ok": False, "status": 503})
-    detail = _detail(events, "http_bridge_post_failed")
-    assert detail is not None, f"expected an http_bridge_post_failed event: {events}"
-    assert isinstance(detail.get("elapsed_ms"), int), detail
-    assert detail["elapsed_ms"] >= 0
 
 
 # ── the recall ────────────────────────────────────────────────────────────────

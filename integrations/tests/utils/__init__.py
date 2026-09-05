@@ -19,7 +19,6 @@ from .suites import (
     CODEX,
     Suite,
     cognee_home,
-    config_dir,
     plugin_root,
     state_dir,
 )
@@ -31,7 +30,6 @@ __all__ = [
     "CODEX",
     "Suite",
     "cognee_home",
-    "config_dir",
     "plugin_root",
     "state_dir",
 ]

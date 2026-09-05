@@ -22,7 +22,9 @@ import types
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-#: The scopes ``_run`` fans out over, in dispatch order.
+#: The scopes ``_run`` fans out over, in dispatch order. The optional ``code``
+#: lane is inserted before ``graph`` only on prompts that arm it, so it is not
+#: part of the always-present set.
 SCOPES = ("session", "trace", "session_context", "graph")
 
 #: Base URL every driven run resolves to. Health state is keyed by service URL
@@ -49,6 +51,9 @@ class RecallRun:
     calls: list[str] = field(default_factory=list)
     #: ``{scope: timeout}`` as handed to ``recall_via_http``, for budget clamping.
     timeouts: dict[str, float] = field(default_factory=dict)
+    #: ``{scope: kwargs}`` as handed to ``recall_via_http`` — the code lane's
+    #: dataset/code_query override is only visible here.
+    kwargs: dict[str, dict] = field(default_factory=dict)
     #: Whatever ``_run`` returned (the injected context, or None).
     output: Any = None
 
@@ -74,6 +79,7 @@ def drive_recall(
     ready_hint: bool = False,
     slow_streak: int = 1,
     slow_threshold: int = 3,
+    cwd: str = "",
 ) -> RecallRun:
     """Run ``module._run(prompt)`` in cloud mode with every seam captured.
 
@@ -100,6 +106,7 @@ def drive_recall(
         run.calls.append(scope)
         if "timeout" in kw:
             run.timeouts[scope] = kw["timeout"]
+        run.kwargs[scope] = dict(kw)
         return _recall_fn(prompt_arg, **kw)
 
     seams = {
@@ -133,7 +140,7 @@ def drive_recall(
     )
     monkeypatch.setitem(sys.modules, "_cognee_client", fake_client)
 
-    run.output = asyncio.run(module._run(prompt))
+    run.output = asyncio.run(module._run(prompt, cwd))
     return run
 
 

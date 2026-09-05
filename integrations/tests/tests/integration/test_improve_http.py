@@ -3,14 +3,13 @@
 
 Driven against the mock server's real POST /api/v1/improve route, so the URL,
 the JSON body, the generous submit timeout, and the real HTTP status taxonomy
-are what get asserted — and the improve-unsupported marker is a real file under
-the per-test HOME.
+are what get asserted.
 
 Contract:
   * POST /api/v1/improve with {dataset_name, session_ids, run_in_background};
   * a 2xx submit counts as success (improve is idempotent server-side);
-  * 404/405/422 marks the server improve-unsupported (callers then fall back to
-    the legacy full-document bridge);
+  * 404/405/422 is reported as ``unsupported`` and nothing else happens — the
+    legacy full-document bridge that used to take over for 24h is gone;
   * an empty {} body means the per-session improve lock skipped the run — busy,
     never success;
   * a dataset_id in the response triggers best-effort cognify+memify polling
@@ -69,23 +68,42 @@ def test_submit_timeout_is_generous(pc, monkeypatch):
 
 
 @pytest.mark.parametrize("code", [404, 405, 422])
-def test_unsupported_statuses_mark_the_server(pc, mock_server, code):
+def test_unsupported_statuses_return_not_ok_without_fallback(pc, mock_server, code):
     mock_server.force_response("POST", IMPROVE, code, {"detail": "no such route"})
     res = pc.improve_session_via_http("ds", "sid")
     assert res["ok"] is False
     assert res["unsupported"] is True
-    # A real marker file landed, so later callers short-circuit to legacy.
-    assert pc._IMPROVE_UNSUPPORTED_MARKER.exists()
-    assert pc.improve_unsupported(mock_server.url) is True
+    assert res["status"] == code
+    # No marker, no memory of it: the next call asks the server again rather than
+    # branding it for 24h, and nothing was re-posted through /remember.
+    assert not (pc._SHARED_PLUGIN_ROOT / "improve-unsupported.json").exists()
+    assert not hasattr(pc, "_IMPROVE_UNSUPPORTED_MARKER")
+    mock_server.assert_not_called("POST", "/api/v1/remember")
+
+
+@pytest.mark.parametrize("code", [404, 422])
+def test_run_session_improve_reports_unsupported_and_does_not_bridge(
+    pc, mock_server, monkeypatch, code
+):
+    """End to end through run_session_improve: the sync is reported as not done and
+    the whole-transcript re-cognify that used to follow never happens."""
+    mock_server.force_response("POST", IMPROVE, code, {"detail": "no such route"})
+    monkeypatch.setattr(pc, "drain_warmup_entries", lambda *a, **k: (0, 0))
+    events = []
+    monkeypatch.setattr(pc, "hook_log", lambda ev, detail=None: events.append((ev, detail or {})))
+    assert pc.run_session_improve("ds", "sid") is False
+    assert any(ev == "improve_unsupported" and d.get("status") == code for ev, d in events)
+    assert not any(ev == "improve_unsupported_fallback" for ev, _ in events)
+    mock_server.assert_not_called("POST", "/api/v1/remember")
+    assert pc.read_improve_state("sid") == {}
 
 
 def test_server_error_is_not_unsupported(pc, mock_server):
-    """A transient 500 must not brand the server as lacking the endpoint."""
+    """A transient 500 must not be reported as a server lacking the endpoint."""
     mock_server.force_response("POST", IMPROVE, 500, {"detail": "boom"})
     res = pc.improve_session_via_http("ds", "sid")
     assert res["ok"] is False
-    assert res.get("unsupported") is not True
-    assert not pc._IMPROVE_UNSUPPORTED_MARKER.exists()
+    assert "unsupported" not in res
 
 
 def test_improve_network_error_is_graceful(pc, closed_port_url, monkeypatch):

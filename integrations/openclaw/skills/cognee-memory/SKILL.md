@@ -42,6 +42,7 @@ AI knowledge engine — a memory system in 6 lines of code.
 import cognee
 import asyncio
 
+
 async def main():
     # Store into the knowledge graph
     await cognee.remember("Cognee turns documents into AI memory.")
@@ -56,6 +57,7 @@ async def main():
 
     # Delete
     await cognee.forget(dataset="main_dataset")
+
 
 asyncio.run(main())
 ```
@@ -172,6 +174,7 @@ See the [plugin README](../../README.md) for required hook permissions
 import cognee
 import asyncio
 
+
 async def memory_loop():
     # 1. Learn new knowledge
     await cognee.remember("The user is learning Python programming")
@@ -185,6 +188,7 @@ async def memory_loop():
 
     # 4. Forget incorrect memories
     await cognee.forget("The incorrect assumption")
+
 
 asyncio.run(memory_loop())
 ```

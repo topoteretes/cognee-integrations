@@ -25,9 +25,13 @@ from pathlib import Path
 
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
+from _logfiles import console_capture_tail as _console_capture_tail
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
+from _logfiles import start_console_capture as _start_console_capture
 from _plugin_common import (
     _COGNEE_CACHE_DIR,
     _COGNEE_DATA_DIR,
+    _COGNEE_HOME,
     _COGNEE_SYSTEM_DIR,
     _VENV_DIR,
     _VENV_PYTHON,
@@ -39,11 +43,13 @@ from _plugin_common import (
     apply_cognee_env,
     clear_server_pidfile,
     ensure_launch_record,
+    get_session_key,
     hook_log,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
     server_presence,
+    service_url_is_local,
     set_session_key,
     touch_activity,
     write_connection_state,
@@ -62,7 +68,6 @@ from config import (
     get_dataset,
     is_cloud_mode,
     load_config,
-    save_config,
 )
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "codex"
@@ -102,8 +107,56 @@ _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.5.0"
+_PINNED_COGNEE_VERSION = "1.5.3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
+
+# Maps a configured backend provider env var to the cognee package "extra" that
+# provides its driver. A bare `cognee==<version>` install has none of these, so
+# the server crashes on first use of any non-default backend (#232): Postgres
+# needs psycopg2/asyncpg (via `postgres-binary`), Neo4j needs its driver, a
+# local Ollama LLM needs the `ollama` extra, and `fastembed` embeddings need
+# their own extra. The env var names are the ones cognee's own config classes
+# read (verified against 1.5.3's infrastructure/*/config.py field names, which
+# pydantic-settings matches case-insensitively; GRAPH_DATABASE_PROVIDER is even
+# explicit there). Values already sit in os.environ by the time the install
+# runs: ensure_cognee_installed() calls apply_cognee_env() first, and the
+# ~/.cognee/.env file is injected at process start (_env_file.py), so both
+# exported and file-configured providers are seen. `postgres`/`pgvector` share
+# one driver set, so VECTOR_DB_PROVIDER=pgvector maps to the same extra as
+# DB_PROVIDER=postgres rather than a separate one.
+_PROVIDER_EXTRAS = (
+    ("DB_PROVIDER", {"postgres": "postgres-binary", "postgresql": "postgres-binary"}),
+    ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
+    ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
+    ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
+    ("LLM_PROVIDER", {"ollama": "ollama"}),
+)
+
+
+def _detect_required_extras() -> list:
+    """Detect the cognee extras actually needed from the configured backend
+    providers, so the install below brings in exactly what's needed instead of
+    either a bare install (missing drivers, #232) or unconditionally installing
+    every possible extra regardless of what's actually configured."""
+    extras: list[str] = []
+    for env_var, mapping in _PROVIDER_EXTRAS:
+        value = os.environ.get(env_var, "").strip().lower()
+        extra = mapping.get(value)
+        if extra and extra not in extras:
+            extras.append(extra)
+    return extras
+
+
+def _cognee_install_spec() -> str:
+    """The pip requirement to install: the pinned cognee, plus the extras the
+    configured providers need."""
+    extras = ",".join(_detect_required_extras())
+    return (
+        f"cognee[{extras}]=={_PINNED_COGNEE_VERSION}"
+        if extras
+        else f"cognee=={_PINNED_COGNEE_VERSION}"
+    )
+
 
 # Install single-flight. Distinct from the server boot lock (which is short): a
 # cold cognee install can take minutes, so concurrent sessions — across BOTH
@@ -167,6 +220,65 @@ def _venv_cognee_version() -> str:
     return ""
 
 
+# One distribution per extra whose presence in the venv proves that extra's
+# drivers are installed (verified against cognee 1.5.3's optional-dependencies).
+# Probing the venv is deliberately preferred over recording installed extras in
+# venv-ready.json: that marker is shared with plugins that don't know about
+# extras (codex/openclaw), whose rewrites would wipe the record and force a
+# reinstall on every cold boot after theirs — the exact churn skip-at-pin
+# exists to avoid. `asyncpg` is common to the `postgres` and `postgres-binary`
+# extras, so either variant satisfies the postgres-binary requirement.
+_EXTRA_SENTINEL_DISTS = {
+    "postgres-binary": "asyncpg",
+    "neo4j": "neo4j",
+    "fastembed": "fastembed",
+    "ollama": "transformers",
+}
+
+
+def _venv_missing_extras(extras: list) -> list:
+    """Which of the required extras' driver packages are absent from the venv.
+
+    Ground truth for the skip-at-pin gate: the venv being at the pinned cognee
+    version says nothing about extras — a provider configured AFTER the venv
+    was built (or a bare install done by an extras-unaware plugin sharing this
+    venv) leaves the pin satisfied but the drivers missing, and #232 comes
+    right back. Fails soft (reports nothing missing, logged) on probe errors:
+    a venv broken enough to fail this probe also fails the version probe, and
+    the install path handles that.
+    """
+    if not extras:
+        return []
+    if not _VENV_PYTHON.exists():
+        return list(extras)
+    dists = [_EXTRA_SENTINEL_DISTS[extra] for extra in extras]
+    try:
+        out = subprocess.run(
+            [
+                str(_VENV_PYTHON),
+                "-c",
+                "import importlib.metadata as m, sys\n"
+                "for d in sys.argv[1:]:\n"
+                "    try:\n"
+                "        m.version(d)\n"
+                "    except Exception:\n"
+                "        print(d)",
+                *dists,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if out.returncode != 0:
+            hook_log("extras_probe_failed", {"stderr": out.stderr[:200]})
+            return []
+        missing_dists = set(out.stdout.split())
+        return [extra for extra, dist in zip(extras, dists) if dist in missing_dists]
+    except Exception as exc:
+        hook_log("extras_probe_failed", {"error": str(exc)[:200]})
+        return []
+
+
 def _write_venv_ready(version: str) -> None:
     try:
         payload = {
@@ -190,7 +302,8 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
     still holding the graph store's file lock, and upgrading the venv under it
     corrupts the databases. Always installs the exact pinned version
     (_PINNED_COGNEE_VERSION) so the server's FastAPI lifespan migrations run on
-    a known-good release.
+    a known-good release, plus the extras the configured backend providers
+    need (_cognee_install_spec, #232).
 
     Fails soft: if the install can't run (e.g. offline) but a usable cognee is
     already present, returns True with whatever version is there. Returns False
@@ -237,12 +350,40 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 break
             except FileExistsError:
                 # Another process owns the install. Don't install concurrently —
-                # wait for it to produce a usable venv, then reuse it.
-                if _venv_cognee_version() == _PINNED_COGNEE_VERSION:
+                # wait for it to produce a usable venv, then reuse it. The venv
+                # must satisfy our extras too: the other installer may be an
+                # extras-unaware plugin doing a bare install, in which case we
+                # keep waiting for the lock and add the drivers ourselves.
+                if _venv_cognee_version() == _PINNED_COGNEE_VERSION and not _venv_missing_extras(
+                    _detect_required_extras()
+                ):
                     return True
                 if time.monotonic() >= deadline:
                     return bool(_venv_cognee_version())
                 time.sleep(_VENV_INSTALL_POLL_SECONDS)
+
+        # Already at the pin AND holding the configured providers' drivers:
+        # there is nothing to install, so do not touch the venv. The install
+        # used to run unconditionally at every cold boot; on a machine where
+        # two plugins with different pins share this venv that made each boot
+        # flip the version back and forth — and a `pip install` is a mutation
+        # window the shared runtime is better off without. The version alone
+        # is not enough, though: a provider configured after the venv was
+        # built leaves the pin satisfied with its drivers missing (#232), so
+        # extras are probed too and a miss falls through to the install.
+        # The marker is (re)written so every plugin reading it sees the truth.
+        current = _venv_cognee_version()
+        required_extras = _detect_required_extras()
+        missing_extras = _venv_missing_extras(required_extras)
+        if current == _PINNED_COGNEE_VERSION:
+            if not missing_extras:
+                _write_venv_ready(current)
+                hook_log(
+                    "cognee_install_skipped_at_pin",
+                    {"version": current, "extras": required_extras},
+                )
+                return True
+            hook_log("cognee_extras_missing_at_pin", {"missing": missing_extras})
 
         uv = _find_uv() or _install_uv()
         venv_present = _VENV_PYTHON.exists()
@@ -268,7 +409,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "--upgrade",
                         "--python",
                         str(_VENV_PYTHON),
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     env=env,
                     check=True,
@@ -296,7 +437,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "pip",
                         "install",
                         "--upgrade",
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     check=True,
                     capture_output=True,
@@ -311,7 +452,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
             hook_log("cognee_venv_unusable", {"venv_python": str(_VENV_PYTHON)})
             return False
         _write_venv_ready(version)
-        hook_log("cognee_install_ready", {"version": version})
+        hook_log("cognee_install_ready", {"version": version, "extras": required_extras})
         return True
     finally:
         if acquired:
@@ -478,11 +619,27 @@ def _ensure_local_server_running(
         # We are spawning the server, so run it in agent mode: it tears itself
         # down once all registered agents disconnect.
         server_env["COGNEE_AGENT_MODE"] = "true"
+        # The server's console output must not inherit this worker's stdio
+        # (bootstrap.log — that is how it reached gigabytes: every line the
+        # server printed for as long as it ran), but it must not vanish either:
+        # a boot that dies before cognee opens its own log (import error,
+        # broken venv, port bind) explains itself only on stderr. So it goes to
+        # a capture pump that keeps the first megabyte of each boot in
+        # server-console.log (previous boot in .1) and discards the rest.
+        console_log = _STATE_DIR / "server-console.log"
+        pump = _start_console_capture(console_log)
+        if pump is None:
+            hook_log("server_console_capture_unavailable", {"path": str(console_log)})
         server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
             env=server_env,
+            stdin=subprocess.DEVNULL,
+            stdout=pump.stdin if pump else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if pump else subprocess.DEVNULL,
             start_new_session=True,
         )
+        if pump is not None and pump.stdin is not None:
+            pump.stdin.close()  # the server holds the write end now
         # Presence evidence for future boot points: covers the spawn-to-bind
         # window where neither the health probe nor the TCP listener sees it.
         write_server_pidfile(port, server_proc.pid, version=_PINNED_COGNEE_VERSION)
@@ -501,14 +658,20 @@ def _ensure_local_server_running(
                 if _health_ok(health_url):
                     _ready()
                     return
+                tail = _console_capture_tail(console_log)
+                hook_log(
+                    "server_exited_before_healthy", {"rc": exit_code, "console_tail": tail[-600:]}
+                )
                 raise RuntimeError(
                     f"server process exited (rc={exit_code}) before becoming "
-                    f"healthy at {health_url}"
+                    f"healthy at {health_url}; console: {console_log}"
+                    + (f"\n{tail}" if tail else "")
                 )
             time.sleep(_HEALTH_POLL_SECONDS)
 
         raise RuntimeError(
-            f"Cognee server did not become healthy at {health_url} within {health_timeout}s"
+            f"Cognee server did not become healthy at {health_url} within {health_timeout}s; "
+            f"console: {console_log}; server log: newest file in {_COGNEE_HOME / 'logs'}"
         )
     finally:
         if acquired:
@@ -702,6 +865,7 @@ def _spawn_idle_watcher(
     log_path = _STATE_DIR / "watcher.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -821,6 +985,7 @@ def _spawn_exit_watcher(
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _EXIT_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("exit_watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -855,6 +1020,17 @@ def _spawn_exit_watcher(
 def _purge_legacy_resolved_files() -> None:
     legacy = _STATE_DIR / "resolved.json"
     scoped_dir = _STATE_DIR / "resolved"
+    # config.json: an older config layer that SessionStart read but the per-turn
+    # hooks never did, so a stale base_url in it split the plugin across two
+    # servers (SDK-466). Nothing reads it any more; remove it so it cannot be
+    # mistaken for live configuration. ~/.cognee/.env is the one setup file.
+    legacy_config = _GLOBAL_STATE_DIR / "config.json"
+    try:
+        if legacy_config.exists():
+            legacy_config.unlink()
+            hook_log("legacy_config_json_removed", {"path": str(legacy_config)})
+    except Exception as exc:
+        hook_log("legacy_config_json_unlink_failed", {"error": str(exc)[:200]})
     try:
         if legacy.exists():
             legacy.unlink()
@@ -928,6 +1104,7 @@ def _spawn_bootstrap(
     log_path = _STATE_DIR / "bootstrap.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("bootstrap_log_open_failed", {"error": str(exc)[:200]})
@@ -1136,6 +1313,24 @@ async def _run_heavy(
     elif service_url and probe_health(service_url, timeout=1.5) == "ready":
         write_connection_state("ready", service_url)
 
+    # Code graph: index the repository this session opened in, or refresh it if
+    # the tree moved while the agent was away. Deliberately last and inside the
+    # detached worker — it must never delay the first prompt — and best-effort:
+    # a failure here costs code facts, not the session.
+    try:
+        from _code_graph import autoindex_on_session_start
+
+        code_outcome = autoindex_on_session_start(
+            cwd,
+            service_url,
+            os.environ.get("COGNEE_API_KEY", ""),
+            is_local_server=service_url_is_local(service_url),
+        )
+        if code_outcome:
+            hook_log("code_autoindex", code_outcome)
+    except Exception as exc:
+        hook_log("code_autoindex_error", {"error": str(exc)[:200]})
+
     return user_id, agent_api_key, True
 
 
@@ -1239,6 +1434,13 @@ async def _start(payload: dict | None = None) -> dict:
     session_candidate, session_source = resolve_session_key_from_payload(payload)
     session_key = set_session_key(session_candidate)
     if not session_key:
+        # The mid-bootstrap venv re-exec (_run_heavy) replays this script after
+        # stdin was already consumed, so the payload is gone — but the pre-exec
+        # run exported COGNEE_SESSION_KEY, which execv preserves.
+        session_key = get_session_key()
+        if session_key:
+            session_source = "env_session_key"
+    if not session_key:
         hook_log("missing_payload_session_id", {"cwd": cwd})
         print(
             "cognee-plugin: missing payload session_id; refusing to register",
@@ -1252,9 +1454,22 @@ async def _start(payload: dict | None = None) -> dict:
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
     # synchronously here so prompt hooks read back the identical ids before any run.
-    session_id, conn_uuid = ensure_launch_record(session_key, cwd)
+    # The record also seeds the launch's active dataset (env/default) and stores
+    # the host pid + cwd so switch-dataset.py, which runs under the shell tool
+    # with no hook payload, can find this launch. A resumed record keeps the
+    # dataset it already has — including one chosen by a switch.
+    session_id, conn_uuid = ensure_launch_record(
+        session_key,
+        cwd,
+        dataset=str(config.get("dataset", "") or "").strip(),
+        host_pid=_find_codex_parent_pid(),
+    )
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
+    dataset = get_dataset(config)
+    # Registration and the bootstrap worker read the dataset off config: keep it
+    # in step with the record so a resumed, switched launch re-binds correctly.
+    config["dataset"] = dataset
     hook_log(
         "session_resolved",
         {
@@ -1262,9 +1477,9 @@ async def _start(payload: dict | None = None) -> dict:
             "session_key": session_key,
             "session_id": session_id,
             "conn_uuid": conn_uuid,
+            "dataset": dataset,
         },
     )
-    dataset = get_dataset(config)
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)
@@ -1325,11 +1540,11 @@ async def _start(payload: dict | None = None) -> dict:
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
     _purge_legacy_resolved_files()
+    # Per-session files nothing else deletes (launch records, status markers,
+    # bridge caches, pending buffers, dead improve locks) and oversized logs.
+    from _plugin_common import sweep_stale_state
 
-    # Create config file on first run if it doesn't exist
-    config_file = Path.home() / ".cognee-plugin" / "config.json"
-    if not config_file.exists():
-        save_config(config)
+    sweep_stale_state()
 
     # Reset the idle clock for this Codex process before the watcher
     # starts, otherwise a stale timestamp from a prior session can cause

@@ -70,6 +70,23 @@ async function flush(rounds = 10): Promise<void> {
   }
 }
 
+// Captured before any test installs fake timers (which also fake setImmediate).
+const realSetImmediate = globalThis.setImmediate;
+
+/**
+ * Under fake timers, advance the clock in `stepMs` steps until `done()` or
+ * `maxSteps`, yielding to the REAL event loop between steps. The session-end
+ * chain awaits real fs I/O (state loading, dataset-state save), which only
+ * completes when the loop actually turns — a fixed number of fake advances
+ * races a slow CI disk and flakes.
+ */
+async function advanceUntil(done: () => boolean, maxSteps = 60, stepMs = 1_000): Promise<void> {
+  for (let i = 0; i < maxSteps && !done(); i++) {
+    await jest.advanceTimersByTimeAsync(stepMs);
+    await new Promise<void>((r) => realSetImmediate(r));
+  }
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   resetMockImplementations();
@@ -212,6 +229,42 @@ describe("session_end final chain", () => {
     expect(improveOrder).toBeLessThan(unregisterOrder);
   });
 
+  it("waits for in-flight capture writes before improving (cold-server race)", async () => {
+    // Regression for the nightly live failure: the QA's remember/entry POST was
+    // still in flight when session_end's improve arrived, improve bridged an
+    // empty session and reported success, and the turn never reached the graph.
+    let releaseStore!: () => void;
+    const gate = new Promise<void>((r) => { releaseStore = r; });
+    mockRememberEntry.mockImplementation(async () => {
+      await gate;
+      return { entryId: "slow-e1" };
+    });
+    try {
+      const { emit } = createApi();
+
+      await emit("gateway_start", { port: 1 }, {});
+      await flush();
+      await emit("before_prompt_build", { prompt: "what is the weather" }, { agentId: "will", sessionId: "s1" });
+      await flush();
+      await emit("llm_output", { assistantTexts: ["sunny today"] }, { agentId: "will", sessionId: "s1" });
+      await flush();
+      expect(mockRememberEntry).toHaveBeenCalledTimes(1);
+
+      await emit("session_end", { sessionId: "s1", messageCount: 1 }, { agentId: "will", sessionId: "s1" });
+      await flush(30);
+      // The store has not landed yet, so improve must not have fired.
+      expect(mockImprove).not.toHaveBeenCalled();
+
+      releaseStore();
+      await flush(30);
+      expect(mockImprove).toHaveBeenCalledTimes(1);
+      expect(mockRememberEntry.mock.invocationCallOrder[0]!).toBeLessThan(mockImprove.mock.invocationCallOrder[0]!);
+      expect(mockUnregisterAgent).toHaveBeenCalledTimes(1);
+    } finally {
+      resetMockImplementations();
+    }
+  });
+
   it("still unregisters when improve keeps failing", async () => {
     mockImprove.mockRejectedValue(new Error("server gone"));
     jest.useFakeTimers();
@@ -246,8 +299,8 @@ describe("session_end final chain", () => {
       for (let i = 0; i < 10; i++) await jest.advanceTimersByTimeAsync(100);
 
       await emit("session_end", { sessionId: "s1", messageCount: 1 }, { agentId: "will", sessionId: "s1" });
-      // Past the 5s serviceReady timeout.
-      for (let i = 0; i < 10; i++) await jest.advanceTimersByTimeAsync(1_000);
+      // Past the 5s serviceReady timeout, then until the chain reaches unregister.
+      await advanceUntil(() => mockUnregisterAgent.mock.calls.length > 0);
 
       expect(mockImprove).toHaveBeenCalledTimes(1);
       expect(mockUnregisterAgent).toHaveBeenCalledWith({ agentSessionName: "s1-will" });

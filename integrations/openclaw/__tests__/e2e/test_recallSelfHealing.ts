@@ -63,6 +63,7 @@ function createApi() {
       autoRecall: true,
       enableSessions: false,
       captureSession: false,
+      memorySteer: false, // steer also rides before_prompt_build; these tests read recall's result
       datasetName: "testds",
       minScore: 0,
     },

@@ -52,7 +52,7 @@ def read_transcript_tail(transcript_path: object) -> list[dict[str, Any]]:
 
     descriptor = -1
     try:
-        path = Path(os.fspath(transcript_path))
+        path = Path(os.fspath(transcript_path)).expanduser()
         flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_BINARY", 0)
         descriptor = os.open(path, flags)
@@ -142,32 +142,33 @@ def _extract_tool_event(
         return
 
     result = records[result_index]
-    call_record = next(
-        (record for record in reversed(records[:result_index]) if _is_tool_call_record(record)),
-        None,
-    )
-    if call_record is None:
-        return
-
-    calls = call_record.get("tool_calls")
-    if not isinstance(calls, list):
-        return
-    candidates = [call for call in calls if isinstance(call, dict)]
-    if not candidates:
-        return
-
-    tool_call_id = result.get("tool_call_id")
-    call = next((item for item in candidates if item.get("id") == tool_call_id), candidates[0])
-    if "tool_name" not in normalized:
-        normalized["tool_name"] = call.get("name", "")
-    if "tool_input" not in normalized:
-        normalized["tool_input"] = call.get("args", {})
     if "tool_response" not in normalized:
         normalized["tool_response"] = result.get("content", "")
     if "exit_code" in result and "exit_code" not in normalized:
         normalized["exit_code"] = result["exit_code"]
     if "error" in result and "error" not in normalized:
         normalized["error"] = result["error"]
+
+    # Parallel tools may complete after newer calls have been recorded. Match
+    # the result's identity across the tail, never borrow an unrelated call.
+    tool_call_id = result.get("tool_call_id")
+    for record in reversed(records[:result_index]):
+        if not _is_tool_call_record(record):
+            continue
+        calls = record.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        candidates = [call for call in calls if isinstance(call, dict)]
+        if tool_call_id:
+            call = next((item for item in candidates if item.get("id") == tool_call_id), None)
+        else:
+            call = candidates[0] if len(candidates) == 1 else None
+        if call is not None:
+            normalized.setdefault("tool_name", call.get("name", ""))
+            normalized.setdefault("tool_input", call.get("args", {}))
+            return
+        if not tool_call_id:
+            return
 
 
 def normalize_payload(
@@ -213,8 +214,12 @@ def normalize_payload(
         normalized["fullyIdle"] = payload["fullyIdle"]
 
     if event == "PostToolUse":
+        if payload.get("stepIdx") not in (None, ""):
+            normalized["tool_step_id"] = str(payload["stepIdx"])
         tool_call = payload.get("toolCall")
         if isinstance(tool_call, dict):
+            if tool_call.get("id") not in (None, ""):
+                normalized["tool_call_id"] = str(tool_call["id"])
             if "name" in tool_call:
                 normalized["tool_name"] = tool_call["name"]
             if "args" in tool_call:
@@ -247,6 +252,14 @@ def normalize_payload(
             normalized["prompt"] = user_record["content"]
     else:
         user_index = -1
+
+    # Current hosts document executionNum on Stop, rather than executionId.
+    # It identifies an execution attempt, not the user turn used by the prompt
+    # buffer. Include the transcript turn because execution counters can reset.
+    execution_num = payload.get("executionNum")
+    if event == "Stop" and execution_id in (None, "") and execution_num not in (None, ""):
+        turn = normalized.get("turn_id", "")
+        normalized["execution_id"] = f"turn:{turn}:execution:{execution_num}"
 
     if event == "PostToolUse":
         _extract_tool_event(normalized, records, payload.get("stepIdx"))
@@ -314,6 +327,11 @@ def _marker_path(payload: dict[str, Any], script: str, root: Path) -> Path | Non
             str(execution_id),
             script,
         )
+    elif script == "store-to-session.py" and payload.get("hook_event_name") == "PostToolUse":
+        tool_id = payload.get("tool_step_id") or payload.get("tool_call_id")
+        if tool_id is None:
+            return None
+        identity = ("antigravity-adapter-v1", "tool", str(conversation), str(tool_id))
     else:
         return None
 
@@ -380,11 +398,43 @@ def _release_claim(claim: Claim) -> None:
             pass
 
 
-def _acquire_claim(marker: Path) -> Claim | None:
+def _bootstrap_owner_pid(payload: dict[str, Any], root: Path) -> int:
+    """Read the host owner recorded by SessionStart without importing its runtime."""
+    key = str(payload.get("session_id") or payload.get("conversationId") or "")
+    key = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in key)
+    key = key.strip("._")[:120]
+    if not key:
+        return 0
+    try:
+        record = json.loads((root.parent / "sessions" / f"{key}.json").read_text(encoding="utf-8"))
+        return int(record.get("host_pid") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def _bootstrap_completed(marker: Path) -> bool:
+    if not marker.is_file():
+        return False
+    try:
+        owner = int(marker.read_text(encoding="utf-8").strip())
+        if owner > 0:
+            from _proc import pid_alive
+
+            return pid_alive(owner)
+    except (OSError, ValueError, ImportError):
+        pass
+    # Older or ownerless markers preserve the original once-per-conversation
+    # behavior; never re-bootstrap a live conversation on an unreadable record.
+    return True
+
+
+def _acquire_claim(
+    marker: Path, *, completed: Callable[[Path], bool] = Path.is_file
+) -> Claim | None:
     """Acquire crash-released ownership of a stable, hash-only claim file."""
     marker.parent.mkdir(parents=True, exist_ok=True)
     claim = marker.with_suffix(".claim")
-    if marker.is_file():
+    if completed(marker):
         return None
 
     for _attempt in range(3):
@@ -405,7 +455,7 @@ def _acquire_claim(marker: Path) -> Claim | None:
             continue
 
         ownership = (claim, handle)
-        if marker.is_file():
+        if completed(marker):
             _release_claim(ownership)
             return None
         return ownership
@@ -533,6 +583,12 @@ def run_inner_hook(
 ) -> Any:
     """Run an inner hook with conversation-, turn-, or execution-scoped once semantics."""
     if (
+        script == "store-to-session.py"
+        and payload.get("hook_event_name") == "Stop"
+        and payload.get("fullyIdle") is False
+    ):
+        return {}
+    if (
         script == "sync-session-to-graph.py"
         and payload.get("hook_event_name") == "Stop"
         and payload.get("fullyIdle") is not True
@@ -544,14 +600,18 @@ def run_inner_hook(
     del claim_stale_after  # Kept for compatibility; OS ownership replaces time-based leases.
     claim = None
     if marker is not None:
-        claim = _acquire_claim(marker)
+        completed = _bootstrap_completed if script == "session-start.py" else Path.is_file
+        claim = _acquire_claim(marker, completed=completed)
         if claim is None:
             return {}
 
     try:
         output = runner(payload, script)
         if marker is not None:
-            marker.touch(exist_ok=True)
+            if script == "session-start.py":
+                marker.write_text(str(_bootstrap_owner_pid(payload, marker_root)), encoding="utf-8")
+            else:
+                marker.touch(exist_ok=True)
         return output
     finally:
         if claim is not None:
@@ -572,6 +632,12 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(payload, dict):
             payload = {}
         normalized = normalize_payload(payload, script, stop=stop)
+        if script in _PROMPT_SCRIPTS and not normalized.get("prompt"):
+            print("{}")
+            return 0
+        if script == "store-to-session.py" and stop and not normalized.get("assistant_message"):
+            print("{}")
+            return 0
         output = run_inner_hook(normalized, script)
         content = output if isinstance(output, str) else json.dumps(output)
         translated = translate_stdout(content)

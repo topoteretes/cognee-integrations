@@ -13,10 +13,11 @@ agy plugin validate integrations/antigravity
 agy plugin install integrations/antigravity
 ```
 
-Antigravity installs the global copy at
+Antigravity CLI 1.1.27 installs the global copy at
 `~/.gemini/config/plugins/cognee`; the bundled skills use that location by default.
 Set `COGNEE_ANTIGRAVITY_PLUGIN_ROOT` only when the plugin is intentionally installed
-somewhere else.
+somewhere else, including `~/.gemini/antigravity-cli/plugins/cognee` on hosts
+using the layout described in the [current CLI documentation](https://antigravity.google/docs/cli/plugins/).
 
 Installation is declarative: it registers the package's `plugin.json` and
 `hooks.json` and **never edits Antigravity settings**. It does not write an
@@ -78,10 +79,28 @@ records are ignored, and the full transcript is never loaded.
 
 The adapter maps those host events to Cognee's internal `SessionStart`,
 `UserPromptSubmit`, `PostToolUse`, and `Stop` contracts. Stop work is deduplicated
-per native `executionId`, so multiple turns in one conversation remain distinct.
-The exit watcher remains the sole process/session teardown authority and performs
+per native `executionId`, or per transcript turn and `executionNum` on hosts
+using the [documented hook contract](https://antigravity.google/docs/hooks).
+Tool retries are deduplicated by step or tool-call identity, and out-of-order
+results are paired with the matching tool call. Distinct turns remain separate.
+Bootstrap ownership follows the host process, so resuming a conversation after
+that process exits starts the runtime again.
+Execution sync honors the shared improve cooldown; manual and final sync always
+run. The exit watcher remains the sole process/session teardown authority and performs
 the final sync and unregister only after Antigravity exits. Hooks are best-effort:
 absent or unreadable transcripts do not block native-field capture or Antigravity.
+
+## Shared runtime behavior
+
+Antigravity uses the current Claude Code/Codex runtime behavior: provider extras
+are installed in the shared environment, logs and stale session state are bounded,
+and configuration comes from shell exports and `~/.cognee/.env`. Legacy
+`config.json` values are ignored. A backend without session-aware improve reports
+sync as unsupported instead of repeatedly ingesting the full transcript.
+
+The codebase skill uses the current code-graph indexing and search endpoints.
+The plugin follows dataset changes recorded for a conversation and includes its
+retired sessions in final sync.
 
 ## Verify
 
