@@ -3,7 +3,7 @@
 The host session id is embedded so the Cognee session maps 1:1 to the
 conversation and is self-describing in the dashboard (no working-directory
 coupling). Migrated from claude-code/tests/test_session_id.py, parametrized
-over both suites (the prefix is the only per-suite difference).
+over all registered suites (the prefix is the only per-suite difference).
 """
 
 from __future__ import annotations

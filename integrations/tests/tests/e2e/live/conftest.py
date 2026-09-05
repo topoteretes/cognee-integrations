@@ -150,12 +150,11 @@ def cloud_tenant_is_clean(live_backend: str, live_prereqs: str):
 
 @pytest.fixture(params=ALL_SUITES, ids=lambda s: s.name)
 def live_suite(request) -> Suite:
-    """Every scenario runs against both integrations.
+    """Every scenario runs against every registered integration.
 
-    This doubles the tier's wall-clock and LLM spend, which is the point: the two
-    plugins diverge in exactly the places a mock cannot show (codex's bridge is
-    synchronous and has no cognify poll), so a shared graph is the only place that
-    divergence becomes visible.
+    This multiplies the tier's wall-clock and LLM spend, which is the point:
+    host-specific hook surfaces and capabilities diverge in places a mock cannot
+    show, so a shared graph is where those differences become visible.
     """
     return request.param
 
@@ -164,9 +163,9 @@ def live_suite(request) -> Suite:
 def live_home(tmp_path: Path, live_backend: str) -> Path:
     """A per-test HOME; on the local backend the plugin venv is seeded into it.
 
-    Deliberately suite-agnostic: the venv and ``~/.cognee`` are shared, and both
-    suites keep their own state subdirectory beneath it. Cross-suite tests need one
-    HOME holding both, so this must not depend on ``live_suite``.
+    Deliberately suite-agnostic: the venv and ``~/.cognee`` are shared, and each
+    suite keeps its own state subdirectory beneath it. Cross-suite tests need one
+    HOME holding every participating suite, so this must not depend on ``live_suite``.
 
     The cloud backend needs no venv at all. ``ensure_cognee_ready`` returns after an
     HTTP ``/health`` check when a base_url is configured — the ``import cognee``

@@ -15,11 +15,11 @@ to be pinned here too; that bridge is gone.)
 
 Gated by capability rather than by probe, and the two halves differ:
 
-* the **helper** half runs on both suites — codex gained ``elapsed_ms`` in the
+* the **helper** half runs on all registered suites — codex gained ``elapsed_ms`` in the
   port that landed in main;
 * the **recall** half stays claude-code only: codex logs no aggregate per-prompt
   total, timing each scope inline instead. That per-scope breakdown is asserted
-  for both suites in test_recall_per_scope.py.
+  for all registered suites in test_recall_per_scope.py.
 
 Migrated from claude-code/tests/test_hook_timing.py, which ran in no CI job on any
 platform.

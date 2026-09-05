@@ -13,8 +13,8 @@ Covers the two fixes:
     real connection failure still returns UNREACHABLE.
 
 The bounded cognify wait is gated on ``suite.has_background_remember`` and now
-holds for both suites — codex's ``do_remember`` gained it in the port that landed
-in main.
+holds for all registered suites — Codex gained it in the port that landed in
+main, and Antigravity inherits that current core.
 
 Migrated from claude-code/tests/test_remember_http.py; the transport-exception
 half lives in unit/test_remember_http_transport.py.

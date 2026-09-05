@@ -17,9 +17,10 @@ Contract:
   * ``_walk_ancestors`` returns the nearest matching ancestor, falls back to the
     starting pid when the host is absent, and terminates on a cyclic table.
 
-The two suites ship a byte-identical ``_proc.py``, so parametrizing over both is
-a drift guard rather than duplicated coverage: the day one integration edits it
-alone, one side goes red.
+All registered suites implement the same ``_proc.py`` behavior, with only
+host-specific process identity differences. Parametrizing over all of them is a
+drift guard rather than duplicated coverage: the day one integration changes
+the contract alone, that suite goes red.
 
 The Windows liveness and process-table paths use Win32 (Toolhelp) and are
 genuinely skipped off-Windows — the pure ancestry tests above cover the walk

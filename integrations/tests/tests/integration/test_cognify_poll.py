@@ -10,8 +10,8 @@ Confirms a background remember can be confirmed/abandoned correctly:
   * a 404 (older server without the status route) returns "unknown" immediately
   * a transient poll failure does not abort the whole deadline
 
-Both suites: codex gained ``wait_for_cognify`` in the background-remember port
-that landed in main, so this ran claude-code-only until then. Gated on
+All current suites: codex gained ``wait_for_cognify`` in the background-remember
+port that landed in main, so this ran claude-code-only until then. Gated on
 ``suite.has_background_remember`` rather than a suite name, which is what let it
 start covering codex the moment the capability arrived.
 

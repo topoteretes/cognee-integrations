@@ -87,7 +87,7 @@ def test_writes_during_an_outage_are_buffered_not_dropped(
     what it drained, so an entry that can never succeed would sit at the head of the
     queue and block everything behind it indefinitely.
 
-    Was a strict xfail; the fix made it XPASS on both suites.
+    Was a strict xfail; the fix made it XPASS on every registered suite.
     """
     session = started_session("buffer")
     session.prompt(f"Pre-outage note for {nonce}.", turn_id="t1")

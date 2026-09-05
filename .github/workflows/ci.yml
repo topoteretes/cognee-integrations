@@ -46,10 +46,10 @@ jobs:
 
           for dir in $CHANGED_DIRS; do
             [ ! -d "integrations/$dir" ] && continue
-            # claude-code and codex have no pyproject of their own; their shared
+            # claude-code, codex, and antigravity have no pyproject of their own; their shared
             # pytest suite lives in integrations/tests and must run when they change.
             case "$dir" in
-              claude-code|codex|tests) RUN_SHARED=1 ;;
+              claude-code|codex|antigravity|tests) RUN_SHARED=1 ;;
             esac
             if [ -f "integrations/$dir/pyproject.toml" ]; then
               PY_LIST="${PY_LIST}\"${dir}\","
