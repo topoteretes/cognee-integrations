@@ -6,8 +6,11 @@ description: Inspect plugin memory permissions, grant or revoke access, choose g
 # Manage Cognee memory access
 
 Use the installed plugin's `scripts/memory-access.py`. Resolve that path relative
- to this skill's plugin root. Run `python3 <script> status` first. Use dataset and
-principal UUIDs returned by the API; names can collide across owners.
+to this skill's plugin root. Run `python3 <script> status` first. Use dataset and
+principal UUIDs returned by the API; names can collide across owners. Status
+includes readable datasets as well as the separately verified write choices.
+New identity creation needs the safe provisioning contract in Cognee SDK
+PR #4942; Cognee 1.5.4 supports the existing-principal access commands.
 
 - Grant or revoke a specific permission with `grant` / `revoke --principal-id UUID
   --dataset-id UUID --permission read|write`. Repeated `--dataset-id` selects

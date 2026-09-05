@@ -124,6 +124,7 @@ def main(argv=None):
         result = {
             "plugin": pc.PLUGIN_KEY,
             "identity": me.get("id"),
+            "readable_datasets": pc._json_http_request("/api/v1/datasets/", method="GET"),
             "datasets": pc.list_writable_datasets(str(me.get("id") or "")),
         }
     print(json.dumps(result))
