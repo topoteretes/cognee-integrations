@@ -162,6 +162,13 @@ async def _store_tool_call(payload: dict) -> None:
     tool_name = payload.get("tool_name", "unknown")
     tool_input = payload.get("tool_input") or {}
     tool_output = payload.get("tool_output") or payload.get("tool_response") or ""
+    from _capture_policy import allow_tool, redact
+
+    if not allow_tool(tool_name, tool_input):
+        return
+    tool_input = redact(tool_input)
+    tool_output = redact(tool_output)
+    payload = redact(payload)
 
     # Suppress self-reference: any Bash call that mentions 'cognee' is
     # likely the plugin/CLI talking to itself and would recurse.
@@ -309,6 +316,11 @@ async def _store_tool_call(payload: dict) -> None:
 
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
+    from _capture_policy import capture_enabled, redact
+
+    if not capture_enabled():
+        return
+    payload = redact(payload)
     msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
     if not msg or msg == "null":
         return
@@ -341,9 +353,9 @@ async def _store_assistant_stop(payload: dict) -> None:
     # separate question-only and answer-only QA entries for the same turn.
     entry = {
         "type": "qa",
-        "question": pending.get("prompt", ""),
+        "question": redact(pending.get("prompt", "")),
         "answer": msg,
-        "context": pending.get("context", ""),
+        "context": redact(pending.get("context", "")),
     }
 
     if not server_usable(runtime.get("base_url", "")):

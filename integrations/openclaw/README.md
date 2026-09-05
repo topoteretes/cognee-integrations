@@ -676,3 +676,12 @@ Two things that cost time to learn, both worth knowing before adding tests:
   (not `name`) and `llm_output` reads `assistantTexts` (not `text`). Get them wrong
   and the handlers simply find nothing to capture and return — the run goes green
   while storing nothing.
+
+### Cold-start recall
+
+The first recall batch of each conversation may retry a timeout or HTTP 504 once.
+`COGNEE_RECALL_RETRIES` (default 1, capped at 3) and
+`COGNEE_RECALL_BACKOFF_MS` (default 500) control this policy. Calls, retries and
+backoff share `recallBudgetMs`; a retry cannot extend the prompt deadline.
+Session end clears only that conversation's retry state. Gateway startup already
+checks `/health`, providing the warmup request without a second startup ping.

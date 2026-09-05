@@ -112,3 +112,9 @@ agy plugin validate integrations/antigravity
 
 It validates the manifest, four bundled skills, and four named hooks without
 installing the plugin or changing local Antigravity configuration.
+
+## Capture, events, and project memory
+
+The shared Python hooks support capture opt-out (`COGNEE_CAPTURE=0`), tool/path filtering and credential redaction before buffering or upload. See [the shared controls](../claude-code/README.md#automatic-capture-controls) and [configuration precedence](../CONFIGURATION.md). Structured log migration is documented in [EVENTS.md](EVENTS.md).
+
+Project node sets (`COGNEE_PROJECT_NODE_SET=auto` or a fixed name) and verified companion routing (`COGNEE_SESSION_COMPANION_DATASET=1`) follow the same contract as Claude Code/Codex. They require the server extension in [cognee#4948](https://github.com/topoteretes/cognee/pull/4948); unverified companions fall back to the primary dataset and unsupported project tags keep capture queued. Both features default off.

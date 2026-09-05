@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 from _logfiles import append_line as _append_log_line
 from _proc import pid_alive as _pid_alive
+from event_names import event_fields
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"
@@ -30,7 +31,12 @@ _SYNC_START_DELAY = 2.0
 
 def _log(event: str, **detail) -> None:
     try:
-        line = {"ts": time.time(), "pid": os.getpid(), "event": event}
+        line = {
+            "ts": time.time(),
+            "pid": os.getpid(),
+            "event": event,
+            **event_fields(event, "exit-watcher"),
+        }
         if detail:
             line["detail"] = detail
         _append_log_line(_LOGFILE, json.dumps(line, default=str))

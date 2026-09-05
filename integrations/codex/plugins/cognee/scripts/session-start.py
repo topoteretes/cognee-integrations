@@ -797,8 +797,12 @@ async def _ensure_agent_credentials_and_register(
         session_id=session_id,
         dataset_names=[str(config.get("dataset", "") or "").strip()],
     )
-    if not registered:
-        raise RuntimeError(f"Failed to register session '{session_id}' on {service_url}.")
+    if not registered and registration.get("lifecycle_supported") is not False:
+        status = registration.get("status_code")
+        message = f"Failed to register session '{session_id}' on {service_url}."
+        if status:
+            raise urllib.error.HTTPError(service_url, status, message, None, None)
+        raise RuntimeError(message)
 
     hook_log(
         "agent_register_result",
@@ -1138,6 +1142,8 @@ def _status_from_error(message: str) -> int:
     """
     import re
 
+    if isinstance(message, urllib.error.HTTPError):
+        return message.code
     m = re.search(r"\((\d{3})[:\s)]", str(message or ""))
     return int(m.group(1)) if m else 0
 
@@ -1228,6 +1234,9 @@ async def _run_heavy(
             # always auth, while a positively-absent one is a connection failure.
             # A timed-out probe is NO verdict (busy != down): keep the prior
             # recorded state rather than stamp a false "unreachable".
+            status = _status_from_error(exc)
+            if _conn_state is None and status:
+                _conn_state, _conn_detail = _classify_conn_status(status), message
             if _conn_state is None:
                 try:
                     health = probe_health(
@@ -1235,9 +1244,7 @@ async def _run_heavy(
                     )
                 except Exception:
                     health = "unknown"
-                if health == "ready":
-                    _conn_state, _conn_detail = "auth_failed", message
-                elif health == "down":
+                if health == "down":
                     _conn_state, _conn_detail = "unreachable", message
             if _conn_state:
                 write_connection_state(
@@ -1286,6 +1293,11 @@ async def _run_heavy(
                 _conn_state, _conn_detail = "auth_failed", str(e)[:200]
             elif status >= 500 and _conn_state is None:
                 _conn_state, _conn_detail = "server_error", str(e)[:200]
+    from _project_memory import prepare as prepare_project_memory
+
+    project_state = prepare_project_memory(dataset, session_id)
+    if project_state:
+        hook_log("project_memory_prepared", project_state)
     if user_id:
         os.environ["COGNEE_USER_ID"] = user_id
 
@@ -1466,6 +1478,9 @@ async def _start(payload: dict | None = None) -> dict:
         dataset=str(config.get("dataset", "") or "").strip(),
         host_pid=_find_codex_parent_pid(),
     )
+    from _project_memory import begin as begin_project_memory
+
+    begin_project_memory(get_dataset(config), session_id, cwd)
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
     dataset = get_dataset(config)

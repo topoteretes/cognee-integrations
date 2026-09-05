@@ -10,7 +10,7 @@ import pytest
 def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatch, explicit_key):
     start = hook_module(suite, "session-start.py")
     # The host lookup differs between suites; neither needs a real host process.
-    for name in ("_find_claude_parent_pid", "_find_codex_parent_pid"):
+    for name in ("_find_claude_parent_pid", "_find_codex_parent_pid", "_find_agy_parent_pid"):
         if hasattr(start, name):
             monkeypatch.setattr(start, name, lambda: 123456)
     monkeypatch.setenv("COGNEE_API_KEY", "inherited-test-key")

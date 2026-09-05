@@ -79,7 +79,7 @@ MIN_SCOPE_TIMEOUT = 0.2
 
 
 def _load_session_id() -> str:
-    resolved = load_resolved()
+    resolved = load_resolved(identity=False)
     session_id = resolved.get("session_id", "")
     if not session_id:
         config = load_config()

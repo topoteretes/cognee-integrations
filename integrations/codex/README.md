@@ -549,3 +549,44 @@ curl -sS http://localhost:8011/health
 **Final sync diagnostics**
 - Check `~/.cognee-plugin/codex/hook.log` and `~/.cognee-plugin/codex/exit-watcher.log`.
 - Relevant logs: `sync_deferred_to_shutdown_worker`, `final_sync_once_*`, `agent_unregister_result`.
+
+### Automatic capture controls and compatible HTTP backends
+
+The plugin supports the same automatic capture policy as Claude Code: set
+`COGNEE_CAPTURE=false` in the host environment or `~/.cognee/.env` to keep recall
+and explicit remember while stopping prompt, answer and trace capture and buffered
+replay. `COGNEE_CAPTURE_TOOLS` is a pipe-separated allowlist of tool names/globs.
+`COGNEE_CAPTURE_DENY_PATHS` extends the default credential/private-key path patterns.
+`COGNEE_CAPTURE_REDACT=true` is the default; common secrets are redacted before
+truncation and storage. `COGNEE_CAPTURE_REDACT_PATTERNS` accepts a JSON array of
+additional regexes. Invalid expressions prevent affected content from being stored.
+Redaction is best effort; the master switch is the strict opt-out. This does not
+erase existing memory or buffers, and path exclusions inspect structured tool path
+arguments rather than arbitrary shell commands.
+
+Backend reachability uses `/health`. Missing optional lifecycle routes (404) do
+not prevent startup; 401/403, transport failures and server failures remain errors.
+Prompt recall enforces an elapsed-time deadline as well as socket timeouts.
+
+
+### Project tags and companion sessions
+
+`COGNEE_PROJECT_NODE_SET=auto` tags captured QA and traces with a readable project
+name plus a hash of the canonical path; a fixed value provides an explicit tag.
+The setting is pinned for the session, including buffered writes and detached
+improve workers. The backend must expose `node_set` on typed QA/trace entries and
+preserve it through improve. Older backends leave capture queued with an explicit
+`project_memory_prepared` error instead of silently losing the tags.
+
+`COGNEE_SESSION_COMPANION_DATASET=true` asks the backend to provision
+`<primary>-agent_sessions`. Writes and improve use the companion only after the
+server attests its permission snapshot. Graph recall reads both datasets in
+separate requests so primary graph reads do not conflict with the session binding.
+Unsupported routes, insufficient rights, collisions and permission mismatches
+fall back to the primary. The client never reads local SQL tables for remote ACLs.
+
+These options require the server project-tags/session-companion extension. The
+companion endpoint currently requires the primary owner and copies an ACL snapshot;
+later sharing changes must be reconciled explicitly. Connection credentials are
+hashed in the local decision record, and a changed principal cannot reuse it.
+Defaults remain off. Start a new host session when changing project routing policy.
