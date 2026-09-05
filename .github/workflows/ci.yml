@@ -164,6 +164,7 @@ jobs:
   # core-team PRs only, advisory (continue-on-error — never blocks a merge).
   claude-review:
     name: Claude Code Review
+    timeout-minutes: 15
     needs: [ detect-changes, test-python, test-typescript ]
     if: >-
       ${{ !cancelled()
