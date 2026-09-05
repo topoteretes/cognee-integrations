@@ -1819,10 +1819,13 @@ def plugin_identity_lock(timeout: float = 25.0):
         os.close(fd)
 
 
-def block_cached_agent_key() -> None:
-    data = _load_json_file(_AGENT_KEY_CACHE)
-    data["blocked"] = True
-    _write_credential(data)
+def block_cached_agent_key(expected_key: str) -> None:
+    with plugin_identity_lock():
+        data = _load_json_file(_AGENT_KEY_CACHE)
+        # A concurrent explicit reconnect may already have replaced this key.
+        if data.get("api_key") == expected_key:
+            data["blocked"] = True
+            _write_credential(data)
 
 
 def _write_credential(data: dict) -> None:
@@ -1879,14 +1882,17 @@ def _api_key() -> str:
 def resolved_http_endpoint_auth() -> tuple[str, str]:
     """Return (service_url, api_key) for runtime HTTP calls.
 
-    Service URL falls back through plugin config before localhost. API key is
-    the single principal key: env first, then the single cached key.
+    Service URL falls back through plugin config before localhost. Export the
+    effective key for child processes while preserving the explicit principal.
     """
     service_url = _normalize_service_url(_local_api_url())
     api_key = _api_key().strip()
     if service_url:
         os.environ["COGNEE_BASE_URL"] = service_url
     if api_key:
+        previous = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
+        if previous and previous != api_key:
+            os.environ["COGNEE_PRINCIPAL_API_KEY"] = previous
         os.environ["COGNEE_API_KEY"] = api_key
     return service_url, api_key
 
@@ -3251,28 +3257,28 @@ def write_outcome_ambiguous(exc: Exception) -> bool:
 def provision_plugin_agent_via_http(
     *,
     principal_key: str,
+    service_url: str = "",
     timeout: float = 20.0,
 ) -> tuple[str, dict]:
-    """Provision (or re-key) this plugin's dedicated agent identity.
+    """Create this plugin's identity without rotating an existing key.
 
-    POST /api/v1/integrations/plugins/{PLUGIN_KEY}/provision, authenticated as
-    the PRINCIPAL (the human user's key — never the agent's own key: the server
-    would nest a new agent under the agent). The endpoint is idempotent
-    get-or-create; a repeat call ROTATES the key and revokes old ones, so call
-    it only when no usable agent key is cached.
-
-    Returns (status, body): status is "provisioned" (body has api_key/agent_id,
-    normalized to snake_case — the server's OutDTO answers camelCase),
-    "unsupported" (older server without the endpoint — caller stays on the
-    principal key), or "failed" (transport/server error — same fallback, but
-    worth retrying on a later bootstrap).
+    Authenticate as the user principal and require the server's advertised
+    create_only contract before POSTing. OpenAPI is a capability declaration;
+    its enforcement is covered by the SDK's provisioning regression tests.
+    Unsupported/failed provisioning must fail closed in the caller.
     """
     if not str(principal_key or "").strip():
         return "failed", {}
     try:
         # Older servers ignore unknown query parameters and rotate keys. Verify
         # the create-only contract BEFORE sending any provisioning request.
-        spec = _json_http_request("/openapi.json", method="GET", api_key=principal_key)
+        spec = _json_http_request(
+            "/openapi.json",
+            method="GET",
+            api_key=principal_key,
+            base_url=service_url or _local_api_url(),
+            timeout=timeout,
+        )
         operation = (
             spec.get("paths", {})
             .get("/api/v1/integrations/plugins/{plugin_key}/provision", {})
@@ -3289,6 +3295,7 @@ def provision_plugin_agent_via_http(
             method="POST",
             timeout=timeout,
             api_key=principal_key,
+            base_url=service_url or _local_api_url(),
         )
         if isinstance(result, dict):
             body = {
@@ -3296,7 +3303,7 @@ def provision_plugin_agent_via_http(
                 "agent_id": str(result.get("agent_id") or result.get("agentId") or ""),
                 "created": bool(result.get("created")),
             }
-            if body["api_key"]:
+            if body["api_key"] and body["created"]:
                 return "provisioned", body
         hook_log(
             "plugin_provision_bad_response",
@@ -3839,11 +3846,6 @@ def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = 
 
 
 def ensure_dataset_via_http(dataset: str) -> None:
-    if parse_dataset_id(dataset):
-        listing = list_writable_datasets()
-        if not any(row["id"] == dataset and row["writable"] is True for row in listing["datasets"]):
-            raise RuntimeError("Write permission for the selected dataset could not be verified")
-        return
     """Best-effort create/authorize the dataset before an improve.
 
     improve() resolves *existing* authorized datasets and fails NON-FATALLY
@@ -3853,6 +3855,11 @@ def ensure_dataset_via_http(dataset: str) -> None:
     whole session's sync. Failures are logged and never block the improve —
     if the dataset truly cannot be created, the improve outcome reports it.
     """
+    if parse_dataset_id(dataset):
+        listing = list_writable_datasets()
+        if not any(row["id"] == dataset and row["writable"] is True for row in listing["datasets"]):
+            raise RuntimeError("Write permission for the selected dataset could not be verified")
+        return
     if not dataset:
         return
     try:

@@ -819,7 +819,9 @@ async def _ensure_plugin_identity(service_url: str, config: dict, principal_key:
             return key
         if mode != "enabled":
             return ""
-        status, body = provision_plugin_agent_via_http(principal_key=principal_key)
+        status, body = provision_plugin_agent_via_http(
+            principal_key=principal_key, service_url=service_url
+        )
         if status != "provisioned":
             raise RuntimeError(
                 f"Plugin provisioning {status}; owner fallback is disabled. "
@@ -865,7 +867,7 @@ async def _ensure_agent_credentials_and_register(
         dataset_names=[str(config.get("dataset", "") or "").strip()],
     )
     if not registered and registration.get("auth_failed") and agent_key:
-        block_cached_agent_key()
+        block_cached_agent_key(agent_key)
         raise RuntimeError(
             "Plugin identity rejected; automatic re-provision and owner fallback are disabled"
         )
