@@ -18,6 +18,7 @@ import os
 import sys
 import time
 import urllib.error
+from pathlib import Path
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -57,6 +58,65 @@ from config import (
 _MAX_PARAMS_BYTES = 4000
 _MAX_RETURN_BYTES = 8000
 _MAX_ASSISTANT_BYTES = 8000
+
+
+def _assistant_message(payload: dict) -> str:
+    """Resolve Stop text from explicit fields or Claude's JSONL transcript."""
+    direct = str(
+        payload.get("assistant_message") or payload.get("last_assistant_message") or ""
+    )
+    if direct and direct != "null":
+        return direct
+
+    transcript_raw = str(payload.get("transcript_path") or "").strip()
+    if not transcript_raw:
+        return ""
+
+    latest = ""
+    try:
+        with Path(transcript_raw).expanduser().open(encoding="utf-8") as transcript:
+            for line in transcript:
+                try:
+                    record = json.loads(line)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                message = record.get("message") if isinstance(record, dict) else None
+                if not isinstance(message, dict) or message.get("role") != "assistant":
+                    continue
+                content = message.get("content")
+                if isinstance(content, str):
+                    text = content.strip()
+                elif isinstance(content, list):
+                    text = "\n".join(
+                        str(block.get("text") or "").strip()
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ).strip()
+                else:
+                    text = ""
+                if text:
+                    latest = text
+    except (OSError, UnicodeError) as exc:
+        hook_log("stop_transcript_read_failed", {"error": str(exc)[:200]})
+        return ""
+
+    if latest:
+        hook_log("stop_message_from_transcript", {"chars": len(latest)})
+    return latest
+
+
+def _clear_transcript(payload: dict) -> None:
+    """Clear Claude's transcript only after Stop capture has read it."""
+    transcript_raw = str(payload.get("transcript_path") or "").strip()
+    if not transcript_raw:
+        return
+    try:
+        transcript = Path(transcript_raw).expanduser()
+        if transcript.is_file():
+            transcript.write_text("", encoding="utf-8")
+            hook_log("transcript_context_cleared", {"transcript_path": str(transcript)})
+    except (OSError, UnicodeError) as exc:
+        hook_log("transcript_context_clear_failed", {"error": str(exc)[:200]})
 
 
 async def _fire_improve_background(dataset: str, session_id: str, user, reason: str) -> None:
@@ -309,7 +369,7 @@ async def _store_tool_call(payload: dict) -> None:
 
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
-    msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
+    msg = _assistant_message(payload)
     if not msg or msg == "null":
         return
 
@@ -359,7 +419,7 @@ async def _store_assistant_stop(payload: dict) -> None:
 
     try:
         if use_http:
-            result = remember_entry_via_http(dataset, session_id, entry)
+            result = remember_entry_via_http(dataset, session_id, entry, timeout=8.0)
             user = None
         else:
             import cognee
@@ -486,10 +546,15 @@ def main():
     try:
         with quiet_hook_output("store-to-session"):
             if is_stop:
-                asyncio.run(_store_assistant_stop(payload))
-                # End-of-turn code-graph freshness: independent of whether an
-                # assistant message was stored (edits happen either way).
-                _maybe_reingest_code_repo(payload)
+                should_clear = bool(_assistant_message(payload))
+                try:
+                    asyncio.run(_store_assistant_stop(payload))
+                finally:
+                    if should_clear:
+                        _clear_transcript(payload)
+                    # End-of-turn code-graph freshness is independent of
+                    # whether the assistant message was stored successfully.
+                    _maybe_reingest_code_repo(payload)
             else:
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:

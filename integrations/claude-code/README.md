@@ -559,6 +559,11 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 
 ## Troubleshooting
 
+**Hooks or `cognee-doctor` select an old system Python**
+- The plugin requires Python 3.10 or newer. Its hook launcher checks versioned Python executables before generic `python3` and `python`, so macOS's bundled Python 3.9 cannot run the hooks by accident.
+- To pin a specific runtime, set `COGNEE_PYTHON` to a Python 3.10+ executable. The launcher exits with a clear error when the override is missing or incompatible.
+- On Stop, the capture hook reads the final assistant text from Claude's transcript before clearing that transcript. Keeping both operations in one hook prevents parallel Stop hooks from erasing the answer before Cognee can save it.
+
 **Terminal connects to cloud when you wanted local (or the reverse)**
 - The mode is routed by `COGNEE_BASE_URL`: configured anywhere (env file or shell) → cloud; otherwise → local. An exported `COGNEE_BACKEND=local` / `=cloud` overrides that for the terminal — see [Which mode wins](#which-mode-wins-and-how-to-switch).
 - `unset COGNEE_BASE_URL` does **not** go local: the env file re-injects the URL at the next launch. Export `COGNEE_BACKEND=local` instead.

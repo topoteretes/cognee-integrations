@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py || python ${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py\"",
             "timeout": 120,
             "statusMessage": "Initializing Cognee memory..."
           }
@@ -17,13 +17,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py || python ${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py\"",
             "timeout": 120,
             "statusMessage": "Searching session memory..."
           },
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py || python ${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py\"",
             "async": true
           }
         ]
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py || python ${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\"",
             "async": true
           }
         ]
@@ -46,19 +46,14 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py --stop || python ${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py --stop",
-            "async": true
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
+            "timeout": 12,
+            "statusMessage": "Saving Cognee memory..."
           },
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py || python ${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
             "async": true
-          },
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/clear-transcript-context.py || python ${CLAUDE_PLUGIN_ROOT}/scripts/clear-transcript-context.py",
-            "timeout": 5,
-            "statusMessage": "Clearing Claude context..."
           }
         ]
       }
@@ -68,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py || python ${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
             "async": true
           }
         ]
@@ -79,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py || python ${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py\"",
             "timeout": 120,
             "statusMessage": "Building memory anchor..."
           }
@@ -91,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py --session-end || python ${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py --session-end"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end"
           }
         ]
       }

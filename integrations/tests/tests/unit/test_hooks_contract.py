@@ -15,7 +15,12 @@ Hermetic — reads the manifest off disk, no server, no subprocess.
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -62,18 +67,11 @@ def test_event_is_wired_to_its_script(suite, manifest, event, script, arg):
         )
 
 
-def test_every_python_hook_falls_back_to_python(suite, manifest):
-    """Every `python3 x.py` must carry a `|| python x.py` fallback.
+def test_every_python_hook_uses_version_checked_launcher(suite, manifest):
+    """Claude hooks must not trust whichever old ``python3`` is first on PATH."""
+    if suite.name != "claude-code":
+        pytest.skip("the Codex plugin owns a separate launcher")
 
-    Windows installs routinely provide `python` but not `python3`, so a bare
-    `python3` invocation fails at the shell before the hook is ever reached — and
-    a hook that never runs is silent by design: memory simply stops being captured
-    with nothing to indicate why.
-
-    Asserted for the *whole* manifest rather than the events in EXPECTED, because a
-    hook added later without the fallback would be just as broken and there is
-    nothing to remind whoever adds it.
-    """
     missing = []
     for event, groups in manifest.items():
         if not isinstance(groups, list):
@@ -83,14 +81,80 @@ def test_every_python_hook_falls_back_to_python(suite, manifest):
                 continue
             for hook in group.get("hooks", []):
                 command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
-                if "python3 " not in command:
+                if ".py" not in command:
                     continue
-                if "|| python " not in command:
+                if "scripts/run-python.sh" not in command:
                     missing.append((event, command[:90]))
     assert not missing, (
-        f"{suite.name}: python3-only hook commands would not start on a Windows box "
-        f"that ships only `python`: {missing}"
+        f"{suite.name}: Python hooks bypass the version-checked launcher: {missing}"
     )
+
+
+def test_python_launcher_skips_incompatible_python3(suite, tmp_path: Path):
+    """A Python 3.9-shaped ``python3`` must not win over a compatible runtime."""
+    if suite.name != "claude-code":
+        pytest.skip("the Codex plugin owns a separate launcher")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    incompatible = bin_dir / "python3"
+    incompatible.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+    incompatible.chmod(0o755)
+    (bin_dir / "python3.12").symlink_to(sys.executable)
+    probe = tmp_path / "probe.py"
+    probe.write_text("print('compatible-python')\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.pop("COGNEE_PYTHON", None)
+    env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+    result = subprocess.run(
+        ["bash", str(suite.scripts_dir / "run-python.sh"), str(probe)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "compatible-python"
+
+
+def test_doctor_wrapper_uses_version_checked_launcher(suite):
+    if suite.name != "claude-code":
+        pytest.skip("the Codex plugin owns a separate launcher")
+
+    wrapper_path = suite.scripts_dir / "cognee-doctor.sh"
+    wrapper = wrapper_path.read_text(encoding="utf-8")
+    assert "run-python.sh" in wrapper
+    assert "exec python3 " not in wrapper
+    assert wrapper_path.stat().st_mode & stat.S_IXUSR
+
+
+def test_claude_stop_does_not_race_capture_against_transcript_cleanup(suite, manifest):
+    """Parallel Stop hooks cannot clear the transcript while capture reads it."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude transcript cleanup is host-specific")
+
+    commands = _commands(manifest, "Stop")
+    assert any("store-to-session.py" in command and "--stop" in command for command in commands)
+    assert not any("clear-transcript-context.py" in command for command in commands)
+
+
+def test_claude_stop_capture_finishes_before_host_exit(suite, manifest):
+    """Claude kills async Stop children when a print-mode session exits."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude Stop child lifetime is host-specific")
+
+    capture_hooks = [
+        hook
+        for group in manifest.get("Stop", [])
+        for hook in group.get("hooks", [])
+        if "store-to-session.py" in str(hook.get("command", ""))
+    ]
+    assert len(capture_hooks) == 1
+    capture = capture_hooks[0]
+    assert not capture.get("async", False)
+    assert 0 < int(capture.get("timeout", 0)) <= 15
 
 
 def test_every_registered_script_exists(suite, manifest):
@@ -103,7 +167,7 @@ def test_every_registered_script_exists(suite, manifest):
                 for token in _PLUGIN_ROOT.sub("", command).split():
                     if not token.endswith((".py", ".sh")):
                         continue
-                    name = token.lstrip("/").removeprefix("scripts/")
+                    name = token.strip("\"'").lstrip("/").removeprefix("scripts/")
                     if not (suite.scripts_dir / name).exists():
                         missing.append((event, name))
     assert not missing, f"{suite.name}: hooks.json points at missing scripts: {missing}"

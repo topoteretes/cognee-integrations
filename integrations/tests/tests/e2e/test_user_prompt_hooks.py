@@ -39,3 +39,34 @@ def test_noop_hook_exits_zero_with_parseable_output(suite, run_hook, payloads, s
         "hookEventName": "UserPromptSubmit",
         "additionalContext": "",
     }
+
+
+def test_stop_reads_latest_assistant_text_from_claude_transcript(
+    suite, hook_module, tmp_path
+):
+    """Current Claude Stop payloads provide a transcript path, not answer text."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude transcript fallback is host-specific")
+
+    transcript = tmp_path / "session.jsonl"
+    records = [
+        {"type": "user", "message": {"role": "user", "content": "Question"}},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "private"},
+                    {"type": "text", "text": "Persist this final answer."},
+                ],
+            },
+        },
+        {"type": "attachment", "attachment": {"type": "command-permissions"}},
+    ]
+    transcript.write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+
+    store = hook_module(suite, "store-to-session.py")
+    payload = {"transcript_path": str(transcript)}
+    assert store._assistant_message(payload) == "Persist this final answer."
