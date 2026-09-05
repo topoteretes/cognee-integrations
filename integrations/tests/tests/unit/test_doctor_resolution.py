@@ -7,7 +7,7 @@ came from the environment or the cached file, the embedding settings, and the
 circuit-breaker state.
 
 The endpoint-resolution precedence (env > localhost default) is asserted for
-both suites here. There is no config-file layer any more — a `config.json` that
+all registered suites here. There is no config-file layer any more — a `config.json` that
 only SessionStart honoured is how a stale URL split the plugin across two servers
 (SDK-466) — and codex's `doctor.py` keeps its own `_API_KEY_CACHE` constant,
 which the API-key fixture accounts for.

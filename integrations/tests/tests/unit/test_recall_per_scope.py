@@ -16,8 +16,8 @@ Contract:
     and once too little is left the rest are skipped, not dispatched;
   * the synchronous prompt hook never drains the warmup buffer.
 
-Both suites carry this machinery identically (``per_scope``,
-``MIN_SCOPE_TIMEOUT``, ``recall_budget_exceeded``), so both are exercised.
+All registered suites carry this machinery identically (``per_scope``,
+``MIN_SCOPE_TIMEOUT``, ``recall_budget_exceeded``), so all are exercised.
 
 Migrated from claude-code/tests/test_per_scope_timing.py, which ran in no CI job
 on any platform.

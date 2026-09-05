@@ -13,7 +13,7 @@ Contract:
   * an empty {} body means the per-session improve lock skipped the run — busy,
     never success;
   * a dataset_id in the response triggers best-effort cognify+memify polling
-    (gated on ``has_improve_pipeline_polling``, now true for both suites — codex's
+    (``has_improve_pipeline_polling`` is true for every shared suite — codex's
     improve path was the one piece the background-remember port missed, and it
     reported no cognify_status until that was fixed).
 
@@ -125,9 +125,6 @@ def test_improve_lock_skip_reports_busy(pc, mock_server):
 
 def test_improve_polls_cognify_then_memify(pc, suite, mock_server):
     """A dataset_id in the response triggers both pipeline polls."""
-    if not suite.has_improve_pipeline_polling:
-        pytest.skip(f"{suite.name}: improve is submit-only (no cognify/memify polling)")
-
     res = pc.improve_session_via_http("ds", "sid")
     assert res["ok"] is True
     assert res["cognify_status"] == "completed"
@@ -135,6 +132,7 @@ def test_improve_polls_cognify_then_memify(pc, suite, mock_server):
 
     pipelines = [c["query"].get("pipeline") for c in mock_server.calls if c["path"] == STATUS]
     assert pipelines == ["cognify_pipeline", "memify_pipeline"]
+    assert suite.has_improve_pipeline_polling is True
 
 
 def test_no_polling_when_response_has_no_dataset_id(pc, mock_server):

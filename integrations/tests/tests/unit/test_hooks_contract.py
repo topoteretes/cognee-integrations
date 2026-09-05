@@ -36,6 +36,10 @@ _PLUGIN_ROOT = re.compile(r'"?\$\{(?:CLAUDE_)?PLUGIN_ROOT\}"?')
 
 @pytest.fixture
 def manifest(suite) -> dict:
+    if suite.hook_manifest_style == "named":
+        pytest.skip(
+            f"{suite.name}: named hook manifests are covered by the dedicated contract test"
+        )
     spec = json.loads(suite.hooks_json.read_text(encoding="utf-8"))
     # Claude nests everything under "hooks"; keep both shapes working.
     return spec.get("hooks", spec)

@@ -12,10 +12,11 @@ Windows CI job then exercises the real platform on top. Stdout is compared as
 **bytes** on purpose — decoding it in the parent would hide the very thing under
 test, which is what the child actually wrote.
 
-Both suites are covered because both ship this entrypoint: codex's live status
-path escapes the glyphs through ``json.dumps(ensure_ascii=True)`` and so cannot
-crash, but ``cognee-statusline.sh`` invokes the renderer directly, and that is
-the path guarded here.
+All registered suites are covered because each ships this entrypoint. The Codex
+and Antigravity live status paths escape the glyphs through
+``json.dumps(ensure_ascii=True)`` and so cannot crash, but
+``cognee-statusline.sh`` invokes the renderer directly, and that is the path
+guarded here.
 
 Migrated from claude-code/tests/test_statusline_render.py and
 codex/tests/test_statusline_render.py, which ran only in the Windows CI job and
