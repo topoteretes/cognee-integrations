@@ -33,13 +33,17 @@ on:
       - '.github/workflows/plugin-windows-tests.yml'
 
 jobs:
-  test-plugins-windows:
+  test-host-windows:
     runs-on: windows-latest
-    # The full suite runs ~20 minutes on this runner (19:21 on main at the time
-    # this was raised): absence-confirmation shells out to netstat and every
-    # probe of a closed loopback port waits its full timeout, because Windows
-    # Firewall drops the SYN instead of refusing. 20 left no headroom at all.
+    # Two hosts already take ~21 minutes: closed-port probes wait for Windows
+    # Firewall timeouts. Run hosts in parallel so adding a third stays bounded.
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [claude-code, codex, antigravity]
+    env:
+      COGNEE_TEST_SUITE: ${{ matrix.suite }}
     steps:
       # The repo has deeply-nested committed artifacts (n8n_workflows LanceDB
       # files) whose paths exceed Windows' MAX_PATH; sparse-checkout the trees
@@ -78,3 +82,15 @@ jobs:
       - name: Run the shared suite
         working-directory: integrations/tests
         run: uv run pytest tests/ -v
+
+  # Preserve the existing required check name and fail if any host failed or
+  # was cancelled. A skipped dependency must never make the gate pass.
+  test-plugins-windows:
+    if: ${{ always() }}
+    needs: test-host-windows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Windows host to pass
+        env:
+          RESULT: ${{ needs.test-host-windows.result }}
+        run: test "$RESULT" = success

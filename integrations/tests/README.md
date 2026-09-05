@@ -31,6 +31,11 @@ uv sync --dev
 uv run pytest tests/ -v
 ```
 
+Windows CI runs hosts in parallel. To run one host locally, set
+`COGNEE_TEST_SUITE=antigravity` (or `claude-code` / `codex`) before pytest.
+Tests that compare hosts and tests without the `suite` fixture still run in
+each job. Without that variable, pytest runs all registered hosts.
+
 CI runs the same via `.github/workflows/ci.yml`; changes under
 `integrations/claude-code/`, `integrations/codex/`, `integrations/qwen/`,
 `integrations/antigravity/`, or `integrations/tests/` all trigger this suite when
