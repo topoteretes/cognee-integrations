@@ -209,6 +209,24 @@ list and the session-end sync covers them again as a safety net. The script behi
 | `PreCompact` | memory anchor build before compaction |
 | `SessionEnd` | trigger detached final sync worker |
 
+## Cold-start warmup
+
+When using Cognee Cloud (or any scale-to-zero deployment), the first recall of a session
+may hit a cold tenant and time out before the server is ready. Setting `COGNEE_WARMUP=true`
+fires a single non-blocking `GET /health` ping immediately after the session URL is resolved
+at `SessionStart`. This warms the tenant in the background before the first real recall
+arrives, shaving cold-start latency off the first query.
+
+The warmup:
+- runs once per session, at `SessionStart`
+- never blocks or errors the session — it runs in a daemon thread and fails silently
+- is off by default; enable with `COGNEE_WARMUP=true` (or `1`/`yes`)
+- only fires for remote/cloud endpoints — it is a no-op in local mode, which has no cold start
+
+```bash
+export COGNEE_WARMUP=true   # enable for cloud deployments
+```
+
 ## Session sync and watchers
 
 Session→graph sync runs through Cognee's session-aware `improve` endpoint: the server bridges the session from its own session cache (feedback weights, Q&A persist, compact trace-feedback persist, distillation, enrichment) instead of the plugin re-posting the full accumulated session text — which used to trigger a complete re-cognify of the whole transcript on every sync. There is no fallback: a server without session-aware improve (`/api/v1/improve` answering 404/405/422) is logged as `improve_unsupported` and the session is reported as not synced.
@@ -505,6 +523,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 | plugin-only mode switch | `COGNEE_CODEX_BACKEND` | unset | Same, for this plugin only; beats `COGNEE_BACKEND` |
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |
 | local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
+| warmup ping | `COGNEE_WARMUP` | `false` | Fire a non-blocking GET /health at session start to warm up a scale-to-zero cloud tenant before the first recall. Set to `true` (or `1`/`yes`) to enable; no-op in local mode. |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle improve fires |
 | improve cooldown | `COGNEE_IMPROVE_COOLDOWN` | `600` | Minimum seconds between automatic (idle/auto) improves of one session |
