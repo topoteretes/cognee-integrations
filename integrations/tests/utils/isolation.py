@@ -39,6 +39,7 @@ ISOLATED_MODULES = (
     "_deadlines",
     "_capture_policy",
     "event_names",
+    "_project_memory",
     "_proc",
     "_recall_http",
     "_remember_http",

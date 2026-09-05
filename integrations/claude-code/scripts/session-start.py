@@ -1295,6 +1295,11 @@ async def _run_heavy(
                 _conn_state, _conn_detail = "auth_failed", str(e)[:200]
             elif status >= 500 and _conn_state is None:
                 _conn_state, _conn_detail = "server_error", str(e)[:200]
+    from _project_memory import prepare as prepare_project_memory
+
+    project_state = prepare_project_memory(dataset, session_id)
+    if project_state:
+        hook_log("project_memory_prepared", project_state)
     if user_id:
         os.environ["COGNEE_USER_ID"] = user_id
 
@@ -1666,6 +1671,9 @@ async def _start(payload: dict | None = None) -> dict:
         dataset=str(config.get("dataset", "") or "").strip(),
         host_pid=_find_claude_parent_pid(),
     )
+    from _project_memory import begin as begin_project_memory
+
+    begin_project_memory(get_dataset(config), session_id, cwd)
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
     dataset = get_dataset(config)

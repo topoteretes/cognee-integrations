@@ -3,6 +3,7 @@
 import os
 
 EVENT_NAMES = {
+    "hook:project_memory_prepared": "project.memory_prepared",
     "clear-transcript-context:claude_context_cleared": "transcript.cleared",
     "clear-transcript-context:clear_context_failed": "transcript.failed",
     "clear-transcript-context:clear_context_invalid_payload": "transcript.invalid_payload",

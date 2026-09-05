@@ -299,3 +299,4 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:sync_lock_import_error` | `idle_watcher.sync_lock_import_error` |
 | `idle-watcher:throttle_check_failed` | `idle_watcher.throttle_check_failed` |
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
+| `hook:project_memory_prepared` | `project.memory_prepared` |

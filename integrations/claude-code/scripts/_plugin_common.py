@@ -3135,7 +3135,13 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    from _project_memory import route
+
+    target = route(dataset, session_id)
+    dataset = target["write"]
     entry = _sanitize_value(entry)
+    if target.get("node_set") and entry.get("type") in ("qa", "trace"):
+        entry = {**entry, "node_set": target["node_set"]}
     return _json_http_request(
         "/api/v1/remember/entry",
         {
@@ -3295,11 +3301,30 @@ def recall_via_http(
     if context_profile:
         payload["context_profile"] = context_profile
     from _deadlines import bounded_call
+    from _project_memory import route
 
-    result = bounded_call(
-        lambda: _json_http_request("/api/v1/recall", payload, timeout=timeout), timeout
-    )
-    return result if isinstance(result, list) else []
+    target = route(dataset, session_id) if dataset and not code_query else {"write": dataset}
+    if dataset:
+        payload["datasets"] = [target["write"]]
+
+    def fetch_scopes():
+        started = time.monotonic()
+        result = _json_http_request("/api/v1/recall", payload, timeout=timeout)
+        result = result if isinstance(result, list) else []
+        if dataset != target["write"] and "graph" in scope:
+            remaining = timeout - (time.monotonic() - started)
+            if remaining > 0.05:
+                primary_payload = {**payload, "datasets": [dataset], "scope": ["graph"]}
+                primary_payload.pop("session_id", None)
+                try:
+                    extra = _json_http_request("/api/v1/recall", primary_payload, timeout=remaining)
+                    if isinstance(extra, list):
+                        result.extend(extra)
+                except (OSError, TimeoutError):
+                    pass
+        return result
+
+    return bounded_call(fetch_scopes, timeout)
 
 
 def _backend_reachable(base_url: str, timeout: float = 1.5) -> bool:
@@ -3670,6 +3695,9 @@ def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = 
     """
     if not dataset or not session_id:
         return {"ok": False, "error": "missing dataset/session"}
+    from _project_memory import route
+
+    dataset = route(dataset, session_id)["write"]
     submit_timeout = (
         timeout if timeout is not None else _float_env("COGNEE_IMPROVE_SUBMIT_TIMEOUT", 180.0)
     )
