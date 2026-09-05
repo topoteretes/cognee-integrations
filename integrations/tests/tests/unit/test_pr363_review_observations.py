@@ -88,3 +88,70 @@ def test_failed_switch_write_keeps_previous_record(suite, isolated_modules, monk
     with pytest.raises(RuntimeError, match="not persisted"):
         pc.switch_launch_record("test-host", session_id="new", dataset="new", conn_uuid="new")
     assert pc._read_map_record("test-host") == before
+
+
+def test_endpoint_resolution_preserves_explicit_parent(suite, isolated_modules, monkeypatch):
+    pc = isolated_modules(suite, "_plugin_common")
+    url = "https://explicit-account.test"
+    monkeypatch.setenv("COGNEE_BASE_URL", url)
+    monkeypatch.setenv("COGNEE_API_KEY", "explicit-parent")
+    monkeypatch.delenv("COGNEE_PRINCIPAL_API_KEY", raising=False)
+    pc.save_cached_agent_key(url, "agent", "agent-id", principal_key="explicit-parent")
+    assert pc.resolved_http_endpoint_auth() == (url, "agent")
+    assert pc.resolved_http_endpoint_auth() == (url, "agent")
+    assert pc._api_key() == "agent"
+
+
+def test_rejected_old_key_does_not_block_new_reconnection(suite, isolated_modules):
+    pc = isolated_modules(suite, "_plugin_common")
+    pc.save_cached_agent_key("https://test", "new-key", "agent", principal_key="parent")
+    pc.block_cached_agent_key("old-key")
+    assert not pc._load_json_file(pc._AGENT_KEY_CACHE).get("blocked")
+    pc.block_cached_agent_key("new-key")
+    assert pc._load_json_file(pc._AGENT_KEY_CACHE)["blocked"] is True
+
+
+def test_provision_uses_explicit_server_for_capability_and_creation(
+    suite, isolated_modules, monkeypatch
+):
+    pc = isolated_modules(suite, "_plugin_common")
+    calls = []
+
+    def request(path, *args, **kwargs):
+        calls.append((path, kwargs))
+        if path == "/openapi.json":
+            return {
+                "paths": {
+                    "/api/v1/integrations/plugins/{plugin_key}/provision": {
+                        "post": {"parameters": [{"name": "create_only", "in": "query"}]}
+                    }
+                }
+            }
+        return {"apiKey": "agent", "agentId": "identity", "created": True}
+
+    monkeypatch.setattr(pc, "_json_http_request", request)
+    status, _ = pc.provision_plugin_agent_via_http(
+        principal_key="parent", service_url="https://explicit-server.test"
+    )
+    assert status == "provisioned"
+    assert len(calls) == 2
+    assert all(call[1]["base_url"] == "https://explicit-server.test" for call in calls)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_permission_rejection_never_falls_back_to_ownership(
+    suite, isolated_modules, monkeypatch, status
+):
+    from urllib.error import HTTPError
+
+    pc = isolated_modules(suite, "_plugin_common")
+
+    def request(path, **kwargs):
+        if path == "/api/v1/datasets/":
+            return [{"id": "owned", "name": "owned", "ownerId": "user"}]
+        raise HTTPError(path, status, "denied", {}, None)
+
+    monkeypatch.setattr(pc, "_json_http_request", request)
+    with pytest.raises(HTTPError) as error:
+        pc.list_writable_datasets("user")
+    assert error.value.code == status

@@ -110,7 +110,7 @@ def _list(host_key: str, rec: dict) -> dict:
     except Exception as exc:
         raise SwitchError(EXIT_ERROR, f"GET /api/v1/datasets failed ({exc})")
     current = str(rec.get("dataset") or resolved.get("dataset") or "")
-    rows = [{**row, "current": row["name"] == current} for row in listing["datasets"]]
+    rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
     return {
         "current": current,
         "session_id": str(rec.get("session_id") or ""),
@@ -301,7 +301,11 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     try:
         switch_launch_record(host_key, session_id=new_session, dataset=target, conn_uuid=new_conn)
     except Exception:
-        unregister_agent_via_http(agent_session_name=new_conn)
+        try:
+            released, _ = unregister_agent_via_http(agent_session_name=new_conn)
+            hook_log("switch_aborted_handle_cleanup", {"conn_uuid": new_conn, "ok": released})
+        except Exception as cleanup_error:
+            hook_log("switch_aborted_handle_cleanup_failed", {"error": str(cleanup_error)[:200]})
         raise
 
     # 5. ... then release the old handle. Best-effort: a lingering active
