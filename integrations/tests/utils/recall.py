@@ -33,6 +33,39 @@ SCOPES = ("session", "trace", "session_context", "graph")
 #: (SDK-356), so assertions need the exact value the hook was handed.
 URL = "https://cloud.example"
 
+#: A session key in the shape the hooks accept, shared by the header tests.
+SESSION_KEY = "fde122ae-07db-431d-b5af-acba353e4e3e"
+
+#: One session hit and nothing else — the smallest recall that counts as a hit.
+HIT = {
+    "session": [{"question": "q1", "answer": "a1"}],
+    "trace": [],
+    "graph": [],
+    "session_context": [],
+}
+
+
+def load_lookup(
+    suite,
+    hook_module,
+    monkeypatch,
+    *,
+    session_key: str = SESSION_KEY,
+    status_line: str = "cognee: ds · local",
+):
+    """``session-context-lookup.py`` with the session key pinned.
+
+    Hosts that prefix the memory header with their plain status line (the
+    Codex-derived cores) get that line held inert, so header assertions see a
+    fixed prefix instead of whatever the renderer reads from the temp HOME.
+    """
+    module = hook_module(suite, "session-context-lookup.py")
+    monkeypatch.setattr(module, "get_session_key", lambda: session_key)
+    if hasattr(module, "render_status_for_host"):
+        monkeypatch.setattr(module, "render_status_for_host", lambda key: status_line)
+    return module
+
+
 #: A connection-state marker standing for "this server has answered before",
 #: which is what separates a real outage from an ordinary cold start.
 READY_PRIOR = {"state": "ready", "base_url": URL, "checked_at": 1.0}
@@ -86,6 +119,7 @@ def drive_recall(
     cwd: str = "",
     mode: str = "http",
     sdk_recall: Callable[..., Any] | dict[str, list] | None = None,
+    saves_last_turn: dict | None = None,
 ) -> RecallRun:
     """Run ``module._run(prompt)`` with every seam captured.
 
@@ -94,6 +128,9 @@ def drive_recall(
     ``prior_state``/``ready_hint`` set what the hook believes about the server
     before the attempt; ``slow_streak``/``slow_threshold`` drive timeout
     escalation without touching real streak files.
+
+    ``saves_last_turn`` is what the hook reads back from the save counter (all
+    kinds zero by default), so a header test can hand it buffered writes.
 
     ``mode="http"`` (the default) drives cloud/HTTP mode, the only mode where
     the health accounting runs. ``mode="local_sdk"`` drives the in-process SDK
@@ -150,7 +187,9 @@ def drive_recall(
         "record_slow_probe": lambda url: slow_streak,
         "slow_streak_threshold": lambda: slow_threshold,
         "_load_session_id": lambda: "sid",
-        "read_and_reset_save_counter": lambda sid: {"prompt": 0, "trace": 0, "answer": 0},
+        "read_and_reset_save_counter": lambda sid: dict(
+            saves_last_turn or {"prompt": 0, "trace": 0, "answer": 0}
+        ),
         "recall_via_http": _recall,
     }
     for name, impl in seams.items():

@@ -147,7 +147,7 @@ def test_plugin_manifest_identifies_cognee_with_a_version_string(plugin_root):
     spec = json.loads(PLUGIN_JSON.read_text(encoding="utf-8"))
 
     assert spec["name"] == "cognee"
-    assert spec["version"] == "1.5.1"
+    assert spec["version"] == "1.5.2"
 
 
 def test_hooks_manifest_is_at_plugin_root_not_claude_hooks_directory(manifest):

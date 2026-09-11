@@ -97,6 +97,14 @@ _SESSIONS_MAP_DIR = _PLUGIN_DIR / "sessions"
 
 # Save-kinds tracked per turn. Keep this tuple in sync with bump_save_counter callers.
 SAVE_KINDS = ("prompt", "trace", "answer")
+# A write the server never received is not a save. When a store hook diverts a
+# trace/answer to the warmup buffer (server down, or a retryable send failure)
+# it is counted under the kind's buffered twin so the recall header can show it
+# as buffered instead of folding it into the saved count — through a 2.5-week
+# outage every prompt read "saved last turn 1 prompt / 6 trace / 1 answer"
+# while nothing reached the server (SDK-467).
+BUFFERED_SAVE_KINDS = ("trace_buffered", "answer_buffered")
+ALL_SAVE_KINDS = SAVE_KINDS + BUFFERED_SAVE_KINDS
 
 # Cap the per-line log size so a noisy tool output doesn't bloat the file.
 _LOG_LINE_CAP = 600
@@ -1520,14 +1528,18 @@ def quiet_hook_output(label: str):
         os.close(log_fd)
 
 
-def bump_save_counter(session_id: str, kind: str) -> None:
+def bump_save_counter(session_id: str, kind: str, *, buffered: bool = False) -> None:
     """Record a save of ``kind`` (one of ``SAVE_KINDS``) for this session.
 
-    Used to surface per-turn save volume back to the user through the
-    next UserPromptSubmit's injected context. Cheap, best-effort file IO —
-    never raises.
+    ``buffered=True`` records it under ``<kind>_buffered`` instead: the entry
+    went to the warmup buffer, not the server, and the recall header must not
+    report it as saved. Used to surface per-turn save volume back to the user
+    through the next UserPromptSubmit's injected context. Cheap, best-effort
+    file IO — never raises.
     """
-    if not session_id or kind not in SAVE_KINDS:
+    if buffered:
+        kind = f"{kind}_buffered"
+    if not session_id or kind not in ALL_SAVE_KINDS:
         return
     try:
         data = (
@@ -1536,7 +1548,7 @@ def bump_save_counter(session_id: str, kind: str) -> None:
     except Exception as exc:
         hook_log("save_counter_read_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]})
         data = {}
-    sess = data.get(session_id) or {k: 0 for k in SAVE_KINDS}
+    sess = data.get(session_id) or {k: 0 for k in ALL_SAVE_KINDS}
     sess[kind] = int(sess.get(kind, 0)) + 1
     data[session_id] = sess
     try:
@@ -1547,8 +1559,11 @@ def bump_save_counter(session_id: str, kind: str) -> None:
 
 
 def read_and_reset_save_counter(session_id: str) -> dict:
-    """Return the save-kind counts accumulated since the last reset, then zero them."""
-    zero = {k: 0 for k in SAVE_KINDS}
+    """Return the save-kind counts accumulated since the last reset, then zero them.
+
+    Keyed by ``ALL_SAVE_KINDS``: the persisted kinds plus their buffered twins.
+    """
+    zero = {k: 0 for k in ALL_SAVE_KINDS}
     if not session_id:
         return zero
     try:
@@ -1569,7 +1584,142 @@ def read_and_reset_save_counter(session_id: str) -> dict:
         hook_log(
             "save_counter_reset_write_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]}
         )
-    return {k: int(sess.get(k, 0)) for k in SAVE_KINDS}
+    return {k: int(sess.get(k, 0)) for k in ALL_SAVE_KINDS}
+
+
+def warmup_backlog() -> dict:
+    """Entries still waiting in the warmup buffers, across every session on this machine.
+
+    Returns ``{"pending": n, "oldest_age_seconds": float | None}``.
+    Read-only and best-effort: a file that cannot be parsed is skipped and the
+    scan never raises — it runs on the keystroke->answer path.
+
+    Every per-session bridge file is scanned, not just the current session's: a
+    buffer left behind by an earlier session drains only when that session runs
+    again, so its entries can sit for weeks with nothing pointing at them — the
+    machine that motivated this held entries from three weeks earlier (SDK-467).
+    An entry written before the timestamp existed takes its file's mtime, a
+    lower bound on its age.
+    """
+    result = {"pending": 0, "oldest_age_seconds": None}
+    try:
+        paths = list(_BRIDGE_DIR.glob("*.json")) if _BRIDGE_DIR.is_dir() else []
+    except Exception:
+        return result
+    now = time.time()
+    oldest = None
+    for path in paths:
+        try:
+            cache = json.loads(path.read_text(encoding="utf-8"))
+            fallback_ts = path.stat().st_mtime
+        except Exception:
+            continue
+        if not isinstance(cache, dict):
+            continue
+        for state in cache.values():
+            if not isinstance(state, dict):
+                continue
+            for entry in state.get("pending_entries") or []:
+                result["pending"] += 1
+                stamp = entry.get(_BUFFERED_AT_KEY) if isinstance(entry, dict) else None
+                try:
+                    buffered_at = float(stamp) if stamp else fallback_ts
+                except (TypeError, ValueError):
+                    buffered_at = fallback_ts
+                age = max(0.0, now - buffered_at)
+                if oldest is None or age > oldest:
+                    oldest = age
+    result["oldest_age_seconds"] = oldest
+    return result
+
+
+def format_age(seconds: float) -> str:
+    """``45s`` / ``12m`` / ``3h`` / ``20d`` — coarse, for a one-line header."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def buffered_saves_segments(saves: dict, backlog: dict | None = None) -> list:
+    """Header segments that make a buffering outage visible; empty when healthy.
+
+    ``saves`` is a ``read_and_reset_save_counter`` result and ``backlog`` a
+    ``warmup_backlog`` result. The recall headers append these after
+    ``saved last turn …`` (Claude Code joins with ``; ``, Codex with `` · ``)::
+
+        buffered last turn 6 trace / 1 answer (not saved yet)
+        7 awaiting replay, oldest 20d
+
+    Nothing is added when nothing was buffered and nothing awaits replay, so
+    the healthy header reads exactly as before.
+    """
+    segments: list = []
+    trace_buffered = int(saves.get("trace_buffered", 0) or 0)
+    answer_buffered = int(saves.get("answer_buffered", 0) or 0)
+    if trace_buffered or answer_buffered:
+        segments.append(
+            f"buffered last turn {trace_buffered} trace / {answer_buffered} answer (not saved yet)"
+        )
+    backlog = backlog or {}
+    pending = int(backlog.get("pending", 0) or 0)
+    if pending > 0:
+        segment = f"{pending} awaiting replay"
+        oldest = backlog.get("oldest_age_seconds")
+        if oldest is not None:
+            segment += f", oldest {format_age(oldest)}"
+        segments.append(segment)
+    return segments
+
+
+def saves_segment(saves: dict) -> str:
+    """``saved last turn 1 prompt / 3 trace / 1 answer`` — persisted writes only."""
+    return (
+        "saved last turn "
+        f"{saves.get('prompt', 0)} prompt / {saves.get('trace', 0)} trace / "
+        f"{saves.get('answer', 0)} answer"
+    )
+
+
+# Probe verdicts that settle the server's recorded state. ``slow`` and ``unknown``
+# are not verdicts: they leave the recorded state untouched.
+DEFINITIVE_FAILURE_STATES = ("auth_failed", "unreachable", "server_error")
+
+_FAILURE_LABELS = {
+    "unreachable": "server unreachable",
+    "server_error": "server error",
+    "auth_failed": "auth failed",
+    "not_responding": "server not responding",
+}
+
+
+def describe_connection_failure(state: str) -> str:
+    """A recorded connection state as the header names it, e.g. ``server unreachable``."""
+    state = str(state or "unknown")
+    return _FAILURE_LABELS.get(state, f"server {state.replace('_', ' ')}")
+
+
+def outage_header(state: str, saves: dict, backlog: dict | None, joiner: str) -> str:
+    """The one-line header for a prompt whose recall was skipped: the server is known bad.
+
+    An empty recall used to be the only sign of an outage. The lookup hook returned
+    nothing, so no header was shown, and because the save counter was only read on
+    a successful recall, the first header after recovery reported weeks of buffered
+    writes as one turn's saves (SDK-467). The buffered writes and the replay backlog
+    are the whole story here, so this names the outage and reports them and nothing
+    else. ``joiner`` is the host's segment separator (``"; "`` or ``" · "``)::
+
+        Cognee memory: recall skipped (server unreachable); saved last turn 1 prompt
+        / 0 trace / 0 answer; buffered last turn 6 trace / 1 answer (not saved yet);
+        7 awaiting replay, oldest 20d
+    """
+    parts = [f"recall skipped ({describe_connection_failure(state)})", saves_segment(saves)]
+    parts.extend(buffered_saves_segments(saves, backlog))
+    return "Cognee memory: " + joiner.join(parts)
 
 
 def _pending_keys(session_id: str, turn_id: str = "") -> tuple[str, str]:
@@ -4451,6 +4601,11 @@ def _improve_submit_timeout() -> float:
 
 
 _AMBIGUOUS_KEY = "_replay_ambiguous"
+# Epoch seconds at which the entry was buffered. Read back by ``warmup_backlog``
+# so the recall header can say how long the oldest unreplayed entry has waited.
+_BUFFERED_AT_KEY = "_buffered_at"
+# Buffer-internal bookkeeping, stripped before an entry is sent to the server.
+_BUFFER_META_KEYS = (_AMBIGUOUS_KEY, _BUFFERED_AT_KEY)
 
 
 def append_warmup_entry(
@@ -4471,10 +4626,10 @@ def append_warmup_entry(
     """
     if not dataset or not session_id or not isinstance(entry, dict):
         return
-    entry = _sanitize_value(entry)
+    entry = dict(_sanitize_value(entry))
     if ambiguous:
-        entry = dict(entry)
         entry[_AMBIGUOUS_KEY] = True
+    entry[_BUFFERED_AT_KEY] = time.time()
     with _buffer_lock():
         cache = _load_json_file(_bridge_file(session_id))
         key = _bridge_cache_key(dataset, session_id)
@@ -4689,9 +4844,9 @@ def drain_warmup_entries(
                 break
             send_entry = entry
             ambiguous = False
-            if isinstance(entry, dict) and _AMBIGUOUS_KEY in entry:
-                send_entry = {k: v for k, v in entry.items() if k != _AMBIGUOUS_KEY}
-                ambiguous = True
+            if isinstance(entry, dict):
+                ambiguous = bool(entry.get(_AMBIGUOUS_KEY))
+                send_entry = {k: v for k, v in entry.items() if k not in _BUFFER_META_KEYS}
             if ambiguous and verified and _entry_fingerprint(send_entry) in server_prints:
                 # The original send committed after all — consume the buffered
                 # copy without re-sending it.

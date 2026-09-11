@@ -31,26 +31,14 @@ import json
 from pathlib import Path
 
 import pytest
-from utils.recall import SCOPES, drive_recall
+from utils.recall import HIT, SCOPES, SESSION_KEY, drive_recall, load_lookup
 
-_KEY = "fde122ae-07db-431d-b5af-acba353e4e3e"
-_HIT = {
-    "session": [{"question": "q1", "answer": "a1"}],
-    "trace": [],
-    "graph": [],
-    "session_context": [],
-}
 _MISS = {scope: [] for scope in SCOPES}
 
 
 @pytest.fixture
 def lookup(suite, hook_module, monkeypatch):
-    module = hook_module(suite, "session-context-lookup.py")
-    monkeypatch.setattr(module, "get_session_key", lambda: _KEY)
-    if suite.name == "codex":
-        # codex prefixes the header with the plain status line; keep it inert.
-        monkeypatch.setattr(module, "render_status_for_host", lambda key: "cognee: ds · local")
-    return module
+    return load_lookup(suite, hook_module, monkeypatch)
 
 
 @pytest.fixture
@@ -62,7 +50,7 @@ def state(suite, temp_home) -> Path:
 def per_session(suite, state):
     """Read the marker this suite's total lives in (see module docstring)."""
 
-    def _read(key: str = _KEY) -> dict:
+    def _read(key: str = SESSION_KEY) -> dict:
         path = state / "last_recall.json"
         if suite.name == "claude-code":
             path = state / "recall" / f"{key}.json"
@@ -75,7 +63,7 @@ def _shared(state: Path) -> dict:
     return json.loads((state / "last_recall.json").read_text(encoding="utf-8"))
 
 
-def _seed(state: Path, suite, payload: dict, key: str = _KEY) -> None:
+def _seed(state: Path, suite, payload: dict, key: str = SESSION_KEY) -> None:
     """Pre-write the marker a previous prompt of session ``key`` would have left."""
     path = state / "last_recall.json"
     if suite.name == "claude-code":
@@ -85,7 +73,7 @@ def _seed(state: Path, suite, payload: dict, key: str = _KEY) -> None:
 
 
 def test_first_prompt_starts_the_count(lookup, monkeypatch, per_session):
-    drive_recall(lookup, monkeypatch, recall=_HIT)
+    drive_recall(lookup, monkeypatch, recall=HIT)
     assert per_session()["session_totals"] == {"turns": 1, "turns_with_hits": 1}
 
 
@@ -95,7 +83,7 @@ def test_a_miss_counts_the_turn_but_not_a_hit(lookup, monkeypatch, per_session):
 
 
 def test_totals_accumulate_across_prompts(lookup, monkeypatch, per_session):
-    for results in (_HIT, _MISS, _HIT, _HIT, _MISS):
+    for results in (HIT, _MISS, HIT, HIT, _MISS):
         drive_recall(lookup, monkeypatch, recall=results)
     marker = per_session()
     assert marker["session_totals"] == {"turns": 5, "turns_with_hits": 3}
@@ -119,10 +107,10 @@ def test_another_sessions_marker_is_not_the_source_of_the_total(
         ),
         encoding="utf-8",
     )
-    drive_recall(lookup, monkeypatch, recall=_HIT)
+    drive_recall(lookup, monkeypatch, recall=HIT)
     assert per_session()["session_totals"] == {"turns": 1, "turns_with_hits": 1}
     # ...and the shared copy now carries ours, stamped with our key.
-    assert _shared(state)["session_key"] == _KEY
+    assert _shared(state)["session_key"] == SESSION_KEY
     assert _shared(state)["session_totals"] == {"turns": 1, "turns_with_hits": 1}
 
 
@@ -132,16 +120,20 @@ def test_codex_continues_its_own_shared_marker(lookup, monkeypatch, suite, state
     _seed(
         state,
         suite,
-        {"session_key": _KEY, "hits": {}, "session_totals": {"turns": 4, "turns_with_hits": 2}},
+        {
+            "session_key": SESSION_KEY,
+            "hits": {},
+            "session_totals": {"turns": 4, "turns_with_hits": 2},
+        },
     )
-    drive_recall(lookup, monkeypatch, recall=_HIT)
+    drive_recall(lookup, monkeypatch, recall=HIT)
     assert per_session()["session_totals"] == {"turns": 5, "turns_with_hits": 3}
 
 
 def test_a_legacy_marker_without_totals_restarts_the_count(
     lookup, monkeypatch, suite, state, per_session
 ):
-    _seed(state, suite, {"session_key": _KEY, "hits": {"session": 2}})
+    _seed(state, suite, {"session_key": SESSION_KEY, "hits": {"session": 2}})
     drive_recall(lookup, monkeypatch, recall=_MISS)
     assert per_session()["session_totals"] == {"turns": 1, "turns_with_hits": 0}
 
@@ -150,7 +142,7 @@ def test_a_corrupt_marker_restarts_the_count_instead_of_failing(
     lookup, monkeypatch, suite, state, per_session
 ):
     _seed(state, suite, "not json{{{")
-    run = drive_recall(lookup, monkeypatch, recall=_HIT)
+    run = drive_recall(lookup, monkeypatch, recall=HIT)
     assert run.detail("last_recall_write_failed") is None, run.events
     assert per_session()["session_totals"] == {"turns": 1, "turns_with_hits": 1}
 
@@ -160,12 +152,12 @@ def test_negative_or_garbage_totals_are_clamped(lookup, monkeypatch, suite, stat
         state,
         suite,
         {
-            "session_key": _KEY,
+            "session_key": SESSION_KEY,
             "hits": {},
             "session_totals": {"turns": -4, "turns_with_hits": "x"},
         },
     )
-    run = drive_recall(lookup, monkeypatch, recall=_HIT)
+    run = drive_recall(lookup, monkeypatch, recall=HIT)
     assert run.detail("last_recall_write_failed") is None, run.events
     assert per_session()["session_totals"] == {"turns": 1, "turns_with_hits": 1}
 
@@ -174,7 +166,7 @@ def test_path_unsafe_session_key_writes_no_per_session_copy(lookup, monkeypatch,
     if suite.name != "claude-code":
         pytest.skip("codex has no per-session copy")
     monkeypatch.setattr(lookup, "get_session_key", lambda: "../escape")
-    run = drive_recall(lookup, monkeypatch, recall=_HIT)
+    run = drive_recall(lookup, monkeypatch, recall=HIT)
     assert run.detail("last_recall_write_failed") is None, run.events
     recall_dir = state / "recall"
     assert not recall_dir.exists() or not any(recall_dir.iterdir())
@@ -297,5 +289,5 @@ def test_codex_header_says_warming_up_until_the_first_hit(codex, lookup, monkeyp
 
 
 def test_codex_header_omits_past_sessions_at_zero(codex, lookup, monkeypatch, state):
-    drive_recall(lookup, monkeypatch, recall=_HIT)
+    drive_recall(lookup, monkeypatch, recall=HIT)
     assert _codex_header(state).startswith("Cognee memory: 1 memory hit · 1/1 turns had hits")

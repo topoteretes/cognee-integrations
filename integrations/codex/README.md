@@ -115,7 +115,9 @@ Every prompt's recalled context opens with a one-line memory header:
 Cognee memory: 5 memory hits (3 from past sessions) · 12/40 turns had hits this session · saved last turn 1 prompt / 3 trace / 1 answer
 ```
 
-`5 memory hits` is how many memories this turn's lookup found and injected (across session turns, traces, graph context and agent guidance); `3 from past sessions` is the part the model could not have known from this conversation — knowledge-graph passages from an earlier session or a `remember`-ed document (omitted when zero); `12/40 turns had hits this session` is the running total, reading `memory warming up (7 turns)` until the first hit; `saved last turn` is what the previous turn persisted. The counts are also written to `~/.cognee-plugin/codex/last_recall.json`.
+`5 memory hits` is how many memories this turn's lookup found and injected (across session turns, traces, graph context and agent guidance); `3 from past sessions` is the part the model could not have known from this conversation — knowledge-graph passages from an earlier session or a `remember`-ed document (omitted when zero); `12/40 turns had hits this session` is the running total, reading `memory warming up (7 turns)` until the first hit; `saved last turn` is what the previous turn persisted — on the server. The counts are also written to `~/.cognee-plugin/codex/last_recall.json`.
+
+When the server cannot be reached, traces and answers are buffered locally and replayed later; those are never counted as saved. Instead the header grows two segments — `buffered last turn 6 trace / 1 answer (not saved yet) · 7 awaiting replay, oldest 20d` — so an outage is visible on every prompt, including prompts whose recall was skipped because the server is known to be down (`Cognee memory: recall skipped (server unreachable) · …`). Both segments disappear once the buffer has drained.
 
 ## Auth
 

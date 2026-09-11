@@ -22,9 +22,11 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    DEFINITIVE_FAILURE_STATES,
     _float_env,
     authed_liveness,
     bounded_dim_mismatch_hint,
+    buffered_saves_segments,
     clear_slow_streak,
     elapsed_ms,
     get_session_key,
@@ -32,6 +34,7 @@ from _plugin_common import (
     load_resolved,
     mark_server_ready,
     notify,
+    outage_header,
     probe_health,
     quiet_hook_output,
     read_and_reset_save_counter,
@@ -43,10 +46,12 @@ from _plugin_common import (
     resolve_session_key_from_payload,
     resolve_user,
     same_connection_target,
+    saves_segment,
     server_ready_hint,
     service_url_is_local,
     set_session_key,
     slow_streak_threshold,
+    warmup_backlog,
     write_connection_state,
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
@@ -165,7 +170,12 @@ def _plural(n: int, word: str) -> str:
 
 
 def _memory_summary(
-    total: int, cross_session: int, totals: dict, saves: dict, code_facts: int | None = None
+    total: int,
+    cross_session: int,
+    totals: dict,
+    saves: dict,
+    code_facts: int | None = None,
+    backlog: dict | None = None,
 ) -> str:
     """The one-line ``Cognee memory: …`` header, in plain words.
 
@@ -182,6 +192,13 @@ def _memory_summary(
     a bare ``0/7``. When the repo code lane is armed, ``N code facts`` follows
     the hit count (they are part of the total) so an indexed repo is visibly in
     play even at zero.
+
+    Writes the server never received are not saves. When the previous turn's
+    trace/answer went to the warmup buffer, or entries still wait for replay
+    (``backlog``, a ``warmup_backlog`` result), that follows as its own
+    segments — ``buffered last turn 6 trace / 1 answer (not saved yet) · 7
+    awaiting replay, oldest 20d`` — and is absent when there is nothing to
+    say (SDK-467).
     """
     parts = [_plural(total, "memory hit")]
     if code_facts is not None:
@@ -198,12 +215,21 @@ def _memory_summary(
             parts.append(f"{with_hits}/{turns} turns had hits this session")
         else:
             parts.append(f"memory warming up ({_plural(turns, 'turn')})")
-    parts.append(
-        "saved last turn "
-        f"{saves.get('prompt', 0)} prompt / {saves.get('trace', 0)} trace / "
-        f"{saves.get('answer', 0)} answer"
-    )
+    parts.append(saves_segment(saves))
+    parts.extend(buffered_saves_segments(saves, backlog))
     return "Cognee memory: " + " · ".join(parts)
+
+
+def _outage_output(state: str) -> dict:
+    """Envelope for a prompt whose recall was skipped: see ``outage_header``."""
+    session_id = _load_session_id()
+    saves = read_and_reset_save_counter(session_id) if session_id else {}
+    summary = outage_header(state, saves, warmup_backlog(), " · ")
+    header = f"{render_status_for_host(get_session_key())}\n{summary}"
+    return {
+        "systemMessage": header,
+        "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": header},
+    }
 
 
 def _has_entry_content(entry: dict) -> bool:
@@ -298,14 +324,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             clear_slow_streak(service_url)
             # fall through to recall below
         else:
-            if state in ("auth_failed", "unreachable", "server_error"):
+            if state in DEFINITIVE_FAILURE_STATES:
                 # A definitive verdict: refresh/replace the recorded failure.
                 write_connection_state(state, service_url, detail="authed liveness probe")
                 clear_slow_streak(service_url)
             # "slow"/"unknown" from the probe is NO verdict — keep the recorded
             # state untouched rather than promote a timeout to a failure.
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
-            return None
+            # Report the outage instead of going quiet: the recorded failure
+            # names it when the probe itself was inconclusive.
+            return _outage_output(state if state in DEFINITIVE_FAILURE_STATES else prior_state)
 
     if not cloud_mode:
         await ensure_cognee_ready(config)
@@ -742,6 +770,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         _totals,
         saves_last_turn,
         code_facts=counts.get("code", 0) if code_lane else None,
+        backlog=warmup_backlog(),
     )
 
     section_lines = []

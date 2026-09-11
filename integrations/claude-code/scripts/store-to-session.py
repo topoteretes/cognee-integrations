@@ -215,7 +215,7 @@ async def _store_tool_call(payload: dict) -> None:
         # for a later /remember/entry replay (improve bridges only what the
         # server session cache holds).
         append_warmup_entry(dataset, session_id, entry)
-        bump_save_counter(session_id, "trace")
+        bump_save_counter(session_id, "trace", buffered=True)
         hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
         return
 
@@ -236,7 +236,7 @@ async def _store_tool_call(payload: dict) -> None:
             # /remember/entry has no idempotency, and a blind replay of a
             # committed write duplicates the trace into the next improve.
             append_warmup_entry(dataset, session_id, entry, ambiguous=write_outcome_ambiguous(exc))
-            bump_save_counter(session_id, "trace")
+            bump_save_counter(session_id, "trace", buffered=True)
             hook_log(
                 "trace_buffered_after_error",
                 {"tool": tool_name, "status": status_code, "error": str(exc)[:200]},
@@ -327,7 +327,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         # structured entry for a later /remember/entry replay (improve bridges
         # only what the server session cache holds).
         append_warmup_entry(dataset, session_id, entry)
-        bump_save_counter(session_id, "answer")
+        bump_save_counter(session_id, "answer", buffered=True)
         hook_log("store_buffered_warming", {"hook": "stop"})
         return
 
@@ -354,7 +354,7 @@ async def _store_assistant_stop(payload: dict) -> None:
             # went out) are verified against the server before replay — see
             # write_outcome_ambiguous.
             append_warmup_entry(dataset, session_id, entry, ambiguous=write_outcome_ambiguous(exc))
-            bump_save_counter(session_id, "answer")
+            bump_save_counter(session_id, "answer", buffered=True)
             hook_log(
                 "store_buffered_after_error",
                 {"hook": "stop", "status": status, "error": str(exc)[:200]},

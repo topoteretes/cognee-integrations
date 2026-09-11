@@ -83,6 +83,7 @@ def _compute_metrics(plugin_dir: Path) -> dict:
     cloud_decisions = 0
     breaker_open_events = 0
     saves_from_log = {"prompt": 0, "trace": 0, "answer": 0}
+    buffered_from_log = {"trace": 0, "answer": 0}
 
     for line in hook_lines:
         ev = line.get("event", "")
@@ -111,9 +112,12 @@ def _compute_metrics(plugin_dir: Path) -> dict:
         if ev == "recall_breaker_open":
             breaker_open_events += 1
 
-        # Save events recorded in hook.log. Warmup-buffered trace/answer saves
-        # log "store_buffered_warming" (tagged with the originating hook) rather
-        # than trace_stored/stop_stored, so count those too for a full total.
+        # Save events recorded in hook.log. A write the server never received is
+        # not a save: a trace/answer diverted to the warmup buffer — logged as
+        # store_buffered_warming (tagged with the originating hook) or as
+        # trace_/store_buffered_after_error — is reported apart, under
+        # "buffered", so an outage does not read as a normal run of saves
+        # (SDK-467; the recall header draws the same line).
         if ev == "prompt_pending":
             saves_from_log["prompt"] += 1
         elif ev == "trace_stored":
@@ -122,9 +126,13 @@ def _compute_metrics(plugin_dir: Path) -> dict:
             saves_from_log["answer"] += 1
         elif ev == "store_buffered_warming":
             if detail.get("hook") == "tool":
-                saves_from_log["trace"] += 1
+                buffered_from_log["trace"] += 1
             elif detail.get("hook") == "stop":
-                saves_from_log["answer"] += 1
+                buffered_from_log["answer"] += 1
+        elif ev == "trace_buffered_after_error":
+            buffered_from_log["trace"] += 1
+        elif ev == "store_buffered_after_error":
+            buffered_from_log["answer"] += 1
 
     # -----------------------------------------------------------------------
     # 2. save_counter.json - session ids only
@@ -176,6 +184,7 @@ def _compute_metrics(plugin_dir: Path) -> dict:
             "hit_rate_pct": hit_rate_pct,
         },
         "saves": total_saves,
+        "buffered": dict(buffered_from_log),
         "mode_split": {
             "local_pct": local_pct,
             "cloud_pct": cloud_pct,
@@ -194,6 +203,7 @@ def _compute_metrics(plugin_dir: Path) -> dict:
 def _print_rollup(metrics: dict, plugin: str) -> None:
     r = metrics["recalls"]
     s = metrics["saves"]
+    b = metrics["buffered"]
     ms = metrics["mode_split"]
 
     print(f"cognee-plugin metrics  [{plugin}]")
@@ -208,6 +218,7 @@ def _print_rollup(metrics: dict, plugin: str) -> None:
     print(f"  Saves (trace)       : {s['trace']}")
     print(f"  Saves (answer)      : {s['answer']}")
     print(f"  Saves (total)       : {sum(s.values())}")
+    print(f"  Buffered, not saved : {b['trace']} trace / {b['answer']} answer")
     print()
     print(f"  Mode - local        : {ms['local_pct']}%  ({ms['local_count']} decisions)")
     print(f"  Mode - cloud        : {ms['cloud_pct']}%  ({ms['cloud_count']} decisions)")

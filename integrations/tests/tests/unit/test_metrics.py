@@ -4,8 +4,9 @@ Everything is derived from mock local files in a temp dir — no network, no rea
 plugin state. Fixtures use the SAME schemas the plugin actually writes: hook.log
 lines are {ts, pid, event, detail}; mode_decision.detail.mode is "http" (or
 "local_sdk" in logs written before the in-process path was removed);
-warmup-buffered saves log "store_buffered_warming"; recall-audit.log /
-save_counter.json / last_recall.json match their writers.
+warmup-buffered writes log "store_buffered_warming" / "*_buffered_after_error" and
+are reported apart from saves; recall-audit.log / save_counter.json /
+last_recall.json match their writers.
 
 Migrated from {claude-code,codex}/tests/test_metrics.py.
 """
@@ -56,6 +57,7 @@ def test_empty_dir_returns_zeros(cognee_plugin, state_dir):
         "sessions": 0,
         "recalls": {"total": 0, "hits": 0, "hit_rate_pct": 0.0},
         "saves": {"prompt": 0, "trace": 0, "answer": 0},
+        "buffered": {"trace": 0, "answer": 0},
         "mode_split": {"local_pct": 0.0, "cloud_pct": 0.0, "local_count": 0, "cloud_count": 0},
         "breaker_open_events": 0,
     }
@@ -95,18 +97,21 @@ def test_saves_counted_once_from_hook_log(cognee_plugin, state_dir):
     assert saves == {"prompt": 2, "trace": 1, "answer": 1}
 
 
-def test_saves_include_warmup_buffered(cognee_plugin, state_dir):
-    # Warmup-buffered trace/answer saves log store_buffered_warming, not
-    # trace_stored/stop_stored, and must still be counted.
+def test_buffered_writes_are_reported_apart_from_saves(cognee_plugin, state_dir):
+    # A write the server never received is not a save (SDK-467): the warming
+    # spillway and the after-error buffering land under "buffered", never "saves".
     _write_jsonl(
         state_dir / "hook.log",
         _hook("trace_stored", tool="Bash", status="ok"),
         _hook("store_buffered_warming", hook="tool", tool="Read"),
         _hook("store_buffered_warming", hook="stop"),
+        _hook("trace_buffered_after_error", tool="Edit", status=503),
+        _hook("store_buffered_after_error", hook="stop", status=None),
         _hook("stop_stored", chars=5),
     )
-    saves = cognee_plugin._compute_metrics(state_dir)["saves"]
-    assert saves == {"prompt": 0, "trace": 2, "answer": 2}
+    metrics = cognee_plugin._compute_metrics(state_dir)
+    assert metrics["saves"] == {"prompt": 0, "trace": 1, "answer": 1}
+    assert metrics["buffered"] == {"trace": 2, "answer": 2}
 
 
 def test_sessions_union_across_files(cognee_plugin, state_dir):
@@ -172,7 +177,14 @@ def test_cli_json_output(cognee_plugin, state_dir):
     rc, out = _run_cli(cognee_plugin, ["metrics", "--json"])
     assert rc == 0
     parsed = json.loads(out)
-    assert set(parsed) == {"sessions", "recalls", "saves", "mode_split", "breaker_open_events"}
+    assert set(parsed) == {
+        "sessions",
+        "recalls",
+        "saves",
+        "buffered",
+        "mode_split",
+        "breaker_open_events",
+    }
     assert parsed["mode_split"]["local_count"] == 1
 
 

@@ -22,8 +22,10 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    DEFINITIVE_FAILURE_STATES,
     _float_env,
     authed_liveness,
+    buffered_saves_segments,
     clear_slow_streak,
     elapsed_ms,
     get_session_key,
@@ -31,6 +33,7 @@ from _plugin_common import (
     load_resolved,
     mark_server_ready,
     notify,
+    outage_header,
     probe_health,
     quiet_hook_output,
     read_and_reset_save_counter,
@@ -41,9 +44,11 @@ from _plugin_common import (
     resolve_runtime_mode,
     resolve_session_key_from_payload,
     same_connection_target,
+    saves_segment,
     server_ready_hint,
     set_session_key,
     slow_streak_threshold,
+    warmup_backlog,
     write_connection_state,
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
@@ -151,6 +156,20 @@ def _count_cross_session_hits(by_source: dict, session_id: str) -> int:
     return count
 
 
+def _outage_output(state: str) -> dict:
+    """Envelope for a prompt whose recall was skipped: see ``outage_header``."""
+    session_id = _load_session_id()
+    saves = read_and_reset_save_counter(session_id) if session_id else {}
+    header = outage_header(state, saves, warmup_backlog(), "; ")
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": header,
+            "systemMessage": header,
+        }
+    }
+
+
 def _has_entry_content(entry: dict) -> bool:
     """Return True when a recall entry has useful content to inject."""
     source = entry.get("source", "")
@@ -218,14 +237,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             clear_slow_streak(service_url)
             # fall through to recall below
         else:
-            if state in ("auth_failed", "unreachable", "server_error"):
+            if state in DEFINITIVE_FAILURE_STATES:
                 # A definitive verdict: refresh/replace the recorded failure.
                 write_connection_state(state, service_url, detail="authed liveness probe")
                 clear_slow_streak(service_url)
             # "slow"/"unknown" from the probe is NO verdict — keep the recorded
             # state untouched rather than promote a timeout to a failure.
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
-            return None
+            # Report the outage instead of going quiet: the recorded failure
+            # names it when the probe itself was inconclusive.
+            return _outage_output(state if state in DEFINITIVE_FAILURE_STATES else prior_state)
 
     session_id = _load_session_id()
     if not session_id:
@@ -617,10 +638,13 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         f"{counts['session']} session / {counts['trace']} trace / "
         f"{counts['graph_context']} graph / {counts['session_context']} agent"
         + (f" / {counts['code']} code" if code_lane else "")
-        + "; saved last turn "
-        f"{saves_last_turn['prompt']} prompt / {saves_last_turn['trace']} trace / "
-        f"{saves_last_turn['answer']} answer"
+        + "; "
+        + saves_segment(saves_last_turn)
     )
+    # Writes the server never received are not saves: a buffering outage gets
+    # its own segment, plus whatever still waits for replay (SDK-467).
+    for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
+        header += f"; {segment}"
 
     section_lines = []
     if by_source.get("session_context"):

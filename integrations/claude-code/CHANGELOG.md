@@ -10,6 +10,43 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.5]
+
+### Fixed
+- **The recall header no longer reports buffered writes as saved (SDK-467).** While
+  the server was unreachable for two and a half weeks, every prompt's header kept
+  reading `saved last turn 1 prompt / 6 trace / 1 answer` — the store hooks
+  diverted every trace and answer to the warmup buffer and bumped the same save
+  counter as a real write, so a durable outage produced no visible signal at all.
+  Buffered writes now have their own counter kinds (`trace_buffered`,
+  `answer_buffered`) and the header shows them as their own segment, followed by
+  what still waits for replay across every session on the machine and how long
+  the oldest entry has waited:
+
+  ```
+  Cognee memory: recall 0 session / 0 trace / 0 graph / 0 agent; saved last turn 1 prompt / 0 trace / 0 answer; buffered last turn 6 trace / 1 answer (not saved yet); 7 awaiting replay, oldest 20d
+  ```
+
+  Nothing is added when nothing was buffered and nothing awaits
+  replay, so the healthy header reads exactly as before. To make the age
+  visible, every buffered entry now carries a `_buffered_at` stamp in
+  `~/.cognee-plugin/claude-code/bridge/`; like the ambiguous-replay marker it is
+  stripped before the entry is sent, so nothing new reaches the server. Entries
+  buffered before this release take their file's mtime, a lower bound on their age.
+- **A prompt whose recall is skipped because the server is known bad now gets a
+  header too.** It used to return nothing — no header, no sign that memory was
+  off — and because the save counter was only read on a successful recall, the
+  first header after recovery presented weeks of buffered writes as one turn's
+  saves. The header now reads `Cognee memory: recall skipped (server unreachable)`
+  (or `auth failed` / `server error` / `server not responding`), followed by the saved,
+  buffered and awaiting-replay segments, and the counter is read and reset on
+  every prompt. The model receives the same line as its context.
+- **`cognee-plugin metrics` reports buffered writes apart from saves.** The
+  offline rollup added warmup-buffered writes to the saved totals and ignored the
+  after-error buffering entirely. It now has a `buffered` section (`trace` /
+  `answer`) fed by `store_buffered_warming`, `trace_buffered_after_error` and
+  `store_buffered_after_error`, and `saves` counts only what the server received.
+
 ## [1.5.4]
 
 ### Fixed

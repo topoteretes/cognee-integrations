@@ -54,6 +54,11 @@ def _pending(pc) -> list:
     return _session_state(pc).get("pending_entries") or []
 
 
+def _pending_content(pc) -> list:
+    """Buffered entries without the buffer's own bookkeeping (the buffered-at stamp)."""
+    return [{k: v for k, v in e.items() if k != pc._BUFFERED_AT_KEY} for e in _pending(pc)]
+
+
 def _replay_into(pc, monkeypatch, sink: list):
     monkeypatch.setattr(
         pc, "remember_entry_via_http", lambda d, s, entry, **k: sink.append(entry) or {}
@@ -118,7 +123,7 @@ def test_concurrent_append_during_drain_survives(pc, monkeypatch):
     monkeypatch.setattr(pc, "remember_entry_via_http", _replay)
     # Both originals replayed; the mid-drain arrival remains.
     assert pc.drain_warmup_entries("ds", "sid") == (2, 1)
-    assert _pending(pc) == [{"type": "qa", "question": "new", "answer": "x"}]
+    assert _pending_content(pc) == [{"type": "qa", "question": "new", "answer": "x"}]
 
 
 def test_drain_skipped_when_lock_busy(pc, monkeypatch):

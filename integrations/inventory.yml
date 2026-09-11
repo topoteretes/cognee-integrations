@@ -34,7 +34,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "1.5.4"
+    current_version: "1.5.5"
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
@@ -45,7 +45,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: http-api
-    current_version: "1.5.1"
+    current_version: "1.5.2"
     migration_status: done
     notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
 
@@ -67,7 +67,7 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.6.4"
+    current_version: "1.6.5"
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
 
