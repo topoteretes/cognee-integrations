@@ -4120,7 +4120,14 @@ def urlopen_following_307(req, *, timeout: float, context=None):
             target = urllib.parse.urljoin(req.full_url, location)
             if not _same_origin(req.full_url, target):
                 raise
-            exc.close()
+            try:
+                exc.close()
+            except Exception:
+                # Best-effort connection release. An HTTPError carrying no body
+                # never initialized its underlying file, and closing that raises
+                # (KeyError on Python 3.9, the hooks' floor). The replay does not
+                # depend on the close, and a raise here would mask the HTTP error.
+                pass
             replay = urllib.request.Request(
                 target, data=req.data, headers=dict(req.headers), method=req.get_method()
             )
