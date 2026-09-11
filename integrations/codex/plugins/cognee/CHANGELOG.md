@@ -46,6 +46,79 @@ project adheres to [Semantic Versioning](https://semver.org/).
   after-error buffering entirely. It now has a `buffered` section (`trace` /
   `answer`) fed by `store_buffered_warming`, `trace_buffered_after_error` and
   `store_buffered_after_error`, and `saves` counts only what the server received.
+- **Skills reached for the `cognee-cli` before the server, and the CLI paths were
+  unreachable anyway (SDK-622).** The `setup` and `local-ui` skills declared
+  `uv run cognee-cli ...` the "primary interface"/"primary launcher", directly
+  contradicting `memory`'s own rule ("Prefer the server-first paths"). Both also
+  assumed a cognee **source checkout**: `scripts/cognee-cli.sh` exits 64 ("Run
+  this from the Cognee repository root") anywhere else, and the skills bypassed
+  even that wrapper with bare `uv run cognee-cli`, which inherits uv's
+  project-directory requirement and never uses the plugin's own venv — a venv
+  that in cloud mode is never built at all. So on any normal install the
+  "primary" path could not run, and the behaviour was masked on developer
+  machines that happen to have `cognee-cli` on PATH.
+  - `setup` is now **Cognee Connection And Status**: it answers from
+    `scripts/doctor.py --json` (mode, resolved URL, reachability, key source) and
+    an HTTP `/health` probe, with the CLI demoted to a last resort gated on
+    *local mode plus a checkout*. Dropped `uv sync --dev --all-extras
+    --reinstall` (there is no cognee repo to sync on a plugin install, and in the
+    user's own project it rebuilds their dependencies) and `serve --logout`.
+    The env-file / `COGNEE_BACKEND` material is now the configuration section
+    rather than a paragraph buried under CLI content.
+  - `local-ui` now **checks the mode first and stops on cloud**, where there is
+    no local UI and launching one would create a second, empty instance holding
+    none of the user's memory. Its description no longer competes with `setup`
+    for "is Cognee running?". `cognee-cli -ui`'s own `:8000`/`:3000` surfaces are
+    kept but marked as a separate dev instance, explicitly not evidence about the
+    plugin's `:8011` server.
+  - Every remaining CLI invocation routes through `scripts/cognee-cli.sh`, so a
+    missing checkout fails with a clear message instead of an opaque `uv` error,
+    and exit 64 is documented as "not a Cognee fault to report".
+  - `memory`'s "CLI only" extras (staged `add`+`cognify`, the `-t
+    GRAPH_COMPLETION/CHUNKS/CODE` search modes, `improve --node-name`) are
+    reframed as *unavailable without a checkout* rather than as a reason to leave
+    the server path.
+- **The recommended "server-first" `curl` 401'd in local mode — and pushed the
+  agent to the CLI.** `memory`'s authoritative recall example sent
+  `-H "X-Api-Key: ${COGNEE_API_KEY:-}"`, but in local mode that variable is
+  empty: the key is minted into `~/.cognee-plugin/api_key.json` and never
+  exported to the shell. The server-first path therefore failed with a 401 that
+  looked like a server fault, and the skill's own fallback rule then sent the
+  agent to the CLI. Recall now goes through `scripts/cognee-search.sh` (which
+  resolves endpoint, session and key the way the hooks do), and the raw-endpoint
+  form is shown with `eval "$(scripts/cognee-forget.sh env)"` in the same shell
+  invocation.
+- **The plugin manifest advertised itself as CLI-first.** `plugin.json`'s
+  description ("CLI-first Cognee workflows"), long description ("skills for
+  running Cognee's CLI workflows") and default prompts ("Use Cognee CLI to
+  remember ...") pointed users and the agent at the CLI before any skill body was
+  read. All three now describe the HTTP/server path, with the CLI named as the
+  fallback it is.
+- **A local server's redirect broke every by-name dataset switch (SDK-622).**
+  `switch-dataset.py` failed with a bare `307` for any dataset named rather than
+  addressed by UUID, so the dataset picker could not switch at all. Real Cognee
+  servers disagree about the trailing slash on `/api/v1/datasets` and answer 307
+  to the spelling they do not serve — in **opposite** directions: cloud tenants
+  redirect the bare path to the slashed one, a local server redirects the slashed
+  path to the bare one. The clients hard-coded the slash for the cloud's benefit,
+  and urllib's `HTTPRedirectHandler` refuses to replay a POST across a 307 (it
+  raises `HTTPError` instead), so the create surfaced as a 307 the caller treated
+  as a failure. Because `ensure_dataset_ready_via_api` runs unconditionally on the
+  by-name path, an *existing* dataset failed exactly like a new one.
+
+  Both HTTP helpers (`_json_http_request` and `config._cloud_http_request`) now
+  replay a 307/308 themselves, preserving method and body, so either spelling
+  works against either server shape. The replay is **same-origin only** — these
+  requests carry `X-Api-Key`, which must never be sent to another host — and
+  bounded to two hops, so a redirect loop cannot spin a hook. A cross-origin
+  target, a missing `Location`, or any other status leaves the original error
+  untouched. The two `# trailing slash on purpose` workarounds are gone.
+
+  The suite missed this because the mock server accepted both spellings
+  unconditionally. It can now redirect either way
+  (`set_collection_redirect`), and the regression tests assert dataset creation
+  through both helpers in both directions, plus the same-origin gate and the
+  refusals.
 
 ## [1.6.4]
 

@@ -11,8 +11,17 @@ memory.
 
 ## Rules
 
-- Prefer the server-first paths below (HTTP to the running Cognee server).
-- Use `uv run cognee-cli ...` only when the server is genuinely unreachable.
+- **Server first.** Every operation below goes to the running Cognee server over
+  HTTP, through the plugin's own scripts. That is the authoritative path in both
+  local and cloud mode.
+- **`cognee-cli` is a last resort, not an alternative.** It is reachable only on a
+  machine holding a cognee **source checkout**: `scripts/cognee-cli.sh` exits 64
+  anywhere else, and in cloud mode the plugin's venv is never built at all. Use it
+  only when the server is genuinely unreachable *and* that checkout exists. Unsure
+  which mode you are in? `python3 "${CODEX_PLUGIN_ROOT}/scripts/doctor.py" --json`
+  reports `mode`, `server_url` and `reachable` without importing cognee.
+- **Empty CLI output is never proof of absence.** Ground-truth against the server
+  before concluding anything (see *The server is the source of truth* below).
 - Choose a clear dataset name with `-d` or `--dataset-name`; ask only if the dataset boundary is genuinely ambiguous.
 - Do not ingest secrets, credentials, `.env` files, private keys, token dumps, or unrelated generated artifacts.
 - Before destructive commands such as `forget`, `delete`, or `--everything`, get explicit user confirmation.
@@ -42,48 +51,73 @@ By default the wrapper then waits a short, bounded time (`COGNEE_REMEMBER_WAIT_S
 **Fallback only — server unreachable:**
 
 ```bash
-uv run cognee-cli remember <text-or-path> -d <dataset-name>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" remember <text-or-path> -d <dataset-name>
 ```
 
-For staged work (no HTTP equivalent — CLI only):
+For staged work there is no HTTP equivalent, so it is available **only** with a
+cognee source checkout. Prefer the one-step server path above; mention this
+limitation rather than switching to the CLI when no checkout exists:
 
 ```bash
-uv run cognee-cli add <text-or-path> -d <dataset-name>
-uv run cognee-cli cognify -d <dataset-name>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" add <text-or-path> -d <dataset-name>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" cognify -d <dataset-name>
 ```
 
 For long processing:
 
 ```bash
-uv run cognee-cli remember <text-or-path> -d <dataset-name> --background
-uv run cognee-cli cognify -d <dataset-name> --background
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" remember <text-or-path> -d <dataset-name> --background
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" cognify -d <dataset-name> --background
 ```
 
 ## Recall And Search
 
-**Server-first (authoritative):**
+**Server-first (authoritative) — use the wrapper:**
 
 ```bash
-curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
+${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh "<question>" 10 --graph
+```
+
+It resolves the endpoint, the session and the API key the way the hooks do
+(launch record → `COGNEE_API_KEY` → the auto-minted `api_key.json`), so it
+authenticates correctly in **both** local and cloud mode. Drop `--graph` to
+search the session cache and the graph, or pass `--session` for the session only.
+
+An empty result from the server is authoritative — the server searched and found
+nothing.
+
+**Do not hand-roll the `curl` with `-H "X-Api-Key: ${COGNEE_API_KEY:-}"`.** In
+local mode that variable is empty — the key is minted into
+`~/.cognee-plugin/api_key.json` and never exported to your shell — so the request
+401s and looks like a server problem when nothing is wrong. When you genuinely
+need the raw endpoint (to pass `node_name`, say), resolve the credentials first,
+in the **same** shell invocation:
+
+```bash
+eval "$(${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh env)" && \
+curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY:-}" \
+  -H "X-Api-Key: ${COGNEE_API_KEY}" \
   -d '{"query": "<question>", "top_k": 10, "only_context": true, "scope": ["graph"]}'
 ```
 
-Omit `-H "X-Api-Key: ..."` for a local single-user server (auth is optional). An empty list `[]` from the server is authoritative — the server searched and found nothing.
+A `401` after that resolver means the key really is wrong for that server; a
+`401` without it means nothing.
 
 **Fallback only — server unreachable:**
 
 ```bash
-uv run cognee-cli recall "<question>" -d <dataset-name> -f pretty
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" recall "<question>" -d <dataset-name> -f pretty
 ```
 
-Search modes (CLI only):
+These search modes have no HTTP equivalent, so they are available **only** with a
+cognee source checkout. They are not a reason to leave the server path: if no
+checkout exists, say the mode is unavailable and use the server search above.
 
 ```bash
-uv run cognee-cli search "<question>" -d <dataset-name> -t GRAPH_COMPLETION -f pretty
-uv run cognee-cli search "<exact passage or citation need>" -d <dataset-name> -t CHUNKS -k 10 -f pretty
-uv run cognee-cli search "<code question>" -d <dataset-name> -t CODE -k 10 -f pretty
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" search "<question>" -d <dataset-name> -t GRAPH_COMPLETION -f pretty
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" search "<exact passage or citation need>" -d <dataset-name> -t CHUNKS -k 10 -f pretty
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" search "<code question>" -d <dataset-name> -t CODE -k 10 -f pretty
 ```
 
 ### The server is the source of truth
@@ -104,19 +138,19 @@ python3 "${CODEX_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"
 **Fallback only — server unreachable:**
 
 ```bash
-uv run cognee-cli improve -d <dataset-name>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" improve -d <dataset-name>
 ```
 
 Bridge session feedback or Q&A into the graph:
 
 ```bash
-uv run cognee-cli improve -d <dataset-name> -s <session-id>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" improve -d <dataset-name> -s <session-id>
 ```
 
 For targeted enrichment:
 
 ```bash
-uv run cognee-cli improve -d <dataset-name> --node-name <entity-name>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" improve -d <dataset-name> --node-name <entity-name>
 ```
 
 ## Forget
@@ -141,9 +175,9 @@ is irreversible — use the narrowest scope possible and confirm first.
 **Fallback only — server unreachable:**
 
 ```bash
-uv run cognee-cli forget --dataset <dataset-name> --data-id <data-uuid>
-uv run cognee-cli forget --dataset <dataset-name>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" forget --dataset <dataset-name> --data-id <data-uuid>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" forget --dataset <dataset-name>
 ```
 
-Avoid `uv run cognee-cli forget --everything` unless the user explicitly asks
-to delete all Cognee data.
+Avoid the CLI's `forget --everything` unless the user explicitly asks to delete
+all Cognee data.

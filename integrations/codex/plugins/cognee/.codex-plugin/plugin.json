@@ -1,7 +1,7 @@
 {
   "name": "cognee",
   "version": "1.6.5",
-  "description": "CLI-first Cognee workflows for memory, knowledge graphs, codebase ingestion, and local UI launch.",
+  "description": "Cognee memory for Codex: automatic capture and recall over the Cognee server's HTTP API, with knowledge-graph and codebase skills.",
   "author": {
     "name": "Topoteretes",
     "url": "https://github.com/topoteretes"
@@ -13,7 +13,7 @@
     "memory",
     "knowledge-graph",
     "rag",
-    "cli",
+    "codex",
     "agents"
   ],
   "skills": "./skills/",
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Cognee",
     "shortDescription": "Use Cognee from Codex with automatic memory capture and recall.",
-    "longDescription": "Reusable Codex skills for running Cognee's CLI workflows plus hooks that automatically capture Codex session starts, user prompts, tool results, and assistant stops into Cognee session memory, then recall relevant context on each prompt. This plugin intentionally does not configure MCP.",
+    "longDescription": "Reusable Codex skills that talk to a local or cloud Cognee server over its HTTP API, plus hooks that automatically capture Codex session starts, user prompts, tool results, and assistant stops into Cognee session memory, then recall relevant context on each prompt. The cognee CLI is only a fallback for an unreachable server. This plugin intentionally does not configure MCP.",
     "developerName": "Topoteretes",
     "category": "Engineering",
     "capabilities": [
@@ -31,8 +31,8 @@
     ],
     "websiteURL": "https://docs.cognee.ai",
     "defaultPrompt": [
-      "Use Cognee CLI to remember the important context in this repo.",
-      "Use Cognee CLI to recall what we know about this feature.",
+      "Remember the important context in this repo with Cognee.",
+      "Recall what we know about this feature from Cognee memory.",
       "Check that Codex session events are reaching Cognee."
     ],
     "brandColor": "#BC9BFF"

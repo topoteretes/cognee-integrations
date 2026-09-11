@@ -262,7 +262,7 @@ def _cloud_http_request(
     import urllib.parse
     import urllib.request
 
-    from _plugin_common import _https_context
+    from _plugin_common import _https_context, urlopen_following_307
 
     headers: dict[str, str] = {}
     data: bytes | None = None
@@ -279,7 +279,7 @@ def _cloud_http_request(
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
+        with urlopen_following_307(req, timeout=timeout, context=_https_context()) as resp:
             return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         try:
@@ -335,7 +335,10 @@ async def ensure_dataset_ready_via_api(service_url: str, api_key: str, dataset: 
             raise RuntimeError("403: no verified write permission on selected dataset")
         return
     status, text = _cloud_http_request(
-        f"{base}/api/v1/datasets/",  # trailing slash: cloud tenants 307-redirect the bare path
+        # Either spelling works: _cloud_http_request replays a same-origin
+        # 307/308, which is how cloud (bare -> slashed) and local
+        # (slashed -> bare) servers disagree about this route.
+        f"{base}/api/v1/datasets/",
         method="POST",
         api_key=api_key,
         json_body={"name": dataset},
