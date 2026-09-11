@@ -56,7 +56,7 @@ On failure the JSON is `{"error", "code"}`:
 
 | code | meaning | what to do |
 |------|---------|------------|
-| 2 | launch record not found | the plugin did not initialise this session; run `/cognee-memory:cognee-doctor` |
+| 2 | launch record not found | the plugin did not initialise this session; run `${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh`. If several Claude Code sessions share this directory, rerun with `--session-key <host session id>` |
 | 3 | syncing the current session failed | nothing was changed; show the error. Re-run with `--force` **only if the user explicitly accepts** that unsynced entries of the current session are retried at session end instead |
 | 4 | registering the new session failed | nothing was changed; the server rejected the registration — check the connection |
 | 5 | dataset not writable | the name is readable but owned by another principal; pick from `--list` |

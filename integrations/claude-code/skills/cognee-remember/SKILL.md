@@ -7,6 +7,19 @@ description: Store data permanently in the Cognee knowledge graph. Accepts a dat
 
 Store data permanently in the Cognee knowledge graph with category tagging.
 
+## Rules
+
+- **Server first.** Writes go to the running Cognee server over HTTP through the
+  wrapper below — the authoritative path in both local and cloud mode.
+- **`cognee-cli` is a last resort, not an alternative.** It is reachable only on a
+  machine holding a cognee **source checkout**, and in cloud mode the plugin's
+  venv is never built at all. Use it only when the server is genuinely
+  unreachable *and* that checkout exists. Unsure which mode you are in?
+  `${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh --json` reports `mode`,
+  `server_url` and `reachable` without importing cognee.
+- **Empty CLI output is never proof that a write landed.** Confirm against the
+  server before reporting success.
+
 ## Data categories
 
 Cognee organizes knowledge into three categories via `node_set` tagging:
@@ -56,13 +69,20 @@ By default the wrapper then waits a short, bounded time (`COGNEE_REMEMBER_WAIT_S
 
 ## Fallback only — server unreachable
 
-`cognee-cli` is a thin client over the same server. Use it only when the server is genuinely down:
+`cognee-cli` is a thin client over the same server, and it requires a cognee
+source checkout — on a normal install it is simply unavailable, which is not a
+Cognee fault to report. Use it only when the server is genuinely down *and* that
+checkout exists:
 
 ```bash
 cognee-cli remember "$ARGUMENTS" -d "${COGNEE_PLUGIN_DATASET:-agent_sessions}" --node-set user_context
 ```
 
 **Empty or clean CLI output does NOT confirm the data was stored.** Verify via the server directly once it is back up.
+
+If the CLI is missing too, say the write could not be persisted and show the user
+`${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh` output — do not report the
+memory as saved.
 
 ## When to use
 

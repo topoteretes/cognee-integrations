@@ -78,6 +78,9 @@ class MockCogneeServer:
         # (method, path) -> (status, body): short-circuits the normal handler.
         self._forced: dict[tuple[str, str], tuple[int, Any]] = {}
         self.calls: list[dict[str, Any]] = []
+        #: Collection-route redirect mode, mirroring how real servers disagree
+        #: about the trailing slash: see ``set_collection_redirect``.
+        self._collection_redirect = None
         self._register_routes()
 
     # -- public surface ----------------------------------------------------
@@ -136,6 +139,23 @@ class MockCogneeServer:
         entry answers with that HTTP status instead of a body.
         """
         self._credits_overview = overview
+
+    def set_collection_redirect(self, mode: str | None) -> None:
+        """Make POST /api/v1/datasets redirect between its two spellings.
+
+        Real servers disagree about the trailing slash and answer 307 to the
+        spelling they do not serve — in *opposite* directions:
+
+          * ``"to_slashed"`` — cloud tenants: ``/datasets`` -> ``/datasets/``
+          * ``"to_bare"``    — a local server: ``/datasets/`` -> ``/datasets``
+          * ``None``         — accept both (the default)
+
+        urllib refuses to replay a POST across a 307, so a client that does not
+        follow the redirect itself fails against one of the two. Accepting both
+        spellings unconditionally is what hid that from this suite.
+        """
+        assert mode in (None, "to_slashed", "to_bare"), mode
+        self._collection_redirect = mode
 
     def force_response(self, method: str, path: str, status: int, body: Any = None) -> None:
         """Force one route to answer (status, body), bypassing its handler.
@@ -297,9 +317,9 @@ class MockCogneeServer:
         route("/api/v1/remember/entry", "POST", self._remember_entry)
         route("/api/v1/recall", "POST", self._recall)
         route("/api/v1/improve", "POST", self._improve)
-        # POST accepts both spellings: the clients send the trailing slash because
-        # cloud tenants 307-redirect the bare path, and urllib will not replay a
-        # POST across a 307.
+        # POST serves both spellings by default; ``set_collection_redirect``
+        # makes one of them 307 to the other, as real servers do (in opposite
+        # directions on cloud vs local).
         route(re.compile(r"^/api/v1/datasets/?$"), "POST", self._datasets)
         route("/api/v1/datasets", "GET", self._datasets_list)
         route("/api/v1/datasets/", "GET", self._datasets_list)
@@ -512,7 +532,23 @@ class MockCogneeServer:
         _, ds = self.identity.datasets_create(dataset)
         return _json(200, {"dataset_id": ds["id"], "status": "submitted"})
 
+    def _redirect_target(self, path: str) -> str:
+        """Absolute Location for a collection request in the wrong spelling, else ""."""
+        mode = self._collection_redirect
+        if mode is None:
+            return ""
+        slashed = path.endswith("/")
+        if mode == "to_slashed" and not slashed:
+            return f"{self.url}{path}/"
+        if mode == "to_bare" and slashed:
+            return f"{self.url}{path.rstrip('/')}"
+        return ""
+
     def _datasets(self, req: Request) -> Response:
+        redirect_to = self._redirect_target(req.path)
+        if redirect_to:
+            self._record(req)
+            return Response("", status=307, headers={"Location": redirect_to})
         self._record(req)
         body_in = req.get_json(silent=True) or {}
         status, body = self.identity.datasets_create(

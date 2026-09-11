@@ -2051,8 +2051,9 @@ def list_datasets_via_http(api_key: str, *, timeout: float = 15.0) -> list[dict]
 
 def create_dataset_via_http(api_key: str, name: str) -> dict:
     """POST /api/v1/datasets/ as ``api_key``: the (new or existing) dataset row, or {}."""
-    # Trailing slash on purpose: cloud tenants 307-redirect the bare path and
-    # urllib will not replay a POST across a redirect.
+    # Either spelling works: the request helper replays a same-origin 307/308,
+    # which is how cloud (bare -> slashed) and local (slashed -> bare) servers
+    # disagree about this route.
     status, body = _control_plane_request(
         "/api/v1/datasets/", {"name": name}, api_key=api_key, timeout=30.0
     )
@@ -3806,6 +3807,70 @@ def set_agent_registration(registered: bool, session_key: str = "") -> None:
     _ = (registered, session_key)
 
 
+_REDIRECT_REPLAY_CODES = (307, 308)
+_MAX_REDIRECT_REPLAYS = 2
+
+
+def _same_origin(first: str, second: str) -> bool:
+    """Same scheme, host and effective port — the gate for replaying a keyed request."""
+    import urllib.parse
+
+    def origin(url):
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        return (parts.scheme, (parts.hostname or "").lower(), port)
+
+    return origin(first) == origin(second)
+
+
+def urlopen_following_307(req, *, timeout: float, context=None):
+    """``urlopen`` that replays a method-preserving redirect (307/308).
+
+    urllib refuses to replay a POST across a 307/308 — ``HTTPRedirectHandler``
+    raises ``HTTPError`` instead — so a server that redirects between the two
+    spellings of a collection route (``/api/v1/datasets`` and
+    ``/api/v1/datasets/``) fails every POST to it. Both spellings occur in the
+    wild and they redirect in *opposite* directions: cloud tenants 307 the bare
+    path to the slashed one, while a local server 307s the slashed path to the
+    bare one. No single spelling works everywhere, so the redirect has to be
+    followed rather than guessed.
+
+    Only a **same-origin** target is followed: these requests carry
+    ``X-Api-Key``, which must never be replayed to another host. A cross-origin
+    target, a missing ``Location``, or any other status leaves the original
+    ``HTTPError`` to the caller untouched.
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    for _ in range(_MAX_REDIRECT_REPLAYS):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout, context=context)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _REDIRECT_REPLAY_CODES:
+                raise
+            location = exc.headers.get("Location") if exc.headers else ""
+            if not location:
+                raise
+            target = urllib.parse.urljoin(req.full_url, location)
+            if not _same_origin(req.full_url, target):
+                raise
+            try:
+                exc.close()
+            except Exception:
+                # Best-effort connection release. An HTTPError carrying no body
+                # never initialized its underlying file, and closing that raises
+                # (KeyError on Python 3.9, the hooks' floor). The replay does not
+                # depend on the close, and a raise here would mask the HTTP error.
+                pass
+            replay = urllib.request.Request(
+                target, data=req.data, headers=dict(req.headers), method=req.get_method()
+            )
+            req = replay
+    return urllib.request.urlopen(req, timeout=timeout, context=context)
+
+
 def _json_http_request(
     path: str,
     payload: dict | None = None,
@@ -3836,7 +3901,7 @@ def _json_http_request(
         headers=headers,
         method=method,
     )
-    with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
+    with urlopen_following_307(req, timeout=timeout, context=_https_context()) as resp:
         body = resp.read().decode("utf-8")
         if not body:
             return None

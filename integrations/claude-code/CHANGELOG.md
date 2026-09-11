@@ -46,6 +46,53 @@ project adheres to [Semantic Versioning](https://semver.org/).
   after-error buffering entirely. It now has a `buffered` section (`trace` /
   `answer`) fed by `store_buffered_warming`, `trace_buffered_after_error` and
   `store_buffered_after_error`, and `saves` counts only what the server received.
+- **The recommended "server-first" `curl` 401'd in local mode, which read as a
+  server fault (SDK-622).** `cognee-search`'s category-filter and
+  ground-truth examples sent `-H "X-Api-Key: ${COGNEE_API_KEY:-}"`, but in local
+  mode that variable is empty: the key is minted into
+  `~/.cognee-plugin/api_key.json` and never exported to the shell. The
+  authoritative path therefore failed with a misleading 401, and the skill's own
+  rule then sent the agent to the `cognee-cli` fallback. Both forms now resolve
+  credentials with `eval "$(scripts/cognee-forget.sh env)"` in the same shell
+  invocation, and the skill states that a `401` without the resolver proves
+  nothing.
+- **`cognee-cli` fallbacks read as an equal alternative.** `cognee-search` and
+  `cognee-remember` now carry the same explicit rules block: the server is first
+  in both modes, and the CLI is a last resort reachable only on a machine holding
+  a cognee **source checkout** (in cloud mode the plugin's venv is never built at
+  all). A missing CLI is documented as "not a Cognee fault to report" — say the
+  server is unreachable and show `scripts/cognee-doctor.sh` instead, and never
+  report a write as saved when neither path persisted it.
+- **`cognee-switch-datasets` pointed at a slash command that does not exist.**
+  Error code 2 told the agent to run `/cognee-memory:cognee-doctor`; the plugin
+  ships no doctor skill. It now names `scripts/cognee-doctor.sh` — as
+  `cognee-forget` already did — and mentions `--session-key <host session id>`
+  for directories shared by several launches.
+- **A local server's redirect broke every by-name dataset switch (SDK-622).**
+  `switch-dataset.py` failed with a bare `307` for any dataset named rather than
+  addressed by UUID, so the dataset picker could not switch at all. Real Cognee
+  servers disagree about the trailing slash on `/api/v1/datasets` and answer 307
+  to the spelling they do not serve — in **opposite** directions: cloud tenants
+  redirect the bare path to the slashed one, a local server redirects the slashed
+  path to the bare one. The clients hard-coded the slash for the cloud's benefit,
+  and urllib's `HTTPRedirectHandler` refuses to replay a POST across a 307 (it
+  raises `HTTPError` instead), so the create surfaced as a 307 the caller treated
+  as a failure. Because `ensure_dataset_ready_via_api` runs unconditionally on the
+  by-name path, an *existing* dataset failed exactly like a new one.
+
+  Both HTTP helpers (`_json_http_request` and `config._cloud_http_request`) now
+  replay a 307/308 themselves, preserving method and body, so either spelling
+  works against either server shape. The replay is **same-origin only** — these
+  requests carry `X-Api-Key`, which must never be sent to another host — and
+  bounded to two hops, so a redirect loop cannot spin a hook. A cross-origin
+  target, a missing `Location`, or any other status leaves the original error
+  untouched. The two `# trailing slash on purpose` workarounds are gone.
+
+  The suite missed this because the mock server accepted both spellings
+  unconditionally. It can now redirect either way
+  (`set_collection_redirect`), and the regression tests assert dataset creation
+  through both helpers in both directions, plus the same-origin gate and the
+  refusals.
 
 ## [1.5.4]
 

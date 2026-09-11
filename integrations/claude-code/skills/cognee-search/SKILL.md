@@ -21,9 +21,23 @@ Knowledge is organized into three categories via `node_set`:
 | **project** | `project_docs` | Repository docs, code context, architecture decisions |
 | **agent** | `agent_actions` | Tool call logs, reasoning traces, generated artifacts |
 
+## Rules
+
+- **Server first.** Search goes through the **running Cognee server**
+  (`POST /api/v1/recall`) via the wrapper below — the source of truth in both
+  local and cloud mode.
+- **`cognee-cli` is a last resort, not an alternative.** It is reachable only on a
+  machine holding a cognee **source checkout**, and in cloud mode the plugin's
+  venv is never built at all. Use it only when the server is genuinely
+  unreachable *and* that checkout exists. Unsure which mode you are in?
+  `${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh --json` reports `mode`,
+  `server_url` and `reachable` without importing cognee.
+- **Empty CLI output is never proof of absence.** Ground-truth against the server
+  before concluding anything.
+
 ## Instructions
 
-Search goes through the **running Cognee server** (`POST /api/v1/recall`) — the source of truth. Use the wrapper below: it queries the server first, scoped to the **plugin's dataset** (`$COGNEE_PLUGIN_DATASET`, default `agent_sessions` — the same dataset all plugin writes target, so unrelated datasets don't bleed in), and falls back to `cognee-cli` only if the server is unreachable.
+Use the wrapper below: it queries the server, scoped to the **plugin's dataset** (`$COGNEE_PLUGIN_DATASET`, default `agent_sessions` — the same dataset all plugin writes target, so unrelated datasets don't bleed in), and resolves the endpoint, session and API key the way the hooks do.
 
 **One broad search is usually enough** — the `UserPromptSubmit` hook already injects session/trace/graph context every turn, so avoid running many targeted searches (each is an extra permission prompt for the user).
 
@@ -51,35 +65,42 @@ conceptual questions that name no symbol ("how does auth work here?").
 
 ### Filter by category (optional)
 
-Categories (`user_context` / `project_docs` / `agent_actions`) filter by node set. `cognee-cli recall` does **not** expose this — pass `node_name` to the server directly:
+Categories (`user_context` / `project_docs` / `agent_actions`) filter by node set. The wrapper does not expose this — pass `node_name` to the server directly.
+
+**Resolve credentials first.** In local mode `$COGNEE_API_KEY` is empty (the key is minted into `~/.cognee-plugin/api_key.json` and never exported to your shell), so a hand-rolled `curl` with `-H "X-Api-Key: ${COGNEE_API_KEY:-}"` 401s and looks like a server fault when nothing is wrong. Use the forget helper's resolver in the **same** shell invocation — exports do not persist across separate Bash calls:
 
 ```bash
-curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
+eval "$(${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh env)" && \
+curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY:-}" \
+  -H "X-Api-Key: ${COGNEE_API_KEY}" \
   -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"], "datasets": ["'"${COGNEE_PLUGIN_DATASET:-agent_sessions}"'"]}'
 ```
 
 ### Ground-truth a suspicious result (debugging)
 
-The server is authoritative. If a search returns empty but you expect content, confirm directly — **do not** conclude "not found" from empty CLI output:
+The server is authoritative. If a search returns empty but you expect content, confirm directly — **do not** conclude "not found" from empty CLI output. Resolve credentials in the same invocation, as above:
 
 ```bash
-curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
+eval "$(${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh env)" && \
+curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY:-}" \
+  -H "X-Api-Key: ${COGNEE_API_KEY}" \
   -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "datasets": ["'"${COGNEE_PLUGIN_DATASET:-agent_sessions}"'"]}'
 ```
 
-(An authed/cloud server needs `COGNEE_API_KEY`; a local single-user server ignores an empty key. If the response is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results".)
+(The server enforces auth in both modes, which is why the resolver is not optional. If the response is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results". A `401` *after* the resolver means the key really is wrong for that server; a `401` without it means nothing.)
 
 ### Fallback only — server unreachable
 
-`cognee-cli` is a thin client over the same server and can print **empty stdout even when content exists**. Use it only when the server is down, and treat empty output as *inconclusive*, never as "no results":
+`cognee-cli` is a thin client over the same server and can print **empty stdout even when content exists**. It also requires a cognee source checkout, so on a normal install it is simply unavailable — an absent CLI is not a Cognee fault to report. Use it only when the server is down *and* a checkout exists, and treat empty output as *inconclusive*, never as "no results":
 
 ```bash
 cognee-cli recall "$ARGUMENTS" -k 5 -f json
 ```
+
+If the CLI is missing, say the server is unreachable and show the user
+`${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh` output instead.
 
 ## Understanding results
 
@@ -99,4 +120,4 @@ Session entries tagged with `[category:agent]` are automatic tool call logs.
 | "what does the codebase do" / "what did we do last time" | `cognee-search.sh "<query>" 10 --graph` |
 | Need a specific category | use the `node_name` curl form above (`["user_context"\|"project_docs"\|"agent_actions"]`) |
 | Auto context insufficient | `cognee-search.sh "<query>" 10 --session` |
-| **Result empty but you expect content** | **Ground-truth via the `curl` above before concluding "not found"** |
+| **Result empty but you expect content** | **Ground-truth via the credential-resolving `curl` above before concluding "not found"** |
