@@ -1,0 +1,20 @@
+Lenovo’s main competitors and the market segments where they pose the biggest threat
+
+- HP (Hewlett‑Packard)
+  - *Segments*: Consumer‑grade laptops & desktops, enterprise workstations & managed‑services contracts, printers.
+- Dell Technologies
+  - *Segments*: Business‑class PCs, high‑performance workstations, servers + storage, end‑to‑end IT solutions for large enterprises.
+- Apple
+  - *Segments*: Premium consumer laptops (MacBook) and tablets (iPad) that attract high‑value users away from Windows devices.
+- Microsoft (Surface)
+  - *Segments*: Premium 2‑in‑1 / convertible devices for enterprise and education, integrated hardware‑software offerings.
+- Samsung
+  - *Segments*: High‑end tablets and 2‑in‑1 convertibles (Galaxy Book) competing with Lenovo’s Yoga/Tab lines.
+- Acer / ASUS
+  - *Segments*: Low‑cost consumer notebooks and gaming laptops (Predator/ROG) that pressure Lenovo’s IdeaPad and Legion families.
+- Huawei
+  - *Segments*: APAC & EMEA smartphones, tablets, and “MateBook”‑style laptops eroding share in emerging regions.
+- Regional budget brands (e.g., Xiaomi, local OEMs)
+  - *Segments*: Budget and mid‑range notebooks in emerging markets (Asia‑Pacific, LATAM, Africa).
+
+— from team handover + your files (bundled copy)
