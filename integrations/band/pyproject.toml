@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-band"
+version = "0.1.0"
+description = "Cognee memory adapter for Band (band.ai) agents."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Cognee team"}
+]
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_band*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.14.6",
+]
