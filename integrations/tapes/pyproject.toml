@@ -1,0 +1,21 @@
+[project]
+name = "cognee-integration-tapes"
+version = "0.1.0"
+description = "Sync Tapes agent session recordings into cognee's knowledge graph."
+requires-python = ">=3.10"
+dependencies = [
+    "cognee>=0.5.1,<0.6.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+cognee-tapes-sync = "cognee_integration_tapes.tapes_import:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
