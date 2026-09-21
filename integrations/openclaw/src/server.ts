@@ -400,7 +400,7 @@ const EXIT_WATCHER_CONTENT = [
   "gw_pid = int(a.get('gateway_pid', 0))",
   "name = str(a.get('agent_session_name', ''))",
   "base_url = str(a.get('base_url', 'http://localhost:8011'))",
-  "api_key = str(a.get('api_key', '') or '')",
+  "api_key = str(a.get('api_key', '') or os.environ.get('COGNEE_API_KEY', '') or '')",
   "pidfile = str(a.get('pidfile', ''))",
   "dataset_name = str(a.get('dataset_name', '') or '')",
   "cognee_session_id = str(a.get('cognee_session_id', '') or '')",
@@ -458,11 +458,12 @@ export async function spawnExitWatcher(params: {
   try {
     await mkdir(EXIT_WATCHERS_DIR, { recursive: true });
     await writeFile(EXIT_WATCHER_SCRIPT_PATH, EXIT_WATCHER_CONTENT, "utf-8");
+    // The API key goes through the environment, not argv: argv is readable by
+    // every local user via ps / /proc/<pid>/cmdline for the watcher's lifetime.
     const args = JSON.stringify({
       gateway_pid: params.gatewayPid,
       agent_session_name: params.agentSessionName,
       base_url: params.baseUrl,
-      api_key: params.apiKey ?? "",
       pidfile: params.pidfilePath,
       dataset_name: params.datasetName ?? "",
       cognee_session_id: params.cogneeSessionId ?? "",
@@ -470,6 +471,7 @@ export async function spawnExitWatcher(params: {
     const python = findSystemPython();
     const result = await runPluginCommandWithTimeout({
       argv: [python, EXIT_WATCHER_SCRIPT_PATH, args],
+      env: { ...process.env, COGNEE_API_KEY: params.apiKey ?? "" },
       timeoutMs: 5_000,
     });
     if (result.code !== 0) {
