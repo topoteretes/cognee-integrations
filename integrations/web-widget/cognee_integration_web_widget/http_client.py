@@ -120,6 +120,39 @@ class CogneeHttpClient:
                 response.status_code,
             )
 
+    # -- read-only introspection (dashboard) -------------------------------
+
+    async def list_datasets(self) -> list[Any]:
+        """Every dataset this key can read. ``[]`` rather than raising on 4xx."""
+        response = await self._request("GET", "/api/v1/datasets/")
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        items = data.get("datasets", data) if isinstance(data, dict) else data
+        return list(items) if isinstance(items, list) else []
+
+    async def dataset_data(self, dataset_id: str) -> list[Any]:
+        """The items ingested into one dataset."""
+        response = await self._request("GET", f"/api/v1/datasets/{dataset_id}/data")
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        items = data.get("data", data) if isinstance(data, dict) else data
+        return list(items) if isinstance(items, list) else []
+
+    async def recall_history(self) -> list[Any]:
+        """Questions this key's principal has asked, newest-first per the server.
+
+        cognee records every recall it answers, so this is the widget's question
+        log without the widget storing anything itself.
+        """
+        response = await self._request("GET", "/api/v1/recall")
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        items = data.get("results", data) if isinstance(data, dict) else data
+        return list(items) if isinstance(items, list) else []
+
     # -- transport ---------------------------------------------------------
     def _headers(self) -> dict:
         return {"X-Api-Key": self.api_key} if self.api_key else {}

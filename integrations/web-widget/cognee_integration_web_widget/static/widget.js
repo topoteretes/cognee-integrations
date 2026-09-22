@@ -44,6 +44,7 @@
     ".cognee-in button{border:0;background:#2563eb;color:#fff;padding:0 16px;cursor:pointer}" +
     ".cognee-bar{padding:6px 12px;font-size:12px;color:#6b7280;display:flex;justify-content:space-between;background:#fff;border-top:1px solid #f3f4f6}" +
     ".cognee-bar a{color:#2563eb;cursor:pointer;text-decoration:none}" +
+    ".cognee-gear{margin-left:10px}" +
     ".cognee-launch{border:0;background:#111827;color:#fff;border-radius:24px;padding:12px 18px;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.2)}";
   var style = document.createElement("style");
   style.textContent = css;
@@ -58,7 +59,8 @@
     '  <div class="cognee-log" id="cognee-log"></div>' +
     '  <div class="cognee-bar">' +
     '    <label><input type="checkbox" id="cognee-optin"> Remember this chat</label>' +
-    '    <a id="cognee-forget">Forget me</a></div>' +
+    '    <span><a id="cognee-forget">Forget me</a>' +
+    '    <a class="cognee-gear" id="cognee-dash" target="_blank" rel="noopener" hidden>⚙</a></span></div>' +
     '  <div class="cognee-in">' +
     '    <input id="cognee-input" placeholder="Ask a question…" autocomplete="off"/>' +
     '    <button id="cognee-send">Send</button></div>' +
@@ -69,6 +71,31 @@
   var box = root.querySelector("#cognee-box");
   var log = root.querySelector("#cognee-log");
   var input = root.querySelector("#cognee-input");
+  // Operator dashboard link. Deliberately not shown to visitors: the token is
+  // never served to the page, so the gear appears only in a browser that was
+  // handed one out-of-band via ?cognee_dashboard_token=... (stored once, then
+  // stripped from the URL). The backend gates /dashboard on the same token, so
+  // this is a convenience, never the access control.
+  try {
+    var qp = new URLSearchParams(window.location.search);
+    var handed = qp.get("cognee_dashboard_token");
+    if (handed) {
+      localStorage.setItem("cognee_dashboard_token", handed);
+      qp.delete("cognee_dashboard_token");
+      var clean = window.location.pathname + (qp.toString() ? "?" + qp : "") + window.location.hash;
+      window.history.replaceState({}, "", clean);
+    }
+    var dashToken = localStorage.getItem("cognee_dashboard_token");
+    if (dashToken) {
+      var dash = root.querySelector("#cognee-dash");
+      dash.href = API + "/dashboard?token=" + encodeURIComponent(dashToken);
+      dash.title = "Widget dashboard";
+      dash.hidden = false;
+    }
+  } catch (e) {
+    /* storage blocked - the gear simply stays hidden */
+  }
+
   var optinBox = root.querySelector("#cognee-optin");
   optinBox.checked = optIn;
 

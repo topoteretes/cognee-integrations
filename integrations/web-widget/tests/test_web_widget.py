@@ -277,3 +277,125 @@ def test_chat_endpoint_returns_cloud_style_citations(fake_client):
         "cognee-cloud__account-and-billing",
     ]
     assert "Evidence:" not in body["answer"]
+
+
+# --- Dashboard gating -------------------------------------------------------
+#
+# The dashboard exposes corpus contents and the visitor question log, so the
+# gate is the security boundary. These assert the *refusals*, not the rendering.
+
+
+@pytest.fixture
+def dashboard_client(fake_client, monkeypatch):
+    """Server with the dashboard enabled under a known token."""
+    from cognee_integration_web_widget import server as server_mod
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(server_mod, "DASHBOARD_TOKEN", "s3cret")
+    # The dashboard reports which cognee it is pointed at; the shared fake is a
+    # bare namespace, so give it the two attributes the real client carries.
+    fake_client.base_url = "https://tenant-test.aws.cognee.ai"
+    fake_client.api_key = "k"
+    fake_client.list_datasets = AsyncMock(return_value=[{"name": "web:demo:docs", "id": "d1"}])
+    fake_client.dataset_data = AsyncMock(return_value=[{"name": "quickstart"}])
+    # The real shape: one row per side of the exchange, tagged by `user`.
+    fake_client.recall_history = AsyncMock(
+        return_value=[
+            {
+                "text": "what is cognee?",
+                "user": "user",
+                "datasetId": "d1",
+                "createdAt": "2026-01-01",
+            },
+            {
+                "text": "Cognee is...",
+                "user": "system",
+                "datasetId": "d1",
+                "createdAt": "2026-01-02",
+            },
+            {
+                "text": "how do I install?",
+                "user": "user",
+                "datasetId": "d1",
+                "createdAt": "2026-01-03",
+            },
+        ]
+    )
+    server_mod.adapter.client = fake_client
+    with TestClient(server_mod.app) as c:
+        yield c
+
+
+def test_dashboard_404s_when_no_token_is_configured(web_client, monkeypatch):
+    """Unconfigured must look like the route does not exist, not like 'locked'."""
+    from cognee_integration_web_widget import server as server_mod
+
+    test_client, _ = web_client
+    monkeypatch.setattr(server_mod, "DASHBOARD_TOKEN", None)
+    assert test_client.get("/dashboard").status_code == 404
+    assert test_client.get("/dashboard?token=anything").status_code == 404
+    assert test_client.get("/api/dashboard?token=anything").status_code == 404
+
+
+@pytest.mark.parametrize("token", ["", "wrong", "s3cre", "s3crett"])
+def test_dashboard_rejects_a_bad_token(dashboard_client, token):
+    assert dashboard_client.get(f"/dashboard?token={token}").status_code == 401
+    assert dashboard_client.get(f"/api/dashboard?token={token}").status_code == 401
+
+
+def test_dashboard_without_token_is_rejected(dashboard_client):
+    assert dashboard_client.get("/dashboard").status_code == 401
+    assert dashboard_client.get("/api/dashboard").status_code == 401
+
+
+def test_dashboard_with_the_right_token_reports_corpus_and_questions(dashboard_client):
+    body = dashboard_client.get("/api/dashboard?token=s3cret").json()
+    assert body["corpus"]["exists"] is True
+    assert body["corpus"]["item_count"] == 1
+    # Newest first, answers excluded.
+    assert [q["query"] for q in body["questions"]] == ["how do I install?", "what is cognee?"]
+    assert body["questions_scoped_to_dataset"] is True
+    assert body["config"]["docs_dataset"] == "web:demo:docs"
+
+
+def test_dashboard_flags_a_missing_dataset_rather_than_showing_it_empty(
+    dashboard_client, fake_client
+):
+    """A dataset that is not there is the difference between 'no data' and
+    'pointed at the wrong name' — the dashboard must say which."""
+    fake_client.list_datasets = AsyncMock(return_value=[{"name": "something-else", "id": "d9"}])
+    body = dashboard_client.get("/api/dashboard?token=s3cret").json()
+    assert body["corpus"]["exists"] is False
+    assert body["corpus"]["all_datasets"] == ["something-else"]
+
+
+def test_dashboard_questions_exclude_answers_and_other_datasets(dashboard_client, fake_client):
+    """Only the visitor's side of the exchange, and only this widget's corpus."""
+    fake_client.recall_history = AsyncMock(
+        return_value=[
+            {"text": "asked here", "user": "user", "datasetId": "d1", "createdAt": "2026-01-01"},
+            {
+                "text": "asked elsewhere",
+                "user": "user",
+                "datasetId": "other",
+                "createdAt": "2026-01-02",
+            },
+            {"text": "an answer", "user": "system", "datasetId": "d1", "createdAt": "2026-01-03"},
+        ]
+    )
+    body = dashboard_client.get("/api/dashboard?token=s3cret").json()
+    assert [q["query"] for q in body["questions"]] == ["asked here"]
+
+
+def test_dashboard_falls_back_to_unscoped_when_no_row_carries_the_dataset(
+    dashboard_client, fake_client
+):
+    """Older rows record no datasetId; an empty panel would read as 'no traffic'."""
+    fake_client.recall_history = AsyncMock(
+        return_value=[
+            {"text": "legacy question", "user": "user", "datasetId": None, "createdAt": "x"}
+        ]
+    )
+    body = dashboard_client.get("/api/dashboard?token=s3cret").json()
+    assert [q["query"] for q in body["questions"]] == ["legacy question"]
+    assert body["questions_scoped_to_dataset"] is False
