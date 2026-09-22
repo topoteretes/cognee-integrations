@@ -10,6 +10,17 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Permanent writes are no longer rejected as duplicate documents on cognee
+  1.6.0.** Every permanent write uploaded its text as `memory.txt`, and 1.6.0
+  introduced a document-identity rule — `add()` answers **HTTP 409** when a name
+  already exists in the dataset with different content — so the first write to a
+  dataset succeeded and every later one was refused and lost. The upload is now
+  named after the content hash, which keeps a fresh name per text and keeps the
+  server's documented no-op for identical content.
+
 ## [1.2.2]
 
 ### Added

@@ -304,6 +304,24 @@ class TestRememberWireFormat(unittest.TestCase):
         )
         self.assertEqual(result.status, "completed")
 
+    def _remember_filename(self, text):
+        opener = FakeOpener({"/api/v1/remember": {"status": "completed"}})
+        _backend(opener).remember_permanent(
+            text=text, dataset="hermes", session_ids=[], timeout=_TIMEOUT
+        )
+        raw = opener.request_for("/api/v1/remember")["body"].decode("utf-8", "replace")
+        return raw.split('filename="', 1)[1].split('"', 1)[0]
+
+    def test_the_upload_name_follows_the_content(self):
+        # The part's filename is the document's identity server-side, and cognee
+        # >= 1.6.0 answers 409 to an add() whose name already exists in the
+        # dataset with different content: one fixed name lost every memory after
+        # the first. Different content must get a different name, and identical
+        # content must keep the same one — re-adding it is a server-side no-op.
+        first = self._remember_filename("a fact")
+        self.assertEqual(self._remember_filename("a fact"), first)
+        self.assertNotEqual(self._remember_filename("another fact"), first)
+
 
 class TestImproveWireFormat(unittest.TestCase):
     def test_session_ids_reach_the_wire(self):

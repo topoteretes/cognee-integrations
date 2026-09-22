@@ -60,6 +60,7 @@ null — so omitting the key costs both auto-routing and every session read.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -629,7 +630,17 @@ class HttpBackend(MemoryBackend):
         fields = {"datasetName": dataset}
         if session_id:
             fields["session_id"] = session_id
-        multipart = _multipart_body(fields, {"data": ("memory.txt", text.encode("utf-8"))})
+        # The upload filename is the document's identity server-side, and cognee
+        # >= 1.6.0 refuses (HTTP 409) to add a document whose name already exists
+        # in the dataset with *different* content — so one fixed name meant the
+        # first permanent write to a dataset succeeded and every later one was
+        # rejected and lost. Naming the part after the content keeps the two
+        # behaviours that matter: different content gets a fresh name, identical
+        # content keeps the same one and is the no-op the server documents.
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        multipart = _multipart_body(
+            fields, {"data": (f"memory-{digest}.txt", text.encode("utf-8"))}
+        )
         payload = self._request("POST", "/api/v1/remember", timeout=timeout, multipart=multipart)
         return RememberResponse(payload if isinstance(payload, dict) else {})
 
