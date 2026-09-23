@@ -921,3 +921,65 @@ def test_item_sync_is_none_when_it_cannot_be_decided(dashboard_client, fake_clie
     )
     corpus = dashboard_client.get("/api/dashboard?token=s3cret").json()["corpus"]
     assert corpus["items"][0]["synced"] is None
+
+
+# --- graph-summary falls back to the last measured run -----------------------
+
+
+@pytest.mark.asyncio
+async def test_graph_summary_falls_back_when_the_latest_run_measured_nothing():
+    """The endpoint reports the latest pipeline run, not the dataset. A run that
+    touched one item reports zeros with a null computedAt, which would empty the
+    graph panel and blank every per-source status."""
+    from cognee_integration_web_widget.http_client import CogneeHttpClient
+
+    class Fake:
+        async def request(self, method, url, **kw):
+            class R:
+                status_code = 200
+
+                def __init__(self, payload):
+                    self._p = payload
+
+                def json(self):
+                    return self._p
+
+            if url.endswith("/graph-summary"):
+                return R({"numNodes": 0, "numEdges": 0, "computedAt": None})
+            return R(
+                [
+                    {"numNodes": 10, "numEdges": 20, "computedAt": "2026-09-01T00:00:00Z"},
+                    {"numNodes": 6214, "numEdges": 28174, "computedAt": "2026-09-23T09:52:16Z"},
+                    {"numNodes": 30, "numEdges": 40, "computedAt": "2026-09-02T00:00:00Z"},
+                ]
+            )
+
+    out = await CogneeHttpClient(client=Fake()).graph_summary("d1")
+    # Newest measured run, not merely the last row.
+    assert out["numNodes"] == 6214
+    assert out["computedAt"] == "2026-09-23T09:52:16Z"
+
+
+@pytest.mark.asyncio
+async def test_graph_summary_prefers_a_current_run_that_did_measure():
+    from cognee_integration_web_widget.http_client import CogneeHttpClient
+
+    class Fake:
+        called = []
+
+        async def request(self, method, url, **kw):
+            Fake.called.append(url)
+
+            class R:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    return {"numNodes": 5, "numEdges": 6, "computedAt": "2026-09-23T10:00:00Z"}
+
+            return R()
+
+    out = await CogneeHttpClient(client=Fake()).graph_summary("d1")
+    assert out["numNodes"] == 5
+    # History is not fetched when the current summary is usable.
+    assert not any("history" in u for u in Fake.called)

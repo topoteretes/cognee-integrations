@@ -183,12 +183,33 @@ class CogneeHttpClient:
         response.raise_for_status()
 
     async def graph_summary(self, dataset_id: str) -> dict:
-        """Node/edge counts for a dataset. Cheap - a few hundred bytes."""
+        """Node/edge counts for a dataset's knowledge graph.
+
+        The summary endpoint reports the *latest pipeline run*, not the dataset.
+        A run that touched one small item - a re-ingest, a delete, the demo
+        seeding on boot - reports numNodes 0, numEdges 0 and a null computedAt,
+        which is true of that run and wrong about the graph. Taken at face value
+        it empties the graph panel and, because the sync badge keys off
+        computedAt, blanks every per-source status too.
+
+        So an empty summary falls back to the newest history entry that actually
+        measured something.
+        """
         response = await self._request("GET", f"/api/v1/datasets/{dataset_id}/graph-summary")
-        if response.status_code >= 400:
-            return {}
-        data = response.json()
-        return data if isinstance(data, dict) else {}
+        current = response.json() if response.status_code < 400 else {}
+        current = current if isinstance(current, dict) else {}
+        if current.get("computedAt"):
+            return current
+
+        history = await self._request("GET", f"/api/v1/datasets/{dataset_id}/graph-summary/history")
+        if history.status_code >= 400:
+            return current
+        rows = history.json()
+        rows = rows.get("history", rows) if isinstance(rows, dict) else rows
+        measured = [r for r in (rows or []) if isinstance(r, dict) and r.get("computedAt")]
+        if not measured:
+            return current
+        return max(measured, key=lambda r: str(r.get("computedAt")))
 
     async def graph(self, dataset_id: str) -> dict:
         """The whole knowledge graph. Megabytes - never fetch this on page load."""
