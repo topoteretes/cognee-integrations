@@ -32,9 +32,14 @@
   var conversationId = id("cognee_conversation_id", "conv");
   var optIn = localStorage.getItem("cognee_opt_in") !== "0";
 
+  // The widget is embedded on sites whose themes we do not control, so every
+  // rule that paints a background must also set a colour: inheriting the
+  // host's text colour onto our own white panels renders the answer
+  // invisible on any dark-themed site. The colour is set once on the box and
+  // inherited; the few elements that want something else override it below.
   var css =
     ".cognee-w{position:fixed;bottom:20px;right:20px;width:360px;max-width:92vw;font:14px/1.5 system-ui,sans-serif;z-index:2147483000}" +
-    ".cognee-box{display:none;flex-direction:column;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18);overflow:hidden}" +
+    ".cognee-box{display:none;flex-direction:column;background:#fff;color:#111827;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18);overflow:hidden}" +
     ".cognee-box.open{display:flex}" +
     ".cognee-head{background:#111827;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center}" +
     ".cognee-head b{font-weight:600}" +
@@ -47,7 +52,7 @@
     ".cognee-cite a{color:#2563eb;text-decoration:none}" +
     ".cognee-cite a:hover{text-decoration:underline}" +
     ".cognee-in{display:flex;border-top:1px solid #e5e7eb}" +
-    ".cognee-in input{flex:1;border:0;padding:11px;outline:none}" +
+    ".cognee-in input{flex:1;border:0;padding:11px;outline:none;background:#fff;color:inherit}" +
     ".cognee-in button{border:0;background:#2563eb;color:#fff;padding:0 16px;cursor:pointer}" +
     ".cognee-bar{padding:6px 12px;font-size:12px;color:#6b7280;display:flex;justify-content:space-between;background:#fff;border-top:1px solid #f3f4f6}" +
     ".cognee-bar a{color:#2563eb;cursor:pointer;text-decoration:none}" +
