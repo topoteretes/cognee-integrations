@@ -446,13 +446,12 @@
     pill.className = "pill " + (stale ? "warn" : "ok");
     const dot = document.createElement("i");
     pill.append(dot, text(stale
-      ? sync.stale + " source" + (sync.stale === 1 ? "" : "s") + " changed since the graph was built"
-      : "synced"));
-    pill.title = stale
-      ? "Newest ingest " + sync.newest_item_at + " is after the graph build " +
-        sync.built_at + ". Rebuild the graph so answers reflect the corpus."
-      : "Graph built " + sync.built_at + ", after the newest ingest " +
-        sync.newest_item_at + ".";
+      ? sync.drifted + " page" + (sync.drifted === 1 ? "" : "s") + " edited since ingest"
+      : "up to date with the docs"));
+    pill.title = (stale
+      ? sync.drifted + " of " + sync.matched + " matched sources have a newer commit than their ingest."
+      : "All " + sync.matched + " matched sources were last committed before they were ingested.") +
+      " Compares each page's last commit with when it was ingested.";
     box.appendChild(pill);
   }
 
@@ -505,10 +504,10 @@
           const pill = document.createElement("span");
           pill.className = "pill sm " + (i.synced ? "ok" : "warn");
           const dot = document.createElement("i");
-          pill.append(dot, text(i.synced ? "synced" : "changed"));
+          pill.append(dot, text(i.synced ? "current" : "edited"));
           pill.title = i.synced
-            ? "Ingested before the graph was built, so the graph reflects it."
-            : "Ingested after the graph was built - rebuild the graph to include this version.";
+            ? "No commit to this page since it was ingested."
+            : "This page has been committed since it was ingested - reingest to pick up the change.";
           st.appendChild(pill);
         }
         cell(tr, ago(i.updated), i.updated).className = "when";
@@ -999,7 +998,18 @@
           return r.json();
         });
         renderComposition(g);
-        if (state()) state().textContent = "";
+        const sum = $("#graph-summary");
+        sum.textContent = "";
+        [[g.node_total, "nodes"], [g.edge_total, "edges"]].forEach(([n, label]) => {
+          const v = document.createElement("span");
+          v.className = "sum-n";
+          v.appendChild(text((n || 0).toLocaleString()));
+          const l = document.createElement("span");
+          l.className = "sum-l";
+          l.appendChild(text(label));
+          sum.append(v, l);
+        });
+        $("#graph-when").textContent = "counted just now";
       } catch (e) {
         // Quiet on purpose: this was never requested, so a failure gets a line
         // inside the fold rather than a toast over the page.
@@ -1079,7 +1089,7 @@
 
     const sum = $("#graph-summary");
     sum.textContent = "";
-    if (d.graph && d.graph.nodes != null) {
+    if (false) {
       [[d.graph.nodes, "nodes"], [d.graph.edges, "edges"]].forEach(([n, label]) => {
         const v = document.createElement("span");
         v.className = "sum-n";
@@ -1116,9 +1126,13 @@
         act.append(b, st);
       });
     } else {
-      sum.appendChild(text("No graph has been built for this dataset yet."));
-      sum.className = "muted";
-      $("#graph-fold").hidden = true;
+      // Counts come from the breakdown, which counts the graph itself; the
+      // summary endpoint reports one pipeline run and goes stale.
+      const st = document.createElement("span");
+      st.className = "fold-state";
+      st.id = "graph-state";
+      sum.append(text("counting\u2026"), st);
+      prefetchComposition();
     }
 
     sessions = s.sessions;

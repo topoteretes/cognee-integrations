@@ -45,6 +45,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from .adapter import ChatMemoryAdapter
+from .docs_drift import drift_for_items
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -190,27 +191,24 @@ def _field(item, *names, default=""):
     return default
 
 
-def _item_synced(updated_at: str, graph: dict) -> Optional[bool]:
-    """Is this item older than the graph build? None when either is unknown."""
-    built = str(graph.get("computedAt") or "")
-    if not updated_at or not built:
-        return None
-    return updated_at <= built
+DOCS_PATH = os.getenv("WIDGET_DOCS_PATH", "").strip() or None
 
 
-def _corpus_sync(items: list, graph: dict) -> dict:
-    """Compare the newest ingest against the graph's build time."""
-    stamps = [str(_field(i, "updatedAt")) for i in items]
-    newest = max((t for t in stamps if t), default="")
-    built = str(graph.get("computedAt") or "")
-    if not newest or not built:
-        return {"state": "unknown", "newest_item_at": newest, "built_at": built, "stale": 0}
-    stale = sum(1 for t in stamps if t and t > built)
+def _corpus_sync(drift: dict) -> dict:
+    """Summarise documentation drift for the header badge.
+
+    Deliberately not derived from updatedAt. That field moves whenever cognee
+    reprocesses a record, so a dataset-wide re-cognify reported every source as
+    changed while nothing had been edited.
+    """
+    if not drift.get("enabled"):
+        return {"state": "unknown", "matched": 0, "drifted": 0}
+    if not drift["matched"]:
+        return {"state": "unknown", "matched": 0, "drifted": 0}
     return {
-        "state": "stale" if stale else "synced",
-        "newest_item_at": newest,
-        "built_at": built,
-        "stale": stale,
+        "state": "stale" if drift["drifted"] else "synced",
+        "matched": drift["matched"],
+        "drifted": drift["drifted"],
     }
 
 
@@ -227,12 +225,9 @@ async def _dashboard_data() -> dict:
     match = next(
         (d for d in datasets if isinstance(d, dict) and d.get("name") == docs_dataset), None
     )
-    items, history, graph = await asyncio.gather(
+    items, history = await asyncio.gather(
         client.dataset_data(str(match.get("id"))) if match else _empty_list(),
         client.recall_history(),
-        # Counts only, not the graph itself. Independent of the other two, so it
-        # rides along in the gather and costs no extra wall time.
-        client.graph_summary(str(match.get("id"))) if match else _empty_dict(),
     )
 
     # Recall history is the whole principal's, and it interleaves both sides of
@@ -246,6 +241,9 @@ async def _dashboard_data() -> dict:
     scoped = [h for h in asked if dataset_id and str(_field(h, "datasetId")) == dataset_id]
     rows, is_scoped = (scoped, True) if scoped else (asked, False)
     rows.sort(key=lambda h: str(_field(h, "createdAt")), reverse=True)
+
+    # Reads the repository, so it is local work rather than another round trip.
+    drift = drift_for_items(items, DOCS_PATH)
 
     questions = []
     for h in rows[:25]:
@@ -277,7 +275,7 @@ async def _dashboard_data() -> dict:
             # documentation it came from: source_uri points into the filesystem
             # that performed the ingest, which this backend cannot see, so an
             # edit to a docs page is invisible here.
-            "sync": _corpus_sync(items, graph),
+            "sync": _corpus_sync(drift),
             "exists": match is not None,
             "item_count": len(items),
             "items": [
@@ -295,17 +293,21 @@ async def _dashboard_data() -> dict:
                     ),
                     # Same comparison the header badge makes, decided once here
                     # so a row can never disagree with the summary above it.
-                    "synced": _item_synced(str(_field(i, "updatedAt")), graph),
+                    # None when the item has no matching source file.
+                    "synced": (
+                        None
+                        if str(_field(i, "id")) not in drift["states"]
+                        else not drift["states"][str(_field(i, "id"))]
+                    ),
                 }
                 for i in items
             ],
             "all_datasets": [str(_field(d, "name")) for d in datasets],
         },
-        "graph": {
-            "nodes": graph.get("numNodes"),
-            "edges": graph.get("numEdges"),
-            "computed_at": str(graph.get("computedAt") or ""),
-        },
+        # No graph counts here. /graph-summary reports the latest pipeline run
+        # rather than the dataset - it returns zeros after a small run, and its
+        # history goes stale - so the counts come from the breakdown endpoint,
+        # which counts the graph itself.
         "questions": questions,
         "questions_scoped_to_dataset": is_scoped,
     }
@@ -366,11 +368,6 @@ async def dashboard_session(
     ]
     turns.sort(key=lambda t: t["time"])
     return JSONResponse({"session_id": session_id, "turns": turns})
-
-
-async def _empty_dict() -> dict:
-    """See _empty_list."""
-    return {}
 
 
 async def _empty_list() -> list:

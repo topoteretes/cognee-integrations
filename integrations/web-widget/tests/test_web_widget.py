@@ -829,157 +829,108 @@ def test_analytics_excludes_other_sites_and_is_gated(analytics_client):
     assert client.get("/api/dashboard/analytics?token=wrong").status_code == 401
 
 
-# --- Corpus sync state --------------------------------------------------------
-#
-# Green means the graph still reflects the corpus. It compares ingests against
-# the graph build, not against the documentation the corpus came from - that
-# lives on a filesystem this backend cannot see.
-
-
-def _sync(items, built):
-    from cognee_integration_web_widget.server import _corpus_sync
-
-    return _corpus_sync(items, {"computedAt": built})
-
-
-def test_corpus_is_synced_when_the_graph_was_built_after_every_ingest():
-    out = _sync(
-        [{"updatedAt": "2026-09-01T00:00:00Z"}, {"updatedAt": "2026-09-02T00:00:00Z"}],
-        "2026-09-03T00:00:00Z",
-    )
-    assert out["state"] == "synced"
-    assert out["stale"] == 0
-
-
-def test_corpus_is_stale_when_a_source_changed_after_the_graph_was_built():
-    """Reingesting or deleting a source is exactly this case."""
-    out = _sync(
-        [{"updatedAt": "2026-09-01T00:00:00Z"}, {"updatedAt": "2026-09-04T00:00:00Z"}],
-        "2026-09-03T00:00:00Z",
-    )
-    assert out["state"] == "stale"
-    assert out["stale"] == 1
-    assert out["newest_item_at"] == "2026-09-04T00:00:00Z"
-
-
-def test_corpus_sync_counts_every_source_that_moved_ahead():
-    out = _sync(
-        [{"updatedAt": "2026-09-05T00:00:00Z"}, {"updatedAt": "2026-09-04T00:00:00Z"}],
-        "2026-09-03T00:00:00Z",
-    )
-    assert out["stale"] == 2
-
-
-@pytest.mark.parametrize(
-    "items,built",
-    [([], "2026-09-03T00:00:00Z"), ([{"updatedAt": "2026-09-01T00:00:00Z"}], ""), ([], "")],
-)
-def test_corpus_sync_is_unknown_rather_than_guessed(items, built):
-    """No graph or no items means no claim - a green badge would be a lie."""
-    assert _sync(items, built)["state"] == "unknown"
-
-
-def test_dashboard_payload_carries_the_sync_state(dashboard_client, fake_client):
-    fake_client.dataset_data = AsyncMock(
-        return_value=[{"id": "a", "name": "x", "updatedAt": "2026-09-09T00:00:00Z"}]
-    )
-    fake_client.graph_summary = AsyncMock(
-        return_value={"numNodes": 1, "numEdges": 0, "computedAt": "2026-09-01T00:00:00Z"}
-    )
-    body = dashboard_client.get("/api/dashboard?token=s3cret").json()
-    assert body["corpus"]["sync"]["state"] == "stale"
-
-
-def test_each_item_carries_its_own_sync_state(dashboard_client, fake_client):
-    """Per-row status is decided server-side from the same comparison as the
-    header badge, so a row can never contradict the summary above it."""
-    fake_client.graph_summary = AsyncMock(
-        return_value={"numNodes": 1, "numEdges": 0, "computedAt": "2026-09-03T00:00:00Z"}
-    )
-    fake_client.dataset_data = AsyncMock(
-        return_value=[
-            {"id": "old", "name": "before", "updatedAt": "2026-09-01T00:00:00Z"},
-            {"id": "new", "name": "after", "updatedAt": "2026-09-05T00:00:00Z"},
-            {"id": "same", "name": "exactly", "updatedAt": "2026-09-03T00:00:00Z"},
-        ]
-    )
-    corpus = dashboard_client.get("/api/dashboard?token=s3cret").json()["corpus"]
-    by_id = {i["id"]: i["synced"] for i in corpus["items"]}
-    assert by_id["old"] is True
-    assert by_id["new"] is False
-    # An item ingested at the instant of the build is covered by it.
-    assert by_id["same"] is True
-    # The header agrees with the rows.
-    assert corpus["sync"]["stale"] == sum(1 for v in by_id.values() if v is False)
-
-
-def test_item_sync_is_none_when_it_cannot_be_decided(dashboard_client, fake_client):
-    """No graph means no claim per row, same as for the header."""
-    fake_client.graph_summary = AsyncMock(return_value={})
-    fake_client.dataset_data = AsyncMock(
-        return_value=[{"id": "a", "name": "x", "updatedAt": "2026-09-01T00:00:00Z"}]
-    )
-    corpus = dashboard_client.get("/api/dashboard?token=s3cret").json()["corpus"]
-    assert corpus["items"][0]["synced"] is None
-
-
 # --- graph-summary falls back to the last measured run -----------------------
 
 
-@pytest.mark.asyncio
-async def test_graph_summary_falls_back_when_the_latest_run_measured_nothing():
-    """The endpoint reports the latest pipeline run, not the dataset. A run that
-    touched one item reports zeros with a null computedAt, which would empty the
-    graph panel and blank every per-source status."""
-    from cognee_integration_web_widget.http_client import CogneeHttpClient
-
-    class Fake:
-        async def request(self, method, url, **kw):
-            class R:
-                status_code = 200
-
-                def __init__(self, payload):
-                    self._p = payload
-
-                def json(self):
-                    return self._p
-
-            if url.endswith("/graph-summary"):
-                return R({"numNodes": 0, "numEdges": 0, "computedAt": None})
-            return R(
-                [
-                    {"numNodes": 10, "numEdges": 20, "computedAt": "2026-09-01T00:00:00Z"},
-                    {"numNodes": 6214, "numEdges": 28174, "computedAt": "2026-09-23T09:52:16Z"},
-                    {"numNodes": 30, "numEdges": 40, "computedAt": "2026-09-02T00:00:00Z"},
-                ]
-            )
-
-    out = await CogneeHttpClient(client=Fake()).graph_summary("d1")
-    # Newest measured run, not merely the last row.
-    assert out["numNodes"] == 6214
-    assert out["computedAt"] == "2026-09-23T09:52:16Z"
+# --- Documentation drift ------------------------------------------------------
+#
+# The question is whether a page has been edited since it was ingested. It is
+# answered from the repository, because the corpus cannot answer it: no content
+# hash is exposed, and updatedAt moves on any reprocess.
 
 
-@pytest.mark.asyncio
-async def test_graph_summary_prefers_a_current_run_that_did_measure():
-    from cognee_integration_web_widget.http_client import CogneeHttpClient
+def _items(*specs):
+    return [{"id": i, "name": n, "createdAt": c} for i, n, c in specs]
 
-    class Fake:
-        called = []
 
-        async def request(self, method, url, **kw):
-            Fake.called.append(url)
+def test_drift_is_off_and_silent_without_a_docs_path():
+    """A hosted backend cannot see the repo, so it must claim nothing."""
+    from cognee_integration_web_widget.docs_drift import drift_for_items
 
-            class R:
-                status_code = 200
+    out = drift_for_items(_items(("a", "guide", "2026-01-01T00:00:00Z")), None)
+    assert out == {"enabled": False, "states": {}, "matched": 0, "drifted": 0}
 
-                @staticmethod
-                def json():
-                    return {"numNodes": 5, "numEdges": 6, "computedAt": "2026-09-23T10:00:00Z"}
 
-            return R()
+def test_drift_is_off_when_the_path_does_not_exist():
+    from cognee_integration_web_widget.docs_drift import drift_for_items
 
-    out = await CogneeHttpClient(client=Fake()).graph_summary("d1")
-    assert out["numNodes"] == 5
-    # History is not fetched when the current summary is usable.
-    assert not any("history" in u for u in Fake.called)
+    out = drift_for_items(_items(("a", "guide", "2026-01-01T00:00:00Z")), "/nope/not/here")
+    assert out["enabled"] is False
+
+
+def test_drift_maps_names_to_nested_paths_and_compares_with_ingest(tmp_path):
+    """setup-configuration__llm-providers -> setup-configuration/llm-providers.mdx"""
+    import subprocess
+
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    import os
+
+    def git(*args, when=None):
+        env = {**os.environ}
+        if when:
+            # The comparison uses the COMMITTER date (%cI); --date only moves
+            # the author date, which is what made this test lie at first.
+            env["GIT_COMMITTER_DATE"] = when
+            env["GIT_AUTHOR_DATE"] = when
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, env=env)
+
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (tmp_path / "setup-configuration").mkdir()
+    (tmp_path / "setup-configuration" / "llm-providers.mdx").write_text("old")
+    (tmp_path / "quickstart.md").write_text("old")
+    git("add", "-A")
+    git("commit", "-qm", "first", when="2026-01-01T00:00:00+0000")
+
+    # Ingested AFTER that commit -> both current.
+    out = drift_for_items(
+        _items(
+            ("a", "setup-configuration__llm-providers", "2026-06-01T00:00:00Z"),
+            ("b", "quickstart", "2026-06-01T00:00:00Z"),
+        ),
+        str(tmp_path),
+    )
+    assert out["enabled"] is True
+    assert out["matched"] == 2
+    assert out["drifted"] == 0
+
+    # Ingested BEFORE the commit -> both edited since.
+    out = drift_for_items(
+        _items(
+            ("a", "setup-configuration__llm-providers", "2020-01-01T00:00:00Z"),
+            ("b", "quickstart", "2020-01-01T00:00:00Z"),
+        ),
+        str(tmp_path),
+    )
+    assert out["drifted"] == 2
+    assert all(out["states"].values())
+
+
+def test_drift_ignores_items_with_no_matching_file(tmp_path):
+    """The demo seeds have no page behind them; they must not be called stale."""
+    import subprocess
+
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    out = drift_for_items(_items(("a", "message", "2020-01-01T00:00:00Z")), str(tmp_path))
+    assert out["matched"] == 0
+    assert out["states"] == {}
+
+
+def test_corpus_sync_reports_unknown_when_nothing_could_be_matched():
+    from cognee_integration_web_widget.server import _corpus_sync
+
+    assert _corpus_sync({"enabled": True, "matched": 0, "drifted": 0})["state"] == "unknown"
+    assert _corpus_sync({"enabled": False, "matched": 0, "drifted": 0})["state"] == "unknown"
+
+
+def test_corpus_sync_states():
+    from cognee_integration_web_widget.server import _corpus_sync
+
+    assert _corpus_sync({"enabled": True, "matched": 251, "drifted": 0})["state"] == "synced"
+    stale = _corpus_sync({"enabled": True, "matched": 251, "drifted": 4})
+    assert stale["state"] == "stale"
+    assert stale["drifted"] == 4
