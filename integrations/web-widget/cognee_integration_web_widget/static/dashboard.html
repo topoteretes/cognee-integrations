@@ -144,12 +144,6 @@
   .viz { --series-1: #2a78d6; --track: rgba(127,127,127,.12) }
   @media (prefers-color-scheme: dark) { .viz { --series-1: #3987e5 } }
 
-  .kpis { display: flex; gap: 28px; flex-wrap: wrap }
-  .kpi-v { font-size: 26px; font-weight: 600; letter-spacing: -.02em;
-           font-variant-numeric: tabular-nums; line-height: 1.2 }
-  .kpi-l { font-size: 11px; color: var(--muted); letter-spacing: .04em;
-           text-transform: uppercase }
-
   .chart { margin-top: 20px }
   .chart-h { font-size: 12px; font-weight: 600; color: var(--muted);
              margin-bottom: 9px; display: flex; gap: 8px; align-items: baseline }
@@ -164,6 +158,20 @@
   .bar-val { font-size: 12px; color: var(--muted);
              font-variant-numeric: tabular-nums; min-width: 5ch; text-align: right }
   .chart-note { font-size: 11px; color: var(--muted); margin-top: 8px }
+
+  /* The composition is secondary detail, so it ships folded. summary carries
+     the headline counts, which cost nothing - they arrive with the main load. */
+  details.fold > summary { list-style: none; cursor: pointer; padding: 13px 16px;
+    display: flex; align-items: baseline; gap: 16px; user-select: none }
+  details.fold > summary::-webkit-details-marker { display: none }
+  details.fold > summary::before { content: "\25B8"; color: var(--muted);
+    font-size: 11px; transition: transform .15s; display: inline-block }
+  details.fold[open] > summary::before { transform: rotate(90deg) }
+  details.fold > summary:hover { background: color-mix(in srgb, var(--accent) 4%, transparent) }
+  .fold-body { padding: 2px 16px 16px; border-top: 1px solid var(--line-soft) }
+  .sum-n { font-variant-numeric: tabular-nums; font-weight: 600 }
+  .sum-l { color: var(--muted); font-size: 12px }
+  .fold-state { margin-left: auto; font-size: 11px; color: var(--muted) }
 
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
@@ -204,10 +212,14 @@
 
 <section class="viz">
   <div class="sec-head"><h2>Knowledge graph</h2><span class="count" id="graph-when"></span></div>
-  <div class="panel pad">
-    <div class="kpis" id="graph-kpis"></div>
-    <p id="graph-actions"></p>
-    <div id="graph-charts"></div>
+  <div class="panel">
+    <details class="fold" id="graph-fold">
+      <summary id="graph-summary"></summary>
+      <div class="fold-body">
+        <p id="graph-actions"></p>
+        <div id="graph-charts"></div>
+      </div>
+    </details>
   </div>
 </section>
 
@@ -473,19 +485,6 @@
     });
   }
 
-  function kpi(parent, value, label, title) {
-    const w = document.createElement("div");
-    const v = document.createElement("div");
-    v.className = "kpi-v";
-    v.appendChild(text(value));
-    const l = document.createElement("div");
-    l.className = "kpi-l";
-    l.appendChild(text(label));
-    if (title) w.title = title;
-    w.append(v, l);
-    parent.appendChild(w);
-  }
-
   // Horizontal bars: the categories are named, the values are magnitudes, and
   // the labels are long - so bars run along the length the eye compares best.
   function barChart(parent, heading, note, rows, total) {
@@ -526,30 +525,53 @@
     parent.appendChild(box);
   }
 
-  async function loadGraphComposition(btn) {
-    btn.disabled = true;
-    btn.textContent = "Reading graph\u2026";
-    try {
-      const g = await fetch(api("/api/dashboard/graph")).then((r) => r.json());
-      const charts = $("#graph-charts");
-      charts.textContent = "";
-      barChart(charts, "Nodes by type", "", g.node_types, g.node_total);
-      barChart(charts, "Edges by relationship", "top 10 of " + g.edge_label_distinct,
-               g.edge_labels, g.edge_total);
-      if (g.edge_label_other) {
-        const n = document.createElement("p");
-        n.className = "chart-note";
-        n.appendChild(text(g.edge_label_other.toLocaleString() +
-          " further edges across " + (g.edge_label_distinct - 10) +
-          " less common relationships are not shown."));
-        charts.appendChild(n);
-      }
-      $("#graph-actions").textContent = "";
-    } catch (e) {
-      btn.disabled = false;
-      btn.textContent = "Analyse composition";
-      toast("Could not read the graph: " + e.message, true);
+  let compositionStarted = false;
+
+  function renderComposition(g) {
+    const charts = $("#graph-charts");
+    charts.textContent = "";
+    barChart(charts, "Nodes by type", "", g.node_types, g.node_total);
+    barChart(charts, "Edges by relationship", "top 10 of " + g.edge_label_distinct,
+             g.edge_labels, g.edge_total);
+    if (g.edge_label_other) {
+      const n = document.createElement("p");
+      n.className = "chart-note";
+      n.appendChild(text(g.edge_label_other.toLocaleString() +
+        " further edges across " + (g.edge_label_distinct - 10) +
+        " less common relationships are not shown."));
+      charts.appendChild(n);
     }
+  }
+
+  // Background, after first paint, at most once. requestIdleCallback keeps it
+  // off the critical path; the timeout is the fallback where it is unsupported.
+  function prefetchComposition() {
+    if (compositionStarted) return;
+    compositionStarted = true;
+    const state = () => $("#graph-state");
+    const go = async () => {
+      if (state()) state().textContent = "loading breakdown\u2026";
+      try {
+        const g = await fetch(api("/api/dashboard/graph")).then((r) => {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        });
+        renderComposition(g);
+        if (state()) state().textContent = "";
+      } catch (e) {
+        // Quiet on purpose: this was never requested, so a failure gets a line
+        // inside the fold rather than a toast over the page.
+        if (state()) state().textContent = "breakdown unavailable";
+        const charts = $("#graph-charts");
+        charts.textContent = "";
+        const p = document.createElement("p");
+        p.className = "chart-note";
+        p.appendChild(text("Could not read the graph (" + e.message + ")."));
+        charts.appendChild(p);
+      }
+    };
+    if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 2500 });
+    else setTimeout(go, 400);
   }
 
   async function load() {
@@ -608,23 +630,32 @@
     $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
     renderSources(sortBy(corpus.items, "updated", "desc"));
 
-    const gk = $("#graph-kpis");
-    gk.textContent = "";
+    const sum = $("#graph-summary");
+    sum.textContent = "";
     if (d.graph && d.graph.nodes != null) {
-      kpi(gk, d.graph.nodes.toLocaleString(), "nodes");
-      kpi(gk, d.graph.edges.toLocaleString(), "edges");
+      [[d.graph.nodes, "nodes"], [d.graph.edges, "edges"]].forEach(([n, label]) => {
+        const v = document.createElement("span");
+        v.className = "sum-n";
+        v.appendChild(text(n.toLocaleString()));
+        const l = document.createElement("span");
+        l.className = "sum-l";
+        l.appendChild(text(label));
+        sum.append(v, l);
+      });
       $("#graph-when").textContent = d.graph.computed_at
         ? "built " + ago(d.graph.computed_at) : "";
-      const act = $("#graph-actions");
-      act.textContent = "";
-      const b = document.createElement("button");
-      b.appendChild(text("Analyse composition"));
-      b.title = "Reads the full graph server-side (a few seconds) and returns counts";
-      b.onclick = () => loadGraphComposition(b);
-      act.appendChild(b);
+      const st = document.createElement("span");
+      st.className = "fold-state";
+      st.id = "graph-state";
+      sum.appendChild(st);
+      // Prefetch the breakdown once the page has settled. It costs a few
+      // seconds against cognee, so it must not delay first paint, and it must
+      // fail quietly - nobody asked for it, so nobody should be told it broke.
+      prefetchComposition();
     } else {
-      gk.appendChild(text("No graph has been built for this dataset yet."));
-      gk.className = "kpis muted";
+      sum.appendChild(text("No graph has been built for this dataset yet."));
+      sum.className = "muted";
+      $("#graph-fold").hidden = true;
     }
 
     sessions = s.sessions;
