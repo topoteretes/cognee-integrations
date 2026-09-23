@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -200,9 +201,12 @@ async def _dashboard_data() -> dict:
     match = next(
         (d for d in datasets if isinstance(d, dict) and d.get("name") == docs_dataset), None
     )
-    items, history = await asyncio.gather(
+    items, history, graph = await asyncio.gather(
         client.dataset_data(str(match.get("id"))) if match else _empty_list(),
         client.recall_history(),
+        # Counts only, not the graph itself. Independent of the other two, so it
+        # rides along in the gather and costs no extra wall time.
+        client.graph_summary(str(match.get("id"))) if match else _empty_dict(),
     )
 
     # Recall history is the whole principal's, and it interleaves both sides of
@@ -257,6 +261,11 @@ async def _dashboard_data() -> dict:
                 for i in items
             ],
             "all_datasets": [str(_field(d, "name")) for d in datasets],
+        },
+        "graph": {
+            "nodes": graph.get("numNodes"),
+            "edges": graph.get("numEdges"),
+            "computed_at": str(graph.get("computedAt") or ""),
         },
         "questions": questions,
         "questions_scoped_to_dataset": is_scoped,
@@ -320,6 +329,11 @@ async def dashboard_session(
     return JSONResponse({"session_id": session_id, "turns": turns})
 
 
+async def _empty_dict() -> dict:
+    """See _empty_list."""
+    return {}
+
+
 async def _empty_list() -> list:
     """An already-satisfied empty result, so the gather above stays symmetrical."""
     return []
@@ -340,6 +354,41 @@ async def _docs_dataset_id() -> str:
     if not match:
         raise HTTPException(status_code=404, detail="docs dataset not found")
     return str(match.get("id"))
+
+
+@app.get("/api/dashboard/graph")
+async def dashboard_graph(token: Optional[str] = Query(default=None)) -> JSONResponse:
+    """What the knowledge graph is made of, as counts.
+
+    The graph itself is ~10MB for this corpus - 6k nodes and 28k edges - and a
+    node-link rendering of that is an unreadable hairball, so the payload is
+    aggregated here and the browser receives about a kilobyte. cognee Cloud's
+    own graph canvas is the right tool for exploring the structure.
+
+    Deliberately not part of /api/dashboard: the fetch takes seconds, and the
+    page should paint without waiting for something most visits do not open.
+    """
+    _require_dashboard(token)
+    dataset_id = await _docs_dataset_id()
+    graph = await adapter.client.graph(dataset_id)
+
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    node_types = Counter(str(_field(n, "type") or "unknown") for n in nodes)
+    edge_labels = Counter(str(_field(e, "label") or "unknown") for e in edges)
+
+    return JSONResponse(
+        {
+            "node_total": len(nodes),
+            "edge_total": len(edges),
+            "node_types": [{"name": k, "count": v} for k, v in node_types.most_common()],
+            # Edge labels have a long tail; the top ten carry the shape and the
+            # rest is summarised rather than rendered as a forest of hairlines.
+            "edge_labels": [{"name": k, "count": v} for k, v in edge_labels.most_common(10)],
+            "edge_label_other": sum(c for _, c in edge_labels.most_common()[10:]),
+            "edge_label_distinct": len(edge_labels),
+        }
+    )
 
 
 @app.post("/api/dashboard/data/{data_id}/reingest")
