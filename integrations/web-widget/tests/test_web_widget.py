@@ -848,7 +848,7 @@ def test_drift_is_off_and_silent_without_a_docs_path():
     from cognee_integration_web_widget.docs_drift import drift_for_items
 
     out = drift_for_items(_items(("a", "guide", "2026-01-01T00:00:00Z")), None)
-    assert out == {"enabled": False, "states": {}, "matched": 0, "drifted": 0}
+    assert out == {"enabled": False, "states": {}, "matched": 0, "drifted": 0, "removed": 0}
 
 
 def test_drift_is_off_when_the_path_does_not_exist():
@@ -860,11 +860,10 @@ def test_drift_is_off_when_the_path_does_not_exist():
 
 def test_drift_maps_names_to_nested_paths_and_compares_with_ingest(tmp_path):
     """setup-configuration__llm-providers -> setup-configuration/llm-providers.mdx"""
+    import os
     import subprocess
 
     from cognee_integration_web_widget.docs_drift import drift_for_items
-
-    import os
 
     def git(*args, when=None):
         env = {**os.environ}
@@ -895,6 +894,7 @@ def test_drift_maps_names_to_nested_paths_and_compares_with_ingest(tmp_path):
     assert out["enabled"] is True
     assert out["matched"] == 2
     assert out["drifted"] == 0
+    assert set(out["states"].values()) == {"current"}
 
     # Ingested BEFORE the commit -> both edited since.
     out = drift_for_items(
@@ -905,7 +905,7 @@ def test_drift_maps_names_to_nested_paths_and_compares_with_ingest(tmp_path):
         str(tmp_path),
     )
     assert out["drifted"] == 2
-    assert all(out["states"].values())
+    assert set(out["states"].values()) == {"edited"}
 
 
 def test_drift_ignores_items_with_no_matching_file(tmp_path):
@@ -917,20 +917,75 @@ def test_drift_ignores_items_with_no_matching_file(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
     out = drift_for_items(_items(("a", "message", "2020-01-01T00:00:00Z")), str(tmp_path))
     assert out["matched"] == 0
-    assert out["states"] == {}
+    # Never a documentation page - labelled, not left blank.
+    assert out["states"] == {"a": "foreign"}
 
 
 def test_corpus_sync_reports_unknown_when_nothing_could_be_matched():
     from cognee_integration_web_widget.server import _corpus_sync
 
-    assert _corpus_sync({"enabled": True, "matched": 0, "drifted": 0})["state"] == "unknown"
-    assert _corpus_sync({"enabled": False, "matched": 0, "drifted": 0})["state"] == "unknown"
+    assert (
+        _corpus_sync({"enabled": True, "matched": 0, "drifted": 0, "removed": 0})["state"]
+        == "unknown"
+    )
+    assert (
+        _corpus_sync({"enabled": False, "matched": 0, "drifted": 0, "removed": 0})["state"]
+        == "unknown"
+    )
 
 
 def test_corpus_sync_states():
     from cognee_integration_web_widget.server import _corpus_sync
 
-    assert _corpus_sync({"enabled": True, "matched": 251, "drifted": 0})["state"] == "synced"
-    stale = _corpus_sync({"enabled": True, "matched": 251, "drifted": 4})
+    assert (
+        _corpus_sync({"enabled": True, "matched": 251, "drifted": 0, "removed": 0})["state"]
+        == "synced"
+    )
+    stale = _corpus_sync({"enabled": True, "matched": 251, "drifted": 4, "removed": 0})
     assert stale["state"] == "stale"
     assert stale["drifted"] == 4
+    # A page deleted from the docs needs attention even with nothing edited.
+    gone = _corpus_sync({"enabled": True, "matched": 251, "drifted": 0, "removed": 1})
+    assert gone["state"] == "stale"
+    assert gone["removed"] == 1
+
+
+def test_drift_separates_a_deleted_page_from_something_that_was_never_a_page(tmp_path):
+    """Both used to render blank, hiding a real problem behind a harmless one."""
+    import os
+    import subprocess
+
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    def git(*args, when=None):
+        env = {**os.environ}
+        if when:
+            env["GIT_COMMITTER_DATE"] = when
+            env["GIT_AUTHOR_DATE"] = when
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, env=env)
+
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (tmp_path / "cognee-cloud").mkdir()
+    (tmp_path / "cognee-cloud" / "schema.mdx").write_text("page")
+    git("add", "-A")
+    git("commit", "-qm", "add", when="2026-01-01T00:00:00+0000")
+    (tmp_path / "cognee-cloud" / "schema.mdx").unlink()
+    git("add", "-A")
+    git("commit", "-qm", "delete", when="2026-02-01T00:00:00+0000")
+
+    out = drift_for_items(
+        _items(
+            ("gone", "cognee-cloud__schema", "2026-01-15T00:00:00Z"),
+            ("seed", "message", "2026-01-15T00:00:00Z"),
+        ),
+        str(tmp_path),
+    )
+    # git knows the path, the file does not exist -> deleted from the docs.
+    assert out["states"]["gone"] == "removed"
+    assert out["removed"] == 1
+    # git has never seen it -> not documentation, and not a problem.
+    assert out["states"]["seed"] == "foreign"
+    # "removed" is not counted as a matched, comparable page.
+    assert out["matched"] == 0

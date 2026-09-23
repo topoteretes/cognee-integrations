@@ -64,40 +64,72 @@ def last_commit_dates(root: Path) -> dict[str, str]:
 
 
 def drift_for_items(items: list, docs_path: Optional[str]) -> dict:
-    """Map each item to its source file and compare commit date with ingest.
+    """Classify every ingested item against the documentation repository.
 
-    Returns ``{item_id: True/False}`` - True meaning the documentation has been
-    edited since that item was ingested - plus how many items could be matched
-    at all, so the caller can distinguish "nothing has drifted" from "nothing
-    could be checked".
+    Four outcomes, because "no status" was hiding two different problems:
+
+    ``current``  the page exists and has no commit since it was ingested
+    ``edited``   the page exists and has been committed since - reingest it
+    ``removed``  git knows the path but the file is gone - the page was deleted
+                 from the docs while its content stayed in the corpus, so the
+                 widget can still answer from it and cite a page that 404s
+    ``foreign``  git has never seen the path - not documentation at all, which
+                 is what the demo seeds are
+
+    The single ``git log`` walk already lists deleted paths (they appear in the
+    commit that removed them), so telling ``removed`` from ``foreign`` costs
+    nothing extra.
     """
+    empty = {"enabled": False, "states": {}, "matched": 0, "drifted": 0, "removed": 0}
     if not docs_path:
-        return {"enabled": False, "states": {}, "matched": 0, "drifted": 0}
+        return empty
 
     root = Path(docs_path).expanduser()
     if not root.is_dir():
-        return {"enabled": False, "states": {}, "matched": 0, "drifted": 0}
+        return empty
 
     dates = last_commit_dates(root)
-    states: dict[str, bool] = {}
-    matched = drifted = 0
+    states: dict[str, str] = {}
+    matched = drifted = removed = 0
 
     for item in items:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "")
         created = str(item.get("createdAt") or "")
-        file = _repo_file(root, name) if name else None
-        if not file or not created:
+        item_id = str(item.get("id"))
+        if not name or not created:
             continue
-        committed = dates.get(str(file.relative_to(root)))
-        if not committed:
-            # Tracked path with no commit touching it, or an untracked file:
-            # nothing to compare against, so make no claim.
-            continue
-        matched += 1
-        is_drifted = committed > created
-        states[str(item.get("id"))] = is_drifted
-        drifted += is_drifted
 
-    return {"enabled": True, "states": states, "matched": matched, "drifted": drifted}
+        file = _repo_file(root, name)
+        if file:
+            committed = dates.get(str(file.relative_to(root)))
+            if not committed:
+                # Untracked file: present but never committed, so there is no
+                # date to compare against.
+                states[item_id] = "foreign"
+                continue
+            matched += 1
+            if committed > created:
+                states[item_id] = "edited"
+                drifted += 1
+            else:
+                states[item_id] = "current"
+            continue
+
+        # No file. Did one ever exist at that path?
+        relative = name.replace("__", "/")
+        known = any(f"{relative}{extension}" in dates for extension in _EXTENSIONS)
+        if known:
+            states[item_id] = "removed"
+            removed += 1
+        else:
+            states[item_id] = "foreign"
+
+    return {
+        "enabled": True,
+        "states": states,
+        "matched": matched,
+        "drifted": drifted,
+        "removed": removed,
+    }

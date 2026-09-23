@@ -270,6 +270,8 @@
   .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)) }
   .pill.warn i { background: var(--warn) }
 
+  .pill.neutral { color: var(--muted) }
+  .pill.neutral i { background: var(--muted) }
   .pill.sm { font-size: 10px; padding: 1px 7px 1px 6px; letter-spacing: .02em }
 
   #toast {
@@ -299,7 +301,7 @@
     <table id="sources">
       <thead><tr>
         <th data-sort="name">source</th>
-        <th data-sort="synced">status</th>
+        <th data-sort="doc_state">status</th>
         <th data-sort="updated">last synced</th>
         <th data-sort="created">first ingested</th>
         <th></th>
@@ -409,6 +411,13 @@
         x = x ? 1 : 0;
         y = y ? 1 : 0;
       }
+      if (key === "doc_state") {
+        // Severity order, so sorting surfaces what needs acting on first
+        // rather than whatever sorts alphabetically.
+        const rank = { removed: 0, edited: 1, foreign: 2, current: 3 };
+        x = rank[x] ?? 9;
+        y = rank[y] ?? 9;
+      }
       const n = typeof x === "number" && typeof y === "number";
       const c = n ? x - y : String(x ?? "").localeCompare(String(y ?? ""));
       return dir === "desc" ? -c : c;
@@ -445,11 +454,12 @@
     const pill = document.createElement("span");
     pill.className = "pill " + (stale ? "warn" : "ok");
     const dot = document.createElement("i");
-    pill.append(dot, text(stale
-      ? sync.drifted + " page" + (sync.drifted === 1 ? "" : "s") + " edited since ingest"
-      : "up to date with the docs"));
+    const bits = [];
+    if (sync.drifted) bits.push(sync.drifted + " edited");
+    if (sync.removed) bits.push(sync.removed + " removed from docs");
+    pill.append(dot, text(stale ? bits.join(", ") : "up to date with the docs"));
     pill.title = (stale
-      ? sync.drifted + " of " + sync.matched + " matched sources have a newer commit than their ingest."
+      ? bits.join(" and ") + ", out of " + sync.matched + " matched sources."
       : "All " + sync.matched + " matched sources were last committed before they were ingested.") +
       " Compares each page's last commit with when it was ingested.";
     box.appendChild(pill);
@@ -500,14 +510,26 @@
           nameTd.appendChild(note);
         }
         const st = tr.insertCell();
-        if (i.synced !== null && i.synced !== undefined) {
+        const STATES = {
+          current: ["ok", "current",
+            "No commit to this page since it was ingested."],
+          edited: ["warn", "edited",
+            "Committed since it was ingested \u2014 reingest to pick up the change."],
+          removed: ["warn", "removed from docs",
+            "This page no longer exists in the repository, but its content is still " +
+            "in the corpus: the widget can answer from it and cite a URL that 404s. " +
+            "Delete it here."],
+          foreign: ["neutral", "not from docs",
+            "No documentation page behind this item \u2014 the demo seeds are the " +
+            "usual case. Nothing to compare it against."],
+        };
+        const spec = STATES[i.doc_state];
+        if (spec) {
           const pill = document.createElement("span");
-          pill.className = "pill sm " + (i.synced ? "ok" : "warn");
+          pill.className = "pill sm " + spec[0];
           const dot = document.createElement("i");
-          pill.append(dot, text(i.synced ? "current" : "edited"));
-          pill.title = i.synced
-            ? "No commit to this page since it was ingested."
-            : "This page has been committed since it was ingested - reingest to pick up the change.";
+          pill.append(dot, text(spec[1]));
+          pill.title = spec[2];
           st.appendChild(pill);
         }
         cell(tr, ago(i.updated), i.updated).className = "when";

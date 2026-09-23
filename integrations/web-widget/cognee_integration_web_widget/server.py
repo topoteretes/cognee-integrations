@@ -200,15 +200,20 @@ def _corpus_sync(drift: dict) -> dict:
     Deliberately not derived from updatedAt. That field moves whenever cognee
     reprocesses a record, so a dataset-wide re-cognify reported every source as
     changed while nothing had been edited.
+
+    A page deleted from the docs counts as needing attention just as much as an
+    edited one: its content still answers questions and still cites a URL that
+    now 404s.
     """
-    if not drift.get("enabled"):
-        return {"state": "unknown", "matched": 0, "drifted": 0}
-    if not drift["matched"]:
-        return {"state": "unknown", "matched": 0, "drifted": 0}
+    base = {"state": "unknown", "matched": 0, "drifted": 0, "removed": 0}
+    if not drift.get("enabled") or not (drift["matched"] or drift["removed"]):
+        return base
+    needs_attention = drift["drifted"] + drift["removed"]
     return {
-        "state": "stale" if drift["drifted"] else "synced",
+        "state": "stale" if needs_attention else "synced",
         "matched": drift["matched"],
         "drifted": drift["drifted"],
+        "removed": drift["removed"],
     }
 
 
@@ -293,12 +298,9 @@ async def _dashboard_data() -> dict:
                     ),
                     # Same comparison the header badge makes, decided once here
                     # so a row can never disagree with the summary above it.
-                    # None when the item has no matching source file.
-                    "synced": (
-                        None
-                        if str(_field(i, "id")) not in drift["states"]
-                        else not drift["states"][str(_field(i, "id"))]
-                    ),
+                    # current | edited | removed | foreign, or None when drift
+                    # checking is switched off.
+                    "doc_state": drift["states"].get(str(_field(i, "id"))),
                 }
                 for i in items
             ],
