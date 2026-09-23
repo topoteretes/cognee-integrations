@@ -139,32 +139,6 @@
   .muted { color: var(--muted) }
   .empty { color: var(--muted); padding: 14px; font-size: 13px }
 
-  /* Data-viz slots. One hue: these bars encode magnitude, not identity, so
-     colour carries no information and a categorical palette would imply one. */
-  .viz { --series-1: #2a78d6; --track: rgba(127,127,127,.12) }
-  @media (prefers-color-scheme: dark) { .viz { --series-1: #3987e5 } }
-
-  .kpis { display: flex; gap: 28px; flex-wrap: wrap }
-  .kpi-v { font-size: 26px; font-weight: 600; letter-spacing: -.02em;
-           font-variant-numeric: tabular-nums; line-height: 1.2 }
-  .kpi-l { font-size: 11px; color: var(--muted); letter-spacing: .04em;
-           text-transform: uppercase }
-
-  .chart { margin-top: 20px }
-  .chart-h { font-size: 12px; font-weight: 600; color: var(--muted);
-             margin-bottom: 9px; display: flex; gap: 8px; align-items: baseline }
-  .chart-h small { font-weight: 400 }
-  .bar-row { display: grid; grid-template-columns: 170px 1fr auto;
-             gap: 12px; align-items: center; padding: 3px 0 }
-  .bar-lab { font-size: 12px; color: var(--ink); overflow: hidden;
-             text-overflow: ellipsis; white-space: nowrap }
-  .bar-track { background: var(--track); border-radius: 4px; height: 12px }
-  .bar-fill { background: var(--series-1); height: 100%;
-              border-radius: 0 4px 4px 0; min-width: 2px }
-  .bar-val { font-size: 12px; color: var(--muted);
-             font-variant-numeric: tabular-nums; min-width: 5ch; text-align: right }
-  .chart-note { font-size: 11px; color: var(--muted); margin-top: 8px }
-
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
     padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
@@ -200,15 +174,6 @@
     </table>
   </div>
   <p id="sources-more"></p>
-</section>
-
-<section class="viz">
-  <div class="sec-head"><h2>Knowledge graph</h2><span class="count" id="graph-when"></span></div>
-  <div class="panel pad">
-    <div class="kpis" id="graph-kpis"></div>
-    <p id="graph-actions"></p>
-    <div id="graph-charts"></div>
-  </div>
 </section>
 
 <section>
@@ -473,85 +438,6 @@
     });
   }
 
-  function kpi(parent, value, label, title) {
-    const w = document.createElement("div");
-    const v = document.createElement("div");
-    v.className = "kpi-v";
-    v.appendChild(text(value));
-    const l = document.createElement("div");
-    l.className = "kpi-l";
-    l.appendChild(text(label));
-    if (title) w.title = title;
-    w.append(v, l);
-    parent.appendChild(w);
-  }
-
-  // Horizontal bars: the categories are named, the values are magnitudes, and
-  // the labels are long - so bars run along the length the eye compares best.
-  function barChart(parent, heading, note, rows, total) {
-    const max = Math.max(...rows.map((r) => r.count), 1);
-    const box = document.createElement("div");
-    box.className = "chart";
-    const h = document.createElement("div");
-    h.className = "chart-h";
-    h.appendChild(text(heading));
-    if (note) {
-      const small = document.createElement("small");
-      small.appendChild(text(note));
-      h.appendChild(small);
-    }
-    box.appendChild(h);
-    rows.forEach((r) => {
-      const row = document.createElement("div");
-      row.className = "bar-row";
-      const lab = document.createElement("div");
-      lab.className = "bar-lab";
-      lab.appendChild(text(r.name));
-      lab.title = r.name;
-      const track = document.createElement("div");
-      track.className = "bar-track";
-      const fill = document.createElement("div");
-      fill.className = "bar-fill";
-      fill.style.width = (r.count / max) * 100 + "%";
-      track.appendChild(fill);
-      const val = document.createElement("div");
-      val.className = "bar-val";
-      val.appendChild(text(r.count.toLocaleString()));
-      const share = total ? ((r.count / total) * 100).toFixed(1) + "% of " +
-                            total.toLocaleString() : "";
-      row.title = r.name + " - " + r.count.toLocaleString() + (share ? " (" + share + ")" : "");
-      row.append(lab, track, val);
-      box.appendChild(row);
-    });
-    parent.appendChild(box);
-  }
-
-  async function loadGraphComposition(btn) {
-    btn.disabled = true;
-    btn.textContent = "Reading graph\u2026";
-    try {
-      const g = await fetch(api("/api/dashboard/graph")).then((r) => r.json());
-      const charts = $("#graph-charts");
-      charts.textContent = "";
-      barChart(charts, "Nodes by type", "", g.node_types, g.node_total);
-      barChart(charts, "Edges by relationship", "top 10 of " + g.edge_label_distinct,
-               g.edge_labels, g.edge_total);
-      if (g.edge_label_other) {
-        const n = document.createElement("p");
-        n.className = "chart-note";
-        n.appendChild(text(g.edge_label_other.toLocaleString() +
-          " further edges across " + (g.edge_label_distinct - 10) +
-          " less common relationships are not shown."));
-        charts.appendChild(n);
-      }
-      $("#graph-actions").textContent = "";
-    } catch (e) {
-      btn.disabled = false;
-      btn.textContent = "Analyse composition";
-      toast("Could not read the graph: " + e.message, true);
-    }
-  }
-
   async function load() {
     // Both endpoints talk to cognee and neither needs the other's result, so
     // they go out together; waiting for the first doubled time-to-paint.
@@ -607,25 +493,6 @@
     }
     $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
     renderSources(sortBy(corpus.items, "updated", "desc"));
-
-    const gk = $("#graph-kpis");
-    gk.textContent = "";
-    if (d.graph && d.graph.nodes != null) {
-      kpi(gk, d.graph.nodes.toLocaleString(), "nodes");
-      kpi(gk, d.graph.edges.toLocaleString(), "edges");
-      $("#graph-when").textContent = d.graph.computed_at
-        ? "built " + ago(d.graph.computed_at) : "";
-      const act = $("#graph-actions");
-      act.textContent = "";
-      const b = document.createElement("button");
-      b.appendChild(text("Analyse composition"));
-      b.title = "Reads the full graph server-side (a few seconds) and returns counts";
-      b.onclick = () => loadGraphComposition(b);
-      act.appendChild(b);
-    } else {
-      gk.appendChild(text("No graph has been built for this dataset yet."));
-      gk.className = "kpis muted";
-    }
 
     sessions = s.sessions;
     $("#sess-count").textContent = sessions.length + " conversations";

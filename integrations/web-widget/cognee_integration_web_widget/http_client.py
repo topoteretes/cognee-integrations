@@ -182,22 +182,6 @@ class CogneeHttpClient:
         )
         response.raise_for_status()
 
-    async def graph_summary(self, dataset_id: str) -> dict:
-        """Node/edge counts for a dataset. Cheap - a few hundred bytes."""
-        response = await self._request("GET", f"/api/v1/datasets/{dataset_id}/graph-summary")
-        if response.status_code >= 400:
-            return {}
-        data = response.json()
-        return data if isinstance(data, dict) else {}
-
-    async def graph(self, dataset_id: str) -> dict:
-        """The whole knowledge graph. Megabytes - never fetch this on page load."""
-        response = await self._request("GET", f"/api/v1/datasets/{dataset_id}/graph")
-        if response.status_code >= 400:
-            return {}
-        data = response.json()
-        return data if isinstance(data, dict) else {}
-
     async def list_sessions(self) -> list[Any]:
         """Every session this key can see, widget conversations among them."""
         response = await self._request("GET", "/api/v1/sessions")
