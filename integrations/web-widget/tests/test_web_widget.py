@@ -786,6 +786,30 @@ def test_analytics_ranks_questions_case_insensitively(analytics_client):
     assert top[0]["question"].lower() == "how do i install?"
 
 
+def test_analytics_defaults_to_one_week(analytics_client):
+    """The default window is a week - the range a reader reaches for first."""
+    client, _ = analytics_client
+    body = client.get("/api/dashboard/analytics?token=s3cret").json()
+    assert body["days"] == 7
+    assert len(body["per_day"]) == 7
+
+
+@pytest.mark.parametrize("days", [1, 7, 14, 30, 90])
+def test_analytics_honours_the_selected_window(analytics_client, days):
+    client, _ = analytics_client
+    body = client.get(f"/api/dashboard/analytics?days={days}&token=s3cret").json()
+    assert body["days"] == days
+    assert len(body["per_day"]) == days
+
+
+@pytest.mark.parametrize("days", [0, -1, 91, 500])
+def test_analytics_refuses_a_window_outside_its_bounds(analytics_client, days):
+    """Rejected at the edge rather than silently clamped, so a bad link is
+    visible instead of quietly answering for a different period."""
+    client, _ = analytics_client
+    assert client.get(f"/api/dashboard/analytics?days={days}&token=s3cret").status_code == 422
+
+
 def test_analytics_series_is_dense_so_quiet_days_read_as_zero(analytics_client):
     """A day with no traffic must be a zero, not a missing point."""
     client, _ = analytics_client

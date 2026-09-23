@@ -433,7 +433,7 @@ def _dense_days(per_day: dict, days: int) -> list:
 
 @app.get("/api/dashboard/analytics")
 async def dashboard_analytics(
-    days: int = Query(default=14, ge=1, le=90),
+    days: int = Query(default=7, ge=1, le=90),
     token: Optional[str] = Query(default=None),
 ) -> JSONResponse:
     """Usage of this widget: who asked what, when, and whether it could answer.

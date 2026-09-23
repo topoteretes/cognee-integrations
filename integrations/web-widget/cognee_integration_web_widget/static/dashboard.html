@@ -214,6 +214,17 @@
   .rank .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
   .rank .c { color: var(--muted); font-variant-numeric: tabular-nums }
 
+  .range { display: flex; gap: 2px; margin-bottom: 10px }
+  .range button { border-radius: 0; border-left-width: 0 }
+  .range button:first-child { border-radius: 7px 0 0 7px; border-left-width: 1px }
+  .range button:last-child { border-radius: 0 7px 7px 0 }
+  .range button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-color: var(--accent); color: var(--ink) }
+  /* Refetch holds the previous render at reduced opacity: no skeleton, no
+     layout jump, and the numbers never flash empty between periods. */
+  #an-scope { transition: opacity .12s }
+  #an-scope.loading { opacity: .45 }
+
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
     padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
@@ -253,6 +264,8 @@
 
 <section class="an">
   <div class="sec-head"><h2>Analytics</h2><span class="count" id="an-range"></span></div>
+  <div class="range" id="an-range-picker"></div>
+  <div id="an-scope">
   <div class="panel"><div class="stats" id="an-stats"></div></div>
   <div class="an-grid">
     <div class="panel pad">
@@ -265,6 +278,7 @@
       <div class="chart-h">Most asked</div>
       <div id="an-top"></div>
     </div>
+  </div>
   </div>
 </section>
 
@@ -646,6 +660,58 @@
     parent.appendChild(w);
   }
 
+  // Presets, not a calendar: nobody fights a date grid for "last 7 days".
+  const RANGES = [
+    { days: 7, label: "7d" },
+    { days: 14, label: "14d" },
+    { days: 30, label: "30d" },
+    { days: 90, label: "90d" },
+  ];
+  const RANGE_KEY = "cognee-dash-range";
+  let rangeDays = 7;
+  try {
+    const saved = parseInt(localStorage.getItem(RANGE_KEY), 10);
+    if (RANGES.some((r) => r.days === saved)) rangeDays = saved;
+  } catch (e) {
+    /* storage blocked - the default stands */
+  }
+
+  function renderRangePicker() {
+    const box = $("#an-range-picker");
+    box.textContent = "";
+    RANGES.forEach((r) => {
+      const b = document.createElement("button");
+      b.appendChild(text(r.label));
+      b.setAttribute("aria-pressed", r.days === rangeDays ? "true" : "false");
+      b.title = "Last " + r.days + " days";
+      b.onclick = () => {
+        if (r.days === rangeDays) return;
+        rangeDays = r.days;
+        try { localStorage.setItem(RANGE_KEY, String(r.days)); } catch (e) { /* fine */ }
+        renderRangePicker();
+        loadAnalytics();
+      };
+      box.appendChild(b);
+    });
+  }
+
+  async function loadAnalytics() {
+    const scope = $("#an-scope");
+    scope.classList.add("loading");
+    try {
+      const a = await fetch(api("/api/dashboard/analytics?days=" + rangeDays))
+        .then((r) => {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        });
+      renderAnalytics(a);
+    } catch (e) {
+      toast("Could not load analytics: " + e.message, true);
+    } finally {
+      scope.classList.remove("loading");
+    }
+  }
+
   function renderAnalytics(a) {
     const t = a.totals;
     $("#an-range").textContent = "last " + a.days + " days";
@@ -786,8 +852,10 @@
     const [d, s, a] = await Promise.all([
       fetch(api("/api/dashboard")).then((r) => r.json()),
       fetch(api("/api/dashboard/sessions")).then((r) => r.json()),
-      fetch(api("/api/dashboard/analytics")).then((r) => r.json()).catch(() => null),
+      fetch(api("/api/dashboard/analytics?days=" + rangeDays))
+        .then((r) => r.json()).catch(() => null),
     ]);
+    renderRangePicker();
     if (a && a.totals) renderAnalytics(a);
     corpus = d.corpus;
 
