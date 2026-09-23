@@ -190,6 +190,14 @@ def _field(item, *names, default=""):
     return default
 
 
+def _item_synced(updated_at: str, graph: dict) -> Optional[bool]:
+    """Is this item older than the graph build? None when either is unknown."""
+    built = str(graph.get("computedAt") or "")
+    if not updated_at or not built:
+        return None
+    return updated_at <= built
+
+
 def _corpus_sync(items: list, graph: dict) -> dict:
     """Compare the newest ingest against the graph's build time."""
     stamps = [str(_field(i, "updatedAt")) for i in items]
@@ -285,6 +293,9 @@ async def _dashboard_data() -> dict:
                         .get("_cognee", {})
                         .get("source_uri", "")
                     ),
+                    # Same comparison the header badge makes, decided once here
+                    # so a row can never disagree with the summary above it.
+                    "synced": _item_synced(str(_field(i, "updatedAt")), graph),
                 }
                 for i in items
             ],

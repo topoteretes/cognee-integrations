@@ -270,6 +270,8 @@
   .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)) }
   .pill.warn i { background: var(--warn) }
 
+  .pill.sm { font-size: 10px; padding: 1px 7px 1px 6px; letter-spacing: .02em }
+
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
     padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
@@ -297,6 +299,7 @@
     <table id="sources">
       <thead><tr>
         <th data-sort="name">source</th>
+        <th data-sort="synced">status</th>
         <th data-sort="updated">last synced</th>
         <th data-sort="created">first ingested</th>
         <th></th>
@@ -401,7 +404,11 @@
 
   function sortBy(list, key, dir) {
     return list.slice().sort((a, b) => {
-      const x = a[key], y = b[key];
+      let x = a[key], y = b[key];
+      if (typeof x === "boolean" || typeof y === "boolean") {
+        x = x ? 1 : 0;
+        y = y ? 1 : 0;
+      }
       const n = typeof x === "number" && typeof y === "number";
       const c = n ? x - y : String(x ?? "").localeCompare(String(y ?? ""));
       return dir === "desc" ? -c : c;
@@ -492,6 +499,17 @@
           note.className = "row-note";
           note.appendChild(text(i.source.replace(/^file:\/\//, "")));
           nameTd.appendChild(note);
+        }
+        const st = tr.insertCell();
+        if (i.synced !== null && i.synced !== undefined) {
+          const pill = document.createElement("span");
+          pill.className = "pill sm " + (i.synced ? "ok" : "warn");
+          const dot = document.createElement("i");
+          pill.append(dot, text(i.synced ? "synced" : "changed"));
+          pill.title = i.synced
+            ? "Ingested before the graph was built, so the graph reflects it."
+            : "Ingested after the graph was built - rebuild the graph to include this version.";
+          st.appendChild(pill);
         }
         cell(tr, ago(i.updated), i.updated).className = "when";
         cell(tr, ago(i.created), i.created).className = "when";

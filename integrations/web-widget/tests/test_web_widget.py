@@ -888,3 +888,36 @@ def test_dashboard_payload_carries_the_sync_state(dashboard_client, fake_client)
     )
     body = dashboard_client.get("/api/dashboard?token=s3cret").json()
     assert body["corpus"]["sync"]["state"] == "stale"
+
+
+def test_each_item_carries_its_own_sync_state(dashboard_client, fake_client):
+    """Per-row status is decided server-side from the same comparison as the
+    header badge, so a row can never contradict the summary above it."""
+    fake_client.graph_summary = AsyncMock(
+        return_value={"numNodes": 1, "numEdges": 0, "computedAt": "2026-09-03T00:00:00Z"}
+    )
+    fake_client.dataset_data = AsyncMock(
+        return_value=[
+            {"id": "old", "name": "before", "updatedAt": "2026-09-01T00:00:00Z"},
+            {"id": "new", "name": "after", "updatedAt": "2026-09-05T00:00:00Z"},
+            {"id": "same", "name": "exactly", "updatedAt": "2026-09-03T00:00:00Z"},
+        ]
+    )
+    corpus = dashboard_client.get("/api/dashboard?token=s3cret").json()["corpus"]
+    by_id = {i["id"]: i["synced"] for i in corpus["items"]}
+    assert by_id["old"] is True
+    assert by_id["new"] is False
+    # An item ingested at the instant of the build is covered by it.
+    assert by_id["same"] is True
+    # The header agrees with the rows.
+    assert corpus["sync"]["stale"] == sum(1 for v in by_id.values() if v is False)
+
+
+def test_item_sync_is_none_when_it_cannot_be_decided(dashboard_client, fake_client):
+    """No graph means no claim per row, same as for the header."""
+    fake_client.graph_summary = AsyncMock(return_value={})
+    fake_client.dataset_data = AsyncMock(
+        return_value=[{"id": "a", "name": "x", "updatedAt": "2026-09-01T00:00:00Z"}]
+    )
+    corpus = dashboard_client.get("/api/dashboard?token=s3cret").json()["corpus"]
+    assert corpus["items"][0]["synced"] is None
