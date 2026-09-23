@@ -27,7 +27,6 @@
   .turn { border-left: 3px solid var(--line); padding: 2px 0 2px 12px; margin: 10px 0 }
   .q { font-weight: 600 } .a { white-space: pre-wrap }
   .row-note { font-size: 12px; color: var(--muted) }
-  tr.gone { opacity: .35 }
   #toast { position: fixed; bottom: 18px; right: 18px; background: #111827; color: #fff;
            padding: 9px 15px; border-radius: 8px; display: none; max-width: 60ch }
 </style>
@@ -52,6 +51,7 @@
   </tr></thead>
   <tbody></tbody>
 </table>
+<p class="bar" id="sources-more"></p>
 
 <h2>Conversations <span class="muted" id="sess-count"></span></h2>
 <table id="sessions">
@@ -128,12 +128,46 @@
     });
   }
 
+  // A corpus is hundreds of pages; showing all of them buries the controls and
+  // makes the page unusable. Ten is enough to see the most recent state, and
+  // the filter searches the whole corpus rather than the visible slice.
+  const PAGE = 10;
+  let shown = PAGE;
+
   function renderSources(items) {
     const q = $("#filter").value.trim().toLowerCase();
     const body = $("#sources tbody");
     body.textContent = "";
-    items
-      .filter((i) => !q || i.name.toLowerCase().includes(q))
+    const matches = items.filter((i) => !q || i.name.toLowerCase().includes(q));
+    const visible = matches.slice(0, shown);
+
+    const more = $("#sources-more");
+    more.textContent = "";
+    const label = document.createElement("span");
+    label.className = "muted";
+    label.appendChild(text(
+      matches.length === 0
+        ? "No sources match \u201c" + q + "\u201d"
+        : "Showing " + visible.length + " of " + matches.length +
+          (q ? " matching \u201c" + q + "\u201d" : " sources")));
+    more.appendChild(label);
+    if (matches.length > visible.length) {
+      const nextChunk = Math.min(PAGE, matches.length - visible.length);
+      const moreBtn = document.createElement("button");
+      moreBtn.appendChild(text("Show " + nextChunk + " more"));
+      moreBtn.onclick = () => { shown += PAGE; renderSources(items); };
+      const allBtn = document.createElement("button");
+      allBtn.appendChild(text("Show all " + matches.length));
+      allBtn.onclick = () => { shown = matches.length; renderSources(items); };
+      more.append(moreBtn, allBtn);
+    } else if (shown > PAGE && matches.length > PAGE) {
+      const lessBtn = document.createElement("button");
+      lessBtn.appendChild(text("Collapse"));
+      lessBtn.onclick = () => { shown = PAGE; renderSources(items); };
+      more.appendChild(lessBtn);
+    }
+
+    visible
       .forEach((i) => {
         const tr = body.insertRow();
         const nameTd = cell(tr, i.name, i.source || "");
@@ -159,11 +193,13 @@
             const r = await fetch(api("/api/dashboard/data/" + encodeURIComponent(i.id)),
                                   { method: "DELETE" });
             if (!r.ok) throw new Error("HTTP " + r.status);
-            tr.classList.add("gone");
-            del.textContent = "Deleted";
             toast("Deleted " + i.name);
+            // Re-render rather than just fading the row, so the counts in the
+            // heading and the footer cannot drift from what is actually there.
             corpus.items = corpus.items.filter((x) => x.id !== i.id);
-            $("#corpus-count").textContent = corpus.items.length + " items in " + corpus.dataset;
+            corpus.item_count = corpus.items.length;
+            $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
+            renderSources(corpus.items);
           } catch (e) {
             del.disabled = false;
             del.textContent = "Delete";
@@ -275,7 +311,7 @@
     renderSessions(sessions);
   }
 
-  $("#filter").oninput = () => renderSources(corpus.items);
+  $("#filter").oninput = () => { shown = PAGE; renderSources(corpus.items); };
   wireSort("#sources", () => corpus.items, renderSources);
   wireSort("#sessions", () => sessions, renderSessions);
   load().catch((e) => toast("Failed to load: " + e.message, true));
