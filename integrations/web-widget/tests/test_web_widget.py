@@ -624,3 +624,86 @@ def test_corpus_items_carry_ids_and_timestamps(interactive_client, fake_client):
     assert item["id"] == "abc"
     assert item["updated"] == "2026-02-02T00:00:00Z"
     assert item["source"] == "file:///app/quickstart.md"
+
+
+# --- Reingest ----------------------------------------------------------------
+#
+# Reingest is delete-then-add because cognee has no in-place refresh and a
+# plain re-upload of identical content is deduplicated into a no-op. That makes
+# the ordering load-bearing: the bytes must be in hand before anything is
+# destroyed, and a failure after the delete must not report success.
+
+
+@pytest.fixture
+def reingest_client(interactive_client):
+    client, fake = interactive_client
+    fake.dataset_data = AsyncMock(
+        return_value=[
+            {
+                "id": "item-1",
+                "name": "quickstart",
+                "extension": "md",
+                "mimeType": "text/markdown",
+                "createdAt": "2026-01-01",
+                "updatedAt": "2026-01-01",
+            }
+        ]
+    )
+    fake.fetch_raw = AsyncMock(return_value=b"# Quickstart\n")
+    fake.remember_bytes = AsyncMock(return_value=None)
+    return client, fake
+
+
+def test_reingest_deletes_then_re_adds_preserving_name_and_type(reingest_client):
+    client, fake = reingest_client
+    body = client.post("/api/dashboard/data/item-1/reingest?token=s3cret").json()
+    assert body == {"reingested": "item-1", "name": "quickstart", "bytes": 13}
+    assert fake.delete_data.await_args.kwargs == {"dataset_id": "d1", "data_id": "item-1"}
+    kw = fake.remember_bytes.await_args.kwargs
+    # Re-uploading as "message.txt" would make the row unidentifiable afterwards.
+    assert kw["filename"] == "quickstart.md"
+    assert kw["content_type"] == "text/markdown"
+    assert kw["dataset_name"] == "web:demo:docs"
+
+
+def test_reingest_reads_the_bytes_before_deleting_anything(reingest_client):
+    """If the stored copy cannot be read, the item must survive untouched."""
+    client, fake = reingest_client
+    fake.fetch_raw = AsyncMock(return_value=None)
+    r = client.post("/api/dashboard/data/item-1/reingest?token=s3cret")
+    assert r.status_code == 502
+    assert "nothing changed" in r.json()["detail"]
+    fake.delete_data.assert_not_awaited()
+
+
+def test_reingest_does_not_delete_when_cognee_refuses(reingest_client):
+    client, fake = reingest_client
+    fake.delete_data = AsyncMock(return_value=False)
+    r = client.post("/api/dashboard/data/item-1/reingest?token=s3cret")
+    assert r.status_code == 502
+    fake.remember_bytes.assert_not_awaited()
+
+
+def test_reingest_reports_data_loss_rather_than_success(reingest_client):
+    """The dangerous case: deleted, then the re-add failed. Say so loudly."""
+    client, fake = reingest_client
+    fake.remember_bytes = AsyncMock(side_effect=RuntimeError("upstream 500"))
+    r = client.post("/api/dashboard/data/item-1/reingest?token=s3cret")
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert "removed but could not be re-added" in detail
+    assert "no longer in the corpus" in detail
+
+
+def test_reingest_refuses_an_item_outside_the_docs_dataset(reingest_client):
+    client, fake = reingest_client
+    r = client.post("/api/dashboard/data/not-mine/reingest?token=s3cret")
+    assert r.status_code == 404
+    fake.delete_data.assert_not_awaited()
+
+
+def test_reingest_is_gated(reingest_client):
+    client, fake = reingest_client
+    assert client.post("/api/dashboard/data/item-1/reingest").status_code == 401
+    assert client.post("/api/dashboard/data/item-1/reingest?token=wrong").status_code == 401
+    fake.delete_data.assert_not_awaited()

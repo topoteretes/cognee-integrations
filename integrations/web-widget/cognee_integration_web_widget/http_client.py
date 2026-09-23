@@ -158,6 +158,30 @@ class CogneeHttpClient:
         response = await self._request("DELETE", f"/api/v1/datasets/{dataset_id}/data/{data_id}")
         return response.status_code < 400
 
+    async def fetch_raw(self, *, dataset_id: str, data_id: str) -> Optional[bytes]:
+        """The bytes originally ingested for one item, or None if unavailable."""
+        response = await self._request("GET", f"/api/v1/datasets/{dataset_id}/data/{data_id}/raw")
+        if response.status_code >= 400:
+            return None
+        return response.content
+
+    async def remember_bytes(
+        self, content: bytes, *, dataset_name: str, filename: str, content_type: str
+    ) -> None:
+        """Store raw bytes under ``filename``, preserving the original type.
+
+        ``remember`` encodes a str as message.txt; re-ingesting an existing item
+        has to keep its own name, or the corpus fills with items called
+        "message" and the source becomes unidentifiable in the dashboard.
+        """
+        response = await self._request(
+            "POST",
+            "/api/v1/remember",
+            data={"datasetName": dataset_name},
+            files={"data": (filename, content, content_type)},
+        )
+        response.raise_for_status()
+
     async def list_sessions(self) -> list[Any]:
         """Every session this key can see, widget conversations among them."""
         response = await self._request("GET", "/api/v1/sessions")

@@ -313,6 +313,86 @@ async def dashboard_session(
     return JSONResponse({"session_id": session_id, "turns": turns})
 
 
+async def _docs_dataset_id() -> str:
+    """The id of the widget's own dataset, resolved server-side.
+
+    Every mutating route goes through this rather than accepting a dataset id
+    from the page: the key can write to anything it can reach, and the
+    dashboard must not be a way to reach the rest of the tenant.
+    """
+    datasets = await adapter.client.list_datasets()
+    docs_dataset = adapter.docs_dataset(DEMO_SITE_ID)
+    match = next(
+        (d for d in datasets if isinstance(d, dict) and d.get("name") == docs_dataset), None
+    )
+    if not match:
+        raise HTTPException(status_code=404, detail="docs dataset not found")
+    return str(match.get("id"))
+
+
+@app.post("/api/dashboard/data/{data_id}/reingest")
+async def dashboard_reingest(
+    data_id: str, token: Optional[str] = Query(default=None)
+) -> JSONResponse:
+    """Re-ingest one item: delete it, then add its bytes back.
+
+    cognee has no per-item refresh. Re-uploading alongside the original is a
+    no-op — identical content is deduplicated, so nothing is rebuilt and no
+    timestamp moves — which means the only honest way to force a fresh pass is
+    to remove the item first.
+
+    What this does NOT do is re-read the page the item came from. source_uri
+    points into whatever filesystem performed the original ingest, not one this
+    backend can see, so this replays the stored bytes. It is useful for
+    rebuilding an item under changed cognify settings; it will not pick up an
+    edit made to the underlying documentation.
+
+    The bytes are fetched before anything is destroyed. If the re-upload fails
+    afterwards the item is genuinely gone, and the response says so rather than
+    reporting a success that lost data.
+    """
+    _require_dashboard(token)
+    dataset_id = await _docs_dataset_id()
+
+    items = await adapter.client.dataset_data(dataset_id)
+    item = next((i for i in items if str(_field(i, "id")) == data_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="item not found in the docs dataset")
+
+    raw = await adapter.client.fetch_raw(dataset_id=dataset_id, data_id=data_id)
+    if raw is None:
+        # Nothing has been touched yet, so this is a clean refusal.
+        raise HTTPException(
+            status_code=502, detail="could not read the stored copy; nothing changed"
+        )
+
+    name = str(_field(item, "name")) or "document"
+    extension = str(_field(item, "extension")) or "txt"
+    filename = name if name.endswith(f".{extension}") else f"{name}.{extension}"
+    content_type = str(_field(item, "mimeType")) or "text/plain"
+
+    if not await adapter.client.delete_data(dataset_id=dataset_id, data_id=data_id):
+        raise HTTPException(status_code=502, detail="cognee refused the delete; nothing changed")
+
+    try:
+        await adapter.client.remember_bytes(
+            raw,
+            dataset_name=adapter.docs_dataset(DEMO_SITE_ID),
+            filename=filename,
+            content_type=content_type,
+        )
+    except Exception as error:  # noqa: BLE001 - the item is already gone; say so
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"'{name}' was removed but could not be re-added ({error}). "
+                "Its content is no longer in the corpus."
+            ),
+        ) from error
+
+    return JSONResponse({"reingested": data_id, "name": name, "bytes": len(raw)})
+
+
 @app.delete("/api/dashboard/data/{data_id}")
 async def dashboard_delete_data(
     data_id: str, token: Optional[str] = Query(default=None)
@@ -324,14 +404,8 @@ async def dashboard_delete_data(
     rest of the tenant.
     """
     _require_dashboard(token)
-    datasets = await adapter.client.list_datasets()
-    docs_dataset = adapter.docs_dataset(DEMO_SITE_ID)
-    match = next(
-        (d for d in datasets if isinstance(d, dict) and d.get("name") == docs_dataset), None
-    )
-    if not match:
-        raise HTTPException(status_code=404, detail="docs dataset not found")
-    ok = await adapter.client.delete_data(dataset_id=str(match.get("id")), data_id=data_id)
+    dataset_id = await _docs_dataset_id()
+    ok = await adapter.client.delete_data(dataset_id=dataset_id, data_id=data_id)
     if not ok:
         raise HTTPException(status_code=502, detail="cognee refused the delete")
     return JSONResponse({"deleted": data_id})

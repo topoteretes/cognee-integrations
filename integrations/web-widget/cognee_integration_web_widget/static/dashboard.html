@@ -89,6 +89,7 @@
   tbody tr:last-child td { border-bottom: 0 }
   tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, transparent) }
   td.act, thead th:last-child { text-align: right; width: 1%; white-space: nowrap }
+  td.act button + button { margin-left: 6px }
   .num { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap }
   .when { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums }
 
@@ -309,7 +310,39 @@
 
         const actions = tr.insertCell();
         actions.className = "act";
-        const del = document.createElement("button");
+
+        const re = document.createElement("button");
+        re.appendChild(text("Reingest"));
+        re.title = "Delete and re-add the stored copy, forcing a fresh pass. " +
+                   "Does not re-read the original page.";
+        re.onclick = async () => {
+          if (!confirm(
+                "Reingest \u201c" + i.name + "\u201d?\n\n" +
+                "cognee has no in-place refresh, so this deletes the item and adds its " +
+                "stored bytes back. It gets a new id and a fresh timestamp.\n\n" +
+                "It replays what is stored - it does NOT re-read the original page, so " +
+                "edits made to the docs will not appear.")) return;
+          re.disabled = true;
+          del.disabled = true;
+          re.textContent = "Reingesting\u2026";
+          try {
+            const r = await fetch(api("/api/dashboard/data/" + encodeURIComponent(i.id) +
+                                      "/reingest"), { method: "POST" });
+            const body = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+            toast("Reingested " + i.name + " (" + body.bytes + " bytes)");
+            // The item has a new id now, so the cached row is stale.
+            await load();
+          } catch (e) {
+            re.disabled = false;
+            del.disabled = false;
+            re.textContent = "Reingest";
+            toast("Reingest failed: " + e.message, true);
+          }
+        };
+        actions.appendChild(re);
+
+        var del = document.createElement("button");
         del.className = "danger";
         del.appendChild(text("Delete"));
         del.onclick = async () => {
