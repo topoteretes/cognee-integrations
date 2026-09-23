@@ -205,6 +205,32 @@ class CogneeHttpClient:
             return None
         return response.text
 
+    async def forget_dataset(self, dataset_name: str) -> bool:
+        """Delete an entire dataset and everything in it."""
+        response = await self._request(
+            "POST", "/api/v1/forget", json={"dataset": dataset_name, "everything": False}
+        )
+        return response.status_code < 400
+
+    async def remember_background(
+        self, content: bytes, *, dataset_name: str, filename: str
+    ) -> bool:
+        """Queue one document for ingest without waiting for its graph build.
+
+        A bulk ingest is hundreds of these, and each one cognifies. Waiting
+        would hold the request open for the whole run, so the server is asked to
+        process in the background and the upload returns as soon as it is
+        accepted.
+        """
+        response = await self._request(
+            "POST",
+            "/api/v1/remember",
+            data={"datasetName": dataset_name, "run_in_background": "true"},
+            files={"data": (filename, content, "text/plain")},
+            timeout_override=120.0,
+        )
+        return response.status_code < 400
+
     async def list_sessions(self) -> list[Any]:
         """Every session this key can see, widget conversations among them."""
         response = await self._request("GET", "/api/v1/sessions")

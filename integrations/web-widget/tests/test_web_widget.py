@@ -989,3 +989,79 @@ def test_drift_separates_a_deleted_page_from_something_that_was_never_a_page(tmp
     assert out["states"]["seed"] == "foreign"
     # "removed" is not counted as a matched, comparable page.
     assert out["matched"] == 0
+
+
+# --- Ingest transform and page listing ---------------------------------------
+
+
+def test_item_name_flattens_the_path_like_the_corpus_does():
+    from cognee_integration_web_widget.docs_ingest import item_name
+
+    assert item_name("cognee-cloud/ui/api-keys.mdx") == "cognee-cloud__ui__api-keys"
+    assert item_name("changelog.md") == "changelog"
+
+
+def test_to_document_lifts_frontmatter_and_drops_mdx_tags():
+    from cognee_integration_web_widget.docs_ingest import to_document
+
+    out = to_document(
+        '---\ntitle: "API Keys"\ndescription: "Manage keys"\nicon: "key"\n---\n\n'
+        "import X from '/snippets/x.mdx'\n\n"
+        "<Note>Keys are secret.</Note>\n\nBody text.\n",
+        "cognee-cloud/ui/api-keys.mdx",
+        "https://docs.cognee.ai",
+    )
+    assert out.startswith("# API Keys\n\nManage keys\n")
+    assert "(Source: https://docs.cognee.ai/cognee-cloud/ui/api-keys)" in out
+    # The component wrapper goes; the sentence inside it stays.
+    assert "<Note>" not in out and "Keys are secret." in out
+    assert "import X" not in out
+    assert "icon" not in out
+
+
+def test_to_document_survives_a_page_with_no_frontmatter():
+    from cognee_integration_web_widget.docs_ingest import to_document
+
+    out = to_document("Just prose.\n", "guides/x.md")
+    assert out.strip() == "Just prose."
+
+
+def test_list_pages_marks_non_docs_folders_as_not_recommended(tmp_path):
+    """Excluded folders are listed but unticked - hiding them would silently
+    decide what the corpus contains."""
+    from cognee_integration_web_widget.docs_ingest import list_pages
+
+    (tmp_path / "guides").mkdir()
+    (tmp_path / "guides" / "a.mdx").write_text("a")
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "b.md").write_text("b")
+    (tmp_path / "root.mdx").write_text("r")
+
+    pages = {p["path"]: p for p in list_pages(tmp_path)}
+    assert pages["guides/a.mdx"]["recommended"] is True
+    assert pages["root.mdx"]["folder"] == "(root)"
+    assert ".github/b.md" in pages
+    assert pages[".github/b.md"]["recommended"] is False
+
+
+def test_clear_requires_the_dataset_name_typed_exactly(dashboard_client, fake_client):
+    """A checkbox is too easy for something that destroys the corpus."""
+    client = dashboard_client
+    fake_client.forget_dataset = AsyncMock(return_value=True)
+
+    bad = client.post("/api/dashboard/clear?token=s3cret", json={"confirm": "web:demo:doc"})
+    assert bad.status_code == 400
+    fake_client.forget_dataset.assert_not_awaited()
+
+    ok = client.post("/api/dashboard/clear?token=s3cret", json={"confirm": "web:demo:docs"})
+    assert ok.status_code == 200
+    fake_client.forget_dataset.assert_awaited_once()
+
+
+def test_clear_and_ingest_are_gated(dashboard_client, fake_client):
+    client = dashboard_client
+    fake_client.forget_dataset = AsyncMock(return_value=True)
+    assert client.post("/api/dashboard/clear", json={"confirm": "x"}).status_code == 401
+    assert client.post("/api/dashboard/ingest", json={"paths": []}).status_code == 401
+    assert client.get("/api/dashboard/docs-tree").status_code == 401
+    fake_client.forget_dataset.assert_not_awaited()

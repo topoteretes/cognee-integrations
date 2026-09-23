@@ -274,6 +274,17 @@
   .pill.neutral i { background: var(--muted) }
   .pill.sm { font-size: 10px; padding: 1px 7px 1px 6px; letter-spacing: .02em }
 
+  .corpus-actions { display: flex; gap: 8px; margin-left: auto }
+  .picker { margin-top: 12px; max-height: 340px; overflow: auto; border: 1px solid var(--line);
+            border-radius: 8px; padding: 10px 12px; background: var(--panel) }
+  .pick-folder { margin: 8px 0 3px; font-size: 11px; font-weight: 650; color: var(--muted);
+                 letter-spacing: .03em; display: flex; gap: 7px; align-items: center }
+  .pick-file { display: flex; gap: 7px; align-items: center; font-size: 12px;
+               padding: 1px 0 1px 18px }
+  .pick-file .muted { font-size: 11px }
+  .pick-bar { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 12px }
+  .pick-count { color: var(--muted) }
+
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
     padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
@@ -292,7 +303,8 @@
 </section>
 
 <section>
-  <div class="sec-head"><h2>Corpus</h2><span class="count" id="corpus-count"></span><span id="corpus-sync"></span></div>
+  <div class="sec-head"><h2>Corpus</h2><span class="count" id="corpus-count"></span><span id="corpus-sync"></span><span class="corpus-actions" id="corpus-actions"></span></div>
+  <div id="corpus-panel"></div>
   <div id="corpus-warn"></div>
   <div class="toolbar">
     <input type="search" id="filter" placeholder="Filter sources…" />
@@ -463,6 +475,147 @@
       : "All " + sync.matched + " matched sources were last committed before they were ingested.") +
       " Compares each page's last commit with when it was ingested.";
     box.appendChild(pill);
+  }
+
+  // Ingest picker. Everything is selected by default; excluded folders
+  // (.github, .mintlify-eval) are listed but unticked rather than hidden, so
+  // nothing is silently decided about what the corpus contains.
+  async function openPicker() {
+    const box = $("#corpus-panel");
+    box.textContent = "";
+    const wrap = document.createElement("div");
+    wrap.className = "picker";
+    wrap.appendChild(text("Reading the docs folder\u2026"));
+    box.appendChild(wrap);
+    let data;
+    try {
+      const r = await fetch(api("/api/dashboard/docs-tree"));
+      data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "HTTP " + r.status);
+    } catch (e) {
+      wrap.textContent = "";
+      wrap.className = "picker muted";
+      wrap.appendChild(text("Cannot list pages: " + e.message));
+      return;
+    }
+
+    wrap.textContent = "";
+    const boxes = [];
+    const byFolder = {};
+    data.pages.forEach((p) => (byFolder[p.folder] = byFolder[p.folder] || []).push(p));
+
+    Object.keys(byFolder).sort().forEach((folder) => {
+      const head = document.createElement("label");
+      head.className = "pick-folder";
+      const all = document.createElement("input");
+      all.type = "checkbox";
+      head.append(all, text(folder + "  (" + byFolder[folder].length + ")"));
+      wrap.appendChild(head);
+
+      const mine = [];
+      byFolder[folder].forEach((p) => {
+        const row = document.createElement("label");
+        row.className = "pick-file";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = p.recommended;
+        cb.value = p.path;
+        const note = document.createElement("span");
+        note.className = "muted";
+        note.appendChild(text(p.ingested ? "in corpus" : "new"));
+        row.append(cb, text(p.path.split("/").pop()), note);
+        wrap.appendChild(row);
+        boxes.push(cb);
+        mine.push(cb);
+      });
+
+      const sync = () => {
+        const on = mine.filter((c) => c.checked).length;
+        all.checked = on === mine.length;
+        all.indeterminate = on > 0 && on < mine.length;
+      };
+      all.onchange = () => { mine.forEach((c) => (c.checked = all.checked)); sync(); count(); };
+      mine.forEach((c) => c.addEventListener("change", () => { sync(); count(); }));
+      sync();
+    });
+
+    const bar = document.createElement("p");
+    bar.className = "pick-bar";
+    const label = document.createElement("span");
+    label.className = "pick-count";
+    const go = document.createElement("button");
+    const cancel = document.createElement("button");
+    cancel.appendChild(text("Cancel"));
+    cancel.onclick = () => { box.textContent = ""; };
+    const count = () => {
+      const n = boxes.filter((c) => c.checked).length;
+      label.textContent = n + " of " + boxes.length + " pages selected";
+      go.textContent = "Ingest " + n + " page" + (n === 1 ? "" : "s");
+      go.disabled = !n;
+    };
+    go.onclick = async () => {
+      const paths = boxes.filter((c) => c.checked).map((c) => c.value);
+      if (!confirm("Ingest " + paths.length + " pages into " + corpus.dataset + "?\n\n" +
+                   "Each page is processed by cognee, which costs credits and takes time. " +
+                   "Pages already in the corpus with identical content are skipped.")) return;
+      go.disabled = true;
+      go.textContent = "Queueing\u2026";
+      try {
+        const r = await fetch(api("/api/dashboard/ingest"), {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ paths }),
+        });
+        const body = await r.json();
+        if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+        toast("Queued " + body.queued + " pages" +
+              (body.skipped.length ? ", " + body.skipped.length + " skipped" : ""));
+        box.textContent = "";
+        load();
+      } catch (e) {
+        go.disabled = false;
+        toast("Ingest failed: " + e.message, true);
+        count();
+      }
+    };
+    bar.append(go, cancel, label);
+    box.appendChild(bar);
+    count();
+  }
+
+  async function clearCorpus() {
+    const name = corpus.dataset;
+    const typed = prompt(
+      "This deletes the dataset \u201c" + name + "\u201d and all " +
+      corpus.item_count + " sources in it. The widget will stop answering until " +
+      "something is ingested again.\n\nType the dataset name to confirm:");
+    if (typed === null) return;
+    try {
+      const r = await fetch(api("/api/dashboard/clear"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: typed }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+      toast("Cleared " + body.cleared + " (" + body.items_removed + " sources)");
+      load();
+    } catch (e) {
+      toast("Clear failed: " + e.message, true);
+    }
+  }
+
+  function renderCorpusActions() {
+    const box = $("#corpus-actions");
+    box.textContent = "";
+    const ingest = document.createElement("button");
+    ingest.appendChild(text("Ingest pages\u2026"));
+    ingest.title = "Pick documentation pages to add to the corpus";
+    ingest.onclick = openPicker;
+    const clear = document.createElement("button");
+    clear.className = "danger";
+    clear.appendChild(text("Clear dataset"));
+    clear.title = "Delete the dataset and everything in it";
+    clear.onclick = clearCorpus;
+    box.append(ingest, clear);
   }
 
   function renderSources(items) {
@@ -1107,6 +1260,7 @@
     }
     $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
     renderSyncPill(corpus.sync);
+    renderCorpusActions();
     renderSources(sortBy(corpus.items, "updated", "desc"));
 
     const sum = $("#graph-summary");

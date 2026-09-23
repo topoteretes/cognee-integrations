@@ -46,6 +46,7 @@ from pydantic import BaseModel
 
 from .adapter import ChatMemoryAdapter
 from .docs_drift import drift_for_items
+from .docs_ingest import item_name, list_pages, to_document
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -192,6 +193,8 @@ def _field(item, *names, default=""):
 
 
 DOCS_PATH = os.getenv("WIDGET_DOCS_PATH", "").strip() or None
+# Used only to stamp a Source line into ingested text.
+DOCS_URL = os.getenv("WIDGET_DOCS_URL", "https://docs.cognee.ai").strip()
 
 
 def _corpus_sync(drift: dict) -> dict:
@@ -585,6 +588,90 @@ async def dashboard_graph(token: Optional[str] = Query(default=None)) -> JSONRes
             "edge_label_distinct": len(edge_labels),
         }
     )
+
+
+class IngestRequest(BaseModel):
+    paths: list[str]
+
+
+class ClearRequest(BaseModel):
+    # Typing the dataset name is the confirmation. A checkbox is too easy to
+    # click through for something that destroys a corpus that cost money to
+    # build and takes an ingest run to restore.
+    confirm: str
+
+
+@app.get("/api/dashboard/docs-tree")
+async def dashboard_docs_tree(token: Optional[str] = Query(default=None)) -> JSONResponse:
+    """The documentation pages available to ingest, and which are already in."""
+    _require_dashboard(token)
+    if not DOCS_PATH:
+        raise HTTPException(status_code=409, detail="WIDGET_DOCS_PATH is not set")
+    root = Path(DOCS_PATH).expanduser()
+    if not root.is_dir():
+        raise HTTPException(status_code=409, detail=f"{DOCS_PATH} is not a directory")
+
+    pages = list_pages(root)
+    dataset_id = await _docs_dataset_id()
+    ingested = {str(_field(i, "name")) for i in await adapter.client.dataset_data(dataset_id)}
+    for page in pages:
+        page["ingested"] = page["name"] in ingested
+    return JSONResponse({"root": str(root), "pages": pages})
+
+
+@app.post("/api/dashboard/ingest")
+async def dashboard_ingest(
+    body: IngestRequest, token: Optional[str] = Query(default=None)
+) -> JSONResponse:
+    """Ingest the selected pages.
+
+    Uploads are queued with run_in_background, so this returns once cognee has
+    accepted them rather than once it has built the graph. Paths are resolved
+    under the docs root and anything escaping it is refused - the list comes
+    from the page, so it is input, not instruction.
+    """
+    _require_dashboard(token)
+    if not DOCS_PATH:
+        raise HTTPException(status_code=409, detail="WIDGET_DOCS_PATH is not set")
+    root = Path(DOCS_PATH).expanduser().resolve()
+    dataset = adapter.docs_dataset(DEMO_SITE_ID)
+
+    queued, skipped = [], []
+    for relative in body.paths[:1000]:
+        candidate = (root / relative).resolve()
+        if not candidate.is_file() or root not in candidate.parents:
+            skipped.append({"path": relative, "why": "outside the docs root or missing"})
+            continue
+        text = to_document(
+            candidate.read_text(encoding="utf-8", errors="replace"), relative, DOCS_URL
+        )
+        name = item_name(relative)
+        ok = await adapter.client.remember_background(
+            text.encode("utf-8"), dataset_name=dataset, filename=f"{name}.md"
+        )
+        (queued if ok else skipped).append(
+            {"path": relative, "name": name} if ok else {"path": relative, "why": "refused"}
+        )
+    return JSONResponse({"queued": len(queued), "skipped": skipped, "dataset": dataset})
+
+
+@app.post("/api/dashboard/clear")
+async def dashboard_clear(
+    body: ClearRequest, token: Optional[str] = Query(default=None)
+) -> JSONResponse:
+    """Delete the widget's dataset and everything in it.
+
+    Scoped to the widget's own dataset, and gated on the caller typing that
+    dataset's name. The next ingest recreates it.
+    """
+    _require_dashboard(token)
+    dataset = adapter.docs_dataset(DEMO_SITE_ID)
+    if body.confirm != dataset:
+        raise HTTPException(status_code=400, detail=f"type the dataset name exactly: {dataset}")
+    items = await adapter.client.dataset_data(await _docs_dataset_id())
+    if not await adapter.client.forget_dataset(dataset):
+        raise HTTPException(status_code=502, detail="cognee refused to clear the dataset")
+    return JSONResponse({"cleared": dataset, "items_removed": len(items)})
 
 
 @app.post("/api/dashboard/data/{data_id}/reingest")
