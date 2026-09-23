@@ -35,6 +35,7 @@ import secrets
 import time
 from collections import Counter
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -415,6 +416,104 @@ async def dashboard_graph_html(
         html = _prefer_dark(html)
         _viz_cache.update({"html": html, "at": time.time(), "dataset": dataset_id})
     return HTMLResponse(html, headers={"X-Cache": "miss"})
+
+
+_EMPTY_ANSWER_MARKER = "I don't have anything in memory for that yet."
+
+
+def _dense_days(per_day: dict, days: int) -> list:
+    """One entry per day in the window, zero-filled, oldest first."""
+    today = datetime.now(timezone.utc).date()
+    out = []
+    for offset in range(days - 1, -1, -1):
+        key = (today - timedelta(days=offset)).isoformat()
+        out.append(per_day.get(key, {"day": key, "answered": 0, "unanswered": 0}))
+    return out
+
+
+@app.get("/api/dashboard/analytics")
+async def dashboard_analytics(
+    days: int = Query(default=14, ge=1, le=90),
+    token: Optional[str] = Query(default=None),
+) -> JSONResponse:
+    """Usage of this widget: who asked what, when, and whether it could answer.
+
+    Session listing gives no per-question detail, so each conversation is
+    fetched for its ``qas``. That is one call per session - fine at this scale,
+    and the place to add a cache if the widget ever gets busy.
+
+    "Unanswered" is exact, not inferred: the adapter returns one fixed string
+    when recall finds nothing, so a question whose answer is that string is one
+    the corpus could not serve. That is the single most actionable number here -
+    it names the documentation gaps.
+    """
+    _require_dashboard(token)
+    prefix = f"web:{DEMO_SITE_ID}:"
+    sessions = [
+        x
+        for x in await adapter.client.list_sessions()
+        if str(_field(x, "session_id")).startswith(prefix)
+    ]
+
+    details = await asyncio.gather(
+        *(adapter.client.session_detail(str(_field(x, "session_id"))) for x in sessions)
+    )
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    visitors, per_day, questions = set(), {}, []
+    answered = unanswered = 0
+
+    for session, detail in zip(sessions, details):
+        sid = str(_field(session, "session_id"))
+        parts = sid.split(":")
+        visitors.add(parts[2] if len(parts) > 2 else sid)
+        for qa in detail.get("qas") or []:
+            when = str(_field(qa, "time"))
+            if when and when < cutoff:
+                continue
+            is_empty = _EMPTY_ANSWER_MARKER in str(_field(qa, "answer"))
+            answered += 0 if is_empty else 1
+            unanswered += 1 if is_empty else 0
+            day = when[:10] or "unknown"
+            bucket = per_day.setdefault(day, {"day": day, "answered": 0, "unanswered": 0})
+            bucket["unanswered" if is_empty else "answered"] += 1
+            questions.append(
+                {
+                    "question": str(_field(qa, "question"))[:200],
+                    "time": when,
+                    "answered": not is_empty,
+                    "visitor": parts[2] if len(parts) > 2 else "",
+                }
+            )
+
+    # Same question asked by different people is the signal worth ranking.
+    counts: Counter = Counter(q["question"].strip().lower() for q in questions if q["question"])
+    display = {}
+    for q in questions:
+        key = q["question"].strip().lower()
+        display.setdefault(key, q["question"])
+
+    return JSONResponse(
+        {
+            "days": days,
+            "totals": {
+                "conversations": len(sessions),
+                "questions": len(questions),
+                "visitors": len(visitors),
+                "answered": answered,
+                "unanswered": unanswered,
+                "tokens_in": sum(int(_field(x, "tokens_in", default=0) or 0) for x in sessions),
+                "tokens_out": sum(int(_field(x, "tokens_out", default=0) or 0) for x in sessions),
+            },
+            # Dense series: a day with no traffic is a zero, not a gap, or the
+            # chart implies activity it did not have.
+            "per_day": _dense_days(per_day, days),
+            "top_questions": [
+                {"question": display[k], "count": c} for k, c in counts.most_common(10)
+            ],
+            "recent": sorted(questions, key=lambda q: q["time"], reverse=True)[:10],
+        }
+    )
 
 
 @app.get("/api/dashboard/graph")

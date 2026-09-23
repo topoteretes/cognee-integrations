@@ -733,3 +733,73 @@ def test_prefer_dark_leaves_an_unrecognised_page_alone():
 
     out = _prefer_dark("<html><body>no head, no class</body></html>")
     assert out == "<html><body>no head, no class</body></html>"
+
+
+# --- Analytics ----------------------------------------------------------------
+
+
+@pytest.fixture
+def analytics_client(interactive_client, fake_client):
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    fake_client.session_detail = AsyncMock(
+        return_value={
+            "qas": [
+                {
+                    "question": "How do I install?",
+                    "answer": "Run pip install.",
+                    "time": f"{today}T10:00:00+00:00",
+                },
+                {
+                    "question": "how do i install?",
+                    "answer": "Run pip install.",
+                    "time": f"{today}T11:00:00+00:00",
+                },
+                {
+                    "question": "Obscure thing?",
+                    "answer": "I don't have anything in memory for that yet.",
+                    "time": f"{today}T12:00:00+00:00",
+                },
+            ]
+        }
+    )
+    return interactive_client[0], fake_client
+
+
+def test_analytics_counts_unanswered_by_the_exact_empty_reply(analytics_client):
+    """The adapter returns one fixed string when recall finds nothing; that is
+    what makes 'unanswered' a fact rather than a guess."""
+    client, _ = analytics_client
+    t = client.get("/api/dashboard/analytics?token=s3cret").json()["totals"]
+    # Two widget sessions in the fixture, three qas each.
+    assert t["questions"] == 6
+    assert t["unanswered"] == 2
+    assert t["answered"] == 4
+
+
+def test_analytics_ranks_questions_case_insensitively(analytics_client):
+    """'How do I install?' and 'how do i install?' are one question."""
+    client, _ = analytics_client
+    top = client.get("/api/dashboard/analytics?token=s3cret").json()["top_questions"]
+    assert top[0]["count"] == 4
+    assert top[0]["question"].lower() == "how do i install?"
+
+
+def test_analytics_series_is_dense_so_quiet_days_read_as_zero(analytics_client):
+    """A day with no traffic must be a zero, not a missing point."""
+    client, _ = analytics_client
+    body = client.get("/api/dashboard/analytics?days=7&token=s3cret").json()
+    assert len(body["per_day"]) == 7
+    assert [d["day"] for d in body["per_day"]] == sorted(d["day"] for d in body["per_day"])
+    assert sum(d["answered"] + d["unanswered"] for d in body["per_day"]) == 6
+
+
+def test_analytics_excludes_other_sites_and_is_gated(analytics_client):
+    client, fake = analytics_client
+    body = client.get("/api/dashboard/analytics?token=s3cret").json()
+    # The fixture's third session is an agent session, not this widget's.
+    assert body["totals"]["conversations"] == 2
+    assert body["totals"]["visitors"] == 2
+    assert client.get("/api/dashboard/analytics").status_code == 401
+    assert client.get("/api/dashboard/analytics?token=wrong").status_code == 401

@@ -177,6 +177,43 @@
                  border-radius: 8px; background: #fff; display: block; margin-top: 14px }
   .viz-status { font-size: 11px; color: var(--muted); margin-left: 10px }
 
+  /* Two series, validated against both surfaces: CVD dE 24.7 light / 26.8 dark. */
+  .an { --s1: #2a78d6; --s2: #eb6834 }
+  @media (prefers-color-scheme: dark) { .an { --s1: #3987e5; --s2: #d95926 } }
+
+  .stats { display: flex; gap: 34px; flex-wrap: wrap; padding: 15px 16px }
+  .stat-v { font-size: 25px; font-weight: 600; letter-spacing: -.02em;
+            font-variant-numeric: tabular-nums; line-height: 1.25 }
+  .stat-l { font-size: 11px; color: var(--muted); letter-spacing: .04em;
+            text-transform: uppercase }
+  .stat-sub { font-size: 11px; color: var(--muted); margin-top: 1px }
+
+  .an-grid { display: grid; grid-template-columns: 1.55fr 1fr; gap: 14px; margin-top: 14px }
+  @media (max-width: 860px) { .an-grid { grid-template-columns: 1fr } }
+
+  .legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin-bottom: 10px }
+  .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px }
+
+  /* Daily columns. Gaps between bars are surface, per the mark spec, and a
+     zero day still gets a baseline tick so absence reads as measured. */
+  .days { display: flex; align-items: flex-end; gap: 2px; height: 132px }
+  .day { flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
+         gap: 2px; min-width: 0; height: 100% }
+  .day .seg { border-radius: 2px 2px 0 0; min-height: 0 }
+  .day .seg.a { background: var(--s1) }
+  .day .seg.u { background: var(--s2) }
+  .day .zero { height: 2px; background: var(--line); border-radius: 1px }
+  .day-axis { display: flex; gap: 2px; margin-top: 6px; font-size: 10px; color: var(--muted) }
+  .day-axis span { flex: 1; text-align: center; min-width: 0; overflow: hidden }
+
+  .rank { display: grid; grid-template-columns: auto 1fr auto; gap: 10px;
+          align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line-soft);
+          font-size: 12px }
+  .rank:last-child { border-bottom: 0 }
+  .rank .i { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2ch }
+  .rank .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .rank .c { color: var(--muted); font-variant-numeric: tabular-nums }
+
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
     padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
@@ -212,6 +249,23 @@
     </table>
   </div>
   <p id="sources-more"></p>
+</section>
+
+<section class="an">
+  <div class="sec-head"><h2>Analytics</h2><span class="count" id="an-range"></span></div>
+  <div class="panel"><div class="stats" id="an-stats"></div></div>
+  <div class="an-grid">
+    <div class="panel pad">
+      <div class="chart-h">Questions per day</div>
+      <div class="legend" id="an-legend"></div>
+      <div class="days" id="an-days"></div>
+      <div class="day-axis" id="an-axis"></div>
+    </div>
+    <div class="panel pad">
+      <div class="chart-h">Most asked</div>
+      <div id="an-top"></div>
+    </div>
+  </div>
 </section>
 
 <section class="viz">
@@ -574,6 +628,109 @@
     }
   }
 
+  function stat(parent, value, label, sub) {
+    const w = document.createElement("div");
+    const v = document.createElement("div");
+    v.className = "stat-v";
+    v.appendChild(text(value));
+    const l = document.createElement("div");
+    l.className = "stat-l";
+    l.appendChild(text(label));
+    w.append(v, l);
+    if (sub) {
+      const sb = document.createElement("div");
+      sb.className = "stat-sub";
+      sb.appendChild(text(sub));
+      w.appendChild(sb);
+    }
+    parent.appendChild(w);
+  }
+
+  function renderAnalytics(a) {
+    const t = a.totals;
+    $("#an-range").textContent = "last " + a.days + " days";
+
+    const st = $("#an-stats");
+    st.textContent = "";
+    stat(st, t.conversations.toLocaleString(), "conversations");
+    stat(st, t.questions.toLocaleString(), "questions");
+    stat(st, t.visitors.toLocaleString(), "visitors");
+    // Answered/unanswered is the number worth acting on: an unanswered
+    // question is a documentation gap with a transcript attached.
+    const pct = t.questions ? Math.round((t.answered / t.questions) * 100) : 0;
+    stat(st, pct + "%", "answered",
+         t.unanswered + " of " + t.questions + " unanswered");
+    stat(st, (t.tokens_in + t.tokens_out).toLocaleString(), "tokens",
+         t.tokens_in.toLocaleString() + " in / " + t.tokens_out.toLocaleString() + " out");
+
+    const leg = $("#an-legend");
+    leg.textContent = "";
+    [["answered", "var(--s1)"], ["unanswered", "var(--s2)"]].forEach(([name, col]) => {
+      const w = document.createElement("span");
+      const i = document.createElement("i");
+      i.style.background = col;
+      w.append(i, text(name));
+      leg.appendChild(w);
+    });
+
+    const max = Math.max(1, ...a.per_day.map((d) => d.answered + d.unanswered));
+    const days = $("#an-days");
+    const axis = $("#an-axis");
+    days.textContent = "";
+    axis.textContent = "";
+    a.per_day.forEach((d, idx) => {
+      const total = d.answered + d.unanswered;
+      const col = document.createElement("div");
+      col.className = "day";
+      col.title = d.day + " - " + total + " question" + (total === 1 ? "" : "s") +
+                  (d.unanswered ? " (" + d.unanswered + " unanswered)" : "");
+      if (!total) {
+        const z = document.createElement("div");
+        z.className = "zero";
+        col.appendChild(z);
+      } else {
+        [["u", d.unanswered], ["a", d.answered]].forEach(([cls, n]) => {
+          if (!n) return;
+          const seg = document.createElement("div");
+          seg.className = "seg " + cls;
+          seg.style.height = (n / max) * 100 + "%";
+          col.appendChild(seg);
+        });
+      }
+      days.appendChild(col);
+      const lab = document.createElement("span");
+      // Only the ends and the middle get a label; 14 dates would collide.
+      const show = idx === 0 || idx === a.per_day.length - 1 ||
+                   idx === Math.floor(a.per_day.length / 2);
+      lab.appendChild(text(show ? d.day.slice(5) : ""));
+      axis.appendChild(lab);
+    });
+
+    const top = $("#an-top");
+    top.textContent = "";
+    if (!a.top_questions.length) {
+      top.className = "empty";
+      top.appendChild(text("No questions asked yet."));
+      return;
+    }
+    a.top_questions.forEach((q, i) => {
+      const row = document.createElement("div");
+      row.className = "rank";
+      const n = document.createElement("span");
+      n.className = "i";
+      n.appendChild(text(String(i + 1)));
+      const qq = document.createElement("span");
+      qq.className = "q";
+      qq.appendChild(text(q.question));
+      qq.title = q.question;
+      const c = document.createElement("span");
+      c.className = "c";
+      c.appendChild(text(q.count));
+      row.append(n, qq, c);
+      top.appendChild(row);
+    });
+  }
+
   let compositionStarted = false;
 
   function renderComposition(g) {
@@ -626,10 +783,12 @@
   async function load() {
     // Both endpoints talk to cognee and neither needs the other's result, so
     // they go out together; waiting for the first doubled time-to-paint.
-    const [d, s] = await Promise.all([
+    const [d, s, a] = await Promise.all([
       fetch(api("/api/dashboard")).then((r) => r.json()),
       fetch(api("/api/dashboard/sessions")).then((r) => r.json()),
+      fetch(api("/api/dashboard/analytics")).then((r) => r.json()).catch(() => null),
     ]);
+    if (a && a.totals) renderAnalytics(a);
     corpus = d.corpus;
 
     const cfg = $("#config");
