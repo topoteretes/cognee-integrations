@@ -13,6 +13,11 @@
   var script = document.currentScript;
   var API = (script && script.getAttribute("data-api")) || window.location.origin;
   var SITE_ID = (script && script.getAttribute("data-site-id")) || "demo";
+  // Cited pages are resolved against the site the widget is embedded on, so
+  // the same backend serves a local preview and a deployed site and each
+  // links to itself. Override with data-docs-base when the docs are hosted
+  // somewhere other than the page carrying the widget.
+  var DOCS_BASE = (script && script.getAttribute("data-docs-base")) || window.location.origin;
 
   // Stable per-browser ids so a returning visitor keeps their conversation.
   function id(key, prefix) {
@@ -39,6 +44,8 @@
     ".cognee-bot{background:#fff;border:1px solid #e5e7eb}" +
     ".cognee-cites{margin:4px 0 10px;font-size:12px;color:#6b7280}" +
     ".cognee-cite{border-left:3px solid #d1d5db;padding:2px 8px;margin:3px 0}" +
+    ".cognee-cite a{color:#2563eb;text-decoration:none}" +
+    ".cognee-cite a:hover{text-decoration:underline}" +
     ".cognee-in{display:flex;border-top:1px solid #e5e7eb}" +
     ".cognee-in input{flex:1;border:0;padding:11px;outline:none}" +
     ".cognee-in button{border:0;background:#2563eb;color:#fff;padding:0 16px;cursor:pointer}" +
@@ -130,13 +137,28 @@
     wrap.className = "cognee-cites";
     wrap.appendChild(el("", "Sources:"));
     cites.slice(0, 4).forEach(function (c) {
-      // Cloud cites a document without quoting it, so a citation may have no
-      // snippet — show the document alone rather than "  (doc)" with a gap.
-      var line = c.snippet
-        ? c.snippet + (c.document ? "  (" + c.document + ")" : "")
-        : c.document || "";
-      if (!line) return;
-      wrap.appendChild(el("cognee-cite", line));
+      // Prefer the readable page title over the flattened document name, and
+      // link it when the backend could resolve a published URL.
+      var label = c.title || c.document || "";
+      if (c.snippet) label = c.snippet + (label ? "  (" + label + ")" : "");
+      if (!label) return;
+
+      // An absolute url wins (the backend was told the docs live elsewhere);
+      // otherwise resolve the page path against DOCS_BASE.
+      var href = c.url || (c.path ? DOCS_BASE.replace(/\/+$/, "") + "/" + c.path : null);
+
+      var node = el("cognee-cite", "");
+      if (href) {
+        var a = document.createElement("a");
+        a.href = href;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = label;
+        node.appendChild(a);
+      } else {
+        node.textContent = label;
+      }
+      wrap.appendChild(node);
     });
     log.appendChild(wrap);
     log.scrollTop = log.scrollHeight;

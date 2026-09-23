@@ -60,7 +60,11 @@ DEMO_DOCS = [
 
 DEMO_SITE_ID = os.getenv("WIDGET_SITE_ID", "demo")
 
-adapter = ChatMemoryAdapter(top_k=8)
+# Public root of the site whose pages were ingested. Set it and every citation
+# links to the page; leave it unset and citations name the document only.
+DOCS_BASE_URL = os.getenv("WIDGET_DOCS_BASE_URL", "").strip() or None
+
+adapter = ChatMemoryAdapter(top_k=8, docs_base_url=DOCS_BASE_URL)
 
 
 # Operator dashboard. Unset means the routes 404 — the dashboard is opt-in, so a

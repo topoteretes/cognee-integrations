@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from cognee_integration_web_widget.adapter import _EMPTY_ANSWER, ChatMemoryAdapter
-from cognee_integration_web_widget.citations import split_evidence
+from cognee_integration_web_widget.citations import (
+    document_path,
+    document_title,
+    document_url,
+    split_evidence,
+)
 
 # A graph completion exactly as recall(include_references=True) returns it:
 # the answer prose followed by an appended, grounded "Evidence:" block.
@@ -399,3 +404,103 @@ def test_dashboard_falls_back_to_unscoped_when_no_row_carries_the_dataset(
     body = dashboard_client.get("/api/dashboard?token=s3cret").json()
     assert [q["query"] for q in body["questions"]] == ["legacy question"]
     assert body["questions_scoped_to_dataset"] is False
+
+
+# --- Citations link to the published page -----------------------------------
+#
+# Ingesting a docs tree flattens each page's path into its document name with
+# the separator doubled, so the path is recoverable. Verified against the real
+# corpus: every derived URL resolves 200 on the live docs site.
+
+DOCS = "https://docs.cognee.ai"
+
+
+@pytest.mark.parametrize(
+    "document,expected",
+    [
+        ("changelog", "changelog"),
+        ("setup-configuration__llm-providers", "setup-configuration/llm-providers"),
+        (
+            "how-to-guides__cognee-sdk__deployment__docker",
+            "how-to-guides/cognee-sdk/deployment/docker",
+        ),
+        # An ingest that kept the extension must not produce a .mdx path.
+        ("python-api__cognify.mdx", "python-api/cognify"),
+    ],
+)
+def test_document_path_maps_ingested_names_to_page_paths(document, expected):
+    assert document_path(document) == expected
+
+
+def test_document_url_trims_a_trailing_slash_on_the_base():
+    assert document_url("changelog", DOCS + "/") == f"{DOCS}/changelog"
+
+
+@pytest.mark.parametrize(
+    "document",
+    ["", "   ", "has spaces in it", "../../etc/passwd", "https://evil.example/x"],
+)
+def test_document_path_declines_to_invent_a_link(document):
+    """A wrong citation link is worse than none — it looks authoritative."""
+    assert document_path(document) is None
+    assert document_url(document, DOCS) is None
+
+
+def test_document_url_is_none_without_a_configured_base():
+    assert document_url("changelog", None) is None
+    assert document_url("changelog", "") is None
+
+
+def test_document_title_is_the_page_not_the_path():
+    assert document_title("how-to-guides__cognee-sdk__deployment__docker") == "docker"
+    assert document_title("setup-configuration__llm-providers") == "llm providers"
+    assert document_title("changelog") == "changelog"
+
+
+def test_split_evidence_always_carries_the_page_path():
+    """The path travels even with no base: the widget resolves it against the
+    site it is embedded on, so one backend serves preview and production."""
+    answer = (
+        "Answer.\n\nEvidence:\n"
+        "- chunk 1 of document setup-configuration__llm-providers (data_id: d1, chunk_id: c1)"
+    )
+    _, cites = split_evidence(answer)
+    assert cites[0].path == "setup-configuration/llm-providers"
+    assert cites[0].title == "llm providers"
+    # No absolute url unless the backend was explicitly told where docs live.
+    assert cites[0].url is None
+
+
+def test_split_evidence_adds_an_absolute_url_only_when_a_base_is_configured():
+    answer = (
+        "Answer.\n\nEvidence:\n"
+        "- chunk 1 of document setup-configuration__llm-providers (data_id: d1, chunk_id: c1)"
+    )
+    _, cites = split_evidence(answer, DOCS)
+    assert cites[0].url == f"{DOCS}/setup-configuration/llm-providers"
+    assert cites[0].path == "setup-configuration/llm-providers"
+
+
+def test_split_evidence_collapses_repeated_chunks_of_one_page():
+    """Several chunks of a page are one source to a reader, and the widget shows
+    only four citations — a duplicate would spend a slot saying nothing new."""
+    _, cites = split_evidence(
+        "A.\n\nEvidence:\n"
+        "- chunk 1 of document setup-configuration__embedding-providers "
+        "(data_id: a, chunk_id: c1)\n"
+        "- chunk 2 of document setup-configuration__embedding-providers "
+        "(data_id: a, chunk_id: c2)\n"
+        "- chunk 1 of document python-api__config (data_id: b, chunk_id: c3)",
+        DOCS,
+    )
+    assert [c.title for c in cites] == ["embedding providers", "config"]
+
+
+def test_split_evidence_keeps_two_chunks_that_quote_different_text():
+    """Collapsing is on (document, snippet), so distinct quotes both survive."""
+    _, cites = split_evidence(
+        "A.\n\nEvidence:\n"
+        '- chunk 1 of document report.pdf (data_id: a, chunk_id: c1): "first quote"\n'
+        '- chunk 2 of document report.pdf (data_id: a, chunk_id: c2): "second quote"'
+    )
+    assert [c.snippet for c in cites] == ["first quote", "second quote"]
