@@ -8,6 +8,13 @@ an ``Evidence:`` block to the answer text — one bullet per source chunk::
     Evidence:
     - chunk 3 of document report.pdf (data_id: d1, chunk_id: c1): "…snippet…"
 
+The quoted snippet is optional, and Cognee Cloud omits it — its bullets stop at
+the closing parenthesis::
+
+    - chunk 1 of document cognee-cloud__api-keys (data_id: 981bfccc-…, chunk_id: 7f5ee6e7-…)
+
+so a citation may carry a document and ids but no quoted text.
+
 The widget shows the clean prose and renders each bullet as a citation below
 it. This module does the split. Answers with no Evidence block (for example a
 plain session-memory recall) simply carry no citations — we never fabricate a
@@ -25,10 +32,14 @@ from typing import List, Optional, Tuple
 _EVIDENCE_MARKER = "\n\nEvidence:\n"
 
 # - chunk 3 of document report.pdf (data_id: d1, chunk_id: c1): "snippet"
-# The parenthetical is optional (omitted when no ids are known).
+# Both trailing parts are optional: the parenthetical when no ids are known, and
+# the quoted snippet, which Cognee Cloud never emits. Requiring the snippet made
+# every Cloud bullet fail to match, so answers silently arrived with no sources
+# at all — the widget's one grounding feature, absent without an error.
 _BULLET = re.compile(
     r"-\s*chunk\s+\d+\s+of\s+document\s+(?P<document>.+?)"
-    r'(?:\s+\((?P<provenance>[^)]*)\))?:\s*"(?P<snippet>.*)"\s*$'
+    r"(?:\s+\((?P<provenance>[^)]*)\))?"
+    r'(?::\s*"(?P<snippet>.*)")?\s*$'
 )
 
 
@@ -70,7 +81,7 @@ def split_evidence(answer: str) -> Tuple[str, List[Citation]]:
         citations.append(
             Citation(
                 document=match.group("document").strip(),
-                snippet=match.group("snippet").strip(),
+                snippet=(match.group("snippet") or "").strip(),
                 data_id=ids.get("data_id"),
                 chunk_id=ids.get("chunk_id"),
             )

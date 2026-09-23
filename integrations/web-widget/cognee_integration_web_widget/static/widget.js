@@ -103,7 +103,12 @@
     wrap.className = "cognee-cites";
     wrap.appendChild(el("", "Sources:"));
     cites.slice(0, 4).forEach(function (c) {
-      var line = c.snippet + (c.document ? "  (" + c.document + ")" : "");
+      // Cloud cites a document without quoting it, so a citation may have no
+      // snippet — show the document alone rather than "  (doc)" with a gap.
+      var line = c.snippet
+        ? c.snippet + (c.document ? "  (" + c.document + ")" : "")
+        : c.document || "";
+      if (!line) return;
       wrap.appendChild(el("cognee-cite", line));
     });
     log.appendChild(wrap);

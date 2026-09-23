@@ -211,3 +211,69 @@ def test_forget_endpoint_clears_conversation(web_client):
     assert body["cleared"] is True
     assert body["session_id"] == "web:demo:anonymous:c1"
     assert fake.forget.call_args.kwargs["dataset_name"] == "web:demo:anonymous:c1"
+
+
+# --- Evidence bullets without a quoted snippet ------------------------------
+#
+# Cognee Cloud grounds an answer by naming the source chunks but does not quote
+# them: its bullets end at the closing parenthesis. Requiring the quoted snippet
+# made every Cloud bullet fail to match, and a citation list that silently comes
+# back empty looks identical to an answer with no sources.
+
+CLOUD_EVIDENCE = (
+    "Cognee Cloud authenticates API-key requests with two custom headers.\n\n"
+    "Evidence:\n"
+    "- chunk 1 of document cognee-cloud__api-keys "
+    "(data_id: 981bfccc-4a10-43bd-811b-de3e70879649, "
+    "chunk_id: 7f5ee6e7-58db-5b99-b83a-b406da213f82)\n"
+    "- chunk 1 of document cognee-cloud__account-and-billing "
+    "(data_id: d2518b1f-84eb-4676-8c9a-747a504611a7, "
+    "chunk_id: 4e937043-1e34-5682-bcb8-abb00b5847f2)"
+)
+
+
+def test_split_evidence_parses_cloud_bullets_that_carry_no_snippet():
+    prose, citations = split_evidence(CLOUD_EVIDENCE)
+    assert prose == "Cognee Cloud authenticates API-key requests with two custom headers."
+    assert [c.document for c in citations] == [
+        "cognee-cloud__api-keys",
+        "cognee-cloud__account-and-billing",
+    ]
+    # The ids still resolve a citation to its source even with nothing quoted.
+    assert citations[0].data_id == "981bfccc-4a10-43bd-811b-de3e70879649"
+    assert citations[0].chunk_id == "7f5ee6e7-58db-5b99-b83a-b406da213f82"
+    assert citations[0].snippet == ""
+
+
+def test_split_evidence_still_parses_a_quoted_snippet():
+    """The documented form must keep working — this is a widening, not a swap."""
+    _, citations = split_evidence(
+        "Answer.\n\nEvidence:\n"
+        '- chunk 3 of document report.pdf (data_id: d1, chunk_id: c1): "the quoted bit"'
+    )
+    assert citations[0].snippet == "the quoted bit"
+    assert citations[0].document == "report.pdf"
+    assert (citations[0].data_id, citations[0].chunk_id) == ("d1", "c1")
+
+
+def test_split_evidence_parses_a_bullet_with_neither_ids_nor_snippet():
+    _, citations = split_evidence("A.\n\nEvidence:\n- chunk 2 of document guide.md")
+    assert citations[0].document == "guide.md"
+    assert citations[0].snippet == ""
+    assert citations[0].data_id is None
+
+
+def test_chat_endpoint_returns_cloud_style_citations(fake_client):
+    """End to end: a Cloud-shaped recall must reach the widget as citations."""
+    from cognee_integration_web_widget import server as server_mod
+    from fastapi.testclient import TestClient
+
+    fake_client.recall = AsyncMock(return_value=[{"source": "graph", "text": CLOUD_EVIDENCE}])
+    server_mod.adapter.client = fake_client
+    with TestClient(server_mod.app) as c:
+        body = c.post("/api/chat", json={"message": "headers?", "conversation_id": "c1"}).json()
+    assert [x["document"] for x in body["citations"]] == [
+        "cognee-cloud__api-keys",
+        "cognee-cloud__account-and-billing",
+    ]
+    assert "Evidence:" not in body["answer"]
