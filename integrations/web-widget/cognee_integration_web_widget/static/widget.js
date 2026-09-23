@@ -38,8 +38,8 @@
   // invisible on any dark-themed site. The colour is set once on the box and
   // inherited; the few elements that want something else override it below.
   var css =
-    ".cognee-w{position:fixed;bottom:20px;right:20px;width:360px;max-width:92vw;font:14px/1.5 system-ui,sans-serif;z-index:2147483000}" +
-    ".cognee-box{display:none;flex-direction:column;background:#fff;color:#111827;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18);overflow:hidden}" +
+    ".cognee-w{position:fixed;bottom:20px;right:20px;width:360px;max-width:92vw;display:flex;flex-direction:column;align-items:flex-end;gap:10px;font:14px/1.5 system-ui,sans-serif;z-index:2147483000}" +
+    ".cognee-box{display:none;width:100%;flex-direction:column;background:#fff;color:#111827;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18);overflow:hidden}" +
     ".cognee-box.open{display:flex}" +
     ".cognee-head{background:#111827;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center}" +
     ".cognee-head b{font-weight:600}" +
@@ -113,10 +113,17 @@
 
   function open(v) {
     box.classList.toggle("open", v);
+    var l = root.querySelector("#cognee-launch");
+    if (l) l.setAttribute("aria-expanded", v ? "true" : "false");
   }
-  root.querySelector("#cognee-launch").onclick = function () {
-    open(true);
-    input.focus();
+  var launcher = root.querySelector("#cognee-launch");
+  launcher.setAttribute("aria-expanded", "false");
+  launcher.onclick = function () {
+    // Toggle: the launcher stays visible while the panel is open, so a second
+    // click on it should close what the first click opened.
+    var nowOpen = !box.classList.contains("open");
+    open(nowOpen);
+    if (nowOpen) input.focus();
   };
   root.querySelector("#cognee-close").onclick = function () {
     open(false);
