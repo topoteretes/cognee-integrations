@@ -707,3 +707,29 @@ def test_reingest_is_gated(reingest_client):
     assert client.post("/api/dashboard/data/item-1/reingest").status_code == 401
     assert client.post("/api/dashboard/data/item-1/reingest?token=wrong").status_code == 401
     fake.delete_data.assert_not_awaited()
+
+
+# --- Graph page opens dark ----------------------------------------------------
+
+
+def test_prefer_dark_drops_the_light_class_and_seeds_only_when_unset():
+    """Dark on first paint, but the page's own toggle must still win later."""
+    from cognee_integration_web_widget.server import _prefer_dark
+
+    out = _prefer_dark('<!DOCTYPE html>\n<html lang="en" class="light">\n<head><title>g</title>')
+    # First paint: no light class, so the dark :root variables apply.
+    assert 'class="light"' not in out
+    assert '<html lang="en">' in out
+    # The seed is conditional - an existing choice is never overwritten.
+    assert "if(!localStorage.getItem('cognee-viz-theme'))" in out
+    assert "setItem('cognee-viz-theme','dark')" in out
+    # ...and it runs before the page's own scripts restore the preference.
+    assert out.index("cognee-viz-theme") < out.index("<title>")
+
+
+def test_prefer_dark_leaves_an_unrecognised_page_alone():
+    """A changed upstream template must not be mangled, only left as-is."""
+    from cognee_integration_web_widget.server import _prefer_dark
+
+    out = _prefer_dark("<html><body>no head, no class</body></html>")
+    assert out == "<html><body>no head, no class</body></html>"

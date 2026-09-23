@@ -366,6 +366,24 @@ _viz_cache: dict = {"html": None, "at": 0.0, "dataset": None}
 _viz_lock = asyncio.Lock()
 
 
+def _prefer_dark(html: str) -> str:
+    """Make cognee's graph page open dark, without taking the choice away.
+
+    The page ships ``<html class="light">`` and its script restores
+    ``cognee-viz-theme`` from storage, defaulting to light. Two small edits:
+    drop the class so the first paint uses the dark ``:root`` variables the
+    stylesheet already defines, and seed the stored preference *only when it is
+    unset*, so a later click of its own Dark/Light button still wins and sticks.
+    """
+    html = html.replace('<html lang="en" class="light">', '<html lang="en">', 1)
+    seed = (
+        "<script>try{if(!localStorage.getItem('cognee-viz-theme'))"
+        "localStorage.setItem('cognee-viz-theme','dark');}catch(e){}</script>"
+    )
+    # Before their scripts, so the seeded value is what the restore reads.
+    return html.replace("<head>", "<head>" + seed, 1)
+
+
 @app.get("/api/dashboard/graph-html", response_class=HTMLResponse)
 async def dashboard_graph_html(
     token: Optional[str] = Query(default=None),
@@ -394,6 +412,7 @@ async def dashboard_graph_html(
         html = await adapter.client.visualize_html(dataset_id)
         if not html:
             raise HTTPException(status_code=502, detail="cognee could not render the graph")
+        html = _prefer_dark(html)
         _viz_cache.update({"html": html, "at": time.time(), "dataset": dataset_id})
     return HTMLResponse(html, headers={"X-Cache": "miss"})
 
