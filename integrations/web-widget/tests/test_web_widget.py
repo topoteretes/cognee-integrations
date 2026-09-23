@@ -504,3 +504,123 @@ def test_split_evidence_keeps_two_chunks_that_quote_different_text():
         '- chunk 2 of document report.pdf (data_id: a, chunk_id: c2): "second quote"'
     )
     assert [c.snippet for c in cites] == ["first quote", "second quote"]
+
+
+# --- Interactive dashboard: sessions and delete ------------------------------
+
+
+@pytest.fixture
+def interactive_client(dashboard_client, fake_client):
+    """Dashboard fixture plus the session/delete client methods."""
+    fake_client.list_sessions = AsyncMock(
+        return_value=[
+            {
+                "session_id": "web:demo:visitor-a:conv-1",
+                "started_at": "2026-01-01",
+                "last_activity_at": "2026-01-02",
+                "msg_count": 2,
+            },
+            {
+                "session_id": "web:demo:visitor-b:conv-2",
+                "started_at": "2026-01-03",
+                "last_activity_at": "2026-01-04",
+                "msg_count": 1,
+            },
+            # An agent session in the same tenant - not this widget's traffic.
+            {
+                "session_id": "default_session_abc",
+                "started_at": "2026-01-05",
+                "last_activity_at": "2026-01-06",
+                "msg_count": 9,
+            },
+        ]
+    )
+    fake_client.session_detail = AsyncMock(
+        return_value={
+            "qas": [
+                {"question": "second?", "answer": "B", "time": "2026-01-02T10:00:00"},
+                {"question": "first?", "answer": "A", "time": "2026-01-01T10:00:00"},
+            ]
+        }
+    )
+    fake_client.delete_data = AsyncMock(return_value=True)
+    return dashboard_client, fake_client
+
+
+def test_sessions_are_filtered_to_this_widget(interactive_client):
+    """The key sees the whole tenant's sessions; the widget dashboard must not."""
+    client, _ = interactive_client
+    body = client.get("/api/dashboard/sessions?token=s3cret").json()
+    ids = [s["session_id"] for s in body["sessions"]]
+    assert ids == ["web:demo:visitor-b:conv-2", "web:demo:visitor-a:conv-1"]  # newest first
+    assert not any("default_session" in i for i in ids)
+
+
+def test_session_detail_returns_both_sides_in_order(interactive_client):
+    client, _ = interactive_client
+    body = client.get("/api/dashboard/sessions/web:demo:visitor-a:conv-1?token=s3cret").json()
+    assert [(t["question"], t["answer"]) for t in body["turns"]] == [
+        ("first?", "A"),
+        ("second?", "B"),
+    ]
+
+
+def test_session_detail_refuses_a_session_from_another_site(interactive_client):
+    """Path traversal into another agent's conversation must not be possible."""
+    client, _ = interactive_client
+    assert client.get("/api/dashboard/sessions/default_session_abc?token=s3cret").status_code == 404
+
+
+def test_delete_targets_only_the_widget_dataset(interactive_client):
+    client, fake = interactive_client
+    assert client.request("DELETE", "/api/dashboard/data/item-1?token=s3cret").status_code == 200
+    # d1 is the id of web:demo:docs in the dashboard fixture.
+    assert fake.delete_data.await_args.kwargs == {"dataset_id": "d1", "data_id": "item-1"}
+
+
+def test_delete_surfaces_a_refusal_rather_than_reporting_success(interactive_client):
+    client, fake = interactive_client
+    fake.delete_data = AsyncMock(return_value=False)
+    assert client.request("DELETE", "/api/dashboard/data/item-1?token=s3cret").status_code == 502
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/dashboard/sessions",
+        "/api/dashboard/sessions/web:demo:visitor-a:conv-1",
+    ],
+)
+def test_new_routes_are_gated_too(interactive_client, path):
+    client, _ = interactive_client
+    assert client.get(path).status_code == 401
+    assert client.get(path + "?token=wrong").status_code == 401
+
+
+def test_delete_is_gated_too(interactive_client):
+    client, fake = interactive_client
+    assert client.request("DELETE", "/api/dashboard/data/x").status_code == 401
+    assert client.request("DELETE", "/api/dashboard/data/x?token=wrong").status_code == 401
+    fake.delete_data.assert_not_awaited()
+
+
+def test_corpus_items_carry_ids_and_timestamps(interactive_client, fake_client):
+    """The dashboard acts on rows, so each needs an id and a last-synced time."""
+    fake_client.dataset_data = AsyncMock(
+        return_value=[
+            {
+                "id": "abc",
+                "name": "quickstart",
+                "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-02-02T00:00:00Z",
+                "externalMetadata": {"_cognee": {"source_uri": "file:///app/quickstart.md"}},
+            }
+        ]
+    )
+    client, _ = interactive_client
+    corpus = client.get("/api/dashboard?token=s3cret").json()["corpus"]
+    assert corpus["dataset_id"] == "d1"
+    item = corpus["items"][0]
+    assert item["id"] == "abc"
+    assert item["updated"] == "2026-02-02T00:00:00Z"
+    assert item["source"] == "file:///app/quickstart.md"

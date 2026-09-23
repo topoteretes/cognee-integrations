@@ -29,7 +29,6 @@ Endpoints:
 
 from __future__ import annotations
 
-import html
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -231,9 +230,25 @@ async def _dashboard_data() -> dict:
         },
         "corpus": {
             "dataset": docs_dataset,
+            "dataset_id": dataset_id,
             "exists": match is not None,
             "item_count": len(items),
-            "sample": [str(_field(i, "name", "raw_data_location"))[:90] for i in items[:25]],
+            "items": [
+                {
+                    "id": str(_field(i, "id")),
+                    "name": str(_field(i, "name", "rawDataLocation"))[:120],
+                    "created": str(_field(i, "createdAt")),
+                    # "Last synced" is updatedAt: it moves when the item is
+                    # re-ingested, not when the underlying page is edited.
+                    "updated": str(_field(i, "updatedAt")),
+                    "source": str(
+                        (_field(i, "externalMetadata", default={}) or {})
+                        .get("_cognee", {})
+                        .get("source_uri", "")
+                    ),
+                }
+                for i in items
+            ],
             "all_datasets": [str(_field(d, "name")) for d in datasets],
         },
         "questions": questions,
@@ -247,85 +262,92 @@ async def dashboard_data(token: Optional[str] = Query(default=None)) -> JSONResp
     return JSONResponse(await _dashboard_data())
 
 
+@app.get("/api/dashboard/sessions")
+async def dashboard_sessions(token: Optional[str] = Query(default=None)) -> JSONResponse:
+    """Widget conversations, newest activity first.
+
+    Sessions are filtered to this site's prefix: the key can see every session
+    in the tenant, and an operator looking at the widget's dashboard wants the
+    widget's conversations, not an agent's.
+    """
+    _require_dashboard(token)
+    prefix = f"web:{DEMO_SITE_ID}:"
+    sessions = [
+        {
+            "session_id": str(_field(x, "session_id")),
+            "started_at": str(_field(x, "started_at")),
+            "last_activity_at": str(_field(x, "last_activity_at", "ended_at")),
+            # msg_count is not populated on the list endpoint; the per-session
+            # detail carries it, so it is fetched on expand rather than shown here.
+            "tokens_in": _field(x, "tokens_in", default=None),
+            "tokens_out": _field(x, "tokens_out", default=None),
+            "cost_usd": _field(x, "cost_usd", default=None),
+        }
+        for x in await adapter.client.list_sessions()
+        if str(_field(x, "session_id")).startswith(prefix)
+    ]
+    sessions.sort(key=lambda x: x["last_activity_at"] or x["started_at"], reverse=True)
+    return JSONResponse({"sessions": sessions})
+
+
+@app.get("/api/dashboard/sessions/{session_id:path}")
+async def dashboard_session(
+    session_id: str, token: Optional[str] = Query(default=None)
+) -> JSONResponse:
+    """One conversation: every question with the answer it got."""
+    _require_dashboard(token)
+    if not session_id.startswith(f"web:{DEMO_SITE_ID}:"):
+        raise HTTPException(status_code=404)
+    detail = await adapter.client.session_detail(session_id)
+    turns = [
+        {
+            "question": str(_field(q, "question")),
+            "answer": str(_field(q, "answer")),
+            "time": str(_field(q, "time")),
+            "feedback_score": _field(q, "feedback_score", default=None),
+            "feedback_text": str(_field(q, "feedback_text")),
+        }
+        for q in (detail.get("qas") or [])
+    ]
+    turns.sort(key=lambda t: t["time"])
+    return JSONResponse({"session_id": session_id, "turns": turns})
+
+
+@app.delete("/api/dashboard/data/{data_id}")
+async def dashboard_delete_data(
+    data_id: str, token: Optional[str] = Query(default=None)
+) -> JSONResponse:
+    """Permanently remove one ingested item from the docs corpus.
+
+    Scoped to the widget's own dataset on purpose: the key can delete from any
+    dataset it can write, and this dashboard should not be a way to reach the
+    rest of the tenant.
+    """
+    _require_dashboard(token)
+    datasets = await adapter.client.list_datasets()
+    docs_dataset = adapter.docs_dataset(DEMO_SITE_ID)
+    match = next(
+        (d for d in datasets if isinstance(d, dict) and d.get("name") == docs_dataset), None
+    )
+    if not match:
+        raise HTTPException(status_code=404, detail="docs dataset not found")
+    ok = await adapter.client.delete_data(dataset_id=str(match.get("id")), data_id=data_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail="cognee refused the delete")
+    return JSONResponse({"deleted": data_id})
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(token: Optional[str] = Query(default=None)) -> HTMLResponse:
+    """The operator page.
+
+    A shell only: it re-fetches /api/dashboard and the session routes from the
+    browser, so acting on a row (deleting, opening a conversation) refreshes in
+    place rather than reloading a server-rendered snapshot. The token travels in
+    the query string it was opened with, so it is never stored by the page.
+    """
     _require_dashboard(token)
-    d = await _dashboard_data()
-    e = html.escape
-
-    cfg = d["config"]
-    corpus = d["corpus"]
-
-    def rows(pairs):
-        return "".join(f"<tr><th>{e(str(k))}</th><td>{e(str(v))}</td></tr>" for k, v in pairs)
-
-    config_rows = rows(
-        [
-            ("cognee", cfg["cognee_base_url"]),
-            ("authenticated", "yes" if cfg["authenticated"] else "no (no API key set)"),
-            ("reachable", "yes" if cfg["cloud_reachable"] else "NO — check key/URL"),
-            ("docs dataset", cfg["docs_dataset"]),
-            ("site id", cfg["site_id"]),
-            ("seeds demo docs", "YES — writes on every boot" if cfg["seeds_demo_docs"] else "no"),
-            ("allowed origins", ", ".join(cfg["allowed_origins"])),
-        ]
-    )
-
-    if not corpus["exists"]:
-        corpus_body = (
-            f"<p class=warn>Dataset <code>{e(corpus['dataset'])}</code> does not exist. "
-            "Recall against a missing dataset returns no results, which the widget "
-            "reports as an empty-memory answer rather than an error — so this looks "
-            "like a broken bot.</p>"
-            f"<p>Datasets this key can read: {e(', '.join(corpus['all_datasets']) or 'none')}</p>"
-        )
-    else:
-        sample = "".join(f"<li>{e(x)}</li>" for x in corpus["sample"])
-        corpus_body = (
-            f"<p><b>{corpus['item_count']}</b> items in <code>{e(corpus['dataset'])}</code></p>"
-            f"<ul class=sample>{sample}</ul>"
-        )
-
-    if d["questions"]:
-        qs = "".join(
-            f"<li><span class=q>{e(q['query'])}</span>"
-            + (f"<span class=at>{e(q['at'])}</span>" if q["at"] else "")
-            + "</li>"
-            for q in d["questions"]
-        )
-        scope_note = (
-            "Scoped to this widget's dataset."
-            if d["questions_scoped_to_dataset"]
-            else "Every recall this API key has run - no rows carry this dataset's id yet."
-        )
-        questions_body = f"<p class=muted>{e(scope_note)}</p><ol class=questions>{qs}</ol>"
-    else:
-        questions_body = "<p class=muted>No recall history yet for this key.</p>"
-
-    return HTMLResponse(
-        "<!doctype html><meta charset=utf-8>"
-        "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<title>cognee widget dashboard</title>"
-        "<style>"
-        ":root{color-scheme:light dark}"
-        "body{font:14px/1.6 system-ui,sans-serif;margin:0;padding:32px;max-width:900px}"
-        "h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:28px 0 8px}"
-        ".muted{color:#6b7280}.warn{color:#b45309}"
-        "table{border-collapse:collapse;width:100%}"
-        "th{text-align:left;font-weight:600;width:190px;vertical-align:top;padding:4px 10px 4px 0}"
-        "td{padding:4px 0}"
-        "code{background:rgba(127,127,127,.15);padding:1px 5px;border-radius:4px}"
-        "ul.sample{columns:2;font-size:13px;color:#6b7280}"
-        "ol.questions{padding-left:20px}"
-        "ol.questions li{margin:6px 0}.q{display:block}"
-        ".at{font-size:12px;color:#6b7280}"
-        "</style>"
-        "<h1>cognee widget</h1>"
-        "<p class=muted>Read-only. Served by the widget backend, not the docs site.</p>"
-        f"<h2>Configuration</h2><table>{config_rows}</table>"
-        f"<h2>Corpus</h2>{corpus_body}"
-        f"<h2>Recent questions</h2>{questions_body}"
-    )
+    return HTMLResponse((STATIC_DIR / "dashboard.html").read_text(encoding="utf-8"))
 
 
 def main() -> None:

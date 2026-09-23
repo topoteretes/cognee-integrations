@@ -1,0 +1,282 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>cognee widget dashboard</title>
+<style>
+  :root { color-scheme: light dark; --line: rgba(127,127,127,.25); --muted: #6b7280; }
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 0; padding: 28px; max-width: 1040px; }
+  h1 { font-size: 20px; margin: 0 0 2px }
+  h2 { font-size: 15px; margin: 30px 0 10px; display: flex; align-items: baseline; gap: 10px }
+  .muted { color: var(--muted) } .warn { color: #b45309 } .err { color: #b91c1c }
+  table { border-collapse: collapse; width: 100% }
+  th, td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line);
+           vertical-align: top }
+  th { font-weight: 600; white-space: nowrap }
+  thead th { cursor: pointer; user-select: none }
+  thead th[data-dir]::after { content: attr(data-dir); color: var(--muted); font-weight: 400 }
+  code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px }
+  button { font: inherit; border: 1px solid var(--line); background: transparent;
+           border-radius: 6px; padding: 2px 9px; cursor: pointer; color: inherit }
+  button:hover { border-color: var(--muted) }
+  button.danger:hover { border-color: #b91c1c; color: #b91c1c }
+  button[disabled] { opacity: .45; cursor: default }
+  .config th { width: 190px; border: 0 } .config td { border: 0 }
+  .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 8px }
+  input[type=search] { font: inherit; padding: 4px 9px; border: 1px solid var(--line);
+                       border-radius: 6px; background: transparent; color: inherit; flex: 1 }
+  .turn { border-left: 3px solid var(--line); padding: 2px 0 2px 12px; margin: 10px 0 }
+  .q { font-weight: 600 } .a { white-space: pre-wrap }
+  .row-note { font-size: 12px; color: var(--muted) }
+  tr.gone { opacity: .35 }
+  #toast { position: fixed; bottom: 18px; right: 18px; background: #111827; color: #fff;
+           padding: 9px 15px; border-radius: 8px; display: none; max-width: 60ch }
+</style>
+
+<h1>cognee widget</h1>
+<p class="muted">Read-only except where stated. Served by the widget backend, not the docs site.</p>
+
+<h2>Configuration</h2>
+<table class="config"><tbody id="config"></tbody></table>
+
+<h2>Corpus <span class="muted" id="corpus-count"></span></h2>
+<div id="corpus-warn"></div>
+<div class="bar">
+  <input type="search" id="filter" placeholder="Filter sources…" />
+</div>
+<table id="sources">
+  <thead><tr>
+    <th data-sort="name">source</th>
+    <th data-sort="updated">last synced</th>
+    <th data-sort="created">first ingested</th>
+    <th></th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<h2>Conversations <span class="muted" id="sess-count"></span></h2>
+<table id="sessions">
+  <thead><tr>
+    <th data-sort="last_activity_at">last active</th>
+    <th data-sort="session_id">visitor / conversation</th>
+    <th data-sort="tokens_in">tokens</th>
+    <th></th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<div id="toast"></div>
+
+<script>
+  // The token is whatever opened this page; never stored, just forwarded.
+  const TOKEN = new URLSearchParams(location.search).get("token") || "";
+  const api = (p) => p + (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN);
+  const $ = (s) => document.querySelector(s);
+  const text = (t) => document.createTextNode(t == null ? "" : String(t));
+
+  function toast(msg, isError) {
+    const t = $("#toast");
+    t.textContent = msg;
+    t.style.background = isError ? "#7f1d1d" : "#111827";
+    t.style.display = "block";
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => (t.style.display = "none"), 4000);
+  }
+
+  // Timestamps are ISO from cognee; show them as "3 hours ago" with the exact
+  // value on hover, because "is this stale" is the question being asked.
+  function ago(iso) {
+    if (!iso || iso === "None") return "—";
+    const then = Date.parse(iso);
+    if (isNaN(then)) return iso;
+    const s = (Date.now() - then) / 1000;
+    const units = [[31536000,"y"],[2592000,"mo"],[86400,"d"],[3600,"h"],[60,"m"]];
+    for (const [secs, label] of units) {
+      if (s >= secs) return Math.floor(s / secs) + label + " ago";
+    }
+    return "just now";
+  }
+
+  function cell(row, value, title) {
+    const td = row.insertCell();
+    td.appendChild(text(value));
+    if (title) td.title = title;
+    return td;
+  }
+
+  let corpus = { items: [] }, sessions = [], sortState = {};
+
+  function sortBy(list, key, dir) {
+    return list.slice().sort((a, b) => {
+      const x = a[key], y = b[key];
+      const n = typeof x === "number" && typeof y === "number";
+      const c = n ? x - y : String(x ?? "").localeCompare(String(y ?? ""));
+      return dir === "desc" ? -c : c;
+    });
+  }
+
+  function wireSort(tableSel, getList, render) {
+    document.querySelectorAll(tableSel + " thead th[data-sort]").forEach((th) => {
+      th.onclick = () => {
+        const key = th.dataset.sort;
+        const dir = sortState[tableSel] && sortState[tableSel].key === key &&
+                    sortState[tableSel].dir === "asc" ? "desc" : "asc";
+        sortState[tableSel] = { key, dir };
+        document.querySelectorAll(tableSel + " thead th").forEach(h => h.removeAttribute("data-dir"));
+        th.setAttribute("data-dir", dir === "asc" ? " ▲" : " ▼");
+        render(sortBy(getList(), key, dir));
+      };
+    });
+  }
+
+  function renderSources(items) {
+    const q = $("#filter").value.trim().toLowerCase();
+    const body = $("#sources tbody");
+    body.textContent = "";
+    items
+      .filter((i) => !q || i.name.toLowerCase().includes(q))
+      .forEach((i) => {
+        const tr = body.insertRow();
+        const nameTd = cell(tr, i.name, i.source || "");
+        if (i.source) {
+          const note = document.createElement("div");
+          note.className = "row-note";
+          note.appendChild(text(i.source.replace(/^file:\/\//, "")));
+          nameTd.appendChild(note);
+        }
+        cell(tr, ago(i.updated), i.updated);
+        cell(tr, ago(i.created), i.created);
+
+        const actions = tr.insertCell();
+        const del = document.createElement("button");
+        del.className = "danger";
+        del.appendChild(text("Delete"));
+        del.onclick = async () => {
+          if (!confirm("Permanently delete \"" + i.name + "\" from the corpus?\n\n" +
+                       "This cannot be undone, and the widget will stop answering from it.")) return;
+          del.disabled = true;
+          del.textContent = "Deleting…";
+          try {
+            const r = await fetch(api("/api/dashboard/data/" + encodeURIComponent(i.id)),
+                                  { method: "DELETE" });
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            tr.classList.add("gone");
+            del.textContent = "Deleted";
+            toast("Deleted " + i.name);
+            corpus.items = corpus.items.filter((x) => x.id !== i.id);
+            $("#corpus-count").textContent = corpus.items.length + " items in " + corpus.dataset;
+          } catch (e) {
+            del.disabled = false;
+            del.textContent = "Delete";
+            toast("Delete failed: " + e.message, true);
+          }
+        };
+        actions.appendChild(del);
+      });
+  }
+
+  function renderSessions(list) {
+    const body = $("#sessions tbody");
+    body.textContent = "";
+    list.forEach((s) => {
+      const tr = body.insertRow();
+      cell(tr, ago(s.last_activity_at || s.started_at), s.last_activity_at || s.started_at);
+      // web:demo:visitor-x:conv-y -> the identifying half
+      cell(tr, s.session_id.replace(/^web:[^:]*:/, ""), s.session_id);
+      // msg_count is null on the list endpoint (only the detail carries it),
+      // so show tokens, which are populated, and let turns appear on expand.
+      cell(tr, (s.tokens_in || 0) + " in / " + (s.tokens_out || 0) + " out",
+           s.cost_usd != null ? "$" + s.cost_usd : "");
+      const actions = tr.insertCell();
+      const btn = document.createElement("button");
+      btn.appendChild(text("View"));
+      let open = null;
+      btn.onclick = async () => {
+        if (open) { open.remove(); open = null; btn.textContent = "View"; return; }
+        btn.disabled = true;
+        try {
+          const r = await fetch(api("/api/dashboard/sessions/" + s.session_id));
+          const d = await r.json();
+          open = body.insertRow(tr.rowIndex);
+          const td = open.insertCell();
+          td.colSpan = 4;
+          if (!d.turns.length) {
+            td.appendChild(text("No recorded turns for this conversation."));
+            td.className = "muted";
+          }
+          d.turns.forEach((t) => {
+            const wrap = document.createElement("div");
+            wrap.className = "turn";
+            const q = document.createElement("div");
+            q.className = "q";
+            q.appendChild(text(t.question));
+            const a = document.createElement("div");
+            a.className = "a";
+            a.appendChild(text(t.answer));
+            const when = document.createElement("div");
+            when.className = "row-note";
+            when.appendChild(text(ago(t.time) + (t.feedback_score != null
+              ? " · feedback " + t.feedback_score : "")));
+            wrap.append(q, a, when);
+            td.appendChild(wrap);
+          });
+          btn.textContent = "Hide";
+        } catch (e) {
+          toast("Could not load conversation: " + e.message, true);
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      actions.appendChild(btn);
+    });
+  }
+
+  async function load() {
+    const d = await fetch(api("/api/dashboard")).then((r) => r.json());
+    corpus = d.corpus;
+
+    const cfg = $("#config");
+    cfg.textContent = "";
+    const rows = [
+      ["cognee", d.config.cognee_base_url],
+      ["authenticated", d.config.authenticated ? "yes" : "no (no API key set)"],
+      ["reachable", d.config.cloud_reachable ? "yes" : "NO — check key/URL"],
+      ["docs dataset", d.config.docs_dataset],
+      ["site id", d.config.site_id],
+      ["seeds demo docs", d.config.seeds_demo_docs ? "YES — writes on every boot" : "no"],
+      ["allowed origins", (d.config.allowed_origins || []).join(", ")],
+    ];
+    rows.forEach(([k, v]) => {
+      const tr = cfg.insertRow();
+      const th = document.createElement("th");
+      th.appendChild(text(k));
+      tr.appendChild(th);
+      const td = tr.insertCell();
+      td.appendChild(text(v));
+      if (/^NO|^YES/.test(String(v))) td.className = "warn";
+    });
+
+    if (!corpus.exists) {
+      $("#corpus-warn").innerHTML = "";
+      const p = document.createElement("p");
+      p.className = "warn";
+      p.appendChild(text(
+        "Dataset " + corpus.dataset + " does not exist. Recall against a missing " +
+        "dataset returns no results, which reads as an empty-memory answer rather " +
+        "than an error — so this looks like a broken bot. Datasets this key can " +
+        "read: " + (corpus.all_datasets || []).join(", ")));
+      $("#corpus-warn").appendChild(p);
+    }
+    $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
+    renderSources(sortBy(corpus.items, "updated", "desc"));
+
+    const s = await fetch(api("/api/dashboard/sessions")).then((r) => r.json());
+    sessions = s.sessions;
+    $("#sess-count").textContent = sessions.length + " conversations";
+    renderSessions(sessions);
+  }
+
+  $("#filter").oninput = () => renderSources(corpus.items);
+  wireSort("#sources", () => corpus.items, renderSources);
+  wireSort("#sessions", () => sessions, renderSessions);
+  load().catch((e) => toast("Failed to load: " + e.message, true));
+</script>

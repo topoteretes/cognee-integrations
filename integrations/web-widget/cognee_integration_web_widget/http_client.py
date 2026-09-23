@@ -153,6 +153,30 @@ class CogneeHttpClient:
         items = data.get("results", data) if isinstance(data, dict) else data
         return list(items) if isinstance(items, list) else []
 
+    async def delete_data(self, *, dataset_id: str, data_id: str) -> bool:
+        """Permanently remove one ingested item. True when the server accepted it."""
+        response = await self._request("DELETE", f"/api/v1/datasets/{dataset_id}/data/{data_id}")
+        return response.status_code < 400
+
+    async def list_sessions(self) -> list[Any]:
+        """Every session this key can see, widget conversations among them."""
+        response = await self._request("GET", "/api/v1/sessions")
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        items = data.get("sessions", data.get("results", data)) if isinstance(data, dict) else data
+        return list(items) if isinstance(items, list) else []
+
+    async def session_detail(self, session_id: str) -> dict:
+        """One session, including its ``qas`` — both sides of each exchange."""
+        from urllib.parse import quote
+
+        response = await self._request("GET", f"/api/v1/sessions/{quote(session_id, safe='')}")
+        if response.status_code >= 400:
+            return {}
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
     # -- transport ---------------------------------------------------------
     def _headers(self) -> dict:
         return {"X-Api-Key": self.api_key} if self.api_key else {}
