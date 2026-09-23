@@ -439,7 +439,12 @@
   }
 
   async function load() {
-    const d = await fetch(api("/api/dashboard")).then((r) => r.json());
+    // Both endpoints talk to cognee and neither needs the other's result, so
+    // they go out together; waiting for the first doubled time-to-paint.
+    const [d, s] = await Promise.all([
+      fetch(api("/api/dashboard")).then((r) => r.json()),
+      fetch(api("/api/dashboard/sessions")).then((r) => r.json()),
+    ]);
     corpus = d.corpus;
 
     const cfg = $("#config");
@@ -489,7 +494,6 @@
     $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
     renderSources(sortBy(corpus.items, "updated", "desc"));
 
-    const s = await fetch(api("/api/dashboard/sessions")).then((r) => r.json());
     sessions = s.sessions;
     $("#sess-count").textContent = sessions.length + " conversations";
     renderSessions(sessions);

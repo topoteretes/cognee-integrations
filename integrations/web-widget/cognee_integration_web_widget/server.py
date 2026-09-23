@@ -29,6 +29,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -191,12 +192,18 @@ async def _dashboard_data() -> dict:
     client = adapter.client
     docs_dataset = adapter.docs_dataset(DEMO_SITE_ID)
 
+    # Three round trips to cognee, and they were run in series: the dataset
+    # list, then the items, then the recall history, for ~2.5s before the page
+    # could paint. The list has to land first because its id names the corpus,
+    # but the items and the history do not depend on each other.
     datasets = await client.list_datasets()
     match = next(
         (d for d in datasets if isinstance(d, dict) and d.get("name") == docs_dataset), None
     )
-    items = await client.dataset_data(str(match.get("id"))) if match else []
-    history = await client.recall_history()
+    items, history = await asyncio.gather(
+        client.dataset_data(str(match.get("id"))) if match else _empty_list(),
+        client.recall_history(),
+    )
 
     # Recall history is the whole principal's, and it interleaves both sides of
     # each exchange: `user` rows are the questions asked, `system` rows the
@@ -311,6 +318,11 @@ async def dashboard_session(
     ]
     turns.sort(key=lambda t: t["time"])
     return JSONResponse({"session_id": session_id, "turns": turns})
+
+
+async def _empty_list() -> list:
+    """An already-satisfied empty result, so the gather above stays symmetrical."""
+    return []
 
 
 async def _docs_dataset_id() -> str:
