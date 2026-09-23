@@ -56,7 +56,10 @@
     ".cognee-in button{border:0;background:#2563eb;color:#fff;padding:0 16px;cursor:pointer}" +
     ".cognee-bar{padding:6px 12px;font-size:12px;color:#6b7280;display:flex;justify-content:space-between;background:#fff;border-top:1px solid #f3f4f6}" +
     ".cognee-bar a{color:#2563eb;cursor:pointer;text-decoration:none}" +
-    ".cognee-gear{margin-left:10px}" +
+    ".cognee-acts{display:flex;align-items:center;gap:2px}" +
+    ".cognee-gear,.cognee-x{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;cursor:pointer;color:#fff;text-decoration:none;opacity:.7;font-size:15px;line-height:1}" +
+    ".cognee-gear:hover,.cognee-x:hover{opacity:1;background:rgba(255,255,255,.15)}" +
+    ".cognee-x{font-size:19px}" +
     ".cognee-launch{border:0;background:#111827;color:#fff;border-radius:24px;padding:12px 18px;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.2)}";
   var style = document.createElement("style");
   style.textContent = css;
@@ -67,12 +70,13 @@
   root.innerHTML =
     '<div class="cognee-box" id="cognee-box">' +
     '  <div class="cognee-head"><b>Ask our docs</b>' +
-    '    <span style="cursor:pointer" id="cognee-close">×</span></div>' +
+    '    <span class="cognee-acts">' +
+    '      <a class="cognee-gear" id="cognee-dash" target="_blank" rel="noopener" hidden>⚙</a>' +
+    '      <span class="cognee-x" id="cognee-close">×</span></span></div>' +
     '  <div class="cognee-log" id="cognee-log"></div>' +
     '  <div class="cognee-bar">' +
     '    <label><input type="checkbox" id="cognee-optin"> Remember this chat</label>' +
-    '    <span><a id="cognee-forget">Forget me</a>' +
-    '    <a class="cognee-gear" id="cognee-dash" target="_blank" rel="noopener" hidden>⚙</a></span></div>' +
+    '    <a id="cognee-forget">Forget me</a></div>' +
     '  <div class="cognee-in">' +
     '    <input id="cognee-input" placeholder="Ask a question…" autocomplete="off"/>' +
     '    <button id="cognee-send">Send</button></div>' +
