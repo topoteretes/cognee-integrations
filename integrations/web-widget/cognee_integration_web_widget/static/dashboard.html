@@ -173,6 +173,10 @@
   .sum-l { color: var(--muted); font-size: 12px }
   .fold-state { margin-left: auto; font-size: 11px; color: var(--muted) }
 
+  #graph-frame { width: 100%; height: 640px; border: 1px solid var(--line);
+                 border-radius: 8px; background: #fff; display: block; margin-top: 14px }
+  .viz-status { font-size: 11px; color: var(--muted); margin-left: 10px }
+
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
     padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
@@ -218,6 +222,8 @@
       <div class="fold-body">
         <p id="graph-actions"></p>
         <div id="graph-charts"></div>
+        <p id="graph-viz-actions"></p>
+        <div id="graph-frame-wrap"></div>
       </div>
     </details>
   </div>
@@ -525,6 +531,49 @@
     parent.appendChild(box);
   }
 
+  // cognee renders the graph page itself - the same HTML artifact the SDK
+  // writes - so it is embedded rather than reimplemented. It needs
+  // allow-same-origin: one of its scripts touches localStorage, which throws
+  // under an opaque origin and kills the render before it draws anything.
+  // The content is first-party (our backend fetched it from our tenant), so
+  // that is an acceptable trust boundary here; isolating it properly would
+  // mean serving it from a second origin.
+  async function loadGraphFrame(btn, status, refresh) {
+    btn.disabled = true;
+    const started = Date.now();
+    const tick = setInterval(() => {
+      status.textContent = "rendering on cognee\u2026 " +
+        Math.round((Date.now() - started) / 1000) + "s";
+    }, 1000);
+    status.textContent = "rendering on cognee\u2026";
+    try {
+      const r = await fetch(api("/api/dashboard/graph-html" + (refresh ? "&refresh=true" : "")));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const cached = (r.headers.get("X-Cache") || "").startsWith("hit");
+      const html = await r.text();
+      const wrap = $("#graph-frame-wrap");
+      wrap.textContent = "";
+      const f = document.createElement("iframe");
+      f.id = "graph-frame";
+      f.setAttribute("sandbox", "allow-scripts allow-same-origin");
+      f.setAttribute("title", "cognee knowledge graph");
+      f.srcdoc = html;
+      wrap.appendChild(f);
+      status.textContent = cached
+        ? "from cache \u00b7 " + Math.round(html.length / 1024) + " KB"
+        : "rendered in " + Math.round((Date.now() - started) / 1000) +
+          "s \u00b7 cached 15 min";
+      btn.textContent = "Rebuild graph";
+      btn.disabled = false;
+      btn.onclick = () => loadGraphFrame(btn, status, true);
+    } catch (e) {
+      status.textContent = "render failed (" + e.message + ")";
+      btn.disabled = false;
+    } finally {
+      clearInterval(tick);
+    }
+  }
+
   let compositionStarted = false;
 
   function renderComposition(g) {
@@ -652,6 +701,22 @@
       // seconds against cognee, so it must not delay first paint, and it must
       // fail quietly - nobody asked for it, so nobody should be told it broke.
       prefetchComposition();
+      // The graph render is expensive, so it is never prefetched - the button
+      // only appears once someone opens the fold, and acts on their click.
+      $("#graph-fold").addEventListener("toggle", function once() {
+        if (!$("#graph-fold").open) return;
+        $("#graph-fold").removeEventListener("toggle", once);
+        const act = $("#graph-viz-actions");
+        act.textContent = "";
+        const b = document.createElement("button");
+        b.appendChild(text("Load interactive graph"));
+        b.title = "cognee renders this server-side: ~40s the first time, " +
+                  "then cached for 15 minutes";
+        const st = document.createElement("span");
+        st.className = "viz-status";
+        b.onclick = () => loadGraphFrame(b, st, false);
+        act.append(b, st);
+      });
     } else {
       sum.appendChild(text("No graph has been built for this dataset yet."));
       sum.className = "muted";

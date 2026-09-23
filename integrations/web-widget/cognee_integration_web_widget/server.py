@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import time
 from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -354,6 +355,47 @@ async def _docs_dataset_id() -> str:
     if not match:
         raise HTTPException(status_code=404, detail="docs dataset not found")
     return str(match.get("id"))
+
+
+# cognee renders this page itself - the same HTML artifact visualize_graph()
+# writes - but the call takes ~40s, is not cached upstream, and two in flight at
+# once was enough to make the tenant answer 503. So it is cached here and
+# serialised: one upstream render at a time, shared until stale.
+_VIZ_TTL_SECONDS = 900
+_viz_cache: dict = {"html": None, "at": 0.0, "dataset": None}
+_viz_lock = asyncio.Lock()
+
+
+@app.get("/api/dashboard/graph-html", response_class=HTMLResponse)
+async def dashboard_graph_html(
+    token: Optional[str] = Query(default=None),
+    refresh: bool = Query(default=False),
+) -> HTMLResponse:
+    """cognee's own graph rendering, cached. ``refresh=true`` forces a rebuild."""
+    _require_dashboard(token)
+    dataset_id = await _docs_dataset_id()
+
+    def _fresh() -> bool:
+        return bool(
+            _viz_cache["html"]
+            and _viz_cache["dataset"] == dataset_id
+            and time.time() - _viz_cache["at"] < _VIZ_TTL_SECONDS
+        )
+
+    if _fresh() and not refresh:
+        age = int(time.time() - _viz_cache["at"])
+        return HTMLResponse(_viz_cache["html"], headers={"X-Cache": "hit", "X-Cache-Age": str(age)})
+
+    # One render at a time: a second opener waits for the first rather than
+    # starting another 40s job against the same tenant.
+    async with _viz_lock:
+        if _fresh() and not refresh:
+            return HTMLResponse(_viz_cache["html"], headers={"X-Cache": "hit-after-wait"})
+        html = await adapter.client.visualize_html(dataset_id)
+        if not html:
+            raise HTTPException(status_code=502, detail="cognee could not render the graph")
+        _viz_cache.update({"html": html, "at": time.time(), "dataset": dataset_id})
+    return HTMLResponse(html, headers={"X-Cache": "miss"})
 
 
 @app.get("/api/dashboard/graph")

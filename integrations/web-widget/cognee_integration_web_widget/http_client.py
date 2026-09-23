@@ -198,6 +198,21 @@ class CogneeHttpClient:
         data = response.json()
         return data if isinstance(data, dict) else {}
 
+    async def visualize_html(self, dataset_id: str) -> Optional[str]:
+        """cognee's own rendered graph page - the same artifact the SDK writes.
+
+        Slow enough that the caller must cache it; see the dashboard route.
+        """
+        response = await self._request(
+            "GET",
+            "/api/v1/visualize",
+            params={"dataset_id": dataset_id},
+            timeout_override=180.0,
+        )
+        if response.status_code >= 400:
+            return None
+        return response.text
+
     async def list_sessions(self) -> list[Any]:
         """Every session this key can see, widget conversations among them."""
         response = await self._request("GET", "/api/v1/sessions")
@@ -224,9 +239,11 @@ class CogneeHttpClient:
     async def _request(self, method: str, path: str, **kwargs):
         import httpx
 
+        timeout = kwargs.pop("timeout_override", None) or self._timeout
+
         url = self.base_url + path
         headers = {**self._headers(), **kwargs.pop("headers", {})}
         if self._client is not None:
             return await self._client.request(method, url, headers=headers, **kwargs)
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             return await client.request(method, url, headers=headers, **kwargs)
