@@ -214,12 +214,38 @@
   .rank .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
   .rank .c { color: var(--muted); font-variant-numeric: tabular-nums }
 
-  .range { display: flex; gap: 2px; margin-bottom: 10px }
-  .range button { border-radius: 0; border-left-width: 0 }
-  .range button:first-child { border-radius: 7px 0 0 7px; border-left-width: 1px }
-  .range button:last-child { border-radius: 0 7px 7px 0 }
-  .range button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent);
-    border-color: var(--accent); color: var(--ink) }
+  .range { display: flex; margin-bottom: 10px }
+  .range select {
+    font: inherit; font-size: 12px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 7px; padding: 6px 30px 6px 11px; cursor: pointer;
+    appearance: none;
+    /* Chevron drawn in, so the control matches the chart chrome in both themes
+       rather than inheriting the OS widget. */
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+  .range select:hover { border-color: var(--muted) }
+  .range select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+
+  /* Per-mark hover, and the same detail on keyboard focus. */
+  .day:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px }
+  .day .seg, .day .zero { transition: filter .1s }
+  .day:hover .seg, .day:focus-visible .seg { filter: brightness(1.18) }
+  #tip {
+    position: fixed; pointer-events: none; z-index: 20; display: none;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 11px; font-size: 12px; line-height: 1.5;
+    box-shadow: 0 6px 22px rgba(0,0,0,.22); min-width: 120px;
+  }
+  #tip b { display: block; font-size: 11px; color: var(--muted); font-weight: 600;
+           letter-spacing: .03em; margin-bottom: 3px }
+  #tip .r { display: flex; align-items: center; gap: 7px; justify-content: space-between }
+  #tip .r i { width: 8px; height: 8px; border-radius: 2px; display: inline-block }
+  #tip .r span:last-child { font-variant-numeric: tabular-nums; font-weight: 600 }
   /* Refetch holds the previous render at reduced opacity: no skeleton, no
      layout jump, and the numbers never flash empty between periods. */
   #an-scope { transition: opacity .12s }
@@ -312,6 +338,7 @@
   </div>
 </section>
 
+<div id="tip"></div>
 <div id="toast"></div>
 
 <script>
@@ -660,12 +687,77 @@
     parent.appendChild(w);
   }
 
+  // Per-mark hover. Native title() waits about a second and cannot be styled;
+  // this follows the pointer and answers the question the bar poses.
+  const tip = () => $("#tip");
+
+  function showTip(html, evt) {
+    const t = tip();
+    t.textContent = "";
+    t.appendChild(html);
+    t.style.display = "block";
+    moveTip(evt);
+  }
+
+  function moveTip(evt) {
+    const t = tip();
+    const r = t.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Prefer above-right of the pointer, flip when that would clip...
+    let x = evt.clientX + 14;
+    let y = evt.clientY - r.height - 12;
+    if (x + r.width > vw - 8) x = evt.clientX - r.width - 14;
+    if (y < 8) y = evt.clientY + 18;
+    // ...then clamp to the viewport regardless. Flipping alone still let the
+    // tooltip land off-screen near the bottom edge, where it silently showed
+    // nothing at all.
+    x = Math.max(8, Math.min(x, vw - r.width - 8));
+    y = Math.max(8, Math.min(y, vh - r.height - 8));
+    t.style.left = x + "px";
+    t.style.top = y + "px";
+  }
+
+  function hideTip() {
+    tip().style.display = "none";
+  }
+
+  function dayTip(d) {
+    const total = d.answered + d.unanswered;
+    const frag = document.createDocumentFragment();
+    const head = document.createElement("b");
+    head.appendChild(text(d.day));
+    frag.appendChild(head);
+    if (!total) {
+      const none = document.createElement("div");
+      none.className = "muted";
+      none.appendChild(text("no questions"));
+      frag.appendChild(none);
+      return frag;
+    }
+    [["answered", d.answered, "var(--s1)"], ["unanswered", d.unanswered, "var(--s2)"]]
+      .forEach(([name, n, col]) => {
+        if (!n && name === "unanswered") return;
+        const row = document.createElement("div");
+        row.className = "r";
+        const left = document.createElement("span");
+        const dot = document.createElement("i");
+        dot.style.background = col;
+        left.append(dot, text(name));
+        const right = document.createElement("span");
+        right.appendChild(text(n));
+        row.append(left, right);
+        frag.appendChild(row);
+      });
+    return frag;
+  }
+
   // Presets, not a calendar: nobody fights a date grid for "last 7 days".
   const RANGES = [
-    { days: 7, label: "7d" },
-    { days: 14, label: "14d" },
-    { days: 30, label: "30d" },
-    { days: 90, label: "90d" },
+    { days: 7, label: "Last 7 days" },
+    { days: 14, label: "Last 14 days" },
+    { days: 30, label: "Last 30 days" },
+    { days: 90, label: "Last 90 days" },
   ];
   const RANGE_KEY = "cognee-dash-range";
   let rangeDays = 7;
@@ -679,20 +771,21 @@
   function renderRangePicker() {
     const box = $("#an-range-picker");
     box.textContent = "";
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", "Analytics period");
     RANGES.forEach((r) => {
-      const b = document.createElement("button");
-      b.appendChild(text(r.label));
-      b.setAttribute("aria-pressed", r.days === rangeDays ? "true" : "false");
-      b.title = "Last " + r.days + " days";
-      b.onclick = () => {
-        if (r.days === rangeDays) return;
-        rangeDays = r.days;
-        try { localStorage.setItem(RANGE_KEY, String(r.days)); } catch (e) { /* fine */ }
-        renderRangePicker();
-        loadAnalytics();
-      };
-      box.appendChild(b);
+      const o = document.createElement("option");
+      o.value = String(r.days);
+      o.appendChild(text(r.label));
+      if (r.days === rangeDays) o.selected = true;
+      sel.appendChild(o);
     });
+    sel.onchange = () => {
+      rangeDays = parseInt(sel.value, 10);
+      try { localStorage.setItem(RANGE_KEY, String(rangeDays)); } catch (e) { /* fine */ }
+      loadAnalytics();
+    };
+    box.appendChild(sel);
   }
 
   async function loadAnalytics() {
@@ -748,8 +841,6 @@
       const total = d.answered + d.unanswered;
       const col = document.createElement("div");
       col.className = "day";
-      col.title = d.day + " - " + total + " question" + (total === 1 ? "" : "s") +
-                  (d.unanswered ? " (" + d.unanswered + " unanswered)" : "");
       if (!total) {
         const z = document.createElement("div");
         z.className = "zero";
@@ -763,6 +854,22 @@
           col.appendChild(seg);
         });
       }
+      // Keyboard reaches the same detail as the pointer, and a screen reader
+      // gets it without either.
+      col.tabIndex = 0;
+      col.setAttribute("role", "img");
+      col.setAttribute("aria-label",
+        d.day + ": " + total + " question" + (total === 1 ? "" : "s") +
+        (d.unanswered ? ", " + d.unanswered + " unanswered" : ""));
+      col.removeAttribute("title");
+      col.addEventListener("mouseenter", (e) => showTip(dayTip(d), e));
+      col.addEventListener("mousemove", moveTip);
+      col.addEventListener("mouseleave", hideTip);
+      col.addEventListener("focus", () => {
+        const r = col.getBoundingClientRect();
+        showTip(dayTip(d), { clientX: r.left + r.width / 2, clientY: r.top });
+      });
+      col.addEventListener("blur", hideTip);
       days.appendChild(col);
       const lab = document.createElement("span");
       // Only the ends and the middle get a label; 14 dates would collide.
