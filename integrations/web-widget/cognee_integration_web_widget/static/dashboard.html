@@ -3,66 +3,192 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>cognee widget dashboard</title>
 <style>
-  :root { color-scheme: light dark; --line: rgba(127,127,127,.25); --muted: #6b7280; }
-  body { font: 14px/1.6 system-ui, sans-serif; margin: 0; padding: 28px; max-width: 1040px; }
-  h1 { font-size: 20px; margin: 0 0 2px }
-  h2 { font-size: 15px; margin: 30px 0 10px; display: flex; align-items: baseline; gap: 10px }
-  .muted { color: var(--muted) } .warn { color: #b45309 } .err { color: #b91c1c }
+  /* One palette, defined once in light and re-pointed for dark, so nothing has
+     its only definition inside a media query. */
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --panel: #fff;
+    --ink: #18181b;
+    --muted: #6b7280;
+    --line: #e7e7e4;
+    --line-soft: #f1f1ef;
+    --accent: #2563eb;
+    --ok: #15803d;
+    --warn: #b45309;
+    --danger: #b91c1c;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 1px 12px rgba(0,0,0,.03);
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0b0d;
+      --panel: #131316;
+      --ink: #ededf0;
+      --muted: #8b8b95;
+      --line: #26262c;
+      --line-soft: #1c1c21;
+      --accent: #7aa2f7;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --shadow: none;
+    }
+  }
+
+  * { box-sizing: border-box }
+  body {
+    font: 14px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: 36px 28px 72px; background: var(--bg); color: var(--ink);
+    max-width: 1080px; margin-inline: auto;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header { margin-bottom: 28px }
+  h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 3px }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 }
+
+  section { margin-top: 26px }
+  .sec-head {
+    display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px;
+  }
+  h2 { font-size: 13px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+       color: var(--muted); margin: 0 }
+  .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+  }
+  .panel > .pad { padding: 14px 16px }
+
+  /* Configuration: a key/value grid reads faster than a table here. */
+  #config { display: grid; grid-template-columns: max-content 1fr; gap: 7px 22px;
+            padding: 15px 16px; margin: 0 }
+  #config dt { color: var(--muted); font-size: 13px }
+  #config dd { margin: 0; font-size: 13px; word-break: break-word }
+  #config dd.ok, #config dd.warn { display: flex; align-items: center; gap: 7px }
+  #config dd.ok::before, #config dd.warn::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%; flex: none;
+  }
+  #config dd.ok::before { background: var(--ok) }
+  #config dd.warn::before { background: var(--warn) }
+  #config dd.warn { color: var(--warn) }
+  #config dd code, .mono { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace }
+
   table { border-collapse: collapse; width: 100% }
-  th, td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line);
-           vertical-align: top }
-  th { font-weight: 600; white-space: nowrap }
-  thead th { cursor: pointer; user-select: none }
-  thead th[data-dir]::after { content: attr(data-dir); color: var(--muted); font-weight: 400 }
-  code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px }
-  button { font: inherit; border: 1px solid var(--line); background: transparent;
-           border-radius: 6px; padding: 2px 9px; cursor: pointer; color: inherit }
+  thead th {
+    text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .05em;
+    text-transform: uppercase; color: var(--muted); padding: 10px 14px;
+    border-bottom: 1px solid var(--line); cursor: pointer; user-select: none;
+    white-space: nowrap; background: var(--panel);
+  }
+  thead th:hover { color: var(--ink) }
+  thead th[data-dir] { color: var(--ink) }
+  tbody td { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top }
+  tbody tr:last-child td { border-bottom: 0 }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, transparent) }
+  td.act, thead th:last-child { text-align: right; width: 1%; white-space: nowrap }
+  .num { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap }
+  .when { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums }
+
+  .src-name { font-weight: 550 }
+  .row-note { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+              color: var(--muted); margin-top: 2px; word-break: break-all }
+
+  button {
+    font: 500 12px/1 inherit; font-family: inherit; color: var(--ink);
+    border: 1px solid var(--line); background: var(--panel);
+    border-radius: 7px; padding: 6px 11px; cursor: pointer;
+    transition: border-color .12s, color .12s, background .12s;
+  }
   button:hover { border-color: var(--muted) }
-  button.danger:hover { border-color: #b91c1c; color: #b91c1c }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+  button.danger:hover { border-color: var(--danger); color: var(--danger);
+                        background: color-mix(in srgb, var(--danger) 7%, transparent) }
   button[disabled] { opacity: .45; cursor: default }
-  .config th { width: 190px; border: 0 } .config td { border: 0 }
-  .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 8px }
-  input[type=search] { font: inherit; padding: 4px 9px; border: 1px solid var(--line);
-                       border-radius: 6px; background: transparent; color: inherit; flex: 1 }
-  .turn { border-left: 3px solid var(--line); padding: 2px 0 2px 12px; margin: 10px 0 }
-  .q { font-weight: 600 } .a { white-space: pre-wrap }
-  .row-note { font-size: 12px; color: var(--muted) }
-  #toast { position: fixed; bottom: 18px; right: 18px; background: #111827; color: #fff;
-           padding: 9px 15px; border-radius: 8px; display: none; max-width: 60ch }
+
+  .toolbar { display: flex; gap: 9px; align-items: center; margin-bottom: 9px }
+  input[type=search] {
+    font: inherit; font-size: 13px; padding: 7px 12px; flex: 1;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: inherit;
+  }
+  input[type=search]:focus { outline: none; border-color: var(--accent) }
+  input[type=search]::placeholder { color: var(--muted) }
+
+  #sources-more { display: flex; gap: 9px; align-items: center;
+                  margin: 11px 2px 0; font-size: 12px }
+
+  /* Transcript: the two voices must be distinguishable at a glance. */
+  .transcript { padding: 4px 14px 14px; background: var(--bg); text-align: left }
+  .turn { padding: 12px 0; border-bottom: 1px solid var(--line-soft) }
+  .turn:last-child { border-bottom: 0 }
+  .role { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+          color: var(--muted); margin-bottom: 3px }
+  .q { font-weight: 600; margin-bottom: 9px }
+  .a { white-space: pre-wrap; color: var(--ink); max-width: 76ch;
+       border-left: 2px solid var(--line); padding-left: 12px;
+       overflow-wrap: anywhere }
+  .q { max-width: 76ch }
+  .turn-meta { font-size: 11px; color: var(--muted); margin-top: 7px }
+
+  .notice { color: var(--warn); padding: 13px 16px; margin: 0; font-size: 13px;
+            border-left: 3px solid var(--warn); background: var(--panel) }
+  .muted { color: var(--muted) }
+  .empty { color: var(--muted); padding: 14px; font-size: 13px }
+
+  #toast {
+    position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
+    padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
+    font-size: 13px; box-shadow: 0 8px 28px rgba(0,0,0,.18); z-index: 10;
+  }
 </style>
 
-<h1>cognee widget</h1>
-<p class="muted">Read-only except where stated. Served by the widget backend, not the docs site.</p>
+<header>
+  <h1>cognee widget</h1>
+  <p class="sub">Read-only except where stated. Served by the widget backend, not the docs site.</p>
+</header>
 
-<h2>Configuration</h2>
-<table class="config"><tbody id="config"></tbody></table>
+<section>
+  <div class="sec-head"><h2>Configuration</h2></div>
+  <div class="panel"><dl id="config"></dl></div>
+</section>
 
-<h2>Corpus <span class="muted" id="corpus-count"></span></h2>
-<div id="corpus-warn"></div>
-<div class="bar">
-  <input type="search" id="filter" placeholder="Filter sources…" />
-</div>
-<table id="sources">
-  <thead><tr>
-    <th data-sort="name">source</th>
-    <th data-sort="updated">last synced</th>
-    <th data-sort="created">first ingested</th>
-    <th></th>
-  </tr></thead>
-  <tbody></tbody>
-</table>
-<p class="bar" id="sources-more"></p>
+<section>
+  <div class="sec-head"><h2>Corpus</h2><span class="count" id="corpus-count"></span></div>
+  <div id="corpus-warn"></div>
+  <div class="toolbar">
+    <input type="search" id="filter" placeholder="Filter sources…" />
+  </div>
+  <div class="panel">
+    <table id="sources">
+      <thead><tr>
+        <th data-sort="name">source</th>
+        <th data-sort="updated">last synced</th>
+        <th data-sort="created">first ingested</th>
+        <th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <p id="sources-more"></p>
+</section>
 
-<h2>Conversations <span class="muted" id="sess-count"></span></h2>
-<table id="sessions">
-  <thead><tr>
-    <th data-sort="last_activity_at">last active</th>
-    <th data-sort="session_id">visitor / conversation</th>
-    <th data-sort="tokens_in">tokens</th>
-    <th></th>
-  </tr></thead>
-  <tbody></tbody>
-</table>
+<section>
+  <div class="sec-head"><h2>Conversations</h2><span class="count" id="sess-count"></span></div>
+  <div class="panel">
+    <table id="sessions">
+      <thead><tr>
+        <th data-sort="last_activity_at">last active</th>
+        <th data-sort="session_id">visitor / conversation</th>
+        <th data-sort="tokens_in">tokens (session)</th>
+        <th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
 
 <div id="toast"></div>
 
@@ -171,16 +297,18 @@
       .forEach((i) => {
         const tr = body.insertRow();
         const nameTd = cell(tr, i.name, i.source || "");
+        nameTd.firstChild && (nameTd.className = "src-name");
         if (i.source) {
           const note = document.createElement("div");
           note.className = "row-note";
           note.appendChild(text(i.source.replace(/^file:\/\//, "")));
           nameTd.appendChild(note);
         }
-        cell(tr, ago(i.updated), i.updated);
-        cell(tr, ago(i.created), i.created);
+        cell(tr, ago(i.updated), i.updated).className = "when";
+        cell(tr, ago(i.created), i.created).className = "when";
 
         const actions = tr.insertCell();
+        actions.className = "act";
         const del = document.createElement("button");
         del.className = "danger";
         del.appendChild(text("Delete"));
@@ -215,14 +343,18 @@
     body.textContent = "";
     list.forEach((s) => {
       const tr = body.insertRow();
-      cell(tr, ago(s.last_activity_at || s.started_at), s.last_activity_at || s.started_at);
+      cell(tr, ago(s.last_activity_at || s.started_at),
+           s.last_activity_at || s.started_at).className = "when";
       // web:demo:visitor-x:conv-y -> the identifying half
       cell(tr, s.session_id.replace(/^web:[^:]*:/, ""), s.session_id);
       // msg_count is null on the list endpoint (only the detail carries it),
       // so show tokens, which are populated, and let turns appear on expand.
-      cell(tr, (s.tokens_in || 0) + " in / " + (s.tokens_out || 0) + " out",
-           s.cost_usd != null ? "$" + s.cost_usd : "");
+      cell(tr, (s.tokens_in || 0).toLocaleString() + " in / " +
+               (s.tokens_out || 0).toLocaleString() + " out",
+           "Totalled across every turn in this conversation, not the visible one")
+        .className = "num";
       const actions = tr.insertCell();
+      actions.className = "act";
       const btn = document.createElement("button");
       btn.appendChild(text("View"));
       let open = null;
@@ -235,24 +367,31 @@
           open = body.insertRow(tr.rowIndex);
           const td = open.insertCell();
           td.colSpan = 4;
+          td.className = "transcript";
           if (!d.turns.length) {
             td.appendChild(text("No recorded turns for this conversation."));
-            td.className = "muted";
+            td.className = "empty";
           }
           d.turns.forEach((t) => {
             const wrap = document.createElement("div");
             wrap.className = "turn";
+            const qRole = document.createElement("div");
+            qRole.className = "role";
+            qRole.appendChild(text("visitor"));
             const q = document.createElement("div");
             q.className = "q";
             q.appendChild(text(t.question));
+            const aRole = document.createElement("div");
+            aRole.className = "role";
+            aRole.appendChild(text("widget"));
             const a = document.createElement("div");
             a.className = "a";
             a.appendChild(text(t.answer));
             const when = document.createElement("div");
-            when.className = "row-note";
+            when.className = "turn-meta";
             when.appendChild(text(ago(t.time) + (t.feedback_score != null
               ? " · feedback " + t.feedback_score : "")));
-            wrap.append(q, a, when);
+            wrap.append(qRole, q, aRole, a, when);
             td.appendChild(wrap);
           });
           btn.textContent = "Hide";
@@ -272,29 +411,41 @@
 
     const cfg = $("#config");
     cfg.textContent = "";
+    const origins = (d.config.allowed_origins || []).join(", ");
+    // state: "ok" | "warn" | null. Only the rows that carry a judgement get a
+    // dot; the rest are plain facts and should not look like status.
     const rows = [
-      ["cognee", d.config.cognee_base_url],
-      ["authenticated", d.config.authenticated ? "yes" : "no (no API key set)"],
-      ["reachable", d.config.cloud_reachable ? "yes" : "NO — check key/URL"],
-      ["docs dataset", d.config.docs_dataset],
-      ["site id", d.config.site_id],
-      ["seeds demo docs", d.config.seeds_demo_docs ? "YES — writes on every boot" : "no"],
-      ["allowed origins", (d.config.allowed_origins || []).join(", ")],
+      ["cognee", d.config.cognee_base_url, null, true],
+      ["authenticated", d.config.authenticated ? "yes" : "no (no API key set)",
+        d.config.authenticated ? "ok" : "warn"],
+      ["reachable", d.config.cloud_reachable ? "yes" : "no — check key/URL",
+        d.config.cloud_reachable ? "ok" : "warn"],
+      ["docs dataset", d.config.docs_dataset, null, true],
+      ["site id", d.config.site_id, null, true],
+      ["seeds demo docs", d.config.seeds_demo_docs ? "yes — writes on every boot" : "no",
+        d.config.seeds_demo_docs ? "warn" : "ok"],
+      ["allowed origins", origins,
+        origins.trim() === "*" ? "warn" : "ok"],
     ];
-    rows.forEach(([k, v]) => {
-      const tr = cfg.insertRow();
-      const th = document.createElement("th");
-      th.appendChild(text(k));
-      tr.appendChild(th);
-      const td = tr.insertCell();
-      td.appendChild(text(v));
-      if (/^NO|^YES/.test(String(v))) td.className = "warn";
+    rows.forEach(([k, v, state, mono]) => {
+      const dt = document.createElement("dt");
+      dt.appendChild(text(k));
+      const dd = document.createElement("dd");
+      if (state) dd.className = state;
+      if (mono) {
+        const c = document.createElement("code");
+        c.appendChild(text(v));
+        dd.appendChild(c);
+      } else {
+        dd.appendChild(text(v));
+      }
+      cfg.append(dt, dd);
     });
 
     if (!corpus.exists) {
       $("#corpus-warn").innerHTML = "";
       const p = document.createElement("p");
-      p.className = "warn";
+      p.className = "notice";
       p.appendChild(text(
         "Dataset " + corpus.dataset + " does not exist. Recall against a missing " +
         "dataset returns no results, which reads as an empty-memory answer rather " +
