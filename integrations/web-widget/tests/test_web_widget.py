@@ -827,3 +827,64 @@ def test_analytics_excludes_other_sites_and_is_gated(analytics_client):
     assert body["totals"]["visitors"] == 2
     assert client.get("/api/dashboard/analytics").status_code == 401
     assert client.get("/api/dashboard/analytics?token=wrong").status_code == 401
+
+
+# --- Corpus sync state --------------------------------------------------------
+#
+# Green means the graph still reflects the corpus. It compares ingests against
+# the graph build, not against the documentation the corpus came from - that
+# lives on a filesystem this backend cannot see.
+
+
+def _sync(items, built):
+    from cognee_integration_web_widget.server import _corpus_sync
+
+    return _corpus_sync(items, {"computedAt": built})
+
+
+def test_corpus_is_synced_when_the_graph_was_built_after_every_ingest():
+    out = _sync(
+        [{"updatedAt": "2026-09-01T00:00:00Z"}, {"updatedAt": "2026-09-02T00:00:00Z"}],
+        "2026-09-03T00:00:00Z",
+    )
+    assert out["state"] == "synced"
+    assert out["stale"] == 0
+
+
+def test_corpus_is_stale_when_a_source_changed_after_the_graph_was_built():
+    """Reingesting or deleting a source is exactly this case."""
+    out = _sync(
+        [{"updatedAt": "2026-09-01T00:00:00Z"}, {"updatedAt": "2026-09-04T00:00:00Z"}],
+        "2026-09-03T00:00:00Z",
+    )
+    assert out["state"] == "stale"
+    assert out["stale"] == 1
+    assert out["newest_item_at"] == "2026-09-04T00:00:00Z"
+
+
+def test_corpus_sync_counts_every_source_that_moved_ahead():
+    out = _sync(
+        [{"updatedAt": "2026-09-05T00:00:00Z"}, {"updatedAt": "2026-09-04T00:00:00Z"}],
+        "2026-09-03T00:00:00Z",
+    )
+    assert out["stale"] == 2
+
+
+@pytest.mark.parametrize(
+    "items,built",
+    [([], "2026-09-03T00:00:00Z"), ([{"updatedAt": "2026-09-01T00:00:00Z"}], ""), ([], "")],
+)
+def test_corpus_sync_is_unknown_rather_than_guessed(items, built):
+    """No graph or no items means no claim - a green badge would be a lie."""
+    assert _sync(items, built)["state"] == "unknown"
+
+
+def test_dashboard_payload_carries_the_sync_state(dashboard_client, fake_client):
+    fake_client.dataset_data = AsyncMock(
+        return_value=[{"id": "a", "name": "x", "updatedAt": "2026-09-09T00:00:00Z"}]
+    )
+    fake_client.graph_summary = AsyncMock(
+        return_value={"numNodes": 1, "numEdges": 0, "computedAt": "2026-09-01T00:00:00Z"}
+    )
+    body = dashboard_client.get("/api/dashboard?token=s3cret").json()
+    assert body["corpus"]["sync"]["state"] == "stale"

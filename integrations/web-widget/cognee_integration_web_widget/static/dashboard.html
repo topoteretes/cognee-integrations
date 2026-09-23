@@ -203,7 +203,7 @@
      floor, so at 90 days the marks overflowed and overlapped. */
   .days { display: flex; align-items: flex-end; justify-content: space-evenly;
           gap: 2px; height: 132px }
-  .day { flex: 1 1 0; max-width: 18px; display: flex; flex-direction: column;
+  .day { flex: 1 1 0; max-width: 40px; display: flex; flex-direction: column;
          justify-content: flex-end; gap: 2px; min-width: 0; height: 100% }
   .day .seg { border-radius: 2px 2px 0 0; min-height: 0; width: 100% }
   .day .seg.a { background: var(--s1) }
@@ -212,7 +212,7 @@
   .day-axis { display: flex; justify-content: space-evenly; gap: 2px; margin-top: 6px;
               font-size: 10px; color: var(--muted) }
   /* Same flex geometry as .day, so each label stays under its column. */
-  .day-axis span { flex: 1 1 0; max-width: 18px; text-align: center;
+  .day-axis span { flex: 1 1 0; max-width: 40px; text-align: center;
                    min-width: 0; overflow: visible; white-space: nowrap }
 
   .rank { display: grid; grid-template-columns: auto 1fr auto; gap: 10px;
@@ -260,6 +260,16 @@
   #an-scope { transition: opacity .12s }
   #an-scope.loading { opacity: .45 }
 
+  /* Status, so it ships with a label and never rests on colour alone. */
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+          padding: 2px 9px 2px 7px; border-radius: 20px; border: 1px solid var(--line);
+          color: var(--muted); white-space: nowrap; cursor: default }
+  .pill i { width: 7px; height: 7px; border-radius: 50%; flex: none }
+  .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)) }
+  .pill.ok i { background: var(--ok) }
+  .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)) }
+  .pill.warn i { background: var(--warn) }
+
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
     padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
@@ -278,7 +288,7 @@
 </section>
 
 <section>
-  <div class="sec-head"><h2>Corpus</h2><span class="count" id="corpus-count"></span></div>
+  <div class="sec-head"><h2>Corpus</h2><span class="count" id="corpus-count"></span><span id="corpus-sync"></span></div>
   <div id="corpus-warn"></div>
   <div class="toolbar">
     <input type="search" id="filter" placeholder="Filter sources…" />
@@ -418,6 +428,27 @@
   const PAGE = 10;
   let shown = PAGE;
 
+  // Green when the graph was built after the last ingest; amber when a source
+  // has changed since, which is what reingesting or deleting one does.
+  function renderSyncPill(sync) {
+    const box = $("#corpus-sync");
+    box.textContent = "";
+    if (!sync || sync.state === "unknown") return;
+    const stale = sync.state === "stale";
+    const pill = document.createElement("span");
+    pill.className = "pill " + (stale ? "warn" : "ok");
+    const dot = document.createElement("i");
+    pill.append(dot, text(stale
+      ? sync.stale + " source" + (sync.stale === 1 ? "" : "s") + " changed since the graph was built"
+      : "synced"));
+    pill.title = stale
+      ? "Newest ingest " + sync.newest_item_at + " is after the graph build " +
+        sync.built_at + ". Rebuild the graph so answers reflect the corpus."
+      : "Graph built " + sync.built_at + ", after the newest ingest " +
+        sync.newest_item_at + ".";
+    box.appendChild(pill);
+  }
+
   function renderSources(items) {
     const q = $("#filter").value.trim().toLowerCase();
     const body = $("#sources tbody");
@@ -517,6 +548,11 @@
             corpus.items = corpus.items.filter((x) => x.id !== i.id);
             corpus.item_count = corpus.items.length;
             $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
+            // The corpus just moved ahead of the graph.
+            corpus.sync = { state: "stale", stale: (corpus.sync && corpus.sync.stale || 0) + 1,
+                            newest_item_at: new Date().toISOString(),
+                            built_at: (corpus.sync && corpus.sync.built_at) || "" };
+            renderSyncPill(corpus.sync);
             renderSources(corpus.items);
           } catch (e) {
             del.disabled = false;
@@ -1020,6 +1056,7 @@
       $("#corpus-warn").appendChild(p);
     }
     $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
+    renderSyncPill(corpus.sync);
     renderSources(sortBy(corpus.items, "updated", "desc"));
 
     const sum = $("#graph-summary");

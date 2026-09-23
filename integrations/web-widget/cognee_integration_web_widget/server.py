@@ -190,6 +190,22 @@ def _field(item, *names, default=""):
     return default
 
 
+def _corpus_sync(items: list, graph: dict) -> dict:
+    """Compare the newest ingest against the graph's build time."""
+    stamps = [str(_field(i, "updatedAt")) for i in items]
+    newest = max((t for t in stamps if t), default="")
+    built = str(graph.get("computedAt") or "")
+    if not newest or not built:
+        return {"state": "unknown", "newest_item_at": newest, "built_at": built, "stale": 0}
+    stale = sum(1 for t in stamps if t and t > built)
+    return {
+        "state": "stale" if stale else "synced",
+        "newest_item_at": newest,
+        "built_at": built,
+        "stale": stale,
+    }
+
+
 async def _dashboard_data() -> dict:
     """Everything the dashboard shows, gathered read-only from cognee."""
     client = adapter.client
@@ -244,6 +260,16 @@ async def _dashboard_data() -> dict:
         "corpus": {
             "dataset": docs_dataset,
             "dataset_id": dataset_id,
+            # Whether the graph still reflects the corpus. Reingesting or
+            # deleting a source moves its updatedAt past the graph's build time,
+            # and until the graph is rebuilt the widget answers from a picture
+            # of a corpus that no longer exists.
+            #
+            # This compares the corpus against the graph, NOT against the
+            # documentation it came from: source_uri points into the filesystem
+            # that performed the ingest, which this backend cannot see, so an
+            # edit to a docs page is invisible here.
+            "sync": _corpus_sync(items, graph),
             "exists": match is not None,
             "item_count": len(items),
             "items": [
