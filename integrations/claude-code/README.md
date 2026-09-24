@@ -353,6 +353,40 @@ Final sync on session end is triggered by the `SessionEnd` detached worker, with
 - `/cognee-memory:cognee-code`
 - `/cognee-memory:cognee-forget`
 - `/cognee-memory:cognee-switch-datasets`
+- `/cognee-memory:cognee-standup`, `/cognee-memory:cognee-digest`,
+  `/cognee-memory:cognee-timeline` — recaps over recorded sessions (below)
+
+## Recaps: standup, digest, timeline
+
+Three skills answer "what did I work on?" from what the server already records —
+no new server surface, no new hooks:
+
+| Skill | Question | Default window |
+|---|---|---|
+| `cognee-standup` | what happened since yesterday, per project; what was left open | `24h` |
+| `cognee-digest` | the week by day and project, most-edited files, the learnings the graph distilled in that window | `7d` |
+| `cognee-timeline <topic>` | how a topic evolved: dated `learned` (graph passages) and `asked` (prompts) events | `30d` |
+
+All three run one wrapper, `scripts/cognee-recap.py`, which reads
+`GET /api/v1/sessions` (+ `/{id}` for each session's last prompts, tool calls and
+edited files) and, for digest/timeline, a context-only graph recall (no LLM call). It
+prints a deterministic Markdown skeleton; the skill tells the model to summarise it.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-recap.py" standup  --since yesterday
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-recap.py" digest   --since week --projects cognee
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-recap.py" timeline "dataset switching" --since 2w --json
+```
+
+`--since` takes `24h`, `7d`, `2w`, `today`, `yesterday`, `week` (since Monday),
+`month`, `all` or a date; windows are by last activity. `--projects` keeps sessions
+whose working directory matches; `--all-sessions` adds sessions not from a coding
+agent (MCP clients, scheduled jobs); `--max-sessions` (25) caps the detail fetches;
+`--json` returns the data. Sessions driven from a host without prompt hooks (a Cursor
+terminal, a cron job) are attributed to the git root of the files they edited and
+described by their tool mix. The dataset is the launch record's (add
+`--session-key <host session id>` when several launches share a directory), else the
+plugin default.
 
 ## Remember (write) behavior
 

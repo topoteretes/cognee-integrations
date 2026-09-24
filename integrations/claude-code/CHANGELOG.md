@@ -10,6 +10,28 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0]
+
+### Added
+- **Recap skills: `cognee-standup`, `cognee-digest`, `cognee-timeline`.** Three
+  skills over one new wrapper, `scripts/cognee-recap.py`, that answer "what did I work
+  on since yesterday?", "what happened this week and what did we decide?" and "how did
+  topic X evolve?" from what the server already records — no new server surface, no
+  new hooks. Sessions come from `GET /api/v1/sessions` (+ `/{id}`: last prompts, tool
+  calls, edited files), learnings from a context-only graph recall (no LLM call). The
+  wrapper prints a deterministic Markdown skeleton grouped by project (standup), by
+  day → project with most-edited files and the graph learnings dated inside the window
+  (digest), or as a dated chronology of `learned` / `asked` events (timeline); the
+  skill tells the model to summarise it, not paste it. `--since` takes `24h`, `7d`,
+  `2w`, `today`, `yesterday`, `week` (since Monday), `month`, `all` or a date;
+  `--projects` narrows by working directory, `--all-sessions` adds non-coding-agent
+  sessions, `--json` returns the data. Sessions driven from a host without prompt
+  hooks (a Cursor terminal, a cron job) are attributed to the git root of the files
+  they edited and described by their tool mix rather than the server's first-tool
+  label. The dataset is the launch record's, else the plugin default — an unscoped
+  recall would search every readable dataset (~1 min, code graphs drowning the
+  learnings).
+
 ## [1.5.7]
 
 ### Fixed
