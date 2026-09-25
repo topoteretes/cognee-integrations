@@ -95,6 +95,25 @@ def mock_server(_http_server):
 
 
 @pytest.fixture
+def private_mock_server():
+    """A mock Cognee server on a port of its own, for tests that run whole sessions.
+
+    A session leaves detached processes behind (the exit watcher, the deferred
+    SessionEnd sync). Against the suite-wide server they reach the next test's
+    fresh mock and provision the plugin identity before that test's own session
+    does, which then gets a 409. A per-test port sends them to a closed one.
+    """
+    server = HTTPServer(host="localhost", port=0)
+    server.start()
+    mock = MockCogneeServer(server)
+    mock.identity.seed_api_key(DEFAULT_TEST_API_KEY)
+    try:
+        yield mock
+    finally:
+        server.stop()
+
+
+@pytest.fixture
 def payloads():
     """The synthetic stdin payload-builder module."""
     return _payloads
