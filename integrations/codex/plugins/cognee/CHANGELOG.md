@@ -55,6 +55,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
   can say where a fact came from, and memory is graph-only recall now anyway.
 
 ### Fixed
+- **A hook that crashes is reported instead of failing silently.** Every hook now
+  runs through `scripts/hook_runner.py`. On Windows every hook was exiting 1 before
+  any of its own error handling ran: Codex showed only "Hook failed", nothing reached
+  `hook.log`, and the `|| python` fallback ran the hook a second time. An uncaught
+  exception, import-time ones included, is now written with its traceback to
+  `~/.cognee-plugin/codex/hook-crash.log`, shown once per hour as a `systemMessage`,
+  and the hook exits 0. An explicit `sys.exit(code)` is left as it was. The runner
+  also switches the hook's stdin/stdout to UTF-8, since Windows pipes default to the
+  ANSI code page. The venv re-exec keeps going through the runner.
+- **Windows hooks have their own launch commands.** Every hook in `hooks.json` has a
+  `commandWindows` that tries `py -3` and then `python`. Codex runs it through
+  `cmd.exe` on Windows, where `python3` is usually the Microsoft Store stub.
 - **Fresh installs against cognee 1.6.0 could not mint their owner API key
   (SDK-740).** cognee 1.6.0 stopped baking `default_password` into the default user:
   the server creates that user at startup only when `DEFAULT_USER_PASSWORD` is set,

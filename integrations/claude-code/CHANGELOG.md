@@ -69,6 +69,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `observer.{started,stopped,completion,completion_failed,probe,retire,signal,
   handler_exception}` (shim, in `~/.cognee-plugin/observer/observer-events.log`).
 
+### Fixed
+- **A hook that crashes is reported instead of failing silently.** Every hook now
+  runs through `scripts/hook_runner.py`. Anything that failed before a hook's own
+  error handling (an import-time error in `_plugin_common`, an unreadable stdin, an
+  unsupported interpreter) exited 1 with no traceback in `hook.log`. For the async
+  hooks (prompt, tool and Stop capture, credits refresh) nothing was shown at all,
+  and the `|| python` fallback ran the hook a second time. An uncaught exception is
+  now written with its traceback to `~/.cognee-plugin/claude-code/hook-crash.log`,
+  shown once per hour as a `systemMessage`, and the hook exits 0. An explicit
+  `sys.exit(code)` is left as it was. The runner also switches the hook's
+  stdin/stdout to UTF-8, since Windows pipes default to the ANSI code page. The
+  venv re-exec keeps going through the runner.
+
 ## [1.6.0]
 
 ### Changed
