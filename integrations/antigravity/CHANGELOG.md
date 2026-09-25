@@ -7,6 +7,22 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.1]
+
+### Added
+- **Graph recall is scoped to the session's project.** Every prompt's graph
+  recall searched the whole dataset, so on a shared graph other projects'
+  documents and sessions dominated the hits. A session that names a project
+  (`COGNEE_PROJECT_NODE_SET`, or the recall-only `COGNEE_RECALL_PROJECT_NODE_SET`)
+  now sends `node_name=[<project>, <shared sets>]` with the `OR` operator on the
+  graph scope. `COGNEE_RECALL_SHARED_NODE_SETS` (default `global,user_context`)
+  names the sets every project may read, so preferences saved with
+  `cognee-remember` stay recallable everywhere; `COGNEE_RECALL_PROJECT_SCOPE=false`
+  turns scoping off. Session, trace and code recall stay unfiltered, and nothing
+  changes without a project name. In the author's A/B over 18 judged prompts
+  across five projects, cross-project bleed fell from 0.72 to 0.06 and injected
+  context shrank by 20%. Contributed by @nagelm (#402).
+
 ## [1.6.0]
 
 ### Changed

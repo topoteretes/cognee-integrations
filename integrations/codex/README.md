@@ -694,6 +694,19 @@ improve workers. The backend must expose `node_set` on typed QA/trace entries an
 preserve it through improve. Older backends leave capture queued with an explicit
 `project_memory_prepared` error instead of silently losing the tags.
 
+When a session names a project, **graph recall is scoped to it**: every prompt's
+graph lookup sends `node_name=[<project>, <shared sets>]` (OR-joined), so other
+projects' documents and sessions stop crowding the hits. Session and trace
+recall are keyed by session and stay unfiltered, and the code lane is never
+filtered. Scoping needs nothing new from the backend, so a recall-only project
+name works where capture tagging is not available yet.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_RECALL_PROJECT_NODE_SET` | unset | Names the project for **recall only**, without tagging capture. `COGNEE_PROJECT_NODE_SET` wins when both are set; `auto`, `off` and blank are ignored. |
+| `COGNEE_RECALL_SHARED_NODE_SETS` | `global,user_context` | Comma-separated node sets every project may read. `user_context` keeps what `cognee-remember` saved about you (preferences, facts) recallable in every project. |
+| `COGNEE_RECALL_PROJECT_SCOPE` | `true` | Set `false` to keep project tagging on capture but leave recall unfiltered. |
+
 `COGNEE_SESSION_COMPANION_DATASET=true` asks the backend to provision
 `<primary>-agent_sessions`. Writes and improve use the companion only after the
 server attests its permission snapshot. Graph recall reads both datasets in
