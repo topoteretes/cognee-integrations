@@ -127,6 +127,20 @@ export function normalizeAgentId(agentId: string | undefined, cfg: Required<Cogn
  * (`_sanitize_session_key`): keep alphanumerics plus `-` `_` `.`, replace anything
  * else with `_`, trim leading/trailing `.`/`_`, and cap length at 120.
  */
+/**
+ * Rewrite a dataset name into one cognee accepts. cognee rejects a name that
+ * contains a space or a dot (check_dataset_name, run on every write); only those
+ * are rewritten, so every name the server accepts today comes back unchanged and
+ * no install is silently moved to a new, empty dataset. Shared rule:
+ * integrations/conformance/dataset_name_cases.json.
+ */
+export function sanitizeDatasetName(name: string, fallback: string): string {
+  const stripped = (name ?? "").trim();
+  const cleaned = stripped.replace(/[ .]+/g, "_");
+  if (!cleaned || (cleaned !== stripped && !cleaned.replace(/_/g, ""))) return fallback;
+  return cleaned;
+}
+
 export function sanitizeSessionKey(value: string): string {
   let safe = "";
   for (const ch of value) safe += /[A-Za-z0-9\-_.]/.test(ch) ? ch : "_";
@@ -154,6 +168,16 @@ export function cogneeSessionId(nativeSessionId: string | undefined): string {
  * cfg.agentId when runtimeAgentId is absent (CLI / background sync paths).
  */
 export function datasetNameForScope(
+  scope: MemoryScope,
+  cfg: Required<CogneePluginConfig>,
+  runtimeAgentId?: string,
+): string {
+  // Derived names embed user and agent ids (an email user id carries dots), so
+  // every scope's name goes through the same sanitizer as the configured one.
+  return sanitizeDatasetName(rawDatasetNameForScope(scope, cfg, runtimeAgentId), cfg.datasetName);
+}
+
+function rawDatasetNameForScope(
   scope: MemoryScope,
   cfg: Required<CogneePluginConfig>,
   runtimeAgentId?: string,

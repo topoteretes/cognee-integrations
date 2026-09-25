@@ -32,7 +32,9 @@ describe("helpers", () => {
   });
 
   it("validates dataset names", () => {
-    expect(isValidDatasetName("project-x_2.0")).toBe(true);
+    expect(isValidDatasetName("project-x_2")).toBe(true);
+    // cognee rejects dots in dataset names, so the switch must too.
+    expect(isValidDatasetName("project-x_2.0")).toBe(false);
     expect(isValidDatasetName("")).toBe(false);
     expect(isValidDatasetName("-leading")).toBe(false);
     expect(isValidDatasetName("has space")).toBe(false);

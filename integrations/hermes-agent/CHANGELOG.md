@@ -10,6 +10,18 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1]
+
+### Fixed
+- **Dataset names are sanitized for cognee.** cognee rejects a dataset name
+  containing a space or a dot; a configured `dataset` like `my project` now has
+  spaces and dots replaced with `_` (with a warning), while every name the server
+  already accepts stays exactly as it is. `cognee_switch_dataset` refuses such a
+  name and suggests the sanitized form. Code-graph datasets for repositories with
+  a dot in their name are now dot-free and can be indexed. Shared rule:
+  `integrations/conformance/dataset_name_cases.json`. First implemented by
+  @eiza763 (#226).
+
 ## [1.3.0]
 
 ### Changed

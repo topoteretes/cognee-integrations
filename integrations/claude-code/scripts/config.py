@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -138,6 +139,22 @@ _ENV_MAP = {
 }
 
 
+# cognee rejects a dataset name containing a space or a dot (check_dataset_name,
+# run on every write). Only those are rewritten, so every name the server accepts
+# today comes back unchanged and no user is silently moved to a new, empty
+# dataset. The rule is shared: integrations/conformance/dataset_name_cases.json.
+_DATASET_NAME_REJECTED_RE = re.compile(r"[ .]+")
+
+
+def sanitize_dataset_name(name: str, fallback: str = "agent_sessions") -> str:
+    """Rewrite ``name`` into a dataset name cognee accepts (spaces/dots → ``_``)."""
+    stripped = str(name or "").strip()
+    cleaned = _DATASET_NAME_REJECTED_RE.sub("_", stripped)
+    if not cleaned or (cleaned != stripped and not cleaned.strip("_")):
+        return fallback
+    return cleaned
+
+
 def load_config() -> dict:
     """Load merged config: defaults → env vars (the env file is already in os.environ)."""
     config = dict(_DEFAULTS)
@@ -146,6 +163,11 @@ def load_config() -> dict:
         val = os.environ.get(env_key, "")
         if val:
             config[config_key] = val
+
+    raw_dataset = str(config.get("dataset") or "")
+    config["dataset"] = sanitize_dataset_name(raw_dataset)
+    if config["dataset"] != raw_dataset.strip():
+        _config_log("dataset_name_sanitized", {"from": raw_dataset[:200], "to": config["dataset"]})
 
     backend = str(config.get("backend") or "auto").lower()
     if backend in ("native", "local", "sdk"):

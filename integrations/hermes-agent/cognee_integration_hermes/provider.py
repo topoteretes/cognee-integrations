@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -52,6 +53,20 @@ logger = logging.getLogger(__name__)
 
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
+
+
+# cognee rejects a dataset name containing a space or a dot (check_dataset_name,
+# run on every write). Only those are rewritten, so every name the server accepts
+# today comes back unchanged. Shared rule: integrations/conformance/dataset_name_cases.json.
+_DATASET_NAME_REJECTED_RE = re.compile(r"[ .]+")
+
+
+def _safe_dataset_name(name: str, fallback: str = DEFAULT_DATASET) -> str:
+    stripped = str(name or "").strip()
+    cleaned = _DATASET_NAME_REJECTED_RE.sub("_", stripped)
+    if not cleaned or (cleaned != stripped and not cleaned.strip("_")):
+        return fallback
+    return cleaned
 
 
 def _safe_session_component(value: str) -> str:
@@ -317,7 +332,14 @@ class CogneeMemoryProvider(MemoryProvider):
         self._hermes_home = kwargs.get("hermes_home")
         self._config = load_config(self._hermes_home)
         self._session_id = session_id
-        self._default_dataset = str(self._config.get("dataset") or DEFAULT_DATASET)
+        configured = str(self._config.get("dataset") or DEFAULT_DATASET)
+        self._default_dataset = _safe_dataset_name(configured)
+        if self._default_dataset != configured.strip():
+            logger.warning(
+                "cognee: dataset name %r is not valid for cognee; using %r",
+                configured,
+                self._default_dataset,
+            )
         self._dataset = self._default_dataset
         self._top_k = int(self._config.get("top_k") or 5)
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
@@ -1330,6 +1352,13 @@ class CogneeMemoryProvider(MemoryProvider):
             target = str(args.get("dataset") or "").strip()
             if not target:
                 return json.dumps({"error": "action='switch' requires a dataset name."})
+            # Refused rather than rewritten, so a switch never lands in a dataset
+            # the user did not name.
+            suggestion = _safe_dataset_name(target, fallback="")
+            if suggestion != target:
+                hint = f" Try {suggestion!r}." if suggestion else ""
+                error = f"Invalid dataset name {target!r}: cognee rejects spaces and dots."
+                return json.dumps({"error": error + hint})
             return self._switch_dataset(target, force=force)
         if action == "reset":
             return self._switch_dataset(self._default_dataset, force=force)

@@ -44,9 +44,12 @@ export function conversationKeys(ctx: { sessionKey?: string; sessionId?: string 
   return keys;
 }
 
-/** Cognee dataset names: letters, digits, `-` `_` `.`, 1–128 chars. */
+/**
+ * Names accepted by the switch command: letters, digits, `-` `_`, 1–128 chars.
+ * No dots: cognee rejects dataset names containing a space or a dot.
+ */
 export function isValidDatasetName(name: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name);
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(name);
 }
 
 export function withSessionSuffix(baseSessionId: string, override: DatasetOverride | undefined): string {
@@ -192,7 +195,7 @@ export const MemorySwitchDatasetSchema = {
       enum: ["list", "current", "switch", "reset"],
       description: "list = datasets available on the server; current = the dataset this conversation writes to and recalls from; switch = move this conversation to `dataset` (created if missing); reset = return to the configured dataset.",
     },
-    dataset: { type: "string", description: "switch only: target dataset name (letters, digits, - _ .)." },
+    dataset: { type: "string", description: "switch only: target dataset name (letters, digits, - _)." },
     force: {
       type: "boolean",
       description: "switch/reset only: proceed even if syncing the current session into its dataset fails. The unsynced session is recorded and re-synced at session end (and on reset); until then its turns exist only in the server's session cache and are lost if that cache expires first. Ask the user before setting this.",
@@ -278,7 +281,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     const before = deps.currentDataset(ctx);
     if (!target) return { action: "switch", switched: false, dataset: before, error: "dataset is required" };
     if (!isValidDatasetName(target)) {
-      return { action: "switch", switched: false, dataset: before, error: `invalid dataset name "${target}" — use letters, digits, '-', '_' or '.' (max 128 chars)` };
+      return { action: "switch", switched: false, dataset: before, error: `invalid dataset name "${target}" — use letters, digits, '-' or '_' (max 128 chars; cognee rejects spaces and dots)` };
     }
     if (target === before) return { action: "switch", switched: false, dataset: before, reason: "already_active" };
     if (!ctx.sessionId && !ctx.sessionKey) {

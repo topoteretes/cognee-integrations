@@ -10,6 +10,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `clear-transcript-context:clear_context_failed` | `transcript.failed` |
 | `clear-transcript-context:clear_context_invalid_payload` | `transcript.invalid_payload` |
 | `clear-transcript-context:clear_context_skipped_stop_hook_active` | `transcript.skip_active` |
+| `config:dataset_name_sanitized` | `config.dataset_name_sanitized` |
 | `config:git_branch_lookup_failed` | `config.git_branch_lookup_failed` |
 | `config:users_me_lookup_failed` | `config.users_me_lookup_failed` |
 | `exit-watcher:already_running_for_parent` | `exit_watcher.already_running_for_parent` |
