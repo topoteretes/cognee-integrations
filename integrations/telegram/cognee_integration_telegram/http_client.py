@@ -27,7 +27,7 @@ class CogneeHttpClient:
         api_key: Optional[str] = None,
         *,
         client: Any = None,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
     ) -> None:
         self.base_url = (base_url or os.getenv("COGNEE_BASE_URL", "http://localhost:8000")).rstrip(
             "/"

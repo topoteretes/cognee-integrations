@@ -1,0 +1,86 @@
+name: Plugin Windows Tests
+
+# The claude-code, codex, and antigravity plugins carry genuinely platform-specific paths:
+# _proc.py (Windows liveness via OpenProcess/WaitForSingleObject, process
+# ancestry via CreateToolhelp32Snapshot), a status-line renderer whose stdio
+# encoding is Windows-sensitive (cp1252 cannot encode the health glyphs), and
+# state directories resolved from USERPROFILE rather than HOME. None of that is
+# exercised by the ubuntu-only matrix in ci.yml, so the shared suite runs again
+# here on a real Windows runner.
+#
+# This runs the SAME suite as ci.yml (integrations/tests), not a hand-listed set
+# of scripts. The previous version invoked five files directly as
+# `python <file>`, which meant those files ran only on Windows and never on
+# Linux, and that any test added to the shared suite was silently never checked
+# on Windows at all.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'integrations/claude-code/**'
+      - 'integrations/codex/**'
+      - 'integrations/antigravity/**'
+      - 'integrations/tests/**'
+      - '.github/workflows/plugin-windows-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'integrations/claude-code/**'
+      - 'integrations/codex/**'
+      - 'integrations/antigravity/**'
+      - 'integrations/tests/**'
+      - '.github/workflows/plugin-windows-tests.yml'
+
+jobs:
+  test-host-windows:
+    runs-on: windows-latest
+    # One host takes close to 30 minutes on its own: closed-port probes wait for
+    # Windows Firewall timeouts. Hosts run in parallel, and the ceiling leaves
+    # headroom so a slow runner is a slow run, not a cancelled one.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [claude-code, codex, antigravity]
+    env:
+      COGNEE_TEST_SUITE: ${{ matrix.suite }}
+    steps:
+      # Full checkout with Git's default path limit, same as a user's clone. Do
+      # not enable core.longpaths or sparse-checkout here: that once hid paths
+      # that broke every Windows marketplace install (see plugin-clean-install.yml).
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: integrations/tests/.python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: integrations/tests
+        run: uv sync --locked --dev
+
+      # The suite's addopts already exclude the live tier (`-m 'not live'`), so
+      # this never needs a server or an LLM key. Tests that encode POSIX-only
+      # semantics (file mode bits) skip themselves via `os.name == "nt"`.
+      - name: Run the shared suite
+        working-directory: integrations/tests
+        run: uv run pytest tests/ -v
+
+  # Preserve the existing required check name and fail if any host failed or
+  # was cancelled. A skipped dependency must never make the gate pass.
+  test-plugins-windows:
+    if: ${{ always() }}
+    needs: test-host-windows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Windows host to pass
+        env:
+          RESULT: ${{ needs.test-host-windows.result }}
+        run: test "$RESULT" = success

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.cognee-manifest-*.json
+.env
+graph.html
+*.egg-info/
+dist/
+build/.DS_Store

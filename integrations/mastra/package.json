@@ -1,0 +1,64 @@
+{
+  "name": "@cognee/cognee-mastra",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cognee knowledge-graph memory layer for Mastra agents: input/output processors for automatic recall and capture, plus explicit cognee_search / cognee_ask / cognee_remember tools, over cognee's HTTP API.",
+  "license": "MIT",
+  "author": {
+    "name": "Cognee",
+    "url": "https://www.cognee.ai"
+  },
+  "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/mastra#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/topoteretes/cognee-integrations.git",
+    "directory": "integrations/mastra"
+  },
+  "bugs": {
+    "url": "https://github.com/topoteretes/cognee-integrations/issues"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit --skipLibCheck",
+    "typecheck:test": "tsc --noEmit --skipLibCheck -p tsconfig.test.json",
+    "typecheck:all": "npm run typecheck && npm run typecheck:test",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --testPathIgnorePatterns __tests__/live --passWithNoTests",
+    "test:live": "COGNEE_LIVE=1 node --experimental-vm-modules node_modules/.bin/jest __tests__/live --testPathIgnorePatterns=/node_modules/",
+    "test:unit": "node --experimental-vm-modules node_modules/.bin/jest __tests__/unit",
+    "test:integration": "node --experimental-vm-modules node_modules/.bin/jest __tests__/integration",
+    "test:e2e": "node --experimental-vm-modules node_modules/.bin/jest __tests__/e2e"
+  },
+  "peerDependencies": {
+    "@mastra/core": ">=1.64.0",
+    "zod": "^3.25.0 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@mastra/core": "^1.64.0",
+    "@mastra/memory": "^1.28.2",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.0.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.9.0",
+    "zod": "^3.25.0"
+  }
+}

@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """Build a memory anchor before context-window compaction.
 
-Runs on the PreCompact hook. Pulls a compact summary from three
-session-cache layers — recent QAs, per-step trace feedback, and the
-graph-context snapshot — and emits a markdown block the compactor
-preserves.
+Runs on the PreCompact hook. One ``/api/v1/recall`` with ``scope=["graph"]``,
+``HYBRID_COMPLETION`` and ``only_context=True`` returns, on cognee >= 1.6.0, the
+full LLM input for a query built from the session's recent turns: the
+conversation history, the retrieved graph context and the session guidance
+block. That string is the anchor the compactor preserves. When memory has
+nothing yet (fresh install, graph not built), the recent QA and trace rows from
+the session detail endpoint stand in, so a compaction never loses the recent
+turns.
 
-Uses ``cognee.recall(scope=[...])`` so this works whether the plugin
-is connected locally or over HTTP.
+Everything goes through the Cognee server over HTTP (``/api/v1/recall`` and
+``GET /api/v1/sessions/{id}``), so the anchor works the same whether the
+plugin booted a local server or is connected to a remote one.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -19,12 +26,17 @@ import sys
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    get_session_detail_via_http,
     hook_log,
+    is_observer_child,
     load_resolved,
+    recall_via_http,
+    resolve_runtime_mode,
     resolve_session_key_from_payload,
+    server_usable,
     set_session_key,
 )
-from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
+from config import get_dataset, get_session_id, load_config
 
 _MIN_WORD_LEN = 3
 _SESSION_TOP_K = 5
@@ -62,22 +74,47 @@ def _extract_query_words(entries: list, max_words: int = 20) -> str:
     return " ".join(words)
 
 
-async def _recall(session_id: str, dataset: str, query: str, scope: list[str], top_k: int) -> list:
-    """Thin wrapper around cognee.recall; tolerates empty/failed recalls."""
-    import cognee
+def _recall(session_id: str, dataset: str, query: str, scope: list[str], top_k: int) -> list:
+    """Recall for the anchor over HTTP; tolerates empty/failed recalls.
 
+    The session cache lives on the server, so this is the only place the
+    entries can come from. Failures are logged, never raised: a compaction is
+    not something the user triggered, and the hook must not disturb it.
+    """
     try:
-        results = await cognee.recall(
+        # HYBRID_COMPLETION (BM25 + vector + graph) with only_context: the
+        # server skips the LLM and, from 1.6.0, hands back the whole prompt it
+        # would have sent — history, retrieved context and guidance in one text.
+        query_type = "HYBRID_COMPLETION" if "graph" in scope else None
+        results = recall_via_http(
             query,
             session_id=session_id,
-            datasets=[dataset] if "graph" in scope else None,
             top_k=top_k,
             scope=scope,
+            only_context=True,
+            search_type=query_type,
+            dataset=dataset,
         )
-        return list(results) if results else []
+        return [r for r in (results or []) if isinstance(r, dict)]
     except Exception as exc:
         hook_log("precompact_recall_error", {"scope": scope, "error": str(exc)[:200]})
         return []
+
+
+def _recent_entries(session_id: str) -> tuple[list, list]:
+    """Return (recent QA entries, recent trace entries) straight from the server.
+
+    The seed recall passes an empty query (there is no user question at compact
+    time) and ``/recall`` matches nothing on an empty string, so the session
+    detail endpoint — which returns the last ~20 QA and trace rows without a
+    query — is what actually produces the anchor mid-session.
+    """
+    detail = get_session_detail_via_http(session_id)
+    if not isinstance(detail, dict):
+        return [], []
+    qas = [r for r in (detail.get("qas") or []) if isinstance(r, dict)]
+    traces = [r for r in (detail.get("traces") or []) if isinstance(r, dict)]
+    return qas[-_SESSION_TOP_K:], traces[-_TRACE_TOP_K:]
 
 
 def _format_session_section(entries: list) -> str:
@@ -112,27 +149,22 @@ def _format_trace_section(entries: list) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def _format_graph_context_section(entries: list) -> str:
-    lines = ["### Knowledge Graph Snapshot"]
+def _format_memory_section(entries: list) -> str:
+    """The recalled memory, verbatim.
+
+    On cognee >= 1.6.0 each graph item's ``text`` is the full LLM input for the
+    query (history, retrieved context, guidance); older servers put the bare
+    retrieval context there. Not truncated: the context sits in the middle and
+    the guidance at the end, so a cut would remove exactly what the anchor is
+    for. ``_GRAPH_TOP_K`` bounds the size server-side.
+    """
+    lines = ["### Cognee Memory"]
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        content = str(entry.get("content") or entry.get("answer") or entry.get("text") or "")
-        short = content[:400] + "..." if len(content) > 400 else content
-        if short.strip():
-            lines.append(short)
-    return "\n".join(lines) if len(lines) > 1 else ""
-
-
-def _format_graph_section(entries: list) -> str:
-    lines = ["### Knowledge Graph (search hits)"]
-    for entry in entries:
-        if not isinstance(entry, dict):
-            lines.append(f"- {str(entry)[:300]}")
-            continue
-        text = entry.get("answer") or entry.get("text") or entry.get("content") or str(entry)
-        short = (text[:300] + "...") if len(text) > 300 else text
-        lines.append(f"- {short}")
+        text = str(entry.get("text") or entry.get("content") or entry.get("answer") or "")
+        if text.strip():
+            lines.append(text.strip())
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
@@ -142,73 +174,51 @@ async def _run():
         hook_log("no_session_id", {"event": "precompact"})
         return
 
-    config = load_config()
-    await ensure_cognee_ready(config)
+    # Pin the endpoint the same way every other hook does (URL + optional key
+    # into the environment), then bail early on a server already known to be
+    # down rather than paying three recall timeouts for nothing.
+    runtime = resolve_runtime_mode()
+    service_url = runtime.get("base_url", "")
+    if not server_usable(service_url):
+        hook_log("precompact_server_unusable", {"base_url": service_url})
+        return
 
-    # Short queries: use the session's recent activity as the seed
-    # since we don't have a specific user question at compact time.
-    # First pull session+trace so we can derive a query from them.
-    seed_results = await _recall(
-        session_id, dataset, query="", scope=["session", "trace"], top_k=_TRACE_TOP_K
-    )
-    session_entries = [
-        r for r in seed_results if isinstance(r, dict) and r.get("_source") == "session"
-    ]
-    trace_entries = [r for r in seed_results if isinstance(r, dict) and r.get("_source") == "trace"]
-
-    # Fall back: if recall returned nothing (keyword-miss on empty query),
-    # pull entries directly. This keeps the anchor useful mid-session
-    # before any user prompts have landed in the cache.
-    if not session_entries and not trace_entries:
-        try:
-            from cognee.infrastructure.session.get_session_manager import get_session_manager
-
-            resolved = load_resolved()
-            user_id = resolved.get("user_id", "")
-            if user_id:
-                sm = get_session_manager()
-                if sm.is_available:
-                    raw_qa = await sm.get_session(
-                        user_id=user_id, session_id=session_id, formatted=False
-                    )
-                    session_entries = list(raw_qa)[-_SESSION_TOP_K:] if raw_qa else []
-                    raw_trace = await sm.get_agent_trace_session(
-                        user_id=user_id, session_id=session_id
-                    )
-                    trace_entries = list(raw_trace)[-_TRACE_TOP_K:] if raw_trace else []
-        except Exception as exc:
-            hook_log("precompact_direct_fetch_error", {"error": str(exc)[:200]})
-
+    # Seed: the session's recent activity, since there is no user question at
+    # compact time. The session detail endpoint returns the recent rows without
+    # a query (``/recall`` matches nothing on an empty string), and the query
+    # for the memory recall is built from them.
+    session_entries, trace_entries = _recent_entries(session_id)
     session_entries = session_entries[-_SESSION_TOP_K:]
     trace_entries = trace_entries[-_TRACE_TOP_K:]
 
     query = _extract_query_words(session_entries + trace_entries)
 
-    graph_context_entries: list = []
-    graph_entries: list = []
+    # One recall for memory. The only_context item already carries the
+    # conversation history and the guidance block next to the retrieved
+    # context (cognee >= 1.6.0), so no separate session/trace recall is made.
+    memory_entries: list = []
     if query:
-        ctx = await _recall(session_id, dataset, query=query, scope=["graph_context"], top_k=1)
-        graph_context_entries = [r for r in ctx if isinstance(r, dict)]
-        g = await _recall(session_id, dataset, query=query, scope=["graph"], top_k=_GRAPH_TOP_K)
-        graph_entries = [r for r in g if isinstance(r, dict)]
+        memory_entries = _recall(
+            session_id, dataset, query=query, scope=["graph"], top_k=_GRAPH_TOP_K
+        )
 
     sections = []
-    if session_entries:
-        s = _format_session_section(session_entries)
+    if memory_entries:
+        s = _format_memory_section(memory_entries)
         if s:
             sections.append(s)
-    if trace_entries:
-        s = _format_trace_section(trace_entries)
-        if s:
-            sections.append(s)
-    if graph_context_entries:
-        s = _format_graph_context_section(graph_context_entries)
-        if s:
-            sections.append(s)
-    if graph_entries:
-        s = _format_graph_section(graph_entries)
-        if s:
-            sections.append(s)
+    if not sections:
+        # Memory has nothing yet (fresh install, graph not built, server
+        # without the session cache): the raw recent rows keep the anchor
+        # useful, as they always did.
+        for entries, fmt in (
+            (session_entries, _format_session_section),
+            (trace_entries, _format_trace_section),
+        ):
+            if entries:
+                s = fmt(entries)
+                if s:
+                    sections.append(s)
 
     if not sections:
         hook_log("precompact_empty")
@@ -216,7 +226,7 @@ async def _run():
 
     header = (
         "## Cognee Memory Anchor\n"
-        "Preserved context from session, agent trace, and knowledge graph:\n"
+        "Preserved context from Cognee memory (session history, knowledge graph, guidance):\n"
     )
     anchor = header + "\n\n".join(sections)
 
@@ -225,14 +235,16 @@ async def _run():
         {
             "session_entries": len(session_entries),
             "trace_entries": len(trace_entries),
-            "graph_context": len(graph_context_entries),
-            "graph": len(graph_entries),
+            "memory": len(memory_entries),
+            "fallback": not memory_entries,
         },
     )
     print(anchor)
 
 
 def main():
+    if is_observer_child():
+        return
     # Read the PreCompact payload to recover the host session id, which lets the
     # session resolver map back to this launch's Cognee session id (the body is
     # otherwise unused — PreCompact is just a trigger).

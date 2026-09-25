@@ -42,15 +42,28 @@ jobs:
 
           PY_LIST=""
           TS_LIST=""
+          RUN_SHARED=""
 
           for dir in $CHANGED_DIRS; do
             [ ! -d "integrations/$dir" ] && continue
+            # claude-code, codex, and antigravity have no pyproject of their own; their shared
+            # pytest suite lives in integrations/tests and must run when they change.
+            case "$dir" in
+              claude-code|codex|antigravity|tests) RUN_SHARED=1 ;;
+            esac
             if [ -f "integrations/$dir/pyproject.toml" ]; then
               PY_LIST="${PY_LIST}\"${dir}\","
             elif [ -f "integrations/$dir/package.json" ]; then
               TS_LIST="${TS_LIST}\"${dir}\","
             fi
           done
+
+          if [ -n "$RUN_SHARED" ]; then
+            case "$PY_LIST" in
+              *'"tests"'*) ;;  # already included (integrations/tests itself changed)
+              *) PY_LIST="${PY_LIST}\"tests\"," ;;
+            esac
+          fi
 
           # Build JSON arrays
           if [ -n "$PY_LIST" ]; then
@@ -71,6 +84,10 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.python != '[]' }}
     runs-on: ubuntu-latest
+    # A hung suite otherwise runs to GitHub's 6h default before anyone hears
+    # about it. The longest real cell is a cold `uv sync` of the cognee stack
+    # plus its tests, which lands around 5m.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -97,10 +114,44 @@ jobs:
         working-directory: integrations/${{ matrix.integration }}
         run: uv run pytest tests/ -v
 
+  # The hook-based plugins (claude-code, codex, antigravity) must run under the
+  # oldest python3 users commonly have on PATH — macOS's Xcode Command Line Tools
+  # ship 3.9.6 — because the hooks run under it before (and, in cloud mode,
+  # instead of) the plugin's own uv-managed 3.12 venv. A `X | None` annotation
+  # without `from __future__ import annotations` breaks every hook at import time
+  # on 3.9 and nothing else catches it (SDK-617). The shared suite's pyproject
+  # pins 3.10+ for its own tooling, so this cell builds an ad-hoc 3.9 environment.
+  test-hooks-python39:
+    needs: detect-changes
+    if: ${{ contains(needs.detect-changes.outputs.python, '"tests"') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Run the shared hook suite on Python 3.9
+        working-directory: integrations/tests
+        run: >-
+          uv run --no-project --python 3.9
+          --with "pytest>=8" --with "pytest-httpserver>=1.0"
+          pytest tests/unit tests/integration tests/e2e -q
+
   test-typescript:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.typescript != '[]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -109,10 +160,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # n8n's dev toolchain (@n8n/node-cli -> n8n-workflow 2.x -> @n8n/expression-runtime)
+      # pulls in isolated-vm 7, a native module that requires Node >= 24 and compiles
+      # from source at install time. Node 20 fails that compile, so n8n gets Node 24
+      # (the version n8n 2.x itself requires); the other integrations stay on 20.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ matrix.integration == 'n8n' && '24' || '20' }}
 
       - name: Build local dependencies
         if: matrix.integration == 'openclaw-skills'
@@ -122,6 +177,23 @@ jobs:
       - name: Install dependencies
         working-directory: integrations/${{ matrix.integration }}
         run: npm install
+
+      # Until this existed the TypeScript job type-checked and stopped, so every
+      # TS test in the repo was decorative — openclaw alone had 128 passing tests
+      # that no CI job ever ran.
+      #
+      # --if-present: integrations without a test script, such as vellum-assistant,
+      # must not fail for lacking one.
+      # --passWithNoTests: openclaw-skills HAS a jest script but no test files, and
+      # bare `jest` exits 1 on "no tests found". Both jest and vitest accept the
+      # flag, so it works across the matrix.
+      - name: Test
+        working-directory: integrations/${{ matrix.integration }}
+        run: |
+          case "${{ matrix.integration }}" in
+            n8n|opencode) npm test --if-present ;;
+            *) npm test --if-present -- --passWithNoTests ;;
+          esac
 
       - name: Type check
         working-directory: integrations/${{ matrix.integration }}
@@ -133,13 +205,15 @@ jobs:
   # core-team PRs only, advisory (continue-on-error — never blocks a merge).
   claude-review:
     name: Claude Code Review
-    needs: [ detect-changes, test-python, test-typescript ]
+    timeout-minutes: 15
+    needs: [ detect-changes, test-python, test-hooks-python39, test-typescript ]
     if: >-
       ${{ !cancelled()
           && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
           && needs.detect-changes.result == 'success'
           && needs.test-python.result != 'failure'
+          && needs.test-hooks-python39.result != 'failure'
           && needs.test-typescript.result != 'failure' }}
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -205,7 +279,7 @@ jobs:
           prompt: "/pr-review"
           claude_args: >-
             --allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob,Grep"
-            --max-turns 20
+            --max-turns 50
             --model claude-sonnet-4-5-20250929
 
       - name: DM review summary to PR author on Slack

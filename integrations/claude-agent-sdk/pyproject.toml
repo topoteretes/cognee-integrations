@@ -7,6 +7,7 @@ name = "cognee-integration-claude"
 version = "0.2.0"
 description = "Cognee integration with claude-agent-sdk-python"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "claude-agent-sdk>=0.2.88,<0.3.0",

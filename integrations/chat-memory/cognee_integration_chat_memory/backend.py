@@ -269,7 +269,7 @@ class CogneeHttpMemoryBackend:
         api_key: Optional[str] = None,
         *,
         client: Any = None,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
         search_type: str = "GRAPH_COMPLETION",
     ) -> None:
         self._base_url = (base_url or os.getenv("COGNEE_BASE_URL", "http://localhost:8000")).rstrip(

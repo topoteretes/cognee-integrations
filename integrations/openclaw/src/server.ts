@@ -6,13 +6,30 @@ import { runPluginCommandWithTimeout } from "openclaw/plugin-sdk/sandbox";
 
 const COGNEE_PLUGIN_BASE = join(homedir(), ".cognee-plugin");
 const API_KEY_CACHE_PATH = join(COGNEE_PLUGIN_BASE, "api_key.json");
+const BOOT_ERROR_MARKER_PATH = join(COGNEE_PLUGIN_BASE, ".venv-error.json");
+
+/**
+ * Why the last ensure_and_boot.py install attempt failed, or "" when it did not
+ * (or nothing recorded one). The boot script daemonizes with stdout/stderr
+ * closed, so this marker is the only channel for its failure reason — e.g. a
+ * host python3 too old to build the fallback venv when uv is unavailable.
+ */
+export async function readBootError(): Promise<string> {
+  try {
+    const raw = await readFile(BOOT_ERROR_MARKER_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as { error?: unknown };
+    return typeof parsed.error === "string" ? parsed.error : "";
+  } catch {
+    return "";
+  }
+}
 
 // Combined install-and-boot script written to ~/.cognee-plugin/ensure_and_boot.py on first use.
 // Handles: (1) creating the venv + installing cognee if absent, (2) booting uvicorn.
 // Self-daemonizes so runPluginCommandWithTimeout returns in < 1 s regardless of install time.
 // Inlining avoids import.meta.url path resolution issues in ts-jest.
 const ENSURE_SCRIPT_PATH = join(COGNEE_PLUGIN_BASE, "ensure_and_boot.py");
-const ENSURE_SCRIPT_CONTENT = [
+export const ENSURE_SCRIPT_CONTENT = [
   "import subprocess, sys, os, json, time",
   "",
   "BASE = os.path.join(os.path.expanduser('~'), '.cognee-plugin')",
@@ -24,8 +41,9 @@ const ENSURE_SCRIPT_CONTENT = [
   "UV_DIR = os.path.join(BASE, 'uv')",
   "UV_BIN = os.path.join(UV_DIR, 'uv' + _ext)",
   "READY_MARKER = os.path.join(BASE, '.venv-ready.json')",
+  "ERROR_MARKER = os.path.join(BASE, '.venv-error.json')",
   "INSTALL_LOCK = os.path.join(BASE, 'venv-install.lock')",
-  "COGNEE_VERSION = '1.2.2.dev3'",
+  "COGNEE_VERSION = '1.6.0'",
   "",
   "# Self-daemonize so the caller returns immediately.",
   "if '--daemon' not in sys.argv:",
@@ -92,6 +110,14 @@ const ENSURE_SCRIPT_CONTENT = [
   "                env=uv_env, check=True, capture_output=True, timeout=600,",
   "            )",
   "        elif not os.path.exists(VENV_PYTHON):",
+  "            # No uv: the venv inherits this interpreter, so it must satisfy",
+  "            # cognee's own floor (3.10+). The script itself runs on any 3.9+.",
+  "            if sys.version_info < (3, 10):",
+  "                raise RuntimeError(",
+  "                    'uv is unavailable and %s is Python %d.%d.%d; building the cognee '",
+  "                    'runtime without uv requires Python 3.10 or newer. Install uv '",
+  "                    '(https://docs.astral.sh/uv/) or a newer python3 and restart the gateway.'",
+  "                    % (sys.executable, sys.version_info[0], sys.version_info[1], sys.version_info[2]))",
   "            subprocess.run(",
   "                [sys.executable, '-m', 'venv', VENV_DIR],",
   "                check=True, capture_output=True, timeout=120,",
@@ -105,8 +131,19 @@ const ENSURE_SCRIPT_CONTENT = [
   "            json.dump({'cognee_version': COGNEE_VERSION, 'python': VENV_PYTHON,",
   "                       'updated_at': time.time()}, f)",
   "        os.replace(tmp, READY_MARKER)",
+  "        try: os.unlink(ERROR_MARKER)",
+  "        except Exception: pass",
   "        return True",
-  "    except Exception: return False",
+  "    except Exception as exc:",
+  "        # The daemon has no stdout/stderr; leave the reason where the gateway",
+  "        # (readBootError) and a human (cat the file) can find it.",
+  "        try:",
+  "            with open(ERROR_MARKER, 'w') as f:",
+  "                json.dump({'error': str(exc)[:500], 'python': sys.executable,",
+  "                           'python_version': '%d.%d.%d' % sys.version_info[:3],",
+  "                           'updated_at': time.time()}, f)",
+  "        except Exception: pass",
+  "        return False",
   "    finally: release_lock(INSTALL_LOCK)",
   "",
   "def boot_server():",
@@ -116,6 +153,17 @@ const ENSURE_SCRIPT_CONTENT = [
   "    env['COGNEE_AGENT_MODE'] = 'true'",
   "    env['AUTO_FEEDBACK'] = 'true'",
   "    env['CACHING'] = 'true'",
+  "    # cognee >= 1.6.0 creates NO default user unless DEFAULT_USER_PASSWORD is",
+  "    # set, and a password-less user cannot log in (400), so the plugin's",
+  "    # one-time JWT login that mints its API key would fail on a fresh server.",
+  "    # This server is bound to localhost and shared by every Cognee plugin on the",
+  "    # machine (one server, one database), so always hand it the LITERAL default",
+  "    # user - never a plugin's configured credentials, or whichever plugin boots",
+  "    # first would define the default user for all of them (cognee sets the",
+  "    # password once and never rewrites an existing user's). setdefault: an",
+  "    # operator who exported DEFAULT_USER_EMAIL / DEFAULT_USER_PASSWORD wins.",
+  "    env.setdefault('DEFAULT_USER_EMAIL', 'default_user@example.com')",
+  "    env.setdefault('DEFAULT_USER_PASSWORD', 'default_password')",
   "    env['SYSTEM_ROOT_DIRECTORY'] = os.path.join(home, '.cognee', 'system')",
   "    env['DATA_ROOT_DIRECTORY'] = os.path.join(home, '.cognee', 'data')",
   "    env['CACHE_ROOT_DIRECTORY'] = os.path.join(home, '.cognee', 'cache')",
@@ -140,7 +188,11 @@ const ENSURE_SCRIPT_CONTENT = [
 ].join("\n");
 
 // System Python candidates for running ensure_and_boot.py on a cold machine
-// (before the plugin venv exists). Only stdlib is needed so any Python 3 works.
+// (before the plugin venv exists). Only stdlib is needed, so any Python 3.9+
+// works: cognee itself runs in the uv-managed 3.12 venv the script builds.
+// The one exception is the uv-less fallback, which inherits this interpreter
+// and therefore needs 3.10+ — the script refuses and records why (see
+// readBootError) rather than building a venv cognee cannot install into.
 const SYSTEM_PYTHON_CANDIDATES = [
   "/usr/bin/python3",          // macOS Xcode CLT + most Linux
   "/usr/local/bin/python3",    // some Linux, older Homebrew
@@ -174,7 +226,9 @@ async function saveApiKeyCache(baseUrl: string, key: string): Promise<void> {
 /**
  * Resolve a permanent Cognee API key for this deployment, using the same
  * strategy as the claude-code and codex integrations:
- *   1. COGNEE_API_KEY env
+ *   1. Explicitly configured key (config apiKey / COGNEE_API_KEY, both
+ *      resolved by the config layer and passed in as configuredApiKey —
+ *      this module deliberately does not read credential env vars itself)
  *   2. Cached key in ~/.cognee-plugin/api_key.json
  *   3. Existing key returned by GET /api/v1/auth/api-keys
  *   4. Mint a new one via POST /api/v1/auth/api-keys and cache it
@@ -186,9 +240,10 @@ async function saveApiKeyCache(baseUrl: string, key: string): Promise<void> {
 export async function resolveOrMintApiKey(
   client: ApiKeyClient,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
+  configuredApiKey = "",
 ): Promise<string> {
-  const envKey = (process.env["COGNEE_API_KEY"] ?? "").trim();
-  if (envKey) return envKey;
+  const configuredKey = configuredApiKey.trim();
+  if (configuredKey) return configuredKey;
 
   try {
     const cache = JSON.parse(await readFile(API_KEY_CACHE_PATH, "utf-8")) as Record<string, unknown>;
@@ -258,6 +313,11 @@ export async function bootServerIfNeeded(
   const result = await runPluginCommandWithTimeout({
     argv: [python, ENSURE_SCRIPT_PATH, String(port)],
     timeoutMs: 5_000,
+    // The script derives every path from `~`, this module from `homedir()`.
+    // Pin the two together: identical in production, and the only way a
+    // redirected homedir (the test suite's sandbox) also redirects the venv
+    // and server state instead of landing them in the real home.
+    env: { ...process.env, HOME: homedir() },
   });
   if (result.code !== 0) {
     logger.warn?.(`cognee-openclaw: boot script exited ${result.code}: ${result.stderr}`);
@@ -281,9 +341,15 @@ const EXIT_WATCHER_CONTENT = [
   "",
   "POLL = 2.0",
   "LOG_PATH = os.path.join(os.path.expanduser('~'), '.openclaw', 'cognee', 'exit-watcher.log')",
+  "# Same ceiling as the Python plugins' logs (COGNEE_PLUGIN_LOG_MAX_BYTES, default 20 MiB):",
+  "# rotate to .1 when over it, so a watcher that logs for months stays readable.",
+  "try: LOG_MAX = max(0, int(float(os.environ.get('COGNEE_PLUGIN_LOG_MAX_BYTES', '') or 20 * 1024 * 1024)))",
+  "except ValueError: LOG_MAX = 20 * 1024 * 1024",
   "",
   "def log(msg):",
   "    try:",
+  "        if LOG_MAX and os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX:",
+  "            os.replace(LOG_PATH, LOG_PATH + '.1')",
   "        with open(LOG_PATH, 'a') as f:",
   "            f.write(time.strftime('%Y-%m-%dT%H:%M:%S') + ' ' + str(msg) + '\\n')",
   "    except Exception: pass",

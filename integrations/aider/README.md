@@ -51,9 +51,11 @@ from cognee_integration_aider import get_sessionized_cognee_tools
 
 remember, recall = get_sessionized_cognee_tools("my-project")
 
+
 async def main():
     await remember("We decided to use PostgreSQL with pgvector.")
     print(await recall("What database did we choose?"))
+
 
 asyncio.run(main())
 ```

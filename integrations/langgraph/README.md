@@ -37,27 +37,27 @@ from langchain_core.messages import HumanMessage
 from cognee_integration_langgraph import get_sessionized_cognee_tools
 import cognee
 
-async def main():  
+
+async def main():
     # Get sessionized tools with a custom session ID
     add_tool, search_tool = get_sessionized_cognee_tools("user-123")
-    
+
     # Or get regular tools without sessionization (auto-generates a session ID)
     # add_tool, search_tool = get_sessionized_cognee_tools()
-    
+
     # Create an agent with memory capabilities
     agent = create_agent(
         "openai:gpt-4o-mini",
         tools=[add_tool, search_tool],
     )
-    
+
     # Use the agent (note: must use await with .ainvoke())
-    response = await agent.ainvoke({
-        "messages": [
-            HumanMessage(content="Remember: I like pizza and coding in Python")
-        ]
-    })
-    
+    response = await agent.ainvoke(
+        {"messages": [HumanMessage(content="Remember: I like pizza and coding in Python")]}
+    )
+
     print(response["messages"][-1].content)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -97,15 +97,16 @@ import asyncio
 from cognee_integration_langgraph import get_sessionized_cognee_tools
 from langchain.agents import create_agent
 
+
 async def main():
     # Each user gets their own isolated session
     user1_add, user1_search = get_sessionized_cognee_tools("user-123")
     user2_add, user2_search = get_sessionized_cognee_tools("user-456")
-    
+
     # Create separate agents for each user
     agent1 = create_agent("openai:gpt-4o-mini", tools=[user1_add, user1_search])
     agent2 = create_agent("openai:gpt-4o-mini", tools=[user2_add, user2_search])
-    
+
     # Each agent works with isolated data
     await agent1.ainvoke({"messages": [...]})
     await agent2.ainvoke({"messages": [...]})

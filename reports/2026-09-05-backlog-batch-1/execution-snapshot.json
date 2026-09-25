@@ -1,0 +1,1868 @@
+{
+  "recordedAt": "2026-09-05T20:46:20.432451+00:00",
+  "prs": {
+    "116": {
+      "headRefOid": "d5120be7c55ce9c6acb407922a151606adb8029f",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 116,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "feat: Add `remember` and `recall` operations to n8n node",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/116"
+    },
+    "169": {
+      "headRefOid": "41a71f283d707d0842dca689272cfad5011ceda3",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 169,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "test(integrations): config precedence tests + matrix for all four integrations (#3559)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/169"
+    },
+    "175": {
+      "headRefOid": "262fe4b9ba93823e824db56b25f042274e75b452",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 175,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "fix(release): correct inventory.yml version drift + add CI version-consistency check",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/175"
+    },
+    "183": {
+      "headRefOid": "4c7ea5dacf2858a36a52d2232cc96c5752325366",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 183,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "feat(openclaw): cold-start warmup + first-recall retry in the TS client (#3546)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/183"
+    },
+    "185": {
+      "headRefOid": "e3b24347c3dd63ce84b6c4c0748e88fe6841333c",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 185,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "feat(claude-code): add project-level dataset picker (#3686)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/185"
+    },
+    "186": {
+      "headRefOid": "b15d703438a5d3c30710d8b08d3276d09f7f9b55",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 186,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "feat(claude-code): mid-session dataset switch (seal bridge + re-register)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/186"
+    },
+    "192": {
+      "headRefOid": "3598f2a86f43be97d0edbbc8c51c12d999df735d",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 192,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "feat(integrations): re-register agent session on mid-session COGNEE_BASE_URL change",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/192"
+    },
+    "193": {
+      "headRefOid": "33838200788cc2de02545da0f37e5edd1fa458aa",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 193,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "feat(claude-code): standardize and namespace hook event names (#3679)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/193"
+    },
+    "202": {
+      "headRefOid": "56fd8879b387a082a4aaed6ac93be4971b08cc22",
+      "mergeCommit": {
+        "oid": "8747f6e545f52ae61e14c0a57d4135ee278aeb46"
+      },
+      "mergedAt": "2026-09-05T20:46:12Z",
+      "number": 202,
+      "state": "MERGED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:16:52Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989505039/job/101369409773",
+          "name": "check-versions",
+          "startedAt": "2026-09-05T20:16:48Z",
+          "status": "COMPLETED",
+          "workflowName": "Check Version Consistency"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:16:50Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989504853/job/101369405235",
+          "name": "detect-changes",
+          "startedAt": "2026-09-05T20:16:46Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:16:58Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989505059/job/101369409065",
+          "name": "ruff",
+          "startedAt": "2026-09-05T20:16:48Z",
+          "status": "COMPLETED",
+          "workflowName": "Lint"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:36:40Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989504960/job/101369407146",
+          "name": "test-plugins-windows",
+          "startedAt": "2026-09-05T20:16:49Z",
+          "status": "COMPLETED",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:18:11Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989504853/job/101369418767",
+          "name": "test-python (tests)",
+          "startedAt": "2026-09-05T20:16:52Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:17:44Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989504853/job/101369418787",
+          "name": "test-typescript (n8n)",
+          "startedAt": "2026-09-05T20:16:53Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:17:41Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989504853/job/101369418813",
+          "name": "test-typescript (openclaw)",
+          "startedAt": "2026-09-05T20:16:52Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:18:11Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989504853/job/101369605313",
+          "name": "Claude Code Review",
+          "startedAt": "2026-09-05T20:18:12Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        }
+      ],
+      "title": "feat(n8n): add Recall and Remember resources (closes topoteretes/cogn\u2026",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/202"
+    },
+    "211": {
+      "headRefOid": "056386822441b5b15fe9fd39f0a8075354f8fcba",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 211,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "feat(datasets): add companion sessions dataset option",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/211"
+    },
+    "225": {
+      "headRefOid": "95ce6ac49fd3cc10d1763fc82ee2f1cca8e8d010",
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 225,
+      "state": "CLOSED",
+      "statusCheckRollup": [],
+      "title": "feat: add companion dataset support for agent sessions(Fixes topoteretes/cognee#3685)",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/225"
+    },
+    "395": {
+      "headRefOid": "f780ea7381723b33cba9ed0a30a77e5a3189f29a",
+      "mergeCommit": {
+        "oid": "393eeac05f6ea39695ea6a9ab5ced828d02e2560"
+      },
+      "mergedAt": "2026-09-05T20:28:37Z",
+      "number": 395,
+      "state": "MERGED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:08:19Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989191161/job/101368225155",
+          "name": "check-versions",
+          "startedAt": "2026-09-05T20:08:11Z",
+          "status": "COMPLETED",
+          "workflowName": "Check Version Consistency"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:08:16Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989191112/job/101368225240",
+          "name": "detect-changes",
+          "startedAt": "2026-09-05T20:08:11Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:08:21Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989191110/job/101368225186",
+          "name": "ruff",
+          "startedAt": "2026-09-05T20:08:12Z",
+          "status": "COMPLETED",
+          "workflowName": "Lint"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:28:00Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989191252/job/101368225881",
+          "name": "test-plugins-windows",
+          "startedAt": "2026-09-05T20:08:13Z",
+          "status": "COMPLETED",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:09:37Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989191112/job/101368240971",
+          "name": "test-python (tests)",
+          "startedAt": "2026-09-05T20:08:18Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:09:05Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989191112/job/101368240928",
+          "name": "test-typescript (openclaw)",
+          "startedAt": "2026-09-05T20:08:18Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:12:55Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989191112/job/101368423652",
+          "name": "Claude Code Review",
+          "startedAt": "2026-09-05T20:09:39Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        }
+      ],
+      "title": "fix(plugins): remove prompt identity delay and watcher credential exposure",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/395"
+    },
+    "396": {
+      "headRefOid": "f36d1fd7effdecb1318f5b8cf03ce9e8d8a9e63b",
+      "mergeCommit": {
+        "oid": "f36d1fd7effdecb1318f5b8cf03ce9e8d8a9e63b"
+      },
+      "mergedAt": "2026-09-05T20:46:12Z",
+      "number": 396,
+      "state": "MERGED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:17:12Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989638922/job/101369450364",
+          "name": "check-versions",
+          "startedAt": "2026-09-05T20:17:06Z",
+          "status": "COMPLETED",
+          "workflowName": "Check Version Consistency"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:17:23Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989638877/job/101369450269",
+          "name": "detect-changes",
+          "startedAt": "2026-09-05T20:17:17Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:17:12Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989638876/job/101369450230",
+          "name": "ruff",
+          "startedAt": "2026-09-05T20:17:05Z",
+          "status": "COMPLETED",
+          "workflowName": "Lint"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:36:49Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989638974/job/101369450453",
+          "name": "test-plugins-windows",
+          "startedAt": "2026-09-05T20:17:06Z",
+          "status": "COMPLETED",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:18:53Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989638877/job/101369496373",
+          "name": "test-python (tests)",
+          "startedAt": "2026-09-05T20:17:25Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:18:10Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989638877/job/101369496284",
+          "name": "test-typescript (openclaw)",
+          "startedAt": "2026-09-05T20:17:26Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:23:18Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989638877/job/101369699938",
+          "name": "Claude Code Review",
+          "startedAt": "2026-09-05T20:18:56Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        }
+      ],
+      "title": "fix(plugins): bound recall and protect automatic capture",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/396"
+    },
+    "397": {
+      "headRefOid": "df3fd229d66eb74b96d9ff9151303beda5b6ad0a",
+      "mergeCommit": {
+        "oid": "df3fd229d66eb74b96d9ff9151303beda5b6ad0a"
+      },
+      "mergedAt": "2026-09-05T20:46:12Z",
+      "number": 397,
+      "state": "MERGED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:20:02Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989780760/job/101369833269",
+          "name": "check-versions",
+          "startedAt": "2026-09-05T20:19:57Z",
+          "status": "COMPLETED",
+          "workflowName": "Check Version Consistency"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:20:04Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989780807/job/101369833618",
+          "name": "detect-changes",
+          "startedAt": "2026-09-05T20:19:58Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:20:09Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989780898/job/101369833774",
+          "name": "ruff",
+          "startedAt": "2026-09-05T20:19:58Z",
+          "status": "COMPLETED",
+          "workflowName": "Lint"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:39:30Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989780741/job/101369833187",
+          "name": "test-plugins-windows",
+          "startedAt": "2026-09-05T20:19:57Z",
+          "status": "COMPLETED",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:21:27Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989780807/job/101369851805",
+          "name": "test-python (tests)",
+          "startedAt": "2026-09-05T20:20:07Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:20:55Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989780807/job/101369851815",
+          "name": "test-typescript (openclaw)",
+          "startedAt": "2026-09-05T20:20:07Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:25:17Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989780807/job/101370045724",
+          "name": "Claude Code Review",
+          "startedAt": "2026-09-05T20:21:30Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        }
+      ],
+      "title": "fix(plugins): document current config and migrate hook event names",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/397"
+    },
+    "398": {
+      "headRefOid": "294b9b35fc8e40ada3dd7b85541ee7444e878cd8",
+      "mergeCommit": {
+        "oid": "294b9b35fc8e40ada3dd7b85541ee7444e878cd8"
+      },
+      "mergedAt": "2026-09-05T20:46:12Z",
+      "number": 398,
+      "state": "MERGED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:24:24Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989998289/job/101370416730",
+          "name": "check-versions",
+          "startedAt": "2026-09-05T20:24:17Z",
+          "status": "COMPLETED",
+          "workflowName": "Check Version Consistency"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:24:20Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989998306/job/101370416845",
+          "name": "detect-changes",
+          "startedAt": "2026-09-05T20:24:16Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:24:27Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989998309/job/101370416728",
+          "name": "ruff",
+          "startedAt": "2026-09-05T20:24:16Z",
+          "status": "COMPLETED",
+          "workflowName": "Lint"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:35Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989998288/job/101370416803",
+          "name": "test-plugins-windows",
+          "startedAt": "2026-09-05T20:24:16Z",
+          "status": "COMPLETED",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:25:35Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989998306/job/101370430291",
+          "name": "test-python (tests)",
+          "startedAt": "2026-09-05T20:24:22Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:25:08Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989998306/job/101370430337",
+          "name": "test-typescript (openclaw)",
+          "startedAt": "2026-09-05T20:24:22Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:28:12Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33989998306/job/101370597280",
+          "name": "Claude Code Review",
+          "startedAt": "2026-09-05T20:25:37Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        }
+      ],
+      "title": "fix(openclaw): bound cold-start retries per conversation",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/398"
+    },
+    "399": {
+      "headRefOid": "76d5a8a47d92e65323b2cd55fb0affc2b2fc5846",
+      "mergeCommit": {
+        "oid": "c296bc750161309b872dd398b28753817e5a5525"
+      },
+      "mergedAt": "2026-09-05T20:46:12Z",
+      "number": 399,
+      "state": "MERGED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628596/job/101372094067",
+          "name": "test-host-windows (claude-code)",
+          "startedAt": "2026-09-05T20:36:44Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:36:50Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628604/job/101372093917",
+          "name": "check-versions",
+          "startedAt": "2026-09-05T20:36:44Z",
+          "status": "COMPLETED",
+          "workflowName": "Check Version Consistency"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:36:50Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628613/job/101372094288",
+          "name": "detect-changes",
+          "startedAt": "2026-09-05T20:36:44Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:36:55Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628602/job/101372094021",
+          "name": "ruff",
+          "startedAt": "2026-09-05T20:36:45Z",
+          "status": "COMPLETED",
+          "workflowName": "Lint"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:37:05Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628606/job/101372094072",
+          "name": "compatibility (1.18.28)",
+          "startedAt": "2026-09-05T20:36:44Z",
+          "status": "COMPLETED",
+          "workflowName": "OpenCode compatibility"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628596/job/101372094040",
+          "name": "test-host-windows (codex)",
+          "startedAt": "2026-09-05T20:36:45Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:37:02Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628606/job/101372093923",
+          "name": "compatibility (1.18.29)",
+          "startedAt": "2026-09-05T20:36:44Z",
+          "status": "COMPLETED",
+          "workflowName": "OpenCode compatibility"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628596/job/101372094073",
+          "name": "test-host-windows (antigravity)",
+          "startedAt": "2026-09-05T20:36:45Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:38:54Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628613/job/101372111134",
+          "name": "test-python (tests)",
+          "startedAt": "2026-09-05T20:36:53Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:37:09Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628613/job/101372111159",
+          "name": "test-typescript (opencode)",
+          "startedAt": "2026-09-05T20:36:53Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:38:55Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990628613/job/101372378405",
+          "name": "Claude Code Review",
+          "startedAt": "2026-09-05T20:38:55Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        }
+      ],
+      "title": "feat(opencode): add native lifecycle, recall and durable capture",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/399"
+    },
+    "400": {
+      "headRefOid": "3521c5a56cdf2fe50535f32b473fff7e98a79cb5",
+      "mergeCommit": {
+        "oid": "fe210608b219ffb3fa7e6bbd9e43d11c0a5b113f"
+      },
+      "mergedAt": "2026-09-05T20:46:11Z",
+      "number": 400,
+      "state": "MERGED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930218/job/101372916397",
+          "name": "test-host-windows (claude-code)",
+          "startedAt": "2026-09-05T20:43:04Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:10Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930234/job/101372916314",
+          "name": "check-versions",
+          "startedAt": "2026-09-05T20:43:04Z",
+          "status": "COMPLETED",
+          "workflowName": "Check Version Consistency"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:09Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930215/job/101372916162",
+          "name": "detect-changes",
+          "startedAt": "2026-09-05T20:43:04Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:11Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930231/job/101372916237",
+          "name": "ruff",
+          "startedAt": "2026-09-05T20:43:04Z",
+          "status": "COMPLETED",
+          "workflowName": "Lint"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:22Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930201/job/101372916131",
+          "name": "compatibility (1.18.28)",
+          "startedAt": "2026-09-05T20:43:04Z",
+          "status": "COMPLETED",
+          "workflowName": "OpenCode compatibility"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930218/job/101372916279",
+          "name": "test-host-windows (codex)",
+          "startedAt": "2026-09-05T20:43:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:22Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930201/job/101372916242",
+          "name": "compatibility (1.18.29)",
+          "startedAt": "2026-09-05T20:43:04Z",
+          "status": "COMPLETED",
+          "workflowName": "OpenCode compatibility"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930218/job/101372916462",
+          "name": "test-host-windows (antigravity)",
+          "startedAt": "2026-09-05T20:43:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "Plugin Windows Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:45:19Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930215/job/101372932547",
+          "name": "test-python (tests)",
+          "startedAt": "2026-09-05T20:43:11Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:59Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930215/job/101372932603",
+          "name": "test-typescript (n8n)",
+          "startedAt": "2026-09-05T20:43:11Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:51Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930215/job/101372932477",
+          "name": "test-typescript (openclaw)",
+          "startedAt": "2026-09-05T20:43:11Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-05T20:43:29Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930215/job/101372932611",
+          "name": "test-typescript (opencode)",
+          "startedAt": "2026-09-05T20:43:12Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/topoteretes/cognee-integrations/actions/runs/33990930215/job/101373204729",
+          "name": "Claude Code Review",
+          "startedAt": "2026-09-05T20:45:21Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "Integration Tests"
+        }
+      ],
+      "title": "feat(integrations): update memory capture, recall and lifecycle across hosts",
+      "url": "https://github.com/topoteretes/cognee-integrations/pull/400"
+    }
+  },
+  "issues": {
+    "135": {
+      "closedAt": "2026-09-05T20:09:49Z",
+      "number": 135,
+      "state": "CLOSED",
+      "stateReason": "COMPLETED",
+      "title": "Observability: add elapsed_ms to recall / bridge / improve events",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/135"
+    },
+    "136": {
+      "closedAt": "2026-09-05T20:28:38Z",
+      "number": 136,
+      "state": "CLOSED",
+      "stateReason": "COMPLETED",
+      "title": "Release: fix inventory.yml version drift + CI version-consistency check",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/136"
+    },
+    "138": {
+      "closedAt": "2026-09-05T20:46:12Z",
+      "number": 138,
+      "state": "CLOSED",
+      "stateReason": "COMPLETED",
+      "title": "Observability: standardize + namespace structured hook event names",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/138"
+    },
+    "171": {
+      "closedAt": "2026-09-05T20:30:47Z",
+      "number": 171,
+      "state": "CLOSED",
+      "stateReason": "NOT_PLANNED",
+      "title": "Local-mode LLM: support Claude Sonnet 5 and reusing the Claude Code subscription via OAuth token (no separate API key)",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/171"
+    },
+    "314": {
+      "closedAt": null,
+      "number": 314,
+      "state": "OPEN",
+      "stateReason": "",
+      "title": "Feature request: optional per-project `node_set` tagging for Claude Code session syncs",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/314"
+    },
+    "319": {
+      "closedAt": null,
+      "number": 319,
+      "state": "OPEN",
+      "stateReason": "",
+      "title": "feat(opencode): add native Cognee persistent-memory plugin",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/319"
+    },
+    "320": {
+      "closedAt": "2026-09-05T20:46:12Z",
+      "number": 320,
+      "state": "CLOSED",
+      "stateReason": "COMPLETED",
+      "title": "Hardening: watcher passes the session key on argv (visible to local process observers) \u2014 pass via environment or file handle instead",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/320"
+    },
+    "332": {
+      "closedAt": "2026-09-05T20:46:12Z",
+      "number": 332,
+      "state": "CLOSED",
+      "stateReason": "COMPLETED",
+      "title": "Claude Code plugin: auto-capture has no redaction or opt-out, so secrets in tool traces reach the graph",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/332"
+    },
+    "335": {
+      "closedAt": "2026-09-05T20:09:52Z",
+      "number": 335,
+      "state": "CLOSED",
+      "stateReason": "NOT_PLANNED",
+      "title": "claude-code: UserPromptSubmit hook can hit its full timeout \u2014 ensure_cognee_ready() awaits setup() outside every budget",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/335"
+    },
+    "350": {
+      "closedAt": "2026-09-05T20:46:13Z",
+      "number": 350,
+      "state": "CLOSED",
+      "stateReason": "COMPLETED",
+      "title": "fix(claude-code,codex): tolerate HTTP backends without optional control-plane routes",
+      "url": "https://github.com/topoteretes/cognee-integrations/issues/350"
+    }
+  },
+  "core": {
+    "headRefOid": "c4130606619f1bbe1bfd2d280a4a7645d85944b1",
+    "number": 4948,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "state": "OPEN",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:34Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923031/job/101372893855",
+        "name": "Code Quality",
+        "startedAt": "2026-09-05T20:42:54Z",
+        "status": "COMPLETED",
+        "workflowName": "Community Tests (No Secrets)"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978560",
+        "name": "Build CI Environment",
+        "startedAt": "2026-09-05T20:44:08Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:36Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990921781/job/101372891941",
+        "name": "Analyze (actions)",
+        "startedAt": "2026-09-05T20:42:53Z",
+        "status": "COMPLETED",
+        "workflowName": "CodeQL"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990922253/job/101372891451",
+        "name": "label-core-team",
+        "startedAt": "2026-09-05T20:42:53Z",
+        "status": "COMPLETED",
+        "workflowName": "Label PRs from core team"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:46:03Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33991067561/job/101373276792",
+        "name": "label-core-team",
+        "startedAt": "2026-09-05T20:45:53Z",
+        "status": "COMPLETED",
+        "workflowName": "Label PRs from core team"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:54Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939581",
+        "name": "MCP Tests / Run MCP Test",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:42:57Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923022/job/101372893766",
+        "name": "linear-issue-check",
+        "startedAt": "2026-09-05T20:42:54Z",
+        "status": "COMPLETED",
+        "workflowName": "Require Linear issue"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:45:58Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33991067290/job/101373275879",
+        "name": "linear-issue-check",
+        "startedAt": "2026-09-05T20:45:54Z",
+        "status": "COMPLETED",
+        "workflowName": "Require Linear issue"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:42:58Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923037/job/101372893785",
+        "name": "check-dco",
+        "startedAt": "2026-09-05T20:42:54Z",
+        "status": "COMPLETED",
+        "workflowName": "community | DCO Check"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:45:55Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33991067383/job/101373276253",
+        "name": "check-dco",
+        "startedAt": "2026-09-05T20:45:52Z",
+        "status": "COMPLETED",
+        "workflowName": "community | DCO Check"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:58Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990921781/job/101372891753",
+        "name": "Analyze (javascript-typescript)",
+        "startedAt": "2026-09-05T20:42:53Z",
+        "status": "COMPLETED",
+        "workflowName": "CodeQL"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990921781/job/101372891911",
+        "name": "Analyze (python)",
+        "startedAt": "2026-09-05T20:42:52Z",
+        "status": "COMPLETED",
+        "workflowName": "CodeQL"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:45:09Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923031/job/101372893822",
+        "name": "Unit Tests (Mocked, No Secrets) (3.11.x)",
+        "startedAt": "2026-09-05T20:42:53Z",
+        "status": "COMPLETED",
+        "workflowName": "Community Tests (No Secrets)"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939746",
+        "name": "CLI Tests / CLI Unit Tests",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:56Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978708",
+        "name": "basic checks / Lockfile and Pre-commit Hooks",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939509",
+        "name": "CLI Tests / CLI Integration Tests",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978886",
+        "name": "OS and Python Tests Ubuntu / Unit tests 3.10.x on ubuntu-22.04 (1/3)",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:44Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923031/job/101372893877",
+        "name": "CLI Unit Tests (Mocked, No Secrets)",
+        "startedAt": "2026-09-05T20:42:53Z",
+        "status": "COMPLETED",
+        "workflowName": "Community Tests (No Secrets)"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978821",
+        "name": "OS and Python Tests Ubuntu / Unit tests 3.10.x on ubuntu-22.04 (2/3)",
+        "startedAt": "2026-09-05T20:43:33Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978763",
+        "name": "OS and Python Tests Ubuntu / Unit tests 3.10.x on ubuntu-22.04 (3/3)",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978938",
+        "name": "OS and Python Tests Ubuntu / Unit tests 3.14.x on ubuntu-22.04 (1/3)",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978779",
+        "name": "OS and Python Tests Ubuntu / Unit tests 3.14.x on ubuntu-22.04 (2/3)",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978865",
+        "name": "OS and Python Tests Ubuntu / Unit tests 3.14.x on ubuntu-22.04 (3/3)",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978825",
+        "name": "OS and Python Tests Ubuntu / Library test 3.10.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:32Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923031/job/101372893892",
+        "name": "Telemetry Test (Mocked, No Secrets)",
+        "startedAt": "2026-09-05T20:42:53Z",
+        "status": "COMPLETED",
+        "workflowName": "Community Tests (No Secrets)"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:45:30Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939522",
+        "name": "CLI Tests / CLI Functionality Tests",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978732",
+        "name": "OS and Python Tests Ubuntu / Library test 3.14.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:45:13Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923031/job/101373183594",
+        "name": "Community Tests Status",
+        "startedAt": "2026-09-05T20:45:11Z",
+        "status": "COMPLETED",
+        "workflowName": "Community Tests (No Secrets)"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939370",
+        "name": "COT Retriever Test",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:55Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978817",
+        "name": "OS and Python Tests Ubuntu / Build test 3.10.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978916",
+        "name": "OS and Python Tests Ubuntu / Build test 3.14.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:33Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939601",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.11.x on ubuntu-22.04 (1/3)",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:48Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978791",
+        "name": "OS and Python Tests Ubuntu / Soft Delete test 3.10.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939472",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.11.x on ubuntu-22.04 (2/3)",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:46:09Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978693",
+        "name": "OS and Python Tests Ubuntu / Soft Delete test 3.14.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:33Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939561",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.11.x on ubuntu-22.04 (3/3)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939663",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.12.x on ubuntu-22.04 (1/3)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939569",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.12.x on ubuntu-22.04 (2/3)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939549",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.12.x on ubuntu-22.04 (3/3)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939586",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.13.x on ubuntu-22.04 (1/3)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939557",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.13.x on ubuntu-22.04 (2/3)",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939437",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Unit tests 3.13.x on ubuntu-22.04 (3/3)",
+        "startedAt": "2026-09-05T20:43:21Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939504",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Library test 3.11.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:35Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978781",
+        "name": "OS and Python Tests Ubuntu / Custom Graph Delete test 3.10.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939436",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Library test 3.12.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:46:11Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978805",
+        "name": "OS and Python Tests Ubuntu / Custom Graph Delete test 3.14.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939469",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Library test 3.13.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978793",
+        "name": "OS and Python Tests Extended / Unit tests 3.13.x on macos-15 (1/3)",
+        "startedAt": "2026-09-05T20:43:37Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:37Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939461",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Build test 3.11.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978806",
+        "name": "OS and Python Tests Extended / Unit tests 3.13.x on macos-15 (2/3)",
+        "startedAt": "2026-09-05T20:43:37Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:57Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939462",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Build test 3.12.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978784",
+        "name": "OS and Python Tests Extended / Unit tests 3.13.x on macos-15 (3/3)",
+        "startedAt": "2026-09-05T20:43:39Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:43Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939479",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Build test 3.13.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978832",
+        "name": "OS and Python Tests Extended / Unit tests 3.13.x on windows-latest (1/3)",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978772",
+        "name": "OS and Python Tests Extended / Unit tests 3.13.x on windows-latest (2/3)",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:46:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978822",
+        "name": "OS and Python Tests Extended / Unit tests 3.13.x on windows-latest (3/3)",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978664",
+        "name": "OS and Python Tests Extended / Library test 3.13.x on macos-15",
+        "startedAt": "2026-09-05T20:43:37Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:17Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939447",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Soft Delete test 3.11.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978669",
+        "name": "OS and Python Tests Extended / Library test 3.13.x on windows-latest",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:20Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939550",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Soft Delete test 3.12.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939449",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Soft Delete test 3.13.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939583",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Custom Graph Delete test 3.11.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:50Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978710",
+        "name": "OS and Python Tests Extended / Build test 3.13.x on macos-15",
+        "startedAt": "2026-09-05T20:43:35Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939555",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Custom Graph Delete test 3.12.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:33Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978720",
+        "name": "OS and Python Tests Extended / Build test 3.13.x on windows-latest",
+        "startedAt": "2026-09-05T20:43:33Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:20Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939481",
+        "name": "Unit Tests (3.11-3.13 ubuntu) / Custom Graph Delete test 3.13.x on ubuntu-22.04",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939661",
+        "name": "Search DB version sweep / Search test for Kuzu/LanceDB/Sqlite (Python 3.10)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:37Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978649",
+        "name": "OS and Python Tests Extended / Soft Delete test 3.13.x on macos-15",
+        "startedAt": "2026-09-05T20:43:36Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939666",
+        "name": "Search DB version sweep / Search test for Kuzu/LanceDB/Sqlite (Python 3.12)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:55Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978729",
+        "name": "OS and Python Tests Extended / Soft Delete test 3.13.x on windows-latest",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939718",
+        "name": "Search DB version sweep / Search test for Kuzu/LanceDB/Sqlite (Python 3.13)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939657",
+        "name": "Search DB version sweep / Search test for Neo4j/LanceDB/Sqlite (Python 3.10)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:45:04Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978768",
+        "name": "OS and Python Tests Extended / Custom Graph Delete test 3.13.x on macos-15",
+        "startedAt": "2026-09-05T20:43:38Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939650",
+        "name": "Search DB version sweep / Search test for Neo4j/LanceDB/Sqlite (Python 3.12)",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:48Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978637",
+        "name": "OS and Python Tests Extended / Custom Graph Delete test 3.13.x on windows-latest",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939668",
+        "name": "Search DB version sweep / Search test for Neo4j/LanceDB/Sqlite (Python 3.13)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939710",
+        "name": "Search DB version sweep / Search test for Kuzu/PGVector/Postgres (Python 3.10)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:45:11Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978659",
+        "name": "MCP Tests / Run MCP Test",
+        "startedAt": "2026-09-05T20:43:34Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939649",
+        "name": "Search DB version sweep / Search test for Kuzu/PGVector/Postgres (Python 3.12)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939678",
+        "name": "Search DB version sweep / Search test for Kuzu/PGVector/Postgres (Python 3.13)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939638",
+        "name": "Search DB version sweep / Search test for Neo4j/PGVector/Postgres (Python 3.10)",
+        "startedAt": "2026-09-05T20:43:16Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978786",
+        "name": "Docker Compose Test / docker-compose-test",
+        "startedAt": "2026-09-05T20:43:33Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939675",
+        "name": "Search DB version sweep / Search test for Neo4j/PGVector/Postgres (Python 3.12)",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939761",
+        "name": "Search DB version sweep / Search test for Neo4j/PGVector/Postgres (Python 3.13)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939574",
+        "name": "Ollama Tests / run_ollama_test",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:45:45Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978677",
+        "name": "Docker CI test / Build Cognee Backend Docker App Image",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939621",
+        "name": "Llama-cpp Tests / run_llama-cpp_test",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:53Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923281/job/101372978668",
+        "name": "UI Docker CI test / Build Cognee UI Docker Image",
+        "startedAt": "2026-09-05T20:43:32Z",
+        "status": "COMPLETED",
+        "workflowName": "Test Suites"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939645",
+        "name": "Run Telemetry Pipeline Test",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:40Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939515",
+        "name": "Delete default graph data test",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939535",
+        "name": "Delete custom graph data test",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:44:26Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939651",
+        "name": "Agent Registry Tests",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939598",
+        "name": "Multi-User Release E2E (default file-based DBs)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939456",
+        "name": "Multi-User Release E2E (Postgres graph + PGVector + Postgres)",
+        "startedAt": "2026-09-05T20:43:14Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:12Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939901",
+        "name": "Load Tests",
+        "startedAt": "2026-09-05T20:43:13Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372939591",
+        "name": "Large migration compat (postgres-pgvector, v1.2.0 \u2192 current)",
+        "startedAt": "2026-09-05T20:43:15Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:12Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/topoteretes/cognee/actions/runs/33990923210/job/101372940458",
+        "name": "Dev Canary Release",
+        "startedAt": "2026-09-05T20:43:13Z",
+        "status": "COMPLETED",
+        "workflowName": "Release Test Workflow"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-05T20:43:29Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/topoteretes/cognee/runs/101372970845",
+        "name": "CodeQL",
+        "startedAt": "2026-09-05T20:43:26Z",
+        "status": "COMPLETED",
+        "workflowName": ""
+      }
+    ],
+    "title": "feat(sessions): preserve project tags and provision companions [SDK-303]",
+    "url": "https://github.com/topoteretes/cognee/pull/4948"
+  }
+}

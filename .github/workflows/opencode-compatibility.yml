@@ -1,0 +1,25 @@
+name: OpenCode compatibility
+on:
+  pull_request:
+    paths: ['integrations/opencode/**', '.github/workflows/opencode-compatibility.yml']
+  push:
+    branches: [main]
+    paths: ['integrations/opencode/**', '.github/workflows/opencode-compatibility.yml']
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        api: ['1.18.28', '1.18.29']
+    defaults:
+      run:
+        working-directory: integrations/opencode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false @opencode-ai/plugin@${{ matrix.api }}
+      - run: npm run typecheck
+      - run: npm test

@@ -83,7 +83,7 @@ All options live under the plugin's `config` key:
 | `autoAmendify` | boolean | `false` | Auto-fix failing skills after runs |
 | `amendifyMinRuns` | number | `3` | Failed runs required before amendify triggers |
 | `amendifyScoreThreshold` | number | `0.5` | Runs scoring below this count as failures |
-| `requestTimeoutMs` | number | `60000` | API request timeout (ms) -- raise to 300000 for LLM calls |
+| `requestTimeoutMs` | number | `120000` | API request timeout (ms) -- raise to 300000 for LLM calls |
 | `ingestionTimeoutMs` | number | `300000` | Skill ingestion timeout (ms) |
 
 ## CLI

@@ -45,7 +45,10 @@ install the extra: `pip install -e ".[sdk]"`.
 
 ```python
 from cognee_integration_chat_memory import (
-    ChatMemoryAdapter, Conversation, Message, per_channel_scope,
+    ChatMemoryAdapter,
+    Conversation,
+    Message,
+    per_channel_scope,
 )
 
 # Default backend talks to a running cognee server (COGNEE_BASE_URL / COGNEE_API_KEY).
@@ -53,8 +56,9 @@ adapter = ChatMemoryAdapter(scope=per_channel_scope)
 
 convo = Conversation(platform="slack", workspace="T1", channel="C1", user="U1")
 adapter.set_consent("U1", True)
-await adapter.ingest(convo, Message(text="We ship on Friday.", user="U1",
-                                    permalink="https://slack/archives/C1/p1"))
+await adapter.ingest(
+    convo, Message(text="We ship on Friday.", user="U1", permalink="https://slack/archives/C1/p1")
+)
 answer = await adapter.answer(convo, "when do we ship?")
 print(answer.text)
 for c in answer.citations:

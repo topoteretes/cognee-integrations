@@ -223,6 +223,8 @@ on gateway start. Force the mode with `perAgentMemory: true|false` if needed.
 openclaw gateway stop && openclaw gateway start
 
 # Datasets show up in Cognee as agents become active:
+# (images from cognee 1.6.0 onward create no default user unless the container
+#  env sets DEFAULT_USER_PASSWORD=default_password — add it or this login 400s)
 TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data-urlencode username=default_user@example.com \

@@ -18,10 +18,13 @@ Contract — what gets printed to stdout:
 Diagnostics also go to stderr so the caller can surface them.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -73,19 +76,6 @@ def _background_flag():
     return "false" if val in {"0", "false", "no", "off"} else "true"
 
 
-def _remember_timeout():
-    """Client timeout (seconds) for the remember submit POST.
-
-    Tunable independently of recall/register via ``COGNEE_REMEMBER_TIMEOUT``;
-    defaults to 60s to preserve the previous hardcoded behaviour.
-    """
-    try:
-        raw = os.environ.get("COGNEE_REMEMBER_TIMEOUT", "").strip()
-        return float(raw) if raw else 60.0
-    except (TypeError, ValueError):
-        return 60.0
-
-
 def _timeout_result(timeout):
     """A write timeout is NOT 'unreachable': the request likely reached the server and
     the write may have landed. Returning UNREACHABLE would make the caller re-write via
@@ -99,6 +89,91 @@ def _timeout_result(timeout):
     return _error(0, "remember submitted; timed out after %ss waiting for confirmation" % timeout)
 
 
+def _float_env(name, default):
+    try:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _explicit_wait_seconds():
+    """Seconds the explicit "remember this" waits for the cognify to become queryable.
+
+    Default 8s: a background submit returns immediately, so without a short wait an
+    immediate recall sees the not-yet-cognified graph. 0 disables (fire-and-forget).
+    """
+    return _float_env("COGNEE_REMEMBER_WAIT_SECONDS", 8.0)
+
+
+def _remember_timeout():
+    """Client timeout (seconds) for the remember submit POST.
+
+    Tunable independently of recall/register via ``COGNEE_REMEMBER_TIMEOUT``;
+    defaults to 120s, the value ``do_remember`` has always used.
+    """
+    return _float_env("COGNEE_REMEMBER_TIMEOUT", 120.0)
+
+
+def _poll_status(
+    service_url,
+    api_key,
+    dataset_id,
+    deadline_seconds,
+    *,
+    opener=urllib.request.urlopen,
+    interval_seconds=3.0,
+    request_timeout=10.0,
+):
+    """Poll /api/v1/datasets/status (cognify_pipeline) until terminal or the deadline.
+
+    Returns "completed" | "errored" | "timeout" | "unknown". The only cognify
+    poller in the plugin: stdlib-only and opener-injectable so this module keeps
+    running under bare python3 (no plugin venv) and remains test-mockable.
+    """
+    if not dataset_id:
+        return "unknown"
+    url = (
+        service_url.rstrip("/")
+        + "/api/v1/datasets/status?dataset="
+        + urllib.parse.quote(str(dataset_id))
+        + "&pipeline=cognify_pipeline"
+    )
+    headers = {}
+    # Always attach the key when present: cognee >=1.2.2 enforces auth even on
+    # localhost; a server with auth disabled ignores the header.
+    if api_key:
+        headers["X-Api-Key"] = api_key
+    deadline = time.monotonic() + max(0.0, deadline_seconds)
+    while True:
+        status = ""
+        try:
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with opener(req, timeout=request_timeout) as resp:
+                raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw or "{}")
+            if isinstance(parsed, dict) and parsed:
+                val = parsed.get(str(dataset_id))
+                if val is None and len(parsed) == 1:
+                    val = next(iter(parsed.values()))
+                if isinstance(val, dict):
+                    val = val.get("cognify_pipeline")
+                status = str(val or "").upper()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return "unknown"  # older server without the status route
+            # transient — fall through to the deadline check
+        except Exception:
+            pass  # transient (URLError/timeout/parse) — keep polling until deadline
+        if status.endswith("COMPLETED"):
+            return "completed"
+        if status.endswith("ERRORED"):
+            return "errored"
+        if time.monotonic() >= deadline:
+            return "timeout"
+        time.sleep(max(0.1, interval_seconds))  # floor avoids a tight spin if misconfigured to 0
+
+
 def do_remember(
     service_url,
     api_key,
@@ -106,18 +181,47 @@ def do_remember(
     dataset,
     node_set,
     *,
+    file_path=None,
+    dataset_id="",
     opener=urllib.request.urlopen,
-    timeout=60.0,
+    timeout=120.0,
 ):
-    """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE."""
+    """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.
+
+    ``dataset_id`` addresses the target by UUID (sent as ``datasetId``, which
+    the endpoint accepts in place of ``datasetName``). Under shared agent
+    memory that is the canonical parent-owned dataset; by name, an agent would
+    silently create and write its own empty copy instead.
+
+    With ``file_path``, the file's bytes are uploaded under its REAL basename
+    instead of the synthetic ``{node_set}.txt``. The filename extension is the
+    server's loader-routing signal: a ``.py``/``.ts``/... upload rides the
+    zero-LLM code-graph route (cognify CODE route, cognee >= 1.5.x), while the
+    ``.txt`` rename would silently ingest code as prose through the LLM
+    pipeline. Reading the file here (not in the shell) also avoids ARG_MAX
+    limits on large sources.
+    """
     url = service_url.rstrip("/") + "/api/v1/remember"
     filename = f"{node_set or 'content'}.txt"
+    if file_path:
+        try:
+            with open(file_path, "rb") as fh:
+                content = fh.read()
+        except OSError as e:
+            return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
+        filename = os.path.basename(str(file_path).rstrip("/")) or filename
+    from _dataset_access import dataset_id as parse_dataset_id
+
+    # The explicit UUID (shared memory's canonical dataset) wins; otherwise a
+    # UUID-shaped dataset is sent as datasetId and a name as datasetName.
+    ident = str(dataset_id or "").strip() or parse_dataset_id(dataset)
+    fields = {"node_set": node_set, "run_in_background": _background_flag()}
+    if ident:
+        fields["datasetId"] = ident
+    else:
+        fields["datasetName"] = dataset
     body, boundary = _multipart_body(
-        {
-            "datasetName": dataset,
-            "node_set": node_set,
-            "run_in_background": _background_flag(),
-        },
+        fields,
         [("data", filename, content.encode("utf-8") if isinstance(content, str) else content)],
     )
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
@@ -166,14 +270,80 @@ def do_remember(
         msg = str(data.get("error"))[:200]
         sys.stderr.write("[cognee-remember] server returned error: %s\n" % msg)
         return _error(200, msg)
-    return {"ok": True}
+
+    result = {"ok": True}
+    if isinstance(data, dict):
+        if data.get("dataset_id"):
+            result["dataset_id"] = str(data["dataset_id"])
+        if data.get("pipeline_run_id"):
+            result["pipeline_run_id"] = str(data["pipeline_run_id"])
+        if data.get("status"):
+            result["status"] = str(data["status"])
+
+    # A background submit returns as soon as the cognify is enqueued, so the graph
+    # isn't queryable yet. Optionally wait (bounded) and report whether it landed,
+    # so an immediate recall isn't stale. Synchronous writes already completed.
+    wait_seconds = _explicit_wait_seconds()
+    if wait_seconds > 0 and result.get("dataset_id") and _background_flag() == "true":
+        outcome = _poll_status(
+            service_url,
+            api_key,
+            result["dataset_id"],
+            wait_seconds,
+            opener=opener,
+            interval_seconds=_float_env("COGNEE_COGNIFY_POLL_INTERVAL", 3.0),
+            request_timeout=_float_env("COGNEE_STATUS_REQUEST_TIMEOUT", 10.0),
+        )
+        result["wait_outcome"] = outcome
+        result["queryable"] = outcome == "completed"
+        if outcome == "errored":
+            sys.stderr.write(
+                "[cognee-remember] cognify ERRORED for dataset %s\n" % result["dataset_id"]
+            )
+    return result
 
 
 def main(argv):
-    # argv: service_url, api_key, content, dataset, node_set
-    a = list(argv) + [""] * 5
-    result = do_remember(a[0], a[1], a[2], a[3], a[4], timeout=_remember_timeout())
+    # argv: service_url, api_key, content, dataset, node_set[, file_path[, dataset_id]]
+    # With file_path set (arg 6), content (arg 3) is ignored: the file's bytes
+    # are uploaded under their real basename so code files route as code.
+    # dataset_id (arg 7) addresses the dataset by UUID instead of the name.
+    a = list(argv) + [""] * 7
+    result = do_remember(
+        a[0],
+        a[1],
+        a[2],
+        a[3],
+        a[4],
+        file_path=a[5] or None,
+        dataset_id=a[6],
+        timeout=_remember_timeout(),
+    )
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
+    if result != UNREACHABLE:
+        # Refresh the status-line credits marker, attributing the spend delta
+        # to this remember (cloud-only; the fetch itself no-ops on a local
+        # server). Lazy, guarded import: this module is standalone by design,
+        # and the opt-out env stops _plugin_common's venv re-exec — an execv
+        # here would re-run main() and double-submit the remember.
+        try:
+            os.environ.setdefault("COGNEE_PLUGIN_IN_VENV", "1")
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _plugin_common import (
+                clear_payment_required,
+                record_payment_required,
+                refresh_credits,
+            )
+
+            # A 402 is the server refusing to pay for this remember; note it
+            # for the status line. A remember that got through clears the note.
+            if isinstance(result, dict) and result.get("status") == 402:
+                record_payment_required("remember")
+            elif isinstance(result, dict) and not result.get("error"):
+                clear_payment_required()
+            refresh_credits("remember")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

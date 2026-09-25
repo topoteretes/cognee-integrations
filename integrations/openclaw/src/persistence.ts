@@ -1,7 +1,8 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentSyncIndexes, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
+import type { AgentSyncIndexes, CodeGraphRecord, CodeGraphsFile, DatasetOverride, DatasetOverridesFile, RetiredSession, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
+import { MAX_PREVIOUS_DATASETS, pruneRetired } from "./retired.js";
 
 // ---------------------------------------------------------------------------
 // State file paths
@@ -12,6 +13,7 @@ export const STATE_PATH = join(STATE_DIR, "datasets.json");
 export const SYNC_INDEX_PATH = join(STATE_DIR, "sync-index.json");
 export const SCOPED_SYNC_INDEX_PATH = join(STATE_DIR, "scoped-sync-indexes.json");
 export const AGENT_SYNC_INDEX_PATH = join(STATE_DIR, "agent-sync-indexes.json");
+export const UPDATE_CHECK_PATH = join(STATE_DIR, "update-check.json");
 
 // ---------------------------------------------------------------------------
 // Dataset state (maps dataset name -> dataset ID)
@@ -169,4 +171,81 @@ export async function migrateAgentScopeToPerAgent(agentId: string): Promise<Agen
   delete shared.agent;
   await saveScopedSyncIndexes(shared);
   return agentIndexes;
+}
+
+// ---------------------------------------------------------------------------
+// Per-conversation dataset overrides (memory_switch_dataset)
+// ---------------------------------------------------------------------------
+
+export const DATASET_OVERRIDES_PATH = join(STATE_DIR, "dataset-overrides.json");
+
+export async function loadDatasetOverrides(path: string = DATASET_OVERRIDES_PATH): Promise<DatasetOverridesFile> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: DatasetOverridesFile = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!v || typeof v !== "object") continue;
+      const o = v as Partial<DatasetOverride>;
+      if (typeof o.dataset !== "string" || !o.dataset) continue;
+      out[k] = {
+        dataset: o.dataset,
+        sessionSuffix: typeof o.sessionSuffix === "number" && o.sessionSuffix >= 2 ? o.sessionSuffix : 2,
+        switchedAt: typeof o.switchedAt === "string" ? o.switchedAt : "",
+        previous: (Array.isArray(o.previous) ? o.previous.filter((p): p is string => typeof p === "string") : []).slice(-MAX_PREVIOUS_DATASETS),
+        retired: pruneRetired(Array.isArray(o.retired)
+          ? o.retired
+              .filter((r): r is RetiredSession => !!r && typeof r === "object" && typeof (r as RetiredSession).dataset === "string" && typeof (r as RetiredSession).sessionId === "string")
+              .map((r) => ({ dataset: r.dataset, sessionId: r.sessionId, synced: r.synced === true, retiredAt: typeof r.retiredAt === "string" ? r.retiredAt : "" }))
+          : []),
+      };
+    }
+    return out;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+export async function saveDatasetOverrides(data: DatasetOverridesFile, path: string = DATASET_OVERRIDES_PATH): Promise<void> {
+  await fs.mkdir(dirname(path), { recursive: true });
+  await fs.writeFile(path, JSON.stringify(data, null, 2), "utf-8");
+}
+
+// ---------------------------------------------------------------------------
+// Indexed code graphs (openclaw cognee index-repo)
+// ---------------------------------------------------------------------------
+
+export const CODE_GRAPHS_PATH = join(STATE_DIR, "code-graphs.json");
+
+export async function loadCodeGraphs(path: string = CODE_GRAPHS_PATH): Promise<CodeGraphsFile> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: CodeGraphsFile = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!v || typeof v !== "object") continue;
+      const r = v as Partial<CodeGraphRecord>;
+      if (typeof r.dataset !== "string" || !r.dataset || typeof r.spec !== "string") continue;
+      out[k] = {
+        dataset: r.dataset,
+        ...(typeof r.datasetId === "string" ? { datasetId: r.datasetId } : {}),
+        spec: r.spec,
+        canonical: typeof r.canonical === "string" ? r.canonical : r.spec,
+        kind: r.kind === "url" ? "url" : "path",
+        indexVectors: r.indexVectors === true,
+        indexedAt: typeof r.indexedAt === "string" ? r.indexedAt : "",
+        ...(typeof r.lastStatus === "string" ? { lastStatus: r.lastStatus } : {}),
+      };
+    }
+    return out;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+export async function saveCodeGraphs(data: CodeGraphsFile, path: string = CODE_GRAPHS_PATH): Promise<void> {
+  await fs.mkdir(dirname(path), { recursive: true });
+  await fs.writeFile(path, JSON.stringify(data, null, 2), "utf-8");
 }

@@ -12,7 +12,7 @@ Bridge session cache entries into the permanent knowledge graph.
 Run the sync script:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"
 ```
 
 ## What this does
