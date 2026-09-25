@@ -150,6 +150,8 @@ EVENT_NAMES = {
     "hook:list_datasets_failed": "datasets.list_failed",
     "hook:llm_state_clear_failed": "llm.state_clear_failed",
     "hook:llm_state_write_failed": "llm.state_write_failed",
+    "hook:managed_endpoint_boot_refused": "boot.refused_managed_endpoint",
+    "hook:managed_endpoint_down": "endpoint.managed_down",
     "hook:map_create_failed": "map.create_failed",
     "hook:missing_payload_session_id": "missing.payload_session_id",
     "hook:mode_decision": "runtime.decision",

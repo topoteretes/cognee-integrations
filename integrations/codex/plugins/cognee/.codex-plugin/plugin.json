@@ -1,6 +1,6 @@
 {
   "name": "cognee",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Cognee memory for Codex: automatic capture and recall over the Cognee server's HTTP API, with knowledge-graph and codebase skills.",
   "author": {
     "name": "Topoteretes",

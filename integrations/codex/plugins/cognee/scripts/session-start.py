@@ -47,6 +47,7 @@ from _plugin_common import (
     ensure_launch_record,
     get_session_key,
     hook_log,
+    managed_endpoint_enabled,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
@@ -640,6 +641,15 @@ def _ensure_local_server_running(
     if _require_absent("pre_install"):
         _ready()
         return
+
+    if managed_endpoint_enabled(config):
+        # Hard stop at the single spawn/install choke point so no call path —
+        # present or future — can boot a shadow server over a managed endpoint.
+        hook_log("managed_endpoint_boot_refused", {"base_url": service_url})
+        raise RuntimeError(
+            f"managed Cognee endpoint {service_url} is unreachable and "
+            "COGNEE_MANAGED_ENDPOINT forbids booting a local fallback server"
+        )
 
     # The server is positively absent and we're at a boot point: ensure the
     # shared venv holds the latest cognee BEFORE booting, so the server's
@@ -1897,13 +1907,21 @@ async def _start(payload: dict | None = None) -> dict:
         server_live = presence_verdict == PRESENCE_READY
     else:
         server_live = bool(target_url) and _health_ok(_health_url(target_url))
-    will_boot = (not server_live) and bool(target_url) and _is_local_url(target_url)
+    # COGNEE_MANAGED_ENDPOINT: the URL belongs to a deployment we don't own, so
+    # it is never booted. This is stronger than _run_heavy's
+    # ``managed_endpoint=not will_boot`` (connect-only for THIS call): the lock
+    # also stops the out-of-band retry and _ensure_local_server_running itself.
+    managed_locked = managed_endpoint_enabled(config)
+    will_boot = (
+        (not server_live) and bool(target_url) and _is_local_url(target_url) and not managed_locked
+    )
     hook_log(
         "endpoint_mode_selected",
         {
             "base_url": target_url,
             "server_live": server_live,
             "will_boot": will_boot,
+            "managed_endpoint": managed_locked,
             **(
                 {"presence": presence_verdict, "evidence": presence_evidence}
                 if presence_verdict
@@ -1911,6 +1929,39 @@ async def _start(payload: dict | None = None) -> dict:
             ),
         },
     )
+    if managed_locked and target_url and not server_live:
+        # Managed deployment is down: fail loudly, never fork a fallback brain.
+        hook_log("managed_endpoint_down", {"base_url": target_url})
+        print(
+            f"cognee-plugin: managed endpoint {target_url} unreachable — memory OFFLINE",
+            file=sys.stderr,
+        )
+        # The status line and the recall gate read the shared marker, not this
+        # output: without this they would keep the previous session's verdict.
+        write_connection_state("unreachable", target_url)
+        offline_message = (
+            "## ⚠ Cognee Memory OFFLINE\n"
+            f"The managed Cognee endpoint {target_url} is unreachable. "
+            "COGNEE_MANAGED_ENDPOINT is set, so no local fallback server was "
+            "started — memory recall and capture are disabled for this session.\n"
+            "Start the deployment, then start a new session (or /clear)."
+        )
+        return {
+            # Top level is where the universal ``systemMessage`` is documented
+            # and where the Antigravity adapter reads it; keep both copies.
+            "systemMessage": offline_message,
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "systemMessage": offline_message,
+                "additionalContext": (
+                    "Cognee memory is OFFLINE for this session: the managed endpoint "
+                    f"{target_url} is unreachable and local fallback is disabled by "
+                    "COGNEE_MANAGED_ENDPOINT. Nothing is being recalled or captured. "
+                    "If durable memory matters for the current task, remind the user "
+                    "that the Cognee stack is down before proceeding."
+                ),
+            },
+        }
     if will_boot and _LAZY_BOOTSTRAP:
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
         user_id = os.environ.get("COGNEE_USER_ID", "")
@@ -1926,7 +1977,7 @@ async def _start(payload: dict | None = None) -> dict:
             boot_timeout=_HEALTH_TIMEOUT_SECONDS,
         )
         if not ok:
-            if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url):
+            if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url) and not managed_locked:
                 # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:
