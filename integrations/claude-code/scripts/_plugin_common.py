@@ -4565,8 +4565,11 @@ def register_agent_via_http(
     session_id: str = "",
     dataset_names: list[str] | None = None,
     dataset_ids: list[str] | None = None,
-    timeout: float = 15.0,
+    timeout: float | None = None,
 ) -> tuple[bool, dict]:
+    if timeout is None:
+        # Tunable independently of recall/remember; 15s is the historical value.
+        timeout = _float_env("COGNEE_REGISTER_TIMEOUT", 15.0)
     payload = {
         "agent_session_name": agent_session_name,
         # Self-declared connection type (the server keeps a free-form registry;
