@@ -34,3 +34,34 @@ The table only holds inputs whose sanitized output is not empty. hermes-agent
 returns `"session"` when the result would be empty, while the others return an
 empty string. That one case is left out on purpose so the shared table stays
 identical for all four integrations.
+
+# Dataset name sanitization conformance
+
+cognee rejects a dataset name that contains a space or a dot
+(`check_dataset_name`, run on every write: remember, improve, memify and the
+pipelines). Every integration therefore runs a configured or derived dataset
+name through a small sanitizer before using it. The rule is deliberately narrow:
+
+- Trim surrounding whitespace.
+- Replace every run of spaces and dots with a single `_`.
+- If nothing but underscores is left (and the input was not already that),
+  use the integration's default dataset instead.
+
+Nothing else changes. A name the server accepts today (`Foo+Bar`, `héllo`,
+`_x_`) comes back unchanged, so no user is silently moved to a new, empty
+dataset. A name that contains a space or a dot never took a write, so rewriting
+it orphans nothing. The vscode extension's `sanitizeDatasetName` is stricter
+(`[^A-Za-z0-9_-]` → `_`) because it only cleans names it derives itself.
+
+`dataset_name_cases.json` holds `{ "input", "fallback", "expected", "note" }`
+cases; each test passes `fallback` as the default, so one table serves
+integrations with different defaults. The tests live next to the session-id ones:
+
+- claude-code, codex and antigravity:
+  `integrations/tests/tests/unit/test_dataset_name_conformance.py`
+- hermes-agent: `integrations/hermes-agent/tests/test_dataset_name_conformance.py`
+- openclaw: `integrations/openclaw/__tests__/unit/test_dataset_name_conformance.ts`
+
+Where a name is typed explicitly (the dataset-switch commands), an invalid name
+is refused with the sanitized form as a suggestion instead of being rewritten,
+so a switch never lands in a dataset the user did not name.

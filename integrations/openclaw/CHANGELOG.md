@@ -11,6 +11,18 @@ reports an update only when the published npm version changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Versions are
 date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
+## [Unreleased]
+
+### Fixed
+- **Dataset names are sanitized for cognee.** cognee rejects a dataset name
+  containing a space or a dot. The configured `datasetName` and every scope's
+  derived name (company, user, agent — an email user id carries dots) now have
+  spaces and dots replaced with `_`; every name the server already accepts stays
+  exactly as it is. The dataset switch no longer accepts `.` in a name, and
+  code-graph datasets for repositories with a dot in their name are now dot-free.
+  Shared rule: `integrations/conformance/dataset_name_cases.json`. First
+  implemented by @eiza763 (#226).
+
 ## [2026.9.22]
 
 ### Changed

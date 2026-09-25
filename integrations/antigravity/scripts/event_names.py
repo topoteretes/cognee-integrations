@@ -38,6 +38,7 @@ EVENT_NAMES = {
     "clear-transcript-context:clear_context_failed": "transcript.failed",
     "clear-transcript-context:clear_context_invalid_payload": "transcript.invalid_payload",
     "clear-transcript-context:clear_context_skipped_stop_hook_active": "transcript.skip_active",
+    "config:dataset_name_sanitized": "config.dataset_name_sanitized",
     "config:default_user_resolve_failed": "config.default_user_resolve_failed",
     "config:git_branch_lookup_failed": "config.git_branch_lookup_failed",
     "config:improve_local_unsupported": "config.improve_local_unsupported",

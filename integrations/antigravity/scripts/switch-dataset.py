@@ -51,7 +51,11 @@ from _plugin_common import (  # noqa: E402
     unregister_agent_via_http,
 )
 from _proc import pid_alive  # noqa: E402
-from config import ensure_dataset_ready_via_api, load_config  # noqa: E402
+from config import (  # noqa: E402
+    ensure_dataset_ready_via_api,
+    load_config,
+    sanitize_dataset_name,
+)
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "antigravity"
 _WATCHER_PID = _STATE_DIR / "watcher.pid"
@@ -261,6 +265,15 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     target = target.strip()
     if not target:
         raise SwitchError(EXIT_ERROR, "dataset name is empty")
+    # A name typed here is refused rather than rewritten, so a switch never
+    # lands in a dataset the user did not name.
+    suggestion = sanitize_dataset_name(target, fallback="")
+    if suggestion != target:
+        hint = f" (try {suggestion!r})" if suggestion else ""
+        raise SwitchError(
+            EXIT_ERROR,
+            f"invalid dataset name {target!r}: cognee rejects spaces and dots{hint}",
+        )
     old_session = str(rec.get("session_id") or "")
     old_dataset = str(
         rec.get("dataset") or load_resolved(session_key=host_key).get("dataset") or ""

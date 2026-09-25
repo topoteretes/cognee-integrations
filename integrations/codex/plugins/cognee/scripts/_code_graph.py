@@ -347,7 +347,10 @@ def default_code_dataset(spec: str) -> str:
     """
     canonical = canonical_spec(spec)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
-    return f"codebase-{_readable_tail(canonical).lower()}-{digest}"
+    # Dots are fine in the repo slug but cognee rejects them in a dataset name
+    # (check_dataset_name), so a repo like ``foo.js`` could never be indexed.
+    tail = _readable_tail(canonical).lower().replace(".", "-")
+    return f"codebase-{tail}-{digest}"
 
 
 def is_remote_repo(spec: str) -> bool:

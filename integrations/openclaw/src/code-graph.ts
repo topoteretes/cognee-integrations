@@ -61,7 +61,10 @@ function readableTail(canonical: string): string {
 export function defaultCodeDataset(spec: string): string {
   const canonical = canonicalSpec(spec);
   const digest = createHash("sha256").update(canonical, "utf-8").digest("hex").slice(0, 8);
-  return `codebase-${readableTail(canonical).toLowerCase()}-${digest}`;
+  // Dots are fine in the repo slug but cognee rejects them in a dataset name
+  // (check_dataset_name), so a repo like `foo.js` could never be indexed.
+  const tail = readableTail(canonical).toLowerCase().replace(/\./g, "-");
+  return `codebase-${tail}-${digest}`;
 }
 
 // ---------------------------------------------------------------------------

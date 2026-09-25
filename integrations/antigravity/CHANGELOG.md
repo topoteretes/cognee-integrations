@@ -7,6 +7,21 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.1]
+
+### Fixed
+- **Dataset names are sanitized for cognee.** cognee rejects a dataset name
+  containing a space or a dot, and a `COGNEE_PLUGIN_DATASET` like `my project`
+  or `team.v2` used to reach the server unchanged and fail every write. The
+  configured name now has spaces and dots replaced with `_` (logged as
+  `config.dataset_name_sanitized`); nothing else changes, so every name the
+  server already accepts stays exactly as it is. The switch-datasets command
+  refuses such a name and suggests the sanitized form instead of rewriting it.
+  Code-graph datasets for repositories with a dot in their name (`foo.js`) are
+  now `codebase-foo-js-…` and can be indexed. The rule is shared across
+  integrations in `integrations/conformance/dataset_name_cases.json`. First
+  implemented by @eiza763 (#226).
+
 ## [1.6.0]
 
 ### Changed
