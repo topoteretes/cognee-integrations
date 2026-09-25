@@ -49,6 +49,7 @@ from _plugin_common import (
     get_session_key,
     hook_log,
     is_observer_child,
+    managed_endpoint_enabled,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
@@ -563,19 +564,6 @@ def _is_local_url(url: str) -> bool:
     return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 
-def _managed_endpoint_enabled(config: dict) -> bool:
-    """True when base_url is an externally managed deployment (docker stack,
-    systemd service, ...) that happens to live on a loopback address. In that
-    case the plugin must NEVER boot its own fallback server on that port — a
-    fallback would shadow the real deployment with a second, unrelated brain.
-    Set COGNEE_MANAGED_ENDPOINT=true (env or config) to opt in; outages then
-    fail loudly instead of silently forking."""
-    val = os.environ.get("COGNEE_MANAGED_ENDPOINT", "") or str(
-        config.get("managed_endpoint", "") or ""
-    )
-    return val.strip().lower() in ("1", "true", "yes", "on")
-
-
 def _with_scheme(url: str) -> str:
     """Ensure the URL has a scheme so urllib + downstream HTTP helpers accept it."""
     url = str(url or "").strip()
@@ -656,7 +644,7 @@ def _ensure_local_server_running(
         _ready()
         return
 
-    if _managed_endpoint_enabled(config):
+    if managed_endpoint_enabled(config):
         # Hard stop at the single spawn/install choke point so no call path —
         # present or future — can boot a shadow server over a managed endpoint.
         hook_log("managed_endpoint_boot_refused", {"base_url": service_url})
@@ -2321,7 +2309,11 @@ async def _start(payload: dict | None = None) -> dict:
         server_live = presence_verdict == PRESENCE_READY
     else:
         server_live = bool(target_url) and _health_ok(_health_url(target_url))
-    managed_locked = _managed_endpoint_enabled(config)
+    # COGNEE_MANAGED_ENDPOINT: the URL belongs to a deployment we don't own, so
+    # it is never booted. This is stronger than _run_heavy's
+    # ``managed_endpoint=not will_boot`` (connect-only for THIS call): the lock
+    # also stops the out-of-band retry and _ensure_local_server_running itself.
+    managed_locked = managed_endpoint_enabled(config)
     will_boot = (
         (not server_live) and bool(target_url) and _is_local_url(target_url) and not managed_locked
     )
@@ -2346,16 +2338,23 @@ async def _start(payload: dict | None = None) -> dict:
             f"cognee-plugin: managed endpoint {target_url} unreachable — memory OFFLINE",
             file=sys.stderr,
         )
+        # The status line and the recall gate read the shared marker, not this
+        # output: without this they would keep the previous session's verdict.
+        write_connection_state("unreachable", target_url)
+        offline_message = (
+            "## ⚠ Cognee Memory OFFLINE\n"
+            f"The managed Cognee endpoint {target_url} is unreachable. "
+            "COGNEE_MANAGED_ENDPOINT is set, so no local fallback server was "
+            "started — memory recall and capture are disabled for this session.\n"
+            "Start the deployment, then start a new session (or /clear)."
+        )
         return {
+            # Top level is where the universal ``systemMessage`` is documented
+            # and where the Antigravity adapter reads it; keep both copies.
+            "systemMessage": offline_message,
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
-                "systemMessage": (
-                    "## ⚠ Cognee Memory OFFLINE\n"
-                    f"The managed Cognee endpoint {target_url} is unreachable. "
-                    "COGNEE_MANAGED_ENDPOINT is set, so no local fallback server was "
-                    "started — memory recall and capture are disabled for this session.\n"
-                    "Start the deployment, then start a new session (or /clear)."
-                ),
+                "systemMessage": offline_message,
                 "additionalContext": (
                     "Cognee memory is OFFLINE for this session: the managed endpoint "
                     f"{target_url} is unreachable and local fallback is disabled by "
@@ -2363,7 +2362,7 @@ async def _start(payload: dict | None = None) -> dict:
                     "If durable memory matters for the current task, remind the user "
                     "that the Cognee stack is down before proceeding."
                 ),
-            }
+            },
         }
     if will_boot and _LAZY_BOOTSTRAP:
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)

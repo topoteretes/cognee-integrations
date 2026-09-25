@@ -20,6 +20,7 @@ Decision (``resolve_observer``), in order:
 
 * ``COGNEE_LLM_OBSERVER=false`` → off.
 * cloud mode → off (the remote server owns its LLM key).
+* ``COGNEE_MANAGED_ENDPOINT=true`` → off (the external deployment owns its LLM).
 * ``auto`` (default) and an ``LLM_API_KEY`` or an explicit ``LLM_PROVIDER`` is
   configured → off: the user chose a provider, respect it. That includes one in
   the ``.env`` the server itself loads (``server_dotenv_path``), which overrides
@@ -361,6 +362,17 @@ def resolve_observer(config: dict | None = None) -> dict:
     if cloud:
         result["reason"] = "cloud_mode"
         return result
+    # A managed deployment on loopback owns its LLM config the way a cloud server
+    # does: this launch never spawns it, so the shim and env would reach nothing.
+    try:
+        from _plugin_common import managed_endpoint_enabled
+
+        managed = managed_endpoint_enabled(config)
+    except Exception:
+        managed = False
+    if managed:
+        result["reason"] = "managed_endpoint"
+        return result
     if mode == "auto":
         # Do not steal a launch the user configured for a provider of their own.
         # A prior apply in this same process (or the bootstrap re-exec) stamped
@@ -603,6 +615,7 @@ def describe(decision: dict | None = None) -> str:
     reasons = {
         "disabled": f"off ({SETTING_ENV}=false)",
         "cloud_mode": "off (cloud mode: the remote server owns its LLM key)",
+        "managed_endpoint": "off (COGNEE_MANAGED_ENDPOINT: the deployment owns its LLM key)",
         "llm_key_configured": "off (LLM_API_KEY is configured)",
         "llm_provider_configured": "off (LLM_PROVIDER is configured)",
         "server_dotenv_configured": (

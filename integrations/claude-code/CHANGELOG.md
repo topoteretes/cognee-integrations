@@ -25,8 +25,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   unreachable, `SessionStart` reports **Cognee Memory OFFLINE** loudly (system
   message + agent context) and refuses to install or boot anything. Extends the
   forced-cloud misconfiguration surfacing and the present-but-busy boot refusal
-  to configured-URL deployments that are cleanly down. Default behavior without
-  the flag is unchanged.
+  to configured-URL deployments that are cleanly down. The outage is also
+  recorded as `unreachable` in the shared connection marker, so the status line
+  and the recall gate stop trusting the previous session's verdict. Default
+  behavior without the flag is unchanged. Contributed by @feyola (#341).
+
+- With `COGNEE_MANAGED_ENDPOINT` set the Claude observer stays off (reason
+  `managed_endpoint`): the external deployment owns its LLM configuration.
+- New events: `boot.refused_managed_endpoint`, `endpoint.managed_down`.
 
 ## [1.6.1]
 
