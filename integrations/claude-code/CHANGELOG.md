@@ -10,6 +10,17 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.2]
+
+### Fixed
+- **Capture hooks no longer wait on identity lookups.** `store-to-session.py`
+  resolved the session with `load_resolved()`, which queries
+  `/agents/connections/me` and then `/users/me` (10s timeout each) on every
+  PostToolUse and Stop, although no store path uses the user id. On a slow
+  backend that added up to ~20s before an entry was written or buffered. The
+  hooks now resolve local fields only (`identity=False`). Diagnosed by
+  @Zozi96 (#270).
+
 ## [1.6.1]
 
 ### Added

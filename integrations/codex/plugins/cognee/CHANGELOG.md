@@ -10,6 +10,17 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.1]
+
+### Fixed
+- **Capture hooks no longer wait on identity lookups.** `store-to-session.py`
+  resolved the session with `load_resolved()`, which queries
+  `/agents/connections/me` and then `/users/me` (10s timeout each) on every
+  PostToolUse and Stop, although no store path uses the user id. Codex runs
+  these hooks synchronously, so on a slow backend every tool call and answer
+  could wait up to ~20s. The hooks now resolve local fields only
+  (`identity=False`). Diagnosed by @Zozi96 (#270).
+
 ## [1.7.0]
 
 ### Changed

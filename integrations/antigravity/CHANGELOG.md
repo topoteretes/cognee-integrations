@@ -7,6 +7,17 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.1]
+
+### Fixed
+- **Capture hooks no longer wait on identity lookups in HTTP mode.**
+  `store-to-session.py` resolved the session with `load_resolved()`, which
+  queries `/agents/connections/me` and then `/users/me` (10s timeout each) on
+  every PostToolUse and Stop. Only the local SDK path uses the user id, so the
+  lookup now runs only in that mode; on a slow backend HTTP mode no longer
+  waits up to ~20s before an entry is written or buffered. Diagnosed by
+  @Zozi96 (#270).
+
 ## [1.6.0]
 
 ### Changed

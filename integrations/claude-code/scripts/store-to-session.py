@@ -133,7 +133,9 @@ def _infer_status(payload: dict) -> tuple[str, str]:
 
 def _load_session() -> tuple[str, str, str]:
     """Load session_id, dataset, user_id from resolved cache with fallbacks."""
-    resolved = load_resolved()
+    # Local fields only: the identity probes cost up to 10s each on a slow
+    # backend, on every tool call and Stop, and no store path uses user_id.
+    resolved = load_resolved(identity=False)
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
