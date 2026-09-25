@@ -309,9 +309,11 @@ def _write_shim(directory: Path, name: str, real: Path, *, kind: str) -> None:
             f'exec "{real.as_posix()}" "$@"\n'
         )
     if os.name == "nt":
-        (directory / f"{name}.cmd").write_text(cmd, encoding="utf-8", newline="")
+        (directory / f"{name}.cmd").write_bytes(cmd.encode("utf-8"))
     target = directory / name
-    target.write_text(sh, encoding="utf-8", newline="\n")
+    # Bytes, not write_text: the line endings are part of the shim, and
+    # write_text only gained `newline=` in Python 3.10.
+    target.write_bytes(sh.encode("utf-8"))
     target.chmod(0o755)
 
 

@@ -47,11 +47,10 @@ _NEEDS_PYTHON3 = (
 #: Direct `python3 …` commands from SKILL.md that only read state, safe to run
 #: as-is against the mock. Commands that switch, sync or take a placeholder
 #: argument are not run.
-_READ_ONLY = {"list-datasets.py", "doctor.py", "switch-dataset.py"}
-#: Commands that find the session through the host process: Codex's
-#: switch-dataset.py reads the launch record SessionStart keyed by the codex
-#: process it ran under, and this harness has no host process for either.
-_NEEDS_HOST_PROCESS = {"codex": {"switch-dataset.py"}}
+_READ_ONLY = {"list-datasets.py", "doctor.py"}
+# switch-dataset.py --list is read-only too, but in both plugins it finds the
+# session through the launch record SessionStart keyed by the host process it
+# ran under (the codex / claude process), and this harness has no host process.
 _SKILL_ROOT_VAR = {"codex": "CODEX_PLUGIN_ROOT", "claude-code": "CLAUDE_PLUGIN_ROOT"}
 
 
@@ -147,7 +146,7 @@ def _read_only_skill_commands(session: HostSession) -> list[str]:
     commands = set()
     for skill in sorted((session.root / "skills").glob("*/SKILL.md")):
         for command, script, _ in pattern.findall(skill.read_text(encoding="utf-8")):
-            if script in _READ_ONLY - _NEEDS_HOST_PROCESS.get(session.suite.name, set()):
+            if script in _READ_ONLY:
                 commands.add(command.replace("${" + var + "}", session.root.as_posix()))
     return sorted(commands)
 
