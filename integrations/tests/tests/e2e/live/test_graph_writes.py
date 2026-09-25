@@ -73,9 +73,12 @@ def test_two_datasets_do_not_leak_into_each_other(
     graph_b.wait_until_recalled(f"What does {nonce_b} use?", "byzantine", deadline=600.0)
 
     # ── neither dataset may answer with the other's content ──────────────
+    # An only_context recall echoes the question back (cognee >= 1.6.0 returns
+    # the whole LLM input), so B's nonce is in A's answer by construction.
+    # Check for B's distinctive fact instead, mirroring the check below.
     from_a = graph_a.recall(f"What do you know about {nonce_b}?")
-    assert nonce_b.lower() not in from_a.lower(), (
-        f"dataset A leaked dataset B's project {nonce_b}:\n{from_a[:900]}"
+    assert "byzantine" not in from_a.lower(), (
+        f"dataset A leaked dataset B's Byzantine decision ({nonce_b}):\n{from_a[:900]}"
     )
 
     from_b = graph_b.recall(f"What do you know about {nonce}?")

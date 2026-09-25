@@ -1,9 +1,9 @@
-# Shared test infrastructure — Claude Code + Codex
+# Shared test infrastructure — Cognee host hooks
 
-Reusable pytest harness for the two Python hook suites, `claude-code` and
-`codex`, which are the same code differing only in constants. One parametrized
-test set runs against both. openclaw (TypeScript) and hermes-agent (SDK-based)
-are out of scope here.
+Reusable pytest harness for the near-identical Python hook suites: Claude Code,
+Codex, Qwen where that integration is present, and Antigravity. One parametrized
+test set runs against every suite available in the checkout. openclaw
+(TypeScript) and hermes-agent (SDK-based) are out of scope here.
 
 ## Layout
 
@@ -31,47 +31,55 @@ uv sync --dev
 uv run pytest tests/ -v
 ```
 
+Windows CI runs hosts in parallel. To run one host locally, set
+`COGNEE_TEST_SUITE=antigravity` (or `claude-code` / `codex`) before pytest.
+Tests that compare hosts and tests without the `suite` fixture still run in
+each job. Without that variable, pytest runs all registered hosts.
+
 CI runs the same via `.github/workflows/ci.yml`; changes under
-`integrations/claude-code/`, `integrations/codex/`, or `integrations/tests/`
-all trigger this suite.
+`integrations/claude-code/`, `integrations/codex/`, `integrations/qwen/`,
+`integrations/antigravity/`, or `integrations/tests/` all trigger this suite when
+the integration exists in the checkout.
 
 ## Ground truth (verified against the scripts)
 
-| | `claude-code` | `codex` |
-|---|---|---|
-| Scripts dir | `claude-code/scripts/` | `codex/plugins/cognee/scripts/` |
-| State dir | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/codex/` |
-| Default dataset | `agent_sessions` | `agent_sessions` |
-| `agent_name` default | `claude-code-agent` | `codex-agent` |
-| `session_prefix` | `claude` | `codex` |
-| cwd env var | `CLAUDE_CWD` | `CODEX_CWD` |
-| Agent-session suffix | `_claude` | `_codex` |
+| | `claude-code` | `codex` | `antigravity` |
+|---|---|---|---|
+| Scripts dir | `claude-code/scripts/` | `codex/plugins/cognee/scripts/` | `antigravity/scripts/` |
+| State dir | `~/.cognee-plugin/claude-code/` | `~/.cognee-plugin/codex/` | `~/.cognee-plugin/antigravity/` |
+| Default dataset | `agent_sessions` | `agent_sessions` | `agent_sessions` |
+| `agent_name` default | `claude-code-agent` | `codex-agent` | `antigravity-agent` |
+| `session_prefix` | `claude` | `codex` | `antigravity` |
+| cwd env var | `CLAUDE_CWD` | `CODEX_CWD` | `AGY_CWD` |
+| Agent-session suffix | `_claude` | `_codex` | `_agy` |
 ### Capability flags
 
 Divergences are named by a declared flag on `Suite`, never inferred from
 `suite.name` and never from another flag that happens to correlate:
 
-| Flag | `claude-code` | `codex` | Gates |
-|---|---|---|---|
-| `has_background_remember` | `True` | `True` | background bridge, `{"ok": ...}` envelope, `wait_for_cognify`, bounded `do_remember` wait |
-| `has_improve_pipeline_polling` | `True` | `False` | `improve_session_via_http` reports `cognify_status`/`memify_status` |
-| `has_async_hooks` | `True` | `False` | `async` hook entries + `StopFailure` in `hooks.json` |
-| `has_elapsed_ms_helper` | `True` | `True` | `_plugin_common.elapsed_ms`, and `elapsed_ms` on the bridge events |
-| `has_recall_latency_metric` | `True` | `False` | aggregate `elapsed_ms` on `context_lookup_*` |
-| `has_rich_statusline` | `True` | `False` | health glyphs, recall-counts strip, mode word, install registry |
-| `has_precompact_http` | `False` | `True` | `pre-compact.py` recalls over HTTP — the one place codex is ahead |
-| `host_stem` | `claude` | `codex` | `_proc`'s Windows ancestry match |
+| Flag | `claude-code` | `codex` | `antigravity` | Gates |
+|---|---|---|---|---|
+| `has_async_hooks` | `True` | `False` | `False` | `async` hook entries + `StopFailure` in `hooks.json` |
+| `has_rich_statusline` | `True` | `False` | `False` | health glyphs, recall-counts strip, mode word, install registry |
+| `has_precompact_http` | `False` | `True` | `True` | `pre-compact.py` recalls over HTTP |
+| `has_single_submit_improve` | `True` | `True` | `False` | one improve submit per trigger (SDK-594): no plugin-side improve lock, no busy re-submit, no post-improve status poll, failure backoff, `run_session_improve_detailed`, no shutdown improve in the idle watcher |
+| `host_stem` | `claude` | `codex` | `agy` | `_proc`'s Windows ancestry match |
+| `has_local_sdk_recall` | `False` | `False` | `True` | `session-context-lookup.py` keeps an in-process `cognee.recall` branch next to HTTP; its concurrent fan-out is driven in both modes |
+| `has_cross_dataset_search` | `True` | `True` | `False` | the cross-dataset search flow: `list_readable_datasets` / `cached_readable_datasets`, `list-datasets.py`, the prompt hook's "Other Cognee datasets you can search" hint on every answered prompt, `cognee-search.sh --dataset-id` forcing a foreign dataset to a graph-only read |
 
-`has_background_remember` was `False` for codex until the refactor was ported in
-main; **39 codex tests started passing the moment the flag flipped**, with no test
-edits, which is the payoff for gating on a capability rather than a suite name.
+A flag is retired once every registered suite agrees on it. `has_background_remember`,
+`has_improve_pipeline_polling` and `has_elapsed_ms_helper` were all `True` everywhere
+and gated nothing, so they are gone; `has_recall_latency_metric` followed when codex
+and antigravity gained the aggregate `elapsed_ms` alongside the concurrent recall
+fan-out (per-scope timings overlap now, so the total is no longer their sum); `has_single_submit_improve` goes the same way
+once Antigravity is ported.
 
-Two lessons from that flip, both worth keeping:
+Two lessons from the `has_background_remember` flip that made codex pass 39 tests
+with no test edits, both worth keeping:
 
-- **The port was partial.** It covered the bridge, `wait_for_cognify` and the
-  bounded `do_remember` wait, but not the improve path — hence
-  `has_improve_pipeline_polling`. One flag covering four behaviours hid the fact
-  that they could travel separately.
+- **Ports can be partial.** That one covered the bridge and the bounded
+  `do_remember` wait but not the improve path, so it needed a second flag. One
+  flag covering four behaviours hid the fact that they could travel separately.
 - **A flag used as a proxy for a suite name is a latent bug.** A status-line test
   branched on `if suite.has_background_remember:  # claude-code` to assert
   claude-only `hooks.json` wiring. When the flag flipped for codex the branch fired
@@ -212,8 +220,9 @@ Non-obvious rules this tier encodes (each one learned by getting it wrong —
   "poll recall until the content comes back".
 - **The venv is seeded** from the host's `~/.cognee-plugin/venv` so boot is ~15s
   instead of a multi-minute `uv` install. That caches the *install* only.
-- **Recall timeouts are raised** (`COGNEE_RECALL_TIMEOUT`/`_BUDGET`). Production
-  keeps them tight (2.5s/4s) so memory can never stall an interactive prompt, and
+- **Recall deadlines are raised** (`COGNEE_RECALL_BUDGET` for the per-prompt hook,
+  `COGNEE_RECALL_TIMEOUT` for the explicit search path). Production
+  keeps them tight (12s per prompt) so memory can never stall an interactive prompt, and
   a cold server's first graph query correctly exceeds that. These tests ask
   whether memory crosses sessions, not whether cold-start recall is fast — so
   cold-start deserves its own scenario rather than silently failing this one.
@@ -233,15 +242,12 @@ Failures dump `hook.log`, the recall-related events, `recall-audit.log` and
 | `test_graph_writes.py` | two populated datasets do not leak into each other; a repeated SessionEnd starts exactly one final-sync worker | two |
 | `test_shared_brain.py` | either integration recalls what the other wrote to the shared graph, **in both directions** — only testable live, and cheap now that no CLI is involved | yes |
 
-### Both integrations, every scenario
+### Every integration, every scenario
 
-`live_suite` is parametrized over `ALL_SUITES`, so all 17 scenarios run twice —
-34 suite-parametrized tests plus the 2 shared-brain directions. That doubles
-wall-clock and LLM spend deliberately: the plugins still diverge in ways a mock
-cannot show. The write paths largely converged when the background bridge was
-ported to codex, but the improve path did not travel with it
-(`has_improve_pipeline_polling`), and a real graph is the only place you can see
-whether a write actually arrives by either route.
+`live_suite` is parametrized over `ALL_SUITES`, so each scenario runs once per
+available host. That multiplies wall-clock and LLM spend deliberately: the
+plugins still diverge in ways a mock cannot show, and a real graph is the only
+place you can see whether a write actually arrives by every route.
 
 Three fixtures are deliberately **suite-agnostic**, which is what makes the
 cross-suite direction possible:
@@ -298,21 +304,31 @@ Four things worth knowing, each of which would bite:
   not by a `-m` expression in CI. Those 8 scenarios kill the server; relying on the
   caller to pass the right marker means one forgotten flag points them at a real
   tenant.
-- **The cloud backend needs no venv.** `ensure_cognee_ready` returns after an HTTP
-  `/health` check when a base_url is set — the `import cognee` is in the local-SDK
-  branch below it — so the hooks are stdlib HTTP throughout. That is why the cloud
-  CI job has no cache step and a shorter timeout.
-- **Cleanup is `DELETE /api/v1/datasets`**, the delete-everything route, run at both
-  ends of the session. Each test invents a `live_<uuid>` dataset; locally they die
-  with the temp HOME, on cloud they persist forever. Wiping on the way *in* covers
-  a previous run that was cancelled before teardown. It is session-scoped, not
-  per-test, because the final sync happens in a detached worker and deleting
-  between tests would race a write still in flight. A failed wipe warns loudly but
-  never fails the run — a red tier should mean the product broke.
-
-**The blunt delete route is only safe against a dedicated tenant that owns nothing
-else.** That precondition is the entire safety argument; do not point
-`COGNEE_LIVE_BASE_URL` at a tenant with real data.
+- **The cloud backend needs no venv.** The hooks never import cognee; every call
+  is stdlib HTTP to the configured server (`ensure_cognee_ready` is just a
+  `/health` check). That is why the cloud CI job has no cache step. It is *not*
+  faster overall, though: the graph round trips are the same and each cognify
+  runs on the shared tenant, so the job gets the same timeout as the local one.
+- **`GraphClient` takes the tenant key from `COGNEE_LIVE_API_KEY` on cloud.** The
+  plugin only writes `~/.cognee-plugin/api_key.json` when it *mints* a key, and
+  with `COGNEE_API_KEY` supplied it never does — so a client that read only the
+  cache was keyless on cloud, got 401 on every poll, and burned each assertion's
+  full deadline. A 401/403 now fails the assertion immediately; only 404 (dataset
+  not created yet) and 5xx (cognify still running) are retried.
+- **Cleanup is prefix-scoped**: `GET /api/v1/datasets`, keep the names starting
+  `live_`, `DELETE /api/v1/datasets/{id}` for each — never the delete-everything
+  route. Each test invents a `live_<uuid>` dataset; locally they die with the temp
+  HOME, on cloud they persist forever. Wiping on the way *in* covers a previous
+  run that was cancelled before teardown, and the CI job repeats the wipe in an
+  `if: cancelled() || failure()` step. It is session-scoped, not per-test, because
+  the final sync happens in a detached worker and deleting between tests would
+  race a write still in flight. A failed wipe warns loudly but never fails the
+  run — a red tier should mean the product broke.
+- **Failures print as they happen.** pytest normally holds every traceback until
+  the session ends; with ten-minute scenarios and a hard job timeout that left
+  nine cancelled nightly runs with `FAILED` lines and nothing else. The live
+  conftest's `pytest_runtest_makereport` wrapper emits each failure's traceback
+  and captured output (including the `live_artifacts` dump) immediately.
 
 Whole tier: **32 passed, 1 skipped, 3 xfailed in ~24m30s** (the skip is codex's
 counts segment; the xfails are the gaps below). Roughly 3x the single-suite time
@@ -343,7 +359,7 @@ each turns red the moment it is fixed. They share a shape: the plugin is careful
 never to break the agent, and the cost is that these failures are *silent* — a log
 line and carry on.
 
-**1. A mid-session outage can lose a turn — both integrations.**
+**1. A mid-session outage can lose a turn — every registered suite.**
 `test_writes_during_an_outage_are_buffered_not_dropped`. `store-to-session.py`
 buffers to the warmup spillway only when `server_usable()` is already False (a
 *stale* ready marker plus a failed probe). The marker has a 30s TTL, so a server
@@ -351,12 +367,12 @@ that dies inside that window leaves `server_usable()` returning True: the hook
 attempts a real write, it raises, and the `except` branch only logs
 `stop_store_error` — the entry is buffered nowhere and that turn is lost, which is
 exactly what the spillway exists to prevent. Fix: call `append_warmup_entry` in
-that `except` branch, as the not-usable path already does. The two suites are
-structurally identical here, so this xfails on both.
+that `except` branch, as the not-usable path already does. The registered suites
+are structurally identical here, so this xfails across all of them.
 
 **2. PreCompact produces no anchor in server mode — claude-code only.**
-`test_precompact_produces_an_anchor_carrying_the_session`. Running this against
-both integrations changed the diagnosis: this is not a missing feature, it is a
+`test_precompact_produces_an_anchor_carrying_the_session`. Running this across
+the shared suites changed the diagnosis: this is not a missing feature, it is a
 **port that never happened**. codex's `pre-compact.py` branches on
 `is_cloud_mode` and recalls via `recall_via_http`; claude-code's recalls via
 `cognee.recall` with a `get_session_manager()` fallback, both local-SDK only, while
@@ -401,8 +417,8 @@ Where each landed:
 | `{claude-code,codex}/tests/test_proc.py` | `unit/test_proc_helpers.py` | `_proc.py` is byte-identical across suites, so parametrizing it is a drift guard; the Toolhelp path is a real `skipif`, not a silent early `return` |
 | `{claude-code,codex}/tests/test_statusline_render.py` | `e2e/test_statusline_encoding.py` | cp1252 regression; asserts **bytes**, since decoding in the parent would hide what the child actually wrote |
 | `claude-code/tests/test_hook_timing.py` | `unit/test_timing_metrics.py` | claude-only via `has_timing_metrics` |
-| `claude-code/tests/test_per_scope_timing.py` | `unit/test_recall_per_scope.py` | applies to **both** suites — codex has the same `per_scope`/budget machinery |
-| `claude-code/tests/test_recall_health_accounting.py` | `unit/test_recall_health_accounting.py` | both suites; seams are seam-for-seam identical |
+| `claude-code/tests/test_per_scope_timing.py` | `unit/test_recall_per_scope.py` | applies to all registered suites; the `per_scope`/budget machinery is shared |
+| `claude-code/tests/test_recall_health_accounting.py` | `unit/test_recall_health_accounting.py` | all registered suites; seams are seam-for-seam identical |
 | `codex/plugins/cognee/tests/test_doctor.py` | already covered | every one of its 25 cases has a counterpart in `unit/test_doctor_resolution.py` or `integration/test_doctor.py` |
 
 The two recall files share `utils/recall.py`, which drives

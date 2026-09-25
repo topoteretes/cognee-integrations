@@ -3,7 +3,7 @@
 Registered as a plugin by ``integrations/tests/conftest.py``.
 
 Key fixtures:
-  - ``suite``            : parametrized over claude-code and codex
+  - ``suite``            : parametrized over every available host integration
   - ``temp_home``        : isolated HOME dir for the test (nothing hits real ~)
   - ``project_dir``      : isolated working dir (the hook ``cwd``)
   - ``mock_server``      : running MockCogneeServer (ephemeral port)
@@ -14,6 +14,7 @@ Key fixtures:
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 from pathlib import Path
@@ -35,10 +36,17 @@ from utils.suites import ALL_SUITES, Suite
 #: happy path needs no per-test identity seeding.
 DEFAULT_TEST_API_KEY = "test-api-key"
 
+# Windows CI runs each host in parallel. Keep ALL_SUITES intact so tests of
+# shared runtime/version contracts still compare every installed integration.
+_REQUESTED_SUITE = os.environ.get("COGNEE_TEST_SUITE", "").strip()
+_SELECTED_SUITES = [s for s in ALL_SUITES if not _REQUESTED_SUITE or s.name == _REQUESTED_SUITE]
+if not _SELECTED_SUITES:
+    raise pytest.UsageError(f"Unknown COGNEE_TEST_SUITE: {_REQUESTED_SUITE!r}")
 
-@pytest.fixture(params=ALL_SUITES, ids=lambda s: s.name)
+
+@pytest.fixture(params=_SELECTED_SUITES, ids=lambda s: s.name)
 def suite(request) -> Suite:
-    """Run the test once per integration suite (claude-code, codex)."""
+    """Run the test once per available host integration suite."""
     return request.param
 
 

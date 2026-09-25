@@ -15,6 +15,8 @@ short-lived process, so in-memory state (as a long-lived provider like Hermes
 uses) would not survive between calls. State lives in the plugin state dir.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import pathlib
@@ -174,6 +176,7 @@ def recall(
     top_k,
     dataset="",
     code_query=None,
+    dataset_ids="",
     *,
     timeout=None,
 ):
@@ -205,6 +208,7 @@ def recall(
         # dataset and code_query, so a positional here silently sends the
         # code query as a context profile.
         code_query=code_query,
+        dataset_ids=dataset_ids,
         timeout=timeout or _RECALL_TIMEOUT,
     )
     if result == UNREACHABLE:
@@ -221,11 +225,13 @@ def recall(
 
 
 def main(argv):
-    # argv: service_url, api_key, query, session_id, scope, top_k[, dataset[, code_query]]
+    # argv: service_url, api_key, query, session_id, scope, top_k[, dataset
+    #        [, code_query[, dataset_ids]]]
     # code_query (arg 8): JSON dict for the deterministic "code" scope (see
     # _recall_http.coerce_code_query); requires scope to include "code".
-    a = list(argv) + [""] * 8
-    result = recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
+    # dataset_ids (arg 9): comma-separated UUIDs that win over the dataset name.
+    a = list(argv) + [""] * 9
+    result = recall(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8])
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
 
 

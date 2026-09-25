@@ -7,6 +7,7 @@ name = "cognee-integration-telegram"
 version = "0.1.0"
 description = "Telegram bot powered by cognee memory — each chat is a memory you can remember, recall, and forget."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Cognee team" }]
 dependencies = [

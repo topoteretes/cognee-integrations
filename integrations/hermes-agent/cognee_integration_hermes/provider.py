@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from . import exit_watcher
+from . import code_graph, dataset_overrides, exit_watcher
 from .backend import MemoryBackend, build_backend, default_backend, has_cognee
 from .config import (
     DEFAULT_DATASET,
@@ -29,7 +29,13 @@ from .config import (
 from .config import (
     save_config as save_plugin_config,
 )
-from .schemas import FORGET_SCHEMA, RECALL_SCHEMA, REMEMBER_SCHEMA
+from .schemas import (
+    CODE_SEARCH_SCHEMA,
+    FORGET_SCHEMA,
+    RECALL_SCHEMA,
+    REMEMBER_SCHEMA,
+    SWITCH_DATASET_SCHEMA,
+)
 from .server_bootstrap import ensure_local_server
 
 try:
@@ -51,9 +57,14 @@ _BREAKER_COOLDOWN_SECS = 120
 def _safe_session_component(value: str) -> str:
     # Sanitization kept consistent with the other integrations' session-id helpers
     # (claude-code/codex `_sanitize_session_key`, openclaw `sanitizeSessionKey`):
-    # keep alphanumerics plus `-` `_` `.`, replace others with `_`, trim `._` ends,
-    # cap length at 120.
-    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value)
+    # keep the ASCII set [A-Za-z0-9-_.], replace others with `_`, trim `._` ends,
+    # cap length at 120. `isascii()` guards against unicode letters/digits that
+    # `isalnum()` would otherwise keep. The trailing `or "session"` fallback is
+    # intentional and hermes-specific, so empty-output cases are excluded from the
+    # shared conformance table.
+    safe = "".join(
+        ch if (ch.isascii() and ch.isalnum()) or ch in ("-", "_", ".") else "_" for ch in value
+    )
     return safe.strip("._")[:120] or "session"
 
 
@@ -81,6 +92,11 @@ def _coerce_result_dict(value: Any) -> dict[str, Any]:
     return {"text": str(value)}
 
 
+#: Tag of the per-prompt memory block: one graph-scope ``only_context`` recall
+#: rendered verbatim (see ``CogneeMemoryProvider._run_layered_prefetch``).
+_MEMORY_LANE = "cognee_memory"
+
+
 def _result_text(value: Any) -> str:
     data = _coerce_result_dict(value)
     for key in ("answer", "text", "content", "chunk_text", "summary"):
@@ -106,7 +122,7 @@ def _recall_failure_advice(exc: Exception) -> str:
     return (
         " The default GRAPH_COMPLETION search runs an LLM per query and can be "
         "slow on local models — retry with search_type='CHUNKS' (fast raw-text "
-        "retrieval) or scope='session', or raise COGNEE_RECALL_TIMEOUT."
+        "retrieval), or raise COGNEE_RECALL_TIMEOUT."
     )
 
 
@@ -147,6 +163,20 @@ class CogneeMemoryProvider(MemoryProvider):
         self._breaker_open_until = 0.0
         # Set when a crash-safe exit watcher is armed (server modes only).
         self._watcher_state_path: Optional[Path] = None
+        # Dataset switching: the configured default, the per-conversation switch
+        # counter (feeds hermes_<id>__N cognee session ids), and sessions retired
+        # by a forced switch whose bridge failed — re-submitted at session end so
+        # the escape hatch defers the sync instead of dropping turns.
+        self._default_dataset = DEFAULT_DATASET
+        self._switch_counter = 0
+        self._retired_sessions: list[tuple[str, str]] = []
+        # Where Hermes was launched; gates the identifier-based code recall lane.
+        self._cwd = ""
+        # Per-session memory-hit totals for the visibility header (guarded by
+        # _prefetch_lock: written by prefetch workers, read on consumption).
+        self._turns_seen = 0
+        self._turns_with_hits = 0
+        self._hits_total = 0
 
     @property
     def name(self) -> str:
@@ -287,12 +317,18 @@ class CogneeMemoryProvider(MemoryProvider):
         self._hermes_home = kwargs.get("hermes_home")
         self._config = load_config(self._hermes_home)
         self._session_id = session_id
-        self._dataset = str(self._config.get("dataset") or DEFAULT_DATASET)
+        self._default_dataset = str(self._config.get("dataset") or DEFAULT_DATASET)
+        self._dataset = self._default_dataset
         self._top_k = int(self._config.get("top_k") or 5)
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
         self._improve_on_end = str_to_bool(self._config.get("improve_on_end"), True)
         self._writes_enabled = kwargs.get("agent_context", "primary") in {"", "primary", None}
         self._session_cognee_id = self._build_cognee_session_id(session_id, **kwargs)
+        self._apply_dataset_override()
+        try:
+            self._cwd = os.getcwd()
+        except OSError:
+            self._cwd = ""
 
         # Now that config is loaded, choose the transport (unless one was injected).
         if self._injected_backend is None:
@@ -455,12 +491,25 @@ class CogneeMemoryProvider(MemoryProvider):
         if not self._is_usable():
             return ""
         mode = "remote" if self._remote_mode else "local"
-        return (
-            "# Cognee Memory\n"
-            f"Active ({mode}). Dataset: {self._dataset}.\n"
+        lines = [
+            "# Cognee Memory",
+            f"Active ({mode}). Dataset: {self._dataset}.",
             "Use cognee_recall for prior context, cognee_remember for durable facts, "
-            "and cognee_forget when the user asks to remove Cognee memory."
-        )
+            "cognee_forget when the user asks to remove Cognee memory, "
+            "cognee_switch_dataset to move this conversation to another dataset, and "
+            "cognee_code_search for structural questions about an indexed repository.",
+        ]
+        # The memory steer — the counterpart of claude-code's COGNEE_PREFER_MEMORY
+        # and openclaw's memorySteer: without it the agent reaches for the host's
+        # native memory files by habit and the graph never hears about it.
+        if str_to_bool(self._config.get("memory_steer"), True):
+            steer = str(self._config.get("memory_steer_text") or "").strip() or (
+                "Cognee is the preferred, authoritative long-term memory. Consult "
+                "recalled Cognee context first, and store durable knowledge through "
+                "the cognee tools rather than Hermes' built-in memory."
+            )
+            lines.append(steer)
+        return "\n".join(lines)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._is_usable():
@@ -486,29 +535,9 @@ class CogneeMemoryProvider(MemoryProvider):
         # than any bounded join would still write after the clear.
         generation = self._prefetch_generation
 
-        def _run() -> None:
-            try:
-                results = self._recall(
-                    query,
-                    scope="auto",
-                    search_type=None,
-                    top_k=min(self._top_k, 5),
-                    session_id=cognee_session_id,
-                )
-                lines = self._format_recall_lines(results, limit=5)
-                if lines:
-                    with self._prefetch_lock:
-                        # Drop the result if a reset invalidated it mid-recall.
-                        if generation == self._prefetch_generation:
-                            self._prefetch_result = "\n".join(lines)
-                # The backend answered, so this is a success either way.
-                self._record_success()
-            except Exception as exc:
-                self._record_failure()
-                logger.debug("Cognee prefetch failed: %s", exc)
-
         self._prefetch_thread = threading.Thread(
-            target=_run,
+            target=self._run_layered_prefetch,
+            args=(query, cognee_session_id, generation),
             daemon=True,
             name="cognee-hermes-prefetch",
         )
@@ -545,7 +574,14 @@ class CogneeMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
-        return [RECALL_SCHEMA, REMEMBER_SCHEMA, FORGET_SCHEMA]
+        schemas = [RECALL_SCHEMA, REMEMBER_SCHEMA, FORGET_SCHEMA]
+        # Config may not be loaded yet when Hermes collects schemas; the
+        # defaults (on) match load_config's, so both paths agree.
+        if str_to_bool(self._config.get("dataset_switch_tool"), True):
+            schemas.append(SWITCH_DATASET_SCHEMA)
+        if str_to_bool(self._config.get("code_search_tool"), True):
+            schemas.append(CODE_SEARCH_SCHEMA)
+        return schemas
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._is_usable():
@@ -565,6 +601,10 @@ class CogneeMemoryProvider(MemoryProvider):
             return self._handle_remember(args)
         if tool_name == "cognee_forget":
             return self._handle_forget(args)
+        if tool_name == "cognee_switch_dataset":
+            return self._handle_switch_dataset(args)
+        if tool_name == "cognee_code_search":
+            return self._handle_code_search(args)
         return json.dumps({"error": f"Unknown Cognee tool: {tool_name}"})
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
@@ -577,6 +617,9 @@ class CogneeMemoryProvider(MemoryProvider):
             or self._is_breaker_open()
         ):
             return
+        # Sessions retired by a forced dataset switch get their deferred bridge
+        # before the current session's own close.
+        self._bridge_retired_sessions()
         if self._hand_off_session_close():
             return
         self._improve_inline()
@@ -649,7 +692,12 @@ class CogneeMemoryProvider(MemoryProvider):
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
         self._session_id = new_session_id
+        # A different conversation means its own dataset override (or none) and
+        # its own switch counter — never the previous conversation's.
+        self._dataset = self._default_dataset
+        self._switch_counter = 0
         self._session_cognee_id = self._build_cognee_session_id(new_session_id, **kwargs)
+        self._apply_dataset_override()
         if self._watcher_state_path is not None and not self._close_handed_off:
             # Re-point the crash insurance at the new session (and re-enable the
             # improve half in case a previous session end disabled it). Skipped
@@ -658,6 +706,7 @@ class CogneeMemoryProvider(MemoryProvider):
             exit_watcher.update(
                 self._watcher_state_path,
                 session_id=self._session_cognee_id,
+                dataset=self._dataset,
                 improve=bool(self._writes_enabled and self._improve_on_end),
             )
         if reset:
@@ -667,6 +716,10 @@ class CogneeMemoryProvider(MemoryProvider):
                 # Only on reset: /resume, /branch and compression continue the same
                 # logical conversation, so a prefetch issued for it stays valid.
                 self._prefetch_generation += 1
+                # The hit totals describe one conversation; a fresh one starts at 0.
+                self._turns_seen = 0
+                self._turns_with_hits = 0
+                self._hits_total = 0
 
     def on_memory_write(
         self,
@@ -777,48 +830,33 @@ class CogneeMemoryProvider(MemoryProvider):
         """A named, bounded timeout read from config at call time."""
         return float(self._config.get(key, default))
 
-    def _recall_scope_params(
-        self, scope: str, search_type: Any, session_id: str
-    ) -> tuple[Optional[str], Optional[list[str]], Optional[str], str]:
-        """Map the tool's ``scope`` onto the backend's explicit targets.
-
-        ``session`` searches only this conversation's cache, ``graph`` only the
-        permanent dataset, ``auto`` both. A ``search_type`` override is
-        meaningless for a pure session lookup, so it is dropped there.
-
-        The normalized scope name is returned alongside the targets so a
-        transport can pass the decision on rather than re-derive it. An
-        unrecognized name resolves to ``auto`` here rather than travelling
-        onward, so the backend is never handed a scope the server would reject.
-        """
-        normalized = (scope or "auto").lower()
-        if normalized == "session":
-            return session_id, None, None, normalized
-        query_type = search_type or None
-        if normalized == "graph":
-            return None, [self._dataset], query_type, normalized
-        return session_id, [self._dataset], query_type, "auto"
-
     def _recall(
         self,
         query: str,
         *,
-        scope: str,
         search_type: Any,
         top_k: int,
         session_id: str,
     ) -> list[Any]:
-        target_session, datasets, query_type, resolved_scope = self._recall_scope_params(
-            scope, search_type, session_id
-        )
+        """The explicit ``cognee_recall`` search: the knowledge graph, stated outright.
+
+        Memory is read from the graph only. The session cache (the server's
+        ``session``, ``trace`` and ``session_context`` scopes) and the ``auto``
+        scope that folds it in are never requested — those entries are noise
+        next to the cognified graph. The session id still travels: on cognee
+        >= 1.6.0 the graph item's prompt then carries this conversation's
+        history, and an explicit graph scope never returns raw session entries.
+        ``search_type`` is the caller's override or None for the query
+        classifier.
+        """
         return self._backend.recall(
             query=query,
-            session_id=target_session,
-            datasets=datasets,
+            session_id=session_id,
+            datasets=[self._dataset],
             top_k=top_k,
             auto_route=self._auto_route,
-            query_type=query_type,
-            scope=resolved_scope,
+            query_type=search_type or None,
+            scope=["graph"],
             timeout=self._timeout("recall_timeout", 120),
         )
 
@@ -830,18 +868,192 @@ class CogneeMemoryProvider(MemoryProvider):
             timeout=self._timeout("write_timeout", 120),
         )
 
+    # -- layered per-prompt recall -------------------------------------------
+
+    def _hit_header(self, hits: int) -> str:
+        """One plain-words line on what memory just contributed, or "".
+
+        Must be called under ``_prefetch_lock`` after the counters were updated:
+        the per-session totals it renders are the ones this turn just advanced.
+        """
+        if not str_to_bool(self._config.get("memory_hits"), True):
+            return ""
+        line = f"{hits} memory hit{'s' if hits != 1 else ''} this turn"
+        line += f" · {self._turns_with_hits}/{self._turns_seen} turns had hits this session"
+        return line + "\n"
+
+    def _code_lane(self, query: str) -> dict[str, Any]:
+        """The additive code-graph lane for this prompt, or {}.
+
+        Syntactically gated: fires only when the prompt names an
+        identifier-shaped token AND either the cwd sits inside a repo indexed
+        via ``hermes cognee index-repo`` or ``code_datasets`` names one.
+        """
+        if not str_to_bool(self._config.get("code_graph_recall"), True):
+            return {}
+        try:
+            lane = code_graph.auto_code_lane(query, self._cwd)
+        except Exception as exc:
+            logger.debug("code lane gate failed: %s", exc)
+            lane = {}
+        if lane:
+            return lane
+        extra = [
+            name.strip()
+            for name in str(self._config.get("code_datasets") or "").split(",")
+            if name.strip()
+        ]
+        if not extra:
+            return {}
+        identifiers = code_graph.extract_identifiers(query)
+        if not identifiers:
+            return {}
+        return {
+            "dataset": extra[0],
+            "identifier": identifiers[0],
+            "code_query": code_graph.build_code_query(identifiers[0]),
+        }
+
+    @staticmethod
+    def _is_graph_not_built(exc: Exception, scope: Any) -> bool:
+        """A 404 on the graph scope means nobody has cognified the dataset yet —
+        routine on a fresh install, so it must not read as a recall failure."""
+        return scope == ["graph"] and getattr(exc, "status", None) == 404
+
+    def _run_layered_prefetch(self, query: str, session_id: str, generation: int) -> None:
+        """One memory request per prompt, plus the code lane when it is armed.
+
+        The memory lane is a single graph-scope ``HYBRID_COMPLETION`` recall
+        with ``only_context`` and this conversation's ``session_id``. On cognee
+        >= 1.6.0 that returns one graph item per dataset whose ``text`` is the
+        full LLM input the completion would have received: the session's
+        conversation history, the question with the retrieved context rendered
+        through the retriever's user template, and the session guidance block.
+        The server builds the history and guidance layers from ``session_id``,
+        so it must always travel; without it the item is bare context. Older
+        servers return the bare retrieval context in ``text``, and the LLM is
+        never called on either. The separate ``system_prompt`` field (the
+        retriever's task template) is deliberately not read.
+
+        That one item replaces the earlier per-scope fan-out (session cache,
+        trace lessons, agent guidance as three more requests). The code lane
+        stays separate: it is a deterministic ``code_query`` against a
+        different dataset. Lanes still share one deadline and are dispatched
+        together; a failure in one never discards the other.
+        """
+        budget = self._config.get("recall_budget")
+        deadline = time.monotonic() + (20.0 if budget is None else float(budget))
+        recall_timeout = self._timeout("recall_timeout", 120)
+        top_k = min(self._top_k, 5)
+
+        lanes: list[tuple[str, dict[str, Any]]] = []
+        code_lane = self._code_lane(query)
+        if code_lane:
+            lanes.append(
+                (
+                    "code_graph",
+                    {
+                        "scope": ["code"],
+                        "datasets": [code_lane["dataset"]],
+                        "code_query": code_lane["code_query"],
+                    },
+                )
+            )
+        # HYBRID_COMPLETION combines BM25 + vector + graph retrieval; with
+        # only_context the LLM completion is skipped server-side and the item's
+        # text is the prompt that completion would have read.
+        lanes.append((_MEMORY_LANE, {"scope": ["graph"], "query_type": "HYBRID_COMPLETION"}))
+
+        # Same deadline for every lane: min(per-call timeout, budget left).
+        # Below the floor a call cannot return anything useful, so nothing is
+        # dispatched rather than firing requests with a doomed deadline.
+        remaining = deadline - time.monotonic()
+        if remaining < 0.2:
+            lanes = []
+        lane_timeout = min(recall_timeout, max(remaining, 0.0))
+
+        def _run_lane(spec: dict[str, Any]) -> tuple[Any, Optional[Exception]]:
+            """One lane's call; never raises, so no lane can take down the rest."""
+            try:
+                results = self._backend.recall(
+                    query=query,
+                    session_id=session_id,
+                    datasets=spec.get("datasets") or [self._dataset],
+                    top_k=top_k,
+                    auto_route=True,
+                    query_type=spec.get("query_type"),
+                    scope=spec["scope"],
+                    code_query=spec.get("code_query"),
+                    only_context=True,
+                    timeout=lane_timeout,
+                )
+            except Exception as exc:
+                return None, exc
+            return results, None
+
+        outcomes: list[tuple[Any, Optional[Exception]]] = []
+        if lanes:
+            # One worker per lane. The HTTP backend blocks on its socket; the
+            # SDK backend hands every call to its single dedicated event loop,
+            # where the lanes interleave as coroutines. Each call bounds itself
+            # with ``lane_timeout``, so the pool joins within the budget.
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(lanes), thread_name_prefix="cognee-recall-lane"
+            ) as pool:
+                outcomes = list(pool.map(_run_lane, [spec for _label, spec in lanes]))
+
+        blocks: list[str] = []
+        hits = 0
+        answered = False
+        hard_failures = 0
+        # Fold the lanes in canonical order so the rendered blocks read the same
+        # whichever request answered first.
+        for (label, spec), (results, exc) in zip(lanes, outcomes):
+            if exc is not None:
+                if self._is_graph_not_built(exc, spec["scope"]):
+                    answered = True
+                    continue
+                hard_failures += 1
+                logger.debug("Cognee recall lane %s failed: %s", label, exc)
+                continue
+            answered = True
+            if label == _MEMORY_LANE:
+                lines = self._memory_lane_texts(results)
+            else:
+                lines = self._format_recall_lines(results, limit=top_k)
+            if not lines:
+                continue
+            hits += len(lines)
+            blocks.append(f"<{label}>\n" + "\n".join(lines) + f"\n</{label}>")
+
+        # One verdict per turn, not per lane: a single dead server must not
+        # feed the breaker five failures every prompt, and one healthy lane is
+        # proof the backend is up.
+        if answered:
+            self._record_success()
+        elif hard_failures:
+            self._record_failure()
+
+        with self._prefetch_lock:
+            self._turns_seen += 1
+            if blocks:
+                self._turns_with_hits += 1
+                self._hits_total += hits
+                if generation == self._prefetch_generation:
+                    self._prefetch_result = self._hit_header(hits) + "\n\n".join(blocks)
+
     def _handle_recall(self, args: dict[str, Any]) -> str:
         query = str(args.get("query") or "").strip()
         if not query:
             return json.dumps({"error": "Missing required parameter: query"})
         top_k = min(max(1, int(args.get("top_k") or self._top_k)), 20)
-        scope = str(args.get("scope") or "auto")
+        # A ``scope`` argument from an older tool schema is ignored: every
+        # explicit recall targets the graph (see ``_recall``).
         search_type = args.get("search_type")
 
         try:
             results = self._recall(
                 query,
-                scope=scope,
                 search_type=search_type,
                 top_k=top_k,
                 session_id=self._session_cognee_id,
@@ -895,25 +1107,417 @@ class CogneeMemoryProvider(MemoryProvider):
             self._record_failure()
             return json.dumps({"error": f"Cognee remember failed: {exc}"})
 
+    _FORGET_MAX_SCANNED = 100
+    _FORGET_MAX_CANDIDATES = 8
+    _FORGET_PREVIEW_CHARS = 240
+
+    def _resolve_dataset_id(self, name: str, *, timeout: float = 30.0) -> str:
+        """The UUID of the named dataset, or "" when this principal cannot see it."""
+        for row in self._backend.list_datasets(timeout=timeout):
+            if str(row.get("name") or "") == name:
+                return str(row.get("id") or "")
+        return ""
+
+    @staticmethod
+    def _forget_terms(raw_terms: str) -> list[str]:
+        return [token for token in raw_terms.lower().replace(",", " ").split() if len(token) >= 2]
+
     def _handle_forget(self, args: dict[str, Any]) -> str:
-        dataset = args.get("dataset")
-        everything = bool(args.get("everything", False))
-        memory_only = bool(args.get("memory_only", False))
-        if not dataset and not everything:
-            return json.dumps({"error": "Specify dataset or set everything=true."})
+        action = str(args.get("action") or "").strip().lower()
+        if action == "find":
+            return self._forget_find(args)
+        if action == "forget":
+            return self._forget_delete(args)
+        return json.dumps(
+            {
+                "error": (
+                    "Specify action='find' (list candidate documents by terms) or "
+                    "action='forget' (delete confirmed data_ids)."
+                )
+            }
+        )
+
+    def _forget_find(self, args: dict[str, Any]) -> str:
+        terms = self._forget_terms(str(args.get("terms") or ""))
+        if not terms:
+            return json.dumps({"error": "action='find' requires terms describing the content."})
+        dataset = str(args.get("dataset") or self._dataset)
+        # Flush the turn currently being written so it is at least in the cache;
+        # note that unbridged session turns are not documents yet either way.
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=5.0)
 
         try:
-            result = self._backend.forget(
-                dataset=dataset,
-                everything=everything,
-                memory_only=memory_only,
-                timeout=self._timeout("write_timeout", 120),
-            )
+            dataset_id = self._resolve_dataset_id(dataset)
+            if not dataset_id:
+                return json.dumps({"error": f"Dataset {dataset!r} was not found."})
+            items = self._backend.list_dataset_data(dataset_id=dataset_id, timeout=30.0)
+            candidates: list[dict[str, Any]] = []
+            scanned = 0
+            # The doc cap alone is not a time bound — 100 raw reads at the
+            # per-read timeout could hold the tool call for minutes. One overall
+            # deadline; a partial scan is reported as such via `scanned`.
+            scan_deadline = time.monotonic() + self._timeout("write_timeout", 120)
+            for item in items[: self._FORGET_MAX_SCANNED]:
+                data_id = str(item.get("id") or "")
+                if not data_id:
+                    continue
+                if time.monotonic() >= scan_deadline:
+                    break
+                scanned += 1
+                try:
+                    raw = self._backend.read_raw_data(
+                        dataset_id=dataset_id,
+                        data_id=data_id,
+                        timeout=min(30.0, max(1.0, scan_deadline - time.monotonic())),
+                    )
+                except Exception as exc:
+                    logger.debug("raw read of %s failed during forget find: %s", data_id, exc)
+                    continue
+                lowered = raw.lower()
+                matched = [term for term in terms if term in lowered]
+                if not matched:
+                    continue
+                first = lowered.find(matched[0])
+                start = max(0, first - self._FORGET_PREVIEW_CHARS // 3)
+                preview = raw[start : start + self._FORGET_PREVIEW_CHARS].strip()
+                candidates.append(
+                    {
+                        "data_id": data_id,
+                        "name": str(item.get("name") or ""),
+                        "matched_terms": matched,
+                        "preview": preview,
+                    }
+                )
             self._record_success()
-            return json.dumps({"result": "Cognee memory deleted.", "details": result})
+            candidates.sort(key=lambda c: len(c["matched_terms"]), reverse=True)
+            envelope: dict[str, Any] = {
+                "action": "find",
+                "dataset": dataset,
+                "dataset_id": dataset_id,
+                "candidates": candidates[: self._FORGET_MAX_CANDIDATES],
+                "scanned": scanned,
+                "total_items": len(items),
+                "note": (
+                    "Show these candidates to the user; delete only what they confirm, "
+                    "via action='forget' with data_ids and confirm=true. Turns from the "
+                    "current conversation become deletable documents only after the "
+                    "session is bridged to the graph."
+                ),
+            }
+            if not candidates:
+                envelope["result"] = "No stored documents matched those terms."
+            return json.dumps(envelope)
+        except Exception as exc:
+            self._record_failure()
+            return json.dumps({"error": f"Cognee forget find failed: {exc}"})
+
+    def _forget_delete(self, args: dict[str, Any]) -> str:
+        if not bool(args.get("confirm", False)):
+            return json.dumps(
+                {"error": "Deletion requires confirm=true, after the user has confirmed."}
+            )
+        dataset = str(args.get("dataset") or self._dataset)
+        if bool(args.get("everything_in_dataset", False)):
+            # Whole-dataset deletion stays on the coarse endpoint; the everything
+            # (all datasets) wipe is deliberately not expressible from this tool.
+            try:
+                result = self._backend.forget(
+                    dataset=dataset,
+                    everything=False,
+                    memory_only=False,
+                    timeout=self._timeout("write_timeout", 120),
+                )
+                self._record_success()
+                return json.dumps({"result": f"Dataset {dataset!r} deleted.", "details": result})
+            except Exception as exc:
+                self._record_failure()
+                return json.dumps({"error": f"Cognee forget failed: {exc}"})
+
+        data_ids = [str(value) for value in (args.get("data_ids") or []) if str(value).strip()]
+        if not data_ids:
+            return json.dumps({"error": "action='forget' requires data_ids (from action='find')."})
+        try:
+            dataset_id = self._resolve_dataset_id(dataset)
+            if not dataset_id:
+                return json.dumps({"error": f"Dataset {dataset!r} was not found."})
         except Exception as exc:
             self._record_failure()
             return json.dumps({"error": f"Cognee forget failed: {exc}"})
+
+        deleted: list[str] = []
+        errors: list[dict[str, str]] = []
+        for data_id in data_ids:
+            try:
+                self._backend.forget_document(
+                    dataset_id=dataset_id,
+                    data_id=data_id,
+                    timeout=self._timeout("write_timeout", 120),
+                )
+                deleted.append(data_id)
+            except Exception as exc:
+                if getattr(exc, "status", None) == 404:
+                    errors.append({"data_id": data_id, "error": "not found (already deleted?)"})
+                else:
+                    errors.append({"data_id": data_id, "error": str(exc)[:200]})
+        if deleted:
+            self._record_success()
+        elif errors:
+            self._record_failure()
+        envelope: dict[str, Any] = {
+            "action": "forget",
+            "dataset": dataset,
+            "deleted": deleted,
+            "count": len(deleted),
+        }
+        if errors:
+            envelope["errors"] = errors
+        return json.dumps(envelope)
+
+    # -- dataset switching -----------------------------------------------------
+
+    def _apply_dataset_override(self) -> None:
+        """Re-apply a persisted per-conversation dataset switch, if any."""
+        override = dataset_overrides.load_override(self._session_id)
+        if not override:
+            return
+        try:
+            dataset = str(override.get("dataset") or "")
+            counter = int(override.get("counter") or 0)
+        except (TypeError, ValueError):
+            return
+        if not dataset or counter <= 0:
+            return
+        self._dataset = dataset
+        self._switch_counter = counter
+        self._session_cognee_id = f"{self._session_cognee_id}__{counter}"
+
+    def _handle_switch_dataset(self, args: dict[str, Any]) -> str:
+        action = str(args.get("action") or "").strip().lower()
+        force = bool(args.get("force", False))
+        if action == "current":
+            return json.dumps(
+                {
+                    "dataset": self._dataset,
+                    "default": self._default_dataset,
+                    "switched": self._dataset != self._default_dataset,
+                    "cognee_session_id": self._session_cognee_id,
+                }
+            )
+        if action == "list":
+            try:
+                rows = self._backend.list_datasets(timeout=30.0)
+                self._record_success()
+            except Exception as exc:
+                self._record_failure()
+                return json.dumps({"error": f"Listing datasets failed: {exc}"})
+            names = sorted({str(row.get("name") or "") for row in rows} - {""})
+            return json.dumps(
+                {
+                    "current": self._dataset,
+                    "default": self._default_dataset,
+                    "datasets": [
+                        {"name": name, "current": name == self._dataset} for name in names
+                    ],
+                    "note": (
+                        "A name not listed is created on switch. Code-graph datasets "
+                        "(codebase-*) belong to indexed repositories — do not move "
+                        "conversations into them."
+                    ),
+                }
+            )
+        if action == "switch":
+            target = str(args.get("dataset") or "").strip()
+            if not target:
+                return json.dumps({"error": "action='switch' requires a dataset name."})
+            return self._switch_dataset(target, force=force)
+        if action == "reset":
+            return self._switch_dataset(self._default_dataset, force=force)
+        return json.dumps({"error": "Specify action: list, current, switch, or reset."})
+
+    def _switch_dataset(self, target: str, *, force: bool) -> str:
+        if target == self._dataset:
+            return json.dumps({"switched": False, "reason": "already_active", "dataset": target})
+        old_dataset, old_session = self._dataset, self._session_cognee_id
+
+        # 1. Flush the turn currently being written, then bridge the session we
+        #    are leaving into its dataset. A cognee session never spans two
+        #    datasets, so this is the last chance its cached turns have of
+        #    reaching the old dataset's graph. run_in_background: the server owns
+        #    the promotion; the tool call must not stall on a graph build.
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=10.0)
+        bridged = True
+        bridge_error = ""
+        if self._writes_enabled and self._improve_on_end:
+            try:
+                self._backend.improve(
+                    dataset=old_dataset,
+                    session_ids=[old_session],
+                    background=True,
+                    timeout=self._timeout("improve_timeout", 300),
+                )
+            except Exception as exc:
+                bridged, bridge_error = False, str(exc)[:300]
+                if not force:
+                    self._record_failure()
+                    return json.dumps(
+                        {
+                            "error": (
+                                f"Bridging the current session into {old_dataset!r} failed, "
+                                "so nothing was switched. Retry, or pass force=true to "
+                                "switch anyway (the session is then re-bridged at session "
+                                f"end). Cause: {bridge_error}"
+                            )
+                        }
+                    )
+                # Forced past the failure: defer the bridge instead of dropping it.
+                self._retired_sessions.append((old_dataset, old_session))
+
+        # 2. Make sure the target exists for this principal (idempotent).
+        try:
+            self._backend.ensure_dataset(dataset=target, timeout=30.0)
+        except Exception as exc:
+            self._record_failure()
+            return json.dumps(
+                {"error": f"Dataset {target!r} is not available to this principal: {exc}"}
+            )
+
+        # 3. Re-point capture, recall and the session-end improve under a fresh
+        #    cognee session id.
+        self._switch_counter += 1
+        base = self._build_cognee_session_id(self._session_id)
+        self._session_cognee_id = f"{base}__{self._switch_counter}"
+        self._dataset = target
+        dataset_overrides.save_override(self._session_id, target, self._switch_counter)
+        with self._prefetch_lock:
+            self._prefetch_result = ""
+            self._prefetch_generation += 1
+        if self._watcher_state_path is not None and not self._close_handed_off:
+            exit_watcher.update(
+                self._watcher_state_path,
+                session_id=self._session_cognee_id,
+                dataset=target,
+                improve=bool(self._writes_enabled and self._improve_on_end),
+            )
+        self._record_success()
+        envelope: dict[str, Any] = {
+            "switched": True,
+            "dataset": target,
+            "cognee_session_id": self._session_cognee_id,
+            "previous": {"dataset": old_dataset, "session_id": old_session, "bridged": bridged},
+        }
+        if bridge_error:
+            envelope["previous"]["bridge_error"] = bridge_error
+        return json.dumps(envelope)
+
+    def _bridge_retired_sessions(self) -> None:
+        """Re-submit the bridge for sessions retired by a forced switch."""
+        if not self._retired_sessions:
+            return
+        remaining: list[tuple[str, str]] = []
+        for dataset, session_id in self._retired_sessions:
+            try:
+                self._backend.improve(
+                    dataset=dataset,
+                    session_ids=[session_id],
+                    background=True,
+                    timeout=self._timeout("improve_timeout", 300),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "re-bridging retired session %s into %s failed: %s", session_id, dataset, exc
+                )
+                remaining.append((dataset, session_id))
+        self._retired_sessions = remaining
+
+    # -- code graph --------------------------------------------------------------
+
+    def _resolve_code_dataset(self, repo: str) -> str:
+        """Map a repo path/URL/dataset name — or the cwd — to a code dataset."""
+        repo = repo.strip()
+        configured = [
+            name.strip()
+            for name in str(self._config.get("code_datasets") or "").split(",")
+            if name.strip()
+        ]
+        if repo:
+            if repo.startswith("codebase-") or repo in configured:
+                return repo
+            state = code_graph.find_repo_state(repo)
+            return str(state.get("dataset") or "")
+        state = code_graph.find_indexed_repo(self._cwd)
+        if state.get("dataset"):
+            return str(state["dataset"])
+        return configured[0] if configured else ""
+
+    def _handle_code_search(self, args: dict[str, Any]) -> str:
+        operation = str(args.get("operation") or "").strip().lower()
+        if operation not in code_graph.CODE_OPERATIONS:
+            return json.dumps(
+                {
+                    "error": f"Unknown operation {operation!r}. One of: "
+                    + ", ".join(code_graph.CODE_OPERATIONS)
+                }
+            )
+        name = str(args.get("name") or "").strip()
+        target = str(args.get("target") or "").strip()
+        limit = min(max(1, int(args.get("limit") or 10)), 50)
+
+        dataset = self._resolve_code_dataset(str(args.get("repo") or ""))
+        if not dataset:
+            return json.dumps(
+                {
+                    "error": (
+                        "No indexed repository found. Index one first with "
+                        "`hermes cognee index-repo <path-or-url>`, or name an indexed "
+                        "repo/dataset via the repo parameter."
+                    )
+                }
+            )
+
+        code_query: dict[str, Any] = {"operation": operation}
+        if operation == "query_facts":
+            if name:
+                code_query["name"] = name
+            code_query["limit"] = limit
+        elif operation == "explore":
+            if not name:
+                return json.dumps({"error": "explore requires name (the symbol to explore)."})
+            code_query["name"] = name
+        elif operation == "traverse":
+            if not name:
+                return json.dumps({"error": "traverse requires name (the seed symbol)."})
+            code_query["start"] = name
+        elif operation == "find_path":
+            if not name or not target:
+                return json.dumps({"error": "find_path requires name (source) and target."})
+            code_query["source"] = name
+            code_query["target"] = target
+        elif operation == "impact_analysis":
+            if not name:
+                return json.dumps({"error": "impact_analysis requires name (the symbol)."})
+            code_query["targets"] = [name]
+
+        try:
+            results = self._backend.recall(
+                query=name or operation,
+                session_id=None,
+                datasets=[dataset],
+                top_k=limit,
+                auto_route=True,
+                query_type=None,
+                scope=["code"],
+                code_query=code_query,
+                only_context=True,
+                timeout=self._timeout("recall_timeout", 120),
+            )
+            self._record_success()
+        except Exception as exc:
+            self._record_failure()
+            return json.dumps({"error": f"Cognee code search failed: {exc}"})
+        items = [_coerce_result_dict(item) for item in results]
+        return json.dumps({"dataset": dataset, "results": items, "count": len(items)})
 
     def _normalize_recall_item(self, item: Any) -> dict[str, Any]:
         data = _coerce_result_dict(item)
@@ -925,6 +1529,25 @@ class CogneeMemoryProvider(MemoryProvider):
             if data.get(key) is not None:
                 normalized[key] = data[key]
         return normalized
+
+    def _memory_lane_texts(self, results: list[Any]) -> list[str]:
+        """Each graph item's ``text`` verbatim — that string *is* the memory.
+
+        On cognee >= 1.6.0 an ``only_context`` completion item is the whole
+        LLM input: history first, retrieved context in the middle, guidance at
+        the end. Truncating or bulleting it would cut exactly what memory is
+        for, so nothing is parsed, stripped or shortened. ``system_prompt`` is
+        never read. Older servers put the bare context in ``text``, which
+        passes through the same way.
+        """
+        texts = []
+        for item in results:
+            data = _coerce_result_dict(item)
+            text = data.get("text")
+            text = str(text).strip() if text else _result_text(item).strip()
+            if text:
+                texts.append(text)
+        return texts
 
     def _format_recall_lines(self, results: list[Any], *, limit: int) -> list[str]:
         lines = []

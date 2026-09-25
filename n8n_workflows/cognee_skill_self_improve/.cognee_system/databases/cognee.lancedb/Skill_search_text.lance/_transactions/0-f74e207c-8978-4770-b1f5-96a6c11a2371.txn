@@ -1,7 +1,0 @@
-$f74e207c-8978-4770-b1f5-96a6c11a2371²Êid ÿÿÿÿÿÿÿÿÿ*string085vector ÿÿÿÿÿÿÿÿÿ*fixed_size_list:float:307208 payload ÿÿÿÿÿÿÿÿÿ*struct0id *string08
-created_at *int6408
-updated_at *int6408ontology_valid *bool08version *int6408!topological_rank *int6408type	 *string08belongs_to_set
- *list08item 
-*string08!source_pipeline *string08source_task *string08!source_node_set *string08source_user *string08%source_content_hash *string08!feedback_weight *double08#importance_weight *double08text *string08"!
-lance.auto_cleanup.interval20"'
-lance.auto_cleanup.older_than14days

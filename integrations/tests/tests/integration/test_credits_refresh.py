@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 
@@ -296,3 +297,118 @@ def test_lock_leftover_does_not_wedge_writer(pc, platform_server):
     os.utime(pc._CREDITS_LOCK, (1.0, 1.0))  # ancient mtime -> stale
     entry = pc.refresh_credits(tenant_id=_TENANT_A)
     assert entry["remaining_usd"] == 9.5
+
+
+# ── the 402 note rides along with the balance ──────────────────────────────
+#
+# record_payment_required stamps ``payment_required`` on the tenant's entry
+# (or on a URL placeholder when no tenant entry exists yet). The refresh must
+# keep that note — a small positive balance can still be "not enough", and
+# only a successful operation knows otherwise — and adopt one parked on the
+# placeholder, since the recall hook records without a tenant id.
+
+
+_LOW_OVERVIEW = _overview(0.04, 19.96, tenants=[_tenant(_TENANT_A, 0.04, 19.96)])
+
+
+def test_refresh_keeps_the_prior_entrys_refusal(pc, platform_server):
+    platform_server.set_credits_overview(
+        _overview(0.04, 19.96, tenants=[_tenant(_TENANT_A, 0.04, 19.96)])
+    )
+    pc.refresh_credits(tenant_id=_TENANT_A)
+    pc.record_payment_required("recall", tenant_id=_TENANT_A)
+
+    entry = pc.refresh_credits("turn", tenant_id=_TENANT_A)
+    assert entry["payment_required"]["op"] == "recall"
+    assert pc.read_credits_marker()[_TENANT_A]["payment_required"]["op"] == "recall"
+
+
+def test_refresh_adopts_the_placeholder_refusal_and_drops_the_placeholder(pc, platform_server):
+    # The recall hook has no tenant id and no prior binding: the note lands on
+    # the URL placeholder. The first tenant-bound refresh folds it in.
+    pc.record_payment_required("recall")
+    placeholder = pc._placeholder_credits_key(_URL_A)
+    assert placeholder in pc.read_credits_marker()
+
+    platform_server.set_credits_overview(
+        _overview(0.04, 19.96, tenants=[_tenant(_TENANT_A, 0.04, 19.96)])
+    )
+    entry = pc.refresh_credits(tenant_id=_TENANT_A)
+    assert entry["payment_required"]["op"] == "recall"
+    on_disk = pc.read_credits_marker()
+    assert set(on_disk) == {_TENANT_A}, "the placeholder must not linger beside the real entry"
+
+
+def test_refresh_prefers_the_entrys_own_refusal_over_the_placeholders(pc, platform_server):
+    platform_server.set_credits_overview(
+        _overview(0.04, 19.96, tenants=[_tenant(_TENANT_A, 0.04, 19.96)])
+    )
+    pc.refresh_credits(tenant_id=_TENANT_A)
+    pc.record_payment_required("remember", tenant_id=_TENANT_A)
+    marker = pc.read_credits_marker()
+    marker[pc._placeholder_credits_key(_URL_A)] = {
+        "base_url": _URL_A,
+        "payment_required": {"op": "recall", "at": 1.0},
+    }
+    pc._write_credits_marker(marker)
+
+    entry = pc.refresh_credits(tenant_id=_TENANT_A)
+    assert entry["payment_required"]["op"] == "remember"
+
+
+def test_refresh_prunes_a_placeholder_for_a_tenant_nobody_talks_to(pc, platform_server):
+    """A refusal note on a URL no session uses any more must not live forever."""
+    marker = {
+        "url:https://tenant-old.aws.cognee.ai": {
+            "base_url": "https://tenant-old.aws.cognee.ai",
+            "payment_required": {"op": "recall", "at": 1.0},
+        },
+        "url:https://tenant-recent.aws.cognee.ai": {
+            "base_url": "https://tenant-recent.aws.cognee.ai",
+            "payment_required": {"op": "recall", "at": time.time() - 60},
+        },
+    }
+    pc._write_credits_marker(marker)
+    platform_server.set_credits_overview(
+        _overview(9.5, 0.5, tenants=[_tenant(_TENANT_A, 9.5, 0.5)])
+    )
+    pc.refresh_credits(tenant_id=_TENANT_A)
+    on_disk = pc.read_credits_marker()
+    assert "url:https://tenant-old.aws.cognee.ai" not in on_disk
+    assert "url:https://tenant-recent.aws.cognee.ai" in on_disk
+
+
+# ── the platform host follows the tenant's environment ─────────────────────
+
+
+@pytest.mark.parametrize(
+    "service_url, expected",
+    [
+        (_URL_A, "https://api.aws.cognee.ai"),
+        (f"https://tenant-{_TENANT_A}.dev-aws.cognee.ai", "https://api.dev-aws.cognee.ai"),
+        ("https://memory.example.com", "https://api.aws.cognee.ai"),  # fallback
+    ],
+)
+def test_platform_url_is_derived_from_the_service_url(pc, monkeypatch, service_url, expected):
+    monkeypatch.delenv("COGNEE_PLATFORM_API_URL", raising=False)
+    monkeypatch.setenv("COGNEE_BASE_URL", service_url)
+    assert pc._platform_api_url() == expected
+
+
+def test_dev_tenant_fetches_its_balance_from_the_dev_platform(pc, monkeypatch, platform_server):
+    """The bug as logged: a dev tenant asked production for its balance and 401d."""
+    dev = f"https://tenant-{_TENANT_A}.dev-aws.cognee.ai"
+    monkeypatch.delenv("COGNEE_PLATFORM_API_URL", raising=False)
+    monkeypatch.setenv("COGNEE_BASE_URL", dev)
+    asked: list[str] = []
+    monkeypatch.setattr(
+        pc,
+        "_json_http_request",
+        lambda path, payload=None, **kw: (
+            asked.append(kw.get("base_url"))
+            or _overview(1.0, 1.0, tenants=[_tenant(_TENANT_A, 1.0, 1.0)])
+        ),
+    )
+    entry = pc.refresh_credits(tenant_id=_TENANT_A)
+    assert asked == ["https://api.dev-aws.cognee.ai"]
+    assert entry["platform_url"] == "https://api.dev-aws.cognee.ai"

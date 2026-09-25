@@ -19,7 +19,7 @@
 //
 // Not ported (on purpose): session-start autoindex and the per-turn git
 // fingerprint re-ingest. Freshness is the operator's: re-run index-repo.
-// Requires a Cognee server >= 1.5.3.
+// Requires a Cognee server >= 1.5.4.
 // ---------------------------------------------------------------------------
 
 import { createHash } from "node:crypto";

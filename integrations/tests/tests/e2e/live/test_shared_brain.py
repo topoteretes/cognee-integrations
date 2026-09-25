@@ -14,9 +14,8 @@ other suite's scripts inside the same temp HOME.
 **Both directions are exercised.** They were sharply asymmetric when codex's bridge
 was synchronous with no cognify poll; the port that landed in main gave codex the
 background bridge, so the two write paths have largely converged. They are still
-worth running in both directions: the improve path did *not* travel with that port
-(``has_improve_pipeline_polling`` is still claude-code only), and this is the only
-place either integration's writes are verified through the other's reader.
+worth running in both directions: this is the only place either integration's
+writes are verified through the other's reader.
 
 Note the suites keep separate *local* state (``~/.cognee-plugin/claude-code`` vs
 ``~/.cognee-plugin/codex``) — only the server-side graph is shared. That is exactly

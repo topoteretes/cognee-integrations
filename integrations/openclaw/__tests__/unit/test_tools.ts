@@ -59,10 +59,14 @@ describe("references", () => {
     expect(parseReference(ref)).toEqual({ scope: "graph", id: "a/b c" });
   });
 
-  it("rejects malformed handles", () => {
+  it("rejects malformed handles and the retired session scope", () => {
     expect(parseReference("MEMORY.md")).toBeNull();
     expect(parseReference("cognee://wiki/x")).toBeNull();
     expect(parseReference("cognee://graph/")).toBeNull();
+    // Session-cache hits are no longer produced, so their handles must not parse either.
+    expect(parseReference("cognee://session/x")).toBeNull();
+    expect(parseReference("cognee://trace/x")).toBeNull();
+    expect(parseReference("cognee://session_context/x")).toBeNull();
   });
 
   it("cache is bounded and evicts oldest", () => {
@@ -87,10 +91,11 @@ describe("provenance", () => {
   });
 
   it("toHit fills memory-core aliases and truncates snippet", () => {
-    const hit = toHit(r("x", "a".repeat(500), 0.8), "session", "session");
+    const hit = toHit(r("x", "a".repeat(500), 0.8), "graph", "agent");
     expect(hit.path).toBe(hit.reference);
     expect(hit.snippet).toHaveLength(401);
-    expect(hit.scope).toBe("session");
+    expect(hit.scope).toBe("graph");
+    expect(hit.source).toBe("agent");
   });
 });
 
@@ -117,26 +122,28 @@ describe("memory_search", () => {
     expect(out.results.map((h) => h.text)).toEqual(["a"]);
   });
 
-  it("corpus=all adds a session-cache pass when a session id resolves; corpus=memory does not", async () => {
-    const calls: Array<string | undefined> = [];
+  it("issues graph-scope requests only — one per dataset, never the session-cache layers", async () => {
+    const calls: Array<Record<string, unknown>> = [];
     const d = deps({
-      sessionIdFor: (s) => (s ? `cog_${s}` : undefined),
-      recall: async ({ sessionId }) => { calls.push(sessionId); return [r(sessionId ? "s1" : "g1", sessionId ? "from session" : "from graph", 0.7)]; },
+      resolveDatasets: async () => [{ id: "ds-a", label: "agent" }, { id: "ds-u", label: "user" }],
+      recall: async (p) => { calls.push(p as unknown as Record<string, unknown>); return [r(`g-${p.datasetIds[0]}`, "from graph", 0.7)]; },
     });
-    const all = await search(d, { query: "q" }, { sessionId: "host-1" });
-    expect(calls).toEqual([undefined, "cog_host-1"]);
-    expect(all.results.map((h) => h.scope).sort()).toEqual(["graph", "session"]);
-
-    calls.length = 0;
-    await search(d, { query: "q", corpus: "memory" }, { sessionId: "host-1" });
-    expect(calls).toEqual([undefined]);
-  });
-
-  it("corpus=sessions without a session yields no results and no recall", async () => {
-    const recall = jest.fn(async () => []);
-    const out = await search(deps({ recall }), { query: "q", corpus: "sessions" });
-    expect(out.results).toEqual([]);
-    expect(recall).not.toHaveBeenCalled();
+    // Default corpus, explicit `memory`, explicit `all`, and the retired
+    // `sessions` value (unknown → falls back to `all`) all behave the same.
+    for (const corpus of [undefined, "memory", "all", "sessions"]) {
+      calls.length = 0;
+      const out = await search(d, { query: "q", ...(corpus ? { corpus } : {}) }, { sessionId: "host-1" });
+      expect(calls.map((c) => c.datasetIds)).toEqual([["ds-a"], ["ds-u"]]);
+      for (const c of calls) {
+        expect(c.scope).toEqual(["graph"]);
+        expect(c.sessionId).toBeUndefined();
+        expect(c).not.toHaveProperty("contextProfile");
+      }
+      expect(out.results).toHaveLength(2);
+      expect(out.results.every((h) => h.scope === "graph")).toBe(true);
+      expect(out.results.every((h) => h.reference.startsWith("cognee://graph/"))).toBe(true);
+      expect(out.corpus).toBe(corpus === "memory" ? "memory" : "all");
+    }
   });
 
   it("signals disabled when every recall fails, warns when only some do", async () => {
@@ -152,7 +159,7 @@ describe("memory_search", () => {
     const half = await search(partial, { query: "q", corpus: "memory" });
     expect(half.results).toHaveLength(1);
     expect(half.disabled).toBeUndefined();
-    expect(half.warning).toMatch(/Some scopes failed: Error: boom/);
+    expect(half.warning).toMatch(/Some datasets failed: Error: boom/);
   });
 
   it("signals disabled while the breaker is open, without calling recall", async () => {
@@ -197,6 +204,10 @@ describe("memory_get", () => {
   it("rejects paths that are neither references nor memory files", async () => {
     const out = await get(deps(), { path: "src/plugin.ts" }, { workspaceDir: "/tmp" });
     expect(out.error).toMatch(/cognee:\/\/ reference .* or a workspace memory file/);
+    // A session-scope handle is not a reference memory_search can hand out any more.
+    const session = await get(deps(), { path: "cognee://session/x" }, { workspaceDir: "/tmp" });
+    expect(session.text).toBe("");
+    expect(session.error).toMatch(/cognee:\/\/ reference .* or a workspace memory file/);
     expect((await get(deps(), { path: "MEMORY.md" })).error).toMatch(/no workspace directory/);
     expect((await get(deps(), { path: "x", corpus: "wiki" })).disabled).toBe(true);
   });

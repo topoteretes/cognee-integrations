@@ -43,6 +43,7 @@ from _plugin_common import (  # noqa: E402
     mint_switch_session_id,
     register_agent_via_http,
     resolve_host_key_outside_hook,
+    resolve_shared_dataset,
     resolved_http_endpoint_auth,
     set_session_key,
     switch_launch_record,
@@ -110,7 +111,7 @@ def _list(host_key: str, rec: dict) -> dict:
     except Exception as exc:
         raise SwitchError(EXIT_ERROR, f"GET /api/v1/datasets failed ({exc})")
     current = str(rec.get("dataset") or resolved.get("dataset") or "")
-    rows = [{**row, "current": row["name"] == current} for row in listing["datasets"]]
+    rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
     return {
         "current": current,
         "session_id": str(rec.get("session_id") or ""),
@@ -156,7 +157,7 @@ def _sync_current(host_key: str, session_id: str, dataset: str) -> None:
         )
 
 
-def _register_new(session_id: str, dataset: str) -> str:
+def _register_new(session_id: str, dataset: str, dataset_id: str = "") -> str:
     """Register the new session under a fresh connection handle; returns the handle.
 
     Fresh handle first, old one released after: the server's agent-mode count
@@ -164,7 +165,10 @@ def _register_new(session_id: str, dataset: str) -> str:
     """
     conn_uuid = _new_conn_uuid()
     ok, _ = register_agent_via_http(
-        agent_session_name=conn_uuid, session_id=session_id, dataset_names=[dataset]
+        agent_session_name=conn_uuid,
+        session_id=session_id,
+        dataset_names=[dataset],
+        dataset_ids=[dataset_id] if dataset_id else None,
     )
     if not ok:
         raise SwitchError(
@@ -174,7 +178,19 @@ def _register_new(session_id: str, dataset: str) -> str:
     return conn_uuid
 
 
-def _ensure_dataset(dataset: str) -> None:
+def _ensure_dataset(dataset: str) -> tuple[str, list[str]]:
+    """Make ``dataset`` exist for this launch; returns its ``(write_id, read_ids)``.
+
+    Under shared agent memory the target is resolved as the PARENT: the
+    canonical parent-owned dataset (created as the parent when absent) that
+    every agent writes to, granted to the shared role — creating it as the
+    agent would fork an agent-owned copy nobody else can see. Otherwise the
+    dataset is created for the effective identity by name, as before, and the
+    ids stay empty (name-addressed).
+    """
+    shared = resolve_shared_dataset(dataset)
+    if shared["mode"] == "shared" and shared["dataset_id"]:
+        return shared["dataset_id"], shared["dataset_ids"]
     service_url, api_key = resolved_http_endpoint_auth()
     try:
         asyncio.run(ensure_dataset_ready_via_api(service_url, api_key, dataset))
@@ -182,6 +198,7 @@ def _ensure_dataset(dataset: str) -> None:
         text = str(exc)
         code = EXIT_NOT_WRITABLE if any(s in text for s in ("401", "403", "404")) else EXIT_ERROR
         raise SwitchError(code, f"dataset {dataset!r} is not available to this principal ({text})")
+    return "", []
 
 
 def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id: str) -> None:
@@ -264,15 +281,23 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     # guaranteed writable; anything else is refused up front rather than failing
     # half-way through.
     listing = list_writable_datasets(user_id)
-    if target in listing["readonly"]:
-        raise SwitchError(
-            EXIT_NOT_WRITABLE,
-            f"dataset {target!r} is readable but owned by someone else (not writable); "
-            "run --list to see the options",
-            hidden_readonly=listing["hidden_readonly"],
-        )
-    # A name that is not listed at all is created for this principal by the
-    # ensure step below (owner = us, hence writable).
+    from _dataset_access import dataset_id
+
+    matches = [row for row in listing["datasets"] if target in (row["id"], row["name"])]
+    if len(matches) > 1:
+        raise SwitchError(EXIT_NOT_WRITABLE, "Dataset name is ambiguous; select its UUID")
+    if (not matches and target in listing["readonly"]) or (dataset_id(target) and not matches):
+        raise SwitchError(EXIT_NOT_WRITABLE, "Selected dataset is not writable")
+    if matches:
+        row = matches[0]
+        target = row["id"] if row["owner_id"] != user_id else row["name"]
+        if row["writable"] is not True:
+            raise SwitchError(EXIT_NOT_WRITABLE, "Write permission could not be verified")
+
+    if dataset_id(target):
+        from _plugin_common import require_typed_dataset_id_support
+
+        require_typed_dataset_id_support()
 
     # 1. Sync the session we are leaving. Abort on failure unless forced — the
     #    retired triple stays in `touched`, so the final sync retries it.
@@ -286,15 +311,31 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
         sync_ok, sync_error = False, str(exc)
         hook_log("switch_sync_forced_past_failure", {"error": sync_error[:300]})
 
-    # 2. Make sure the dataset exists for this principal (idempotent).
-    _ensure_dataset(target)
+    # 2. Make sure the dataset exists for this principal (idempotent); under
+    #    shared memory this also resolves its canonical UUIDs.
+    write_id, read_ids = _ensure_dataset(target)
 
     # 3. Register the new session first (fresh handle) ...
     new_session = mint_switch_session_id(host_key)
-    new_conn = _register_new(new_session, target)
+    new_conn = _register_new(new_session, target, write_id)
 
     # 4. ... repoint the launch record (atomic) ...
-    switch_launch_record(host_key, session_id=new_session, dataset=target, conn_uuid=new_conn)
+    try:
+        switch_launch_record(
+            host_key,
+            session_id=new_session,
+            dataset=target,
+            conn_uuid=new_conn,
+            dataset_id=write_id,
+            dataset_ids=read_ids,
+        )
+    except Exception:
+        try:
+            released, _ = unregister_agent_via_http(agent_session_name=new_conn)
+            hook_log("switch_aborted_handle_cleanup", {"conn_uuid": new_conn, "ok": released})
+        except Exception as cleanup_error:
+            hook_log("switch_aborted_handle_cleanup_failed", {"error": str(cleanup_error)[:200]})
+        raise
 
     # 5. ... then release the old handle. Best-effort: a lingering active
     #    connection is harmless and the final unregister sweeps `touched`.

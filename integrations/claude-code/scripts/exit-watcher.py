@@ -7,6 +7,8 @@ does nothing while Codex is alive; once that PID disappears, it starts the
 normal detached graph sync worker and exits.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
@@ -17,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 from _logfiles import append_line as _append_log_line
 from _proc import pid_alive as _pid_alive
+from event_names import event_fields
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _EXIT_WATCHERS_DIR = _PLUGIN_DIR / "exit-watchers"
@@ -30,7 +33,12 @@ _SYNC_START_DELAY = 2.0
 
 def _log(event: str, **detail) -> None:
     try:
-        line = {"ts": time.time(), "pid": os.getpid(), "event": event}
+        line = {
+            "ts": time.time(),
+            "pid": os.getpid(),
+            "event": event,
+            **event_fields(event, "exit-watcher"),
+        }
         if detail:
             line["detail"] = detail
         _append_log_line(_LOGFILE, json.dumps(line, default=str))
@@ -85,34 +93,86 @@ def _spawn_sync(
         _log("exit_sync_detach_failed", error=str(exc)[:300])
 
 
-def _refresh_credits_marker(service_url: str) -> None:
-    """Keep the status-line credits marker fresh for the WHOLE session.
+# Connection self-heal. Recovery of a red status-line verdict is
+# otherwise prompt-driven: once the shared marker says unreachable /
+# server_error / not_responding / auth_failed, nothing re-checks it until a
+# hook runs, so a server that recovers while the user is idle leaves a stale
+# ✕ on the bar for up to the renderer's 30-minute fade. This process lives as
+# long as the host session, so it is the right place for a slow background
+# re-probe. Credits are deliberately NOT polled here: the balance only moves
+# when this session does something, so the hook-time refreshes (prompt start,
+# turn end, remember, improve) are the whole cadence and an idle terminal
+# makes no billing calls; the renderer shows the reading's age instead.
+_CONN_REPROBE_STATES = ("unreachable", "server_error", "not_responding", "auth_failed")
+_last_conn_reprobe_at = 0.0
 
-    This is the only plugin process whose lifetime matches the host session —
-    the idle watcher exits at ``bridge_complete``, minutes after the last
-    activity, so a credits poll there dies with it and the segment ages out
-    of its 15-minute TTL during any longer idle stretch. Cloud only,
-    throttled against our tenant's own entry, best-effort by contract.
+
+def _conn_reprobe_interval() -> float:
+    try:
+        return float(os.environ.get("COGNEE_CONN_REPROBE_INTERVAL", "") or 60.0)
+    except ValueError:
+        return 60.0
+
+
+def _reprobe_connection(service_url: str, api_key: str = "") -> None:
+    """Re-probe a recorded failure state and mark ready if the server is back.
+
+    Contract, in order:
+      * Only acts while the shared marker holds a failure state — a healthy or
+        absent marker costs one file read and nothing else.
+      * Same-base_url guard: the marker is machine-wide (Claude and Codex, local
+        and cloud, share it), so a verdict about a different server than this
+        session's is not ours to overwrite.
+      * Throttled to one probe per interval (default 60s) per watcher process.
+      * ONLY a positive "ready" is ever written. Timeouts / unknown are no
+        verdict and leave the marker untouched — the re-probe can heal a wrong
+        red but can never paint one.
+      * auth_failed heals only on an AUTHENTICATED success: /health answering
+        200 says nothing about the key. Other failure states heal on either
+        probe, with the authed one preferred because it is the stronger signal.
     """
+    global _last_conn_reprobe_at
     try:
         from _plugin_common import (
-            _credits_entry_for_url,
             _local_api_url,
-            read_credits_marker,
-            refresh_credits,
-            service_url_is_local,
+            _normalize_service_url,
+            authed_liveness,
+            mark_server_ready,
+            probe_health,
+            read_connection_state,
         )
 
-        base_url = str(service_url or "") or _local_api_url()
-        if service_url_is_local(base_url):
-            return  # local server: no credits concept
-        interval = float(os.environ.get("COGNEE_CREDITS_CHECK_INTERVAL", "") or 300.0)
-        _tid, prior = _credits_entry_for_url(read_credits_marker(), base_url)
-        if time.time() - float(prior.get("checked_at", 0) or 0) < interval:
+        marker = read_connection_state()
+        state = str(marker.get("state") or "")
+        if state not in _CONN_REPROBE_STATES:
             return
-        refresh_credits()
+        base_url = _normalize_service_url(str(service_url or "") or _local_api_url())
+        if not base_url:
+            return
+        marker_url = _normalize_service_url(str(marker.get("base_url") or ""))
+        if marker_url and marker_url != base_url:
+            return  # someone else's server
+        now = time.time()
+        last_seen = max(_last_conn_reprobe_at, float(marker.get("checked_at", 0) or 0))
+        if now - last_seen < _conn_reprobe_interval():
+            return
+        _last_conn_reprobe_at = now
+
+        verdict = authed_liveness(base_url, api_key, timeout=2.0)
+        authed = verdict != "unknown"
+        if not authed:
+            verdict = probe_health(base_url, timeout=2.0)
+        if verdict != "ready":
+            _log("connection_reprobe_no_heal", state=state, verdict=verdict, base_url=base_url)
+            return
+        if state == "auth_failed" and not authed:
+            # /health is unauthenticated: a 200 cannot clear an auth verdict.
+            _log("connection_reprobe_no_heal", state=state, verdict="ready_unauthed")
+            return
+        mark_server_ready(base_url)
+        _log("connection_self_healed", prior=state, base_url=base_url, authed=authed)
     except Exception as exc:
-        _log("credits_check_error", error=str(exc)[:200])
+        _log("connection_reprobe_error", error=str(exc)[:200])
 
 
 def main() -> None:
@@ -130,7 +190,7 @@ def main() -> None:
     dataset = str(bootstrap.get("dataset") or "agent_sessions")
     session_key = str(bootstrap.get("session_key") or "")
     agent_session_name = str(bootstrap.get("agent_session_name") or "")
-    api_key = str(bootstrap.get("api_key") or "")
+    api_key = os.environ.get("COGNEE_API_KEY", "")
     service_url = str(bootstrap.get("base_url") or "")
     pidfile_raw = str(bootstrap.get("pidfile") or "").strip()
     pidfile = Path(pidfile_raw) if pidfile_raw else _PIDFILE
@@ -171,8 +231,8 @@ def main() -> None:
         pidfile=str(pidfile),
     )
     while _owns_pidfile(pidfile) and _pid_alive(parent_pid):
-        # Session-long steady-state credits refresh (throttled internally).
-        _refresh_credits_marker(service_url)
+        # Self-heal a stale red connection verdict (throttled internally).
+        _reprobe_connection(service_url, api_key)
         time.sleep(_POLL_SECONDS)
 
     if not _owns_pidfile(pidfile):

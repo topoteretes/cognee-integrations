@@ -9,6 +9,8 @@ Runs on the SessionStart hook. Responsibilities:
   5. Register the current Codex thread as an active agent connection
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -62,9 +64,7 @@ from config import (
     _cloud_http_request,
     _user_id_via_api,
     ensure_cognee_ready,
-    ensure_dataset_ready,
     ensure_dataset_ready_via_api,
-    ensure_identity,
     get_dataset,
     is_cloud_mode,
     load_config,
@@ -102,13 +102,70 @@ _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() n
 # uv + a uv-managed Python guarantee a cognee-compatible runtime (3.10-3.14)
 # regardless of what's on the machine. All paths sit under the shared
 # ~/.cognee-plugin root so the two plugins install once and reuse one venv.
+# The hooks themselves need only a stdlib python3 of 3.9+ (see SDK-617): the
+# host interpreter never imports cognee, it only builds and talks to the venv.
 _UV_DIR = _GLOBAL_STATE_DIR / "uv"
 _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
 _UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 _PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-_PINNED_COGNEE_VERSION = "1.5.3"
+# Floor for the HOST interpreter, enforced only on the uv-less fallback, which
+# builds the runtime venv from sys.executable and so inherits its version.
+_FALLBACK_VENV_MIN_PYTHON = (3, 10)
+# Written when that fallback is refused; read by the next SessionStart so the
+# refusal reaches the user as a systemMessage (the worker that hits it runs
+# detached, with nothing it prints visible). Cleared once a venv is ready.
+_HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
+_PINNED_COGNEE_VERSION = "1.6.0"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
+
+# Maps a configured backend provider env var to the cognee package "extra" that
+# provides its driver. A bare `cognee==<version>` install has none of these, so
+# the server crashes on first use of any non-default backend (#232): Postgres
+# needs psycopg2/asyncpg (via `postgres-binary`), Neo4j needs its driver, a
+# local Ollama LLM needs the `ollama` extra, and `fastembed` embeddings need
+# their own extra. The env var names are the ones cognee's own config classes
+# read (verified against 1.5.3's infrastructure/*/config.py field names, which
+# pydantic-settings matches case-insensitively; GRAPH_DATABASE_PROVIDER is even
+# explicit there). Values already sit in os.environ by the time the install
+# runs: ensure_cognee_installed() calls apply_cognee_env() first, and the
+# ~/.cognee/.env file is injected at process start (_env_file.py), so both
+# exported and file-configured providers are seen. `postgres`/`pgvector` share
+# one driver set, so VECTOR_DB_PROVIDER=pgvector maps to the same extra as
+# DB_PROVIDER=postgres rather than a separate one.
+_PROVIDER_EXTRAS = (
+    ("DB_PROVIDER", {"postgres": "postgres-binary", "postgresql": "postgres-binary"}),
+    ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
+    ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
+    ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
+    ("LLM_PROVIDER", {"ollama": "ollama"}),
+)
+
+
+def _detect_required_extras() -> list:
+    """Detect the cognee extras actually needed from the configured backend
+    providers, so the install below brings in exactly what's needed instead of
+    either a bare install (missing drivers, #232) or unconditionally installing
+    every possible extra regardless of what's actually configured."""
+    extras: list[str] = []
+    for env_var, mapping in _PROVIDER_EXTRAS:
+        value = os.environ.get(env_var, "").strip().lower()
+        extra = mapping.get(value)
+        if extra and extra not in extras:
+            extras.append(extra)
+    return extras
+
+
+def _cognee_install_spec() -> str:
+    """The pip requirement to install: the pinned cognee, plus the extras the
+    configured providers need."""
+    extras = ",".join(_detect_required_extras())
+    return (
+        f"cognee[{extras}]=={_PINNED_COGNEE_VERSION}"
+        if extras
+        else f"cognee=={_PINNED_COGNEE_VERSION}"
+    )
+
 
 # Install single-flight. Distinct from the server boot lock (which is short): a
 # cold cognee install can take minutes, so concurrent sessions — across BOTH
@@ -125,6 +182,72 @@ def _find_uv() -> str:
         return str(_UV_BIN)
     found = shutil.which("uv")
     return found or ""
+
+
+def _host_python_label() -> str:
+    """``<sys.executable> (Python X.Y.Z)`` — names the interpreter a user must replace."""
+    return "{} (Python {}.{}.{})".format(sys.executable, *sys.version_info[:3])
+
+
+def _refuse_fallback_venv() -> None:
+    """Record why the uv-less fallback will not build the runtime venv.
+
+    Three readers: hook.log (forensics), this process's stderr (the bootstrap
+    log when detached, the terminal when not), and the marker the next
+    SessionStart turns into a systemMessage via ``_apply_host_python_warning``.
+    """
+    message = (
+        "Cognee Memory: cannot build the local Cognee runtime. uv is unavailable, and the "
+        "fallback would build the venv from {}, but that needs Python 3.10 or newer. Install "
+        "uv (https://docs.astral.sh/uv/) or a Python 3.10+ python3, then start a new "
+        "session.".format(_host_python_label())
+    )
+    detail = {
+        "python": sys.executable,
+        "version": "{}.{}.{}".format(*sys.version_info[:3]),
+        "required": "{}.{}".format(*_FALLBACK_VENV_MIN_PYTHON),
+    }
+    hook_log("host_python_too_old_for_venv", detail)
+    print(message, file=sys.stderr)
+    try:
+        _HOST_PYTHON_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _HOST_PYTHON_MARKER.write_text(
+            json.dumps({"message": message, "updated_at": time.time(), **detail}),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        hook_log("host_python_marker_write_failed", {"error": str(exc)[:200]})
+
+
+def _apply_host_python_warning(output: dict) -> dict:
+    """Append the recorded fallback refusal (if any) to the hook's systemMessage.
+
+    The marker outlives the session that wrote it on purpose: every launch on
+    the broken host repeats the message until a venv is built (which clears it
+    in ``_write_venv_ready``) — this is the loud failure SDK-617 asks for.
+    """
+    try:
+        if not _HOST_PYTHON_MARKER.exists():
+            return output
+        message = str(
+            json.loads(_HOST_PYTHON_MARKER.read_text(encoding="utf-8")).get("message") or ""
+        )
+    except Exception as exc:
+        hook_log("host_python_marker_read_failed", {"error": str(exc)[:200]})
+        return output
+    if not message:
+        return output
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = "{}\n\n{}".format(existing, message) if existing else message
+    result["hookSpecificOutput"] = hso
+    # Also at the top level: that is where Claude Code documents the universal
+    # ``systemMessage`` field, and where the Antigravity adapter reads it.
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = "{}\n\n{}".format(top, message) if top else message
+    return result
 
 
 def _install_uv() -> str:
@@ -172,6 +295,66 @@ def _venv_cognee_version() -> str:
     return ""
 
 
+# One distribution per extra whose presence in the venv proves that extra's
+# drivers are installed (verified against cognee 1.6.0's optional-dependencies:
+# fastembed and codegraph are empty extras there, their packages being core).
+# Probing the venv is deliberately preferred over recording installed extras in
+# venv-ready.json: that marker is shared with plugins that don't know about
+# extras (codex/openclaw), whose rewrites would wipe the record and force a
+# reinstall on every cold boot after theirs — the exact churn skip-at-pin
+# exists to avoid. `asyncpg` is common to the `postgres` and `postgres-binary`
+# extras, so either variant satisfies the postgres-binary requirement.
+_EXTRA_SENTINEL_DISTS = {
+    "postgres-binary": "asyncpg",
+    "neo4j": "neo4j",
+    "fastembed": "fastembed",
+    "ollama": "transformers",
+}
+
+
+def _venv_missing_extras(extras: list) -> list:
+    """Which of the required extras' driver packages are absent from the venv.
+
+    Ground truth for the skip-at-pin gate: the venv being at the pinned cognee
+    version says nothing about extras — a provider configured AFTER the venv
+    was built (or a bare install done by an extras-unaware plugin sharing this
+    venv) leaves the pin satisfied but the drivers missing, and #232 comes
+    right back. Fails soft (reports nothing missing, logged) on probe errors:
+    a venv broken enough to fail this probe also fails the version probe, and
+    the install path handles that.
+    """
+    if not extras:
+        return []
+    if not _VENV_PYTHON.exists():
+        return list(extras)
+    dists = [_EXTRA_SENTINEL_DISTS[extra] for extra in extras]
+    try:
+        out = subprocess.run(
+            [
+                str(_VENV_PYTHON),
+                "-c",
+                "import importlib.metadata as m, sys\n"
+                "for d in sys.argv[1:]:\n"
+                "    try:\n"
+                "        m.version(d)\n"
+                "    except Exception:\n"
+                "        print(d)",
+                *dists,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if out.returncode != 0:
+            hook_log("extras_probe_failed", {"stderr": out.stderr[:200]})
+            return []
+        missing_dists = set(out.stdout.split())
+        return [extra for extra, dist in zip(extras, dists) if dist in missing_dists]
+    except Exception as exc:
+        hook_log("extras_probe_failed", {"error": str(exc)[:200]})
+        return []
+
+
 def _write_venv_ready(version: str) -> None:
     try:
         payload = {
@@ -184,6 +367,11 @@ def _write_venv_ready(version: str) -> None:
         os.replace(tmp, _VENV_READY_MARKER)
     except Exception as exc:
         hook_log("venv_ready_write_failed", {"error": str(exc)[:200]})
+    try:
+        # A usable venv exists, so the host-python refusal (if any) is moot.
+        _HOST_PYTHON_MARKER.unlink(missing_ok=True)
+    except Exception as exc:
+        hook_log("host_python_marker_unlink_failed", {"error": str(exc)[:200]})
 
 
 def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
@@ -195,7 +383,8 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
     still holding the graph store's file lock, and upgrading the venv under it
     corrupts the databases. Always installs the exact pinned version
     (_PINNED_COGNEE_VERSION) so the server's FastAPI lifespan migrations run on
-    a known-good release.
+    a known-good release, plus the extras the configured backend providers
+    need (_cognee_install_spec, #232).
 
     Fails soft: if the install can't run (e.g. offline) but a usable cognee is
     already present, returns True with whatever version is there. Returns False
@@ -242,24 +431,40 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 break
             except FileExistsError:
                 # Another process owns the install. Don't install concurrently —
-                # wait for it to produce a usable venv, then reuse it.
-                if _venv_cognee_version() == _PINNED_COGNEE_VERSION:
+                # wait for it to produce a usable venv, then reuse it. The venv
+                # must satisfy our extras too: the other installer may be an
+                # extras-unaware plugin doing a bare install, in which case we
+                # keep waiting for the lock and add the drivers ourselves.
+                if _venv_cognee_version() == _PINNED_COGNEE_VERSION and not _venv_missing_extras(
+                    _detect_required_extras()
+                ):
                     return True
                 if time.monotonic() >= deadline:
                     return bool(_venv_cognee_version())
                 time.sleep(_VENV_INSTALL_POLL_SECONDS)
 
-        # Already at the pin: there is nothing to install, so do not touch the
-        # venv. The install used to run unconditionally at every cold boot; on
-        # a machine where two plugins with different pins share this venv that
-        # made each boot flip the version back and forth — and a `pip install`
-        # is a mutation window the shared runtime is better off without. The
-        # marker is (re)written so every plugin reading it sees the truth.
+        # Already at the pin AND holding the configured providers' drivers:
+        # there is nothing to install, so do not touch the venv. The install
+        # used to run unconditionally at every cold boot; on a machine where
+        # two plugins with different pins share this venv that made each boot
+        # flip the version back and forth — and a `pip install` is a mutation
+        # window the shared runtime is better off without. The version alone
+        # is not enough, though: a provider configured after the venv was
+        # built leaves the pin satisfied with its drivers missing (#232), so
+        # extras are probed too and a miss falls through to the install.
+        # The marker is (re)written so every plugin reading it sees the truth.
         current = _venv_cognee_version()
+        required_extras = _detect_required_extras()
+        missing_extras = _venv_missing_extras(required_extras)
         if current == _PINNED_COGNEE_VERSION:
-            _write_venv_ready(current)
-            hook_log("cognee_install_skipped_at_pin", {"version": current})
-            return True
+            if not missing_extras:
+                _write_venv_ready(current)
+                hook_log(
+                    "cognee_install_skipped_at_pin",
+                    {"version": current, "extras": required_extras},
+                )
+                return True
+            hook_log("cognee_extras_missing_at_pin", {"missing": missing_extras})
 
         uv = _find_uv() or _install_uv()
         venv_present = _VENV_PYTHON.exists()
@@ -272,6 +477,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     subprocess.run(
                         [uv, "venv", str(_VENV_DIR), "--python", _PINNED_PYTHON],
                         env=env,
+                        cwd=str(_GLOBAL_STATE_DIR),
                         check=True,
                         capture_output=True,
                         text=True,
@@ -285,9 +491,10 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "--upgrade",
                         "--python",
                         str(_VENV_PYTHON),
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     env=env,
+                    cwd=str(_GLOBAL_STATE_DIR),
                     check=True,
                     capture_output=True,
                     text=True,
@@ -296,8 +503,13 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
             except Exception as exc:
                 hook_log("cognee_install_failed", {"via": "uv", "error": str(exc)[:300]})
         elif not venv_present:
-            # Last-resort fallback: stdlib venv + pip. Slower, and relies on the
-            # system python3 being a cognee-compatible version (3.10-3.14).
+            # Last-resort fallback: stdlib venv + pip. Slower, and the venv inherits
+            # this interpreter, so the host python3 must itself satisfy cognee's
+            # floor (3.10-3.14). The hooks run on any 3.9+, so check explicitly
+            # rather than build a venv cognee could never install into.
+            if sys.version_info < _FALLBACK_VENV_MIN_PYTHON:
+                _refuse_fallback_venv()
+                return False
             try:
                 subprocess.run(
                     [sys.executable, "-m", "venv", str(_VENV_DIR)],
@@ -313,7 +525,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "pip",
                         "install",
                         "--upgrade",
-                        f"cognee=={_PINNED_COGNEE_VERSION}",
+                        _cognee_install_spec(),
                     ],
                     check=True,
                     capture_output=True,
@@ -328,7 +540,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
             hook_log("cognee_venv_unusable", {"venv_python": str(_VENV_PYTHON)})
             return False
         _write_venv_ready(version)
-        hook_log("cognee_install_ready", {"version": version})
+        hook_log("cognee_install_ready", {"version": version, "extras": required_extras})
         return True
     finally:
         if acquired:
@@ -517,6 +729,15 @@ def _ensure_local_server_running(
         # We are spawning the server, so run it in agent mode: it tears itself
         # down once all registered agents disconnect.
         server_env["COGNEE_AGENT_MODE"] = "true"
+        # cognee >= 1.6.0 creates the default user at startup only when
+        # DEFAULT_USER_PASSWORD is set, and never rewrites a stored password. Hand
+        # the server the well-known local credentials so a fresh install gets the
+        # same default user it always had and the owner-key bootstrap below can log
+        # in. The server binds localhost only. setdefault: an operator's own
+        # DEFAULT_USER_* export wins. COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD still
+        # pick the user the plugin logs in as; a non-default user must already exist.
+        server_env.setdefault("DEFAULT_USER_EMAIL", _LOCAL_DEFAULT_USER_EMAIL)
+        server_env.setdefault("DEFAULT_USER_PASSWORD", _LOCAL_DEFAULT_USER_PASSWORD)
         # The server's console output must not inherit this worker's stdio
         # (bootstrap.log — that is how it reached gigabytes: every line the
         # server printed for as long as it ran), but it must not vanish either:
@@ -530,6 +751,8 @@ def _ensure_local_server_running(
             hook_log("server_console_capture_unavailable", {"path": str(console_log)})
         server_proc = subprocess.Popen(
             [str(_VENV_PYTHON), "-m", "uvicorn", "cognee.api.client:app", "--port", str(port)],
+            # Import the installed runtime even when the host opened a Cognee checkout.
+            cwd=str(_VENV_DIR),
             env=server_env,
             stdin=subprocess.DEVNULL,
             stdout=pump.stdin if pump else subprocess.DEVNULL,
@@ -584,6 +807,40 @@ def _normalize_service_url(service_url: str) -> str:
     return str(service_url or "").strip().rstrip("/")
 
 
+# The credentials a server booted by this plugin is given (DEFAULT_USER_EMAIL /
+# DEFAULT_USER_PASSWORD) and the ones config.py logs in with by default. They
+# must agree, or a fresh install cannot mint its owner API key.
+_LOCAL_DEFAULT_USER_EMAIL = "default_user@example.com"
+_LOCAL_DEFAULT_USER_PASSWORD = "default_password"
+_NO_PASSWORD_MARKER = "does not have a password"
+_BAD_CREDENTIALS_MARKER = "LOGIN_BAD_CREDENTIALS"
+
+
+def _login_failure_message(status: int, body: str) -> str:
+    """One actionable sentence for a failed default-user login.
+
+    cognee >= 1.6.0 creates the default user without a password unless the server
+    was started with DEFAULT_USER_PASSWORD, and logging into such a user answers
+    400 "does not have a password". A server this plugin boots gets the variable
+    itself, so that answer means an externally managed server, whose environment
+    the plugin cannot set.
+    """
+    head = f"default-user login failed ({status}: {body[:200]})."
+    if status == 400 and _NO_PASSWORD_MARKER in body:
+        return (
+            f"{head} The server's default user has no password: cognee >= 1.6.0 "
+            "creates none unless the server is started with DEFAULT_USER_PASSWORD set. "
+            "Start the server with DEFAULT_USER_PASSWORD set to the same value as "
+            "COGNEE_USER_PASSWORD, or set COGNEE_API_KEY to skip the login."
+        )
+    if status == 400 and _BAD_CREDENTIALS_MARKER in body:
+        return (
+            f"{head} The server rejected COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD; point "
+            "them at a user that exists on that server, or set COGNEE_API_KEY."
+        )
+    return f"{head} Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly, or set COGNEE_API_KEY."
+
+
 async def _login_default_user_for_owner_api_key(service_url: str, config: dict) -> str:
     base = _normalize_service_url(service_url)
     email = config.get("user_email", "")
@@ -596,11 +853,7 @@ async def _login_default_user_for_owner_api_key(service_url: str, config: dict) 
         timeout=30.0,
     )
     if status != 200:
-        raise RuntimeError(
-            "default-user login failed "
-            f"({status}: {body[:200]}). "
-            "Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly."
-        )
+        raise RuntimeError(_login_failure_message(status, body))
     login_data = json.loads(body) if body else {}
     jwt = str(login_data.get("access_token", "") or "")
     if not jwt:
@@ -652,21 +905,186 @@ def _resolve_agent_name(config: dict, cwd: str) -> str:
 
 
 async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
-    """Resolve the one API key for this deployment.
+    """Resolve the PRINCIPAL key for this deployment.
 
     Order: env ``COGNEE_API_KEY`` -> single cached key -> mint once from the
-    default user (and cache it). No per-agent users or keys.
-    """
-    from _plugin_common import load_cached_api_key, save_cached_api_key
+    default user (and cache it).
 
+    The provisioned plugin-agent key is explicitly NOT a principal: earlier
+    steps in this same process may have stamped it into the env / config (see
+    ``_api_key_with_source``), and provisioning authenticated as the agent
+    would nest a new agent under the agent. Skip it wherever it leaked in.
+    """
+    from _plugin_common import (
+        load_cached_agent_key,
+        load_cached_api_key,
+        save_cached_api_key,
+    )
+
+    agent_key = load_cached_agent_key(service_url)
     api_key = str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
+    if agent_key and api_key == agent_key:
+        api_key = ""
     if not api_key:
-        api_key = load_cached_api_key(service_url)
+        api_key = os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or load_cached_api_key(service_url)
     if not api_key:
         api_key = await _login_default_user_for_owner_api_key(service_url, config)
         if api_key:
             save_cached_api_key(service_url, api_key)
     return api_key
+
+
+# Shared-memory outcomes that no retry within this deployment can change: the
+# server predates the permissions API or cannot store session entries by
+# dataset UUID, the user is not the owner of its tenant, or a tenant-less user
+# already owns data (activating a tenant would hide it). Under identity mode
+# ``auto`` an install that hit one of these stays on the principal instead of
+# probing and provisioning again every launch.
+_STRUCTURAL_SHARED_MEMORY_FAILURES = frozenset(
+    {"unsupported", "typed_dataset_unsupported", "not_tenant_owner", "tenantless_with_data"}
+)
+
+
+async def _ensure_plugin_identity(service_url: str, config: dict, principal_key: str) -> str:
+    """Resolve the plugin's dedicated agent key, provisioning when the mode allows.
+
+    ``plugin_identity`` / ``COGNEE_PLUGIN_IDENTITY`` selects the policy:
+      - ``false``: principal only; a cached identity is ignored.
+      - ``true``: explicit identity. Provision (create-only — never rotating a
+        key another machine may hold) when none is cached. Anything that
+        prevents that — a server without the create-only contract, a cached
+        key bound to another principal, a key the server rejected — is an
+        error, never a silent fall back to the owner's authority.
+      - ``auto`` (default): identity in service of shared agent memory. With
+        shared memory on, provision when none is cached; the caller then wires
+        the shared role and reverts to the principal if that fails, so nothing
+        the principal owns is ever stranded. With shared memory off, or after a
+        structural shared-memory failure, stay on the principal. A blocked or
+        foreign cached key is not used: the launch runs as the principal and
+        says so in the log.
+
+    A cached key that passes its checks always wins — provisioning again would
+    rotate it out from under every other machine of this user.
+    """
+    from _plugin_common import (
+        _AGENT_KEY_CACHE,
+        _installed_plugin_version,
+        _load_json_file,
+        _principal_fingerprint,
+        load_cached_agent_key,
+        load_cached_api_key,
+        load_shared_memory_marker,
+        plugin_identity_lock,
+        plugin_identity_mode,
+        provision_plugin_agent_via_http,
+        save_cached_agent_key,
+        save_cached_api_key,
+        shared_memory_enabled,
+    )
+
+    mode = plugin_identity_mode(config)
+    if mode == "disabled":
+        return ""
+    strict = mode == "enabled"
+    with plugin_identity_lock():
+        key = load_cached_agent_key(service_url)
+        record = _load_json_file(_AGENT_KEY_CACHE)
+        if key:
+            if record.get("blocked"):
+                if strict:
+                    raise RuntimeError(
+                        "Plugin identity is disconnected; explicit reconnect is required"
+                    )
+                hook_log("plugin_identity_skipped", {"reason": "blocked"})
+                return ""
+            if record.get("principal_fingerprint") != _principal_fingerprint(principal_key):
+                if strict:
+                    raise RuntimeError(
+                        "Cached plugin identity does not match this principal; reconnect explicitly"
+                    )
+                hook_log("plugin_identity_skipped", {"reason": "principal_mismatch"})
+                return ""
+            return key
+        if not strict:
+            if not shared_memory_enabled(config):
+                return ""
+            marker = load_shared_memory_marker(service_url)
+            prior = str(marker.get("reason") or "")
+            if prior in _STRUCTURAL_SHARED_MEMORY_FAILURES:
+                # Structural for the plugin version that recorded it. After an
+                # update the limitation may be gone (server-side fixes ship
+                # with plugin bumps), so try once more instead of never again.
+                if marker.get("plugin_version") == _installed_plugin_version():
+                    hook_log("plugin_provision_skipped", {"status": "shared_memory_" + prior})
+                    return ""
+                hook_log("plugin_provision_retry_after_update", {"prior_reason": prior})
+        status, body = provision_plugin_agent_via_http(
+            principal_key=principal_key, service_url=service_url
+        )
+        if status != "provisioned":
+            if strict:
+                raise RuntimeError(
+                    f"Plugin provisioning {status}; owner fallback is disabled. "
+                    "Safe create-only SDK support is required."
+                )
+            # ``auto``: no identity on this server (no create-only contract, or
+            # an agent that already exists without a key here) — the principal
+            # sees everything anyway, so shared memory has nothing to add.
+            hook_log("plugin_provision_skipped", {"status": status})
+            return ""
+        key = str(body.get("api_key") or "").strip()
+        save_cached_agent_key(
+            service_url, key, str(body.get("agent_id") or ""), principal_key=principal_key
+        )
+        # Keep the PRINCIPAL reachable for later control-plane work (grant
+        # backfills from the idle watcher): an env-provided key only lives in
+        # this process's environment.
+        if not load_cached_api_key(service_url):
+            save_cached_api_key(service_url, principal_key)
+        config["_provisioned_now"] = True
+        hook_log(
+            "plugin_agent_provisioned",
+            {
+                "agent_id": str(body.get("agent_id") or ""),
+                "created": bool(body.get("created")),
+                "reason": "explicit" if strict else "shared_memory",
+            },
+        )
+        return key
+
+
+def _wire_shared_memory(
+    service_url: str, config: dict, principal_key: str, agent_key: str, session_key: str
+) -> dict:
+    """Run the shared-memory wiring for the active agent and pin the launch's
+    canonical dataset ids. Returns ``ensure_shared_memory``'s outcome."""
+    from _plugin_common import (
+        ensure_shared_memory,
+        hook_log,
+        load_cached_agent_id,
+        set_launch_dataset_ids,
+    )
+
+    shared = ensure_shared_memory(
+        service_url=service_url,
+        principal_key=principal_key,
+        agent_key=agent_key,
+        agent_id=load_cached_agent_id(service_url),
+        dataset=str(config.get("dataset", "") or "").strip(),
+        allow_setup=True,
+        config=config,
+    )
+    set_launch_dataset_ids(session_key, shared["dataset_id"], shared["dataset_ids"])
+    hook_log(
+        "shared_memory_resolved",
+        {
+            "mode": shared["mode"],
+            "reason": shared["reason"],
+            "dataset_id": shared["dataset_id"],
+            "read_ids": len(shared["dataset_ids"]),
+        },
+    )
+    return shared
 
 
 async def _ensure_agent_credentials_and_register(
@@ -676,27 +1094,112 @@ async def _ensure_agent_credentials_and_register(
     if not service_url:
         return "", "", "", False
 
-    api_key = await _resolve_single_principal_key(service_url, config)
-    if not api_key:
+    from _plugin_common import (
+        block_cached_agent_key,
+        clear_cached_agent_key,
+        plugin_identity_mode,
+        register_agent_via_http,
+        set_launch_dataset_ids,
+    )
+
+    principal_key = await _resolve_single_principal_key(service_url, config)
+    if not principal_key:
         return "", "", "", False
+
+    os.environ["COGNEE_PRINCIPAL_API_KEY"] = principal_key
+    agent_key = await _ensure_plugin_identity(service_url, config, principal_key)
+
+    # Shared agent memory: wire the agent into the user's shared role and pin
+    # the canonical dataset ids on the launch record. Under identity mode
+    # ``auto`` the agent was provisioned only on the promise that shared memory
+    # keeps the principal's datasets reachable — if that wiring did not happen,
+    # honour the promise by staying on the principal (the agent key is dropped
+    # and its server-side key revoked; a structural reason also stops the next
+    # launch from provisioning again). An explicit identity (``true``) is kept
+    # regardless: the user asked for it.
+    shared = {
+        "mode": "separated",
+        "reason": "no_agent_identity",
+        "dataset_id": "",
+        "dataset_ids": [],
+    }
+    if agent_key:
+        shared = _wire_shared_memory(service_url, config, principal_key, agent_key, session_key)
+        if (
+            shared["mode"] != "shared"
+            and config.get("_provisioned_now")
+            and plugin_identity_mode(config) != "enabled"
+        ):
+            hook_log(
+                "plugin_identity_reverted",
+                {"reason": shared["reason"], "detail": "shared memory unavailable"},
+            )
+            from _plugin_common import disconnect_plugin_agent_via_http
+
+            # Nobody will hold the key just minted: revoke it server-side (the
+            # agent user stays for a later, successful migration).
+            disconnect_plugin_agent_via_http(principal_key=principal_key)
+            clear_cached_agent_key()
+            agent_key = ""
+            set_launch_dataset_ids(session_key, "", [])
+    api_key = agent_key or principal_key
 
     os.environ["COGNEE_API_KEY"] = api_key
     config["api_key"] = api_key
 
-    # The principal user id (best-effort) — used for dataset readiness + watchers.
+    # The effective identity's user id (best-effort) — used for dataset
+    # readiness + watchers. Under a plugin identity this is the agent
+    # sub-user, which is exactly the user the data plane operates as.
     user_id = await _user_id_via_api(service_url, api_key)
 
-    from _plugin_common import register_agent_via_http
+    def _register() -> tuple[bool, dict]:
+        # Registration is a lifecycle counter + connection registry under the
+        # effective identity. The connection handle IS the Cognee session id.
+        # Under shared memory the binding is the canonical dataset's UUID.
+        return register_agent_via_http(
+            agent_session_name=agent_session_name,
+            session_id=session_id,
+            dataset_names=[str(config.get("dataset", "") or "").strip()],
+            dataset_ids=[shared["dataset_id"]] if shared.get("dataset_id") else None,
+        )
 
-    # Registration is now purely a lifecycle counter + connection registry under
-    # the single principal. The connection handle IS the Cognee session id.
-    registered, registration = register_agent_via_http(
-        agent_session_name=agent_session_name,
-        session_id=session_id,
-        dataset_names=[str(config.get("dataset", "") or "").strip()],
-    )
-    if not registered:
-        raise RuntimeError(f"Failed to register session '{session_id}' on {service_url}.")
+    registered, registration = _register()
+    if not registered and registration.get("auth_failed") and agent_key:
+        # The provisioned key was revoked out-of-band (dashboard disconnect or
+        # a rotation elsewhere). It is blocked so no later hook reuses it, and
+        # never re-provisioned: the create-only contract refuses an agent that
+        # already exists, and rotating would revoke another machine's key.
+        block_cached_agent_key(agent_key)
+        if plugin_identity_mode(config) == "enabled":
+            raise RuntimeError(
+                "Plugin identity rejected; automatic re-provision and owner fallback are disabled"
+            )
+        # ``auto``: this launch runs as the principal; shared memory is off
+        # until the identity is reconnected explicitly.
+        hook_log("plugin_identity_rejected_fallback", {"agent_key_blocked": True})
+        agent_key = ""
+        api_key = principal_key
+        shared = {
+            "mode": "separated",
+            "reason": "identity_rejected",
+            "dataset_id": "",
+            "dataset_ids": [],
+        }
+        set_launch_dataset_ids(session_key, "", [])
+        os.environ["COGNEE_API_KEY"] = api_key
+        config["api_key"] = api_key
+        user_id = await _user_id_via_api(service_url, api_key)
+        registered, registration = _register()
+    # Optional lifecycle routes (older / minimal servers, lifecycle_supported is
+    # False): the session runs unregistered rather than failing. Anything else
+    # is a real failure on a server that has the route — raise with the HTTP
+    # status so the caller can classify it (auth vs server error).
+    if not registered and registration.get("lifecycle_supported") is not False:
+        status = registration.get("status_code")
+        message = f"Failed to register session '{session_id}' on {service_url}."
+        if status:
+            raise urllib.error.HTTPError(service_url, status, message, None, None)
+        raise RuntimeError(message)
 
     hook_log(
         "agent_register_result",
@@ -788,7 +1291,20 @@ def _spawn_idle_watcher(
 
 
 def _find_codex_parent_pid() -> int:
-    """Find the nearest live Codex ancestor, skipping hook shells."""
+    """Find the live Codex host process for this hook.
+
+    Codex exports its own pid as ``CODEX_PID`` to subprocesses; when that pid
+    is alive it IS the host, so use it before walking the process tree. The
+    walk stops at the *nearest* ``codex`` ancestor, which can be a short-lived
+    hook-runner rather than the session runtime (see the claude-code twin,
+    topoteretes/cognee-integrations#391).
+    """
+    try:
+        host_pid = int(str(os.environ.get("CODEX_PID", "") or "0").strip() or 0)
+    except ValueError:
+        host_pid = 0
+    if host_pid > 1 and _pid_alive(host_pid):
+        return host_pid
     fallback = os.getppid()
     if sys.platform == "win32":
         return find_host_ancestor_windows(fallback, "codex")
@@ -875,7 +1391,6 @@ def _spawn_exit_watcher(
         "dataset": dataset,
         "session_key": session_key,
         "agent_session_name": agent_session_name,
-        "api_key": api_key,
         "base_url": service_url,
         "pidfile": str(watcher_pidfile),
     }
@@ -891,6 +1406,9 @@ def _spawn_exit_watcher(
 
     try:
         env = os.environ.copy()
+        # Credentials must not be serialized into process arguments.
+        if api_key:
+            env["COGNEE_API_KEY"] = api_key
         if session_key:
             env["COGNEE_SESSION_KEY"] = session_key
         subprocess.Popen(
@@ -1034,6 +1552,8 @@ def _status_from_error(message: str) -> int:
     """
     import re
 
+    if isinstance(message, urllib.error.HTTPError):
+        return message.code
     m = re.search(r"\((\d{3})[:\s)]", str(message or ""))
     return int(m.group(1)) if m else 0
 
@@ -1074,8 +1594,8 @@ async def _run_heavy(
     # On a cold start this worker began under the host python3, so the
     # _plugin_common import-time guard could not re-exec us. The boot above
     # (via ensure_cognee_installed) has now built the shared venv, so flip into
-    # it before any cognee/aiohttp import below resolves against the host. No-op
-    # when the venv is absent (connect/managed mode) or already inside it.
+    # it so the rest of this bootstrap runs under the plugin-owned interpreter.
+    # No-op when the venv is absent (connect/managed mode) or already inside it.
     _reexec_into_venv()
 
     # Track the cloud connection outcome so the status line can show a precise
@@ -1124,6 +1644,9 @@ async def _run_heavy(
             # always auth, while a positively-absent one is a connection failure.
             # A timed-out probe is NO verdict (busy != down): keep the prior
             # recorded state rather than stamp a false "unreachable".
+            status = _status_from_error(exc)
+            if _conn_state is None and status:
+                _conn_state, _conn_detail = _classify_conn_status(status), message
             if _conn_state is None:
                 try:
                     health = probe_health(
@@ -1131,9 +1654,7 @@ async def _run_heavy(
                     )
                 except Exception:
                     health = "unknown"
-                if health == "ready":
-                    _conn_state, _conn_detail = "auth_failed", message
-                elif health == "down":
+                if health == "down":
                     _conn_state, _conn_detail = "unreachable", message
             if _conn_state:
                 write_connection_state(
@@ -1145,34 +1666,23 @@ async def _run_heavy(
                     {"reason": "probe returned no verdict after registration failure"},
                 )
             return "", "", False
-    else:
-        # Local SDK fallback path.
-        try:
-            if not user_id:
-                user_id, fallback_key = await ensure_identity(config)
-                if fallback_key and not agent_api_key:
-                    agent_api_key = fallback_key
-        except Exception as e:
-            print(f"cognee-plugin: identity warning ({e})", file=sys.stderr)
 
     try:
         # Cloud: the API key IS the identity (the server derives the principal
         # from X-Api-Key), so dataset creation must NOT be gated on user_id —
         # servers without /users/me (e.g. cloud tenants) leave user_id empty
-        # while auth works fine. Only the SDK branch below needs a User object.
-        if is_cloud_mode(config):
+        # while auth works fine.
+        # Under shared memory the canonical dataset was already resolved (and
+        # created as the parent when absent) by the credential step; creating
+        # it here as the agent would fork an agent-owned copy of the same name.
+        from _plugin_common import resolve_active_dataset_ids
+
+        if is_cloud_mode(config) and not resolve_active_dataset_ids(session_key)[0]:
             await ensure_dataset_ready_via_api(
                 config.get("base_url", ""),
                 agent_api_key or config.get("api_key", ""),
                 dataset,
             )
-        elif user_id:
-            from uuid import UUID
-
-            from cognee.modules.users.methods import get_user
-
-            user = await get_user(UUID(user_id))
-            await ensure_dataset_ready(dataset, user)
     except Exception as e:
         print(f"cognee-plugin: dataset warning ({e})", file=sys.stderr)
         if is_cloud_mode(config):
@@ -1182,6 +1692,11 @@ async def _run_heavy(
                 _conn_state, _conn_detail = "auth_failed", str(e)[:200]
             elif status >= 500 and _conn_state is None:
                 _conn_state, _conn_detail = "server_error", str(e)[:200]
+    from _project_memory import prepare as prepare_project_memory
+
+    project_state = prepare_project_memory(dataset, session_id)
+    if project_state:
+        hook_log("project_memory_prepared", project_state)
     if user_id:
         os.environ["COGNEE_USER_ID"] = user_id
 
@@ -1362,6 +1877,9 @@ async def _start(payload: dict | None = None) -> dict:
         dataset=str(config.get("dataset", "") or "").strip(),
         host_pid=_find_codex_parent_pid(),
     )
+    from _project_memory import begin as begin_project_memory
+
+    begin_project_memory(get_dataset(config), session_id, cwd)
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
     dataset = get_dataset(config)
@@ -1582,6 +2100,7 @@ def main():
             output = asyncio.run(_start(payload)) or {}
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
+    output = _apply_host_python_warning(output)
     print(json.dumps(output))
 
 

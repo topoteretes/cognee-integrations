@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Search Cognee's memory (session or permanent graph).
+# Search Cognee's memory: the knowledge graph, or a repository's code graph.
 #
 # Usage:
-#   cognee-search.sh <query> [top_k] [--session | --graph]
+#   cognee-search.sh <query> [top_k] [--graph]
 #   cognee-search.sh <query> [top_k] --code [--dataset <name>] [--code-query '<json>']
+#   cognee-search.sh <query> [top_k] --graph --dataset-id <uuid>
 #
-# --session: search session cache only
-# --graph:   search permanent knowledge graph only
+# --graph:   search the permanent knowledge graph (the default; the flag is
+#            accepted for callers that spell it out)
 # --code:    deterministic code-graph search (cognee >= 1.5.3). Query text is
 #            the seed; --code-query selects an exact operation instead, e.g.
 #            '{"operation": "impact_analysis", "targets": ["process_payment"]}'
@@ -14,8 +15,16 @@
 #            impact_analysis, delta). The repository's own code dataset is
 #            resolved from the current directory automatically.
 # --dataset: override the dataset to search (default: the plugin dataset, or
-#            the current repo's code dataset in --code mode)
-# No flag:   search session first, then graph if empty
+#            the current repo's code dataset in --code mode). A name only
+#            resolves among datasets this identity OWNS; anything else must be
+#            addressed by UUID.
+# --dataset-id: search another dataset by UUID (the cross-dataset picker flow:
+#            list-datasets.py names the candidates). Searching a dataset other
+#            than the launch's active one is graph-only — session history is
+#            bound to the active dataset — so the scope is forced to graph and
+#            the session id is dropped, with a note on stderr.
+# No flag:   same as --graph. Memory is read from the graph and the code graph
+#            only; the session cache is written, never searched.
 #
 # Configuration:
 #   Session ID and dataset come from this launch's record (~/.cognee-plugin/
@@ -60,16 +69,18 @@ if not api_key:
 
 session_id = ""
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
-# The launch record wins: it carries the dataset + session chosen with
-# switch-dataset.py, which the shell env and a first-connection lookup lack.
+dataset_ids = ""
+# The launch record wins (dataset + session chosen with switch-dataset.py, the
+# dataset UUIDs under shared memory, the plugin-agent key the hooks use).
+# NOTE: no apostrophes in this block - bash 3.2 scans $( ... ) for quotes
+# without understanding the heredoc, and a lone quote breaks the whole script.
 try:
-    from _plugin_common import _read_map_record, resolve_host_key_outside_hook
-    _host_key, _ = resolve_host_key_outside_hook()
-    _rec = _read_map_record(_host_key) if _host_key else {}
-    if str(_rec.get("dataset") or "").strip():
-        dataset = str(_rec["dataset"]).strip()
-    if str(_rec.get("session_id") or "").strip():
-        session_id = str(_rec["session_id"]).strip()
+    from _plugin_common import shell_runtime_overrides
+    _rt = shell_runtime_overrides(service_url)
+    dataset = _rt["dataset"] or dataset
+    session_id = _rt["session_id"] or session_id
+    dataset_ids = _rt["dataset_ids"]
+    api_key = _rt["api_key"] or api_key
 except Exception:
     pass
 if not session_id and service_url and api_key:
@@ -105,7 +116,7 @@ if not session_id and service_url and api_key:
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
         pass
 
-print(json.dumps({"session_id": session_id, "dataset": dataset, "service_url": service_url, "api_key": api_key}))
+print(json.dumps({"session_id": session_id, "dataset": dataset, "dataset_ids": dataset_ids, "service_url": service_url, "api_key": api_key}))
 PY
 )"
 
@@ -113,6 +124,14 @@ DATASET="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
 import json, sys
 try:
     print((json.loads(sys.argv[1] or "{}").get("dataset") or "").strip())
+except Exception:
+    pass
+PY
+)"
+DATASET_IDS="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
+import json, sys
+try:
+    print((json.loads(sys.argv[1] or "{}").get("dataset_ids") or "").strip())
 except Exception:
     pass
 PY
@@ -146,9 +165,15 @@ PY
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
 [ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 
+# The launch's active dataset, by name and by every UUID graph recall spans
+# (the canonical write id is always first among them), so an explicit target
+# can be told apart from "the active dataset, by hand".
+ACTIVE_DATASET="$DATASET"
+ACTIVE_DATASET_IDS="$DATASET_IDS"
+
 QUERY="${1:-}"
 TOP_K="${2:-5}"
-MODE="auto"
+MODE="graph"
 CODE_QUERY=""
 DATASET_EXPLICIT=""
 
@@ -157,14 +182,13 @@ _args=("$@")
 _i=0
 while [ $_i -lt ${#_args[@]} ]; do
     case "${_args[$_i]}" in
-        --session) MODE="session" ;;
         --graph)   MODE="graph" ;;
         --code)    MODE="code" ;;
         --code-query)
             _i=$((_i + 1))
             CODE_QUERY="${_args[$_i]:-}"
             ;;
-        --dataset|-d)
+        --dataset|-d|--dataset-id)
             _i=$((_i + 1))
             DATASET="${_args[$_i]:-$DATASET}"
             DATASET_EXPLICIT="1"
@@ -172,6 +196,12 @@ while [ $_i -lt ${#_args[@]} ]; do
     esac
     _i=$((_i + 1))
 done
+
+# The resolved UUIDs belong to the launch's active dataset only: an explicit
+# --dataset or the code lane (the repo's own dataset) must search by name.
+if [ -n "${DATASET_EXPLICIT:-}" ] || [ "$MODE" = "code" ]; then
+    DATASET_IDS=""
+fi
 
 # Code searches target the repository's OWN dataset, whose name carries a path
 # digest (two checkouts can share a basename, so the basename cannot be the
@@ -188,12 +218,32 @@ if [ -z "$QUERY" ]; then
     exit 1
 fi
 
-# Search scope from MODE
+# A dataset other than the active one has none of this session's history, and
+# the server rejects a session bound to one dataset being read against another
+# — so a foreign target is a graph-only read with no session id. The active
+# dataset named by hand (its name or one of its UUIDs) keeps the full scope.
+FOREIGN=""
+if [ -n "${DATASET_EXPLICIT:-}" ] && [ "$MODE" != "code" ]; then
+    FOREIGN="1"
+    [ "$DATASET" = "$ACTIVE_DATASET" ] && FOREIGN=""
+    case ",${ACTIVE_DATASET_IDS}," in
+        *",${DATASET},"*) FOREIGN="" ;;
+    esac
+    if [ -n "$FOREIGN" ]; then
+        if [ "$MODE" != "graph" ]; then
+            echo "[cognee-search] dataset '$DATASET' is not this session's active dataset (${ACTIVE_DATASET:-unknown}) — searching its knowledge graph only (no session history there)" >&2
+        fi
+        MODE="graph"
+        SESSION_ID=""
+    fi
+fi
+
+# Search scope from MODE. Graph and code only: the session cache is never a
+# search source (its history reaches the model through the graph item's
+# prompt on cognee >= 1.6.0, and through the sync bridge before that).
 case "$MODE" in
-    session) SCOPE='["session"]' ;;
-    graph)   SCOPE='["graph"]' ;;
-    code)    SCOPE='["code"]' ;;
-    *)       SCOPE='["session", "graph"]' ;;
+    code) SCOPE='["code"]' ;;
+    *)    SCOPE='["graph"]' ;;
 esac
 
 # Server-first: the running server (/api/v1/recall) is the source of truth.
@@ -207,16 +257,17 @@ esac
 # at ~/.cognee-plugin/recall-breaker.json that the per-prompt hooks, doctor and
 # the status line use. Pointing it at the per-plugin dir gave this skill its own
 # breaker, so a server the hooks had already given up on looked healthy here.
-RECALL_JSON="$(python3 "${SELF_DIR}/_cognee_client.py" "$SERVICE_URL" "$API_KEY" "$QUERY" "$SESSION_ID" "$SCOPE" "$TOP_K" "$DATASET" "$CODE_QUERY" || true)"
+RECALL_JSON="$(python3 "${SELF_DIR}/_cognee_client.py" "$SERVICE_URL" "$API_KEY" "$QUERY" "$SESSION_ID" "$SCOPE" "$TOP_K" "$DATASET" "$CODE_QUERY" "$DATASET_IDS" || true)"
 
 if [ -n "$RECALL_JSON" ] && [ "$RECALL_JSON" != "UNREACHABLE" ]; then
     # Server answered — authoritative, even if the result is empty.
     printf '%s\n' "$RECALL_JSON"
-elif [ "$MODE" = "code" ]; then
-    # No CLI fallback for code searches: the deterministic code lane exists
-    # only on the server (>= 1.5.3); a CLI recall would answer from the wrong
-    # retriever and read as authoritative when it is not.
-    echo "[cognee-search] server unreachable — code search not run; retry once the server is back" >&2
+elif [ "$MODE" = "code" ] || [ -n "$FOREIGN" ]; then
+    # No CLI fallback for code searches or for another dataset: the code lane
+    # exists only on the server (>= 1.5.3), and a dataset addressed by UUID
+    # resolves only there — a CLI recall would answer from a different backend
+    # or identity and read as authoritative when it is not.
+    echo "[cognee-search] server unreachable — search not run; retry once the server is back" >&2
     echo "UNREACHABLE"
     exit 1
 else

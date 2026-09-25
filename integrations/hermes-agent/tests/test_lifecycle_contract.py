@@ -246,13 +246,18 @@ class TestSyncTurn(unittest.TestCase):
 
 
 class TestPrefetchProtocol(unittest.TestCase):
+    """The two-phase protocol around the per-prompt memory block; the block's
+    own request and rendering are characterized in test_layered_recall."""
+
     def test_queued_result_is_returned_with_the_cognee_memory_header(self):
         with fake_backend() as fake:
             fake.results["recall"] = [{"text": "remembered thing", "source": "graph"}]
             provider = make_provider()
             provider.queue_prefetch("q")
             out = provider.prefetch("q")
-        self.assertEqual(out, "## Cognee Memory\n- [graph] remembered thing")
+        self.assertEqual(
+            out, "## Cognee Memory\n<cognee_memory>\nremembered thing\n</cognee_memory>"
+        )
 
     def test_prefetch_without_a_queued_result_is_empty(self):
         with fake_backend():
@@ -296,7 +301,20 @@ class TestPrefetchProtocol(unittest.TestCase):
         self.assertEqual(kwargs["top_k"], 5)
         self.assertIsNotNone(kwargs["session_id"])
         self.assertIsNotNone(kwargs["datasets"])
-        self.assertIsNone(kwargs["query_type"])
+        self.assertEqual(kwargs["scope"], ["graph"])
+        self.assertEqual(kwargs["query_type"], "HYBRID_COMPLETION")
+        self.assertIs(kwargs["only_context"], True)
+
+    def test_there_is_only_one_prefetch_path(self):
+        # The legacy single auto-scope search behind ``recall_session_layers``
+        # is gone: the toggle is not read, and the request is the graph one.
+        with fake_backend() as fake:
+            provider = make_provider(config={"recall_session_layers": False})
+            provider.queue_prefetch("q")
+            self.assertTrue(fake.wait("recall"))
+            kwargs = fake.only_call("recall")
+        self.assertEqual(kwargs["scope"], ["graph"])
+        self.assertIs(kwargs["only_context"], True)
 
     def test_prefetch_budget_respects_a_lower_configured_top_k(self):
         with fake_backend() as fake:
@@ -305,21 +323,16 @@ class TestPrefetchProtocol(unittest.TestCase):
             self.assertTrue(fake.wait("recall"))
             self.assertEqual(fake.only_call("recall")["top_k"], 2)
 
-    def test_at_most_five_lines_are_injected(self):
+    def test_every_memory_item_is_injected_whole(self):
+        # No line cap and no 500-character cut: the item's text is the memory.
         with fake_backend() as fake:
-            fake.results["recall"] = [{"text": f"item {i}"} for i in range(8)]
+            fake.results["recall"] = [{"text": f"item {i} " + "x" * 900} for i in range(8)]
             provider = make_provider()
             provider.queue_prefetch("q")
             out = provider.prefetch("q")
-        self.assertEqual(len(out.splitlines()), 6)  # header + 5 items
-
-    def test_long_text_is_truncated_to_500_chars(self):
-        with fake_backend() as fake:
-            fake.results["recall"] = [{"text": "x" * 900}]
-            provider = make_provider()
-            provider.queue_prefetch("q")
-            out = provider.prefetch("q")
-        self.assertEqual(out.count("x"), 500)
+        self.assertEqual(out.count("x"), 8 * 900)
+        for i in range(8):
+            self.assertIn(f"item {i} ", out)
 
     def test_blank_text_results_are_skipped(self):
         with fake_backend() as fake:
@@ -327,7 +340,7 @@ class TestPrefetchProtocol(unittest.TestCase):
             provider = make_provider()
             provider.queue_prefetch("q")
             out = provider.prefetch("q")
-        self.assertEqual(out, "## Cognee Memory\n- [cognee] kept")
+        self.assertEqual(out, "## Cognee Memory\n<cognee_memory>\nkept\n</cognee_memory>")
 
     def test_recall_failure_leaves_prefetch_empty_and_does_not_raise(self):
         with fake_backend() as fake:

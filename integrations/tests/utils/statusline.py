@@ -1,12 +1,12 @@
 """Suite-aware expectations for the status-line renderer.
 
-The two renderers are the same logic with one deliberate difference: claude-code
-styles the bar with ANSI escapes for a terminal, while codex's string is injected
-into the model's context and must stay plain text. Tests that care about *which*
-glyph or segment appears are shared and go through these helpers; tests that care
-about the styling itself are per-suite (and skip on the other suite).
+The registered renderers share the same logic with one deliberate difference:
+Claude Code styles the bar with ANSI escapes for a terminal, while Codex and
+Antigravity keep it plain text. Tests that care about *which* glyph or segment
+appears are shared and go through these helpers; tests that care about the
+styling itself are per-suite.
 
-Both renderers derive every marker path from ``Path.home()``, so a module loaded
+Every renderer derives its marker paths from ``Path.home()``, so a module loaded
 through ``isolated_modules`` already reads and writes inside the per-test HOME —
 no path constants need patching. Marker payload shapes differ per segment, so
 each test file builds its own; ``write_json`` is the one shared piece.

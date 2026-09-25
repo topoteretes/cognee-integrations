@@ -24,6 +24,8 @@ import urllib.request
 
 from .config import (
     DEFAULT_SERVER_BOOT_TIMEOUT,
+    DEFAULT_USER_EMAIL,
+    DEFAULT_USER_PASSWORD,
     SHARED_COGNEE_HOME,
     SHARED_PLUGIN_STATE_DIR,
     ollama_embedding_pins,
@@ -111,12 +113,24 @@ def _spawn(port, data_root, system_root, log_path):
     # LLM_INSTRUCTOR_MODE=json_schema_mode uses grammar-constrained decoding for
     # structured output — small local models fail schema-in-prompt mode so often
     # that every improve() timed out (diagnosed in the claude-code plugin).
+    # DEFAULT_USER_EMAIL/PASSWORD: cognee >= 1.6.0 creates the default user at
+    # startup only when DEFAULT_USER_PASSWORD is set, and a password-less user
+    # rejects the login http_backend._mint_api_key relies on. Always the plugin
+    # *literals* here, never COGNEE_USER_*: every cognee plugin shares this one
+    # server and database, and the server sets the default user's password once
+    # and never rewrites it — so a per-plugin login user passed through as
+    # DEFAULT_USER_* would let whichever plugin boots first define the default
+    # user for all of them. claude-code/codex/antigravity pass the same literals.
+    # COGNEE_USER_* only selects which (already existing) user the login uses.
+    # setdefault keeps an operator's own DEFAULT_USER_* export authoritative.
     for key, value in (
         ("CACHING", "true"),
         ("AUTO_FEEDBACK", "true"),
         ("CACHE_ROOT_DIRECTORY", str(SHARED_COGNEE_HOME / "cache")),
         ("LLM_INSTRUCTOR_MODE", "json_schema_mode"),
         ("COGNEE_IMPROVE_SUBMIT_TIMEOUT", "420"),
+        ("DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL),
+        ("DEFAULT_USER_PASSWORD", DEFAULT_USER_PASSWORD),
     ):
         env.setdefault(key, value)
     # A local Ollama embedder inherits a token ceiling far above its real

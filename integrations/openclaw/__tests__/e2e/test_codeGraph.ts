@@ -115,10 +115,24 @@ describe("openclaw cognee index-repo", () => {
     await expect(h.runCli("index-repo", { dataset: "my-code", indexVectors: true }, "https://x/y")).rejects.toThrow(/process\.exit\(0\)/);
     expect(mockIndexRepository).toHaveBeenCalledWith(expect.objectContaining({ datasetName: "my-code", indexVectors: true }));
 
-    mockIndexRepository.mockImplementation(async () => { throw new Error("HTTP (400) content_type unsupported"); });
+    // The server's own wording for a content_type value it does not know.
+    mockIndexRepository.mockImplementation(async () => { throw new Error("HTTP (400) Unsupported content_type 'code'."); });
     const h2 = createPluginApi(plugin);
     await expect(h2.runCli("index-repo", {}, "https://x/z")).rejects.toThrow(/process\.exit\(1\)/);
-    expect(lines().some((l) => /requires Cognee >= 1\.5\.3/.test(l))).toBe(true);
+    expect(lines().some((l) => /requires Cognee >= 1\.5\.4/.test(l))).toBe(true);
+  });
+
+  it("does not blame the server version for a 400 the server can explain itself", async () => {
+    // The second half of issue #420. Every 400 the code branch raises names
+    // `content_type`, and the old check matched any 400 at all, so the server's
+    // actionable complaint got overwritten with "upgrade your server" — the
+    // reporter chased a version that was already new enough.
+    const detail = "content_type='code' requires at least one repository path or git URL in 'raw_data'.";
+    mockIndexRepository.mockImplementation(async () => { throw new Error(`HTTP (400) ${detail}`); });
+    const h = createPluginApi(plugin);
+    await expect(h.runCli("index-repo", {}, "https://x/w")).rejects.toThrow(/process\.exit\(1\)/);
+    expect(lines().some((l) => l.includes(detail))).toBe(true);
+    expect(lines().some((l) => /requires Cognee >=/.test(l))).toBe(false);
   });
 });
 
@@ -142,7 +156,7 @@ describe("code recall lane", () => {
     const text = await recallInjection(h, "what calls `UserService` and does it break?");
     const lane = mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("code"))!;
     expect(lane).toMatchObject({ datasetIds: ["id-code"], queryText: "UserService", codeQuery: { operation: "query_facts", name: "UserService", limit: 5 } });
-    expect(text.indexOf("<graph_memory>")).toBeLessThan(text.indexOf("<code_graph>"));
+    expect(text.indexOf("<cognee_memory>")).toBeLessThan(text.indexOf("<code_graph>"));
     expect(text).toContain("UserService.get -> Database.query");
   });
 

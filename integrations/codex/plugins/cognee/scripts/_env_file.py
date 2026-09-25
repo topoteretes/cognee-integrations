@@ -29,6 +29,8 @@ Loading must never break a hook: any parse or IO problem results in the file
 being (partially) ignored, never an exception.
 """
 
+from __future__ import annotations
+
 import os
 import stat
 import sys
@@ -72,6 +74,15 @@ _TEMPLATE = """\
 ## local Cognee API; only an LLM key is required:
 # LLM_API_KEY="sk-..."
 # LLM_MODEL="openai/gpt-4o-mini"
+
+## Local mode backends (optional) — the defaults (sqlite/lancedb/openai) need
+## nothing here. Configuring a provider below makes session start install the
+## matching cognee driver extra into the plugin venv automatically:
+# DB_PROVIDER="postgres"
+# VECTOR_DB_PROVIDER="pgvector"
+# GRAPH_DATABASE_PROVIDER="neo4j"
+# EMBEDDING_PROVIDER="fastembed"
+# LLM_PROVIDER="ollama"
 
 ## Optional:
 # COGNEE_PLUGIN_DATASET="agent_sessions"

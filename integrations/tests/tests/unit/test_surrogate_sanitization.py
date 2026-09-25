@@ -45,7 +45,7 @@ def test_truncate_str_sanitizes_untruncated_text(store_session):
 
 def test_truncate_str_sanitizes_truncated_text(store_session):
     # Not gated: the truncation branch has always decoded the re-encoded bytes,
-    # so it was already safe on both suites. Only the under-the-cap path (above)
+    # so it was already safe on all registered suites. Only the under-the-cap path (above)
     # returned the text verbatim.
     long_text = SURROGATE_TEXT * 500
     out = store_session._truncate_str(long_text, 100)

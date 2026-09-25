@@ -33,6 +33,11 @@ def _json(status: int, body: Any) -> Response:
     return Response(json.dumps(body), status=status, content_type="application/json")
 
 
+def _norm_path(path: str) -> str:
+    """Canonical request path: trailing slash dropped (except for the root)."""
+    return path.rstrip("/") or "/"
+
+
 class MockCogneeServer:
     """Registers Cognee routes on a pytest-httpserver ``HTTPServer``.
 
@@ -73,6 +78,9 @@ class MockCogneeServer:
         # (method, path) -> (status, body): short-circuits the normal handler.
         self._forced: dict[tuple[str, str], tuple[int, Any]] = {}
         self.calls: list[dict[str, Any]] = []
+        #: Collection-route redirect mode, mirroring how real servers disagree
+        #: about the trailing slash: see ``set_collection_redirect``.
+        self._collection_redirect = None
         self._register_routes()
 
     # -- public surface ----------------------------------------------------
@@ -132,6 +140,23 @@ class MockCogneeServer:
         """
         self._credits_overview = overview
 
+    def set_collection_redirect(self, mode: str | None) -> None:
+        """Make POST /api/v1/datasets redirect between its two spellings.
+
+        Real servers disagree about the trailing slash and answer 307 to the
+        spelling they do not serve — in *opposite* directions:
+
+          * ``"to_slashed"`` — cloud tenants: ``/datasets`` -> ``/datasets/``
+          * ``"to_bare"``    — a local server: ``/datasets/`` -> ``/datasets``
+          * ``None``         — accept both (the default)
+
+        urllib refuses to replay a POST across a 307, so a client that does not
+        follow the redirect itself fails against one of the two. Accepting both
+        spellings unconditionally is what hid that from this suite.
+        """
+        assert mode in (None, "to_slashed", "to_bare"), mode
+        self._collection_redirect = mode
+
     def force_response(self, method: str, path: str, status: int, body: Any = None) -> None:
         """Force one route to answer (status, body), bypassing its handler.
 
@@ -140,14 +165,14 @@ class MockCogneeServer:
         JSON-encoded. The request is still recorded. Clear with
         ``clear_forced``.
         """
-        self._forced[(method, path)] = (status, body if body is not None else {})
+        self._forced[(method, _norm_path(path))] = (status, body if body is not None else {})
 
     def clear_forced(self, method: str | None = None, path: str | None = None) -> None:
         """Drop forced responses (all of them, or one method+path pair)."""
         if method is None and path is None:
             self._forced.clear()
         else:
-            self._forced.pop((method, path), None)
+            self._forced.pop((method, _norm_path(path)), None)
 
     def assert_called(self, method: str, path: str, **json_fields: Any) -> dict[str, Any]:
         """Assert a matching request was recorded; return the call entry.
@@ -176,7 +201,9 @@ class MockCogneeServer:
     def _record(self, req: Request) -> None:
         entry: dict[str, Any] = {
             "method": req.method,
-            "path": req.path,
+            # Trailing slash normalized: clients may send either spelling (see the
+            # POST /api/v1/datasets route), tests key on the bare path.
+            "path": _norm_path(req.path),
             "query": dict(req.args),
             "headers": dict(req.headers),
         }
@@ -199,7 +226,7 @@ class MockCogneeServer:
 
         def route(uri, method, handler):
             def dispatch(req: Request, _handler=handler) -> Response:
-                forced = self._forced.get((req.method, req.path))
+                forced = self._forced.get((req.method, _norm_path(req.path)))
                 if forced is not None:
                     self._record(req)
                     status, body = forced
@@ -214,6 +241,35 @@ class MockCogneeServer:
         # health / reachability
         route("/health", "GET", self._health)
         route("/docs", "GET", self._docs)
+        route(
+            "/openapi.json",
+            "GET",
+            lambda req: _json(
+                200,
+                {
+                    "paths": {
+                        **(
+                            {
+                                "/api/v1/integrations/plugins/{plugin_key}/provision": {
+                                    "post": {"parameters": [{"name": "create_only", "in": "query"}]}
+                                }
+                            }
+                            if self.identity.plugin_provisioning
+                            else {}
+                        ),
+                        **(
+                            {
+                                "/api/v1/remember/entry": {
+                                    "post": {"x-cognee-session-dataset-ids": True}
+                                }
+                            }
+                            if self.identity.typed_dataset_ids
+                            else {}
+                        ),
+                    }
+                },
+            ),
+        )
 
         # auth + identity (single-principal-key flow)
         route("/api/v1/auth/login", "POST", self._login)
@@ -226,13 +282,58 @@ class MockCogneeServer:
         route("/api/v1/agents/unregister", "POST", self._agents_unregister)
         route("/api/v1/agents/connections/me", "GET", self._agents_connections_me)
 
+        # plugin identity provisioning (per-plugin agent sub-user + key).
+        # Exact-path routing, so each known plugin key gets its own route.
+        for plugin_key in ("claude-code", "codex", "antigravity"):
+            route(
+                f"/api/v1/integrations/plugins/{plugin_key}/provision",
+                "POST",
+                self._plugins_provision,
+            )
+            route(
+                f"/api/v1/integrations/plugins/{plugin_key}",
+                "DELETE",
+                self._plugins_disconnect,
+            )
+
+        # permissions (shared agent memory: tenants, roles, dataset grants).
+        # Fixed paths first — pytest-httpserver matches in registration order.
+        route("/api/v1/permissions/tenants/me", "GET", self._tenants_me)
+        route("/api/v1/permissions/tenants/select", "POST", self._tenant_select)
+        route("/api/v1/permissions/tenants", "POST", self._tenants_create)
+        route(re.compile(r"^/api/v1/permissions/tenants/[^/]+/roles$"), "GET", self._tenant_roles)
+        route("/api/v1/permissions/roles", "POST", self._roles_create)
+        route(
+            re.compile(r"^/api/v1/permissions/users/[^/]+/tenants$"), "POST", self._tenant_add_user
+        )
+        route(re.compile(r"^/api/v1/permissions/users/[^/]+/roles$"), "POST", self._role_add_user)
+        route(
+            re.compile(r"^/api/v1/permissions/users/[^/]+/roles$"), "DELETE", self._role_remove_user
+        )
+        route(re.compile(r"^/api/v1/permissions/datasets/[^/]+$"), "POST", self._grant_datasets)
+
         # memory
         route("/api/v1/remember", "POST", self._remember)
         route("/api/v1/remember/entry", "POST", self._remember_entry)
         route("/api/v1/recall", "POST", self._recall)
         route("/api/v1/improve", "POST", self._improve)
-        route("/api/v1/datasets", "POST", self._datasets)
+        # POST serves both spellings by default; ``set_collection_redirect``
+        # makes one of them 307 to the other, as real servers do (in opposite
+        # directions on cloud vs local).
+        route(re.compile(r"^/api/v1/datasets/?$"), "POST", self._datasets)
         route("/api/v1/datasets", "GET", self._datasets_list)
+        route("/api/v1/datasets/", "GET", self._datasets_list)
+        route(
+            re.compile(r"/api/v1/permissions/principals/[^/]+/datasets"),
+            "GET",
+            # The real route lists a principal's DIRECT grants (no role expansion).
+            lambda req: _json(
+                200,
+                self.identity.principal_datasets(
+                    req.path.split("/")[-2], req.args.get("permission_name", "read")
+                ),
+            ),
+        )
         route("/api/v1/datasets/status", "GET", self._datasets_status)
 
         # forget surface (dataset inspection + deletion); the listing itself is
@@ -291,12 +392,43 @@ class MockCogneeServer:
         status, body = self.identity.agents_connections_me(req.args.get("agent_session_name"))
         return _json(status, body)
 
+    def _plugins_provision(self, req: Request) -> Response:
+        self._record(req)
+        # /api/v1/integrations/plugins/{plugin_key}/provision
+        plugin_key = req.path.rstrip("/").split("/")[-2]
+        status, body = self.identity.plugins_provision(
+            plugin_key,
+            req.headers.get("X-Api-Key"),
+            create_only=req.args.get("create_only") == "true",
+        )
+        return _json(status, body)
+
+    def _plugins_disconnect(self, req: Request) -> Response:
+        self._record(req)
+        # DELETE /api/v1/integrations/plugins/{plugin_key}
+        plugin_key = req.path.rstrip("/").split("/")[-1]
+        status, body = self.identity.plugins_disconnect(plugin_key, req.headers.get("X-Api-Key"))
+        return _json(status, body)
+
     def _remember(self, req: Request) -> Response:
         self._record(req)
         # Background remember returns an enqueue handle the client may poll
-        # via /api/v1/datasets/status.
+        # via /api/v1/datasets/status. ``datasetId`` addresses an existing
+        # dataset the caller must hold "write" on (shared-memory path);
+        # ``datasetName`` creates-or-gets the caller's own dataset by name.
+        api_key = req.headers.get("X-Api-Key")
+        dataset_id = req.form.get("datasetId", "")
+        if dataset_id:
+            caller = self.identity.user_id_for_key(api_key)
+            if dataset_id not in self.identity.dataset_rows:
+                return _json(404, {"detail": "Dataset not found"})
+            if caller and dataset_id not in self.identity.writable_dataset_ids(caller):
+                return _json(403, {"detail": "no write permission on dataset"})
+            return _json(
+                200, {"dataset_id": dataset_id, "pipeline_run_id": f"run-{len(self.calls)}"}
+            )
         dataset = req.form.get("datasetName", "")
-        _, ds = self.identity.datasets_create(dataset or "default")
+        _, ds = self.identity.datasets_create(dataset or "default", api_key)
         return _json(
             200,
             {"dataset_id": ds["id"], "pipeline_run_id": f"run-{len(self.calls)}"},
@@ -308,8 +440,88 @@ class MockCogneeServer:
 
     def _recall(self, req: Request) -> Response:
         self._record(req)
+        # ``dataset_ids`` are authorised against the caller (the real server
+        # raises PermissionDenied for ids the caller cannot read) so a test can
+        # prove cross-agent recall really is permitted, not just requested.
+        body_in = req.get_json(silent=True) or {}
+        ids = [str(x) for x in (body_in.get("dataset_ids") or [])]
+        caller = self.identity.user_id_for_key(req.headers.get("X-Api-Key"))
+        if ids and caller:
+            readable = set(self.identity.readable_dataset_ids(caller))
+            if any(ds not in readable for ds in ids):
+                return _json(403, {"detail": "Request owner does not have permission: [read]"})
         # Response MUST be a top-level JSON array (both clients expect a list).
         return _json(200, self._recall_results)
+
+    def _tenants_me(self, req: Request) -> Response:
+        self._record(req)
+        return _json(*self.identity.tenants_me(req.headers.get("X-Api-Key")))
+
+    def _tenants_create(self, req: Request) -> Response:
+        self._record(req)
+        return _json(
+            *self.identity.tenants_create(
+                req.headers.get("X-Api-Key"), req.args.get("tenant_name", "")
+            )
+        )
+
+    def _tenant_select(self, req: Request) -> Response:
+        self._record(req)
+        body_in = req.get_json(silent=True) or {}
+        return _json(
+            *self.identity.tenant_select(req.headers.get("X-Api-Key"), body_in.get("tenant_id"))
+        )
+
+    def _tenant_roles(self, req: Request) -> Response:
+        self._record(req)
+        tenant_id = req.path.rstrip("/").split("/")[-2]
+        return _json(*self.identity.tenant_roles(req.headers.get("X-Api-Key"), tenant_id))
+
+    def _roles_create(self, req: Request) -> Response:
+        self._record(req)
+        return _json(
+            *self.identity.roles_create(req.headers.get("X-Api-Key"), req.args.get("role_name", ""))
+        )
+
+    def _tenant_add_user(self, req: Request) -> Response:
+        self._record(req)
+        target = req.path.rstrip("/").split("/")[-2]
+        return _json(
+            *self.identity.tenant_add_user(
+                req.headers.get("X-Api-Key"), target, req.args.get("tenant_id", "")
+            )
+        )
+
+    def _role_add_user(self, req: Request) -> Response:
+        self._record(req)
+        target = req.path.rstrip("/").split("/")[-2]
+        return _json(
+            *self.identity.role_add_user(
+                req.headers.get("X-Api-Key"), target, req.args.get("role_id", "")
+            )
+        )
+
+    def _role_remove_user(self, req: Request) -> Response:
+        self._record(req)
+        target = req.path.rstrip("/").split("/")[-2]
+        return _json(
+            *self.identity.role_remove_user(
+                req.headers.get("X-Api-Key"), target, req.args.get("role_id", "")
+            )
+        )
+
+    def _grant_datasets(self, req: Request) -> Response:
+        self._record(req)
+        principal = req.path.rstrip("/").split("/")[-1]
+        ids = req.get_json(silent=True) or []
+        return _json(
+            *self.identity.grant_datasets(
+                req.headers.get("X-Api-Key"),
+                principal,
+                [str(x) for x in ids] if isinstance(ids, list) else [],
+                req.args.get("permission_name", ""),
+            )
+        )
 
     def _improve(self, req: Request) -> Response:
         self._record(req)
@@ -320,10 +532,28 @@ class MockCogneeServer:
         _, ds = self.identity.datasets_create(dataset)
         return _json(200, {"dataset_id": ds["id"], "status": "submitted"})
 
+    def _redirect_target(self, path: str) -> str:
+        """Absolute Location for a collection request in the wrong spelling, else ""."""
+        mode = self._collection_redirect
+        if mode is None:
+            return ""
+        slashed = path.endswith("/")
+        if mode == "to_slashed" and not slashed:
+            return f"{self.url}{path}/"
+        if mode == "to_bare" and slashed:
+            return f"{self.url}{path.rstrip('/')}"
+        return ""
+
     def _datasets(self, req: Request) -> Response:
+        redirect_to = self._redirect_target(req.path)
+        if redirect_to:
+            self._record(req)
+            return Response("", status=307, headers={"Location": redirect_to})
         self._record(req)
         body_in = req.get_json(silent=True) or {}
-        status, body = self.identity.datasets_create(body_in.get("name", "default"))
+        status, body = self.identity.datasets_create(
+            body_in.get("name", "default"), req.headers.get("X-Api-Key")
+        )
         return _json(status, body)
 
     def _datasets_list(self, req: Request) -> Response:
@@ -335,8 +565,12 @@ class MockCogneeServer:
         seed nothing and get the fixed ``set_datasets`` list instead.
         """
         self._record(req)
-        if self.identity.datasets:
-            status, body = self.identity.datasets_list()
+        # Identity-backed once anything permission-relevant exists: seeded
+        # datasets, or a provisioned plugin agent (shared memory lists datasets
+        # per caller BEFORE any dataset exists — the static list would hand it a
+        # phantom dataset nobody owns).
+        if self.identity.dataset_rows or self.identity.plugin_agents:
+            status, body = self.identity.datasets_list(req.headers.get("X-Api-Key"))
             return _json(status, body)
         return _json(200, self._static_datasets)
 

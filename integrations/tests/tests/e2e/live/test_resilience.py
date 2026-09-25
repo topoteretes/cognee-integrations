@@ -87,7 +87,7 @@ def test_writes_during_an_outage_are_buffered_not_dropped(
     what it drained, so an entry that can never succeed would sit at the head of the
     queue and block everything behind it indefinitely.
 
-    Was a strict xfail; the fix made it XPASS on both suites.
+    Was a strict xfail; the fix made it XPASS on every registered suite.
     """
     session = started_session("buffer")
     session.prompt(f"Pre-outage note for {nonce}.", turn_id="t1")
@@ -173,10 +173,11 @@ def test_buffered_turns_are_replayed_once_the_server_returns(
 def test_a_slow_cold_query_is_classified_slow_not_down(
     started_session, live_env, live_suite, live_home, graph, nonce
 ):
-    """Production recall timeouts are tight on purpose; exceeding them is not an outage.
+    """Recall timeouts are tight on purpose; exceeding them is not an outage.
 
-    With ``COGNEE_RECALL_TIMEOUT`` at its real 2.5s default, the first graph query
-    against a freshly booted server does not finish in time. The plugin must treat
+    With ``COGNEE_RECALL_TIMEOUT`` pinned to a tight 2.5s (the pre-1.5.1 default;
+    production now ships 10s/12s), the first graph query against a freshly booted
+    server does not finish in time. The plugin must treat
     that as "slow" — no memory this prompt, no breaker trip, no failure state that
     would redden the status line — rather than concluding the server is down.
 
@@ -191,9 +192,9 @@ def test_a_slow_cold_query_is_classified_slow_not_down(
     assert writer.wait_for_sync(deadline=600.0) is not None
     graph.wait_until_recalled(f"What did we choose for {nonce}?", "paxos", deadline=600.0)
 
-    # Now restore the production budget for a fresh session's first prompt. The
-    # env dict is shared with the sessions, so mutating it here is what a real
-    # deployment's defaults would give us.
+    # Now pin a tight budget for a fresh session's first prompt. The env dict
+    # is shared with the sessions, so mutating it here is what a deployment
+    # with these values would give us.
     live_env["COGNEE_RECALL_TIMEOUT"] = "2.5"
     live_env["COGNEE_RECALL_BUDGET"] = "4"
 

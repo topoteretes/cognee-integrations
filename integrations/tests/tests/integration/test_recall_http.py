@@ -14,8 +14,9 @@ Contract under test (from the PR reviews):
   does NOT fall back to a possibly-different local backend.
 
 Migrated from claude-code/tests/test_recall_http.py (the module is identical in
-both suites, so codex gains this coverage). Transport-exception classification
-lives in unit/test_recall_http_transport.py — no server can raise those.
+all registered suites, so Codex and Antigravity gain this coverage).
+Transport-exception classification lives in unit/test_recall_http_transport.py
+— no server can raise those.
 """
 
 from __future__ import annotations
@@ -77,6 +78,18 @@ def test_http_500_is_error_envelope(rh, mock_server):
     out = _recall(rh, mock_server.url)
     assert isinstance(out, dict) and out["status"] == 500 and out["authoritative"] is False
     # reachable-but-erroring must NOT fall back to the local CLI
+    assert out != rh.UNREACHABLE
+
+
+def test_http_404_is_an_authoritative_empty(rh, mock_server):
+    """cognee >= 1.6.0 answers a dataset with no graph yet, or an unresolvable
+    dataset name, with 404 instead of an empty list. Nothing is there to find:
+    an empty result, not an error envelope, and not a local-CLI fallback."""
+    mock_server.force_response(
+        "POST", RECALL, 404, {"detail": {"message": "No datasets found. [DatasetNotFoundError]"}}
+    )
+    out = _recall(rh, mock_server.url)
+    assert out == []
     assert out != rh.UNREACHABLE
 
 

@@ -3,9 +3,10 @@
 Three things a real server has to confirm, because getting any of them wrong
 fails silently rather than loudly:
 
-  * an index submits ``content_type=code`` with the repo in ``repositories``
-    and NO file upload — the server rejects the two together, and a plain
-    upload would build a per-file graph instead of a repo one;
+  * an index submits ``content_type=code`` with the repo in ``raw_data``
+    and NO file upload — the server rejects the two together, a plain upload
+    would build a per-file graph instead of a repo one, and a spec under the
+    pre-1.5.4 name ``repositories`` is dropped by the server without a word;
   * a code file remembered with ``--file`` keeps its REAL filename, because
     the extension is the server's loader-routing signal (a ``.txt`` rename
     silently ingests code as prose through the LLM pipeline);
@@ -64,18 +65,24 @@ def git_repo(tmp_path):
 # ── indexing a repository ──────────────────────────────────────────────────
 
 
-def test_index_submits_repositories_not_a_file_upload(cg, mock_server):
-    """content_type=code + repositories, with no `data` file part.
+def test_index_submits_raw_data_not_a_file_upload(cg, mock_server):
+    """content_type=code + raw_data, with no `data` file part.
 
     The server rejects uploads combined with content_type='code', and an upload
     without it would build a one-file graph with no cross-file edges.
+
+    The field name is load-bearing and fails silently when wrong: cognee 1.5.4
+    renamed it from `repositories`, and an unrecognised multipart part is
+    dropped rather than refused, so the old name reached a 1.5.4 server as a
+    request with no repository at all (issue #420).
     """
     res = cg.do_index_repo(mock_server.url, "", "/path/to/proj", "codebase-proj")
     assert res["ok"] is True
 
     call = mock_server.assert_called("POST", REMEMBER)
     assert call["form"]["content_type"] == "code"
-    assert call["form"]["repositories"] == "/path/to/proj"
+    assert call["form"]["raw_data"] == "/path/to/proj"
+    assert "repositories" not in call["form"]
     assert call["form"]["datasetName"] == "codebase-proj"
     assert call["form"]["run_in_background"] == "true"
     assert call.get("files", []) == []
@@ -97,14 +104,31 @@ def test_api_key_header_attached(cg, mock_server):
 
 
 def test_old_server_rejection_names_the_version_requirement(cg, mock_server):
-    """A pre-1.5.3 server 400s content_type='code'. The message must say so —
-    otherwise it reads as a bad repo path and sends the user hunting."""
+    """A server too old for content_type='code' 400s it. The message must say
+    so — otherwise it reads as a bad repo path and sends the user hunting."""
     mock_server.force_response(
         "POST", REMEMBER, 400, {"detail": "Unsupported content_type 'code'."}
     )
     res = cg.do_index_repo(mock_server.url, "", "/path/to/proj", "ds")
     assert res != cg.UNREACHABLE
-    assert "1.5.3" in res["error"]
+    assert "1.5.4" in res["error"]
+
+
+def test_a_current_server_400_is_not_blamed_on_the_server_version(cg, mock_server):
+    """The inverse of the test above, and the second half of issue #420.
+
+    Every 400 the code branch raises names `content_type`, so classifying on
+    that substring relabelled the server's own actionable complaint — a bad
+    argument, a disabled local path — as "your server is too old". The reporter
+    chased a version that was already new enough. Only "Unsupported
+    content_type" means old; everything else is quoted verbatim.
+    """
+    detail = "content_type='code' requires at least one repository path or git URL in 'raw_data'."
+    mock_server.force_response("POST", REMEMBER, 400, {"detail": detail})
+    res = cg.do_index_repo(mock_server.url, "", "/path/to/proj", "ds")
+    assert res != cg.UNREACHABLE
+    assert "requires cognee >=" not in res["error"]
+    assert detail in res["error"]
 
 
 @pytest.mark.parametrize("code", [401, 403, 500])

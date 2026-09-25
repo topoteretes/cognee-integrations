@@ -7,6 +7,7 @@ name = "cognee-integration-web-widget"
 version = "0.1.0"
 description = "Embeddable web chat widget powered by cognee memory — cited answers over your docs, scoped per visitor conversation."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Cognee team" }]
 dependencies = [

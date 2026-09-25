@@ -12,8 +12,9 @@ Breaker semantics under test (SDK-356):
   * transient results (timeouts) are no-verdict: neither failure nor success
   * the trip reason (unreachable vs server_error) is recorded
 
-Migrated from claude-code/tests/test_cognee_client.py, parametrized over both
-suites (the client is identical; codex never had this coverage).
+Migrated from claude-code/tests/test_cognee_client.py, parametrized over all
+registered suites (the client is identical; Codex and Antigravity gain this
+coverage).
 """
 
 from __future__ import annotations

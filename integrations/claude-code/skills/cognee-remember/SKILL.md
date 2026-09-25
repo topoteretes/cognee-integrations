@@ -7,6 +7,19 @@ description: Store data permanently in the Cognee knowledge graph. Accepts a dat
 
 Store data permanently in the Cognee knowledge graph with category tagging.
 
+## Rules
+
+- **Server first.** Writes go to the running Cognee server over HTTP through the
+  wrapper below — the authoritative path in both local and cloud mode.
+- **`cognee-cli` is a last resort, not an alternative.** It is reachable only on a
+  machine holding a cognee **source checkout**, and in cloud mode the plugin's
+  venv is never built at all. Use it only when the server is genuinely
+  unreachable *and* that checkout exists. Unsure which mode you are in?
+  `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh" --json` reports `mode`,
+  `server_url` and `reachable` without importing cognee.
+- **Empty CLI output is never proof that a write landed.** Confirm against the
+  server before reporting success.
+
 ## Data categories
 
 Cognee organizes knowledge into three categories via `node_set` tagging:
@@ -23,17 +36,17 @@ Determine the category from the user's intent, then run:
 
 **User data** (preferences, corrections, personal context):
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh "$ARGUMENTS" --node-set user_context
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh" "$ARGUMENTS" --node-set user_context
 ```
 
 **Project data** (docs, code, company knowledge):
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh "$ARGUMENTS" --node-set project_docs
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh" "$ARGUMENTS" --node-set project_docs
 ```
 
 **Agent data** (explicit agent notes — routine tool logs are automatic):
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh "$ARGUMENTS" --node-set agent_actions
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh" "$ARGUMENTS" --node-set agent_actions
 ```
 
 **Storing a file (code included)**: pass `--file` so the upload keeps its real
@@ -42,7 +55,7 @@ filename — the extension is the server's routing signal, and a code file
 ingested as prose:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh --file src/payments.py --node-set project_docs
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh" --file src/payments.py --node-set project_docs
 ```
 
 For a whole repository (cross-file calls/imports, impact analysis), index it
@@ -50,19 +63,26 @@ instead — see the **cognee-code** skill.
 
 The wrapper POSTs to the running Cognee server (`/api/v1/remember`). A `{"ok": true}` response means the server accepted the data. An error response means the server rejected or failed the request — check `COGNEE_API_KEY` and server logs; do **not** re-run or conclude the data wasn't stored without confirming against the server.
 
-**Background by default + eventual consistency**: the wrapper submits with `run_in_background=true` (so a large cognify never holds one request open past the cloud's ~10-min request ceiling). The POST returns once the work is **enqueued**, with `dataset_id` and `pipeline_run_id`; `status: "running"` means *submitted, not yet in the permanent graph*. The session cache is searchable immediately, but the graph is queryable only after the cognify pipeline **completes**.
+**Background by default + eventual consistency**: the wrapper submits with `run_in_background=true` (so a large cognify never holds one request open past the cloud's ~10-min request ceiling). The POST returns once the work is **enqueued**, with `dataset_id` and `pipeline_run_id`; `status: "running"` means *submitted, not yet in the permanent graph*. The graph is queryable only after the cognify pipeline **completes**; until then a search will not find the new content.
 
 By default the wrapper then waits a short, bounded time (`COGNEE_REMEMBER_WAIT_SECONDS`, default `8`) polling `/api/v1/datasets/status` and adds `"queryable": true|false` + `"wait_outcome"` to the result. `queryable: true` means it's now in the graph and an immediate recall will find it. If `queryable: false`, check `wait_outcome`: `"timeout"` means it's still processing (recall later — not an error), `"errored"` means the cognify failed (check server logs), `"unknown"` means completion couldn't be confirmed (e.g. an older server without the status route). Set `COGNEE_REMEMBER_WAIT_SECONDS=0` to skip the wait, or `COGNEE_REMEMBER_BACKGROUND=false` for a fully synchronous, immediately-queryable write (small content only — large content risks the request ceiling).
 
 ## Fallback only — server unreachable
 
-`cognee-cli` is a thin client over the same server. Use it only when the server is genuinely down:
+`cognee-cli` is a thin client over the same server, and it requires a cognee
+source checkout — on a normal install it is simply unavailable, which is not a
+Cognee fault to report. Use it only when the server is genuinely down *and* that
+checkout exists:
 
 ```bash
 cognee-cli remember "$ARGUMENTS" -d "${COGNEE_PLUGIN_DATASET:-agent_sessions}" --node-set user_context
 ```
 
 **Empty or clean CLI output does NOT confirm the data was stored.** Verify via the server directly once it is back up.
+
+If the CLI is missing too, say the write could not be persisted and show the user
+`"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"` output — do not report the
+memory as saved.
 
 ## When to use
 

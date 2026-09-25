@@ -21,10 +21,15 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 
 // Recall hot path — same defaults as the claude-code/codex integrations
-// (COGNEE_RECALL_TIMEOUT=2.5s, COGNEE_RECALL_BUDGET=4s,
+// (COGNEE_RECALL_TIMEOUT=10s, COGNEE_RECALL_BUDGET=12s,
 //  COGNEE_BREAKER_THRESHOLD=5, COGNEE_BREAKER_COOLDOWN=120s).
-export const DEFAULT_RECALL_TIMEOUT_MS = 2_500;
-export const DEFAULT_RECALL_BUDGET_MS = 4_000;
+// Sized for the graph scope, which runs last and is the only expensive call:
+// graph search time grows with the dataset and with the round trip to a
+// remote (cloud) server, and a call that overruns its timeout contributes
+// nothing, so a cap tuned for a small local graph silently drops graph memory
+// once either grows.
+export const DEFAULT_RECALL_TIMEOUT_MS = 10_000;
+export const DEFAULT_RECALL_BUDGET_MS = 12_000;
 export const DEFAULT_RECALL_BREAKER_THRESHOLD = 5;
 export const DEFAULT_RECALL_BREAKER_COOLDOWN_MS = 120_000;
 

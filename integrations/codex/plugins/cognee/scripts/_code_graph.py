@@ -3,14 +3,15 @@
 
 Standalone, stdlib-only, so it runs under the system ``python3`` without the
 plugin venv (the same constraint ``_remember_http.py`` / ``_recall_http.py``
-already work under). Requires a cognee server >= 1.5.3 (the release that
-opened ``content_type="code"`` on /api/v1/remember and the ``code`` recall
-scope).
+already work under). Requires a cognee server >= 1.5.4. 1.5.3 opened
+``content_type="code"`` on /api/v1/remember and the ``code`` recall scope;
+1.5.4 renamed the repo-spec form field from ``repositories`` to ``raw_data``,
+and this module sends the new name only.
 
 Four responsibilities, all shared by the wrapper CLI and the hooks:
 
 1. **Repo indexing** (``do_index_repo``): POST ``content_type="code"`` +
-   ``repositories`` to ``/api/v1/remember``. One code graph per repository
+   ``raw_data`` to ``/api/v1/remember``. One code graph per repository
    spec (a local path when the server shares this filesystem, or a git URL
    the server clones). The transport contract mirrors ``_remember_http.py``:
    ``{"ok": true, ...}`` on 2xx, an error envelope on HTTP errors (no CLI
@@ -62,6 +63,8 @@ This is normal behavior, not a gap to close client-side — but the two produce
 identical-looking results, which is why the skills tell the agent to say which
 one it is answering from when the work is in progress.
 """
+
+from __future__ import annotations
 
 import hashlib
 import json
@@ -429,7 +432,7 @@ def auto_code_lane(prompt: str, cwd: str) -> dict:
 
 def _multipart_body(fields):
     """Multipart encoder over (name, value) pairs — repeated names allowed,
-    which List[str] Form fields (repositories) require."""
+    which List[str] Form fields (raw_data) require."""
     boundary = f"----cogneeCodeGraph{uuid.uuid4().hex}"
     chunks = []
     for name, value in fields:
@@ -474,7 +477,11 @@ def do_index_repo(
         [
             ("datasetName", dataset),
             ("content_type", "code"),
-            ("repositories", str(repo_spec)),
+            # cognee >= 1.5.4 reads the repo specs from raw_data; 1.5.3 called
+            # the same field repositories. Sending the old name to a 1.5.4
+            # server drops the spec silently (unknown Form parts are ignored),
+            # which is what issue #420 reported.
+            ("raw_data", str(repo_spec)),
             ("run_in_background", "true" if run_in_background else "false"),
             ("index_vectors", "true" if index_vectors else "false"),
         ]
@@ -496,11 +503,16 @@ def do_index_repo(
             pass
         if e.code in (401, 403):
             msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
-        elif e.code == 400 and "content_type" in detail:
-            # An older server (< 1.5.3) rejects content_type='code' outright.
+        elif e.code == 400 and "unsupported content_type" in detail.lower():
+            # An older server rejects the content_type value outright, and says
+            # so in those words. Matching on a bare "content_type" substring
+            # would also swallow a current server's code-branch 400s (which all
+            # name the field), reporting a contract or argument error as "your
+            # server is too old" — the misdirection issue #420 reported. Those
+            # fall through to the generic branch, which quotes the server.
             msg = (
                 "server rejected content_type='code' (HTTP 400) — repo indexing "
-                "requires cognee >= 1.5.3; restart the session to upgrade the "
+                "requires cognee >= 1.5.4; restart the session to upgrade the "
                 "plugin server, or upgrade the remote deployment. Detail: " + detail
             )
         else:

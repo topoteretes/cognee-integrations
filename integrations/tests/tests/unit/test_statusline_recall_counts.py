@@ -12,9 +12,6 @@ Contract:
     provides one, and a neighbour's per-turn counts must never show either;
   * an unattributed shared marker is still rendered (lagging counts beat none);
   * a session id arrives from stdin JSON, so it never builds a path unchecked;
-  * `(N from past sessions)` follows the per-turn count when the marker's
-    `cross_session_hits` is positive — graph passages from earlier sessions —
-    singular at 1, capped at the total, omitted at 0;
   * `COGNEE_STATUSLINE_COUNTS=false` hides the segment; `=full` restores the
     per-scope diagnostic strip `recall 4s/5t/0g/1a · saved 2p/41t/2a`.
 
@@ -125,45 +122,6 @@ def test_unparseable_counts_read_as_zero(sl):
 def test_saves_are_not_shown_by_default(sl):
     _marker(sl, per_session=_mine(totals=None, saves_last_turn=_SAVES))
     assert sl._recall_segment(_SESSION) == _PER_TURN
-
-
-# ── from past sessions ─────────────────────────────────────────────────────
-
-
-def test_cross_session_hits_ride_along_with_the_per_turn_count(sl):
-    _marker(sl, per_session=_mine(cross_session_hits=3))
-    assert sl._recall_segment(_SESSION) == (
-        f" · 10 memory hits (3 from past sessions) "
-        f"{_DIM}· 12/40 turns had hits this session{_RESET}"
-    )
-
-
-def test_a_single_cross_session_hit_is_singular(sl):
-    _marker(sl, per_session=_mine(totals=None, cross_session_hits=1))
-    assert sl._recall_segment(_SESSION) == " · 10 memory hits (1 from a past session)"
-
-
-def test_zero_cross_session_hits_are_omitted(sl):
-    _marker(sl, per_session=_mine(totals=None, cross_session_hits=0))
-    assert sl._recall_segment(_SESSION) == _PER_TURN
-
-
-def test_cross_session_hits_never_exceed_the_total(sl):
-    """A stale or inconsistent marker must not claim more than was injected."""
-    hits = {"session": 1, "trace": 0, "graph_context": 1, "session_context": 0}
-    _marker(sl, per_session=_mine(hits=hits, totals=None, cross_session_hits=7))
-    assert sl._recall_segment(_SESSION) == " · 2 memory hits (2 from past sessions)"
-
-
-def test_garbage_cross_session_count_reads_as_zero(sl):
-    _marker(sl, per_session=_mine(totals=None, cross_session_hits="many"))
-    assert sl._recall_segment(_SESSION) == _PER_TURN
-
-
-def test_full_mode_ignores_cross_session_hits(sl, monkeypatch):
-    _marker(sl, per_session=_mine(cross_session_hits=3))
-    monkeypatch.setenv("COGNEE_STATUSLINE_COUNTS", "full")
-    assert sl._recall_segment(_SESSION) == _STRIP_COUNTS_ONLY
 
 
 # ── per session ────────────────────────────────────────────────────────────

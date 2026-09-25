@@ -149,7 +149,18 @@ def test_mint_switch_session_id_never_collides(suite, pc):
 
 
 def _serve(pc, monkeypatch, rows):
-    monkeypatch.setattr(pc, "_json_http_request", lambda *a, **k: rows)
+    def response(path, **kwargs):
+        if "/permissions/" in path:
+            if not any("ownerId" in row or "owner_id" in row for row in rows):
+                import urllib.error
+
+                raise urllib.error.HTTPError(path, 404, "unsupported", {}, None)
+            return [row for row in rows if row.get("ownerId", row.get("owner_id")) == "me"]
+        if path.endswith("/users/me"):
+            return {}
+        return rows
+
+    monkeypatch.setattr(pc, "_json_http_request", response)
 
 
 def test_list_writable_filters_by_owner_camelcase(pc, monkeypatch):
@@ -229,8 +240,9 @@ def test_statusline_reads_record_dataset(suite, statusline, temp_home, monkeypat
     )
     monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "from-env")
     assert statusline._active_dataset(HOST) == "from-record"
-    assert "switched" in statusline._switched_marker(HOST)
-    # another launch, or no host id: env still rules and no marker
+    # No "switched" tag: the bar names the dataset it is on, which is the whole
+    # story — the tag only cluttered the line and read as a state to act on.
+    assert not hasattr(statusline, "_switched_marker")
+    # another launch, or no host id: env still rules
     assert statusline._active_dataset("unknown-host") == "from-env"
-    assert statusline._switched_marker("unknown-host") == ""
     assert statusline._active_dataset("../evil") == "from-env"  # path-unsafe id ignored

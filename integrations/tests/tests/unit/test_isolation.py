@@ -55,4 +55,4 @@ def test_isolated_config_reads_mock_url_and_defaults(
 def test_hook_module_loads_hyphenated_scripts(suite, hook_module, temp_home):
     watcher = hook_module(suite, "exit-watcher.py")
     assert watcher.__name__.endswith("_exit_watcher")
-    assert callable(watcher._refresh_credits_marker)
+    assert callable(watcher._reprobe_connection)

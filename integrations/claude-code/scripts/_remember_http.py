@@ -18,6 +18,8 @@ Contract — what gets printed to stdout:
 Diagnostics also go to stderr so the caller can surface them.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import socket
@@ -116,9 +118,9 @@ def _poll_status(
 ):
     """Poll /api/v1/datasets/status (cognify_pipeline) until terminal or the deadline.
 
-    Returns "completed" | "errored" | "timeout" | "unknown". Deliberately mirrors
-    _plugin_common.wait_for_cognify but stays stdlib-only and opener-injectable so this
-    module keeps running under bare python3 (no plugin venv) and remains test-mockable.
+    Returns "completed" | "errored" | "timeout" | "unknown". The only cognify
+    poller in the plugin: stdlib-only and opener-injectable so this module keeps
+    running under bare python3 (no plugin venv) and remains test-mockable.
     """
     if not dataset_id:
         return "unknown"
@@ -171,10 +173,16 @@ def do_remember(
     node_set,
     *,
     file_path=None,
+    dataset_id="",
     opener=urllib.request.urlopen,
     timeout=120.0,
 ):
     """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.
+
+    ``dataset_id`` addresses the target by UUID (sent as ``datasetId``, which
+    the endpoint accepts in place of ``datasetName``). Under shared agent
+    memory that is the canonical parent-owned dataset; by name, an agent would
+    silently create and write its own empty copy instead.
 
     With ``file_path``, the file's bytes are uploaded under its REAL basename
     instead of the synthetic ``{node_set}.txt``. The filename extension is the
@@ -193,12 +201,18 @@ def do_remember(
         except OSError as e:
             return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
         filename = os.path.basename(str(file_path).rstrip("/")) or filename
+    from _dataset_access import dataset_id as parse_dataset_id
+
+    # The explicit UUID (shared memory's canonical dataset) wins; otherwise a
+    # UUID-shaped dataset is sent as datasetId and a name as datasetName.
+    ident = str(dataset_id or "").strip() or parse_dataset_id(dataset)
+    fields = {"node_set": node_set, "run_in_background": _background_flag()}
+    if ident:
+        fields["datasetId"] = ident
+    else:
+        fields["datasetName"] = dataset
     body, boundary = _multipart_body(
-        {
-            "datasetName": dataset,
-            "node_set": node_set,
-            "run_in_background": _background_flag(),
-        },
+        fields,
         [("data", filename, content.encode("utf-8") if isinstance(content, str) else content)],
     )
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
@@ -281,11 +295,12 @@ def do_remember(
 
 
 def main(argv):
-    # argv: service_url, api_key, content, dataset, node_set[, file_path]
+    # argv: service_url, api_key, content, dataset, node_set[, file_path[, dataset_id]]
     # With file_path set (arg 6), content (arg 3) is ignored: the file's bytes
     # are uploaded under their real basename so code files route as code.
-    a = list(argv) + [""] * 6
-    result = do_remember(a[0], a[1], a[2], a[3], a[4], file_path=a[5] or None)
+    # dataset_id (arg 7) addresses the dataset by UUID instead of the name.
+    a = list(argv) + [""] * 7
+    result = do_remember(a[0], a[1], a[2], a[3], a[4], file_path=a[5] or None, dataset_id=a[6])
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
     if result != UNREACHABLE:
         # Refresh the status-line credits marker, attributing the spend delta
@@ -296,8 +311,18 @@ def main(argv):
         try:
             os.environ.setdefault("COGNEE_PLUGIN_IN_VENV", "1")
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from _plugin_common import refresh_credits
+            from _plugin_common import (
+                clear_payment_required,
+                record_payment_required,
+                refresh_credits,
+            )
 
+            # A 402 is the server refusing to pay for this remember; note it
+            # for the status line. A remember that got through clears the note.
+            if isinstance(result, dict) and result.get("status") == 402:
+                record_payment_required("remember")
+            elif isinstance(result, dict) and not result.get("error"):
+                clear_payment_required()
             refresh_credits("remember")
         except Exception:
             pass

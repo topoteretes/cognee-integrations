@@ -54,6 +54,11 @@ def _pending(pc) -> list:
     return _session_state(pc).get("pending_entries") or []
 
 
+def _pending_content(pc) -> list:
+    """Buffered entries without the buffer's own bookkeeping (the buffered-at stamp)."""
+    return [{k: v for k, v in e.items() if k != pc._BUFFERED_AT_KEY} for e in _pending(pc)]
+
+
 def _replay_into(pc, monkeypatch, sink: list):
     monkeypatch.setattr(
         pc, "remember_entry_via_http", lambda d, s, entry, **k: sink.append(entry) or {}
@@ -118,7 +123,7 @@ def test_concurrent_append_during_drain_survives(pc, monkeypatch):
     monkeypatch.setattr(pc, "remember_entry_via_http", _replay)
     # Both originals replayed; the mid-drain arrival remains.
     assert pc.drain_warmup_entries("ds", "sid") == (2, 1)
-    assert _pending(pc) == [{"type": "qa", "question": "new", "answer": "x"}]
+    assert _pending_content(pc) == [{"type": "qa", "question": "new", "answer": "x"}]
 
 
 def test_drain_skipped_when_lock_busy(pc, monkeypatch):
@@ -131,10 +136,18 @@ def test_drain_skipped_when_lock_busy(pc, monkeypatch):
     assert calls == []
 
 
-def test_concurrent_appends_do_not_lose_entries(pc):
+def test_concurrent_appends_do_not_lose_entries(pc, monkeypatch):
     # Two async hooks appending at the same moment must both land: the buffer
     # mutex serializes the read-modify-write, so the last writer no longer
     # clobbers the other's entry.
+    #
+    # The mutex fails OPEN after _BUFFER_LOCK_TIMEOUT_SECONDS (1s) by design —
+    # a rare lost update beats a hook that hangs. Eight writers queueing on a
+    # slow CI runner (Windows) can push the last one past that second and
+    # into the documented lost-update path, which is not what this test is
+    # about. Pin the wait high so what is asserted is serialization, not the
+    # runner's speed; the fail-open path has its own test below.
+    monkeypatch.setattr(pc, "_BUFFER_LOCK_TIMEOUT_SECONDS", 30.0)
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         list(
             ex.map(
@@ -156,18 +169,6 @@ def test_append_fails_open_when_lock_held(pc, monkeypatch):
     pc.append_warmup_entry("ds", "sid", {"type": "trace", "origin_function": "X"})
     entries = _pending(pc)
     assert entries and entries[0]["origin_function"] == "X"
-
-
-def test_drain_leaves_legacy_shadow_untouched(pc, monkeypatch):
-    # The qa/trace text mirrors (legacy document-bridge data) must survive a drain.
-    pc.append_http_bridge_entry("ds", "sid", trace="Bash [success]")
-    pc.append_warmup_entry("ds", "sid", {"type": "trace", "origin_function": "Bash"})
-    monkeypatch.setattr(pc, "remember_entry_via_http", lambda *a, **k: {})
-    pc.drain_warmup_entries("ds", "sid")
-
-    state = _session_state(pc)
-    assert state.get("trace") == ["Bash [success]"]
-    assert state.get("pending_entries") == []
 
 
 def test_drain_budget_exceeded_preserves_tail(pc, events, monkeypatch):

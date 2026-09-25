@@ -1,7 +1,7 @@
 {
   "name": "n8n-nodes-cognee",
-  "version": "0.5.1",
-  "description": "n8n node to call Cognee Cloud API and its memory services",
+  "version": "0.7.0",
+  "description": "n8n nodes for Cognee AI memory: the Cognee action node and a Cognee Memory sub-node for the AI Agent",
   "keywords": [
     "n8n-community-node-package"
   ],
@@ -27,29 +27,37 @@
     "lintfix": "n8n-node lint --fix",
     "format": "prettier nodes credentials --write",
     "release": "n8n-node release",
-    "prepublishOnly": "npm run build && npm run lint"
+    "prepublishOnly": "npm run build && npm run lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "files": [
     "dist"
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
+    "aiNodeSdkVersion": 1,
     "credentials": [
       "dist/credentials/CogneeApi.credentials.js"
     ],
     "nodes": [
-      "dist/nodes/Cognee/Cognee.node.js"
+      "dist/nodes/Cognee/Cognee.node.js",
+      "dist/nodes/CogneeMemory/CogneeMemory.node.js"
     ]
   },
   "devDependencies": {
-    "@n8n/node-cli": "^0.23.1",
+    "@n8n/ai-node-sdk": "^0.27.2",
+    "@n8n/node-cli": "^0.46.2",
     "@typescript-eslint/typescript-estree": "^8.57.2",
     "eslint": "^9.39.4",
+    "n8n-workflow": "2.37.2",
     "prettier": "^3.5.3",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
-    "n8n-workflow": "*"
+    "n8n-workflow": "*",
+    "@n8n/ai-node-sdk": "*"
   },
   "release-it": {
     "git": {

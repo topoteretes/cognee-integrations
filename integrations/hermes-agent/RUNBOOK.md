@@ -70,5 +70,4 @@ stays wrong until re-embedded, which is why the rebuild below is not optional.
 
 The default `GRAPH_COMPLETION` search runs an LLM per query — slow on local
 models even with a good index. Use `search_type=CHUNKS` for fast raw-text
-retrieval, scope the query with `scope=session` when the answer is in the
-current conversation, or raise `COGNEE_RECALL_TIMEOUT`.
+retrieval, or raise `COGNEE_RECALL_TIMEOUT`.

@@ -12,6 +12,8 @@ Never modifies configuration, initialises databases, registers
 resources, writes files, or mutates state.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import pathlib
@@ -111,6 +113,7 @@ def _resolve_server_url() -> tuple:
 
 
 _KEY_SOURCE_LABELS = {
+    "plugin_agent_key": "Plugin identity",
     "env_api_key": "ENV",
     "cache_single_key": "Config",
     "missing": "Default",
@@ -131,6 +134,41 @@ def _resolve_api_key_source() -> str:
         if file_key and file_key == key:
             label = "Env file"
     return label
+
+
+def _resolve_memory_sharing() -> str:
+    """How this plugin's memory relates to the user's other agents.
+
+    ``shared (role: cognee-agent)`` when the agent is wired into the shared
+    role; otherwise ``separated`` with the reason: the user opted out, the
+    plugin runs as the principal (no agent identity — the principal sees
+    everything anyway), or the wiring was skipped (older server, not the
+    tenant owner, tenant-less install that already owns data).
+    """
+    from _plugin_common import (
+        AGENT_ROLE_NAME,
+        active_agent_key,
+        load_shared_memory_marker,
+        shared_memory_enabled,
+    )
+
+    if not shared_memory_enabled():
+        return "separated (opt-out)"
+    marker = load_shared_memory_marker()
+    if not active_agent_key():
+        # An install that could not be wired (or whose identity is blocked or
+        # bound to another principal) runs as the principal; say why, so "no
+        # agent identity" is not mistaken for a broken install.
+        reason = str(marker.get("reason") or "").replace("_", " ")
+        return (
+            f"principal (shared memory unavailable: {reason})"
+            if reason
+            else ("principal (no agent identity)")
+        )
+    if marker.get("mode") == "shared":
+        return f"shared (role: {AGENT_ROLE_NAME})"
+    reason = str(marker.get("reason") or "not wired yet").replace("_", " ")
+    return f"separated ({reason})"
 
 
 def _check_health(server_url: str, timeout: float = 5.0) -> dict:
@@ -194,6 +232,50 @@ def _resolve_embedding() -> tuple[str, str]:
     return model, dims
 
 
+def _resolve_llm() -> str:
+    """Where the local server's LLM calls go: a configured provider key, or the
+    Claude observer (Claude Code's own subscription via ``claude -p``).
+
+    Local mode only — a remote server owns its own LLM. Read-only: decides as
+    session-start would (``resolve_observer``) and asks the shim's ``/health``;
+    it never starts the shim or touches the environment.
+    """
+    from _observer import observer_alive, resolve_observer
+    from config import load_config
+
+    cfg = load_config()
+    mode = _resolve_mode()
+    if mode == "Cloud":
+        return "Remote server (not applicable)"
+    try:
+        decision = resolve_observer(cfg)
+    except Exception as exc:
+        return f"Unknown ({str(exc)[:80]})"
+    if decision.get("active"):
+        from _observer import SPEND_WARNING, embedding_warning
+
+        shim = "shim running" if observer_alive(decision.get("port")) else "shim not running"
+        return (
+            f"Claude Code observer (`claude -p`, model {decision.get('model')}, "
+            f"{decision.get('endpoint')}, {shim}). {SPEND_WARNING} {embedding_warning()}"
+            + (f" Warning: {decision['model_warning']}" if decision.get("model_warning") else "")
+        )
+    if decision.get("error"):
+        return f"None — {decision['error']}"
+    reason = str(decision.get("reason") or "")
+    if reason in ("llm_key_configured", "llm_provider_configured"):
+        provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
+        model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
+        return f"Configured provider ({provider}, model {model})"
+    if reason == "server_dotenv_configured":
+        return f"Configured provider (in the server's {decision.get('dotenv') or '.env'})"
+    if reason == "claude_cli_missing":
+        return "None — no LLM_API_KEY and no `claude` executable for the observer"
+    if reason == "disabled":
+        return "None — no LLM_API_KEY; observer disabled (COGNEE_LLM_OBSERVER=false)"
+    return "None — no LLM_API_KEY configured"
+
+
 def _resolve_env_file() -> str:
     """One-time config file (~/.cognee/.env): presence, key names, overrides.
 
@@ -219,6 +301,7 @@ def collect_report() -> dict:
     mode = _resolve_mode()
     display_url, raw_url = _resolve_server_url()
     api_key_source = _resolve_api_key_source()
+    memory_sharing = _resolve_memory_sharing()
     health = _check_health(raw_url)
     cognee_server = _resolve_server_version(health["raw_body"])
     cognee_local = _resolve_local_cognee_version()
@@ -230,10 +313,12 @@ def collect_report() -> dict:
         "env_file": _resolve_env_file(),
         "server_url": display_url if display_url != "-" else None,
         "api_key_source": api_key_source,
+        "memory_sharing": memory_sharing,
         "reachable": health["reachable"],
         "latency_ms": health["latency_ms"],
         "cognee_local": cognee_local,
         "cognee_server": cognee_server,
+        "llm": _resolve_llm(),
         "embedding_model": embedding_model,
         "embedding_dimensions": embedding_dimensions,
         "circuit_breaker": circuit_breaker,
@@ -245,10 +330,12 @@ _DISPLAY_ORDER = [
     ("Env File", "env_file"),
     ("Server URL", "server_url"),
     ("API Key Source", "api_key_source"),
+    ("Memory Sharing", "memory_sharing"),
     ("Reachable", "reachable"),
     ("Latency", "latency_ms"),
     ("Cognee (local)", "cognee_local"),
     ("Cognee (server)", "cognee_server"),
+    ("LLM", "llm"),
     ("Embedding Model", "embedding_model"),
     ("Embedding Dims", "embedding_dimensions"),
     ("Circuit Breaker", "circuit_breaker"),

@@ -1,3 +1,19 @@
+<div align="center">
+  <a href="https://www.cognee.ai">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="Cognee" width="260">
+  </a>
+  <p><strong>Cognee memory for Hermes Agent</strong> — persistent, graph-backed memory with session recall, durable remember/forget, and automatic capture for your Hermes agents.</p>
+  <p>
+    <a href="https://docs.cognee.ai">Docs</a> ·
+    <a href="https://discord.gg/NQPKmU5CCg">Discord</a> ·
+    <a href="https://github.com/topoteretes/cognee">Cognee core</a>
+  </p>
+  <p>
+    <a href="https://pypi.org/project/cognee-integration-hermes-agent/"><img src="https://img.shields.io/pypi/v/cognee-integration-hermes-agent" alt="PyPI version"></a>
+    <a href="https://pypi.org/project/cognee-integration-hermes-agent/"><img src="https://img.shields.io/pypi/dm/cognee-integration-hermes-agent" alt="PyPI downloads"></a>
+  </p>
+</div>
+
 # Cognee Memory Plugin for Hermes Agent
 
 Standalone Hermes memory provider backed by Cognee.
@@ -10,11 +26,23 @@ Python package with the `hermes_agent.plugins` entry point.
 ## Features
 
 - Stores each completed Hermes turn in Cognee session memory.
-- Uses `cognee_recall` for session-first recall with graph fallback.
-- Exposes `cognee_remember` for durable graph memory.
-- Exposes `cognee_forget` for deletion requests.
+- Recalls memory per prompt with a single request: one `<cognee_memory>`
+  block holding the session history, retrieved graph context and session
+  guidance (see [Per-prompt memory block](#per-prompt-memory-block)), with a
+  plain-words hit counter on top.
+- Uses `cognee_recall` for explicit search, `cognee_remember` for durable
+  graph memory.
+- Exposes `cognee_forget` for user-directed, per-document deletion ("forget
+  what we said about tennis"): find candidates with previews, then delete only
+  what the user confirms.
+- Exposes `cognee_switch_dataset` to move a conversation to another dataset
+  mid-session, bridging the session it leaves behind.
+- Indexes repositories into a deterministic code graph (`hermes cognee
+  index-repo`) and answers structural code questions exactly via
+  `cognee_code_search`, plus an identifier-gated code recall lane.
 - Runs `cognee.improve()` at Hermes session end to bridge session memory into the graph.
-- Mirrors explicit Hermes memory writes through `on_memory_write`.
+- Mirrors explicit Hermes memory writes through `on_memory_write`, and steers
+  the agent to prefer Cognee over Hermes' built-in memory files.
 - Supports local embedded Cognee and remote Cognee service mode.
 - Closes every session out of process, the way the other cognee plugins do: a
   detached worker bridges the session into the graph and only then unregisters
@@ -26,8 +54,16 @@ Python package with the `hermes_agent.plugins` entry point.
 
 ### Prerequisites
 
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed
-  (`curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`).
+- **Python 3.10 or newer.** This integration imports cognee in-process
+  (`requires-python = ">=3.10"` in `pyproject.toml`), so it inherits cognee's
+  own floor; `pip` refuses to install it on 3.9. Note that macOS's Xcode
+  Command Line Tools ship Python 3.9.6 — use a Homebrew, python.org or
+  [uv](https://docs.astral.sh/uv/)-managed 3.10+ interpreter instead.
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed — see
+  the [Hermes installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation).
+  (The install one-liner is quoted there rather than here: the catalog's install
+  scanner flags a piped shell script even inside a README, and a clean scan is
+  one less thing for a catalog reviewer to read past.)
 - **Local mode:** an LLM API key (e.g. OpenAI) — cognee uses it to build the
   knowledge graph on your machine.
 - **Cloud mode:** a Cognee Cloud tenant URL and API key from your
@@ -36,19 +72,33 @@ Python package with the `hermes_agent.plugins` entry point.
 
 ### 1. Install the plugin
 
-Via pip (recommended):
+**Hermes catalog — available after catalog acceptance:**
+
+```bash
+hermes plugins install cognee
+hermes plugins enable cognee
+hermes memory setup
+```
+
+Catalog installs use the commit reviewed by Hermes. Update them with
+`hermes plugins update cognee`; a newer PyPI release does not change the
+reviewed catalog version. The pip installer refuses to overwrite a catalog copy.
+
+**Via pip (available now):**
 
 ```bash
 pip install cognee-integration-hermes-agent
 cognee-hermes-install
 ```
 
-Hermes discovers plugins by scanning `~/.hermes/plugins/`, so the second
-command copies the plugin there — `pip install` alone is not enough, and after
-a `pip install -U` you re-run `cognee-hermes-install` to update the copy
-(`hermes cognee status` reminds you when the two drift).
+The pip package registers the memory provider through Hermes' entry-point
+discovery. The second command copies it into `~/.hermes/plugins/cognee/` to
+also provide the CLI and dashboard integration. For this installation method,
+update with `pip install -U cognee-integration-hermes-agent` followed by
+`cognee-hermes-install` (`hermes cognee status` reminds you when the two drift).
 
-Or from a checkout of this repository:
+Or, for development, copy a checkout into a Hermes home with no existing
+Cognee installation (do not copy over a catalog-managed plugin):
 
 ```bash
 git clone https://github.com/topoteretes/cognee-integrations.git
@@ -106,21 +156,22 @@ tenant, authenticated with your API key via `X-Api-Key`.
 
 ## How the pip install works
 
-Hermes has no entry-point plugin discovery (yet) — it scans
-`$HERMES_HOME/plugins/` for directories with a `plugin.yaml`. The wheel
-therefore ships the plugin-root files as package data and provides the
-`cognee-hermes-install` console script, which materializes the exact directory
-shape the scanner expects. Because Hermes runs that *copy*, upgrading is always
-two steps: `pip install -U cognee-integration-hermes-agent`, then
-`cognee-hermes-install` again.
+Hermes discovers memory providers two ways, and the package serves both:
 
-The package also declares the entry point Hermes would use if it grows native
-discovery, at which point the copy step becomes unnecessary:
+- **Pip entry point** — the wheel declares
+  `[project.entry-points."hermes_agent.memory_providers"]`, the group Hermes'
+  memory loader scans, so the provider activates from a plain `pip install`.
+- **Directory install** — `cognee-hermes-install` copies the plugin into
+  `$HERMES_HOME/plugins/cognee/` in the exact shape the directory scanner
+  expects; the load-bearing file is the root `__init__.py` (Hermes silently
+  skips a plugin directory without one). The directory install is the
+  recommended path: it carries the `hermes cognee` subcommands and the
+  dashboard config panel at full fidelity.
 
-```toml
-[project.entry-points."hermes_agent.plugins"]
-cognee = "cognee_integration_hermes"
-```
+For a pip-managed directory *copy*, upgrading takes two steps:
+`pip install -U cognee-integration-hermes-agent`, then `cognee-hermes-install`
+again (`hermes cognee status` reminds you when the copy is stale). Catalog
+installations instead use `hermes plugins update cognee`.
 
 Releases are published from CI on `hermes-agent-v*` tags
 (`.github/workflows/hermes-agent-publish.yml`).
@@ -234,6 +285,24 @@ COGNEE_API_KEY=...
 > mint with. A remote `COGNEE_BASE_URL` without a key fails at startup with a
 > clear error rather than a 401 on every call.
 
+> **Where the default user's password comes from.** cognee >= 1.6.0 ships no
+> built-in default-user password: the API server creates the default user at
+> startup only when `DEFAULT_USER_PASSWORD` is set in *its* environment. The
+> local server this plugin spawns always gets `DEFAULT_USER_EMAIL=default_user@example.com`
+> / `DEFAULT_USER_PASSWORD=default_password` — the same literals the Claude Code,
+> Codex and Antigravity plugins pass, since they all share this server — unless
+> you export `DEFAULT_USER_EMAIL` / `DEFAULT_USER_PASSWORD` yourself, in which
+> case your values win. `COGNEE_USER_EMAIL` / `COGNEE_USER_PASSWORD` do *not*
+> change the server's default user: they only select which user the plugin logs
+> in as to mint its key, and a non-default user must already exist on the server.
+> If you point the plugin at a local server you start yourself, start it with
+> `DEFAULT_USER_PASSWORD` set (matching `COGNEE_USER_PASSWORD` if you changed
+> that), or set `COGNEE_API_KEY` to a key that server issued. The server sets
+> the password once and never rewrites an existing user's, so a later change has
+> to be made on the server as well. A login the server refuses
+> (`This user does not have a password` / `LOGIN_BAD_CREDENTIALS`) is logged as
+> a warning at startup and repeated on the first `401`, naming the fix.
+
 Embedded (in-process) mode — single-process / offline only:
 
 ```bash
@@ -266,6 +335,16 @@ LLM_API_KEY=sk-...
 | `recall_timeout` | `COGNEE_RECALL_TIMEOUT` | `120` (seconds) |
 | `write_timeout` | `COGNEE_WRITE_TIMEOUT` | `120` (seconds) |
 | `improve_timeout` | `COGNEE_IMPROVE_TIMEOUT` | `300` (seconds) |
+| `recall_budget` | `COGNEE_RECALL_BUDGET` | `20` (seconds, bounds the per-prompt recall) |
+| `memory_steer` | `COGNEE_MEMORY_STEER` | `true` |
+| `memory_steer_text` | `COGNEE_MEMORY_STEER_TEXT` | built-in wording |
+| `memory_hits` | `COGNEE_MEMORY_HITS` | `true` |
+| `dataset_switch_tool` | `COGNEE_DATASET_SWITCH_TOOL` | `true` |
+| `code_search_tool` | `COGNEE_CODE_SEARCH_TOOL` | `true` |
+| `code_graph_recall` | `COGNEE_CODE_GRAPH_RECALL` | `true` |
+| `code_datasets` | `COGNEE_CODE_DATASETS` | empty (comma-separated extra code datasets) |
+| `update_check` | `COGNEE_UPDATE_CHECK` | `true` (CLI-only PyPI check) |
+| `update_check_interval` | `COGNEE_UPDATE_CHECK_INTERVAL` | `3600` (seconds) |
 
 > **Storage is shared, and a server is per port.** The roots above are the ones
 > every cognee agent plugin pins, so the store is the same no matter which plugin
@@ -346,16 +425,79 @@ an LLM per query, which local models make slow. `search_type=CHUNKS` returns
 matching stored text directly with no LLM in the loop; `COGNEE_RECALL_TIMEOUT`
 raises the deadline.
 
+### Per-prompt memory block
+
+Every prompt triggers exactly one memory request: `scope=["graph"]`,
+`search_type=HYBRID_COMPLETION`, `only_context=true`, with the conversation's
+`session_id` (plus a separate deterministic code-graph request when the
+[code recall lane](#code-graph-index-a-repository) is armed). No LLM is called
+on the server for it. On cognee >= 1.6.0 the server answers with one graph
+item per dataset whose `text` is the full input the completion would have
+received — the session's conversation history, the question with the retrieved
+context, then the session guidance block — and the plugin injects that string
+verbatim as the `<cognee_memory>` block, untruncated. Older servers (1.5.x)
+return the bare retrieval context in `text`, which is injected the same way.
+The item's `system_prompt` field is ignored.
+
+Memory is read from the knowledge graph only, on the per-prompt block and on the
+explicit `cognee_recall` tool alike: the server's session-cache scopes
+(`session`, `trace`, `session_context`) and its `auto` scope, which folds them
+in, are never requested. Turns are still written to the session cache — that is
+what `improve()` promotes into the graph at session end — but they are not
+searched as raw entries; on cognee >= 1.6.0 the graph item's prompt already
+carries this conversation's history because the session id travels with every
+recall. `cognee_recall` takes `query`, an optional `search_type` and `top_k`.
+
+## Code graph: index a repository
+
+Repositories are indexed explicitly (Hermes is rarely launched inside a
+checkout, so there is no auto-indexing):
+
+```bash
+hermes cognee index-repo ~/work/my-service            # local path
+hermes cognee index-repo https://github.com/o/repo    # URL (the server clones it)
+hermes cognee index-repo ~/work/my-service --wait 120 # block until queryable
+```
+
+Each repository gets its own `codebase-<repo>-<digest>` dataset. Indexing is
+deterministic — no LLM or embedding calls on either side (add semantic search
+over code entities with `--index-vectors`). Requires a cognee server >= 1.5.4.
+
+Once indexed, two things light up in a Hermes session:
+
+- the **`cognee_code_search` tool** — exact structural answers: `query_facts`,
+  `explore`, `traverse`, `find_path`, `impact_analysis`, `delta`;
+- the **code recall lane** — a prompt naming an identifier-shaped token
+  (`process_payment`, `UserService`, `billing/api.py`) while Hermes runs inside
+  an indexed repo gets code-graph facts injected alongside the memory block.
+  For repos indexed elsewhere, list their datasets in `COGNEE_CODE_DATASETS`.
+
+A locally indexed path reflects the working tree at index time; a URL-indexed
+repo reflects the last pushed commit. Re-run `index-repo` after significant
+changes — the server's content hashes make re-runs cheap.
+
 ## Hermes Commands
 
 When Cognee is the active memory provider:
 
 ```bash
-hermes cognee status
+hermes cognee status [--check-updates]
+hermes cognee version [--check-updates]
 hermes cognee setup
 hermes cognee config
 hermes cognee install
+hermes cognee index-repo <path-or-url> [--dataset D] [--index-vectors] [--wait SECONDS]
 ```
+
+For pip installations, `status` and `version` include an update hint when PyPI has a newer release
+(checked at most once per `COGNEE_UPDATE_CHECK_INTERVAL`, never from a live
+session): update with `pip install -U cognee-integration-hermes-agent` and then
+`cognee-hermes-install`, since Hermes runs the installed copy.
+
+For catalog installations, these commands show the running plugin version and
+direct you to `hermes plugins update cognee`. They never query PyPI, even with
+`--check-updates`; that flag prints catalog update guidance rather than checking
+for a new catalog release. `hermes plugins update cognee` checks the catalog.
 
 ## Development
 

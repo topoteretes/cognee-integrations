@@ -52,8 +52,19 @@ def _resolve(module, monkeypatch, *, agent_session_name="agent1", session_key="k
     )
 
 
-def _improve(module, monkeypatch, wrote):
-    monkeypatch.setattr(module, "run_session_improve", lambda d, s: wrote)
+def _improve(module, monkeypatch, wrote, *, busy=False):
+    """Stub the improve seam across suite generations: single-submit suites call
+    ``run_session_improve_detailed`` (a dict outcome), the others the boolean
+    ``run_session_improve``."""
+    if hasattr(module, "run_session_improve_detailed"):
+        outcome = {
+            "ok": wrote,
+            "reason": "busy" if busy else ("" if wrote else "failed"),
+            "error": "" if wrote or busy else "timed out",
+        }
+        monkeypatch.setattr(module, "run_session_improve_detailed", lambda d, s, **kw: outcome)
+    else:
+        monkeypatch.setattr(module, "run_session_improve", lambda d, s, **kw: wrote)
 
 
 def test_strict_raises_on_incomplete_sync(sync_mod, monkeypatch):
@@ -73,6 +84,25 @@ def test_strict_complete_sync_does_not_raise(sync_mod, monkeypatch):
     _resolve(sync_mod, monkeypatch)
     _improve(sync_mod, monkeypatch, True)
     asyncio.run(sync_mod._sync(stop_watcher=False, strict=True))  # must not raise
+
+
+def test_strict_defers_a_busy_answer_instead_of_raising(sync_mod, suite, monkeypatch):
+    """Another improve of this session is in flight server-side; it persists
+    everything above the watermark, so re-driving would only be recorded as one
+    more improve operation. Busy is logged as deferred, never as incomplete —
+    until 1.5.3 one collision here became three ten-minute busy loops."""
+    if not suite.has_single_submit_improve:
+        pytest.skip("suite still treats busy as incomplete")
+    events = []
+    monkeypatch.setattr(
+        sync_mod, "hook_log", lambda ev, detail=None: events.append((ev, detail or {}))
+    )
+    _resolve(sync_mod, monkeypatch)
+    _improve(sync_mod, monkeypatch, False, busy=True)
+    asyncio.run(sync_mod._sync(stop_watcher=False, strict=True))  # must not raise
+    assert any(ev == "sync_bridge_deferred_busy" and d["session"] == "sess1" for ev, d in events)
+    done = [d for ev, d in events if ev == "sync_bridge_done"]
+    assert done and done[0]["wrote"] is False and done[0]["reason"] == "busy"
 
 
 def test_unregister_still_runs_when_strict_raises(sync_mod, mock_server, monkeypatch):

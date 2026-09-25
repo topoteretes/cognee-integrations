@@ -13,6 +13,8 @@ rendered as ``last turn ~$X.XX``. ``refresh_credits`` never raises and no-ops
 entirely on a local server, so this hook is safe to fire unconditionally.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 

@@ -12,6 +12,8 @@ Never modifies configuration, initialises databases, registers
 resources, writes files, or mutates state.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import pathlib
@@ -110,37 +112,63 @@ def _resolve_server_url() -> tuple:
     return display, raw_url
 
 
-_SHARED_PLUGIN_ROOT = pathlib.Path.home() / ".cognee-plugin"
-_API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"
+_KEY_SOURCE_LABELS = {
+    "plugin_agent_key": "Plugin identity",
+    "env_api_key": "ENV",
+    "cache_single_key": "Config",
+    "missing": "Default",
+}
 
 
 def _resolve_api_key_source() -> str:
-    """Return a human-friendly label for where the API key came from.
+    """Return a human-friendly label for where the API key came from."""
+    from _env_file import env_file_path, parse_env_file
+    from _plugin_common import _api_key_with_source
 
-    Codex's _plugin_common._api_key does not return the source, so we
-    inline the same precedence logic here without modifying the module.
-    """
-    env_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
-    if env_key:
+    key, source = _api_key_with_source()
+    label = _KEY_SOURCE_LABELS.get(source, source)
+    if source == "env_api_key" and key:
         # The env layer is fed by both real exports and ~/.cognee/.env
         # (setdefault); tell them apart for debuggability.
-        from _env_file import env_file_path, parse_env_file
-
         file_key = parse_env_file(env_file_path()).get("COGNEE_API_KEY", "")
-        if file_key and file_key == env_key:
-            return "Env file"
-        return "ENV"
+        if file_key and file_key == key:
+            label = "Env file"
+    return label
 
-    # Check the single cached key file.
-    try:
-        if _API_KEY_CACHE.exists():
-            data = json.loads(_API_KEY_CACHE.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and (data.get("api_key") or "").strip():
-                return "Config"
-    except Exception:
-        pass
 
-    return "Default"
+def _resolve_memory_sharing() -> str:
+    """How this plugin's memory relates to the user's other agents.
+
+    ``shared (role: cognee-agent)`` when the agent is wired into the shared
+    role; otherwise ``separated`` with the reason: the user opted out, the
+    plugin runs as the principal (no agent identity — the principal sees
+    everything anyway), or the wiring was skipped (older server, not the
+    tenant owner, tenant-less install that already owns data).
+    """
+    from _plugin_common import (
+        AGENT_ROLE_NAME,
+        active_agent_key,
+        load_shared_memory_marker,
+        shared_memory_enabled,
+    )
+
+    if not shared_memory_enabled():
+        return "separated (opt-out)"
+    marker = load_shared_memory_marker()
+    if not active_agent_key():
+        # An install that could not be wired (or whose identity is blocked or
+        # bound to another principal) runs as the principal; say why, so "no
+        # agent identity" is not mistaken for a broken install.
+        reason = str(marker.get("reason") or "").replace("_", " ")
+        return (
+            f"principal (shared memory unavailable: {reason})"
+            if reason
+            else ("principal (no agent identity)")
+        )
+    if marker.get("mode") == "shared":
+        return f"shared (role: {AGENT_ROLE_NAME})"
+    reason = str(marker.get("reason") or "not wired yet").replace("_", " ")
+    return f"separated ({reason})"
 
 
 def _check_health(server_url: str, timeout: float = 5.0) -> dict:
@@ -229,6 +257,7 @@ def collect_report() -> dict:
     mode = _resolve_mode()
     display_url, raw_url = _resolve_server_url()
     api_key_source = _resolve_api_key_source()
+    memory_sharing = _resolve_memory_sharing()
     health = _check_health(raw_url)
     cognee_server = _resolve_server_version(health["raw_body"])
     cognee_local = _resolve_local_cognee_version()
@@ -240,6 +269,7 @@ def collect_report() -> dict:
         "env_file": _resolve_env_file(),
         "server_url": display_url if display_url != "-" else None,
         "api_key_source": api_key_source,
+        "memory_sharing": memory_sharing,
         "reachable": health["reachable"],
         "latency_ms": health["latency_ms"],
         "cognee_local": cognee_local,
@@ -255,6 +285,7 @@ _DISPLAY_ORDER = [
     ("Env File", "env_file"),
     ("Server URL", "server_url"),
     ("API Key Source", "api_key_source"),
+    ("Memory Sharing", "memory_sharing"),
     ("Reachable", "reachable"),
     ("Latency", "latency_ms"),
     ("Cognee (local)", "cognee_local"),

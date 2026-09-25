@@ -41,9 +41,11 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     )
 
     ident = mock_server.identity
-    ident.seed_user("owner@example.com")
-    # ensure_dataset_ready_via_api only POSTs when it has a key to send.
-    monkeypatch.setenv("COGNEE_API_KEY", ident.seed_owner_key("owner@example.com"))
+    # ensure_dataset_ready_via_api only POSTs when it has a key to send. The
+    # key must be the PRINCIPAL's: the fake scopes GET /datasets and dataset
+    # creation to the calling user, like the server, and the datasets below
+    # are seeded for the principal.
+    monkeypatch.setenv("COGNEE_API_KEY", "test-api-key")
     # The launch as SessionStart left it: registered under conn_uuid on dataset "a".
     sid, conn = pc.ensure_launch_record(HOST, "/w", dataset="a")
     ident.agents_register({"agent_session_name": conn, "session_id": sid})

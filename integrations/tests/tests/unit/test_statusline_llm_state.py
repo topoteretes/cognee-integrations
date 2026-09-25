@@ -1,7 +1,7 @@
 """Tests for `_llm_prefix` / `_status_prefix` (cognee_statusline_render.py) — the
 LLM-key verdict in the bar's single glyph slot.
 
-Contract (shared by both suites):
+Contract (shared by all registered suites):
 
   * only a FRESH verdict shows (`_LLM_STATE_STALE_SECONDS`); a missing,
     malformed, unstamped or unparseable marker renders nothing;
@@ -15,10 +15,10 @@ Contract (shared by both suites):
   * cloud mode suppresses the glyph entirely — the local server's LLM key is not
     ours to report.
 
-Parametrized over both suites; expected glyphs come from ``utils.statusline``.
-The ANSI-reset rule is claude-only and the plain-text guard codex-only, as is
-codex's ``render_status_for_host`` emitter (the string that reaches the model's
-context). The full subprocess render lives in e2e/test_statusline_bar.py, and the stdio
+Parametrized over all registered suites; expected glyphs come from
+``utils.statusline``. The ANSI-reset rule is Claude Code-only; Codex and
+Antigravity use the plain-text guard and ``render_status_for_host`` emitter. The
+full subprocess render lives in e2e/test_statusline_bar.py, and the stdio
 encoding it must survive in e2e/test_statusline_encoding.py.
 
 Migrated from {claude-code,codex}/tests/test_statusline_llm_state.py.

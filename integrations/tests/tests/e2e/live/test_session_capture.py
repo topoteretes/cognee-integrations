@@ -1,15 +1,20 @@
-"""Within one session, what was said and done is recallable immediately.
+"""Within one session, what was said and done reaches the next prompt's memory.
 
-This is the other half of the memory promise, and it works differently from
-cross-session recall: per-turn prompts, answers and tool traces go straight to
-the *server's session cache* via ``/remember/entry``, so they are queryable
-without waiting for improve or cognify. No graph build, no LLM extraction — which
-also makes these the cheapest live tests to run.
+Per-turn prompts, answers and tool traces go straight to the *server's session
+cache* via ``/remember/entry``. Prompt recall no longer searches that cache: it
+is one graph-scope request, and on cognee >= 1.6.0 the graph item's text is the
+whole LLM input — this session's conversation history, the question with the
+retrieved graph context, and the session guidance block. Keeping recall to that
+one item is deliberate (it bounds what gets injected), and it means in-session
+history arrives only once the dataset has a graph: before the first cognify the
+graph scope answers 404 and nothing is injected. So each test here first syncs
+one unrelated turn into the graph (``synced_turn``), then asserts that a new
+session's own capture rides along with its recall.
 
 Assertions lean on the per-scope hit counts the plugin records in
-``last_recall.json`` rather than on the prose a semantic search returns: "the
-trace scope found something" is a structural fact, whereas which sentence comes
-back is not something this plugin controls.
+``last_recall.json`` plus a term from the captured turn that is absent from the
+recall question — the question itself is echoed back in the item, so a term
+from it would match trivially.
 """
 
 from __future__ import annotations
@@ -20,9 +25,28 @@ from utils.live import read_last_recall
 pytestmark = pytest.mark.live
 
 
+def _seed_graph(synced_turn, nonce) -> None:
+    synced_turn(
+        "seed",
+        f"Project {nonce}-seed replicates with raft.",
+        f"Noted: {nonce}-seed replicates with raft.",
+        f"How does {nonce}-seed replicate?",
+        "raft",
+    )
+
+
+def _assert_graph_only(hits: dict) -> None:
+    """Recall is graph-only: the retired raw-session buckets stay at zero."""
+    raw = {k: hits.get(k) for k in ("session", "trace", "session_context")}
+    assert not any(int(v or 0) for v in raw.values()), (
+        f"recall injected raw session-cache entries; it should read the graph only: {hits}"
+    )
+
+
 def test_prompt_and_answer_are_recallable_in_the_same_session(
-    started_session, live_suite, live_home, nonce
+    synced_turn, started_session, live_suite, live_home, nonce
 ):
+    _seed_graph(synced_turn, nonce)
     session = started_session("same")
 
     session.prompt(f"The deploy target for {nonce} is cluster edge-7.", turn_id="t1")
@@ -32,17 +56,26 @@ def test_prompt_and_answer_are_recallable_in_the_same_session(
     assert lookup.ok, f"recall hook failed (rc={lookup.returncode}): {lookup.stderr[:600]}"
 
     hits = read_last_recall(live_suite, live_home).get("hits") or {}
-    assert hits, "the recall recorded no per-scope counts at all"
-    assert sum(int(v or 0) for v in hits.values()) > 0, (
-        f"nothing was recalled in-session; per-scope hits were {hits}"
+    assert int(hits.get("graph_context") or 0) > 0, (
+        f"nothing was recalled in-session against a built graph; per-scope hits were {hits}"
+    )
+    _assert_graph_only(hits)
+    injected = lookup.additional_context().lower()
+    assert "edge-7" in injected, (
+        "the graph item did not carry this session's history:\n" + injected[:1500]
     )
 
     session.end()
 
 
-def test_tool_trace_is_captured_and_recallable(started_session, live_suite, live_home, nonce):
-    """PostToolUse traces are memory too — they are what "what did you just do"
-    questions are answered from."""
+def test_tool_trace_is_captured_and_recallable(
+    synced_turn, started_session, live_suite, live_home, nonce
+):
+    """PostToolUse traces are captured, and the turn they belong to reaches the
+    next prompt's memory. The trace itself reaches the model through the
+    server-distilled guidance block, which is not deterministic enough to pin;
+    the capture is asserted through the save counters instead."""
+    _seed_graph(synced_turn, nonce)
     session = started_session("trace")
 
     session.prompt(f"Check the {nonce} service config.", turn_id="t1")
@@ -57,9 +90,17 @@ def test_tool_trace_is_captured_and_recallable(started_session, live_suite, live
     lookup = session.recall(f"What port did we find for {nonce}?", turn_id="t2")
     assert lookup.ok, f"recall hook failed (rc={lookup.returncode}): {lookup.stderr[:600]}"
 
-    hits = read_last_recall(live_suite, live_home).get("hits") or {}
-    assert sum(int(v or 0) for v in hits.values()) > 0, (
+    recall = read_last_recall(live_suite, live_home)
+    saves = recall.get("saves_last_turn") or {}
+    assert int(saves.get("trace") or 0) > 0, f"the tool trace was not captured: {saves}"
+    hits = recall.get("hits") or {}
+    assert int(hits.get("graph_context") or 0) > 0, (
         f"the captured turn was not recallable; per-scope hits were {hits}"
+    )
+    _assert_graph_only(hits)
+    injected = lookup.additional_context().lower()
+    assert "9931" in injected, (
+        "the graph item did not carry this session's history:\n" + injected[:1500]
     )
 
     session.end()

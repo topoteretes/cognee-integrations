@@ -57,6 +57,7 @@ class _SearchType:
     """
 
     GRAPH_COMPLETION = "GRAPH_COMPLETION"
+    HYBRID_COMPLETION = "HYBRID_COMPLETION"
     RAG_COMPLETION = "RAG_COMPLETION"
     CHUNKS = "CHUNKS"
     CHUNKS_LEXICAL = "CHUNKS_LEXICAL"
@@ -228,9 +229,15 @@ class FakeBackend(MemoryBackend):
             "remember_session": None,
             "remember_permanent": RememberResultStub(),
             "forget": {"deleted": True},
+            "forget_document": {"deleted": True},
             "improve": {},
             "connect": None,
             "resolve_identity": "USER",
+            "list_datasets": [],
+            "list_dataset_data": [],
+            "read_raw_data": "",
+            "index_repository": {},
+            "dataset_pipeline_status": "",
         }
         self.empty_recall_hint_value = None
         self.overflow_hint_value = None
@@ -300,6 +307,24 @@ class FakeBackend(MemoryBackend):
     def improve(self, **kwargs):
         return self._recorder.record("improve", kwargs)
 
+    def list_datasets(self, **kwargs):
+        return self._recorder.record("list_datasets", kwargs)
+
+    def list_dataset_data(self, **kwargs):
+        return self._recorder.record("list_dataset_data", kwargs)
+
+    def read_raw_data(self, **kwargs):
+        return self._recorder.record("read_raw_data", kwargs)
+
+    def forget_document(self, **kwargs):
+        return self._recorder.record("forget_document", kwargs)
+
+    def index_repository(self, **kwargs):
+        return self._recorder.record("index_repository", kwargs)
+
+    def dataset_pipeline_status(self, **kwargs):
+        return self._recorder.record("dataset_pipeline_status", kwargs)
+
     def empty_recall_hint(self, **kwargs):
         self._recorder.record("empty_recall_hint", kwargs)
         return self.empty_recall_hint_value
@@ -365,11 +390,14 @@ def make_provider(
     provider._improve_on_end = improve_on_end
     provider._session_id = session_id
     provider._session_cognee_id = session_cognee_id or f"hermes_{session_id}"
+    provider._default_dataset = dataset
     provider._config = {
         "recall_timeout": 5,
         "write_timeout": 5,
         "improve_timeout": 5,
         "improve_background": "",
+        # The hit header has its own tests; everything else runs without it.
+        "memory_hits": False,
         **(config or {}),
     }
     return provider

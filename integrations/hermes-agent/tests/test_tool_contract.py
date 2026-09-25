@@ -204,27 +204,122 @@ class TestRememberEnvelope(unittest.TestCase):
         self.assertTrue(out["error"].startswith("Cognee remember failed:"))
 
 
+_DATASET_ID = "11111111-1111-1111-1111-111111111111"
+_DATA_ID_A = "22222222-2222-2222-2222-222222222222"
+_DATA_ID_B = "33333333-3333-3333-3333-333333333333"
+
+
 class TestForgetEnvelope(unittest.TestCase):
-    def test_requires_dataset_or_everything(self):
+    """The two-phase forget: find lists candidates, forget deletes confirmed ids."""
+
+    def test_missing_action_is_an_error_and_touches_nothing(self):
         with fake_backend() as fake:
             provider = make_provider()
             out = _call(provider, "cognee_forget", {})
-        self.assertEqual(out, {"error": "Specify dataset or set everything=true."})
+        self.assertIn("action='find'", out["error"])
+        self.assertEqual(fake.calls, [])
+
+    def test_find_requires_terms(self):
+        with fake_backend() as fake:
+            provider = make_provider()
+            out = _call(provider, "cognee_forget", {"action": "find"})
+        self.assertIn("terms", out["error"])
+        self.assertEqual(fake.calls, [])
+
+    def test_find_lists_matching_documents_with_previews(self):
+        with fake_backend() as fake:
+            fake.results["list_datasets"] = [{"id": _DATASET_ID, "name": "hermes"}]
+            fake.results["list_dataset_data"] = [
+                {"id": _DATA_ID_A, "name": "doc-a"},
+                {"id": _DATA_ID_B, "name": "doc-b"},
+            ]
+            raw = {
+                _DATA_ID_A: "we talked about tennis and rackets",
+                _DATA_ID_B: "grocery list: milk, eggs",
+            }
+            original = fake.read_raw_data
+
+            def read_raw_data(**kwargs):
+                original(**kwargs)
+                return raw[kwargs["data_id"]]
+
+            fake.read_raw_data = read_raw_data
+            provider = make_provider()
+            out = _call(provider, "cognee_forget", {"action": "find", "terms": "tennis"})
+        self.assertEqual(out["action"], "find")
+        self.assertEqual(len(out["candidates"]), 1)
+        candidate = out["candidates"][0]
+        self.assertEqual(candidate["data_id"], _DATA_ID_A)
+        self.assertEqual(candidate["matched_terms"], ["tennis"])
+        self.assertIn("tennis", candidate["preview"])
+        # Nothing was deleted during a find.
+        self.assertEqual(fake.kwargs_for("forget_document"), [])
         self.assertEqual(fake.kwargs_for("forget"), [])
 
-    def test_success_envelope_passes_backend_details_through(self):
+    def test_find_with_no_matches_says_so(self):
+        with fake_backend() as fake:
+            fake.results["list_datasets"] = [{"id": _DATASET_ID, "name": "hermes"}]
+            fake.results["list_dataset_data"] = []
+            provider = make_provider()
+            out = _call(provider, "cognee_forget", {"action": "find", "terms": "tennis"})
+        self.assertEqual(out["candidates"], [])
+        self.assertIn("No stored documents matched", out["result"])
+
+    def test_forget_requires_confirm(self):
+        with fake_backend() as fake:
+            provider = make_provider()
+            out = _call(provider, "cognee_forget", {"action": "forget", "data_ids": [_DATA_ID_A]})
+        self.assertIn("confirm=true", out["error"])
+        self.assertEqual(fake.calls, [])
+
+    def test_forget_requires_data_ids(self):
+        with fake_backend() as fake:
+            provider = make_provider()
+            out = _call(provider, "cognee_forget", {"action": "forget", "confirm": True})
+        self.assertIn("data_ids", out["error"])
+        self.assertEqual(fake.kwargs_for("forget_document"), [])
+
+    def test_forget_deletes_exactly_the_listed_ids(self):
+        with fake_backend() as fake:
+            fake.results["list_datasets"] = [{"id": _DATASET_ID, "name": "hermes"}]
+            provider = make_provider()
+            out = _call(
+                provider,
+                "cognee_forget",
+                {"action": "forget", "data_ids": [_DATA_ID_A, _DATA_ID_B], "confirm": True},
+            )
+        self.assertEqual(out["deleted"], [_DATA_ID_A, _DATA_ID_B])
+        deletes = fake.kwargs_for("forget_document")
+        self.assertEqual([d["data_id"] for d in deletes], [_DATA_ID_A, _DATA_ID_B])
+        self.assertTrue(all(d["dataset_id"] == _DATASET_ID for d in deletes))
+
+    def test_a_failed_delete_is_reported_per_id_not_thrown(self):
+        with fake_backend() as fake:
+            fake.results["list_datasets"] = [{"id": _DATASET_ID, "name": "hermes"}]
+            fake.errors["forget_document"] = RuntimeError("denied")
+            provider = make_provider()
+            out = _call(
+                provider,
+                "cognee_forget",
+                {"action": "forget", "data_ids": [_DATA_ID_A], "confirm": True},
+            )
+        self.assertEqual(out["deleted"], [])
+        self.assertEqual(out["errors"][0]["data_id"], _DATA_ID_A)
+
+    def test_everything_in_dataset_uses_the_coarse_endpoint(self):
         with fake_backend() as fake:
             fake.results["forget"] = {"deleted": 3}
             provider = make_provider()
-            out = _call(provider, "cognee_forget", {"dataset": "hermes"})
-        self.assertEqual(out, {"result": "Cognee memory deleted.", "details": {"deleted": 3}})
-
-    def test_backend_failure_is_reported_as_error_text(self):
-        with fake_backend() as fake:
-            fake.errors["forget"] = RuntimeError("denied")
-            provider = make_provider()
-            out = _call(provider, "cognee_forget", {"everything": True})
-        self.assertTrue(out["error"].startswith("Cognee forget failed:"))
+            out = _call(
+                provider,
+                "cognee_forget",
+                {"action": "forget", "everything_in_dataset": True, "confirm": True},
+            )
+            kwargs = fake.only_call("forget")
+        self.assertIn("deleted", out["result"].lower() + str(out))
+        self.assertEqual(kwargs["dataset"], "hermes")
+        # The all-datasets wipe is not expressible from the tool, by construction.
+        self.assertIs(kwargs["everything"], False)
 
 
 class TestDispatch(unittest.TestCase):
@@ -247,20 +342,33 @@ class TestDispatch(unittest.TestCase):
                 self.assertIn("temporarily unavailable", out["error"])
         self.assertEqual(fake.calls, [])
 
-    def test_tool_schemas_are_the_three_declared_tools_with_required_params(self):
+    def test_tool_schemas_are_the_five_declared_tools_with_required_params(self):
         provider = make_provider()
         schemas = {schema["name"]: schema for schema in provider.get_tool_schemas()}
         self.assertEqual(
             set(schemas),
-            {"cognee_recall", "cognee_remember", "cognee_forget"},
+            {
+                "cognee_recall",
+                "cognee_remember",
+                "cognee_forget",
+                "cognee_switch_dataset",
+                "cognee_code_search",
+            },
         )
         self.assertEqual(schemas["cognee_recall"]["parameters"]["required"], ["query"])
         self.assertEqual(schemas["cognee_remember"]["parameters"]["required"], ["content"])
-        self.assertEqual(schemas["cognee_forget"]["parameters"]["required"], [])
+        self.assertEqual(schemas["cognee_forget"]["parameters"]["required"], ["action"])
+        self.assertEqual(schemas["cognee_switch_dataset"]["parameters"]["required"], ["action"])
+        self.assertEqual(schemas["cognee_code_search"]["parameters"]["required"], ["operation"])
         self.assertEqual(
             set(schemas["cognee_recall"]["parameters"]["properties"]),
-            {"query", "scope", "search_type", "top_k"},
+            {"query", "search_type", "top_k"},
         )
+
+    def test_optional_tools_can_be_disabled_by_config(self):
+        provider = make_provider(config={"dataset_switch_tool": False, "code_search_tool": False})
+        names = {schema["name"] for schema in provider.get_tool_schemas()}
+        self.assertEqual(names, {"cognee_recall", "cognee_remember", "cognee_forget"})
 
 
 # --------------------------------------------------------------------------
@@ -343,37 +451,25 @@ class TestRecallPayload(unittest.TestCase):
         self.assertEqual(kwargs["top_k"], 7)
         self.assertIs(kwargs["auto_route"], False)
 
-    def test_auto_scope_targets_both_session_and_datasets(self):
+    def test_recall_targets_the_graph_with_the_dataset_and_the_session(self):
         kwargs = self._recall_kwargs({"query": "q"}, session_cognee_id="hermes_abc")
+        self.assertEqual(kwargs["scope"], ["graph"])
+        self.assertEqual(kwargs["datasets"], ["hermes"])
         self.assertEqual(kwargs["session_id"], "hermes_abc")
-        self.assertEqual(kwargs["datasets"], ["hermes"])
 
-    def test_missing_scope_defaults_to_auto(self):
-        kwargs = self._recall_kwargs({"query": "q", "scope": None})
-        self.assertIsNotNone(kwargs["session_id"])
-        self.assertIsNotNone(kwargs["datasets"])
+    def test_a_legacy_scope_argument_is_ignored(self):
+        # The tool no longer takes ``scope``; an older caller passing one gets
+        # the same graph request as everyone else.
+        for legacy in (None, "auto", "session", "graph", "GRAPH"):
+            with self.subTest(scope=legacy):
+                kwargs = self._recall_kwargs({"query": "q", "scope": legacy})
+                self.assertEqual(kwargs["scope"], ["graph"])
+                self.assertEqual(kwargs["datasets"], ["hermes"])
+                self.assertIsNotNone(kwargs["session_id"])
 
-    def test_session_scope_targets_the_session_only(self):
-        kwargs = self._recall_kwargs({"query": "q", "scope": "session"})
-        self.assertIsNotNone(kwargs["session_id"])
-        self.assertIsNone(kwargs["datasets"])
-
-    def test_graph_scope_targets_datasets_only(self):
-        kwargs = self._recall_kwargs({"query": "q", "scope": "graph"})
-        self.assertEqual(kwargs["datasets"], ["hermes"])
-        self.assertIsNone(kwargs["session_id"])
-
-    def test_scope_is_case_insensitive(self):
-        kwargs = self._recall_kwargs({"query": "q", "scope": "GRAPH"})
-        self.assertIsNone(kwargs["session_id"])
-
-    def test_search_type_applied_outside_session_scope(self):
-        kwargs = self._recall_kwargs({"query": "q", "scope": "graph", "search_type": "CHUNKS"})
+    def test_search_type_is_applied(self):
+        kwargs = self._recall_kwargs({"query": "q", "search_type": "CHUNKS"})
         self.assertEqual(kwargs["query_type"], "CHUNKS")
-
-    def test_search_type_ignored_in_session_scope(self):
-        kwargs = self._recall_kwargs({"query": "q", "scope": "session", "search_type": "CHUNKS"})
-        self.assertIsNone(kwargs["query_type"])
 
     def test_unrecognized_search_type_is_passed_through(self):
         # The provider does not police search-type names; each transport resolves
@@ -443,28 +539,48 @@ class TestRememberPayload(unittest.TestCase):
 
 
 class TestForgetPayload(unittest.TestCase):
-    def test_dataset_scoped_delete(self):
+    def test_document_delete_resolves_the_dataset_id_by_name(self):
         with fake_backend() as fake:
+            fake.results["list_datasets"] = [
+                {"id": _DATASET_ID, "name": "hermes"},
+                {"id": _DATA_ID_B, "name": "other"},
+            ]
             provider = make_provider()
-            provider.handle_tool_call("cognee_forget", {"dataset": "hermes"})
-            kwargs = fake.only_call("forget")
-        self.assertEqual(kwargs["dataset"], "hermes")
-        self.assertIs(kwargs["everything"], False)
-        self.assertIs(kwargs["memory_only"], False)
+            provider.handle_tool_call(
+                "cognee_forget",
+                {"action": "forget", "data_ids": [_DATA_ID_A], "confirm": True},
+            )
+            kwargs = fake.only_call("forget_document")
+        self.assertEqual(kwargs["dataset_id"], _DATASET_ID)
+        self.assertEqual(kwargs["data_id"], _DATA_ID_A)
 
-    def test_everything_is_forwarded(self):
-        # Whether a wipe-everything request also carries the dataset is a wire
-        # detail of each transport — see test_sdk_backend.
+    def test_an_explicit_dataset_argument_wins_over_the_provider_default(self):
         with fake_backend() as fake:
+            fake.results["list_datasets"] = [{"id": _DATASET_ID, "name": "special"}]
             provider = make_provider()
-            provider.handle_tool_call("cognee_forget", {"dataset": "hermes", "everything": True})
-            self.assertIs(fake.only_call("forget")["everything"], True)
+            provider.handle_tool_call(
+                "cognee_forget",
+                {
+                    "action": "forget",
+                    "dataset": "special",
+                    "data_ids": [_DATA_ID_A],
+                    "confirm": True,
+                },
+            )
+            self.assertEqual(fake.only_call("forget_document")["dataset_id"], _DATASET_ID)
 
-    def test_memory_only_is_forwarded(self):
+    def test_an_unknown_dataset_is_an_error_before_any_delete(self):
         with fake_backend() as fake:
+            fake.results["list_datasets"] = []
             provider = make_provider()
-            provider.handle_tool_call("cognee_forget", {"dataset": "hermes", "memory_only": True})
-            self.assertIs(fake.only_call("forget")["memory_only"], True)
+            out = json.loads(
+                provider.handle_tool_call(
+                    "cognee_forget",
+                    {"action": "forget", "data_ids": [_DATA_ID_A], "confirm": True},
+                )
+            )
+        self.assertIn("not found", out["error"])
+        self.assertEqual(fake.kwargs_for("forget_document"), [])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
-"""Shared test infrastructure for the Claude Code and Codex Cognee integrations.
+"""Shared test infrastructure for the Cognee host-hook integrations.
 
 Building blocks (see README.md):
-  - suites        : Suite descriptors that parametrize tests over claude-code / codex
+  - suites        : Host descriptors that parametrize tests over every available suite
   - identity_fake : stateful login / api-key / agent / dataset fake
   - mock_cognee   : lightweight mock Cognee HTTP server built on pytest-httpserver
   - payloads      : synthetic stdin hook-payload builders (all hook types)
@@ -14,6 +14,7 @@ redirected into a per-test temporary HOME.
 
 from .suites import (
     ALL_SUITES,
+    ANTIGRAVITY,
     CLAUDE,
     CODEX,
     Suite,
@@ -24,6 +25,7 @@ from .suites import (
 
 __all__ = [
     "ALL_SUITES",
+    "ANTIGRAVITY",
     "CLAUDE",
     "CODEX",
     "Suite",

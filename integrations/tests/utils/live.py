@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .hooklog import hook_events
 from .suites import Suite, state_dir
 
 #: The port a developer's own cognee almost certainly occupies.
@@ -239,9 +240,10 @@ def build_live_env(
             "COGNEE_UPDATE_CHECK": "off",
             "COGNEE_IDLE_DISABLED": "1",
             "COGNEE_SYNC_START_DELAY": "0.5",
-            # Test-only patience for the per-prompt recall. In production these
-            # are deliberately tight (COGNEE_RECALL_TIMEOUT 2.5s per scope,
-            # COGNEE_RECALL_BUDGET 4s overall) so memory can never stall an
+            # Test-only patience for recall. In production the per-prompt hook's
+            # COGNEE_RECALL_BUDGET is deliberately tight (12s, the deadline every
+            # concurrent scope gets; COGNEE_RECALL_TIMEOUT bounds only the
+            # explicit search path) so memory can never stall an
             # interactive prompt — and on a *cold* server the first graph query
             # exceeds that and is correctly dropped as "slow". These tests ask
             # "does memory cross sessions", not "is cold-start recall fast", so
@@ -300,21 +302,6 @@ def kill_server(base_url: str, port: int, *, deadline: float = 30.0) -> list[str
             return killed
         time.sleep(0.5)
     raise AssertionError(f"server on {base_url} still answering {deadline}s after kill {killed}")
-
-
-def hook_events(suite: Suite, home: Path) -> list[tuple[str, dict]]:
-    """Every (event, detail) the hooks have logged so far, in order."""
-    path = state_dir(suite, home) / "hook.log"
-    if not path.exists():
-        return []
-    events: list[tuple[str, dict]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            entry = json.loads(line)
-        except Exception:
-            continue
-        events.append((str(entry.get("event", "")), entry.get("detail") or {}))
-    return events
 
 
 def read_last_recall(suite: Suite, home: Path) -> dict:
@@ -584,7 +571,20 @@ class GraphClient:
 
     @property
     def api_key(self) -> str:
-        """The principal key the plugin minted and cached in this temp HOME."""
+        """The principal key for this backend.
+
+        Cloud first: the tenant key comes in through ``COGNEE_LIVE_API_KEY`` and is
+        handed to the hooks as ``COGNEE_API_KEY``, which ``_resolve_single_principal_key``
+        honours *before* the cache — so on cloud the plugin never mints a key and
+        ``api_key.json`` is never written. Reading only the cache here left every
+        cloud recall keyless: the tenant answered 401 for the whole ``deadline``,
+        each graph assertion burned its full 15 minutes, and the job hit its
+        timeout with two tests reported. Locally the plugin mints against the
+        server it booted and caches the result, so the cache is the source there.
+        """
+        env_key = cloud_api_key()
+        if env_key:
+            return env_key
         cache = self.home / ".cognee-plugin" / "api_key.json"
         if not cache.exists():
             return ""
@@ -631,6 +631,19 @@ class GraphClient:
         while time.monotonic() < end:
             try:
                 last = self.recall(query)
+            except urllib.error.HTTPError as exc:
+                # 401/403 will not turn into a 200 by waiting: the key is wrong or
+                # missing. Retrying it for the full deadline is how a keyless client
+                # once spent 15 minutes per assertion and timed the whole job out.
+                # Anything else (404 before the dataset exists, 5xx while cognify
+                # is still running) is legitimately transient, so keep polling.
+                if exc.code in (401, 403):
+                    raise AssertionError(
+                        f"recall on {self.base_url} rejected the key (HTTP {exc.code}) "
+                        f"— api_key {'is empty' if not self.api_key else 'was supplied'}; "
+                        f"the graph cannot be verified with this credential"
+                    ) from exc
+                last = f"<recall error: HTTP {exc.code}: {exc.reason}>"
             except Exception as exc:  # server may be booting or briefly down
                 last = f"<recall error: {type(exc).__name__}: {exc}>"
             lowered = last.lower()

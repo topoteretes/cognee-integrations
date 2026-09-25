@@ -4,13 +4,15 @@ This lane runs on the keystroke->answer path, so its whole design is "cost
 nothing unless it can pay for itself". These tests pin that bargain end to end
 through ``_run``:
 
-  * an ordinary prompt dispatches exactly the four standard scopes — no extra
+  * an ordinary prompt dispatches exactly the one memory request — no extra
     request, no extra budget spent, and the visibility header keeps the shape
     its consumers already parse;
-  * a prompt naming a symbol inside an INDEXED repo adds a fifth lane, carrying
-    the repo's own dataset and a structured ``code_query`` — the semantic
-    scopes are untouched, because the lane is additive, never a substitute;
-  * code facts are injected under their own heading and counted separately;
+  * a prompt naming a symbol inside an INDEXED repo adds a second request,
+    carrying the repo's own dataset and a structured ``code_query`` — the
+    memory request is untouched, because the lane is additive, never a
+    substitute;
+  * code facts are injected under their own heading, ahead of memory, and
+    counted separately;
   * a failure anywhere in the gate degrades to "no code lane" rather than
     taking the prompt's memory down with it.
 
@@ -21,9 +23,10 @@ in integration/test_code_graph.py.
 from __future__ import annotations
 
 import pytest
-from utils.recall import drive_recall
+from utils.recall import CODE_SCOPES, SCOPES, drive_recall
 
-STANDARD = ["session", "trace", "session_context", "graph"]
+#: A 1.6.0-shaped memory item: the server's rendered LLM input, question and all.
+MEMORY = {"graph": [{"source": "graph", "text": "The question is: `q`\n\nContext:\n`a`"}]}
 
 
 def _header(output) -> str:
@@ -62,40 +65,37 @@ def indexed_repo(suite, isolated_modules, tmp_path):
 # ── the lane stays off ─────────────────────────────────────────────────────
 
 
-def test_conversational_prompt_dispatches_only_standard_scopes(lookup, monkeypatch, indexed_repo):
+def test_conversational_prompt_dispatches_only_the_memory_request(
+    lookup, monkeypatch, indexed_repo
+):
     """Inside an indexed repo, prose still costs nothing extra."""
     run = drive_recall(
         lookup, monkeypatch, prompt="thanks, that looks right", cwd=str(indexed_repo)
     )
-    assert run.calls == STANDARD
+    assert run.calls == list(SCOPES)
     assert not run.fired("code_lane_armed")
 
 
 def test_identifier_outside_an_indexed_repo_does_not_arm(lookup, monkeypatch, tmp_path):
     """No opt-in for this checkout — the lane must not query someone else's graph."""
     run = drive_recall(lookup, monkeypatch, prompt="what calls process_payment?", cwd=str(tmp_path))
-    assert run.calls == STANDARD
+    assert run.calls == list(SCOPES)
 
 
 def test_header_shape_is_unchanged_when_the_lane_is_off(suite, lookup, monkeypatch):
     """The one-line header is parsed downstream; adding a code counter to every
     turn would change a line that most turns have no code content for.
 
-    claude-code's header still lists every scope (``… / N graph / …``); codex's
+    claude-code's header counts the memory items (``recall N memory``); codex's
     reads in plain words (``N memory hits · … turns had hits this session``).
     """
-    run = drive_recall(
-        lookup,
-        monkeypatch,
-        prompt="what happened earlier",
-        recall={"session": [{"question": "q", "answer": "a"}]},
-    )
+    run = drive_recall(lookup, monkeypatch, prompt="what happened earlier", recall=MEMORY)
     header = _header(run.output)
     assert "code" not in header
-    if suite.name == "codex":
+    if not suite.has_rich_statusline:
         assert "memory hit" in header and "turns had hits this session" in header
     else:
-        assert "session" in header and "graph" in header
+        assert "Cognee memory: recall 1 memory; " in header
 
 
 # ── the lane fires ─────────────────────────────────────────────────────────
@@ -108,11 +108,9 @@ def test_identifier_in_an_indexed_repo_adds_the_lane(lookup, monkeypatch, indexe
         prompt="what calls process_payment?",
         cwd=str(indexed_repo / "src"),
     )
-    assert "code" in run.calls
-    # Additive: every semantic scope still ran, and the code lane precedes the
-    # graph long pole so a warm snapshot answers before the budget is spent.
-    assert [c for c in run.calls if c != "code"] == STANDARD
-    assert run.calls.index("code") < run.calls.index("graph")
+    # Additive: the memory request still ran alongside it. The two are
+    # dispatched concurrently, so only membership is meaningful, not order.
+    assert sorted(run.calls) == sorted(CODE_SCOPES), run.calls
 
     armed = run.detail("code_lane_armed")
     assert armed["identifier"] == "process_payment"
@@ -129,29 +127,33 @@ def test_lane_carries_the_repo_dataset_and_structured_query(lookup, monkeypatch,
     assert code_kwargs["code_query"]["name"] == "UserService"
 
 
-def test_semantic_scopes_keep_the_session_dataset(lookup, monkeypatch, indexed_repo):
-    """The code lane's dataset override must not leak into the other scopes."""
+def test_the_memory_request_keeps_the_session_dataset(lookup, monkeypatch, indexed_repo):
+    """The code lane's dataset override must not leak into the memory request."""
     run = drive_recall(lookup, monkeypatch, prompt="explain UserService", cwd=str(indexed_repo))
-    for scope in STANDARD:
+    for scope in SCOPES:
         assert run.kwargs[scope].get("dataset") != "codebase-proj"
         assert run.kwargs[scope].get("code_query") is None
 
 
-def test_code_facts_are_injected_and_counted(lookup, monkeypatch, indexed_repo):
+def test_code_facts_are_injected_ahead_of_memory_and_counted(lookup, monkeypatch, indexed_repo):
     run = drive_recall(
         lookup,
         monkeypatch,
         prompt="what calls process_payment?",
         cwd=str(indexed_repo),
         recall={
-            "code": [{"source": "code", "text": "process_payment (function) — billing/pay.py:42"}]
+            **MEMORY,
+            "code": [{"source": "code", "text": "process_payment (function) — billing/pay.py:42"}],
         },
     )
     context = run.output["hookSpecificOutput"]["additionalContext"]
     assert "=== Code graph facts ===" in context
     assert "billing/pay.py:42" in context
+    # Deterministic facts read first; the rendered memory block follows.
+    assert context.index("=== Code graph facts ===") < context.index("=== Cognee memory ===")
 
-    assert run.detail("context_lookup_hit")["counts"]["code"] == 1
+    counts = run.detail("context_lookup_hit")["counts"]
+    assert counts["code"] == 1 and counts["graph_context"] == 1
     assert "1 code" in _header(run.output)
 
 
@@ -163,7 +165,7 @@ def test_empty_code_lane_is_not_an_error(lookup, monkeypatch, indexed_repo):
         monkeypatch,
         prompt="what calls process_payment?",
         cwd=str(indexed_repo),
-        recall={"session": [{"question": "q", "answer": "a"}]},
+        recall=MEMORY,
     )
     context = run.output["hookSpecificOutput"]["additionalContext"]
     assert "=== Code graph facts ===" not in context
@@ -192,8 +194,8 @@ def test_a_broken_gate_never_breaks_the_prompt(lookup, monkeypatch, indexed_repo
         monkeypatch,
         prompt="what calls process_payment?",
         cwd=str(indexed_repo),
-        recall={"session": [{"question": "q", "answer": "a"}]},
+        recall=MEMORY,
     )
-    assert run.calls == STANDARD
+    assert run.calls == list(SCOPES)
     assert run.fired("code_lane_gate_error")
-    assert "q" in run.output["hookSpecificOutput"]["additionalContext"]
+    assert "The question is: `q`" in run.output["hookSpecificOutput"]["additionalContext"]

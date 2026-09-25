@@ -113,5 +113,39 @@ def test_coerce_top_k(rh):
 
 def test_coerce_scope(rh):
     assert rh.coerce_scope('["graph"]') == ["graph"]
-    assert rh.coerce_scope("not json") == "auto"
-    assert rh.coerce_scope("") == "auto"
+    # Graph-only on anything empty or malformed: "auto" would fold session entries in.
+    assert rh.coerce_scope("not json") == ["graph"]
+    assert rh.coerce_scope("") == ["graph"]
+
+
+def _http_error(status, body: bytes):
+    import io
+
+    return urllib.error.HTTPError("http://x/api/v1/recall", status, "err", {}, io.BytesIO(body))
+
+
+def test_rejection_names_the_dataset_and_the_servers_reason(rh):
+    """The server names a dataset only by UUID; a bare status code left a model to
+    guess which dataset failed and why."""
+    body = (
+        b'{"detail": "Dataset cf36 was embedded with \'BAAI/bge-small-en-v1.5\' '
+        b'(384 dimensions), but the configured model produces 3072."}'
+    )
+    out = rh.do_recall(
+        "http://x",
+        "",
+        "q",
+        "",
+        '["graph"]',
+        "5",
+        dataset="shim_testing",
+        opener=_raises(_http_error(409, body)),
+    )
+    assert out["status"] == 409 and out["authoritative"] is False
+    assert "searched dataset shim_testing" in out["error"]
+    assert "384 dimensions" in out["error"]
+
+
+def test_rejection_without_a_body_keeps_the_plain_message(rh):
+    out = _recall(rh, _raises(_http_error(500, b"")))
+    assert out["error"] == "server returned HTTP 500 for /api/v1/recall"

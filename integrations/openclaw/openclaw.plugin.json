@@ -60,7 +60,7 @@
       },
       "password": {
         "type": "string",
-        "description": "Cognee login password (default: default_password)"
+        "description": "Cognee login password (default: default_password). Together with username this selects which user the plugin logs in as; a non-default user must already exist on the server. The local server the plugin starts always creates the default user with default_password (via DEFAULT_USER_PASSWORD) unless you export DEFAULT_USER_EMAIL / DEFAULT_USER_PASSWORD yourself. An external server (cognee >= 1.6.0) must itself be started with DEFAULT_USER_PASSWORD set, or use an API key (apiKey / COGNEE_API_KEY) instead."
       },
       "datasetName": {
         "type": "string",
@@ -221,7 +221,7 @@
       },
       "recallSessionLayers": {
         "type": "boolean",
-        "description": "Alongside the graph search, recall this conversation's session layers (cached Q&A, tool-call lessons, distilled agent guidance) and inject them as separate sections. Requires enableSessions (default: true)"
+        "description": "Deprecated, no effect: since cognee 1.6.0 the single graph recall already carries this conversation's history and guidance in its text. Kept so existing configs keep validating"
       },
       "memoryTools": {
         "type": "boolean",

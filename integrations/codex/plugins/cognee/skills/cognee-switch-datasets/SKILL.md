@@ -73,5 +73,8 @@ On failure the JSON is `{"error", "code"}`:
 
 ## Notes
 
+- A switch is not needed just to *look* in another dataset: a one-off graph search
+  leaves the session where it is — `${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh "<question>" 10 --graph --dataset-id <id>` (see the **memory** skill).
+
 - `COGNEE_PLUGIN_DATASET` only seeds the dataset at launch; a switch overrides it for the rest of the session and survives a resume.
 - Recall is scoped to the active dataset, so after a switch earlier context from the previous dataset is no longer injected — switch back to see it again.

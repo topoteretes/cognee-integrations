@@ -1,11 +1,16 @@
 """Contract tests for the UserPromptSubmit hook output envelope.
 
-Both suites emit `hookSpecificOutput.hookEventName == "UserPromptSubmit"` with
-the recalled text in `additionalContext`, but the **status header goes in a
-different place**, and each host only reads its own:
+All registered lookup implementations emit
+`hookSpecificOutput.hookEventName == "UserPromptSubmit"` with the recalled text
+in `additionalContext`, but the copied inner cores place the **status header**
+differently:
 
-  * codex puts `systemMessage` at the TOP level (and must NOT nest it);
-  * claude-code puts `systemMessage` INSIDE `hookSpecificOutput`.
+  * the Codex-derived cores put `systemMessage` at the TOP level (and must NOT nest it);
+  * Claude Code puts `systemMessage` INSIDE `hookSpecificOutput`.
+
+Codex consumes that envelope directly. Antigravity's outer ``agy_hook`` instead
+translates ``additionalContext`` — with top-level ``systemMessage`` only as a
+fallback — into the host's ``injectSteps`` shape.
 
 Getting this wrong is silent — the hook still exits 0 and the host just shows no
 status — so it is worth pinning per suite. Migrated from

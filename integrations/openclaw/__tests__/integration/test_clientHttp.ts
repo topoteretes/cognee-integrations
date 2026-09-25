@@ -114,6 +114,39 @@ describe("authentication", () => {
     expect(call.headers.authorization).toBeUndefined();
   });
 
+  it("explains a password-less default user (cognee >= 1.6.0) and names both fixes", async () => {
+    // cognee 1.6.0 stopped baking in a default-user password: without
+    // DEFAULT_USER_PASSWORD at server start the default user cannot log in and
+    // the server answers 400 with this exact detail. The bare status would leave
+    // a user with no idea what to change.
+    const client = new CogneeHttpClient(mock.url, undefined, undefined, undefined, 5_000, 30_000, LOCAL);
+    mock.forceResponse("POST", "/auth/login", 400, {
+      detail: "This user does not have a password. Use API key authentication.",
+    });
+
+    await expect(client.listDatasets()).rejects.toThrow(
+      /DEFAULT_USER_PASSWORD[\s\S]*COGNEE_API_KEY/,
+    );
+    // The raw status and body stay in the message for debugging.
+    await expect(client.listDatasets()).rejects.toThrow(/\(400\).*does not have a password/);
+  });
+
+  it("names the credential settings on LOGIN_BAD_CREDENTIALS", async () => {
+    const client = new CogneeHttpClient(mock.url, undefined, "u", "wrong", 5_000, 30_000, LOCAL);
+    mock.forceResponse("POST", "/auth/login", 400, { detail: "LOGIN_BAD_CREDENTIALS" });
+
+    await expect(client.listDatasets()).rejects.toThrow(/LOGIN_BAD_CREDENTIALS/);
+    await expect(client.listDatasets()).rejects.toThrow(/"username".*"password"/);
+    await expect(client.listDatasets()).rejects.toThrow(/COGNEE_USERNAME.*COGNEE_PASSWORD/);
+  });
+
+  it("keeps the generic message for any other login failure", async () => {
+    const client = new CogneeHttpClient(mock.url, undefined, "u", "p", 5_000, 30_000, LOCAL);
+    mock.forceResponse("POST", "/auth/login", 503, { detail: "warming up" });
+
+    await expect(client.listDatasets()).rejects.toThrow(/^Cognee login failed \(503\): .*warming up.*$/);
+  });
+
   it("re-logs in and retries once on a 401 with no API key", async () => {
     const client = new CogneeHttpClient(mock.url, undefined, "u", "p", 5_000, 30_000, LOCAL);
     mock.forceResponse("GET", "/datasets", 401, { detail: "expired" }, true);
@@ -250,6 +283,40 @@ describe("memory verbs send what the server expects", () => {
     });
   });
 
+  it("the prompt-time recall body: scope graph, completion type, only_context, session_id — and no context_format", async () => {
+    // Exactly what plugin.ts sends once per prompt since cognee 1.6.0 (SDK-741).
+    await localClient().recall({
+      queryText: "what did we decide about the theme?",
+      searchPrompt: "",
+      searchType: "HYBRID_COMPLETION" as never,
+      datasetIds: ["ds-1"],
+      topK: 3,
+      sessionId: "open_claw_s1",
+      scope: ["graph"],
+      onlyContext: true,
+    });
+
+    expect(mock.assertCalled("POST", "/recall").json).toEqual({
+      query: "what did we decide about the theme?",
+      search_type: "HYBRID_COMPLETION",
+      dataset_ids: ["ds-1"],
+      only_context: true,
+      top_k: 3,
+      session_id: "open_claw_s1",
+      scope: ["graph"],
+    });
+  });
+
+  it("recall keeps a cognee >= 1.6.0 graph item's full text and drops its system_prompt", async () => {
+    const fullPrompt = "User: hi\nAssistant: hello\n\nThe question is: `theme?`\nContext:\n`dark mode`\n\nSession guidance: confirm first.";
+    mock.setResponse("POST", "/recall", [
+      { source: "graph", dataset_id: "ds-1", text: fullPrompt, system_prompt: "Answer the question using the provided context. Be as brief as possible." },
+    ]);
+    const [item] = await localClient().recall({ queryText: "theme?", searchPrompt: "", searchType: "HYBRID_COMPLETION" as never, datasetIds: ["ds-1"], scope: ["graph"], sessionId: "s1" });
+    expect(item).toEqual({ id: "ds-1", text: fullPrompt, score: 1, metadata: undefined, source: "graph" });
+    expect(JSON.stringify(item)).not.toContain("Be as brief as possible");
+  });
+
   it("recall omits optional fields rather than sending nulls", async () => {
     // The server treats an explicit null differently from an absent key, so the
     // spread-guards in recall() matter.
@@ -292,6 +359,25 @@ describe("memory verbs send what the server expects", () => {
     const res = await localClient().unregisterAgent({ agentSessionName: "a1" } as never);
     expect(res).toMatchObject({ ok: true });
     expect(mock.assertCalled("POST", "/agents/unregister")).toBeTruthy();
+  });
+
+  it("indexRepository sends the repo spec as raw_data, not repositories", async () => {
+    // Load-bearing and silent when wrong: cognee 1.5.4 renamed this form field
+    // from `repositories`, and the server drops an unrecognised multipart part
+    // rather than refusing it — so the old name arrived as a request carrying no
+    // repository at all and 400'd on every repo (issue #420). Asserted on the
+    // raw body because e2e/test_codeGraph.ts mocks indexRepository wholesale and
+    // structurally cannot see the wire.
+    await localClient().indexRepository({
+      datasetName: "codebase-proj",
+      repository: "https://github.com/org/repo",
+    });
+
+    const body = mock.assertCalled("POST", "/remember").body;
+    expect(body).toContain('name="raw_data"');
+    expect(body).toContain("https://github.com/org/repo");
+    expect(body).not.toContain('name="repositories"');
+    expect(body).toContain('name="content_type"');
   });
 
   it("health reads the status field", async () => {

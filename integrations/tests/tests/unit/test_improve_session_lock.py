@@ -2,8 +2,8 @@
 
 The regression this locks down was root-caused from a real hook.log: the idle
 watcher, ``store-to-session`` and the SessionEnd sync all bridge sessions, and
-the outer ``sync_lock`` is bypassed in API mode
-(``nullcontext(True) if api_mode``). 67% of sessions were submitted by two
+nothing else serialized them (the old cross-hook ``sync_lock`` only ever
+applied to the since-removed in-process SDK path). 67% of sessions were submitted by two
 processes at once; the server's own per-session lock answered the loser with
 ``{}`` (busy), driving a 15s retry loop for up to ten minutes, while concurrent
 writers collided on the single-writer graph store ("Could not set lock on file")
@@ -11,6 +11,12 @@ and left pipeline runs stuck with the graph unwritten.
 
 Pure filesystem/pid logic, so it stays a unit test. The recall-payload half of
 the original file is now covered on the wire in integration/test_recall_via_http.py.
+
+Suites with ``has_single_submit_improve`` (claude-code 1.5.3, codex 1.6.3, SDK-594) have
+no such lock any more: repeated and parallel improves are safe server-side
+(watermarks + content-hash dedup), the busy loop this lock pre-empted is gone,
+and a busy answer is simply reported. Their contract lives in
+unit/test_improve_single_submit.py; this module is skipped for them.
 
 Migrated from {claude-code,codex}/tests/test_improve_session_lock.py.
 """
@@ -27,6 +33,8 @@ import pytest
 @pytest.fixture
 def pc(suite, isolated_modules, tmp_path, monkeypatch):
     """_plugin_common with its improve-lock dir pointed at a temp path."""
+    if suite.has_single_submit_improve:
+        pytest.skip("suite has no plugin-side improve lock (single-submit improve)")
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setattr(common, "_IMPROVE_LOCK_DIR", tmp_path / "improve-locks")
     monkeypatch.setattr(common, "hook_log", lambda *a, **kw: None)
@@ -104,7 +112,7 @@ def test_run_session_improve_skips_when_claim_is_held(pc, monkeypatch):
     monkeypatch.setattr(
         pc,
         "_run_session_improve_locked",
-        lambda ds, sid: called.append((ds, sid)) or True,
+        lambda ds, sid, **kw: called.append((ds, sid)) or True,
     )
 
     assert pc.run_session_improve("ds", "sess-A") is True

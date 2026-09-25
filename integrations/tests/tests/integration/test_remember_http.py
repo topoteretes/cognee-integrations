@@ -12,9 +12,7 @@ Covers the two fixes:
     caller does not fall back to the CLI and risk a duplicate write — while a
     real connection failure still returns UNREACHABLE.
 
-The bounded cognify wait is gated on ``suite.has_background_remember`` and now
-holds for both suites — codex's ``do_remember`` gained it in the port that landed
-in main.
+The bounded cognify wait holds for all registered suites.
 
 Migrated from claude-code/tests/test_remember_http.py; the transport-exception
 half lives in unit/test_remember_http_transport.py.
@@ -98,13 +96,13 @@ def test_connection_failure_is_unreachable(rh, closed_port_url):
     assert _remember(rh, closed_port_url) == rh.UNREACHABLE
 
 
-# ── the bounded cognify wait (claude-code only) ────────────────────────────
+# ── the bounded cognify wait ───────────────────────────────────────────────
 
 
 @pytest.fixture
 def waits(suite):
-    if not suite.has_background_remember:
-        pytest.skip(f"{suite.name}: do_remember is submit-only (no bounded cognify wait)")
+    """Every registered suite has the bounded wait; kept as a named fixture so the
+    tests below read as what they are."""
 
 
 def test_response_body_parsed_into_result(rh, mock_server, waits, monkeypatch):

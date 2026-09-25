@@ -95,16 +95,22 @@ class MemoryBackend:
         top_k: int,
         auto_route: bool,
         query_type: Optional[str],
-        scope: Optional[str] = None,
+        scope: Any = None,
+        code_query: Optional[dict[str, Any]] = None,
+        only_context: bool = False,
         timeout: float,
     ) -> list[Any]:
-        """Search memory. ``scope`` is the provider's routing decision by name —
-        ``session``, ``graph`` or ``auto`` — alongside the targets it implies.
+        """Search memory. ``scope`` is the list of server scopes to read —
+        ``["graph"]`` for memory, ``["code"]`` for the deterministic code graph
+        — alongside the targets it implies. Memory is read from the graph only:
+        the session-cache scopes and the server's ``auto`` scope (which folds
+        them in) are never requested, so a transport handed no scope states
+        ``["graph"]`` rather than leaving the server to infer one.
 
-        A transport that can state the scope outright should say it rather than
-        leave the server to infer it from which targets happen to be set: that
-        inference is conditional on other fields, so it silently changes meaning
-        when one of them moves.
+        A transport must state the scope outright rather than leave the server
+        to infer it from which targets happen to be set: that inference is
+        conditional on other fields, so it silently changes meaning when one of
+        them moves.
         """
         raise NotImplementedError
 
@@ -133,6 +139,48 @@ class MemoryBackend:
     ) -> Any:
         """Bridge session-cache content into the permanent graph."""
         raise NotImplementedError
+
+    # -- inspection / targeted deletion / code graph -------------------------
+    #
+    # These operations exist only on the server's REST API — the SDK's client
+    # objects have no equivalents — so only the HTTP transport implements them.
+    # The shared default raises a uniform, actionable error instead of
+    # NotImplementedError so a tool envelope can carry it verbatim.
+
+    def _http_only(self, operation: str) -> RuntimeError:
+        return RuntimeError(
+            f"{operation} requires the HTTP transport to a cognee server. "
+            "Unset COGNEE_TRANSPORT/COGNEE_EMBEDDED (local-server mode is the "
+            "default) or set COGNEE_TRANSPORT=http."
+        )
+
+    def list_datasets(self, *, timeout: float) -> list[dict[str, Any]]:
+        raise self._http_only("listing datasets")
+
+    def list_dataset_data(self, *, dataset_id: str, timeout: float) -> list[dict[str, Any]]:
+        raise self._http_only("listing dataset documents")
+
+    def read_raw_data(self, *, dataset_id: str, data_id: str, timeout: float) -> str:
+        raise self._http_only("reading a stored document")
+
+    def forget_document(self, *, dataset_id: str, data_id: str, timeout: float) -> dict[str, Any]:
+        raise self._http_only("per-document deletion")
+
+    def index_repository(
+        self,
+        *,
+        repo: str,
+        dataset: str,
+        index_vectors: bool = False,
+        run_in_background: bool = True,
+        timeout: float,
+    ) -> dict[str, Any]:
+        raise self._http_only("code-graph indexing")
+
+    def dataset_pipeline_status(
+        self, *, dataset_id: str, pipeline: str = "code_graph_pipeline", timeout: float
+    ) -> str:
+        raise self._http_only("pipeline status polling")
 
     # -- diagnostics -------------------------------------------------------
 
@@ -278,18 +326,29 @@ class SdkBackend(MemoryBackend):
         auto_route,
         query_type,
         scope=None,
+        code_query=None,
+        only_context=False,
         timeout,
     ) -> list[Any]:
-        # ``scope`` is accepted but not forwarded. ``cognee.recall`` grew a
-        # ``scope`` parameter after this plugin's 1.2.1 floor, and passing an
-        # unknown keyword to the older SDK is a TypeError, not a degraded search.
-        # Nothing is lost by leaving it out: the in-process path passes
-        # ``auto_route`` and ``query_type`` natively, so cognee resolves the same
-        # sources from them. Only the HTTP transport needs to say it explicitly,
-        # because the endpoint defaults ``search_type`` where the SDK does not.
-        del scope
+        # ``scope`` and ``only_context`` are forwarded: both are ``cognee.recall``
+        # keywords on every version this plugin pins (>= 1.4), and the per-prompt
+        # memory lane depends on them — ``scope=["graph"]`` with ``only_context``
+        # and a ``session_id`` is what makes the server hand back the full
+        # prompt-shaped memory item instead of running an LLM completion.
+        # ``code_query`` is dropped: the SDK entry point has no such keyword, and
+        # the code lane is HTTP-only anyway.
+        del code_query
         return self._bridge.run(
-            self._do_recall(query, session_id, datasets, top_k, auto_route, query_type),
+            self._do_recall(
+                query,
+                session_id,
+                datasets,
+                top_k,
+                auto_route,
+                query_type,
+                scope=scope,
+                only_context=only_context,
+            ),
             timeout=timeout,
         )
 
@@ -390,6 +449,8 @@ class SdkBackend(MemoryBackend):
         top_k: int,
         auto_route: bool,
         query_type: Optional[str],
+        scope: Any = None,
+        only_context: bool = False,
     ) -> list[Any]:
         import cognee
 
@@ -404,6 +465,11 @@ class SdkBackend(MemoryBackend):
             kwargs["datasets"] = datasets
         if query_type:
             kwargs["query_type"] = resolve_search_type(query_type)
+        # Always stated: left out, cognee resolves the scope to ``auto`` and
+        # folds the session cache in whenever a session id travels.
+        kwargs["scope"] = scope or ["graph"]
+        if only_context:
+            kwargs["only_context"] = True
 
         return await cognee.recall(query_text=query, **kwargs)
 

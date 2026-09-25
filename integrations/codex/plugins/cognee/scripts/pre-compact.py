@@ -8,7 +8,13 @@ markdown block the compactor preserves.
 PreCompact intentionally does not run live graph search: there is no real user
 query at compact time, and deriving one from recalled/compacted context can feed
 synthetic text back into Cognee as if it were a user question.
+
+Everything goes through the Cognee server over HTTP (``/api/v1/recall`` and
+``GET /api/v1/sessions/{id}``), so the anchor works the same whether the
+plugin booted a local server or is connected to a remote one.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -20,23 +26,18 @@ from pathlib import Path
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    get_session_detail_via_http,
     get_session_key,
     hook_log,
     load_resolved,
     quiet_hook_output,
     recall_via_http,
+    resolve_runtime_mode,
     resolve_session_key_from_payload,
-    resolve_user,
+    server_usable,
     set_session_key,
 )
-from config import (
-    ensure_cognee_ready,
-    ensure_dataset_ready,
-    get_dataset,
-    get_session_id,
-    is_cloud_mode,
-    load_config,
-)
+from config import get_dataset, get_session_id, load_config
 
 _SESSION_TOP_K = 5
 _TRACE_TOP_K = 8
@@ -59,22 +60,6 @@ def _load_resolved_fields() -> tuple[str, str, str]:
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
     return session_id, dataset, user_id
-
-
-def _as_dict(entry):
-    if hasattr(entry, "model_dump"):
-        try:
-            return entry.model_dump()
-        except Exception as exc:
-            hook_log("precompact_model_dump_failed", {"error": str(exc)[:200]})
-    if hasattr(entry, "dict"):
-        try:
-            return entry.dict()
-        except Exception as exc:
-            hook_log("precompact_dict_dump_failed", {"error": str(exc)[:200]})
-    if hasattr(entry, "__dict__"):
-        return dict(entry.__dict__)
-    return entry
 
 
 def _spawn_background_sync(session_id: str, dataset: str, user_id: str) -> None:
@@ -102,52 +87,42 @@ def _spawn_background_sync(session_id: str, dataset: str, user_id: str) -> None:
         )
 
 
-async def _recall(
-    session_id: str,
-    dataset: str,
-    query: str,
-    scope: list[str],
-    top_k: int,
-    config: dict,
-    user=None,
-) -> list:
-    """Thin wrapper around cognee.recall; tolerates empty/failed recalls."""
+def _recall(session_id: str, dataset: str, query: str, scope: list[str], top_k: int) -> list:
+    """Recall for the anchor over HTTP; tolerates empty/failed recalls."""
     try:
-        if is_cloud_mode(config):
-            qtype = "GRAPH_COMPLETION" if "graph" in scope else None
-            results = recall_via_http(
-                query,
-                session_id=session_id,
-                top_k=top_k,
-                scope=scope,
-                only_context=True,
-                search_type=qtype,
-                dataset=get_dataset(config),
-            )
-        else:
-            import cognee
-            from cognee.modules.search.types import SearchType
-
-            query_type = SearchType.GRAPH_COMPLETION if "graph" in scope else None
-            results = await cognee.recall(
-                query,
-                session_id=session_id,
-                datasets=[dataset] if "graph" in scope else None,
-                top_k=top_k,
-                scope=scope,
-                query_type=query_type,
-                user=user,
-            )
-        return list(results) if results else []
+        results = recall_via_http(
+            query,
+            session_id=session_id,
+            top_k=top_k,
+            scope=scope,
+            only_context=True,
+            dataset=dataset,
+        )
+        return [r for r in (results or []) if isinstance(r, dict)]
     except Exception as exc:
         hook_log("precompact_recall_error", {"scope": scope, "error": str(exc)[:200]})
         return []
 
 
+def _recent_entries(session_id: str) -> tuple[list, list]:
+    """Return (recent QA entries, recent trace entries) straight from the server.
+
+    The seed recall passes an empty query (there is no user question at compact
+    time) and ``/recall`` matches nothing on an empty string, so the session
+    detail endpoint — which returns the last ~20 QA and trace rows without a
+    query — is what actually produces the anchor mid-session.
+    """
+    detail = get_session_detail_via_http(session_id)
+    if not isinstance(detail, dict):
+        return [], []
+    qas = [r for r in (detail.get("qas") or []) if isinstance(r, dict)]
+    traces = [r for r in (detail.get("traces") or []) if isinstance(r, dict)]
+    return qas[-_SESSION_TOP_K:], traces[-_TRACE_TOP_K:]
+
+
 def _format_session_section(entries: list) -> str:
     lines = ["### Session Memory (recent turns)"]
     for entry in entries:
-        entry = _as_dict(entry)
         if not isinstance(entry, dict):
             continue
         q = str(entry.get("question") or "").strip()
@@ -165,7 +140,6 @@ def _format_session_section(entries: list) -> str:
 def _format_trace_section(entries: list) -> str:
     lines = ["### Agent Trace (tool calls & feedback)"]
     for entry in entries:
-        entry = _as_dict(entry)
         if not isinstance(entry, dict):
             continue
         origin = entry.get("origin_function", "?")
@@ -185,59 +159,25 @@ async def _run():
         return ""
     hook_log("precompact_start", {"session": session_id, "dataset": dataset, "user_id": user_id})
 
-    config = load_config()
-    await ensure_cognee_ready(config)
-    user = None
-    if not is_cloud_mode(config):
-        user = await resolve_user(user_id)
-        await ensure_dataset_ready(dataset, user)
+    # Pin the endpoint the same way every other hook does (URL + optional key
+    # into the environment), then bail early on a server already known to be
+    # down rather than paying recall timeouts for nothing.
+    runtime = resolve_runtime_mode()
+    service_url = runtime.get("base_url", "")
+    if not server_usable(service_url):
+        hook_log("precompact_server_unusable", {"base_url": service_url})
+        return ""
 
-    # Short queries: use the session's recent activity as the seed
-    # since we don't have a specific user question at compact time.
-    # First pull session+trace so we can derive a query from them.
-    seed_results = await _recall(
-        session_id,
-        dataset,
-        query="",
-        scope=["session", "trace"],
-        top_k=_TRACE_TOP_K,
-        config=config,
-        user=user,
+    # Seed: the session's recent activity, since there is no user question at
+    # compact time. Try recall first, then the session detail endpoint, which
+    # returns the recent rows without needing a query.
+    seed_results = _recall(
+        session_id, dataset, query="", scope=["session", "trace"], top_k=_TRACE_TOP_K
     )
-    normalized_seed = [_as_dict(r) for r in seed_results]
-    session_entries = [
-        r
-        for r in normalized_seed
-        if isinstance(r, dict) and (r.get("source") or r.get("_source")) == "session"
-    ]
-    trace_entries = [
-        r
-        for r in normalized_seed
-        if isinstance(r, dict) and (r.get("source") or r.get("_source")) == "trace"
-    ]
-
-    # Fall back: if recall returned nothing (keyword-miss on empty query),
-    # pull entries directly. This keeps the anchor useful mid-session
-    # before any user prompts have landed in the cache.
+    session_entries = [r for r in seed_results if r.get("source") == "session"]
+    trace_entries = [r for r in seed_results if r.get("source") == "trace"]
     if not session_entries and not trace_entries:
-        try:
-            from cognee.infrastructure.session.get_session_manager import get_session_manager
-
-            resolved = load_resolved()
-            user_id = resolved.get("user_id", "")
-            if user_id:
-                sm = get_session_manager()
-                if sm.is_available:
-                    raw_qa = await sm.get_session(
-                        user_id=user_id, session_id=session_id, formatted=False
-                    )
-                    session_entries = list(raw_qa)[-_SESSION_TOP_K:] if raw_qa else []
-                    raw_trace = await sm.get_agent_trace_session(
-                        user_id=user_id, session_id=session_id
-                    )
-                    trace_entries = list(raw_trace)[-_TRACE_TOP_K:] if raw_trace else []
-        except Exception as exc:
-            hook_log("precompact_direct_fetch_error", {"error": str(exc)[:200]})
+        session_entries, trace_entries = _recent_entries(session_id)
 
     session_entries = session_entries[-_SESSION_TOP_K:]
     trace_entries = trace_entries[-_TRACE_TOP_K:]

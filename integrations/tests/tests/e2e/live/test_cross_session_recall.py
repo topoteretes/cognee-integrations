@@ -99,8 +99,8 @@ def test_paxos_then_byzantine_recalled_in_a_fresh_session(
 #   real question. Doing it honestly means populating *two* datasets and showing
 #   neither surfaces the other's nonce — a second cognify, so it belongs in its
 #   own test rather than bolted onto this file.
-# * Cold-start recall. With production timeouts (COGNEE_RECALL_TIMEOUT 2.5s,
-#   COGNEE_RECALL_BUDGET 4s) the first graph query against a freshly booted
+# * Cold-start recall. With production timeouts (COGNEE_RECALL_TIMEOUT 10s,
+#   COGNEE_RECALL_BUDGET 12s) the first graph query against a freshly booted
 #   server times out and is correctly reported as "slow", so the prompt gets no
 #   memory. This tier raises those limits to ask its own question, which means
 #   the cold-start behaviour is currently untested. It deserves pinning: first

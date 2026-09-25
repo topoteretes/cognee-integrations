@@ -55,17 +55,27 @@ if not api_key:
             pass
 
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
-# The launch record wins: it carries the dataset chosen with switch-dataset.py.
+dataset_id = ""
+# The launch record wins (dataset chosen with switch-dataset.py, its canonical
+# UUID under shared memory, the plugin-agent key the hooks use).
 try:
-    from _plugin_common import _read_map_record, resolve_host_key_outside_hook
-    _host_key, _ = resolve_host_key_outside_hook()
-    _rec = _read_map_record(_host_key) if _host_key else {}
-    if str(_rec.get("dataset") or "").strip():
-        dataset = str(_rec["dataset"]).strip()
+    from _plugin_common import shell_runtime_overrides
+    _rt = shell_runtime_overrides(service_url)
+    dataset = _rt["dataset"] or dataset
+    dataset_id = _rt["dataset_id"]
+    api_key = _rt["api_key"] or api_key
 except Exception:
     pass
 
-print(json.dumps({"service_url": service_url, "api_key": api_key, "dataset": dataset}))
+print(json.dumps({"service_url": service_url, "api_key": api_key, "dataset": dataset, "dataset_id": dataset_id}))
+PY
+)"
+DATASET_ID="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
+import json, sys
+try:
+    print((json.loads(sys.argv[1] or "{}").get("dataset_id") or "").strip())
+except Exception:
+    pass
 PY
 )"
 
@@ -116,6 +126,8 @@ while [ $# -gt 0 ]; do
         --dataset|-d)
             shift
             DATASET="${1:-$DATASET}"
+            # The canonical UUID belongs to the launch's active dataset only.
+            DATASET_ID=""
             ;;
         --file)
             shift
@@ -139,7 +151,7 @@ fi
 # Server-first: POST to /api/v1/remember via _remember_http.py.
 # UNREACHABLE → fall back to cognee-cli and warn.
 # Any other result (ok or error) → authoritative; do not fall back.
-RESULT="$(python3 "${SELF_DIR}/_remember_http.py" "$SERVICE_URL" "$API_KEY" "$CONTENT" "$DATASET" "$NODE_SET" "$FILE_PATH" || true)"
+RESULT="$(python3 "${SELF_DIR}/_remember_http.py" "$SERVICE_URL" "$API_KEY" "$CONTENT" "$DATASET" "$NODE_SET" "$FILE_PATH" "$DATASET_ID" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
     printf '%s\n' "$RESULT"

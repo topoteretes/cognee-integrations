@@ -15,10 +15,10 @@ order under test:
   4. the recall breaker still overrides a "ready", and a base_url mismatch is still
      ignored.
 
-Parametrized over both suites: the resolution logic is shared, and the expected
-glyphs come from ``utils.statusline`` (claude styles them with ANSI, codex keeps
-them plain — see the colour-policy section at the bottom and codex's
-test_statusline_plain_text).
+Parametrized over all registered suites: the resolution logic is shared, and the
+expected glyphs come from ``utils.statusline`` (Claude Code styles them with ANSI;
+Codex and Antigravity keep them plain — see the colour-policy section at the
+bottom and Codex's test_statusline_plain_text).
 
 Marker paths derive from Path.home(), so the isolated import already points them
 inside the per-test HOME. Migrated from

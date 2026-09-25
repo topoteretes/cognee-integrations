@@ -1,16 +1,45 @@
 /**
- * Wire-format handling for the session layers and /improve:
- *   * normalizeSearchResults renders session/trace/session_context entries
- *     (which carry no `text`) and keeps the `source` discriminator;
- *   * renderSessionLayerSections groups them into labelled prompt blocks;
+ * Wire-format handling for recall items and /improve:
+ *   * normalizeSearchResults keeps a graph item's `text` verbatim (the cognee
+ *     >= 1.6.0 full-prompt text included) and never reads `system_prompt`;
+ *     session/trace/session_context entries (which carry no `text`; no
+ *     search path requests them any more, but the client stays wire-complete)
+ *     are rendered from their fields and keep the `source` discriminator;
  *   * normalizeImproveResponse collapses both the flat and the per-dataset
  *     response shapes, so describeImprove never prints `status=?` for a map.
  */
 
 import { normalizeImproveResponse, normalizeSearchResults } from "../../src/client";
-import { MAX_ENTRIES_PER_LAYER, describeImprove, renderSessionLayerSections } from "../../src/recall-layers";
+import { describeImprove } from "../../src/recall-layers";
+
+const FULL_PROMPT_TEXT = [
+  "User: what theme do I like?",
+  "Assistant: dark mode",
+  "",
+  "The question is: `what did we decide about the theme?`",
+  "Answer using only the context below.",
+  "Context:",
+  "`User prefers dark mode. Deploys happen on Fridays.`",
+  "",
+  "Session guidance: always confirm before deleting.",
+].join("\n");
 
 describe("normalizeSearchResults — recall sources", () => {
+  it("keeps a cognee >= 1.6.0 graph item's full-prompt text whole and ignores system_prompt", () => {
+    const [r] = normalizeSearchResults([
+      { source: "graph", dataset_id: "ds-1", text: FULL_PROMPT_TEXT, system_prompt: "Answer the question using the provided context. Be as brief as possible.", content: "should not win", search_result: ["should not win either"] },
+    ]);
+    expect(r).toEqual({ id: "ds-1", text: FULL_PROMPT_TEXT, score: 1, metadata: undefined, source: "graph" });
+    expect(r.text).not.toContain("Be as brief as possible");
+    expect(r).not.toHaveProperty("system_prompt");
+  });
+
+  it("keeps an older server's bare graph context exactly as sent", () => {
+    const [r] = normalizeSearchResults([{ source: "graph", text: "bare context" }]);
+    expect(r.text).toBe("bare context");
+    expect(r.source).toBe("graph");
+  });
+
   it("renders a session Q&A entry and tags its source", () => {
     const [r] = normalizeSearchResults([
       { source: "session", question: "what theme?", answer: "dark", context: "", feedback_text: "correct", entry_id: "qa-1" },
@@ -47,33 +76,6 @@ describe("normalizeSearchResults — recall sources", () => {
     expect(rs[1].source).toBeUndefined();
     expect(rs[2].text).toBe("plain string");
     expect(rs[3].text).toBe("cloud\nformat");
-  });
-});
-
-describe("renderSessionLayerSections", () => {
-  it("groups by layer in guidance → trace → session order and skips graph entries", () => {
-    const sections = renderSessionLayerSections([
-      { id: "1", text: "Q: a\nA: b", score: 1, source: "session" },
-      { id: "2", text: "Use --wait", score: 1, source: "session_context" },
-      { id: "3", text: "graph hit", score: 0.9, source: "graph" },
-      { id: "4", text: "deploy (error)", score: 1, source: "trace" },
-    ]);
-    expect(sections).toHaveLength(3);
-    expect(sections[0]).toMatch(/^<agent_guidance>\n\[.*\]\n- Use --wait\n<\/agent_guidance>$/);
-    expect(sections[1]).toMatch(/^<trace_lessons>/);
-    expect(sections[2]).toBe("<session_memory>\n[Earlier turns of this conversation]\n- Q: a\n  A: b\n</session_memory>");
-  });
-
-  it("treats untagged entries as session Q&A, drops blanks, and caps each layer", () => {
-    const many = Array.from({ length: MAX_ENTRIES_PER_LAYER + 3 }, (_, i) => ({ id: String(i), text: `turn ${i}`, score: 1 }));
-    const sections = renderSessionLayerSections([...many, { id: "b", text: "   ", score: 1, source: "trace" as const }]);
-    expect(sections).toHaveLength(1);
-    expect(sections[0].split("\n- ")).toHaveLength(MAX_ENTRIES_PER_LAYER + 1);
-  });
-
-  it("returns [] when nothing is injectable", () => {
-    expect(renderSessionLayerSections([])).toEqual([]);
-    expect(renderSessionLayerSections([{ id: "g", text: "x", score: 1, source: "graph" }])).toEqual([]);
   });
 });
 

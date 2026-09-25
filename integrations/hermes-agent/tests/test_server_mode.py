@@ -736,5 +736,69 @@ class TestConfigModes(unittest.TestCase):
         self.assertEqual(cfg["local_port"], 65535)
 
 
+class TestSpawnEnv(unittest.TestCase):
+    """The env ``_spawn`` hands the server: default-user credentials.
+
+    cognee >= 1.6.0 creates the default user only when DEFAULT_USER_PASSWORD is
+    set, so the spawned server is told the plugin's literal defaults — never the
+    COGNEE_USER_* login selection, since the server (and its once-set default
+    password) is shared by every cognee plugin.
+    """
+
+    def _spawn_env(self, extra=None, drop=()):
+        base = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("DEFAULT_USER_", "COGNEE_USER_")) and k not in drop
+        }
+        base.update(extra or {})
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        log_path = str(Path(tmp.name) / "server.log")
+        with (
+            mock.patch.dict("os.environ", base, clear=True),
+            mock.patch.object(sb.subprocess, "Popen") as popen,
+        ):
+            sb._spawn(8011, "", "", log_path)
+        self.assertEqual(popen.call_count, 1)
+        return popen.call_args.kwargs["env"]
+
+    def test_defaults_match_the_login_the_transport_performs(self):
+        from cognee_integration_hermes.http_backend import (
+            DEFAULT_USER_EMAIL,
+            DEFAULT_USER_PASSWORD,
+        )
+
+        env = self._spawn_env()
+        self.assertEqual(env["DEFAULT_USER_EMAIL"], DEFAULT_USER_EMAIL)
+        self.assertEqual(env["DEFAULT_USER_PASSWORD"], DEFAULT_USER_PASSWORD)
+        self.assertEqual(env["DEFAULT_USER_EMAIL"], "default_user@example.com")
+        self.assertEqual(env["DEFAULT_USER_PASSWORD"], "default_password")
+
+    def test_cognee_user_login_selection_does_not_redefine_the_default_user(self):
+        env = self._spawn_env(
+            {"COGNEE_USER_EMAIL": "me@example.org", "COGNEE_USER_PASSWORD": "s3cret"}
+        )
+        self.assertEqual(env["DEFAULT_USER_EMAIL"], "default_user@example.com")
+        self.assertEqual(env["DEFAULT_USER_PASSWORD"], "default_password")
+
+    def test_an_explicit_default_user_export_wins(self):
+        env = self._spawn_env(
+            {
+                "DEFAULT_USER_EMAIL": "ops@example.org",
+                "DEFAULT_USER_PASSWORD": "operator-set",
+                "COGNEE_USER_PASSWORD": "ignored-for-the-server",
+            }
+        )
+        self.assertEqual(env["DEFAULT_USER_EMAIL"], "ops@example.org")
+        self.assertEqual(env["DEFAULT_USER_PASSWORD"], "operator-set")
+
+    def test_the_other_server_flags_are_still_set(self):
+        env = self._spawn_env()
+        self.assertEqual(env["CACHING"], "true")
+        self.assertEqual(env["HTTP_API_PORT"], "8011")
+        self.assertEqual(env["COGNEE_AGENT_MODE"], "true")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

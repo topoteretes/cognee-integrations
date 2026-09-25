@@ -106,18 +106,15 @@ describe("memory_switch_dataset end to end", () => {
     expect(qa.sessionId).toBe("open_claw_s1__2");
   });
 
-  it("recalls from the new dataset (graph lane) and the new session (session lane)", async () => {
+  it("recalls from the new dataset under the new session id (one graph-scope request)", async () => {
     const h = harness();
     await switchTo(h, "proj-a");
     mockRecall.mockClear();
 
     await h.emit("before_prompt_build", { prompt: "what is the plan for proj-a?" }, CONVO_A);
     const calls = mockRecall.mock.calls.map((c) => c[0]);
-    const graph = calls.find((c) => !c.scope)!;
-    const session = calls.find((c) => Array.isArray(c.scope))!;
-    expect(graph.datasetIds).toEqual(["id-proj-a"]);
-    expect(session.sessionId).toBe("open_claw_s1__2");
-    expect(session.datasetIds).toEqual(["id-proj-a"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ scope: ["graph"], datasetIds: ["id-proj-a"], sessionId: "open_claw_s1__2" });
   });
 
   it("leaves another conversation of the same agent on the configured dataset", async () => {
@@ -130,7 +127,7 @@ describe("memory_switch_dataset end to end", () => {
     await h.emit("llm_output", { assistantTexts: ["answer"] }, CONVO_B);
     await flush();
 
-    expect(mockRecall.mock.calls.map((c) => c[0]).find((c) => !c.scope)!.datasetIds).toEqual(["ds-1"]);
+    expect(mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!.datasetIds).toEqual(["ds-1"]);
     const qa = mockRememberEntry.mock.calls.map((c) => c[0] as { datasetName: string; sessionId: string }).pop()!;
     expect(qa).toMatchObject({ datasetName: "testds", sessionId: "open_claw_s2" });
   });
@@ -214,7 +211,8 @@ describe("memory_switch_dataset end to end", () => {
     mockRecall.mockClear();
 
     await h.emit("before_prompt_build", { prompt: "what is the plan?" }, CONVO_A);
-    const graphLanes = mockRecall.mock.calls.map((c) => c[0]).filter((c) => !c.scope).map((c) => c.datasetIds[0]).sort();
-    expect(graphLanes).toEqual(["ds-company", "id-proj-a"]);
+    const calls = mockRecall.mock.calls.map((c) => c[0]);
+    expect(calls).toHaveLength(1);
+    expect([...calls[0].datasetIds].sort()).toEqual(["ds-company", "id-proj-a"]);
   });
 });

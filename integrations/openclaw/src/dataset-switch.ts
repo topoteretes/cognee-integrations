@@ -14,7 +14,7 @@
 //      minted session suffix (`open_claw_<id>__2`, `__3`, …) so the entries
 //      captured after the switch form a fresh session on the new dataset.
 //
-// Every later capture write, session-layer recall, graph recall of the
+// Every later capture write, graph recall of the
 // agent/single scope, and the session-end improve consult the override.
 // company/user scopes (multi-scope mode) are shared and stay untouched, and
 // memory-file sync keeps following the workspace→dataset routing — the

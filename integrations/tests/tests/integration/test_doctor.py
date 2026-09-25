@@ -25,6 +25,7 @@ _REPORT_KEYS = {
     "env_file",
     "server_url",
     "api_key_source",
+    "memory_sharing",
     "reachable",
     "latency_ms",
     "cognee_local",
@@ -60,10 +61,13 @@ def test_health_unreachable_when_the_server_errors(doctor, mock_server):
     assert doctor._check_health(mock_server.url)["reachable"] is False
 
 
-def test_json_report_has_exactly_the_expected_keys(doctor, mock_server):
+def test_json_report_has_exactly_the_expected_keys(doctor, mock_server, suite):
     report = doctor.collect_report()
     parsed = json.loads(doctor.format_json(report))
-    assert set(parsed.keys()) == _REPORT_KEYS, f"keys mismatch: {_REPORT_KEYS ^ set(parsed.keys())}"
+    expected = set(_REPORT_KEYS)
+    if suite.name == "claude-code":
+        expected.add("llm")  # where the local server's LLM calls go (key vs. Claude observer)
+    assert set(parsed.keys()) == expected, f"keys mismatch: {expected ^ set(parsed.keys())}"
 
 
 def test_report_sees_the_running_server(doctor, mock_server):

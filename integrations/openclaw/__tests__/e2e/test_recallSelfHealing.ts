@@ -63,6 +63,7 @@ function createApi() {
       autoRecall: true,
       enableSessions: false,
       captureSession: false,
+      memorySteer: false, // steer also rides before_prompt_build; these tests read recall's result
       datasetName: "testds",
       minScore: 0,
     },
@@ -215,7 +216,7 @@ describe("recall budget + circuit breaker", () => {
 
       const { api, emit } = createApi();
       const pending = emit("before_prompt_build", { prompt: "what did we discuss" }, { agentId: "will" });
-      await jest.advanceTimersByTimeAsync(4_500); // past the 4s default budget
+      await jest.advanceTimersByTimeAsync(12_500); // past the 12s default budget
       const results = await pending;
 
       expect(results.find((r) => r !== undefined)).toBeUndefined();
@@ -232,6 +233,6 @@ describe("recall budget + circuit breaker", () => {
     const { emit } = createApi();
     await emit("before_prompt_build", { prompt: "what did we discuss" }, { agentId: "will" });
 
-    expect(mockRecall).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 2_500 }));
+    expect(mockRecall).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 10_000 }));
   });
 });

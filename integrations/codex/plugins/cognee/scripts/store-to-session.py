@@ -12,6 +12,8 @@ Configuration:
     Resolves session state via Cognee HTTP endpoints.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -21,35 +23,29 @@ import urllib.error
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
-    append_http_bridge_entry,
     append_warmup_entry,
     bump_save_counter,
     bump_turn_counter,
+    clear_payment_required,
     get_session_key,
     hook_log,
     http_api_ready,
+    improve_throttle_reason,
     load_resolved,
     notify,
     pop_pending_prompt,
     quiet_hook_output,
+    record_payment_required,
     remember_entry_via_http,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
-    resolve_user,
-    run_session_improve,
+    run_session_improve_detailed,
     server_usable,
     set_session_key,
     touch_activity,
     write_outcome_ambiguous,
 )
-from config import (
-    ensure_cognee_ready,
-    ensure_dataset_ready,
-    get_dataset,
-    get_session_id,
-    improve_session_local,
-    load_config,
-)
+from config import get_dataset, get_session_id, load_config
 
 # Hard cap per field to avoid ballooning the cache with massive tool outputs.
 _MAX_PARAMS_BYTES = 4000
@@ -57,35 +53,40 @@ _MAX_RETURN_BYTES = 8000
 _MAX_ASSISTANT_BYTES = 8000
 
 
-async def _fire_improve_background(dataset: str, session_id: str, user, reason: str) -> None:
+async def _fire_improve_background(dataset: str, session_id: str, reason: str) -> None:
     """Fire-and-forget session improve; failures are logged but never raised.
 
-    The server bridges the session itself from its session cache (improve),
-    instead of the old client-side full-document re-post — see run_session_improve.
+    The server bridges the session itself from its session cache (improve);
+    see run_session_improve_detailed. Shares the cooldown / backoff gate with the
+    idle watcher; the session-end sync ignores it and covers whatever a skip
+    here leaves behind. Without server auth there is nothing to submit to —
+    the session-end sync picks the session up once a key is available.
     """
+    throttled = improve_throttle_reason(session_id)
+    if throttled:
+        hook_log(
+            "auto_improve_throttled",
+            {"reason": reason, "session": session_id, "why": throttled},
+        )
+        return
     try:
-        if http_api_ready():
-            wrote = run_session_improve(dataset, session_id)
-            hook_log(
-                "auto_improve_fired",
-                {"reason": reason, "session": session_id, "via": "http_improve", "wrote": wrote},
-            )
-            if wrote:
-                notify(f"session improve submitted ({reason})")
+        if not http_api_ready():
+            hook_log("auto_improve_skipped_no_auth", {"reason": reason, "session": session_id})
             return
-
-        await ensure_dataset_ready(dataset, user)
-        result = await improve_session_local(dataset, session_id, user)
+        outcome = run_session_improve_detailed(dataset, session_id, trigger="auto")
+        wrote = bool(outcome.get("ok"))
         hook_log(
             "auto_improve_fired",
             {
                 "reason": reason,
                 "session": session_id,
-                "via": "local_improve",
-                "ok": bool(result.get("ok")),
+                "via": "http_improve",
+                "wrote": wrote,
+                "outcome": str(outcome.get("reason") or ""),
             },
         )
-        notify(f"session improve completed ({reason})")
+        if wrote:
+            notify(f"session improve submitted ({reason})")
     except Exception as exc:
         hook_log("auto_improve_error", {"reason": reason, "error": str(exc)[:200]})
 
@@ -139,6 +140,13 @@ async def _store_tool_call(payload: dict) -> None:
     tool_name = payload.get("tool_name", "unknown")
     tool_input = payload.get("tool_input") or {}
     tool_output = payload.get("tool_output") or payload.get("tool_response") or ""
+    from _capture_policy import allow_tool, redact
+
+    if not allow_tool(tool_name, tool_input):
+        return
+    tool_input = redact(tool_input)
+    tool_output = redact(tool_output)
+    payload = redact(payload)
 
     # Suppress self-reference: any Bash call that mentions 'cognee' is
     # likely the plugin/CLI talking to itself and would recurse.
@@ -163,14 +171,12 @@ async def _store_tool_call(payload: dict) -> None:
 
     return_value = _truncate_str(tool_output, _MAX_RETURN_BYTES)
 
-    session_id, dataset, user_id = _load_session()
+    session_id, dataset, _user_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"tool": tool_name})
         return
 
-    config = load_config()
     runtime = resolve_runtime_mode()
-    use_http = runtime["mode"] == "http"
     entry = {
         "type": "trace",
         "origin_function": tool_name,
@@ -190,37 +196,14 @@ async def _store_tool_call(payload: dict) -> None:
         # keeps the ready marker fresh through long turns, #298): don't block
         # the tool call and don't lose the trace. Buffer the structured entry
         # for a later /remember/entry replay (improve bridges only what the
-        # server session cache holds), and keep the legacy text mirror for the
-        # document-bridge fallback path.
+        # server session cache holds).
         append_warmup_entry(dataset, session_id, entry)
-        trace_text = (
-            f"{tool_name} [{status}]\n"
-            f"Params: {json.dumps(params, ensure_ascii=False)}\n"
-            f"Return: {return_value}"
-        )
-        append_http_bridge_entry(dataset, session_id, trace=trace_text)
-        bump_save_counter(session_id, "trace")
+        bump_save_counter(session_id, "trace", buffered=True)
         hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
         return
-    if not use_http:
-        await ensure_cognee_ready(config)
 
     try:
-        if use_http:
-            result = remember_entry_via_http(dataset, session_id, entry)
-            user = None
-        else:
-            import cognee
-            from cognee.memory import TraceEntry
-
-            user = await resolve_user(user_id)
-            result = await cognee.remember(
-                TraceEntry(**entry),
-                dataset_name=dataset,
-                session_id=session_id,
-                self_improvement=False,
-                user=user,
-            )
+        result = remember_entry_via_http(dataset, session_id, entry)
     except Exception as exc:
         # Same reasoning as the Stop path: the server_usable() guard above only
         # catches an outage already known about, so a server that dies inside the
@@ -236,19 +219,15 @@ async def _store_tool_call(payload: dict) -> None:
             # /remember/entry has no idempotency, and a blind replay of a
             # committed write duplicates the trace into the next improve.
             append_warmup_entry(dataset, session_id, entry, ambiguous=write_outcome_ambiguous(exc))
-            trace_text = (
-                f"{tool_name} [{status}]\n"
-                f"Params: {json.dumps(params, ensure_ascii=False)}\n"
-                f"Return: {return_value}"
-            )
-            append_http_bridge_entry(dataset, session_id, trace=trace_text)
-            bump_save_counter(session_id, "trace")
+            bump_save_counter(session_id, "trace", buffered=True)
             hook_log(
                 "trace_buffered_after_error",
                 {"tool": tool_name, "status": status_code, "error": str(exc)[:200]},
             )
             notify(f"trace store failed, buffered for replay ({exc})")
         else:
+            if status_code == 402:
+                record_payment_required("save")
             hook_log(
                 "trace_store_error",
                 {
@@ -262,6 +241,7 @@ async def _store_tool_call(payload: dict) -> None:
         return
 
     if result:
+        clear_payment_required()
         trace_id = (
             result.get("entry_id")
             if isinstance(result, dict)
@@ -276,43 +256,35 @@ async def _store_tool_call(payload: dict) -> None:
             },
         )
         notify(f"trace stored ({tool_name}, {status})")
-        if use_http:
-            trace_text = (
-                f"{tool_name} [{status}]\n"
-                f"Params: {json.dumps(params, ensure_ascii=False)}\n"
-                f"Return: {return_value}"
-            )
-            append_http_bridge_entry(
-                dataset,
-                session_id,
-                trace=trace_text,
-            )
         bump_save_counter(session_id, "trace")
 
         touch_activity()
         count, should_improve = bump_turn_counter(session_id)
         if should_improve:
-            await _fire_improve_background(dataset, session_id, user, reason=f"turn_{count}")
+            await _fire_improve_background(dataset, session_id, reason=f"turn_{count}")
     else:
         hook_log("trace_store_noresult", {"tool": tool_name})
 
 
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
+    from _capture_policy import capture_enabled, redact
+
+    if not capture_enabled():
+        return
+    payload = redact(payload)
     msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
     if not msg or msg == "null":
         return
 
     msg = _truncate_str(msg, _MAX_ASSISTANT_BYTES)
 
-    session_id, dataset, user_id = _load_session()
+    session_id, dataset, _user_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"event": "stop"})
         return
 
-    config = load_config()
     runtime = resolve_runtime_mode()
-    use_http = runtime["mode"] == "http"
     pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
 
     # Codex intentionally differs from Claude here: store one paired
@@ -320,45 +292,22 @@ async def _store_assistant_stop(payload: dict) -> None:
     # separate question-only and answer-only QA entries for the same turn.
     entry = {
         "type": "qa",
-        "question": pending.get("prompt", ""),
+        "question": redact(pending.get("prompt", "")),
         "answer": msg,
-        "context": pending.get("context", ""),
+        "context": redact(pending.get("context", "")),
     }
 
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe): buffer the
         # structured entry for a later /remember/entry replay (improve bridges
-        # only what the server session cache holds), and keep the legacy text
-        # mirror for the document-bridge fallback path.
+        # only what the server session cache holds).
         append_warmup_entry(dataset, session_id, entry)
-        append_http_bridge_entry(
-            dataset,
-            session_id,
-            question=pending.get("prompt", ""),
-            answer=msg,
-        )
-        bump_save_counter(session_id, "answer")
+        bump_save_counter(session_id, "answer", buffered=True)
         hook_log("store_buffered_warming", {"hook": "stop"})
         return
-    if not use_http:
-        await ensure_cognee_ready(config)
 
     try:
-        if use_http:
-            result = remember_entry_via_http(dataset, session_id, entry)
-            user = None
-        else:
-            import cognee
-            from cognee.memory import QAEntry
-
-            user = await resolve_user(user_id)
-            result = await cognee.remember(
-                QAEntry(**entry),
-                dataset_name=dataset,
-                session_id=session_id,
-                self_improvement=False,
-                user=user,
-            )
+        result = remember_entry_via_http(dataset, session_id, entry)
     except Exception as exc:
         # A write that FAILED must still be buffered, or the turn is simply lost.
         # The `server_usable()` guard above only catches an outage the plugin
@@ -380,19 +329,15 @@ async def _store_assistant_stop(payload: dict) -> None:
             # went out) are verified against the server before replay — see
             # write_outcome_ambiguous.
             append_warmup_entry(dataset, session_id, entry, ambiguous=write_outcome_ambiguous(exc))
-            append_http_bridge_entry(
-                dataset,
-                session_id,
-                question=pending.get("prompt", ""),
-                answer=msg,
-            )
-            bump_save_counter(session_id, "answer")
+            bump_save_counter(session_id, "answer", buffered=True)
             hook_log(
                 "store_buffered_after_error",
                 {"hook": "stop", "status": status, "error": str(exc)[:200]},
             )
             notify(f"stop store failed, buffered for replay ({exc})")
         else:
+            if status == 402:
+                record_payment_required("save")
             hook_log(
                 "stop_store_error",
                 {"error": str(exc)[:200], "status": status, "buffered": False},
@@ -401,13 +346,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         return
 
     if result:
-        if use_http:
-            append_http_bridge_entry(
-                dataset,
-                session_id,
-                question=pending.get("prompt", ""),
-                answer=msg,
-            )
+        clear_payment_required()
         qa_id = (
             result.get("entry_id")
             if isinstance(result, dict)
@@ -420,7 +359,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         touch_activity()
         count, should_improve = bump_turn_counter(session_id)
         if should_improve:
-            await _fire_improve_background(dataset, session_id, user, reason=f"turn_{count}")
+            await _fire_improve_background(dataset, session_id, reason=f"turn_{count}")
 
 
 def _maybe_reingest_code_repo(payload: dict) -> None:

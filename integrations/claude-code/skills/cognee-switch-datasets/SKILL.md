@@ -16,13 +16,13 @@ syncing it into the graph) and starts a new one on the chosen dataset.
 When `$ARGUMENTS` contains a dataset name, skip the picker:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py "$ARGUMENTS" --json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" "$ARGUMENTS" --json
 ```
 
 ### 2. Otherwise, list and let the user choose
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py --list --json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
 ```
 
 The JSON has `current`, `datasets` (`[{name, id, writable, current}]`),
@@ -40,7 +40,7 @@ question text ("write access could not be verified for these").
 Then run the switch with the chosen name:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py "<chosen name>" --json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" "<chosen name>" --json
 ```
 
 ### 3. Report the result
@@ -56,7 +56,7 @@ On failure the JSON is `{"error", "code"}`:
 
 | code | meaning | what to do |
 |------|---------|------------|
-| 2 | launch record not found | the plugin did not initialise this session; run `/cognee-memory:cognee-doctor` |
+| 2 | launch record not found | the plugin did not initialise this session; run `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"`. If several Claude Code sessions share this directory, rerun with `--session-key <host session id>` |
 | 3 | syncing the current session failed | nothing was changed; show the error. Re-run with `--force` **only if the user explicitly accepts** that unsynced entries of the current session are retried at session end instead |
 | 4 | registering the new session failed | nothing was changed; the server rejected the registration — check the connection |
 | 5 | dataset not writable | the name is readable but owned by another principal; pick from `--list` |
@@ -70,6 +70,9 @@ On failure the JSON is `{"error", "code"}`:
 5. Retired sessions stay in the record's `touched` list; the session-end sync covers them again as a safety net.
 
 ## Notes
+
+- A switch is not needed just to *look* in another dataset: a one-off graph search
+  leaves the session where it is — `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id>` (see the **cognee-search** skill).
 
 - `COGNEE_PLUGIN_DATASET` only seeds the dataset at launch; a switch overrides it for the rest of the session and survives `--resume`.
 - Recall is scoped to the active dataset, so after a switch earlier context from the previous dataset is no longer injected — switch back to see it again.

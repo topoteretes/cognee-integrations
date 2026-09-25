@@ -13,7 +13,7 @@ deterministic, and token-free.
 ## Index a repository
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh" <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
 ```
 
 - **Local path** (e.g. `.` or `/path/to/repo`): works when the Cognee server
@@ -82,7 +82,7 @@ servers reject local paths and need a git URL.
 ## Query the code graph
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "<seed>" 10 --code [--code-query '<json>']
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<seed>" 10 --code [--code-query '<json>']
 ```
 
 The repository's code dataset is resolved from the current directory, so
@@ -125,7 +125,7 @@ To store a single code file in normal memory under its real filename (routes
 down the zero-LLM code path server-side, no cross-file edges):
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh --file src/payments.py --node-set project_docs
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh" --file src/payments.py --node-set project_docs
 ```
 
 Prefer the repo index above when you care about callers/imports across files.

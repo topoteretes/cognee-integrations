@@ -11,6 +11,126 @@ reports an update only when the published npm version changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Versions are
 date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
+## [2026.9.22]
+
+### Changed
+- **Bundled cognee is 1.6.0** (was 1.5.4; `COGNEE_VERSION` in `src/server.ts`, and
+  `cognee-docker-compose.yaml` runs `cognee/cognee:1.6.0`). The shared
+  `~/.cognee-plugin/venv` is upgraded on the next gateway start, which runs that
+  release's migrations; 1.6.0 made `fastembed` and `onnxruntime` core dependencies,
+  so the venv grows. The pin stays in step with the claude-code/codex/antigravity
+  plugins that share the venv.
+- **One recall request per prompt, injected as the LLM would have received it
+  (SDK-741, cognee #5085).** With `only_context`, a completion search type on cognee
+  1.6.0 returns one graph item per dataset whose `text` is the full LLM input: the
+  conversation history for the session, the question with the retrieved context
+  rendered through the retriever's template, and the session guidance block (a
+  separate `system_prompt` field carries the task template and is ignored). The
+  per-prompt recall therefore makes exactly one request — `scope: ["graph"]`, the
+  configured `searchType` (default `HYBRID_COMPLETION`), `only_context: true`, the
+  session id and every recall dataset id — plus the identifier-gated code lane, and
+  injects each item's `text` verbatim as `<cognee_memory>` inside `<cognee_memories>`.
+  The separate session-layers request and its `<agent_guidance>`, `<trace_lessons>`
+  and `<session_memory>` blocks are gone, as is the JSON `<graph_memory>` block and
+  its per-entry clipping; under multi-scope recall the per-scope `<agent_memory>` /
+  `<user_memory>` / `<company_memory>` labels give way to one `<cognee_memory>` per
+  dataset. `recallSessionLayers` is now a parsed no-op, kept so existing configs
+  keep validating. Against a pre-1.6.0 server the item holds the bare retrieval
+  context and is injected the same way.
+- **`memory_search` searches the knowledge graph only.** The tool used to accept
+  `corpus=sessions` / `all` and, when a session id resolved, add a second recall
+  over the session-cache layers (`scope: ["session","trace","session_context"]`,
+  `context_profile: "agent"`), tagging those hits `scope: "session"`. Those layers
+  are noise when searched, so the tool now matches the prompt-time recall: one
+  explicit `scope: ["graph"]` request per recall dataset, nothing else. `corpus`
+  accepts `memory` | `all` (synonyms) | `wiki` (no results); `sessions` is gone
+  from the schema and any unknown value falls back to `all`. Hits are always
+  `scope: "graph"`, `cognee://session/…` references are no longer produced, and
+  `memory_get` rejects them as it does any non-reference path. Session capture,
+  bridging (`/improve`) and sync are unchanged — sessions are still written, just
+  never searched.
+
+### Fixed
+- **Fresh installs against cognee 1.6.0 could not mint their owner API key
+  (SDK-740).** cognee 1.6.0 stopped baking `default_password` into the default user:
+  the server creates that user at startup only when `DEFAULT_USER_PASSWORD` is set,
+  sets the password once, and never rewrites a stored one, so the login the key
+  bootstrap relies on answered `400 "This user does not have a password"`. The
+  bootstrap script (`ensure_and_boot.py`) now starts the server with
+  `DEFAULT_USER_EMAIL=default_user@example.com` and
+  `DEFAULT_USER_PASSWORD=default_password` (the literals every Cognee plugin shares,
+  since they all share one server and one database), `setdefault` so an operator's
+  own `DEFAULT_USER_*` export wins. The plugin's `username`/`password` still select
+  which user it logs in as and are never forwarded to the server; a non-default user
+  must already exist. Against a server the plugin did not start, the two 400 answers
+  now produce an actionable message (start the server with `DEFAULT_USER_PASSWORD`
+  matching the plugin's password, or set `COGNEE_API_KEY`). The README, the
+  manifest's `password` description and the falkor skill document it.
+
+## [2026.9.8]
+
+### Fixed
+- **Hotfix: the uv-less install fallback refuses a host python older than 3.10
+  (SDK-617).** The bootstrap script (`~/.cognee-plugin/ensure_and_boot.py`) runs
+  under the system `python3` — `/usr/bin/python3`, which is 3.9.6 on macOS with
+  the Xcode Command Line Tools — and that is fine: it only needs the standard
+  library, and cognee runs in the uv-managed Python 3.12 venv it builds. But when
+  uv is unavailable and cannot be downloaded, the fallback `python3 -m venv`
+  inherits the host version, and a 3.9 venv can never hold cognee. The script
+  now refuses in that case and, since it daemonizes with its output closed,
+  records the reason in `~/.cognee-plugin/.venv-error.json`; the gateway's
+  "server did not become ready" warning quotes it (`readBootError`). The marker
+  is cleared once an install succeeds. README gains a Requirements section:
+  Python 3.9+ for the bootstrap, 3.10+ only for the uv-less fallback, none in
+  cloud mode. Shipped in place, without a version bump.
+- **Repo indexing submitted the repository under a field the server had stopped
+  reading, so every index 400'd ([#420](https://github.com/topoteretes/cognee-integrations/issues/420)).**
+  cognee 1.5.4 renamed the form field that carries the repository spec on
+  `POST /api/v1/remember` with `content_type=code` from `repositories` to
+  `raw_data`. `openclaw cognee index-repo` still sent the old name, and an unrecognised multipart part is
+  dropped by the server rather than refused — so each request arrived naming no
+  repository at all and came back `HTTP 400: content_type='code' requires at least
+  one repository path or git URL in 'raw_data'`. Local paths and git URLs failed
+  alike. The spec now goes in `raw_data`.
+- **Every failed index blamed the server version.** The branch matched `/\(400\)/`
+  — *any* 400 at all — and appended "code indexing requires Cognee >= 1.5.3" to it,
+  so a bad path, a disabled local-path setting and the field mismatch above all
+  printed the same misleading advice. It now matches the server's "Unsupported
+  content_type" wording only.
+
+### Changed
+- **Per-prompt recall waits long enough for growing graphs.** `recallTimeoutMs`
+  (per recall call) and `recallBudgetMs` (whole recall step) default to `10000` and
+  `12000`, up from `2500` and `4000`, matching the Claude Code and Codex plugins.
+  Graph search time grows with the dataset and with the round trip to a remote
+  (cloud) server, and a call that overruns its timeout contributes nothing, so the
+  old caps could silently drop graph memory from recall once a graph got large. Both remain configurable; the cheap scopes are unaffected,
+  so a fast prompt is not slower.
+- **Bundled server pin bumped to `cognee==1.5.4`** (`src/server.ts`; the venv upgrades
+  on next boot), and `cognee-docker-compose.yaml` now uses `cognee/cognee:1.5.4`.
+  Required by the field rename above, and it re-aligns this plugin with the
+  claude-code/codex/antigravity plugins, which pin 1.5.4 and share the same
+  `~/.cognee-plugin/venv`: while the pins differed, a cold boot by either side
+  flipped the venv to its own version and re-ran that release's migrations over a
+  database the other had written. The drift guard that exists to catch exactly this
+  (`integrations/tests/tests/unit/test_cognee_pin.py`) was resolving `src/server.ts`
+  one directory too high, so it had been passing as an expected failure on a missing
+  file rather than on the pin; the path is fixed and the pin agreement is now
+  enforced.
+
+## [2026.9.2]
+
+### Fixed
+- **Memory steer moved off the removed `before_agent_start` hook.** OpenClaw deprecated
+  `before_agent_start` in 2026.7 ("Use before_model_resolve and before_prompt_build") and
+  dropped it from the plugin hook API in 2026.9.1-beta.1, so ClawHub's
+  `clawhub package validate --openclaw-version 2026.9.1-beta.1` flagged the steer
+  registration in `dist/src/plugin.js`. The steer now rides `before_prompt_build`, which
+  carries the same `appendSystemContext` result field on every supported OpenClaw version
+  and is likewise a prompt-injection hook, so `allowPromptInjection` behaviour is unchanged.
+  OpenClaw concatenates system context across all `before_prompt_build` results, so the
+  steer, auto-recall and QA capture coexist as separate handlers.
+
 ## [2026.8.27]
 
 Parity release: brings the OpenClaw plugin up to the claude-code/codex integrations on

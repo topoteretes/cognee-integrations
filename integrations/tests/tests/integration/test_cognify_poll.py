@@ -10,10 +10,10 @@ Confirms a background remember can be confirmed/abandoned correctly:
   * a 404 (older server without the status route) returns "unknown" immediately
   * a transient poll failure does not abort the whole deadline
 
-Both suites: codex gained ``wait_for_cognify`` in the background-remember port
-that landed in main, so this ran claude-code-only until then. Gated on
-``suite.has_background_remember`` rather than a suite name, which is what let it
-start covering codex the moment the capability arrived.
+Only suites WITHOUT ``has_single_submit_improve`` still have this poller: the
+single-submit suites dropped the post-improve status poll and with it
+``wait_for_cognify`` (their remember path keeps its own stdlib poller in
+``_remember_http``, covered in integration/test_remember_http.py).
 
 Migrated from claude-code/tests/test_cognify_poll.py.
 """
@@ -28,8 +28,8 @@ STATUS = "/api/v1/datasets/status"
 
 @pytest.fixture
 def pc(suite, isolated_modules, mock_server, monkeypatch):
-    if not suite.has_background_remember:
-        pytest.skip(f"{suite.name}: no wait_for_cognify (writes are submit-only)")
+    if suite.has_single_submit_improve:
+        pytest.skip(f"{suite.name}: wait_for_cognify removed with the improve status poll")
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)

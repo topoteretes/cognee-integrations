@@ -4,9 +4,10 @@ A too-short prompt takes the no-op path, which is the case most likely to regres
 unnoticed: the hook still has to leave the host with parseable output (or, for
 claude-code, deliberately nothing) rather than a traceback on stdout.
 
-Migrated from codex/tests/test_user_prompt_hooks.py — claude-code had no
-equivalent, and the two hosts' no-op contracts genuinely differ: codex always
-prints an envelope, while claude-code's main() prints only when there is output.
+Migrated from codex/tests/test_user_prompt_hooks.py — Claude Code had no
+equivalent, and the host no-op contracts genuinely differ: Codex and Antigravity
+always print an envelope, while Claude Code's main() prints only when there is
+output.
 """
 
 from __future__ import annotations

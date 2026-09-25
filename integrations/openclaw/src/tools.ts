@@ -10,8 +10,10 @@
 //
 // These tools fill the contract with Cognee-backed implementations:
 //
-//   memory_search  — recall across the configured scopes (and, with
-//                    corpus=sessions/all, the live session cache). Returns
+//   memory_search  — recall across the configured scopes' knowledge-graph
+//                    datasets (explicit `scope: ["graph"]`, never the
+//                    session cache: those layers are written and bridged
+//                    into the graph but are noise when searched). Returns
 //                    `{ results: [...] }`; `{ results: [], disabled: true }`
 //                    when memory is unavailable, which is the signal
 //                    active-memory looks for.
@@ -48,7 +50,12 @@ export function jsonResult<T>(payload: T): ToolResult<T> {
 // operator allowlists work unchanged)
 // ---------------------------------------------------------------------------
 
-export const MEMORY_SEARCH_CORPORA = ["memory", "sessions", "all", "wiki"] as const;
+/**
+ * memory-core's corpus vocabulary minus `sessions`. `memory` and `all` are
+ * synonyms (both search the knowledge graph); `wiki` is accepted for
+ * compatibility and returns no results. Any other value falls back to `all`.
+ */
+export const MEMORY_SEARCH_CORPORA = ["memory", "all", "wiki"] as const;
 export type MemorySearchCorpus = (typeof MEMORY_SEARCH_CORPORA)[number];
 
 export const MemorySearchSchema = {
@@ -60,7 +67,7 @@ export const MemorySearchSchema = {
     corpus: {
       type: "string",
       enum: [...MEMORY_SEARCH_CORPORA],
-      description: "memory = permanent knowledge graph; sessions = this conversation's session cache; all = both (default). wiki is not backed by Cognee and returns no results.",
+      description: "memory and all (default) both search the permanent knowledge graph. wiki is not backed by Cognee and returns no results.",
     },
   },
   required: ["query"],
@@ -102,8 +109,8 @@ export type MemorySearchHit = {
   reference: string;
   text: string;
   score: number;
-  /** Which corpus produced the hit: "graph" (permanent memory) or "session". */
-  scope: "graph" | "session";
+  /** Which corpus produced the hit: always "graph" (permanent memory). */
+  scope: "graph";
   /** Best-effort provenance label (file name, dataset, or scope). */
   source: string;
   /** ISO timestamp when the server supplied one. */
@@ -132,7 +139,7 @@ export type MemoryGetResult = {
   text: string;
   /** Provenance for references; file metadata for workspace files. */
   source?: string;
-  scope?: "graph" | "session" | "file";
+  scope?: "graph" | "file";
   score?: number;
   time?: string;
   from?: number;
@@ -151,17 +158,19 @@ export type MemoryGetResult = {
 export const REFERENCE_PREFIX = "cognee://";
 const REFERENCE_CACHE_MAX = 500;
 
-export function makeReference(scope: "graph" | "session", id: string): string {
+export type ReferenceScope = "graph";
+
+export function makeReference(scope: ReferenceScope, id: string): string {
   return `${REFERENCE_PREFIX}${scope}/${encodeURIComponent(id)}`;
 }
 
-export function parseReference(value: string): { scope: "graph" | "session"; id: string } | null {
+export function parseReference(value: string): { scope: ReferenceScope; id: string } | null {
   if (!value.startsWith(REFERENCE_PREFIX)) return null;
   const rest = value.slice(REFERENCE_PREFIX.length);
   const slash = rest.indexOf("/");
   if (slash <= 0) return null;
   const scope = rest.slice(0, slash);
-  if (scope !== "graph" && scope !== "session") return null;
+  if (scope !== "graph") return null;
   const id = decodeURIComponent(rest.slice(slash + 1));
   return id ? { scope, id } : null;
 }
@@ -219,7 +228,7 @@ export function hitTime(result: CogneeSearchResult): string | undefined {
   return undefined;
 }
 
-export function toHit(result: CogneeSearchResult, scope: "graph" | "session", fallbackSource: string): MemorySearchHit {
+export function toHit(result: CogneeSearchResult, scope: ReferenceScope, fallbackSource: string): MemorySearchHit {
   const text = typeof result.text === "string" ? result.text : String(result.text ?? "");
   const time = hitTime(result);
   return {
@@ -295,17 +304,12 @@ export type RecallFn = (params: {
   datasetIds: string[];
   searchPrompt?: string;
   topK?: number;
-  sessionId?: string;
+  /** Always `["graph"]` from memory_search: the session-cache layers are never searched. */
   scope?: string | string[];
-  contextProfile?: "qa" | "agent";
 }) => Promise<CogneeSearchResult[]>;
 
-/**
- * Session-cache layers recalled alongside the graph. The server's default
- * scope ("auto") is graph-only whenever dataset_ids/search_type are supplied,
- * so these must be requested explicitly.
- */
-export const SESSION_LAYER_SCOPES = ["session", "trace", "session_context"] as const;
+/** The only recall scope memory_search requests. */
+export const GRAPH_SCOPE = ["graph"] as const;
 
 export type MemoryToolsDeps = {
   cfg: Required<CogneePluginConfig>;
@@ -315,8 +319,6 @@ export type MemoryToolsDeps = {
   recall: RecallFn;
   /** Seconds until the recall breaker closes; 0 when closed. */
   breakerOpenForSeconds?: () => Promise<number>;
-  /** Cognee session id for corpus=sessions (conversation-aware). */
-  sessionIdFor?: (hostSessionId?: string, ctx?: MemoryToolContext) => string | undefined;
   cache?: ReferenceCache;
   logger?: { debug?: (m: string) => void; warn?: (m: string) => void };
 };
@@ -355,8 +357,8 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
     name: "memory_search",
     label: "Memory Search",
     description:
-      "Mandatory recall step: search Cognee long-term memory (knowledge graph built from MEMORY.md, memory/*.md and past sessions) before answering questions about prior work, decisions, dates, people, preferences, or todos. " +
-      "`corpus=memory` searches the permanent graph, `corpus=sessions` this conversation's session cache, `corpus=all` (default) both. " +
+      "Mandatory recall step: search Cognee long-term memory (the knowledge graph built from MEMORY.md, memory/*.md and past sessions synced into it) before answering questions about prior work, decisions, dates, people, preferences, or todos. " +
+      "`corpus=memory` and `corpus=all` (default) both search the knowledge graph. " +
       "Each result carries a `reference` you can pass to memory_get for the full text. If the response has disabled=true, memory is unavailable — tell the user and include the warning/action guidance.",
     parameters: MemorySearchSchema as unknown as Record<string, unknown>,
     async execute(_id, params) {
@@ -365,7 +367,7 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
       if (!query) return jsonResult<MemorySearchResult>({ results: [], query, corpus, error: "query is required" });
 
       if (corpus === "wiki") {
-        return jsonResult<MemorySearchResult>({ results: [], query, corpus, note: "Cognee does not serve a wiki corpus; use corpus=memory or corpus=all." });
+        return jsonResult<MemorySearchResult>({ results: [], query, corpus, note: "Cognee does not serve a wiki corpus; use corpus=memory (or omit corpus)." });
       }
 
       const retryIn = deps.breakerOpenForSeconds ? await deps.breakerOpenForSeconds() : 0;
@@ -386,33 +388,14 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
         return jsonResult<MemorySearchResult>({ results: [], query, corpus, note: "No Cognee dataset is indexed yet for this agent. Run `openclaw cognee index` or let auto-index finish." });
       }
 
-      const wantGraph = corpus === "memory" || corpus === "all";
-      const wantSession = corpus === "sessions" || corpus === "all";
-      const sessionId = wantSession ? deps.sessionIdFor?.(ctx.sessionId, ctx) : undefined;
-
-      const tasks: Array<Promise<MemorySearchHit[]>> = [];
-      if (wantGraph) {
-        for (const ds of datasets) {
-          tasks.push(
-            deps.recall({ queryText: query, searchType: deps.cfg.searchType, datasetIds: [ds.id], searchPrompt: deps.cfg.searchPrompt, topK })
-              .then((rs) => rs.map((r) => toHit(r, "graph", ds.label))),
-          );
-        }
-      }
-      if (wantSession && sessionId) {
-        tasks.push(
-          deps.recall({
-            queryText: query,
-            searchType: deps.cfg.searchType,
-            datasetIds: datasets.map((d) => d.id),
-            searchPrompt: deps.cfg.searchPrompt,
-            topK,
-            sessionId,
-            scope: [...SESSION_LAYER_SCOPES],
-            contextProfile: "agent",
-          }).then((rs) => rs.map((r) => toHit(r, "session", r.source === "session_context" ? "agent guidance" : r.source === "trace" ? "trace" : "session"))),
-        );
-      }
+      // One explicit graph-scope request per dataset. The session-cache
+      // layers (session / trace / session_context) are deliberately never
+      // requested here: they are written and bridged into the graph, but
+      // searching them only adds noise (same rule as the prompt-time recall).
+      const tasks: Array<Promise<MemorySearchHit[]>> = datasets.map((ds) =>
+        deps.recall({ queryText: query, searchType: deps.cfg.searchType, datasetIds: [ds.id], searchPrompt: deps.cfg.searchPrompt, topK, scope: [...GRAPH_SCOPE] })
+          .then((rs) => rs.map((r) => toHit(r, "graph", ds.label))),
+      );
 
       const settled = await Promise.allSettled(tasks);
       const hits: MemorySearchHit[] = [];
@@ -436,7 +419,7 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
       for (const h of results) cache.put(h);
 
       const out: MemorySearchResult = { results, query, corpus };
-      if (errors.length > 0) out.warning = `Some scopes failed: ${errors.join("; ").slice(0, 300)}`;
+      if (errors.length > 0) out.warning = `Some datasets failed: ${errors.join("; ").slice(0, 300)}`;
       deps.logger?.debug?.(`cognee-openclaw: memory_search "${query.slice(0, 60)}" -> ${results.length} result(s)`);
       return jsonResult(out);
     },

@@ -23,7 +23,7 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.8.20"
+    current_version: "2026.9.22"
     migration_status: done
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
@@ -34,9 +34,20 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "0.1.0"
+    current_version: "1.6.1"
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
+
+  - slug: antigravity
+    name: "Cognee Plugin for Antigravity"
+    owner: cognee
+    language: python
+    registry: none
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "1.6.0"
+    migration_status: done
+    notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
 
   - slug: vellum-assistant
     name: "Cognee Plugin for Vellum Assistant"
@@ -56,7 +67,7 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.0.3-local"
+    current_version: "1.7.0"
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
 
@@ -67,7 +78,7 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
     cognee_dependency: http-api
-    current_version: "1.1.0"
+    current_version: "1.3.0"
     migration_status: done
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: >-
@@ -75,10 +86,14 @@ integrations:
       Talks to a cognee server over the REST API (as claude-code/codex/openclaw do);
       still needs the cognee package installed, both to spawn the local server and
       for the opt-in in-process mode (COGNEE_EMBEDDED=true, COGNEE_TRANSPORT=sdk).
-      Hermes discovers memory providers by directory scan only, so the wheel ships
-      a cognee-hermes-install console script that copies the plugin into
-      $HERMES_HOME/plugins/cognee (re-run after pip install -U). Published to PyPI
-      from CI on hermes-agent-v* tags (hermes-agent-publish.yml).
+      Hermes discovers memory providers through pip entry points and by scanning
+      $HERMES_HOME/plugins, so the wheel ships a cognee-hermes-install console
+      script that copies the plugin into $HERMES_HOME/plugins/cognee for the CLI
+      and dashboard surfaces (re-run after pip install -U). Installs from the
+      Hermes plugin catalog carry a .hermes-catalog.json sidecar; those update
+      with `hermes plugins update cognee` and the console script refuses to
+      overwrite them. Published to PyPI from CI on hermes-agent-v* tags
+      (hermes-agent-publish.yml).
 
   - slug: dify
     name: "Cognee Tool Plugin for Dify"
@@ -156,10 +171,10 @@ integrations:
     registry: npm
     package_name: "n8n-nodes-cognee"
     cognee_dependency: http-api
-    current_version: "0.4.1"
+    current_version: "0.7.0"
     migration_status: done
     source_repo: https://github.com/topoteretes/cognee-n8n
-    notes: "n8n community node – add data, cognify, search, delete. Published via .github/workflows/n8n-publish.yml on `n8n-v*.*.*` tags."
+    notes: "n8n community nodes – the Cognee action node (memory, datasets, search, sessions, skills) and the Cognee Memory sub-node for the AI Agent's memory port. Published via .github/workflows/n8n-publish.yml on `n8n-v*.*.*` tags."
 
   - slug: crewai
     name: "Cognee Integration for CrewAI"
@@ -172,6 +187,21 @@ integrations:
     migration_status: done
     source_repo: https://github.com/topoteretes/cognee-integration-crewai
     notes: "CrewAI agent tools – add, search, session management"
+
+  - slug: mastra
+    name: "Memory (Cognee) for Mastra"
+    owner: cognee
+    language: typescript
+    registry: none
+    package_name: "@cognee/cognee-mastra"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: >-
+      Cognee memory layer for Mastra agents: input/output processors for
+      automatic recall and capture, plus cognee_search / cognee_ask /
+      cognee_remember tools. Talks to a cognee server over the HTTP API
+      (/recall, /remember, /datasets, /forget); no cognee SDK dependency.
 
   # ── Chat bots & editor (memory over the cognee HTTP API) ───────────
 
@@ -279,29 +309,6 @@ integrations:
 
   # ── Pending migrations ─────────────────────────────────────────────
 
-  - slug: claude
-    name: "Cognee Integration for Claude Agent SDK"
-    owner: cognee
-    language: python
-    registry: pypi
-    package_name: "cognee-integration-claude"
-    cognee_dependency: sdk
-    current_version: "0.1.0"
-    migration_status: pending
-    source_repo: https://github.com/topoteretes/cognee-integration-claude
-    notes: "Claude Agent SDK tools – add, search, session management"
-  - slug: strands
-    name: "Cognee Integration for Strands"
-    owner: cognee
-    language: python
-    registry: pypi
-    package_name: "cognee-integration-strands"
-    cognee_dependency: sdk
-    current_version: "0.2.0"
-    migration_status: done
-    source_repo: https://github.com/topoteretes/cognee-integration-strands
-    notes: "Strands agent tools – remember, recall, session management (cognee v1.0)"
-
   - slug: vercel-ai-sdk
     name: "Cognee for Vercel AI SDK"
     owner: cognee
@@ -325,3 +332,14 @@ integrations:
     migration_status: pending
     source_repo: https://github.com/topoteretes/cognee-integration-openai-agents
     notes: "Repo currently private."
+
+  - slug: opencode
+    name: "Cognee Plugin for OpenCode"
+    owner: cognee
+    language: typescript
+    registry: npm
+    package_name: "@cognee/cognee-opencode"
+    cognee_dependency: http-api
+    current_version: "2026.9.5"
+    migration_status: done
+    notes: "Native OpenCode plugin: per-turn recall, typed QA/tool capture, durable outbox and lifecycle hooks. Registry release pending."

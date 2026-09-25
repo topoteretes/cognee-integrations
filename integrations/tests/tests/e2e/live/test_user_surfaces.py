@@ -8,8 +8,10 @@ ever sees it through a surface:
   keeps a long session coherent;
 * **cognee-search.sh**, the escape hatch for asking the graph directly.
 
-All three read the *session cache*, so none of them needs a cognify — which makes
-this the cheapest file in the tier and the one worth running most often.
+The anchor falls back to the session detail endpoint when memory has nothing
+yet, so it needs no cognify. The status line and the search CLI do: recall reads
+the graph only (the session cache is written, never searched), so a fresh
+dataset recalls nothing until one sync has built its graph (``synced_turn``).
 """
 
 from __future__ import annotations
@@ -39,7 +41,10 @@ def _enable_plugin(suite, live_home) -> None:
 
 @pytest.fixture
 def captured_session(started_session, nonce):
-    """A session with one real turn already captured into the session cache."""
+    """A session with one real turn already captured into the session cache.
+
+    Captured, not cognified: tests that need recall to find it add ``synced_turn``.
+    """
     session = started_session("surfaces")
     session.prompt(f"Remember that {nonce} runs on cluster edge-7.", turn_id="t1")
     session.answer(f"Noted: {nonce} runs on cluster edge-7.", turn_id="t1")
@@ -47,13 +52,21 @@ def captured_session(started_session, nonce):
 
 
 @pytest.fixture
-def recalled_session(captured_session, live_suite, live_home, nonce):
+def recalled_session(synced_turn, captured_session, live_suite, live_home, nonce):
     """A session that has just performed a recall which genuinely found something.
 
     Both status-line tests need this precondition, and it is worth asserting
     separately: if the recall found nothing, a bar with no counts would be correct
-    and the test would be measuring the wrong thing.
+    and the test would be measuring the wrong thing. The dataset gets a graph
+    first, since without one the graph-only recall has nothing to find.
     """
+    synced_turn(
+        "surfaces-seed",
+        f"Project {nonce}-seed replicates with raft.",
+        f"Noted: {nonce}-seed replicates with raft.",
+        f"How does {nonce}-seed replicate?",
+        "raft",
+    )
     _enable_plugin(live_suite, live_home)
 
     lookup = captured_session.recall(f"Where does {nonce} run?", turn_id="t2")
@@ -68,10 +81,10 @@ def recalled_session(captured_session, live_suite, live_home, nonce):
 def test_the_status_line_renders_against_a_real_server(recalled_session, live_suite):
     """Whatever shape the bar takes, it must render and name the dataset.
 
-    Both integrations have a bar; only its form differs (claude-code styles a
-    terminal line, codex emits plain text for the model's context). This is the
-    part that must hold for both — a renderer that crashes or self-evicts against a
-    live server costs the user their only signal that memory is alive.
+    Every registered integration has a bar; only its form differs (Claude Code
+    styles a terminal line, while Codex and Antigravity emit plain text). A renderer
+    that crashes or self-evicts against a live server costs the user their only
+    signal that memory is alive.
     """
     session, _recalled = recalled_session
 
@@ -87,8 +100,8 @@ def test_the_status_line_shows_the_counts_from_a_real_recall(recalled_session, l
     The counts are the user's only quantitative signal that memory is working; a
     silent regression here looks exactly like a quiet session.
 
-    claude-code only: codex's bar is a short plain-text string for the model's
-    context and carries no diagnostics strip.
+    Claude Code only: Codex and Antigravity use short plain-text bars with no
+    diagnostics strip.
     """
     if not live_suite.has_rich_statusline:
         pytest.skip(f"{live_suite.name}: the bar is plain text and has no counts segment")
@@ -116,21 +129,19 @@ def test_precompact_produces_an_anchor_carrying_the_session(
 ):
     """Compaction drops the transcript; the anchor is what carries memory across it.
 
-    Both suites now recall over HTTP, so both must produce an anchor against a real
-    server. That was not always true: claude-code's pre-compact was local-SDK only
-    — ``cognee.recall`` plus a ``get_session_manager()`` fallback — while in server
-    mode the session cache lives on the server. Session and trace entries came back
-    empty, the derived query stayed empty, the graph scopes were never queried, and
-    the hook logged ``precompact_empty`` and printed nothing. Anyone running against
-    a server lost their anchor at exactly the moment compaction discarded the
-    transcript, with nothing erroring to say so.
-
-    This test is what caught it, and the fix was a port of the branch codex had all
-    along. It stays a live test because it is the only place the difference shows:
-    against a mock the local path looks fine.
+    Every suite now builds the anchor over HTTP: the seed recall runs with an
+    empty query (there is no user question at compact time) and matches nothing,
+    so the hook falls back to the session detail endpoint, which returns the
+    recent QA and trace rows without one. Claude Code used to be the exception —
+    its pre-compact was local-SDK only, so in server mode it found nothing, logged
+    ``precompact_empty`` and printed no anchor at exactly the moment compaction
+    discarded the transcript. This test caught that; it stays live because a mock
+    makes a broken path look healthy while only a real server exposes it.
 
     ``has_precompact_http`` is still a flag rather than an assumption — a future
-    integration could arrive without the branch, and this would then say so.
+    integration could arrive without the fallback, and this would then say so
+    (as a strict xfail, so a suite that later gains it flips the flag instead of
+    quietly passing).
     """
     if not live_suite.has_precompact_http:
         request.node.add_marker(
@@ -160,23 +171,32 @@ def test_precompact_produces_an_anchor_carrying_the_session(
     )
 
 
-def test_search_cli_finds_the_session_from_the_command_line(captured_session, nonce):
-    """cognee-search.sh is the documented way to ask memory directly."""
-    run = captured_session.run_shell(
-        "cognee-search.sh", f"What runs on cluster edge-7 for {nonce}?", "5", "--session"
+def test_search_cli_finds_the_session_from_the_command_line(synced_turn, captured_session, nonce):
+    """cognee-search.sh is the documented way to ask memory directly.
+
+    It searches the graph, so the fact is synced there first. The query leaves
+    out the asserted term: an only_context recall can echo the question back.
+    """
+    synced_turn(
+        "search-writer",
+        f"Remember that {nonce} runs on cluster edge-7.",
+        f"Noted: {nonce} runs on cluster edge-7.",
+        f"Where does {nonce} run?",
+        "edge-7",
     )
+    run = captured_session.run_shell("cognee-search.sh", f"Where does {nonce} run?", "5", "--graph")
     assert run.ok, f"cognee-search.sh failed (rc={run.returncode}): {run.stderr[:600]}"
 
     output = run.stdout
     assert output.strip(), f"search returned nothing at all; stderr was {run.stderr[:400]}"
-    assert nonce.lower() in output.lower(), (
+    assert "edge-7" in output.lower(), (
         f"the search CLI could not find the session's own content:\n{output[:1200]}"
     )
 
 
 def test_search_cli_emits_parseable_output(captured_session, nonce):
     """Whatever it prints must be usable by a caller, not just human-readable."""
-    run = captured_session.run_shell("cognee-search.sh", f"{nonce}", "3", "--session")
+    run = captured_session.run_shell("cognee-search.sh", f"{nonce}", "3", "--graph")
     assert run.ok, f"cognee-search.sh failed (rc={run.returncode}): {run.stderr[:600]}"
 
     text = run.stdout.strip()

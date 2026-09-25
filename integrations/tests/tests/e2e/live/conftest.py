@@ -50,6 +50,46 @@ def _dump(label: str, body: str, limit: int = 1500) -> None:
         print(f"[live artifacts] {label}:\n{body[-limit:]}")
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Print a failure's traceback and captured output the moment it happens.
+
+    pytest holds every failure report until the session ends. In this tier a
+    single scenario can legitimately take ten-plus minutes, and the CI job has a
+    hard ``timeout-minutes`` — so a run that is cut short by the timeout leaves
+    behind a log with ``FAILED`` lines and nothing else. Nine consecutive
+    nightly cloud runs were cancelled that way without a single traceback
+    surviving. Emitting each failure immediately is what makes the next such
+    run diagnosable from its log alone.
+
+    The teardown report is included too: that is where ``live_artifacts``
+    prints hook.log and the recall audit, which is usually where the answer is.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    failed_key = "live_failed_phase"
+    if report.failed and report.when in ("setup", "call"):
+        setattr(item, failed_key, True)
+    if not (report.failed or (report.when == "teardown" and getattr(item, failed_key, False))):
+        return
+    terminal = item.config.pluginmanager.get_plugin("terminalreporter")
+    if terminal is None:
+        return
+    terminal.ensure_newline()
+    terminal.section(f"live {report.when} {report.outcome}: {item.nodeid}", sep="-", red=True)
+    if report.failed and report.longrepr is not None:
+        terminal.line(str(report.longrepr))
+    for name, content in report.sections:
+        # The teardown report carries the earlier phases' output again; those
+        # were already printed above, so only the teardown's own is new.
+        if report.when == "teardown" and "teardown" not in name:
+            continue
+        if content.strip():
+            terminal.section(name, sep="~")
+            terminal.line(content.rstrip())
+    terminal.flush()
+
+
 def pytest_collection_modifyitems(config, items):
     """Drop ``local_only`` scenarios when the backend is a remote tenant.
 
@@ -150,12 +190,11 @@ def cloud_tenant_is_clean(live_backend: str, live_prereqs: str):
 
 @pytest.fixture(params=ALL_SUITES, ids=lambda s: s.name)
 def live_suite(request) -> Suite:
-    """Every scenario runs against both integrations.
+    """Every scenario runs against every registered integration.
 
-    This doubles the tier's wall-clock and LLM spend, which is the point: the two
-    plugins diverge in exactly the places a mock cannot show (codex's bridge is
-    synchronous and has no cognify poll), so a shared graph is the only place that
-    divergence becomes visible.
+    This multiplies the tier's wall-clock and LLM spend, which is the point:
+    host-specific hook surfaces and capabilities diverge in places a mock cannot
+    show, so a shared graph is where those differences become visible.
     """
     return request.param
 
@@ -164,15 +203,15 @@ def live_suite(request) -> Suite:
 def live_home(tmp_path: Path, live_backend: str) -> Path:
     """A per-test HOME; on the local backend the plugin venv is seeded into it.
 
-    Deliberately suite-agnostic: the venv and ``~/.cognee`` are shared, and both
-    suites keep their own state subdirectory beneath it. Cross-suite tests need one
-    HOME holding both, so this must not depend on ``live_suite``.
+    Deliberately suite-agnostic: the venv and ``~/.cognee`` are shared, and each
+    suite keeps its own state subdirectory beneath it. Cross-suite tests need one
+    HOME holding every participating suite, so this must not depend on ``live_suite``.
 
-    The cloud backend needs no venv at all. ``ensure_cognee_ready`` returns after an
-    HTTP ``/health`` check when a base_url is configured — the ``import cognee``
-    lives in the local-SDK branch below it — so the hooks talk to the tenant over
-    stdlib HTTP and never load the package. Skipping the seed is what makes the
-    cloud job the fast one: no venv build, no cache step.
+    The cloud backend needs no venv at all. The hooks never import cognee — every
+    call is stdlib HTTP to the configured server (``ensure_cognee_ready`` is just
+    a ``/health`` check) — so they talk to the tenant without loading the package.
+    Skipping the seed is what makes the cloud job the fast one: no venv build, no
+    cache step.
     """
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
@@ -334,12 +373,59 @@ def graph(live_base_url: str, live_dataset: str, live_home: Path) -> GraphClient
 
 
 @pytest.fixture
+def synced_turn(started_session, graph: GraphClient):
+    """Write one turn into the graph, then keep the server up for the test.
+
+    Prompt recall reads the graph only: the session cache is written, never
+    searched. On cognee >= 1.6.0 the graph item's text also carries the
+    session's own history, but only once the dataset has a graph — before the
+    first cognify the graph scope answers 404 and nothing is injected. Any
+    test that expects a recall to find something therefore pays for one real
+    sync first; this does it and waits on recall, the only honest readiness
+    gate (``wait_for_sync`` returns on any earlier ``sync_bridge_done`` too).
+
+    ``terms`` must not appear in ``query``: an ``only_context`` recall echoes
+    the question back, so a term taken from it would match trivially.
+
+    An anchor session is held open for the whole test: the plugin runs uvicorn
+    in agent mode, so ending the writer would otherwise leave no agent holding
+    the server and every later request would get ECONNREFUSED.
+    """
+    anchors: list[LiveSession] = []
+
+    def _sync(
+        name: str,
+        prompt: str,
+        answer: str,
+        query: str,
+        *terms: str,
+        tool: tuple | None = None,
+    ) -> str:
+        if not anchors:
+            anchors.append(started_session(f"{name}-anchor"))
+        writer = started_session(name)
+        writer.prompt(prompt, turn_id="t1")
+        if tool is not None:
+            writer.tool(*tool, turn_id="t1")
+        writer.answer(answer, turn_id="t1")
+        end = writer.end()
+        assert end.ok, f"SessionEnd failed (rc={end.returncode}): {end.stderr[:800]}"
+        return graph.wait_until_recalled(query, *terms, deadline=600.0)
+
+    yield _sync
+
+    for anchor in anchors:
+        anchor.end()
+
+
+@pytest.fixture
 def session_for(
     live_prereqs: str,
     live_home: Path,
     live_project: Path,
     live_base_url: str,
     live_dataset: str,
+    live_api_key: str,
     live_port: int,
 ):
     """Boot a session for an *explicitly named* suite, sharing one server.
@@ -351,6 +437,13 @@ def session_for(
     Every session shares the HOME, port, and dataset — so the graph is shared while
     each suite keeps its own state subdirectory, which is exactly the arrangement
     the shared-brain claim rests on.
+
+    Builds its own env rather than reusing ``live_env`` (which is bound to the
+    parametrised suite), so it must thread the same ``api_key``. Without it the
+    cross-suite sessions were the only ones running keyless on cloud: the plugin
+    cannot mint against a tenant, every store got 401, and the final sync gave up
+    with "no server credentials resolved" — a failure that looked like a
+    shared-memory bug and was really this fixture.
     """
 
     def _make(suite: Suite, name: str, *, start: bool = True) -> LiveSession:
@@ -365,6 +458,7 @@ def session_for(
                 dataset=live_dataset,
                 llm_api_key=live_prereqs,
                 suite=suite,
+                api_key=live_api_key,
             ),
             session_id=f"live-{name}-{uuid.uuid4().hex[:8]}",
         )

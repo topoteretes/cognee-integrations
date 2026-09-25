@@ -93,6 +93,29 @@ class TestRecallWireFormat(unittest.TestCase):
     def test_absent_query_type_is_omitted(self):
         self.assertNotIn("query_type", self._recall_kwargs(query_type=None))
 
+    def test_memory_lane_request_is_forwarded_explicitly(self):
+        # The per-prompt memory lane: scope and only_context travel to
+        # cognee.recall alongside the resolved SearchType and the session id.
+        kwargs = self._recall_kwargs(
+            query_type="HYBRID_COMPLETION", scope=["graph"], only_context=True
+        )
+        self.assertEqual(kwargs["query_type"], "HYBRID_COMPLETION")
+        self.assertEqual(kwargs["scope"], ["graph"])
+        self.assertIs(kwargs["only_context"], True)
+        self.assertEqual(kwargs["session_id"], "hermes_s1")
+
+    def test_absent_scope_is_stated_as_the_graph(self):
+        # Left out, cognee.recall resolves the scope to ``auto`` and folds the
+        # session cache in alongside the session id; memory reads the graph only.
+        kwargs = self._recall_kwargs()
+        self.assertEqual(kwargs["scope"], ["graph"])
+        self.assertNotIn("only_context", kwargs)
+
+    def test_http_only_fields_are_not_forwarded(self):
+        kwargs = self._recall_kwargs(scope=["code"], code_query={"operation": "query_facts"})
+        self.assertNotIn("code_query", kwargs)
+        self.assertEqual(kwargs["scope"], ["code"])
+
 
 class TestRememberWireFormat(unittest.TestCase):
     def test_session_write_is_a_cheap_cache_write(self):

@@ -9,6 +9,8 @@ Configuration:
     Resolves session state via Cognee HTTP endpoints.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -24,6 +26,7 @@ from _plugin_common import (
     drain_warmup_entries,
     get_session_key,
     hook_log,
+    is_observer_child,
     load_resolved,
     notify,
     quiet_hook_output,
@@ -31,14 +34,12 @@ from _plugin_common import (
     remember_pending_prompt,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
-    resolve_user,
-    server_ready_hint,
     server_usable,
     set_session_key,
     touch_activity,
 )
 from _proc import pid_alive
-from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
+from config import get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
 _STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
@@ -132,6 +133,12 @@ def _prompt_context(payload: dict) -> str:
 
 
 async def _store(prompt: str, payload: dict):
+    from _capture_policy import capture_enabled, redact
+
+    if not capture_enabled():
+        return
+    prompt = redact(prompt)
+    payload = redact(payload)
     session_id, dataset, user_id, tenant_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"event": "prompt"})
@@ -153,16 +160,6 @@ async def _store(prompt: str, payload: dict):
             "api_key_present": runtime.get("api_key_present", False),
         },
     )
-    if runtime["mode"] == "local_sdk" and server_ready_hint(runtime.get("base_url", "")):
-        # Keep Cognee initialization parity with Claude so fresh local
-        # databases, identities, and datasets are ready before Stop writes.
-        # Skipped while the server is still warming so this hook never blocks;
-        # the prompt is still buffered below and flushed once the server is up.
-        try:
-            await ensure_cognee_ready(config)
-            await resolve_user(user_id)
-        except Exception as exc:
-            hook_log("prompt_prepare_warning", {"error": str(exc)[:200]})
 
     # Round-trip through utf-8 with errors="replace": prompts pasted from
     # transcripts can carry lone surrogates, and one stored surrogate 500s
@@ -202,6 +199,8 @@ async def _store(prompt: str, payload: dict):
 
 
 def main():
+    if is_observer_child():
+        return
     payload_raw = sys.stdin.read()
     if not payload_raw.strip():
         return

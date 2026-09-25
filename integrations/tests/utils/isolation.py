@@ -19,6 +19,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,10 +36,17 @@ ISOLATED_MODULES = (
     "_cognee_client",
     "_env_file",
     "_logfiles",
+    "_file_lock",
+    "_deadlines",
+    "_capture_policy",
+    "event_names",
+    "_project_memory",
+    "_dataset_access",
     "_proc",
     "_recall_http",
     "_remember_http",
     "_code_graph",
+    "_observer",
     "cognee_plugin",
     "cognee_statusline_render",
     "doctor",
@@ -59,17 +67,21 @@ ISOLATED_MODULES = (
 #:     reconfigure their own stdout to UTF-8, other hook scripts don't — this
 #:     keeps every child's output UTF-8 so run_hook can decode it as such.
 #:     Tests that probe encoding behavior override it via extra_env/build_env.
+#:   - COGNEE_LLM_OBSERVER=false keeps SessionStart from starting the Claude
+#:     observer shim (a detached process) on a machine with `claude` on PATH;
+#:     the observer tests opt back in.
 DETERMINISTIC_ENV = {
     "COGNEE_PLUGIN_IN_VENV": "1",
     "COGNEE_IDLE_DISABLED": "1",
     "COGNEE_UPDATE_CHECK": "off",
     "COGNEE_LAZY_BOOTSTRAP": "0",
     "PYTHONIOENCODING": "utf-8",
+    "COGNEE_LLM_OBSERVER": "false",
 }
 
 #: Env-var prefixes scrubbed from the inherited environment so a developer's
 #: exported COGNEE_*/LLM_* configuration can never leak into a test.
-_SCRUBBED_PREFIXES = ("COGNEE_", "LLM_", "CLAUDE_", "CODEX_")
+_SCRUBBED_PREFIXES = ("COGNEE_", "LLM_", "CLAUDE_", "CODEX_", "AGY_")
 
 
 def scrub_env_dict(env: dict[str, str]) -> dict[str, str]:
@@ -78,7 +90,7 @@ def scrub_env_dict(env: dict[str, str]) -> dict[str, str]:
 
 
 def scrub_cognee_env(monkeypatch) -> None:
-    """Delete all COGNEE_*/LLM_*/CLAUDE_*/CODEX_* vars for one test (in-process)."""
+    """Delete all Cognee and host-integration vars for one test (in-process)."""
     for key in list(os.environ):
         if key.startswith(_SCRUBBED_PREFIXES):
             monkeypatch.delenv(key, raising=False)
@@ -238,3 +250,28 @@ def _isolate_process_env(home: Path | str, monkeypatch) -> None:
     monkeypatch.setenv("USERPROFILE", str(home))
     for key, value in DETERMINISTIC_ENV.items():
         monkeypatch.setenv(key, value)
+
+
+def usable_bash() -> str | None:
+    """Path to a bash that actually runs scripts, or None.
+
+    ``shutil.which("bash")`` alone is not enough: on Windows it resolves to
+    ``C:\\Windows\\System32\\bash.exe`` — the WSL launcher — which, with no distro
+    installed, prints "Windows Subsystem for Linux has no installed
+    distributions" (as UTF-16) and exits 1. The shell wrappers are POSIX
+    scripts that also need ``python3`` and ``curl`` on the shell's PATH, so they
+    are not exercised on Windows at all; elsewhere the probe guards against any
+    stub. Shared by every e2e test that runs a ``.sh`` wrapper as a subprocess.
+    """
+    if sys.platform == "win32":
+        return None
+    bash = shutil.which("bash")
+    if not bash:
+        return None
+    try:
+        probe = subprocess.run(
+            [bash, "-c", "echo __ok__"], capture_output=True, encoding="utf-8", timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return bash if probe.returncode == 0 and "__ok__" in probe.stdout else None
