@@ -28,7 +28,7 @@
     "format": "prettier nodes credentials --write",
     "release": "n8n-node release",
     "prepublishOnly": "npm run build && npm run lint",
-    "test": "vitest run",
+    "test": "vitest run && tsc --project tsconfig.test.json",
     "test:watch": "vitest"
   },
   "files": [
