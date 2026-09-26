@@ -291,6 +291,8 @@
                transition: transform .12s }
   .pick-group[open] > summary .pick-chev { transform: rotate(90deg) }
   .pick-some { margin-left: auto; font-weight: 400; letter-spacing: 0 }
+  .pick-set { font-size: 10px; font-weight: 400; letter-spacing: 0; color: var(--muted);
+              background: var(--line-soft); border-radius: 5px; padding: 1px 6px }
   .pick-file { display: flex; gap: 7px; align-items: center; font-size: 12px;
                padding: 1px 0 1px 18px }
   .pick-file .muted { font-size: 11px }
@@ -582,7 +584,8 @@
     head.appendChild(text(
       (rootName ? "Selected \u201c" + rootName + "\u201d \u2014 " : "Selected ") +
       picked.length + (picked.length === 1 ? " file" : " files") +
-      ". Untick anything you do not want ingested."));
+      ". Untick anything you do not want ingested. Each folder is tagged as its " +
+      "own node set, so it can be recalled on its own."));
     wrap.appendChild(head);
 
     const list = document.createElement("div");
@@ -619,7 +622,14 @@
       all.onclick = (e) => e.stopPropagation();
       const tally = document.createElement("span");
       tally.className = "pick-some";
-      header.append(chev, all, text(folder + "  (" + byFolder[folder].length + ")"), tally);
+      // The tag cognee will receive for this folder, shown because it is what a
+      // later recall has to name, and it is not quite the folder path.
+      const tag = [rootName, folder === "(root)" ? "" : folder].filter(Boolean).join("/");
+      const setName = document.createElement("code");
+      setName.className = "pick-set";
+      setName.appendChild(text(tag || "\u2014"));
+      header.append(chev, all, text(folder + "  (" + byFolder[folder].length + ")"),
+                    setName, tally);
       group.appendChild(header);
 
       const mine = [];
@@ -687,13 +697,13 @@
       go.textContent = "Ingest " + n + (n === 1 ? " file" : " files");
       go.disabled = !n;
     };
-    go.onclick = () => runIngest(box, boxes.filter((c) => c.checked), go, count);
+    go.onclick = () => runIngest(box, boxes.filter((c) => c.checked), go, count, rootName);
     bar.append(go, back, cancel, label);
     wrap.appendChild(bar);
     count();
   }
 
-  async function runIngest(box, chosen, go, count) {
+  async function runIngest(box, chosen, go, count, rootName) {
     if (!confirm("Ingest " + chosen.length + " files into " + corpus.dataset + "?\n\n" +
                  "Each file is processed by cognee, which costs credits and takes time. " +
                  "Files already in the corpus with identical content are skipped.")) return;
@@ -714,12 +724,15 @@
     try {
       const r = await fetch(api("/api/dashboard/ingest"), {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ files: payload }),
+        body: JSON.stringify({ files: payload, root: rootName || "" }),
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+      const sets = body.node_sets || [];
       toast("Queued " + body.queued + (body.queued === 1 ? " file" : " files") +
-            (body.skipped.length ? ", " + body.skipped.length + " skipped" : ""));
+            (body.skipped.length ? ", " + body.skipped.length + " skipped" : "") +
+            (sets.length ? " \u2014 " + sets.length +
+             (sets.length === 1 ? " node set" : " node sets") : ""));
       box.textContent = "";
       markGraphStale();
       load();

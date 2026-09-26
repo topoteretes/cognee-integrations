@@ -1222,6 +1222,70 @@ def test_ingest_skips_what_would_only_cost_a_cognify_run(dashboard_client, fake_
     assert fake_client.remember_background.await_count == 1
 
 
+@pytest.mark.parametrize(
+    "relative,root,expected",
+    [
+        ("guides/deploy.mdx", "cognee-docs", "cognee-docs/guides"),
+        ("a/b/c.md", "repo", "repo/a/b"),
+        ("quickstart.mdx", "cognee-docs", "cognee-docs"),
+        ("guides/deploy.mdx", "", "guides"),
+        # A lone file picked with no folder around it still needs a tag, or it
+        # is invisible to every filtered recall rather than merely ungrouped.
+        ("notes.md", "", "demo"),
+    ],
+)
+def test_node_set_is_the_folder_under_the_chosen_root(relative, root, expected):
+    from cognee_integration_web_widget.server import _node_set_for
+
+    assert _node_set_for(relative, root) == expected
+
+
+def test_ingest_tags_each_folder_as_its_own_node_set(dashboard_client, fake_client):
+    """A folder can be recalled on its own; cognee's recall filters on these."""
+    client = dashboard_client
+    fake_client.remember_background = AsyncMock(return_value=True)
+
+    body = client.post(
+        "/api/dashboard/ingest?token=s3cret",
+        json={
+            "root": "cognee-docs",
+            "files": [
+                {"path": "guides/deploy.mdx", "text": "a"},
+                {"path": "guides/ladybug.md", "text": "b"},
+                {"path": "cognee-cloud/ui/schema.mdx", "text": "c"},
+                {"path": "quickstart.mdx", "text": "d"},
+            ],
+        },
+    ).json()
+
+    assert body["queued"] == 4
+    assert body["node_sets"] == [
+        "cognee-docs",
+        "cognee-docs/cognee-cloud/ui",
+        "cognee-docs/guides",
+    ]
+    sent = [c.kwargs["node_set"] for c in fake_client.remember_background.await_args_list]
+    assert sent == [
+        ["cognee-docs/guides"],
+        ["cognee-docs/guides"],
+        ["cognee-docs/cognee-cloud/ui"],
+        ["cognee-docs"],
+    ]
+
+
+def test_ingest_ignores_a_root_that_is_not_usable_as_a_tag(dashboard_client, fake_client):
+    """The root arrives from the page, so it is input, not instruction."""
+    client = dashboard_client
+    fake_client.remember_background = AsyncMock(return_value=True)
+
+    body = client.post(
+        "/api/dashboard/ingest?token=s3cret",
+        json={"root": "  /  ", "files": [{"path": "guides/a.md", "text": "x"}]},
+    ).json()
+
+    assert body["node_sets"] == ["guides"]
+
+
 def test_ingest_refuses_a_selection_too_large_for_one_request(dashboard_client, fake_client):
     from cognee_integration_web_widget import server as server_mod
 

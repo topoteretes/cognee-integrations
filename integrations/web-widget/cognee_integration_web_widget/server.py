@@ -639,6 +639,10 @@ class UploadedFile(BaseModel):
 
 class IngestRequest(BaseModel):
     files: list[UploadedFile]
+    # The name of the folder that was chosen, when one was. Paths are relative
+    # to it, so it is the only thing that tells two ingests of a "guides" folder
+    # apart.
+    root: str = ""
 
 
 class ClearRequest(BaseModel):
@@ -675,6 +679,30 @@ def _safe_relative(path: str) -> Optional[str]:
     return candidate
 
 
+def _safe_tag(value: str) -> str:
+    """``value`` as a node-set tag, or empty if it is not usable as one."""
+    tag = (value or "").strip().strip("/")
+    if not tag or len(tag) > 120 or any(c < " " for c in tag):
+        return ""
+    return tag
+
+
+def _node_set_for(relative: str, root: str) -> str:
+    """The node set a file joins: the folder it came from, under the chosen root.
+
+    One tag per folder, so a folder can be recalled on its own - cognee's recall
+    takes these same values as ``node_name``. The root is part of the tag
+    because paths are relative to it, and two ingests of some other project's
+    ``guides`` folder would otherwise answer as one.
+
+    Falls back to the site id for a lone file picked with no folder around it:
+    every document should carry a tag, and an untagged one is invisible to every
+    filtered recall rather than merely ungrouped.
+    """
+    folder = relative.rsplit("/", 1)[0] if "/" in relative else ""
+    return "/".join([p for p in (root, folder) if p]) or DEMO_SITE_ID
+
+
 @app.post("/api/dashboard/ingest")
 async def dashboard_ingest(
     body: IngestRequest, token: Optional[str] = Query(default=None)
@@ -696,6 +724,7 @@ async def dashboard_ingest(
     """
     _require_dashboard(token)
     dataset = adapter.docs_dataset(DEMO_SITE_ID)
+    root = _safe_tag(body.root)
 
     if len(body.files) > MAX_INGEST_FILES:
         raise HTTPException(
@@ -725,14 +754,29 @@ async def dashboard_ingest(
 
         name = item_name(relative)
         text = render_for_ingest(upload.text, relative, DOCS_URL)
+        node_set = _node_set_for(relative, root)
         ok = await adapter.client.remember_background(
-            text.encode("utf-8"), dataset_name=dataset, filename=f"{name}.md"
+            text.encode("utf-8"),
+            dataset_name=dataset,
+            filename=f"{name}.md",
+            node_set=[node_set],
         )
         (queued if ok else skipped).append(
-            {"path": relative, "name": name} if ok else {"path": relative, "why": "refused"}
+            {"path": relative, "name": name, "node_set": node_set}
+            if ok
+            else {"path": relative, "why": "refused"}
         )
     _invalidate_viz_cache()
-    return JSONResponse({"queued": len(queued), "skipped": skipped, "dataset": dataset})
+    return JSONResponse(
+        {
+            "queued": len(queued),
+            "skipped": skipped,
+            "dataset": dataset,
+            # What was tagged, so the page can say which sets are now recallable
+            # rather than leaving the operator to infer them from the folders.
+            "node_sets": sorted({q["node_set"] for q in queued}),
+        }
+    )
 
 
 @app.post("/api/dashboard/clear")

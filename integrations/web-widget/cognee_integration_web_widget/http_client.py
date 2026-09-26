@@ -213,7 +213,12 @@ class CogneeHttpClient:
         return response.status_code < 400
 
     async def remember_background(
-        self, content: bytes, *, dataset_name: str, filename: str
+        self,
+        content: bytes,
+        *,
+        dataset_name: str,
+        filename: str,
+        node_set: Optional[list[str]] = None,
     ) -> bool:
         """Queue one document for ingest without waiting for its graph build.
 
@@ -221,11 +226,19 @@ class CogneeHttpClient:
         would hold the request open for the whole run, so the server is asked to
         process in the background and the upload returns as soon as it is
         accepted.
+
+        ``node_set`` tags the nodes this document produces. cognee takes the
+        field repeated, once per tag, and ``recall``'s ``node_name`` filters on
+        the same values, so a tag written here is what makes part of a corpus
+        retrievable on its own later.
         """
+        data: dict = {"datasetName": dataset_name, "run_in_background": "true"}
+        if node_set:
+            data["node_set"] = list(node_set)
         response = await self._request(
             "POST",
             "/api/v1/remember",
-            data={"datasetName": dataset_name, "run_in_background": "true"},
+            data=data,
             files={"data": (filename, content, "text/plain")},
             timeout_override=120.0,
         )
