@@ -293,6 +293,11 @@
   .pick-some { margin-left: auto; font-weight: 400; letter-spacing: 0 }
   .pick-set { font-size: 10px; font-weight: 400; letter-spacing: 0; color: var(--muted);
               background: var(--line-soft); border-radius: 5px; padding: 1px 6px }
+  /* One indent per level, drawn on the children rather than the folder, so a
+     folder's own row lines up with the files beside it. */
+  .pick-children { margin-left: 11px; border-left: 1px solid var(--line-soft);
+                   padding-left: 5px }
+  .pick-children .pick-file { padding-left: 4px }
   .pick-file { display: flex; gap: 7px; align-items: center; font-size: 12px;
                padding: 1px 0 1px 18px }
   .pick-file .muted { font-size: 11px }
@@ -588,29 +593,62 @@
       "own node set, so it can be recalled on its own."));
     wrap.appendChild(head);
 
+    // A real tree, not a flat list of full paths. A repository checkout puts
+    // hundreds of directories under .git alone, and each one arriving as its
+    // own top-level row is what made "I don't want any of .git" a scroll
+    // instead of a click. Nested folders fold and tick as one.
     const list = document.createElement("div");
     list.className = "picker";
     const boxes = [];
-    const byFolder = {};
-    picked.forEach((x) => {
-      const folder = x.path.indexOf("/") !== -1 ? x.path.slice(0, x.path.lastIndexOf("/"))
-                                                : "(root)";
-      (byFolder[folder] = byFolder[folder] || []).push(x);
-    });
-
-    // Folders fold. A whole repository is hundreds of files and most of a
-    // selection is usually decided at the folder level, so scrolling past every
-    // name to reach the next folder is the wrong default. They start open only
-    // while the selection is small enough to read at a glance; past that each
-    // header carries its own tally, which is what a folded folder needs to say.
     const groups = [];
-    const folders = Object.keys(byFolder).sort();
+    const dirs = [];
     const startOpen = picked.length <= 25;
 
-    folders.forEach((folder) => {
+    const root = { name: "", path: "", dirs: new Map(), files: [] };
+    picked.forEach((x) => {
+      const parts = x.path.split("/");
+      const leaf = parts.pop();
+      let node = root;
+      let prefix = "";
+      parts.forEach((part) => {
+        prefix = prefix ? prefix + "/" + part : part;
+        if (!node.dirs.has(part)) {
+          node.dirs.set(part, { name: part, path: prefix, dirs: new Map(), files: [] });
+        }
+        node = node.dirs.get(part);
+      });
+      node.files.push({ item: x, leaf: leaf });
+    });
+
+    function countBeneath(node) {
+      let n = node.files.length;
+      node.dirs.forEach((d) => (n += countBeneath(d)));
+      return n;
+    }
+
+    function fileRow(entry) {
+      const line = document.createElement("label");
+      line.className = "pick-file";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      const tooBig = entry.item.file.size > MAX_PICK_BYTES;
+      cb.checked = !entry.item.skip && !tooBig;
+      cb.dataset.path = entry.item.path;
+      cb._file = entry.item.file;
+      const why = document.createElement("span");
+      why.className = "muted";
+      why.appendChild(text(tooBig ? "too large" : (entry.item.skip || "")));
+      line.append(cb, text(entry.leaf), why);
+      cb.addEventListener("change", () => { syncAll(); count(); });
+      boxes.push(cb);
+      return { line: line, cb: cb };
+    }
+
+    // Each directory owns every checkbox beneath it, however deep, so ticking
+    // one is one decision about a whole subtree rather than a pass over it.
+    function renderDir(node, into) {
       const group = document.createElement("details");
       group.className = "pick-group";
-      group.open = startOpen;
       const header = document.createElement("summary");
       header.className = "pick-folder";
       const chev = document.createElement("span");
@@ -622,51 +660,74 @@
       all.onclick = (e) => e.stopPropagation();
       const tally = document.createElement("span");
       tally.className = "pick-some";
-      // The tag cognee will receive for this folder, shown because it is what a
-      // later recall has to name, and it is not quite the folder path.
-      const tag = [rootName, folder === "(root)" ? "" : folder].filter(Boolean).join("/");
-      const setName = document.createElement("code");
-      setName.className = "pick-set";
-      setName.appendChild(text(tag || "\u2014"));
-      header.append(chev, all, text(folder + "  (" + byFolder[folder].length + ")"),
-                    setName, tally);
+      header.append(chev, all, text(node.name + "  (" + countBeneath(node) + ")"));
+      // Only a directory that holds files directly becomes a node set; one that
+      // holds nothing but other directories never names a tag.
+      if (node.files.length) {
+        const tag = [rootName, node.path].filter(Boolean).join("/");
+        const setName = document.createElement("code");
+        setName.className = "pick-set";
+        setName.appendChild(text(tag || "—"));
+        header.appendChild(setName);
+      }
+      header.appendChild(tally);
       group.appendChild(header);
 
-      const mine = [];
-      byFolder[folder].forEach((x) => {
-        const line = document.createElement("label");
-        line.className = "pick-file";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        const tooBig = x.file.size > MAX_PICK_BYTES;
-        cb.checked = !x.skip && !tooBig;
-        cb.dataset.path = x.path;
-        cb._file = x.file;
-        const why = document.createElement("span");
-        why.className = "muted";
-        why.appendChild(text(tooBig ? "too large" : (x.skip || "")));
-        line.append(cb, text(x.path.split("/").pop()), why);
-        group.appendChild(line);
-        boxes.push(cb);
-        mine.push(cb);
-      });
+      const body = document.createElement("div");
+      body.className = "pick-children";
+      group.appendChild(body);
+      const mine = renderInto(node, body);
 
-      const sync = () => {
-        const on = mine.filter((c) => c.checked).length;
-        all.checked = on === mine.length;
-        all.indeterminate = on > 0 && on < mine.length;
-        tally.textContent = on === mine.length ? "all"
-          : on === 0 ? "none" : on + " of " + mine.length;
+      all.onchange = () => {
+        mine.forEach((c) => (c.checked = all.checked));
+        syncAll();
+        count();
       };
-      all.onchange = () => { mine.forEach((c) => (c.checked = all.checked)); sync(); count(); };
-      mine.forEach((c) => c.addEventListener("change", () => { sync(); count(); }));
-      sync();
-      list.appendChild(group);
+      dirs.push({ box: all, tally: tally, mine: mine, group: group });
       groups.push(group);
+      into.appendChild(group);
+      return mine;
+    }
+
+    // Directories first, then this directory's own files - the shape of the
+    // folder it is standing in.
+    function renderInto(node, into) {
+      const mine = [];
+      [...node.dirs.keys()].sort().forEach((key) => {
+        renderDir(node.dirs.get(key), into).forEach((c) => mine.push(c));
+      });
+      node.files
+        .sort((a, b) => a.leaf.localeCompare(b.leaf))
+        .forEach((entry) => {
+          const row = fileRow(entry);
+          into.appendChild(row.line);
+          mine.push(row.cb);
+        });
+      return mine;
+    }
+
+    function syncAll() {
+      dirs.forEach((d) => {
+        const on = d.mine.filter((c) => c.checked).length;
+        d.box.checked = on === d.mine.length && on > 0;
+        d.box.indeterminate = on > 0 && on < d.mine.length;
+        d.tally.textContent = on === 0 ? "none"
+          : on === d.mine.length ? "all" : on + " of " + d.mine.length;
+      });
+    }
+
+    renderInto(root, list);
+    syncAll();
+    // A folder with nothing ticked in it is one nobody needs to look inside -
+    // .git and node_modules are the whole point of this - so it starts shut
+    // whatever the selection size. The rest follow the small-selection rule.
+    dirs.forEach((d) => {
+      const anyOn = d.mine.some((c) => c.checked);
+      d.group.open = anyOn && startOpen;
     });
     wrap.appendChild(list);
 
-    if (folders.length > 1) {
+    if (groups.length > 1) {
       const folds = document.createElement("p");
       folds.className = "pick-bar";
       const toggle = document.createElement("button");
@@ -675,7 +736,7 @@
         toggle.textContent = open ? "Collapse all" : "Expand all";
       };
       toggle.onclick = () => setAll(!groups.every((g) => g.open));
-      setAll(startOpen);
+      toggle.textContent = groups.every((g) => g.open) ? "Collapse all" : "Expand all";
       folds.appendChild(toggle);
       wrap.insertBefore(folds, list);
     }
