@@ -684,10 +684,17 @@ async def dashboard_ingest(
 async def dashboard_clear(
     body: ClearRequest, token: Optional[str] = Query(default=None)
 ) -> JSONResponse:
-    """Delete the widget's dataset and everything in it.
+    """Ask cognee to delete the widget's dataset and everything in it.
 
     Scoped to the widget's own dataset, and gated on the caller typing that
     dataset's name. The next ingest recreates it.
+
+    cognee accepts the delete and drains the dataset behind it - a 255-item
+    corpus empties over several minutes - so the count here is what was queued,
+    not what is gone. It is read before the call for that reason, and named
+    ``items_queued``: reporting it as removed claimed a finish that had not
+    happened, and anything rendered from the next read showed a half-emptied
+    corpus, which reads as the clear having failed.
     """
     _require_dashboard(token)
     dataset = adapter.docs_dataset(DEMO_SITE_ID)
@@ -696,7 +703,7 @@ async def dashboard_clear(
     items = await adapter.client.dataset_data(await _docs_dataset_id())
     if not await adapter.client.forget_dataset(dataset):
         raise HTTPException(status_code=502, detail="cognee refused to clear the dataset")
-    return JSONResponse({"cleared": dataset, "items_removed": len(items)})
+    return JSONResponse({"cleared": dataset, "items_queued": len(items)})
 
 
 @app.post("/api/dashboard/data/{data_id}/reingest")

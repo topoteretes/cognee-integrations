@@ -1179,6 +1179,24 @@ def test_clear_requires_the_dataset_name_typed_exactly(dashboard_client, fake_cl
     fake_client.forget_dataset.assert_awaited_once()
 
 
+def test_clear_reports_what_it_queued_not_what_is_gone(dashboard_client, fake_client):
+    """cognee drains the dataset behind the call, so a finish cannot be claimed.
+
+    The count is read before the delete and named for what it is. Reported as
+    removed, it described a corpus that was still emptying minutes later.
+    """
+    client = dashboard_client
+    fake_client.forget_dataset = AsyncMock(return_value=True)
+
+    body = client.post(
+        "/api/dashboard/clear?token=s3cret", json={"confirm": "web:demo:docs"}
+    ).json()
+
+    assert "items_removed" not in body
+    assert body["items_queued"] == len(fake_client.dataset_data.return_value)
+    assert body["cleared"] == "web:demo:docs"
+
+
 def test_clear_and_ingest_are_gated(dashboard_client, fake_client):
     client = dashboard_client
     fake_client.forget_dataset = AsyncMock(return_value=True)

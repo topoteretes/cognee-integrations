@@ -110,13 +110,18 @@
   button[disabled] { opacity: .45; cursor: default }
 
   .toolbar { display: flex; gap: 9px; align-items: center; margin-bottom: 9px }
-  input[type=search] {
+  input[type=search], input[type=text] {
     font: inherit; font-size: 13px; padding: 7px 12px; flex: 1;
     border: 1px solid var(--line); border-radius: 8px;
     background: var(--panel); color: inherit;
   }
-  input[type=search]:focus { outline: none; border-color: var(--accent) }
-  input[type=search]::placeholder { color: var(--muted) }
+  input[type=search]:focus, input[type=text]:focus {
+    outline: none; border-color: var(--accent);
+  }
+  input[type=search]::placeholder, input[type=text]::placeholder { color: var(--muted) }
+
+  .confirm-row { display: flex; gap: 8px; align-items: center; padding: 0 16px 14px }
+  .confirm-row input { max-width: 280px }
 
   #sources-more { display: flex; gap: 9px; align-items: center;
                   margin: 11px 2px 0; font-size: 12px }
@@ -582,25 +587,104 @@
     count();
   }
 
-  async function clearCorpus() {
+  // Clearing the corpus is the slowest destructive thing here and the one that
+  // used to look most like nothing happening: a browser prompt, then an
+  // unmarked wait, then a toast that expired after four seconds. It confirms
+  // and reports in the page instead, where the outcome stays put.
+  function clearCorpus() {
     const name = corpus.dataset;
-    const typed = prompt(
-      "This deletes the dataset \u201c" + name + "\u201d and all " +
-      corpus.item_count + " sources in it. The widget will stop answering until " +
-      "something is ingested again.\n\nType the dataset name to confirm:");
-    if (typed === null) return;
+    const box = $("#corpus-panel");
+    box.textContent = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "panel";
+    const warn = document.createElement("p");
+    warn.className = "notice";
+    warn.appendChild(text(
+      "Deleting \u201c" + name + "\u201d removes all " + corpus.item_count +
+      " sources in it. The widget answers nothing until something is ingested " +
+      "again, and rebuilding the corpus costs another cognify run."));
+
+    const row = document.createElement("div");
+    row.className = "confirm-row";
+    const field = document.createElement("input");
+    field.type = "text";
+    field.placeholder = "type " + name + " to confirm";
+    field.setAttribute("aria-label", "Type the dataset name to confirm deletion");
+    const go = document.createElement("button");
+    go.className = "danger";
+    go.appendChild(text("Delete dataset"));
+    go.disabled = true;
+    const cancel = document.createElement("button");
+    cancel.appendChild(text("Cancel"));
+    cancel.onclick = () => { box.textContent = ""; };
+
+    // The name sits beside the field, so a typo is visible while it is being
+    // typed rather than coming back as a 400 once the button has been pressed.
+    field.oninput = () => { go.disabled = field.value !== name; };
+    field.onkeydown = (e) => { if (e.key === "Enter" && !go.disabled) go.click(); };
+    go.onclick = () => runClear(name, wrap, [field, go, cancel]);
+
+    row.append(field, go, cancel);
+    wrap.append(warn, row);
+    box.appendChild(wrap);
+    field.focus();
+  }
+
+  async function runClear(name, wrap, controls) {
+    controls.forEach((c) => (c.disabled = true));
+    const status = document.createElement("p");
+    status.className = "notice";
+    status.appendChild(text("Clearing " + name + "\u2026"));
+    wrap.appendChild(status);
+    const say = (msg) => { status.textContent = ""; status.appendChild(text(msg)); };
+
     try {
       const r = await fetch(api("/api/dashboard/clear"), {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ confirm: typed }),
+        body: JSON.stringify({ confirm: name }),
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
-      toast("Cleared " + body.cleared + " (" + body.items_removed + " sources)");
-      load();
+      // cognee accepts the delete and drains the dataset over the minutes that
+      // follow, so this reports what was queued rather than claiming a finish
+      // that has not happened. Without the watch below, the next render shows a
+      // half-emptied corpus, which reads as the clear having failed.
+      say("Clearing " + body.cleared + " \u2014 " + body.items_queued +
+          " sources queued. This continues in the background.");
+      await watchClearDrain(say);
     } catch (e) {
-      toast("Clear failed: " + e.message, true);
+      // A timeout is not proof the delete did not start, so this says what is
+      // known rather than promising nothing happened.
+      say("Clear failed: " + e.message + ". Reload to see the corpus as it stands.");
+      controls.forEach((c) => (c.disabled = false));
     }
+  }
+
+  async function watchClearDrain(say) {
+    let previous = null;
+    let unchanged = 0;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 6000));
+      let d;
+      try {
+        d = await fetch(api("/api/dashboard")).then((r) => r.json());
+      } catch (e) {
+        continue;
+      }
+      if (!d.corpus || !d.corpus.exists) {
+        say("Cleared. The dataset is gone \u2014 ingest something to start answering again.");
+        load();
+        return;
+      }
+      const left = d.corpus.item_count;
+      say("Clearing\u2026 " + left + " sources left.");
+      unchanged = left === previous ? unchanged + 1 : 0;
+      previous = left;
+      if (unchanged >= 3) break;
+    }
+    say("Still deleting after several minutes. Reload to check again.");
+    load();
   }
 
   function renderCorpusActions() {
