@@ -1286,6 +1286,71 @@ def test_ingest_ignores_a_root_that_is_not_usable_as_a_tag(dashboard_client, fak
     assert body["node_sets"] == ["guides"]
 
 
+def test_ingest_sends_uploads_concurrently_rather_than_one_after_another(
+    dashboard_client, fake_client
+):
+    """Each upload is a round trip of about a second, so in series a folder of
+    pages holds one request open for minutes."""
+    import asyncio
+
+    from cognee_integration_web_widget import server as server_mod
+
+    client = dashboard_client
+    in_flight = {"now": 0, "peak": 0}
+
+    async def slow(*args, **kwargs):
+        in_flight["now"] += 1
+        in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        await asyncio.sleep(0.02)
+        in_flight["now"] -= 1
+        return True
+
+    fake_client.remember_background = AsyncMock(side_effect=slow)
+    files = [{"path": f"guides/p{i}.md", "text": "x"} for i in range(12)]
+
+    body = client.post("/api/dashboard/ingest?token=s3cret", json={"files": files}).json()
+
+    assert body["queued"] == 12
+    assert in_flight["peak"] > 1
+    assert in_flight["peak"] <= server_mod.INGEST_CONCURRENCY
+
+
+def test_ingest_progress_reports_the_build_that_follows_the_upload(dashboard_client, fake_client):
+    """An upload returns once cognee accepts it; the cognify runs for minutes
+    afterwards, and used to have nothing watching it."""
+    client = dashboard_client
+    fake_client.dataset_progress = AsyncMock(
+        return_value={
+            "status": "running",
+            "progress": {"completed_items": 40, "total_items": 251, "current_stage": "extracting"},
+        }
+    )
+
+    body = client.get("/api/dashboard/ingest-progress?token=s3cret").json()
+
+    assert body["status"] == "running"
+    assert (body["completed_items"], body["total_items"]) == (40, 251)
+    assert body["current_stage"] == "extracting"
+    assert body["item_count"] == len(fake_client.dataset_data.return_value)
+
+
+def test_ingest_progress_survives_a_run_with_no_numbers_yet(dashboard_client, fake_client):
+    """progress is null until the first in-flight tick, so the corpus count has
+    to carry the report until the pipeline has figures of its own."""
+    client = dashboard_client
+    fake_client.dataset_progress = AsyncMock(return_value={"status": "running", "progress": None})
+
+    body = client.get("/api/dashboard/ingest-progress?token=s3cret").json()
+
+    assert body["status"] == "running"
+    assert body["completed_items"] is None and body["total_items"] is None
+    assert body["item_count"] == len(fake_client.dataset_data.return_value)
+
+
+def test_ingest_progress_is_gated(dashboard_client):
+    assert dashboard_client.get("/api/dashboard/ingest-progress").status_code == 401
+
+
 def test_ingest_refuses_a_selection_too_large_for_one_request(dashboard_client, fake_client):
     from cognee_integration_web_widget import server as server_mod
 

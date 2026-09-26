@@ -298,6 +298,12 @@
   .pick-children { margin-left: 11px; border-left: 1px solid var(--line-soft);
                    padding-left: 5px }
   .pick-children .pick-file { padding-left: 4px }
+
+  .ingest-bar { height: 3px; margin: 0 16px 13px; border-radius: 2px;
+                background: var(--line-soft); overflow: hidden }
+  .ingest-bar i { display: block; height: 100%; width: 0; background: var(--accent);
+                  transition: width .25s }
+  .skipped { margin: 0 16px 13px; max-height: 190px; overflow: auto }
   .pick-file { display: flex; gap: 7px; align-items: center; font-size: 12px;
                padding: 1px 0 1px 18px }
   .pick-file .muted { font-size: 11px }
@@ -764,44 +770,152 @@
     count();
   }
 
+  // Files go up in batches, not in one request. Each upload is a round trip
+  // costing about a second even with the backend sending four at a time, so a
+  // folder of 250 pages is minutes of work; sent as one request it was one
+  // opaque wait with "Queueing…" on a button and no way to tell progress from a
+  // hang. A batch is small enough to report between, large enough that the
+  // per-request overhead stays noise.
+  const INGEST_BATCH = 20;
+
   async function runIngest(box, chosen, go, count, rootName) {
     if (!confirm("Ingest " + chosen.length + " files into " + corpus.dataset + "?\n\n" +
                  "Each file is processed by cognee, which costs credits and takes time. " +
                  "Files already in the corpus with identical content are skipped.")) return;
-    go.disabled = true;
-    go.textContent = "Reading\u2026";
+
+    // The outcome replaces the picker and stays there. It used to be a toast,
+    // which expired after four seconds and took the list of skipped files with
+    // it before anyone could read why anything had been skipped.
+    box.textContent = "";
+    const panel = document.createElement("div");
+    panel.className = "panel";
+    const line = document.createElement("p");
+    line.className = "notice";
+    const bar = document.createElement("div");
+    bar.className = "ingest-bar";
+    const fill = document.createElement("i");
+    bar.appendChild(fill);
+    const detail = document.createElement("div");
+    panel.append(line, bar, detail);
+    box.appendChild(panel);
+
+    const say = (msg) => { line.textContent = ""; line.appendChild(text(msg)); };
+    const setBar = (done, total) => {
+      fill.style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+    };
+
+    say("Reading " + chosen.length + (chosen.length === 1 ? " file…" : " files…"));
     let payload;
     try {
       payload = await Promise.all(chosen.map(async (cb) => ({
         path: cb.dataset.path, text: await cb._file.text(),
       })));
     } catch (e) {
-      go.disabled = false;
-      count();
-      toast("Could not read the files: " + e.message, true);
+      say("Could not read the files: " + e.message);
       return;
     }
-    go.textContent = "Queueing\u2026";
-    try {
-      const r = await fetch(api("/api/dashboard/ingest"), {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ files: payload, root: rootName || "" }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
-      const sets = body.node_sets || [];
-      toast("Queued " + body.queued + (body.queued === 1 ? " file" : " files") +
-            (body.skipped.length ? ", " + body.skipped.length + " skipped" : "") +
-            (sets.length ? " \u2014 " + sets.length +
-             (sets.length === 1 ? " node set" : " node sets") : ""));
-      box.textContent = "";
-      markGraphStale();
-      load();
-    } catch (e) {
-      go.disabled = false;
-      count();
-      toast("Ingest failed: " + e.message, true);
+
+    const queued = [];
+    const skipped = [];
+    const sets = new Set();
+    for (let i = 0; i < payload.length; i += INGEST_BATCH) {
+      const batch = payload.slice(i, i + INGEST_BATCH);
+      say("Uploading… " + i + " of " + payload.length);
+      setBar(i, payload.length);
+      let body;
+      try {
+        const r = await fetch(api("/api/dashboard/ingest"), {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ files: batch, root: rootName || "" }),
+        });
+        body = await r.json();
+        if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+      } catch (e) {
+        // Say how far it got. The batches before this one are already in
+        // cognee, so "failed" on its own would misdescribe the corpus.
+        setBar(i, payload.length);
+        say("Upload failed after " + queued.length + " of " + payload.length +
+            " files: " + e.message);
+        markGraphStale();
+        load();
+        return;
+      }
+      body.skipped.forEach((s) => skipped.push(s));
+      (body.node_sets || []).forEach((s) => sets.add(s));
+      for (let n = 0; n < body.queued; n++) queued.push(1);
     }
+    setBar(1, 1);
+    say("Queued " + queued.length + (queued.length === 1 ? " file" : " files") +
+        " in " + sets.size + (sets.size === 1 ? " node set" : " node sets") +
+        (skipped.length ? ", " + skipped.length + " skipped" : "") +
+        ". cognee is building the graph.");
+    renderSkipped(detail, skipped);
+    markGraphStale();
+    load();
+    await watchIngestProgress(say, setBar, detail);
+  }
+
+  function renderSkipped(into, skipped) {
+    if (!skipped.length) return;
+    const fold = document.createElement("details");
+    fold.className = "pick-group skipped";
+    const head = document.createElement("summary");
+    head.className = "pick-folder";
+    head.appendChild(text(skipped.length + " skipped — why"));
+    fold.appendChild(head);
+    skipped.slice(0, 200).forEach((s) => {
+      const row = document.createElement("div");
+      row.className = "pick-file";
+      const why = document.createElement("span");
+      why.className = "muted";
+      why.appendChild(text(s.why || ""));
+      row.append(text(s.path), why);
+      fold.appendChild(row);
+    });
+    into.appendChild(fold);
+  }
+
+  // cognee accepts an upload and builds the graph after it, so the ingest is
+  // not over when the last batch lands. This follows the pipeline until it is,
+  // which is the difference between "queued" and "answerable".
+  async function watchIngestProgress(say, setBar, detail) {
+    let lastCount = null;
+    let still = 0;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 6000));
+      let p;
+      try {
+        p = await fetch(api("/api/dashboard/ingest-progress")).then((r) => r.json());
+      } catch (e) {
+        continue;
+      }
+      if (p.status === "completed") {
+        setBar(1, 1);
+        say("Ingested. " + p.item_count + " sources in the corpus, graph built.");
+        markGraphStale();
+        load();
+        return;
+      }
+      if (p.status === "failed" || p.status === "errored") {
+        say("cognee reported the run failed. " + p.item_count + " sources are in the corpus.");
+        load();
+        return;
+      }
+      // total_items is null until the first in-flight tick, so the corpus count
+      // carries the report until the pipeline has numbers of its own.
+      if (p.total_items) {
+        setBar(p.completed_items || 0, p.total_items);
+        say("Building the graph… " + (p.completed_items || 0) + " of " + p.total_items +
+            (p.current_stage ? " — " + p.current_stage : ""));
+      } else {
+        say("Building the graph… " + p.item_count + " sources in the corpus so far.");
+      }
+      still = p.item_count === lastCount ? still + 1 : 0;
+      lastCount = p.item_count;
+      if (still >= 5 && p.status !== "running") break;
+    }
+    say("Still building after several minutes. The corpus fills as it goes — reload to check.");
+    load();
   }
 
   // Clearing the corpus is the slowest destructive thing here and the one that

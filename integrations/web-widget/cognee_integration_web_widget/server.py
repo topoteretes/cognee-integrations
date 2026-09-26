@@ -659,6 +659,13 @@ MAX_INGEST_FILES = 2000
 MAX_INGEST_CHARS = 2_000_000
 MAX_INGEST_TOTAL_CHARS = 50_000_000
 
+# Uploads within one request go out together rather than one after another. Each
+# is a round trip costing about a second, so a folder of 250 pages sent in series
+# held a single request open for minutes. Four at a time: the tenant's throughput
+# flattens well before a dozen, and a burst large enough to make it answer 503
+# would cost more than it saves.
+INGEST_CONCURRENCY = 4
+
 
 def _safe_relative(path: str) -> Optional[str]:
     """``path`` as a corpus-safe relative path, or ``None`` if it is not one.
@@ -733,7 +740,7 @@ async def dashboard_ingest(
     if sum(len(f.text) for f in body.files) > MAX_INGEST_TOTAL_CHARS:
         raise HTTPException(status_code=413, detail="that selection is too large for one ingest")
 
-    queued, skipped = [], []
+    queued, skipped, sendable = [], [], []
     for upload in body.files:
         relative = _safe_relative(upload.path)
         if relative is None:
@@ -751,21 +758,28 @@ async def dashboard_ingest(
         if not upload.text.strip():
             skipped.append({"path": relative, "why": "empty"})
             continue
+        sendable.append((relative, upload.text))
 
+    limit = asyncio.Semaphore(INGEST_CONCURRENCY)
+
+    async def send(relative: str, source: str) -> dict:
         name = item_name(relative)
-        text = render_for_ingest(upload.text, relative, DOCS_URL)
         node_set = _node_set_for(relative, root)
-        ok = await adapter.client.remember_background(
-            text.encode("utf-8"),
-            dataset_name=dataset,
-            filename=f"{name}.md",
-            node_set=[node_set],
-        )
-        (queued if ok else skipped).append(
+        async with limit:
+            ok = await adapter.client.remember_background(
+                render_for_ingest(source, relative, DOCS_URL).encode("utf-8"),
+                dataset_name=dataset,
+                filename=f"{name}.md",
+                node_set=[node_set],
+            )
+        return (
             {"path": relative, "name": name, "node_set": node_set}
             if ok
             else {"path": relative, "why": "refused"}
         )
+
+    for result in await asyncio.gather(*(send(r, t) for r, t in sendable)):
+        (queued if "name" in result else skipped).append(result)
     _invalidate_viz_cache()
     return JSONResponse(
         {
@@ -775,6 +789,33 @@ async def dashboard_ingest(
             # What was tagged, so the page can say which sets are now recallable
             # rather than leaving the operator to infer them from the folders.
             "node_sets": sorted({q["node_set"] for q in queued}),
+        }
+    )
+
+
+@app.get("/api/dashboard/ingest-progress")
+async def dashboard_ingest_progress(token: Optional[str] = Query(default=None)) -> JSONResponse:
+    """How far cognee has got building the graph for what was ingested.
+
+    An upload returns once cognee has accepted it; the cognify that follows runs
+    for minutes with nothing to show for it, which is why an ingest used to end
+    at "queued" and go quiet. The corpus count is reported alongside the
+    pipeline's own figures because it moves even before the first progress tick.
+    """
+    _require_dashboard(token)
+    dataset_id = await _docs_dataset_id()
+    state, items = await asyncio.gather(
+        adapter.client.dataset_progress(dataset_id),
+        adapter.client.dataset_data(dataset_id),
+    )
+    progress = state.get("progress") or {}
+    return JSONResponse(
+        {
+            "status": str(state.get("status") or "unknown"),
+            "completed_items": progress.get("completed_items"),
+            "total_items": progress.get("total_items"),
+            "current_stage": progress.get("current_stage"),
+            "item_count": len(items),
         }
     )
 

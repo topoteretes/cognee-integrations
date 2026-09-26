@@ -244,6 +244,25 @@ class CogneeHttpClient:
         )
         return response.status_code < 400
 
+    async def dataset_progress(self, dataset_id: str) -> dict:
+        """How far cognee has got building the graph for ``dataset_id``.
+
+        ``remember`` with ``run_in_background`` returns once the upload is
+        accepted, so this is the only way to see the work that follows it.
+        ``progress`` is null until the first in-flight tick and absent once a
+        run is terminal, so a caller gets "running with no numbers yet" and
+        "finished" as different answers rather than as one empty one.
+        """
+        response = await self._request(
+            "GET",
+            "/api/v1/datasets/status/progress",
+            params={"dataset": dataset_id, "pipeline": "cognify_pipeline"},
+        )
+        if response.status_code >= 400:
+            return {}
+        body = response.json()
+        return body.get(dataset_id) or {} if isinstance(body, dict) else {}
+
     async def list_sessions(self) -> list[Any]:
         """Every session this key can see, widget conversations among them."""
         response = await self._request("GET", "/api/v1/sessions")
