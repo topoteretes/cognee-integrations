@@ -665,9 +665,10 @@
         const st = tr.insertCell();
         const STATES = {
           current: ["ok", "current",
-            "No commit to this page since it was ingested."],
+            "The page renders to exactly the bytes the corpus holds."],
           edited: ["warn", "edited",
-            "Committed since it was ingested \u2014 reingest to pick up the change."],
+            "The page no longer renders to the bytes the corpus holds \u2014 " +
+            "reingest to pick up the change."],
           removed: ["warn", "removed from docs",
             "This page no longer exists in the repository, but its content is still " +
             "in the corpus: the widget can answer from it and cite a URL that 404s. " +
@@ -675,6 +676,9 @@
           foreign: ["neutral", "not from docs",
             "No documentation page behind this item \u2014 the demo seeds are the " +
             "usual case. Nothing to compare it against."],
+          unknown: ["neutral", "not comparable",
+            "The page is there, but this item's stored copy carries no digest to " +
+            "compare it against, so nothing can be claimed either way."],
         };
         const spec = STATES[i.doc_state];
         if (spec) {

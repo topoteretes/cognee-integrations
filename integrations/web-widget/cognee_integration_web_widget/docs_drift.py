@@ -1,29 +1,66 @@
 """Has the documentation changed since it was ingested?
 
-The corpus carries no content hash, and ``updatedAt`` moves whenever cognee
-reprocesses a record - a dataset-wide re-cognify bumps all of them while no
-document has been touched. So neither field can answer the question.
+The corpus answers this itself, once you know where to look. cognee stores every
+upload at a content-addressed path, so an item's ``rawDataLocation`` ends in
+``text_<md5>.txt`` - the digest of the exact bytes it holds. Render a page the
+way ingest would render it today, hash that, and the two either agree or they do
+not. No proxy, no inference.
 
-What can: the source repository. Each item's ``name`` encodes its path
-(``setup-configuration__llm-providers`` -> ``setup-configuration/llm-providers``),
-so an item can be matched to a file, and that file's last commit compared with
-``createdAt``, which is stable across reprocessing.
+The fields that look like they should answer this cannot. ``updatedAt`` moves
+whenever cognee reprocesses a record, so a dataset-wide re-cognify reports every
+document as changed while nobody has touched a page, and ``createdAt`` says when
+an item arrived rather than what is in it.
 
-This needs to see the repository, so it is opt-in via ``WIDGET_DOCS_PATH`` and
-reports nothing at all when unset - a hosted backend cannot do this, and a badge
-that guesses is worse than no badge.
+This replaces a comparison of each file's last commit date against ``createdAt``.
+That was a proxy for content, and it was wrong in three directions at once: an
+uncommitted edit read as current, a revert or a reformat read as edited, and a
+source folder that was not a git repository could not be read at all. Only one
+question still goes to git - whether a path it no longer finds ever existed -
+and the answer degrades to "not documentation" when there is no repository.
+
+Comparing needs the source files, so it stays opt-in via ``WIDGET_DOCS_PATH`` and
+reports nothing at all when unset: a badge that guesses is worse than no badge.
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
 
+from .docs_ingest import to_document
+
 _EXTENSIONS = (".mdx", ".md")
 
+# s3://…/text_b4cb18fd4f75db55c8773c9e4ffb6a13.txt
+_STORED_DIGEST = re.compile(r"text_([0-9a-f]{32})(?:\.[A-Za-z0-9]+)?$")
 
-def _repo_file(root: Path, name: str) -> Optional[Path]:
+
+def stored_digest(item: dict) -> Optional[str]:
+    """The digest cognee's own storage path carries for this item.
+
+    ``None`` when the location is shaped some other way. That is a reason to say
+    nothing about the item, not to assume it is current: an unreadable location
+    and an unchanged page are different states.
+    """
+    if not isinstance(item, dict):
+        return None
+    match = _STORED_DIGEST.search(str(item.get("rawDataLocation") or ""))
+    return match.group(1) if match else None
+
+
+def content_digest(text: str) -> str:
+    """The digest cognee would store for ``text``.
+
+    MD5 because that is what cognee's storage path uses; this is a checksum for
+    telling two versions of a page apart, never a security claim.
+    """
+    return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _source_file(root: Path, name: str) -> Optional[Path]:
     """The documentation file an ingested item came from, if it still exists."""
     relative = name.replace("__", "/")
     for extension in _EXTENSIONS:
@@ -33,52 +70,48 @@ def _repo_file(root: Path, name: str) -> Optional[Path]:
     return None
 
 
-def last_commit_dates(root: Path) -> dict[str, str]:
-    """Every tracked file's most recent commit date, in one pass.
+def _paths_git_has_seen(root: Path) -> set:
+    """Every path in the history, including ones since deleted.
 
-    Asking git per file costs a process each - 251 of them for this corpus. One
-    ``git log`` walk newest-first gives the same answer: the first time a path
-    appears is its latest commit.
+    Only used to tell a page that was deleted from the docs apart from an item
+    that was never documentation. Asked once, and only when some item has no
+    file; an empty set - no repository, no git, a failed call - collapses both
+    cases into "not documentation", which understates the problem rather than
+    inventing one.
     """
     try:
         result = subprocess.run(
-            ["git", "log", "--format=%x00%cI", "--name-only", "--no-renames"],
+            ["git", "log", "--format=", "--name-only", "--no-renames"],
             cwd=root,
             capture_output=True,
             text=True,
             timeout=120,
         )
     except (OSError, subprocess.SubprocessError):
-        return {}
+        return set()
     if result.returncode != 0:
-        return {}
-
-    dates: dict[str, str] = {}
-    current = ""
-    for line in result.stdout.splitlines():
-        if line.startswith("\x00"):
-            current = line[1:].strip()
-        elif line.strip() and current:
-            dates.setdefault(line.strip(), current)
-    return dates
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
-def drift_for_items(items: list, docs_path: Optional[str]) -> dict:
-    """Classify every ingested item against the documentation repository.
+def drift_for_items(items: list, docs_path: Optional[str], docs_url: Optional[str] = None) -> dict:
+    """Classify every ingested item against the documentation it came from.
 
-    Four outcomes, because "no status" was hiding two different problems:
+    Five outcomes:
 
-    ``current``  the page exists and has no commit since it was ingested
-    ``edited``   the page exists and has been committed since - reingest it
+    ``current``  the page renders to exactly the bytes the corpus holds
+    ``edited``   it does not - the page has changed since it was ingested
     ``removed``  git knows the path but the file is gone - the page was deleted
                  from the docs while its content stayed in the corpus, so the
-                 widget can still answer from it and cite a page that 404s
-    ``foreign``  git has never seen the path - not documentation at all, which
-                 is what the demo seeds are
+                 widget can still answer from it and cite a URL that 404s
+    ``foreign``  no file, and git has never seen the path - not documentation at
+                 all, which is what the demo seeds are
+    ``unknown``  the page is there but the item carries no digest to compare it
+                 against, so nothing can be claimed either way
 
-    The single ``git log`` walk already lists deleted paths (they appear in the
-    commit that removed them), so telling ``removed`` from ``foreign`` costs
-    nothing extra.
+    ``docs_url`` must be the one ingest stamps into the Source line, or every
+    page renders to different bytes than were stored and the whole corpus reads
+    as edited.
     """
     empty = {"enabled": False, "states": {}, "matched": 0, "drifted": 0, "removed": 0}
     if not docs_path:
@@ -88,43 +121,48 @@ def drift_for_items(items: list, docs_path: Optional[str]) -> dict:
     if not root.is_dir():
         return empty
 
-    dates = last_commit_dates(root)
     states: dict[str, str] = {}
     matched = drifted = removed = 0
+    absent: list[tuple[str, str]] = []
 
     for item in items:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "")
-        created = str(item.get("createdAt") or "")
         item_id = str(item.get("id"))
-        if not name or not created:
+        if not name:
             continue
 
-        file = _repo_file(root, name)
-        if file:
-            committed = dates.get(str(file.relative_to(root)))
-            if not committed:
-                # Untracked file: present but never committed, so there is no
-                # date to compare against.
-                states[item_id] = "foreign"
-                continue
-            matched += 1
-            if committed > created:
-                states[item_id] = "edited"
-                drifted += 1
-            else:
-                states[item_id] = "current"
+        file = _source_file(root, name)
+        if file is None:
+            absent.append((item_id, name))
             continue
 
-        # No file. Did one ever exist at that path?
-        relative = name.replace("__", "/")
-        known = any(f"{relative}{extension}" in dates for extension in _EXTENSIONS)
-        if known:
-            states[item_id] = "removed"
-            removed += 1
+        stored = stored_digest(item)
+        if not stored:
+            states[item_id] = "unknown"
+            continue
+
+        relative = file.relative_to(root).as_posix()
+        # Read exactly as ingest reads, or the bytes differ for a reason that
+        # has nothing to do with the page having been edited.
+        source = file.read_text(encoding="utf-8", errors="replace")
+        matched += 1
+        if content_digest(to_document(source, relative, docs_url)) == stored:
+            states[item_id] = "current"
         else:
-            states[item_id] = "foreign"
+            states[item_id] = "edited"
+            drifted += 1
+
+    if absent:
+        seen = _paths_git_has_seen(root)
+        for item_id, name in absent:
+            relative = name.replace("__", "/")
+            if any(f"{relative}{extension}" in seen for extension in _EXTENSIONS):
+                states[item_id] = "removed"
+                removed += 1
+            else:
+                states[item_id] = "foreign"
 
     return {
         "enabled": True,

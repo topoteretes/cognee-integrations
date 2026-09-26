@@ -251,8 +251,10 @@ async def _dashboard_data() -> dict:
     rows, is_scoped = (scoped, True) if scoped else (asked, False)
     rows.sort(key=lambda h: str(_field(h, "createdAt")), reverse=True)
 
-    # Reads the repository, so it is local work rather than another round trip.
-    drift = drift_for_items(items, DOCS_PATH)
+    # Reads and hashes the source files, so it is local work rather than another
+    # round trip. DOCS_URL is the one ingest stamps into each document, and the
+    # comparison is over the rendered bytes, so the two have to agree.
+    drift = drift_for_items(items, DOCS_PATH, DOCS_URL)
 
     questions = []
     for h in rows[:25]:
@@ -275,15 +277,13 @@ async def _dashboard_data() -> dict:
         "corpus": {
             "dataset": docs_dataset,
             "dataset_id": dataset_id,
-            # Whether the graph still reflects the corpus. Reingesting or
-            # deleting a source moves its updatedAt past the graph's build time,
-            # and until the graph is rebuilt the widget answers from a picture
-            # of a corpus that no longer exists.
+            # Whether the corpus still matches the documentation it came from,
+            # decided by hashing each page as ingest would render it and
+            # comparing that with the digest in the item's storage path.
             #
-            # This compares the corpus against the graph, NOT against the
-            # documentation it came from: source_uri points into the filesystem
-            # that performed the ingest, which this backend cannot see, so an
-            # edit to a docs page is invisible here.
+            # This says nothing about the graph. A corpus can be current and its
+            # graph still be built from an older pass; the breakdown below
+            # counts the graph itself, and the two questions stay separate.
             "sync": _corpus_sync(drift),
             "exists": match is not None,
             "item_count": len(items),

@@ -889,9 +889,24 @@ def test_analytics_excludes_other_sites_and_is_gated(analytics_client):
 
 # --- Documentation drift ------------------------------------------------------
 #
-# The question is whether a page has been edited since it was ingested. It is
-# answered from the repository, because the corpus cannot answer it: no content
-# hash is exposed, and updatedAt moves on any reprocess.
+# The question is whether a page has been edited since it was ingested, and the
+# corpus answers it: cognee stores each upload at text_<md5>.txt, so the item
+# carries the digest of the bytes it holds. Render the page as ingest would and
+# compare. updatedAt cannot be used - it moves on any reprocess.
+
+
+def _ingested(root, relative, docs_url=None):
+    """An item as cognee would report it after ingesting ``relative``."""
+    from cognee_integration_web_widget.docs_drift import content_digest
+    from cognee_integration_web_widget.docs_ingest import item_name, to_document
+
+    text = (root / relative).read_text(encoding="utf-8")
+    digest = content_digest(to_document(text, relative, docs_url))
+    return {
+        "id": relative,
+        "name": item_name(relative),
+        "rawDataLocation": f"s3://bucket/tenant/data/text_{digest}.txt",
+    }
 
 
 def _items(*specs):
@@ -913,54 +928,91 @@ def test_drift_is_off_when_the_path_does_not_exist():
     assert out["enabled"] is False
 
 
-def test_drift_maps_names_to_nested_paths_and_compares_with_ingest(tmp_path):
+def test_drift_maps_names_to_nested_paths_and_compares_content(tmp_path):
     """setup-configuration__llm-providers -> setup-configuration/llm-providers.mdx"""
-    import os
-    import subprocess
-
     from cognee_integration_web_widget.docs_drift import drift_for_items
 
-    def git(*args, when=None):
-        env = {**os.environ}
-        if when:
-            # The comparison uses the COMMITTER date (%cI); --date only moves
-            # the author date, which is what made this test lie at first.
-            env["GIT_COMMITTER_DATE"] = when
-            env["GIT_AUTHOR_DATE"] = when
-        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, env=env)
-
-    git("init", "-q")
-    git("config", "user.email", "t@t")
-    git("config", "user.name", "t")
     (tmp_path / "setup-configuration").mkdir()
-    (tmp_path / "setup-configuration" / "llm-providers.mdx").write_text("old")
-    (tmp_path / "quickstart.md").write_text("old")
-    git("add", "-A")
-    git("commit", "-qm", "first", when="2026-01-01T00:00:00+0000")
+    (tmp_path / "setup-configuration" / "llm-providers.mdx").write_text("original")
+    (tmp_path / "quickstart.md").write_text("original")
+    items = [
+        _ingested(tmp_path, "setup-configuration/llm-providers.mdx"),
+        _ingested(tmp_path, "quickstart.md"),
+    ]
 
-    # Ingested AFTER that commit -> both current.
-    out = drift_for_items(
-        _items(
-            ("a", "setup-configuration__llm-providers", "2026-06-01T00:00:00Z"),
-            ("b", "quickstart", "2026-06-01T00:00:00Z"),
-        ),
-        str(tmp_path),
-    )
+    # Nothing touched since the ingest those digests came from.
+    out = drift_for_items(items, str(tmp_path))
     assert out["enabled"] is True
     assert out["matched"] == 2
     assert out["drifted"] == 0
     assert set(out["states"].values()) == {"current"}
 
-    # Ingested BEFORE the commit -> both edited since.
-    out = drift_for_items(
-        _items(
-            ("a", "setup-configuration__llm-providers", "2020-01-01T00:00:00Z"),
-            ("b", "quickstart", "2020-01-01T00:00:00Z"),
-        ),
-        str(tmp_path),
-    )
+    # Edit both pages, leaving the corpus holding the old bytes.
+    (tmp_path / "setup-configuration" / "llm-providers.mdx").write_text("rewritten")
+    (tmp_path / "quickstart.md").write_text("rewritten")
+    out = drift_for_items(items, str(tmp_path))
     assert out["drifted"] == 2
     assert set(out["states"].values()) == {"edited"}
+
+
+def test_drift_sees_an_edit_that_was_never_committed(tmp_path):
+    """The comparison is against the file, not the history.
+
+    Dates could not see this: an uncommitted edit leaves every commit date
+    where it was, so the page read as current while the corpus was stale.
+    """
+    import subprocess
+
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    (tmp_path / "guide.mdx").write_text("as ingested")
+    items = [_ingested(tmp_path, "guide.mdx")]
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+
+    (tmp_path / "guide.mdx").write_text("edited in the working tree, never committed")
+
+    assert drift_for_items(items, str(tmp_path))["states"] == {"guide.mdx": "edited"}
+
+
+def test_drift_does_not_call_a_touched_but_unchanged_page_edited(tmp_path):
+    """A revert or a reformat moves the commit date and changes no content."""
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    (tmp_path / "guide.mdx").write_text("stable")
+    items = [_ingested(tmp_path, "guide.mdx")]
+
+    (tmp_path / "guide.mdx").write_text("briefly different")
+    (tmp_path / "guide.mdx").write_text("stable")
+
+    out = drift_for_items(items, str(tmp_path))
+    assert out["drifted"] == 0
+    assert out["states"] == {"guide.mdx": "current"}
+
+
+def test_drift_compares_against_the_docs_url_ingest_stamps_in(tmp_path):
+    """The Source line is part of the bytes, so the two must use one base URL."""
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    (tmp_path / "guide.mdx").write_text("page")
+    items = [_ingested(tmp_path, "guide.mdx", "https://docs.example.com")]
+
+    assert drift_for_items(items, str(tmp_path), "https://docs.example.com")["drifted"] == 0
+    assert drift_for_items(items, str(tmp_path), "https://elsewhere.example.com")["drifted"] == 1
+
+
+def test_drift_says_nothing_about_an_item_with_no_digest(tmp_path):
+    """An unreadable storage path and an unchanged page are different states."""
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    (tmp_path / "guide.mdx").write_text("page")
+    item = {"id": "a", "name": "guide", "rawDataLocation": "s3://bucket/legacy-name.txt"}
+
+    out = drift_for_items([item], str(tmp_path))
+    assert out["states"] == {"a": "unknown"}
+    # Not comparable, so not counted as agreeing either.
+    assert out["matched"] == 0
+    assert out["drifted"] == 0
 
 
 def test_drift_ignores_items_with_no_matching_file(tmp_path):
@@ -974,6 +1026,20 @@ def test_drift_ignores_items_with_no_matching_file(tmp_path):
     assert out["matched"] == 0
     # Never a documentation page - labelled, not left blank.
     assert out["states"] == {"a": "foreign"}
+
+
+def test_drift_works_on_a_folder_that_is_not_a_repository(tmp_path):
+    """ "Ingest whatever I want" means plain folders, which have no history."""
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    (tmp_path / "notes.md").write_text("kept")
+    (tmp_path / "changed.md").write_text("before")
+    items = [_ingested(tmp_path, "notes.md"), _ingested(tmp_path, "changed.md")]
+    (tmp_path / "changed.md").write_text("after")
+
+    out = drift_for_items(items, str(tmp_path))
+    assert out["enabled"] is True
+    assert out["states"] == {"notes.md": "current", "changed.md": "edited"}
 
 
 def test_corpus_sync_reports_unknown_when_nothing_could_be_matched():
