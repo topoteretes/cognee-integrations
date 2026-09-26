@@ -304,8 +304,17 @@
   .ingest-bar i { display: block; height: 100%; width: 0; background: var(--accent);
                   transition: width .25s }
   .skipped { margin: 0 16px 13px; max-height: 190px; overflow: auto }
-  #corpus-repos:not(:empty) { margin: 0 0 11px }
-  #corpus-repos .chart-note { margin: 9px 0 0 }
+  .tabs { display: flex; gap: 2px; margin: 0 0 11px;
+          border-bottom: 1px solid var(--line) }
+  .tabs button { background: none; border: 0; border-bottom: 2px solid transparent;
+                 border-radius: 0; margin-bottom: -1px; padding: 7px 12px;
+                 font: inherit; font-size: 12px; color: var(--muted); cursor: pointer }
+  .tabs button:hover { color: var(--ink) }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent) }
+  .tabs .tab-n { margin-left: 6px; font-size: 11px; color: var(--muted) }
+  .tabs button[aria-selected="true"] .tab-n { color: var(--accent) }
+  #corpus-repos .chart-note { margin: 11px 0 0 }
+  .repo-empty { color: var(--muted); font-size: 12px; padding: 14px 16px }
   .repo-row { display: flex; gap: 10px; align-items: baseline; font-size: 12px;
               padding: 3px 0 }
   .repo-row .muted { font-size: 11px }
@@ -336,23 +345,26 @@
   <div class="sec-head"><h2>Corpus</h2><span class="count" id="corpus-count"></span><span id="corpus-sync"></span><span class="corpus-actions" id="corpus-actions"></span></div>
   <div id="corpus-panel"></div>
   <div id="corpus-warn"></div>
-  <div id="corpus-repos"></div>
-  <div class="toolbar">
-    <input type="search" id="filter" placeholder="Filter sources…" />
+  <div class="tabs" id="corpus-tabs" role="tablist"></div>
+  <div id="tab-files">
+    <div class="toolbar">
+      <input type="search" id="filter" placeholder="Filter sources…" />
+    </div>
+    <div class="panel">
+      <table id="sources">
+        <thead><tr>
+          <th data-sort="name">source</th>
+          <th data-sort="doc_state">status</th>
+          <th data-sort="updated">last synced</th>
+          <th data-sort="created">first ingested</th>
+          <th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p id="sources-more"></p>
   </div>
-  <div class="panel">
-    <table id="sources">
-      <thead><tr>
-        <th data-sort="name">source</th>
-        <th data-sort="doc_state">status</th>
-        <th data-sort="updated">last synced</th>
-        <th data-sort="created">first ingested</th>
-        <th></th>
-      </tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-  <p id="sources-more"></p>
+  <div id="tab-repos" hidden><div id="corpus-repos"></div></div>
 </section>
 
 <section class="an">
@@ -1710,23 +1722,53 @@
     prefetchComposition(true);
   }
 
-  // Repositories belong in the corpus - they are part of what the widget can
-  // answer from - but not in the table below it. That table is one row per
-  // ingested document, and a repository produces none: it becomes graph nodes
-  // directly. So it is listed above the table, with what it actually has
-  // instead of the columns a document would fill, and without Reingest or
-  // Delete, neither of which addresses anything a repository owns.
+  // Two kinds of thing live in this corpus and they are not rows in one list.
+  // A file is one ingested document, with a status against its source and a
+  // data id behind Reingest and Delete; a repository is neither - it becomes
+  // graph nodes directly and owns no data id at all. Tabs keep both visible
+  // without the columns of one describing the other.
+  let corpusTab = "files";
+  let repoCount = 0;
+  // Repositories arrive with the graph breakdown, seconds after the page. Until
+  // then the count is not zero, it is unknown - showing 0 would report "none
+  // indexed" for a corpus that has one.
+  let reposKnown = false;
+
+  function renderCorpusTabs() {
+    const bar = $("#corpus-tabs");
+    bar.textContent = "";
+    [["files", "Documentation & files", (corpus && corpus.item_count) || 0],
+     ["repos", "Repositories", reposKnown ? repoCount : "\u2026"]].forEach(([key, label, n]) => {
+      const b = document.createElement("button");
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", String(corpusTab === key));
+      b.appendChild(text(label));
+      const count = document.createElement("span");
+      count.className = "tab-n";
+      count.appendChild(text(String(n)));
+      b.appendChild(count);
+      b.onclick = () => { corpusTab = key; renderCorpusTabs(); };
+      bar.appendChild(b);
+    });
+    $("#tab-files").hidden = corpusTab !== "files";
+    $("#tab-repos").hidden = corpusTab !== "repos";
+  }
+
   function renderRepositories(repos) {
+    repoCount = repos.length;
+    reposKnown = true;
     const box = $("#corpus-repos");
     box.textContent = "";
-    if (!repos.length) return;
     const panel = document.createElement("div");
     panel.className = "panel pad";
-    const head = document.createElement("div");
-    head.className = "chart-h";
-    head.appendChild(text(
-      repos.length === 1 ? "1 repository" : repos.length + " repositories"));
-    panel.appendChild(head);
+    if (!repos.length) {
+      const empty = document.createElement("p");
+      empty.className = "repo-empty";
+      empty.appendChild(text(
+        "No repositories indexed. \u201cIndex repository\u2026\u201d builds a code " +
+        "graph from a git URL: symbols, files and the dependencies between them."));
+      panel.appendChild(empty);
+    }
     repos.forEach((r) => {
       const row = document.createElement("div");
       row.className = "repo-row";
@@ -1741,14 +1783,17 @@
       row.append(name, stat);
       panel.appendChild(row);
     });
-    const note = document.createElement("p");
-    note.className = "chart-note";
-    note.appendChild(text(
-      "Indexed as a code graph, so it has no rows in the table below \u2014 " +
-      "its symbols, files and dependencies are nodes. Open the Knowledge graph " +
-      "panel to see them counted."));
-    panel.appendChild(note);
+    if (repos.length) {
+      const note = document.createElement("p");
+      note.className = "chart-note";
+      note.appendChild(text(
+        "Indexed as a code graph, so a repository has no rows under " +
+        "Documentation & files \u2014 its symbols, files and dependencies are " +
+        "nodes. Open the Knowledge graph panel to see them counted."));
+      panel.appendChild(note);
+    }
     box.appendChild(panel);
+    renderCorpusTabs();
   }
 
   function prefetchComposition(force) {
@@ -1858,6 +1903,14 @@
     $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
     renderSyncPill(corpus.sync);
     renderCorpusActions();
+    renderCorpusTabs();
+    if (!reposKnown) {
+      const waiting = document.createElement("p");
+      waiting.className = "repo-empty";
+      waiting.appendChild(text("Reading the graph\u2026"));
+      $("#corpus-repos").textContent = "";
+      $("#corpus-repos").appendChild(waiting);
+    }
     renderSources(sortBy(corpus.items, "updated", "desc"));
 
     const sum = $("#graph-summary");
