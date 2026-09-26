@@ -1269,51 +1269,38 @@
 
     const sum = $("#graph-summary");
     sum.textContent = "";
-    if (false) {
-      [[d.graph.nodes, "nodes"], [d.graph.edges, "edges"]].forEach(([n, label]) => {
-        const v = document.createElement("span");
-        v.className = "sum-n";
-        v.appendChild(text(n.toLocaleString()));
-        const l = document.createElement("span");
-        l.className = "sum-l";
-        l.appendChild(text(label));
-        sum.append(v, l);
-      });
-      $("#graph-when").textContent = d.graph.computed_at
-        ? "built " + ago(d.graph.computed_at) : "";
-      const st = document.createElement("span");
-      st.className = "fold-state";
-      st.id = "graph-state";
-      sum.appendChild(st);
-      // Prefetch the breakdown once the page has settled. It costs a few
-      // seconds against cognee, so it must not delay first paint, and it must
-      // fail quietly - nobody asked for it, so nobody should be told it broke.
-      prefetchComposition();
-      // The graph render is expensive, so it is never prefetched - the button
-      // only appears once someone opens the fold, and acts on their click.
-      $("#graph-fold").addEventListener("toggle", function once() {
-        if (!$("#graph-fold").open) return;
-        $("#graph-fold").removeEventListener("toggle", once);
-        const act = $("#graph-viz-actions");
-        act.textContent = "";
-        const b = document.createElement("button");
-        b.appendChild(text("Load interactive graph"));
-        b.title = "cognee renders this server-side: ~40s the first time, " +
-                  "then cached for 15 minutes";
-        const st = document.createElement("span");
-        st.className = "viz-status";
-        b.onclick = () => loadGraphFrame(b, st, false);
-        act.append(b, st);
-      });
-    } else {
-      // Counts come from the breakdown, which counts the graph itself; the
-      // summary endpoint reports one pipeline run and goes stale.
-      const st = document.createElement("span");
-      st.className = "fold-state";
-      st.id = "graph-state";
-      sum.append(text("counting\u2026"), st);
-      prefetchComposition();
-    }
+    // Counts come from the breakdown, which counts the graph itself; the
+    // summary endpoint reports one pipeline run and goes stale.
+    const st = document.createElement("span");
+    st.className = "fold-state";
+    st.id = "graph-state";
+    sum.append(text("counting\u2026"), st);
+    // Prefetch the breakdown once the page has settled. It costs a few seconds
+    // against cognee, so it must not delay first paint, and it must fail
+    // quietly - nobody asked for it, so nobody should be told it broke.
+    prefetchComposition();
+
+    // The render itself is expensive, so it is never prefetched: the button
+    // appears when someone opens the fold, and acts on their click.
+    //
+    // This wiring sat beside the node and edge counts, and was switched off
+    // along with them when those counts turned out to be reporting a stale
+    // pipeline run. Nothing else creates the button, so the visualisation went
+    // silently with them - the fold still opened, onto an empty panel.
+    $("#graph-fold").addEventListener("toggle", function once() {
+      if (!$("#graph-fold").open) return;
+      $("#graph-fold").removeEventListener("toggle", once);
+      const act = $("#graph-viz-actions");
+      act.textContent = "";
+      const b = document.createElement("button");
+      b.appendChild(text("Load interactive graph"));
+      b.title = "cognee renders this server-side: ~40s the first time, " +
+                "then cached for 15 minutes";
+      const vizStatus = document.createElement("span");
+      vizStatus.className = "viz-status";
+      b.onclick = () => loadGraphFrame(b, vizStatus, false);
+      act.append(b, vizStatus);
+    });
 
     sessions = s.sessions;
     $("#sess-count").textContent = sessions.length + " conversations";
