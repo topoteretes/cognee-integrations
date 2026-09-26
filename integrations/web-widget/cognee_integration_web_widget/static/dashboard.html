@@ -304,7 +304,8 @@
   .ingest-bar i { display: block; height: 100%; width: 0; background: var(--accent);
                   transition: width .25s }
   .skipped { margin: 0 16px 13px; max-height: 190px; overflow: auto }
-  #graph-repos:not(:empty) { margin-bottom: 14px }
+  #corpus-repos:not(:empty) { margin: 0 0 11px }
+  #corpus-repos .chart-note { margin: 9px 0 0 }
   .repo-row { display: flex; gap: 10px; align-items: baseline; font-size: 12px;
               padding: 3px 0 }
   .repo-row .muted { font-size: 11px }
@@ -335,6 +336,7 @@
   <div class="sec-head"><h2>Corpus</h2><span class="count" id="corpus-count"></span><span id="corpus-sync"></span><span class="corpus-actions" id="corpus-actions"></span></div>
   <div id="corpus-panel"></div>
   <div id="corpus-warn"></div>
+  <div id="corpus-repos"></div>
   <div class="toolbar">
     <input type="search" id="filter" placeholder="Filter sources…" />
   </div>
@@ -379,7 +381,6 @@
     <details class="fold" id="graph-fold">
       <summary id="graph-summary"></summary>
       <div class="fold-body">
-        <div id="graph-repos"></div>
         <p id="graph-actions"></p>
         <div id="graph-charts"></div>
         <p id="graph-viz-actions"></p>
@@ -1709,17 +1710,23 @@
     prefetchComposition(true);
   }
 
-  // Repositories live only in the graph: indexing one creates no dataset item,
-  // so the corpus table below cannot show it and its absence there reads as
-  // nothing having happened.
+  // Repositories belong in the corpus - they are part of what the widget can
+  // answer from - but not in the table below it. That table is one row per
+  // ingested document, and a repository produces none: it becomes graph nodes
+  // directly. So it is listed above the table, with what it actually has
+  // instead of the columns a document would fill, and without Reingest or
+  // Delete, neither of which addresses anything a repository owns.
   function renderRepositories(repos) {
-    const box = $("#graph-repos");
+    const box = $("#corpus-repos");
     box.textContent = "";
     if (!repos.length) return;
+    const panel = document.createElement("div");
+    panel.className = "panel pad";
     const head = document.createElement("div");
     head.className = "chart-h";
-    head.appendChild(text(repos.length === 1 ? "Repository" : "Repositories"));
-    box.appendChild(head);
+    head.appendChild(text(
+      repos.length === 1 ? "1 repository" : repos.length + " repositories"));
+    panel.appendChild(head);
     repos.forEach((r) => {
       const row = document.createElement("div");
       row.className = "repo-row";
@@ -1732,8 +1739,16 @@
         (r.edges ? r.edges.toLocaleString() + " edges" : "") +
         (r.loaded_at ? " \u00b7 indexed " + ago(r.loaded_at) : "")));
       row.append(name, stat);
-      box.appendChild(row);
+      panel.appendChild(row);
     });
+    const note = document.createElement("p");
+    note.className = "chart-note";
+    note.appendChild(text(
+      "Indexed as a code graph, so it has no rows in the table below \u2014 " +
+      "its symbols, files and dependencies are nodes. Open the Knowledge graph " +
+      "panel to see them counted."));
+    panel.appendChild(note);
+    box.appendChild(panel);
   }
 
   function prefetchComposition(force) {
