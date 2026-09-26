@@ -571,6 +571,84 @@
     box.appendChild(wrap);
   }
 
+  // Indexing a repository is a different route through cognee, not another
+  // kind of file pick: content_type='code' refuses uploads and clones the
+  // repository itself, so there is nothing for the browser to read. Uploaded
+  // code files become prose that happens to contain code; this is what gives
+  // functions, classes and the edges between them.
+  function openRepo() {
+    const box = $("#corpus-panel");
+    box.textContent = "";
+    const wrap = document.createElement("div");
+    wrap.className = "panel";
+    const note = document.createElement("p");
+    note.className = "chart-note";
+    note.appendChild(text(
+      "cognee clones the repository and builds a code graph from it. A URL, " +
+      "not a folder: the clone happens on the cognee server, so a path on this " +
+      "machine would mean nothing to it. Public repositories only \u2014 a " +
+      "private one needs credentials on the tenant."));
+
+    const row = document.createElement("div");
+    row.className = "confirm-row";
+    const field = document.createElement("input");
+    field.type = "text";
+    field.placeholder = "https://github.com/owner/name";
+    field.setAttribute("aria-label", "Repository URL");
+    const go = document.createElement("button");
+    go.appendChild(text("Index repository"));
+    go.disabled = true;
+    const cancel = document.createElement("button");
+    cancel.appendChild(text("Cancel"));
+    cancel.onclick = () => { box.textContent = ""; };
+    const looksLikeRepo = (v) => /^https?:\/\/[^\s/]+\/[^\s/]+\/[^\s]+$/.test(v.trim());
+    field.oninput = () => { go.disabled = !looksLikeRepo(field.value); };
+    field.onkeydown = (e) => { if (e.key === "Enter" && !go.disabled) go.click(); };
+    go.onclick = () => runRepo(box, wrap, field.value.trim(), [field, go, cancel]);
+
+    row.append(field, go, cancel);
+    wrap.append(note, row);
+    box.appendChild(wrap);
+    field.focus();
+  }
+
+  async function runRepo(box, wrap, url, controls) {
+    controls.forEach((c) => (c.disabled = true));
+    const line = document.createElement("p");
+    line.className = "notice";
+    const bar = document.createElement("div");
+    bar.className = "ingest-bar";
+    const fill = document.createElement("i");
+    bar.appendChild(fill);
+    wrap.append(line, bar);
+    const say = (msg) => { line.textContent = ""; line.appendChild(text(msg)); };
+    const setBar = (done, total) => {
+      fill.style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+    };
+    say("Asking cognee to clone " + url + "\u2026");
+
+    let body;
+    try {
+      const r = await fetch(api("/api/dashboard/ingest-repo"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: url }),
+      });
+      body = await r.json();
+      if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+    } catch (e) {
+      say("Could not start: " + e.message);
+      controls.forEach((c) => (c.disabled = false));
+      return;
+    }
+    say("Cloning and indexing " + body.repository + " as " + body.node_set +
+        ". cognee does the clone, so this runs on its side.");
+    markGraphStale();
+    load();
+    // The repository is walked by its own pipeline; watching the ordinary one
+    // would show a run that never starts.
+    await watchIngestProgress(say, setBar, wrap, "code_graph_pipeline");
+  }
+
   function showSelection(box, wrap, files, fromFolder) {
     if (!files.length) return;
     // webkitRelativePath is prefixed with the chosen folder's own name. Dropping
@@ -852,7 +930,7 @@
     renderSkipped(detail, skipped);
     markGraphStale();
     load();
-    await watchIngestProgress(say, setBar, detail);
+    await watchIngestProgress(say, setBar, detail, "cognify_pipeline");
   }
 
   function renderSkipped(into, skipped) {
@@ -878,14 +956,15 @@
   // cognee accepts an upload and builds the graph after it, so the ingest is
   // not over when the last batch lands. This follows the pipeline until it is,
   // which is the difference between "queued" and "answerable".
-  async function watchIngestProgress(say, setBar, detail) {
+  async function watchIngestProgress(say, setBar, detail, pipeline) {
     let lastCount = null;
     let still = 0;
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 6000));
       let p;
       try {
-        p = await fetch(api("/api/dashboard/ingest-progress")).then((r) => r.json());
+        p = await fetch(api("/api/dashboard/ingest-progress") +
+                        "&pipeline=" + (pipeline || "cognify_pipeline")).then((r) => r.json());
       } catch (e) {
         continue;
       }
@@ -1027,11 +1106,15 @@
     ingest.title = "Add a folder or a file to the corpus";
     ingest.onclick = openPicker;
     const clear = document.createElement("button");
+    const repoBtn = document.createElement("button");
+    repoBtn.appendChild(text("Index repository\u2026"));
+    repoBtn.title = "Build a code graph from a git repository";
+    repoBtn.onclick = openRepo;
     clear.className = "danger";
     clear.appendChild(text("Clear dataset"));
     clear.title = "Delete the dataset and everything in it";
     clear.onclick = clearCorpus;
-    box.append(ingest, clear);
+    box.append(ingest, repoBtn, clear);
   }
 
   function renderSources(items) {

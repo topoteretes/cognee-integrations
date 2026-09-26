@@ -1391,6 +1391,102 @@ def test_ingest_progress_survives_a_run_with_no_numbers_yet(dashboard_client, fa
     assert body["item_count"] == len(fake_client.dataset_data.return_value)
 
 
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://github.com/topoteretes/cognee", "topoteretes/cognee"),
+        ("https://github.com/topoteretes/cognee.git", "topoteretes/cognee"),
+        ("https://gitlab.com/group/sub/project/", "sub/project"),
+    ],
+)
+def test_repo_label_is_the_owner_and_name(url, expected):
+    from cognee_integration_web_widget.server import repo_label
+
+    assert repo_label(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/Users/milenko/cognee",
+        "~/cognee",
+        "file:///etc",
+        "git@github.com:owner/name.git",
+        "https://github.com",
+        "https://github.com/owner",
+        "ftp://host/owner/name",
+        "",
+    ],
+)
+def test_repo_ingest_refuses_anything_but_an_http_url(dashboard_client, fake_client, url):
+    """cognee resolves the spec, so a path would be read from the tenant's own
+    filesystem rather than the operator's - useless, and not a primitive this
+    dashboard should hand out."""
+    client = dashboard_client
+    fake_client.remember_repo = AsyncMock(return_value=(True, ""))
+
+    r = client.post("/api/dashboard/ingest-repo?token=s3cret", json={"url": url})
+
+    assert r.status_code == 400
+    fake_client.remember_repo.assert_not_awaited()
+
+
+def test_repo_ingest_sends_the_url_and_tags_the_code_graph(dashboard_client, fake_client):
+    client = dashboard_client
+    fake_client.remember_repo = AsyncMock(return_value=(True, ""))
+
+    body = client.post(
+        "/api/dashboard/ingest-repo?token=s3cret",
+        json={"url": "https://github.com/topoteretes/cognee"},
+    ).json()
+
+    assert body["repository"] == "topoteretes/cognee"
+    assert body["node_set"] == "code/topoteretes/cognee"
+    call = fake_client.remember_repo.await_args
+    assert call.args[0] == "https://github.com/topoteretes/cognee"
+    assert call.kwargs["node_set"] == ["code/topoteretes/cognee"]
+
+
+def test_repo_ingest_reports_why_cognee_refused(dashboard_client, fake_client):
+    """A clone can fail for reasons only cognee knows - a private repo, a bad
+    name - and a status code on its own does not say which."""
+    client = dashboard_client
+    fake_client.remember_repo = AsyncMock(return_value=(False, "repository not found"))
+
+    r = client.post(
+        "/api/dashboard/ingest-repo?token=s3cret",
+        json={"url": "https://github.com/owner/nope"},
+    )
+
+    assert r.status_code == 502
+    assert "repository not found" in r.json()["detail"]
+
+
+def test_repo_ingest_is_gated(dashboard_client):
+    assert (
+        dashboard_client.post(
+            "/api/dashboard/ingest-repo", json={"url": "https://github.com/a/b"}
+        ).status_code
+        == 401
+    )
+
+
+def test_progress_follows_the_pipeline_it_is_asked_for(dashboard_client, fake_client):
+    """A repository is walked by code_graph_pipeline; watching the ordinary one
+    shows a run that never starts."""
+    client = dashboard_client
+    fake_client.dataset_progress = AsyncMock(return_value={"status": "running", "progress": None})
+
+    client.get("/api/dashboard/ingest-progress?token=s3cret&pipeline=code_graph_pipeline")
+    assert fake_client.dataset_progress.await_args.args[1] == "code_graph_pipeline"
+
+    client.get("/api/dashboard/ingest-progress?token=s3cret")
+    assert fake_client.dataset_progress.await_args.args[1] == "cognify_pipeline"
+
+    bad = client.get("/api/dashboard/ingest-progress?token=s3cret&pipeline=whatever")
+    assert bad.status_code == 400
+
+
 def test_ingest_progress_is_gated(dashboard_client):
     assert dashboard_client.get("/api/dashboard/ingest-progress").status_code == 401
 

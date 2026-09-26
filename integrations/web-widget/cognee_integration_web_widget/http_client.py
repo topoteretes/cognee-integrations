@@ -244,7 +244,41 @@ class CogneeHttpClient:
         )
         return response.status_code < 400
 
-    async def dataset_progress(self, dataset_id: str) -> dict:
+    async def remember_repo(
+        self, repo_url: str, *, dataset_name: str, node_set: Optional[list[str]] = None
+    ) -> tuple[bool, str]:
+        """Index a git repository as a code graph.
+
+        A different route through the same endpoint: ``content_type='code'``
+        takes repository specs in ``raw_data`` and refuses file uploads, because
+        cognee clones the repository and walks it itself rather than being
+        handed bytes. That is why the browser-reads-the-files arrangement the
+        rest of ingest uses cannot reach this - a code graph needs the
+        repository, not its contents.
+
+        Returns whether it was accepted and what cognee said if it was not, so
+        the page can show the reason rather than a status code.
+        """
+        data: dict = {
+            "datasetName": dataset_name,
+            "run_in_background": "true",
+            "content_type": "code",
+            "raw_data": [repo_url],
+        }
+        if node_set:
+            data["node_set"] = list(node_set)
+        response = await self._request(
+            "POST", "/api/v1/remember", data=data, timeout_override=120.0
+        )
+        if response.status_code < 400:
+            return True, ""
+        try:
+            detail = str(response.json().get("detail") or "")[:300]
+        except ValueError:
+            detail = response.text[:300]
+        return False, detail or f"cognee answered {response.status_code}"
+
+    async def dataset_progress(self, dataset_id: str, pipeline: str = "cognify_pipeline") -> dict:
         """How far cognee has got building the graph for ``dataset_id``.
 
         ``remember`` with ``run_in_background`` returns once the upload is
@@ -256,7 +290,7 @@ class CogneeHttpClient:
         response = await self._request(
             "GET",
             "/api/v1/datasets/status/progress",
-            params={"dataset": dataset_id, "pipeline": "cognify_pipeline"},
+            params={"dataset": dataset_id, "pipeline": pipeline},
         )
         if response.status_code >= 400:
             return {}

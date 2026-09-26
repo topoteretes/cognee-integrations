@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import secrets
 import time
 from collections import Counter
@@ -645,6 +646,26 @@ class IngestRequest(BaseModel):
     root: str = ""
 
 
+class RepoRequest(BaseModel):
+    url: str
+
+
+# A repository spec is resolved by cognee, not by this process, so "local path"
+# here would mean a path on the tenant's own filesystem - useless to the
+# operator and a way to point the tenant at its own disk. Only http(s) URLs
+# leave this backend.
+_REPO_URL = re.compile(r"^https?://[A-Za-z0-9.-]+(?::\d+)?/[\w.~%+-]+(?:/[\w.~%+-]+)+/?$")
+
+
+def repo_label(url: str) -> str:
+    """The owner/name a repository URL ends in, for tagging and for saying so."""
+    path = url.split("://", 1)[-1].split("/", 1)[-1].rstrip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    parts = [p for p in path.split("/") if p]
+    return "/".join(parts[-2:]) if len(parts) >= 2 else (parts[-1] if parts else "repository")
+
+
 class ClearRequest(BaseModel):
     # Typing the dataset name is the confirmation. A checkbox is too easy to
     # click through for something that destroys a corpus that cost money to
@@ -793,8 +814,49 @@ async def dashboard_ingest(
     )
 
 
+@app.post("/api/dashboard/ingest-repo")
+async def dashboard_ingest_repo(
+    body: RepoRequest, token: Optional[str] = Query(default=None)
+) -> JSONResponse:
+    """Index a git repository as a code graph.
+
+    Uploaded code files are stored as prose - chunks that happen to contain
+    code, with no functions, classes or call edges in them. cognee builds a real
+    code graph instead when it is given the repository itself, which is why this
+    takes a URL rather than going through the picker: the route refuses uploads,
+    because it clones and walks the repository on its own side.
+
+    Only http(s) URLs are accepted. cognee resolves the spec, so a path here
+    would be read from the tenant's filesystem rather than the operator's.
+    """
+    _require_dashboard(token)
+    url = (body.url or "").strip()
+    if not _REPO_URL.match(url):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Pass an https URL to a git repository, for example "
+                "https://github.com/owner/name. A filesystem path would be read on "
+                "the cognee server, not on this machine."
+            ),
+        )
+
+    label = repo_label(url)
+    dataset = adapter.docs_dataset(DEMO_SITE_ID)
+    ok, why = await adapter.client.remember_repo(
+        url, dataset_name=dataset, node_set=[f"code/{label}"]
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail=why)
+    _invalidate_viz_cache()
+    return JSONResponse({"repository": label, "url": url, "node_set": f"code/{label}"})
+
+
 @app.get("/api/dashboard/ingest-progress")
-async def dashboard_ingest_progress(token: Optional[str] = Query(default=None)) -> JSONResponse:
+async def dashboard_ingest_progress(
+    token: Optional[str] = Query(default=None),
+    pipeline: str = Query(default="cognify_pipeline"),
+) -> JSONResponse:
     """How far cognee has got building the graph for what was ingested.
 
     An upload returns once cognee has accepted it; the cognify that follows runs
@@ -804,8 +866,13 @@ async def dashboard_ingest_progress(token: Optional[str] = Query(default=None)) 
     """
     _require_dashboard(token)
     dataset_id = await _docs_dataset_id()
+    # A repository is indexed by code_graph_pipeline, ordinary files by
+    # cognify_pipeline, and a caller watching the wrong one sees a run that
+    # never starts.
+    if pipeline not in ("cognify_pipeline", "code_graph_pipeline"):
+        raise HTTPException(status_code=400, detail="unknown pipeline")
     state, items = await asyncio.gather(
-        adapter.client.dataset_progress(dataset_id),
+        adapter.client.dataset_progress(dataset_id, pipeline),
         adapter.client.dataset_data(dataset_id),
     )
     progress = state.get("progress") or {}
