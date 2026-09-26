@@ -98,7 +98,11 @@ async def lifespan(app: FastAPI):
         await adapter.ingest_docs(site_id=DEMO_SITE_ID, documents=DEMO_DOCS)
     except Exception as error:  # noqa: BLE001 - the demo should still boot
         print(f"[web_widget] docs seeding skipped: {error}")
+    # Not awaited: the graph takes ~24s to fetch and nothing should wait for it,
+    # least of all the server accepting its first request.
+    warm = asyncio.create_task(_warm_graph_cache())
     yield
+    warm.cancel()
 
 
 app = FastAPI(title="cognee web chat widget", lifespan=lifespan)
@@ -421,6 +425,9 @@ def _invalidate_viz_cache() -> None:
     would spend forty seconds drawing the shape the ingest has not reached yet.
     """
     _viz_cache.update({"html": None, "at": 0.0, "dataset": None})
+    # The counts and the repository list describe the same corpus, so they go
+    # stale at the same moment.
+    _graph_cache.update({"summary": None, "at": 0.0, "dataset": None})
 
 
 def _prefer_dark(html: str) -> str:
@@ -623,11 +630,93 @@ def _repositories(nodes: list) -> list:
     return sorted(out, key=lambda r: r["name"])
 
 
+# The graph arrives whole or not at all: this deployment has no schema route,
+# no cypher, and no filter on the graph endpoint, so asking which repositories
+# are indexed costs the same 46MB and 24 seconds as counting every node. It is
+# therefore fetched once, summarised, and kept - and warmed at startup, so the
+# first person to open the dashboard is usually not the one paying for it.
+_GRAPH_TTL_SECONDS = 900
+_graph_cache: dict = {"summary": None, "at": 0.0, "dataset": None}
+_graph_lock = asyncio.Lock()
+
+
+def _summarise_graph(graph: dict) -> dict:
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    node_types = Counter(str(_field(n, "type") or "unknown") for n in nodes)
+    edge_labels = Counter(str(_field(e, "label") or "unknown") for e in edges)
+    return {
+        "node_total": len(nodes),
+        "edge_total": len(edges),
+        "node_types": [{"name": k, "count": v} for k, v in node_types.most_common()],
+        # Edge labels have a long tail; the top ten carry the shape and the
+        # rest is summarised rather than rendered as a forest of hairlines.
+        "edge_labels": [{"name": k, "count": v} for k, v in edge_labels.most_common(10)],
+        "edge_label_other": sum(c for _, c in edge_labels.most_common()[10:]),
+        "edge_label_distinct": len(edge_labels),
+        # Indexed repositories. They create no dataset items, so the corpus
+        # table can never show one; this is the only place they exist.
+        "repositories": _repositories(nodes),
+    }
+
+
+def _graph_cache_fresh(dataset_id: str) -> bool:
+    return bool(
+        _graph_cache["summary"]
+        and _graph_cache["dataset"] == dataset_id
+        and time.time() - _graph_cache["at"] < _GRAPH_TTL_SECONDS
+    )
+
+
+async def _graph_summary(dataset_id: str) -> dict:
+    """The summary, from cache when it is warm.
+
+    One fetch at a time: two dashboards opening together would otherwise pull
+    46MB each to compute the same counts.
+    """
+    if _graph_cache_fresh(dataset_id):
+        return dict(_graph_cache["summary"], cached=True)
+    async with _graph_lock:
+        if _graph_cache_fresh(dataset_id):
+            return dict(_graph_cache["summary"], cached=True)
+        summary = _summarise_graph(await adapter.client.graph(dataset_id))
+        _graph_cache.update({"summary": summary, "at": time.time(), "dataset": dataset_id})
+    return dict(summary, cached=False)
+
+
+async def _warm_graph_cache() -> None:
+    """Fill the cache in the background, so opening the page does not wait."""
+    try:
+        await _graph_summary(await _docs_dataset_id())
+    except Exception as error:  # noqa: BLE001 - a warm cache is an optimisation
+        print(f"[web_widget] graph warm-up skipped: {error}")
+
+
+@app.get("/api/dashboard/repositories")
+async def dashboard_repositories(token: Optional[str] = Query(default=None)) -> JSONResponse:
+    """The indexed repositories, and only if answering is already cheap.
+
+    Never triggers the fetch. A repository is one line on a page that paints in
+    three seconds, so it either comes from the warm cache or it comes later with
+    the breakdown - what it must not do is hold the page for 24 seconds, or
+    report "none indexed" because the answer was not ready yet.
+    """
+    _require_dashboard(token)
+    # No round trip at all, not even to resolve the dataset id: the cache is
+    # dropped whenever the corpus changes, so a warm entry is this dataset's by
+    # construction. Resolving it first cost a second against the tenant, on a
+    # route whose whole reason to exist is being cheap enough to call on load.
+    summary = _graph_cache["summary"]
+    if not summary or time.time() - _graph_cache["at"] >= _GRAPH_TTL_SECONDS:
+        return JSONResponse({"ready": False, "repositories": []})
+    return JSONResponse({"ready": True, "repositories": summary["repositories"]})
+
+
 @app.get("/api/dashboard/graph")
 async def dashboard_graph(token: Optional[str] = Query(default=None)) -> JSONResponse:
     """What the knowledge graph is made of, as counts.
 
-    The graph itself is ~10MB for this corpus - 6k nodes and 28k edges - and a
+    The graph itself is 46MB for this corpus - 35k nodes and 116k edges - and a
     node-link rendering of that is an unreadable hairball, so the payload is
     aggregated here and the browser receives about a kilobyte. cognee Cloud's
     own graph canvas is the right tool for exploring the structure.
@@ -636,28 +725,10 @@ async def dashboard_graph(token: Optional[str] = Query(default=None)) -> JSONRes
     page should paint without waiting for something most visits do not open.
     """
     _require_dashboard(token)
-    dataset_id = await _docs_dataset_id()
-    graph = await adapter.client.graph(dataset_id)
-
-    nodes = graph.get("nodes") or []
-    edges = graph.get("edges") or []
-    node_types = Counter(str(_field(n, "type") or "unknown") for n in nodes)
-    edge_labels = Counter(str(_field(e, "label") or "unknown") for e in edges)
-
+    summary = await _graph_summary(await _docs_dataset_id())
     return JSONResponse(
         {
-            "node_total": len(nodes),
-            "edge_total": len(edges),
-            "node_types": [{"name": k, "count": v} for k, v in node_types.most_common()],
-            # Edge labels have a long tail; the top ten carry the shape and the
-            # rest is summarised rather than rendered as a forest of hairlines.
-            "edge_labels": [{"name": k, "count": v} for k, v in edge_labels.most_common(10)],
-            "edge_label_other": sum(c for _, c in edge_labels.most_common()[10:]),
-            "edge_label_distinct": len(edge_labels),
-            # Indexed repositories. They create no dataset items, so the corpus
-            # table can never show one; this is the only place they exist, and
-            # the whole graph has already been fetched to count it.
-            "repositories": _repositories(nodes),
+            **summary,
         }
     )
 

@@ -1737,7 +1737,10 @@
   function renderCorpusTabs() {
     const bar = $("#corpus-tabs");
     bar.textContent = "";
-    [["files", "Documentation & files", (corpus && corpus.item_count) || 0],
+    // Both counts read "…" until known rather than 0. Repositories now arrive
+    // first - they come off a cache in a millisecond while the corpus is a
+    // round trip - so whichever is still missing would otherwise claim none.
+    [["files", "Documentation & files", corpus ? corpus.item_count : "\u2026"],
      ["repos", "Repositories", reposKnown ? repoCount : "\u2026"]].forEach(([key, label, n]) => {
       const b = document.createElement("button");
       b.setAttribute("role", "tab");
@@ -1752,6 +1755,16 @@
     });
     $("#tab-files").hidden = corpusTab !== "files";
     $("#tab-repos").hidden = corpusTab !== "repos";
+  }
+
+  function showReposLoading() {
+    const box = $("#corpus-repos");
+    if (box.querySelector(".repo-row")) return;
+    box.textContent = "";
+    const waiting = document.createElement("p");
+    waiting.className = "repo-empty";
+    waiting.appendChild(text("Reading the graph\u2026"));
+    box.appendChild(waiting);
   }
 
   function renderRepositories(repos) {
@@ -1848,6 +1861,19 @@
     // this function. See the note there.
     renderRangePicker();
 
+    // Repositories first, and not awaited. It is a kilobyte off the backend's
+    // cache, or an immediate "not yet" - it never orders the 24-second graph
+    // fetch, the breakdown does that. Started here rather than after the corpus
+    // lands because that await is seconds long against a hosted tenant, and
+    // queueing a one-millisecond call behind it wasted all of them.
+    if (!reposKnown) {
+      showReposLoading();
+      fetch(api("/api/dashboard/repositories"))
+        .then((r) => r.json())
+        .then((body) => { if (body.ready) renderRepositories(body.repositories); })
+        .catch(() => { /* the breakdown is still coming */ });
+    }
+
     // These two talk to cognee and neither needs the other's result, so
     // they go out together; waiting for the first doubled time-to-paint.
     const [d, s] = await Promise.all([
@@ -1904,13 +1930,7 @@
     renderSyncPill(corpus.sync);
     renderCorpusActions();
     renderCorpusTabs();
-    if (!reposKnown) {
-      const waiting = document.createElement("p");
-      waiting.className = "repo-empty";
-      waiting.appendChild(text("Reading the graph\u2026"));
-      $("#corpus-repos").textContent = "";
-      $("#corpus-repos").appendChild(waiting);
-    }
+
     renderSources(sortBy(corpus.items, "updated", "desc"));
 
     const sum = $("#graph-summary");

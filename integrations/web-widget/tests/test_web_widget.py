@@ -329,6 +329,12 @@ def dashboard_client(fake_client, monkeypatch):
     )
     server_mod.adapter.client = fake_client
     with TestClient(server_mod.app) as c:
+        # After startup, not before. Both caches are module state outliving a
+        # test and keyed on a dataset id every test shares, and the lifespan
+        # warms the graph one as the client comes up - so a test that did not
+        # clear them here would be reading the warm-up's graph, not its own.
+        server_mod._graph_cache.update({"summary": None, "at": 0.0, "dataset": None})
+        server_mod._viz_cache.update({"html": None, "at": 0.0, "dataset": None})
         yield c
 
 
@@ -1523,6 +1529,63 @@ def test_graph_breakdown_lists_indexed_repositories(dashboard_client, fake_clien
     assert len(repos) == 1
     assert repos[0]["origin"] == "github.com-topoteretes-cognee"
     assert (repos[0]["nodes"], repos[0]["edges"]) == (24953, 40994)
+
+
+def test_repositories_never_trigger_the_graph_fetch(dashboard_client, fake_client):
+    """Answering costs 46MB and ~24s on the deployment this was built against,
+    so one line on a page that paints in three seconds must not order it."""
+    from cognee_integration_web_widget import server as server_mod
+
+    server_mod._graph_cache.update({"summary": None, "at": 0.0, "dataset": None})
+    client = dashboard_client
+    fake_client.graph = AsyncMock(return_value={"nodes": [], "edges": []})
+
+    body = client.get("/api/dashboard/repositories?token=s3cret").json()
+
+    assert body == {"ready": False, "repositories": []}
+    fake_client.graph.assert_not_awaited()
+
+
+def test_repositories_are_served_from_the_warm_cache(dashboard_client, fake_client):
+    client = dashboard_client
+    fake_client.graph = AsyncMock(
+        return_value={
+            "nodes": [
+                {
+                    "type": "CodeRepository",
+                    "label": "cognee",
+                    "properties": {"path": "/var/cognee/repos/github.com-topoteretes-cognee"},
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    # The breakdown is what pays for the fetch; it fills the cache.
+    client.get("/api/dashboard/graph?token=s3cret")
+    assert fake_client.graph.await_count == 1
+
+    body = client.get("/api/dashboard/repositories?token=s3cret").json()
+    assert body["ready"] is True
+    assert body["repositories"][0]["origin"] == "github.com-topoteretes-cognee"
+    # Still one: a second reader is served from the cache, not charged again.
+    assert fake_client.graph.await_count == 1
+
+
+def test_changing_the_corpus_drops_the_graph_summary_too(dashboard_client, fake_client):
+    """The counts and the repositories describe the corpus that just changed."""
+    from cognee_integration_web_widget import server as server_mod
+
+    client = dashboard_client
+    fake_client.graph = AsyncMock(return_value={"nodes": [], "edges": []})
+    fake_client.delete_data = AsyncMock(return_value=True)
+
+    client.get("/api/dashboard/graph?token=s3cret")
+    assert server_mod._graph_cache["summary"] is not None
+
+    client.delete("/api/dashboard/data/abc?token=s3cret")
+
+    assert server_mod._graph_cache["summary"] is None
 
 
 def test_repo_ingest_reports_why_cognee_refused(dashboard_client, fake_client):
