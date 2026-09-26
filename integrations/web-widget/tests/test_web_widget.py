@@ -1044,8 +1044,13 @@ def test_drift_tells_a_deleted_code_file_from_one_that_was_never_there(tmp_path)
 
     (tmp_path / "script.py").write_text("x = 1")
     items = [_ingested(tmp_path, "script.py")]
-    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"],
-                 ["add", "-A"], ["commit", "-qm", "add"]):
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+        ["add", "-A"],
+        ["commit", "-qm", "add"],
+    ):
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "script.py").unlink()
 
