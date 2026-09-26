@@ -22,6 +22,28 @@ from typing import Any, Optional
 logger = logging.getLogger("web_widget.http_client")
 
 
+def normalise_run_status(value) -> str:
+    """One vocabulary for a pipeline state, whichever endpoint reported it.
+
+    ``/status`` answers DATASET_PROCESSING_COMPLETED where ``/status/progress``
+    answers "completed", and a page should not have to know which it is talking
+    to. Completed is tested before running because the long form contains both
+    words.
+    """
+    text = str(value or "").lower()
+    if not text:
+        return "unknown"
+    if "completed" in text or "finished" in text:
+        return "completed"
+    if "error" in text or "fail" in text:
+        return "failed"
+    if "processing" in text or "running" in text or "started" in text:
+        return "running"
+    if "pending" in text or "queued" in text or "waiting" in text:
+        return "pending"
+    return "unknown"
+
+
 class CogneeHttpClient:
     """Talks to a running cognee server over its HTTP API."""
 
@@ -244,9 +266,7 @@ class CogneeHttpClient:
         )
         return response.status_code < 400
 
-    async def remember_repo(
-        self, repo_url: str, *, dataset_name: str, node_set: Optional[list[str]] = None
-    ) -> tuple[bool, str]:
+    async def remember_repo(self, repo_url: str, *, dataset_name: str) -> tuple[bool, str]:
         """Index a git repository as a code graph.
 
         A different route through the same endpoint: ``content_type='code'``
@@ -255,6 +275,11 @@ class CogneeHttpClient:
         handed bytes. That is why the browser-reads-the-files arrangement the
         rest of ingest uses cannot reach this - a code graph needs the
         repository, not its contents.
+
+        No node_set is sent. The field is accepted by the endpoint and dropped
+        on this path - a repository indexed with one produces no NodeSet node
+        and nothing recall can filter on - so sending it would only promise a
+        tag that does not exist. Code nodes carry ``repo`` instead.
 
         Returns whether it was accepted and what cognee said if it was not, so
         the page can show the reason rather than a status code.
@@ -265,8 +290,6 @@ class CogneeHttpClient:
             "content_type": "code",
             "raw_data": [repo_url],
         }
-        if node_set:
-            data["node_set"] = list(node_set)
         response = await self._request(
             "POST", "/api/v1/remember", data=data, timeout_override=120.0
         )
@@ -283,19 +306,50 @@ class CogneeHttpClient:
 
         ``remember`` with ``run_in_background`` returns once the upload is
         accepted, so this is the only way to see the work that follows it.
-        ``progress`` is null until the first in-flight tick and absent once a
-        run is terminal, so a caller gets "running with no numbers yet" and
-        "finished" as different answers rather than as one empty one.
+
+        Two endpoints, because not every cognee has both. ``/status/progress``
+        carries item counts and a stage; where it is missing - it 404s on the
+        deployment this was built against - ``/status`` still answers with the
+        state alone. Which one answered is reported rather than hidden: a
+        deployment that cannot count items and a run that has not started are
+        different things, and collapsing them into one empty answer made the
+        page wait for numbers that were never coming.
         """
         response = await self._request(
             "GET",
             "/api/v1/datasets/status/progress",
             params={"dataset": dataset_id, "pipeline": pipeline},
         )
+        if response.status_code == 404:
+            return await self._dataset_status(dataset_id, pipeline)
         if response.status_code >= 400:
-            return {}
+            return {"status": "", "progress": None, "counts_available": False}
         body = response.json()
-        return body.get(dataset_id) or {} if isinstance(body, dict) else {}
+        entry = (body.get(dataset_id) or {}) if isinstance(body, dict) else {}
+        return {
+            "status": normalise_run_status(entry.get("status")),
+            "progress": entry.get("progress") or None,
+            "counts_available": True,
+        }
+
+    async def _dataset_status(self, dataset_id: str, pipeline: str) -> dict:
+        """The state of a run, with no item counts, from the older endpoint."""
+        response = await self._request(
+            "GET",
+            "/api/v1/datasets/status",
+            params={"dataset": dataset_id, "pipeline": pipeline},
+        )
+        if response.status_code >= 400:
+            return {"status": "", "progress": None, "counts_available": False}
+        body = response.json()
+        value = body.get(dataset_id) if isinstance(body, dict) else None
+        if isinstance(value, dict):
+            value = value.get(pipeline)
+        return {
+            "status": normalise_run_status(value),
+            "progress": None,
+            "counts_available": False,
+        }
 
     async def list_sessions(self) -> list[Any]:
         """Every session this key can see, widget conversations among them."""

@@ -304,6 +304,10 @@
   .ingest-bar i { display: block; height: 100%; width: 0; background: var(--accent);
                   transition: width .25s }
   .skipped { margin: 0 16px 13px; max-height: 190px; overflow: auto }
+  #graph-repos:not(:empty) { margin-bottom: 14px }
+  .repo-row { display: flex; gap: 10px; align-items: baseline; font-size: 12px;
+              padding: 3px 0 }
+  .repo-row .muted { font-size: 11px }
   .pick-file { display: flex; gap: 7px; align-items: center; font-size: 12px;
                padding: 1px 0 1px 18px }
   .pick-file .muted { font-size: 11px }
@@ -375,6 +379,7 @@
     <details class="fold" id="graph-fold">
       <summary id="graph-summary"></summary>
       <div class="fold-body">
+        <div id="graph-repos"></div>
         <p id="graph-actions"></p>
         <div id="graph-charts"></div>
         <p id="graph-viz-actions"></p>
@@ -640,8 +645,11 @@
       controls.forEach((c) => (c.disabled = false));
       return;
     }
-    say("Cloning and indexing " + body.repository + " as " + body.node_set +
-        ". cognee does the clone, so this runs on its side.");
+    // A repository becomes graph nodes and no dataset items, so it will never
+    // appear in the sources table however long anyone waits for it.
+    say("Cloning and indexing " + body.repository + ". cognee does the clone, so " +
+        "this runs on its side \u2014 and a repository shows up in the Knowledge " +
+        "graph panel, not in the sources list below.");
     markGraphStale();
     load();
     // The repository is walked by its own pipeline; watching the ordinary one
@@ -959,6 +967,7 @@
   async function watchIngestProgress(say, setBar, detail, pipeline) {
     let lastCount = null;
     let still = 0;
+    let countsWarned = false;
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 6000));
       let p;
@@ -980,8 +989,18 @@
         load();
         return;
       }
-      // total_items is null until the first in-flight tick, so the corpus count
-      // carries the report until the pipeline has numbers of its own.
+      // total_items is null until the first in-flight tick, and on a cognee
+      // with no progress endpoint it never arrives at all - so the corpus count
+      // carries the report, and the reason it is carrying it is said once.
+      if (p.counts_available === false && !countsWarned) {
+        countsWarned = true;
+        const note = document.createElement("p");
+        note.className = "chart-note";
+        note.appendChild(text(
+          "This cognee reports the run's state but not its item counts, so the " +
+          "figure below is the corpus filling rather than the pipeline's own progress."));
+        if (detail) detail.appendChild(note);
+      }
       if (p.total_items) {
         setBar(p.completed_items || 0, p.total_items);
         say("Building the graph… " + (p.completed_items || 0) + " of " + p.total_items +
@@ -1690,6 +1709,33 @@
     prefetchComposition(true);
   }
 
+  // Repositories live only in the graph: indexing one creates no dataset item,
+  // so the corpus table below cannot show it and its absence there reads as
+  // nothing having happened.
+  function renderRepositories(repos) {
+    const box = $("#graph-repos");
+    box.textContent = "";
+    if (!repos.length) return;
+    const head = document.createElement("div");
+    head.className = "chart-h";
+    head.appendChild(text(repos.length === 1 ? "Repository" : "Repositories"));
+    box.appendChild(head);
+    repos.forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "repo-row";
+      const name = document.createElement("code");
+      name.appendChild(text(r.origin || r.name));
+      const stat = document.createElement("span");
+      stat.className = "muted";
+      stat.appendChild(text(
+        (r.nodes ? r.nodes.toLocaleString() + " nodes, " : "") +
+        (r.edges ? r.edges.toLocaleString() + " edges" : "") +
+        (r.loaded_at ? " \u00b7 indexed " + ago(r.loaded_at) : "")));
+      row.append(name, stat);
+      box.appendChild(row);
+    });
+  }
+
   function prefetchComposition(force) {
     if (compositionStarted && !force) return;
     compositionStarted = true;
@@ -1702,6 +1748,7 @@
           return r.json();
         });
         renderComposition(g);
+        renderRepositories(g.repositories || []);
         const sum = $("#graph-summary");
         sum.textContent = "";
         [[g.node_total, "nodes"], [g.edge_total, "edges"]].forEach(([n, label]) => {

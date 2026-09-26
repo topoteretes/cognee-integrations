@@ -596,6 +596,33 @@ async def dashboard_analytics(
     )
 
 
+def _repositories(nodes: list) -> list:
+    """The code repositories indexed into this dataset.
+
+    cognee records each as a CodeRepository node carrying where it was cloned
+    from and what the last load added, which is everything needed to say a
+    repository is in without listing ten thousand symbols.
+    """
+    out = []
+    for node in nodes:
+        if not isinstance(node, dict) or str(node.get("type")) != "CodeRepository":
+            continue
+        props = node.get("properties") or {}
+        delta = props.get("last_delta") or {}
+        out.append(
+            {
+                "name": str(node.get("label") or "repository"),
+                # /var/cognee/repos/github.com-topoteretes-cognee -> the origin,
+                # as close to the URL that was typed as cognee keeps.
+                "origin": str(props.get("path") or "").rsplit("/", 1)[-1],
+                "loaded_at": str(delta.get("loaded_at") or ""),
+                "nodes": delta.get("nodes_added"),
+                "edges": delta.get("edges_added"),
+            }
+        )
+    return sorted(out, key=lambda r: r["name"])
+
+
 @app.get("/api/dashboard/graph")
 async def dashboard_graph(token: Optional[str] = Query(default=None)) -> JSONResponse:
     """What the knowledge graph is made of, as counts.
@@ -627,6 +654,10 @@ async def dashboard_graph(token: Optional[str] = Query(default=None)) -> JSONRes
             "edge_labels": [{"name": k, "count": v} for k, v in edge_labels.most_common(10)],
             "edge_label_other": sum(c for _, c in edge_labels.most_common()[10:]),
             "edge_label_distinct": len(edge_labels),
+            # Indexed repositories. They create no dataset items, so the corpus
+            # table can never show one; this is the only place they exist, and
+            # the whole graph has already been fetched to count it.
+            "repositories": _repositories(nodes),
         }
     )
 
@@ -843,13 +874,14 @@ async def dashboard_ingest_repo(
 
     label = repo_label(url)
     dataset = adapter.docs_dataset(DEMO_SITE_ID)
-    ok, why = await adapter.client.remember_repo(
-        url, dataset_name=dataset, node_set=[f"code/{label}"]
-    )
+    ok, why = await adapter.client.remember_repo(url, dataset_name=dataset)
     if not ok:
         raise HTTPException(status_code=502, detail=why)
     _invalidate_viz_cache()
-    return JSONResponse({"repository": label, "url": url, "node_set": f"code/{label}"})
+    # A repository produces graph nodes and no dataset items, so nothing about
+    # it will appear in the sources table. Saying where it does appear is the
+    # difference between "indexed" and "apparently nothing happened".
+    return JSONResponse({"repository": label, "url": url, "shows_in": "knowledge graph"})
 
 
 @app.get("/api/dashboard/ingest-progress")
@@ -879,6 +911,10 @@ async def dashboard_ingest_progress(
     return JSONResponse(
         {
             "status": str(state.get("status") or "unknown"),
+            # False when this cognee has no progress endpoint at all, which is
+            # not the same as a run that has not reported numbers yet - the page
+            # should stop waiting for counts rather than wait forever.
+            "counts_available": bool(state.get("counts_available")),
             "completed_items": progress.get("completed_items"),
             "total_items": progress.get("total_items"),
             "current_stage": progress.get("current_stage"),

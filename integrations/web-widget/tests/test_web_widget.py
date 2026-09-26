@@ -10,6 +10,7 @@ appended ``Evidence:`` block (that is how ``include_references=True`` surfaces
 sources), not a fabricated structured ``references`` list.
 """
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1441,10 +1442,87 @@ def test_repo_ingest_sends_the_url_and_tags_the_code_graph(dashboard_client, fak
     ).json()
 
     assert body["repository"] == "topoteretes/cognee"
-    assert body["node_set"] == "code/topoteretes/cognee"
+    assert body["shows_in"] == "knowledge graph"
     call = fake_client.remember_repo.await_args
     assert call.args[0] == "https://github.com/topoteretes/cognee"
-    assert call.kwargs["node_set"] == ["code/topoteretes/cognee"]
+    # No node_set: the field is accepted on this path and dropped, so sending it
+    # promised a tag that no NodeSet node ever carried.
+    assert "node_set" not in call.kwargs
+
+
+def test_status_falls_back_when_the_progress_endpoint_is_absent():
+    """It 404s on the deployment this was built against, and a 404 swallowed
+    into an empty answer made the page wait for numbers never coming."""
+    import httpx
+    from cognee_integration_web_widget.http_client import CogneeHttpClient
+
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if request.url.path.endswith("/status/progress"):
+            return httpx.Response(404, json={"detail": "Not Found"})
+        return httpx.Response(200, json={"d1": "DATASET_PROCESSING_COMPLETED"})
+
+    transport = httpx.MockTransport(handler)
+    client = CogneeHttpClient(base_url="http://c", client=httpx.AsyncClient(transport=transport))
+
+    state = asyncio.run(client.dataset_progress("d1", "code_graph_pipeline"))
+
+    assert state["status"] == "completed"
+    assert state["counts_available"] is False
+    assert seen[-1].endswith("/datasets/status")
+
+
+@pytest.mark.parametrize(
+    "reported,expected",
+    [
+        ("DATASET_PROCESSING_COMPLETED", "completed"),
+        ("completed", "completed"),
+        ("DATASET_PROCESSING_STARTED", "running"),
+        ("running", "running"),
+        ("DATASET_PROCESSING_ERRORED", "failed"),
+        ("", "unknown"),
+        (None, "unknown"),
+    ],
+)
+def test_run_status_reads_the_same_from_either_endpoint(reported, expected):
+    """One vocabulary, so the page need not know which endpoint answered."""
+    from cognee_integration_web_widget.http_client import normalise_run_status
+
+    assert normalise_run_status(reported) == expected
+
+
+def test_graph_breakdown_lists_indexed_repositories(dashboard_client, fake_client):
+    """A repository creates no dataset item, so the corpus table can never show
+    one; the graph is the only place it exists."""
+    client = dashboard_client
+    fake_client.graph = AsyncMock(
+        return_value={
+            "nodes": [
+                {"type": "CodeSymbol", "label": "x"},
+                {
+                    "type": "CodeRepository",
+                    "label": "cognee",
+                    "properties": {
+                        "path": "/var/cognee/repos/github.com-topoteretes-cognee",
+                        "last_delta": {
+                            "loaded_at": "2026-09-26T18:35:53+00:00",
+                            "nodes_added": 24953,
+                            "edges_added": 40994,
+                        },
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    repos = client.get("/api/dashboard/graph?token=s3cret").json()["repositories"]
+
+    assert len(repos) == 1
+    assert repos[0]["origin"] == "github.com-topoteretes-cognee"
+    assert (repos[0]["nodes"], repos[0]["edges"]) == (24953, 40994)
 
 
 def test_repo_ingest_reports_why_cognee_refused(dashboard_client, fake_client):
