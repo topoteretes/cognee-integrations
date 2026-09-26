@@ -407,6 +407,21 @@ _viz_cache: dict = {"html": None, "at": 0.0, "dataset": None}
 _viz_lock = asyncio.Lock()
 
 
+def _invalidate_viz_cache() -> None:
+    """Drop the cached render because the corpus it pictures has changed.
+
+    The cache is keyed on the dataset id, which stays the same while its
+    contents do not, so nothing else expires it: ingesting or deleting a source
+    left the graph serving a picture of the corpus as it was, for the rest of
+    its fifteen minutes, with no sign that it was describing something gone.
+
+    Dropping it does not rebuild anything. The next opener pays the render, and
+    cognee builds the graph behind an ingest anyway, so an eager rebuild here
+    would spend forty seconds drawing the shape the ingest has not reached yet.
+    """
+    _viz_cache.update({"html": None, "at": 0.0, "dataset": None})
+
+
 def _prefer_dark(html: str) -> str:
     """Make cognee's graph page open dark, without taking the choice away.
 
@@ -677,6 +692,7 @@ async def dashboard_ingest(
         (queued if ok else skipped).append(
             {"path": relative, "name": name} if ok else {"path": relative, "why": "refused"}
         )
+    _invalidate_viz_cache()
     return JSONResponse({"queued": len(queued), "skipped": skipped, "dataset": dataset})
 
 
@@ -703,6 +719,7 @@ async def dashboard_clear(
     items = await adapter.client.dataset_data(await _docs_dataset_id())
     if not await adapter.client.forget_dataset(dataset):
         raise HTTPException(status_code=502, detail="cognee refused to clear the dataset")
+    _invalidate_viz_cache()
     return JSONResponse({"cleared": dataset, "items_queued": len(items)})
 
 
@@ -766,6 +783,7 @@ async def dashboard_reingest(
             ),
         ) from error
 
+    _invalidate_viz_cache()
     return JSONResponse({"reingested": data_id, "name": name, "bytes": len(raw)})
 
 
@@ -784,6 +802,7 @@ async def dashboard_delete_data(
     ok = await adapter.client.delete_data(dataset_id=dataset_id, data_id=data_id)
     if not ok:
         raise HTTPException(status_code=502, detail="cognee refused the delete")
+    _invalidate_viz_cache()
     return JSONResponse({"deleted": data_id})
 
 

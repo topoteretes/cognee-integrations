@@ -1197,6 +1197,44 @@ def test_clear_reports_what_it_queued_not_what_is_gone(dashboard_client, fake_cl
     assert body["cleared"] == "web:demo:docs"
 
 
+def test_changing_the_corpus_drops_the_cached_graph_render(dashboard_client, fake_client):
+    """The render is a picture of a corpus, so a changed corpus makes it wrong.
+
+    The cache is keyed on the dataset id, which does not change when its
+    contents do, so nothing else expires it inside its fifteen minutes.
+    """
+    from cognee_integration_web_widget import server as server_mod
+
+    client = dashboard_client
+    fake_client.visualize_html = AsyncMock(return_value="<html>graph</html>")
+    fake_client.forget_dataset = AsyncMock(return_value=True)
+
+    first = client.get("/api/dashboard/graph-html?token=s3cret")
+    assert first.headers["X-Cache"] == "miss"
+    assert client.get("/api/dashboard/graph-html?token=s3cret").headers["X-Cache"] == "hit"
+
+    client.post("/api/dashboard/clear?token=s3cret", json={"confirm": "web:demo:docs"})
+
+    assert server_mod._viz_cache["html"] is None
+    assert client.get("/api/dashboard/graph-html?token=s3cret").headers["X-Cache"] == "miss"
+
+
+def test_deleting_one_source_also_drops_the_cached_render(dashboard_client, fake_client):
+    """One row is enough: the picture no longer shows what is in the corpus."""
+    from cognee_integration_web_widget import server as server_mod
+
+    client = dashboard_client
+    fake_client.visualize_html = AsyncMock(return_value="<html>graph</html>")
+    fake_client.delete_data = AsyncMock(return_value=True)
+
+    client.get("/api/dashboard/graph-html?token=s3cret")
+    assert server_mod._viz_cache["html"] is not None
+
+    client.delete("/api/dashboard/data/abc?token=s3cret")
+
+    assert server_mod._viz_cache["html"] is None
+
+
 def test_clear_and_ingest_are_gated(dashboard_client, fake_client):
     client = dashboard_client
     fake_client.forget_dataset = AsyncMock(return_value=True)

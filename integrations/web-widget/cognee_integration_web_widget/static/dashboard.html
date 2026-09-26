@@ -477,8 +477,9 @@
     pill.append(dot, text(stale ? bits.join(", ") : "up to date with the docs"));
     pill.title = (stale
       ? bits.join(" and ") + ", out of " + sync.matched + " matched sources."
-      : "All " + sync.matched + " matched sources were last committed before they were ingested.") +
-      " Compares each page's last commit with when it was ingested.";
+      : "All " + sync.matched + " matched sources render to exactly the bytes the " +
+        "corpus holds.") +
+      " Compares each page against the digest of what was ingested.";
     box.appendChild(pill);
   }
 
@@ -575,6 +576,7 @@
         toast("Queued " + body.queued + " pages" +
               (body.skipped.length ? ", " + body.skipped.length + " skipped" : ""));
         box.textContent = "";
+        markGraphStale();
         load();
       } catch (e) {
         go.disabled = false;
@@ -674,6 +676,7 @@
       }
       if (!d.corpus || !d.corpus.exists) {
         say("Cleared. The dataset is gone \u2014 ingest something to start answering again.");
+        markGraphStale();
         load();
         return;
       }
@@ -800,6 +803,7 @@
             if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
             toast("Reingested " + i.name + " (" + body.bytes + " bytes)");
             // The item has a new id now, so the cached row is stale.
+            markGraphStale();
             await load();
           } catch (e) {
             re.disabled = false;
@@ -828,12 +832,15 @@
             corpus.items = corpus.items.filter((x) => x.id !== i.id);
             corpus.item_count = corpus.items.length;
             $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
-            // The corpus just moved ahead of the graph.
-            corpus.sync = { state: "stale", stale: (corpus.sync && corpus.sync.stale || 0) + 1,
-                            newest_item_at: new Date().toISOString(),
-                            built_at: (corpus.sync && corpus.sync.built_at) || "" };
+            // Drift is decided per item against the source files, so removing
+            // one changes a tally only the server can recompute. This used to
+            // patch a guess into corpus.sync using fields the pill does not
+            // read, which rendered as a warning with no text in it; saying
+            // nothing until the next load is the honest version.
+            corpus.sync = { state: "unknown" };
             renderSyncPill(corpus.sync);
             renderSources(corpus.items);
+            markGraphStale();
           } catch (e) {
             del.disabled = false;
             del.textContent = "Delete";
@@ -1233,6 +1240,9 @@
   }
 
   let compositionStarted = false;
+  // When the corpus last changed under the graph panel, so a recount can say
+  // whether cognee has had time to catch up.
+  let corpusChangedAt = 0;
 
   function renderComposition(g) {
     const charts = $("#graph-charts");
@@ -1252,8 +1262,24 @@
 
   // Background, after first paint, at most once. requestIdleCallback keeps it
   // off the critical path; the timeout is the fallback where it is unsupported.
-  function prefetchComposition() {
-    if (compositionStarted) return;
+  // A corpus change makes this panel wrong rather than merely old: the counts
+  // describe a corpus that no longer exists, and any rendered graph is a
+  // picture of it. The counts are recounted straight away because that costs
+  // seconds; the render is not, because it costs about forty and cognee builds
+  // the graph behind an ingest, so rebuilding now would draw the shape the
+  // ingest has not reached yet. The picture is labelled instead, and the button
+  // that rebuilds it is already there.
+  function markGraphStale() {
+    corpusChangedAt = Date.now();
+    const status = document.querySelector(".viz-status");
+    if ($("#graph-frame") && status) {
+      status.textContent = "rendered before the last corpus change — rebuild to update";
+    }
+    prefetchComposition(true);
+  }
+
+  function prefetchComposition(force) {
+    if (compositionStarted && !force) return;
     compositionStarted = true;
     const state = () => $("#graph-state");
     const go = async () => {
@@ -1275,7 +1301,12 @@
           l.appendChild(text(label));
           sum.append(v, l);
         });
-        $("#graph-when").textContent = "counted just now";
+        // Counted now, but cognee may not have finished rebuilding after a
+        // change, so a fresh count is not the same as a settled one.
+        const settling = corpusChangedAt && Date.now() - corpusChangedAt < 10 * 60 * 1000;
+        $("#graph-when").textContent = settling
+          ? "counted just now — cognee may still be building after the change"
+          : "counted just now";
       } catch (e) {
         // Quiet on purpose: this was never requested, so a failure gets a line
         // inside the fold rather than a toast over the page.
