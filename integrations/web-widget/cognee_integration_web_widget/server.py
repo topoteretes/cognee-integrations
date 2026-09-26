@@ -225,18 +225,19 @@ async def _dashboard_data() -> dict:
     client = adapter.client
     docs_dataset = adapter.docs_dataset(DEMO_SITE_ID)
 
-    # Three round trips to cognee, and they were run in series: the dataset
-    # list, then the items, then the recall history, for ~2.5s before the page
-    # could paint. The list has to land first because its id names the corpus,
-    # but the items and the history do not depend on each other.
+    # Three round trips to cognee, each about a second against a hosted tenant,
+    # and they were originally run in series for ~2.5s before the page could
+    # paint. Only one ordering is forced: the dataset list names the corpus, so
+    # its items cannot be asked for until it lands. The recall history is
+    # addressed to the principal rather than to a dataset, so it is started
+    # first and collected last - it costs nothing but the wait it removes.
+    history_task = asyncio.create_task(client.recall_history())
     datasets = await client.list_datasets()
     match = next(
         (d for d in datasets if isinstance(d, dict) and d.get("name") == docs_dataset), None
     )
-    items, history = await asyncio.gather(
-        client.dataset_data(str(match.get("id"))) if match else _empty_list(),
-        client.recall_history(),
-    )
+    items = await (client.dataset_data(str(match.get("id"))) if match else _empty_list())
+    history = await history_task
 
     # Recall history is the whole principal's, and it interleaves both sides of
     # each exchange: `user` rows are the questions asked, `system` rows the
@@ -460,6 +461,17 @@ async def dashboard_graph_html(
 _EMPTY_ANSWER_MARKER = "I don't have anything in memory for that yet."
 
 
+def _active_since(session, cutoff: str) -> bool:
+    """Could this conversation hold a question at or after ``cutoff``?
+
+    Both sides are ISO-8601 in UTC, so comparing the strings orders them. A
+    session carrying no timestamp at all is kept: it cannot be ruled out, and
+    paying for one extra round trip beats under-reporting the period.
+    """
+    at = str(_field(session, "last_activity_at", "ended_at", "started_at"))
+    return not at or at >= cutoff
+
+
 def _dense_days(per_day: dict, days: int) -> list:
     """One entry per day in the window, zero-filled, oldest first."""
     today = datetime.now(timezone.utc).date()
@@ -477,9 +489,11 @@ async def dashboard_analytics(
 ) -> JSONResponse:
     """Usage of this widget: who asked what, when, and whether it could answer.
 
-    Session listing gives no per-question detail, so each conversation is
-    fetched for its ``qas``. That is one call per session - fine at this scale,
-    and the place to add a cache if the widget ever gets busy.
+    Session listing gives no per-question detail, so each conversation in the
+    window is fetched for its ``qas``. That is one call per session, and each
+    costs about a second against a hosted tenant, so it is the slowest thing
+    the dashboard asks for - the place to add a cache if the widget ever gets
+    busy enough that a window's worth of conversations is itself a lot.
 
     "Unanswered" is exact, not inferred: the adapter returns one fixed string
     when recall finds nothing, so a question whose answer is that string is one
@@ -488,17 +502,28 @@ async def dashboard_analytics(
     """
     _require_dashboard(token)
     prefix = f"web:{DEMO_SITE_ID}:"
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    # Conversations that cannot contribute to this window are dropped before
+    # the fan-out rather than after it: a question is never newer than its
+    # session's last activity, so a session that went quiet before the cutoff
+    # has nothing inside it to count. Filtering afterwards spent a round trip
+    # on every conversation the tenant had ever held, which made the default
+    # seven-day view cost more every month regardless of the period asked for.
+    #
+    # The totals below are therefore the window's, matching the question counts
+    # beside them rather than reporting lifetime figures under a "last N days"
+    # heading.
     sessions = [
         x
         for x in await adapter.client.list_sessions()
-        if str(_field(x, "session_id")).startswith(prefix)
+        if str(_field(x, "session_id")).startswith(prefix) and _active_since(x, cutoff)
     ]
 
     details = await asyncio.gather(
         *(adapter.client.session_detail(str(_field(x, "session_id"))) for x in sessions)
     )
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     visitors, per_day, questions = set(), {}, []
     answered = unanswered = 0
 

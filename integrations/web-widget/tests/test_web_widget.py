@@ -743,6 +743,30 @@ def analytics_client(interactive_client, fake_client):
     from datetime import datetime, timezone
 
     today = datetime.now(timezone.utc).date().isoformat()
+    # The listing is restated here rather than inherited: analytics reads
+    # last_activity_at to decide which conversations can hold a question in the
+    # window, so a session dated last January carrying questions stamped today
+    # would describe traffic cognee never produces.
+    fake_client.list_sessions = AsyncMock(
+        return_value=[
+            {
+                "session_id": "web:demo:visitor-a:conv-1",
+                "started_at": f"{today}T10:00:00+00:00",
+                "last_activity_at": f"{today}T12:00:00+00:00",
+            },
+            {
+                "session_id": "web:demo:visitor-b:conv-2",
+                "started_at": f"{today}T10:00:00+00:00",
+                "last_activity_at": f"{today}T12:00:00+00:00",
+            },
+            # An agent session in the same tenant - not this widget's traffic.
+            {
+                "session_id": "default_session_abc",
+                "started_at": f"{today}T10:00:00+00:00",
+                "last_activity_at": f"{today}T12:00:00+00:00",
+            },
+        ]
+    )
     fake_client.session_detail = AsyncMock(
         return_value={
             "qas": [
@@ -784,6 +808,37 @@ def test_analytics_ranks_questions_case_insensitively(analytics_client):
     top = client.get("/api/dashboard/analytics?token=s3cret").json()["top_questions"]
     assert top[0]["count"] == 4
     assert top[0]["question"].lower() == "how do i install?"
+
+
+def test_analytics_never_fetches_a_conversation_outside_the_window(analytics_client):
+    """The fan-out is the slow part, so a quiet conversation costs nothing.
+
+    A question is never newer than its session's last activity, so a session
+    that went quiet before the cutoff cannot hold one - fetching it anyway made
+    the seven-day view cost more every month the tenant stayed in use.
+    """
+    client, fake = analytics_client
+    stale = dict(fake.list_sessions.return_value[0])
+    stale["session_id"] = "web:demo:visitor-c:conv-3"
+    stale["last_activity_at"] = "2026-01-02T10:00:00+00:00"
+    fake.list_sessions = AsyncMock(return_value=[*fake.list_sessions.return_value, stale])
+    fake.session_detail.reset_mock()
+
+    body = client.get("/api/dashboard/analytics?token=s3cret").json()
+
+    assert stale["session_id"] not in [c.args[0] for c in fake.session_detail.call_args_list]
+    assert body["totals"]["conversations"] == 2
+
+
+def test_analytics_keeps_a_conversation_with_no_timestamp(analytics_client):
+    """Undatable means unrulable-out: pay the round trip rather than under-report."""
+    client, fake = analytics_client
+    undated = {"session_id": "web:demo:visitor-d:conv-4"}
+    fake.list_sessions = AsyncMock(return_value=[*fake.list_sessions.return_value, undated])
+
+    body = client.get("/api/dashboard/analytics?token=s3cret").json()
+
+    assert body["totals"]["conversations"] == 3
 
 
 def test_analytics_defaults_to_one_week(analytics_client):

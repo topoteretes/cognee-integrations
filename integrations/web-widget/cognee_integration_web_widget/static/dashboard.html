@@ -1028,6 +1028,9 @@
   async function loadAnalytics() {
     const scope = $("#an-scope");
     scope.classList.add("loading");
+    // On the first load the panels are still empty, so dimming them alone
+    // shows nothing at all. Say what is happening, the way the graph fold does.
+    if (!$("#an-stats").childElementCount) $("#an-range").textContent = "counting…";
     try {
       const a = await fetch(api("/api/dashboard/analytics?days=" + rangeDays))
         .then((r) => {
@@ -1202,16 +1205,17 @@
   }
 
   async function load() {
-    // Both endpoints talk to cognee and neither needs the other's result, so
+    // The picker can be drawn before its data arrives; the analytics request
+    // itself is deliberately left until the page has painted, at the bottom of
+    // this function. See the note there.
+    renderRangePicker();
+
+    // These two talk to cognee and neither needs the other's result, so
     // they go out together; waiting for the first doubled time-to-paint.
-    const [d, s, a] = await Promise.all([
+    const [d, s] = await Promise.all([
       fetch(api("/api/dashboard")).then((r) => r.json()),
       fetch(api("/api/dashboard/sessions")).then((r) => r.json()),
-      fetch(api("/api/dashboard/analytics?days=" + rangeDays))
-        .then((r) => r.json()).catch(() => null),
     ]);
-    renderRangePicker();
-    if (a && a.totals) renderAnalytics(a);
     corpus = d.corpus;
 
     const cfg = $("#config");
@@ -1314,6 +1318,14 @@
     sessions = s.sessions;
     $("#sess-count").textContent = sessions.length + " conversations";
     renderSessions(sessions);
+
+    // Analytics last, and never awaited. It is the most expensive thing on the
+    // page - one round trip per conversation in the window - and nothing else
+    // needs its result, so awaiting it with the rest held the whole dashboard
+    // blank for as long as it took. Starting it here rather than alongside the
+    // others also keeps its fan-out from competing for the tenant's
+    // concurrency with the two calls the first paint is actually waiting on.
+    loadAnalytics();
   }
 
   $("#filter").oninput = () => { shown = PAGE; renderSources(corpus.items); };
