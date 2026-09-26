@@ -30,7 +30,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from .docs_ingest import to_document
+from .docs_ingest import render_for_ingest
 
 _EXTENSIONS = (".mdx", ".md")
 
@@ -148,7 +148,7 @@ def drift_for_items(items: list, docs_path: Optional[str], docs_url: Optional[st
         # has nothing to do with the page having been edited.
         source = file.read_text(encoding="utf-8", errors="replace")
         matched += 1
-        if content_digest(to_document(source, relative, docs_url)) == stored:
+        if content_digest(render_for_ingest(source, relative, docs_url)) == stored:
             states[item_id] = "current"
         else:
             states[item_id] = "edited"

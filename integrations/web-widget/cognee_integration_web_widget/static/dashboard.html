@@ -483,54 +483,134 @@
     box.appendChild(pill);
   }
 
-  // Ingest picker. Everything is selected by default; excluded folders
-  // (.github, .mintlify-eval) are listed but unticked rather than hidden, so
-  // nothing is silently decided about what the corpus contains.
-  async function openPicker() {
+  // Ingest. The operator picks a folder or a file with the OS chooser and the
+  // browser reads it; nothing here asks the backend to open a path. That is
+  // what lets any folder be a source without the dashboard becoming a way to
+  // read the host's disk, and it is the only arrangement that still works once
+  // the backend is hosted, where there is no operator disk to see.
+  //
+  // Names skipped by default rather than hidden: what goes into the corpus
+  // should be something the operator can see was decided.
+  const SKIP_DIRS = [".git", ".github", "node_modules", "snippets", ".mintlify-eval",
+                     "dist", "build", ".next", "__pycache__", ".venv"];
+  const BINARY_SUFFIXES = [".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".pdf",
+                           ".zip", ".gz", ".woff", ".woff2", ".ttf", ".mp4", ".mp3", ".lock"];
+  const MAX_PICK_BYTES = 2000000;
+
+  function skipByDefault(relative) {
+    const parts = relative.split("/");
+    const lower = relative.toLowerCase();
+    if (parts.some((p) => p.startsWith("."))) return "hidden";
+    if (parts.slice(0, -1).some((p) => SKIP_DIRS.indexOf(p) !== -1)) return "excluded folder";
+    if (BINARY_SUFFIXES.some((x) => lower.endsWith(x))) return "not text";
+    return null;
+  }
+
+  function openPicker() {
     const box = $("#corpus-panel");
     box.textContent = "";
     const wrap = document.createElement("div");
-    wrap.className = "picker";
-    wrap.appendChild(text("Reading the docs folder\u2026"));
+    wrap.className = "panel pad";
+    const p = document.createElement("p");
+    p.className = "chart-note";
+    p.appendChild(text(
+      "Choose a folder to ingest everything under it, or a single file. The " +
+      "browser reads what you pick and sends the text; the backend never opens " +
+      "anything on this machine."));
+
+    const row = document.createElement("div");
+    row.className = "pick-bar";
+    const folderBtn = document.createElement("button");
+    folderBtn.appendChild(text("Choose folder\u2026"));
+    const fileBtn = document.createElement("button");
+    fileBtn.appendChild(text("Choose file\u2026"));
+    const cancel = document.createElement("button");
+    cancel.appendChild(text("Cancel"));
+    cancel.onclick = () => { box.textContent = ""; };
+
+    // Two inputs rather than one: webkitdirectory turns the chooser into a
+    // directory chooser, so a file selection needs its own.
+    const dirInput = document.createElement("input");
+    dirInput.type = "file";
+    dirInput.multiple = true;
+    dirInput.webkitdirectory = true;
+    dirInput.setAttribute("webkitdirectory", "");
+    dirInput.hidden = true;
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.multiple = true;
+    fileInput.hidden = true;
+
+    folderBtn.onclick = () => dirInput.click();
+    fileBtn.onclick = () => fileInput.click();
+    dirInput.onchange = () => showSelection(box, wrap, [...dirInput.files], true);
+    fileInput.onchange = () => showSelection(box, wrap, [...fileInput.files], false);
+
+    row.append(folderBtn, fileBtn, cancel);
+    wrap.append(p, row, dirInput, fileInput);
     box.appendChild(wrap);
-    let data;
-    try {
-      const r = await fetch(api("/api/dashboard/docs-tree"));
-      data = await r.json();
-      if (!r.ok) throw new Error(data.detail || "HTTP " + r.status);
-    } catch (e) {
-      wrap.textContent = "";
-      wrap.className = "picker muted";
-      wrap.appendChild(text("Cannot list pages: " + e.message));
-      return;
-    }
+  }
+
+  function showSelection(box, wrap, files, fromFolder) {
+    if (!files.length) return;
+    // webkitRelativePath is prefixed with the chosen folder's own name. Dropping
+    // it makes paths relative to what was chosen, so picking the docs folder
+    // produces the same item names an earlier ingest of it did - and drift can
+    // still match them to files on disk.
+    const rel = (f) => {
+      const full = f.webkitRelativePath || f.name;
+      return fromFolder && full.indexOf("/") !== -1 ? full.slice(full.indexOf("/") + 1) : full;
+    };
+    const rootName = fromFolder && files[0].webkitRelativePath
+      ? files[0].webkitRelativePath.split("/")[0] : "";
+
+    const picked = files
+      .map((f) => ({ file: f, path: rel(f), skip: skipByDefault(rel(f)) }))
+      .filter((x) => x.path)
+      .sort((a, b) => a.path.localeCompare(b.path));
 
     wrap.textContent = "";
+    const head = document.createElement("p");
+    head.className = "chart-note";
+    head.appendChild(text(
+      (rootName ? "Selected \u201c" + rootName + "\u201d \u2014 " : "Selected ") +
+      picked.length + (picked.length === 1 ? " file" : " files") +
+      ". Untick anything you do not want ingested."));
+    wrap.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "picker";
     const boxes = [];
     const byFolder = {};
-    data.pages.forEach((p) => (byFolder[p.folder] = byFolder[p.folder] || []).push(p));
+    picked.forEach((x) => {
+      const folder = x.path.indexOf("/") !== -1 ? x.path.slice(0, x.path.lastIndexOf("/"))
+                                                : "(root)";
+      (byFolder[folder] = byFolder[folder] || []).push(x);
+    });
 
     Object.keys(byFolder).sort().forEach((folder) => {
-      const head = document.createElement("label");
-      head.className = "pick-folder";
+      const header = document.createElement("label");
+      header.className = "pick-folder";
       const all = document.createElement("input");
       all.type = "checkbox";
-      head.append(all, text(folder + "  (" + byFolder[folder].length + ")"));
-      wrap.appendChild(head);
+      header.append(all, text(folder + "  (" + byFolder[folder].length + ")"));
+      list.appendChild(header);
 
       const mine = [];
-      byFolder[folder].forEach((p) => {
-        const row = document.createElement("label");
-        row.className = "pick-file";
+      byFolder[folder].forEach((x) => {
+        const line = document.createElement("label");
+        line.className = "pick-file";
         const cb = document.createElement("input");
         cb.type = "checkbox";
-        cb.checked = p.recommended;
-        cb.value = p.path;
-        const note = document.createElement("span");
-        note.className = "muted";
-        note.appendChild(text(p.ingested ? "in corpus" : "new"));
-        row.append(cb, text(p.path.split("/").pop()), note);
-        wrap.appendChild(row);
+        const tooBig = x.file.size > MAX_PICK_BYTES;
+        cb.checked = !x.skip && !tooBig;
+        cb.dataset.path = x.path;
+        cb._file = x.file;
+        const why = document.createElement("span");
+        why.className = "muted";
+        why.appendChild(text(tooBig ? "too large" : (x.skip || "")));
+        line.append(cb, text(x.path.split("/").pop()), why);
+        list.appendChild(line);
         boxes.push(cb);
         mine.push(cb);
       });
@@ -544,49 +624,66 @@
       mine.forEach((c) => c.addEventListener("change", () => { sync(); count(); }));
       sync();
     });
+    wrap.appendChild(list);
 
     const bar = document.createElement("p");
     bar.className = "pick-bar";
     const label = document.createElement("span");
     label.className = "pick-count";
     const go = document.createElement("button");
+    const back = document.createElement("button");
+    back.appendChild(text("Choose again"));
+    back.onclick = () => openPicker();
     const cancel = document.createElement("button");
     cancel.appendChild(text("Cancel"));
     cancel.onclick = () => { box.textContent = ""; };
     const count = () => {
       const n = boxes.filter((c) => c.checked).length;
-      label.textContent = n + " of " + boxes.length + " pages selected";
-      go.textContent = "Ingest " + n + " page" + (n === 1 ? "" : "s");
+      label.textContent = n + " of " + boxes.length + " selected";
+      go.textContent = "Ingest " + n + (n === 1 ? " file" : " files");
       go.disabled = !n;
     };
-    go.onclick = async () => {
-      const paths = boxes.filter((c) => c.checked).map((c) => c.value);
-      if (!confirm("Ingest " + paths.length + " pages into " + corpus.dataset + "?\n\n" +
-                   "Each page is processed by cognee, which costs credits and takes time. " +
-                   "Pages already in the corpus with identical content are skipped.")) return;
-      go.disabled = true;
-      go.textContent = "Queueing\u2026";
-      try {
-        const r = await fetch(api("/api/dashboard/ingest"), {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ paths }),
-        });
-        const body = await r.json();
-        if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
-        toast("Queued " + body.queued + " pages" +
-              (body.skipped.length ? ", " + body.skipped.length + " skipped" : ""));
-        box.textContent = "";
-        markGraphStale();
-        load();
-      } catch (e) {
-        go.disabled = false;
-        toast("Ingest failed: " + e.message, true);
-        count();
-      }
-    };
-    bar.append(go, cancel, label);
-    box.appendChild(bar);
+    go.onclick = () => runIngest(box, boxes.filter((c) => c.checked), go, count);
+    bar.append(go, back, cancel, label);
+    wrap.appendChild(bar);
     count();
+  }
+
+  async function runIngest(box, chosen, go, count) {
+    if (!confirm("Ingest " + chosen.length + " files into " + corpus.dataset + "?\n\n" +
+                 "Each file is processed by cognee, which costs credits and takes time. " +
+                 "Files already in the corpus with identical content are skipped.")) return;
+    go.disabled = true;
+    go.textContent = "Reading\u2026";
+    let payload;
+    try {
+      payload = await Promise.all(chosen.map(async (cb) => ({
+        path: cb.dataset.path, text: await cb._file.text(),
+      })));
+    } catch (e) {
+      go.disabled = false;
+      count();
+      toast("Could not read the files: " + e.message, true);
+      return;
+    }
+    go.textContent = "Queueing\u2026";
+    try {
+      const r = await fetch(api("/api/dashboard/ingest"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ files: payload }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+      toast("Queued " + body.queued + (body.queued === 1 ? " file" : " files") +
+            (body.skipped.length ? ", " + body.skipped.length + " skipped" : ""));
+      box.textContent = "";
+      markGraphStale();
+      load();
+    } catch (e) {
+      go.disabled = false;
+      count();
+      toast("Ingest failed: " + e.message, true);
+    }
   }
 
   // Clearing the corpus is the slowest destructive thing here and the one that
@@ -694,8 +791,8 @@
     const box = $("#corpus-actions");
     box.textContent = "";
     const ingest = document.createElement("button");
-    ingest.appendChild(text("Ingest pages\u2026"));
-    ingest.title = "Pick documentation pages to add to the corpus";
+    ingest.appendChild(text("Ingest"));
+    ingest.title = "Add a folder or a file to the corpus";
     ingest.onclick = openPicker;
     const clear = document.createElement("button");
     clear.className = "danger";

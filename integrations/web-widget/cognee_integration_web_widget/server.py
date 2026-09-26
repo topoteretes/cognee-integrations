@@ -46,7 +46,7 @@ from pydantic import BaseModel
 
 from .adapter import ChatMemoryAdapter
 from .docs_drift import drift_for_items
-from .docs_ingest import item_name, list_pages, to_document
+from .docs_ingest import item_name, render_for_ingest
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -630,8 +630,15 @@ async def dashboard_graph(token: Optional[str] = Query(default=None)) -> JSONRes
     )
 
 
+# One upload is a file's path relative to the root the operator chose, plus its
+# text. The browser reads both; this process opens nothing.
+class UploadedFile(BaseModel):
+    path: str
+    text: str
+
+
 class IngestRequest(BaseModel):
-    paths: list[str]
+    files: list[UploadedFile]
 
 
 class ClearRequest(BaseModel):
@@ -641,51 +648,83 @@ class ClearRequest(BaseModel):
     confirm: str
 
 
-@app.get("/api/dashboard/docs-tree")
-async def dashboard_docs_tree(token: Optional[str] = Query(default=None)) -> JSONResponse:
-    """The documentation pages available to ingest, and which are already in."""
-    _require_dashboard(token)
-    if not DOCS_PATH:
-        raise HTTPException(status_code=409, detail="WIDGET_DOCS_PATH is not set")
-    root = Path(DOCS_PATH).expanduser()
-    if not root.is_dir():
-        raise HTTPException(status_code=409, detail=f"{DOCS_PATH} is not a directory")
+# Bounds on one request. The body is held in memory while it is parsed, and the
+# page can send whatever the operator selected, so a mistyped folder should be
+# refused rather than absorbed.
+MAX_INGEST_FILES = 2000
+MAX_INGEST_CHARS = 2_000_000
+MAX_INGEST_TOTAL_CHARS = 50_000_000
 
-    pages = list_pages(root)
-    dataset_id = await _docs_dataset_id()
-    ingested = {str(_field(i, "name")) for i in await adapter.client.dataset_data(dataset_id)}
-    for page in pages:
-        page["ingested"] = page["name"] in ingested
-    return JSONResponse({"root": str(root), "pages": pages})
+
+def _safe_relative(path: str) -> Optional[str]:
+    """``path`` as a corpus-safe relative path, or ``None`` if it is not one.
+
+    It never opens a file - nothing here touches the filesystem - but it does
+    become an item name and a citation path, so a value that escapes its root
+    or carries separators cognee would not round-trip is refused rather than
+    normalised into something the operator did not choose.
+    """
+    candidate = (path or "").strip().replace("\\", "/")
+    if not candidate or candidate.startswith("/") or len(candidate) > 300:
+        return None
+    if "\x00" in candidate or "//" in candidate:
+        return None
+    parts = candidate.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return None
+    return candidate
 
 
 @app.post("/api/dashboard/ingest")
 async def dashboard_ingest(
     body: IngestRequest, token: Optional[str] = Query(default=None)
 ) -> JSONResponse:
-    """Ingest the selected pages.
+    """Ingest files the operator picked in the browser.
+
+    The page sends each file's text. This used to take a list of paths and read
+    them here, which meant the dashboard could name any file this process had
+    permission to read and have its contents uploaded to the tenant. The guard
+    against that was a prefix check against one configured root - which also
+    made ingesting anything else impossible.
+
+    Reading in the browser answers both. The operator picks with the OS chooser,
+    this process opens nothing, and a hosted backend - which can never see the
+    operator's disk - works exactly the same way.
 
     Uploads are queued with run_in_background, so this returns once cognee has
-    accepted them rather than once it has built the graph. Paths are resolved
-    under the docs root and anything escaping it is refused - the list comes
-    from the page, so it is input, not instruction.
+    accepted them rather than once it has built the graph.
     """
     _require_dashboard(token)
-    if not DOCS_PATH:
-        raise HTTPException(status_code=409, detail="WIDGET_DOCS_PATH is not set")
-    root = Path(DOCS_PATH).expanduser().resolve()
     dataset = adapter.docs_dataset(DEMO_SITE_ID)
 
-    queued, skipped = [], []
-    for relative in body.paths[:1000]:
-        candidate = (root / relative).resolve()
-        if not candidate.is_file() or root not in candidate.parents:
-            skipped.append({"path": relative, "why": "outside the docs root or missing"})
-            continue
-        text = to_document(
-            candidate.read_text(encoding="utf-8", errors="replace"), relative, DOCS_URL
+    if len(body.files) > MAX_INGEST_FILES:
+        raise HTTPException(
+            status_code=413, detail=f"at most {MAX_INGEST_FILES} files in one ingest"
         )
+    if sum(len(f.text) for f in body.files) > MAX_INGEST_TOTAL_CHARS:
+        raise HTTPException(status_code=413, detail="that selection is too large for one ingest")
+
+    queued, skipped = [], []
+    for upload in body.files:
+        relative = _safe_relative(upload.path)
+        if relative is None:
+            skipped.append({"path": upload.path[:120], "why": "not a usable relative path"})
+            continue
+        if len(upload.text) > MAX_INGEST_CHARS:
+            skipped.append({"path": relative, "why": "file is too large"})
+            continue
+        # A NUL says this was never text, whatever its extension claims. Storing
+        # it would put bytes in the corpus that answer nothing and cost a
+        # cognify run to find out.
+        if "\x00" in upload.text:
+            skipped.append({"path": relative, "why": "looks binary"})
+            continue
+        if not upload.text.strip():
+            skipped.append({"path": relative, "why": "empty"})
+            continue
+
         name = item_name(relative)
+        text = render_for_ingest(upload.text, relative, DOCS_URL)
         ok = await adapter.client.remember_background(
             text.encode("utf-8"), dataset_name=dataset, filename=f"{name}.md"
         )

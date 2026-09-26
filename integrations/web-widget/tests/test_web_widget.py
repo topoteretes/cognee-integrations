@@ -1147,22 +1147,93 @@ def test_to_document_survives_a_page_with_no_frontmatter():
     assert out.strip() == "Just prose."
 
 
-def test_list_pages_marks_non_docs_folders_as_not_recommended(tmp_path):
-    """Excluded folders are listed but unticked - hiding them would silently
-    decide what the corpus contains."""
-    from cognee_integration_web_widget.docs_ingest import list_pages
+# The page decides what to tick; the backend no longer walks a folder, so the
+# listing and its exclusions moved to the browser along with the reading.
 
-    (tmp_path / "guides").mkdir()
-    (tmp_path / "guides" / "a.mdx").write_text("a")
-    (tmp_path / ".github").mkdir()
-    (tmp_path / ".github" / "b.md").write_text("b")
-    (tmp_path / "root.mdx").write_text("r")
 
-    pages = {p["path"]: p for p in list_pages(tmp_path)}
-    assert pages["guides/a.mdx"]["recommended"] is True
-    assert pages["root.mdx"]["folder"] == "(root)"
-    assert ".github/b.md" in pages
-    assert pages[".github/b.md"]["recommended"] is False
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("guide.mdx", "guide.mdx"),
+        ("a/b/c.md", "a/b/c.md"),
+        ("  notes.txt  ", "notes.txt"),
+        ("a\\b.md", "a/b.md"),
+    ],
+)
+def test_ingest_accepts_paths_relative_to_the_chosen_root(path, expected):
+    from cognee_integration_web_widget.server import _safe_relative
+
+    assert _safe_relative(path) == expected
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/etc/passwd", "../../.ssh/id_rsa", "a/../../b.md", "", "   ", "a//b.md", "x" * 301],
+)
+def test_ingest_refuses_a_path_that_is_not_relative_to_it(path):
+    """These never open a file - nothing server-side does any more - but they
+    become item names and citation paths, so they are refused rather than
+    normalised into something the operator did not choose."""
+    from cognee_integration_web_widget.server import _safe_relative
+
+    assert _safe_relative(path) is None
+
+
+def test_ingest_sends_the_browsers_text_and_never_reads_a_path(dashboard_client, fake_client):
+    """The whole point of the rework: this process opens nothing."""
+    client = dashboard_client
+    fake_client.remember_background = AsyncMock(return_value=True)
+
+    body = client.post(
+        "/api/dashboard/ingest?token=s3cret",
+        json={"files": [{"path": "guides/setup.mdx", "text": "# Setup\n\nRun it."}]},
+    ).json()
+
+    assert body["queued"] == 1
+    call = fake_client.remember_background.await_args
+    assert call.kwargs["filename"] == "guides__setup.md"
+    assert b"Run it." in call.args[0]
+
+
+def test_ingest_skips_what_would_only_cost_a_cognify_run(dashboard_client, fake_client):
+    """Binary, empty and oversized files are named in the response, not silently
+    dropped and not sent."""
+    client = dashboard_client
+    fake_client.remember_background = AsyncMock(return_value=True)
+
+    body = client.post(
+        "/api/dashboard/ingest?token=s3cret",
+        json={
+            "files": [
+                {"path": "ok.md", "text": "real"},
+                {"path": "logo.bin", "text": "PNG\x00\x00"},
+                {"path": "blank.md", "text": "   \n"},
+                {"path": "../escape.md", "text": "nope"},
+            ]
+        },
+    ).json()
+
+    assert body["queued"] == 1
+    assert {s["why"] for s in body["skipped"]} == {
+        "looks binary",
+        "empty",
+        "not a usable relative path",
+    }
+    assert fake_client.remember_background.await_count == 1
+
+
+def test_ingest_refuses_a_selection_too_large_for_one_request(dashboard_client, fake_client):
+    from cognee_integration_web_widget import server as server_mod
+
+    client = dashboard_client
+    fake_client.remember_background = AsyncMock(return_value=True)
+
+    too_many = [{"path": f"f{i}.md", "text": "x"} for i in range(server_mod.MAX_INGEST_FILES + 1)]
+    assert (
+        client.post("/api/dashboard/ingest?token=s3cret", json={"files": too_many}).status_code
+        == 413
+    )
+    fake_client.remember_background.assert_not_awaited()
 
 
 def test_clear_requires_the_dataset_name_typed_exactly(dashboard_client, fake_client):
@@ -1239,6 +1310,5 @@ def test_clear_and_ingest_are_gated(dashboard_client, fake_client):
     client = dashboard_client
     fake_client.forget_dataset = AsyncMock(return_value=True)
     assert client.post("/api/dashboard/clear", json={"confirm": "x"}).status_code == 401
-    assert client.post("/api/dashboard/ingest", json={"paths": []}).status_code == 401
-    assert client.get("/api/dashboard/docs-tree").status_code == 401
+    assert client.post("/api/dashboard/ingest", json={"files": []}).status_code == 401
     fake_client.forget_dataset.assert_not_awaited()

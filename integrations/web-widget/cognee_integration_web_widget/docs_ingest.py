@@ -14,7 +14,6 @@ byte.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Optional
 
 _FRONTMATTER = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.S)
@@ -23,13 +22,30 @@ _FIELD = re.compile(r'^(title|description):\s*["\']?(.*?)["\']?\s*$', re.M)
 _MDX_TAG = re.compile(r"</?[A-Z][A-Za-z0-9]*(?:\s[^<>]*?)?/?>")
 _IMPORTS = re.compile(r"^import\s+.*$", re.M)
 
-DEFAULT_EXCLUDES = (".github", ".mintlify-eval", "node_modules", "snippets")
+MARKDOWN_SUFFIXES = (".md", ".mdx")
 
 
 def item_name(relative_path: str) -> str:
     """The flattened name the corpus uses: a/b/c.mdx -> a__b__c."""
     stem = re.sub(r"\.(mdx|md)$", "", relative_path)
     return stem.replace("/", "__")
+
+
+def render_for_ingest(source: str, relative_path: str, docs_url: Optional[str] = None) -> str:
+    """The exact text that gets ingested for ``relative_path``.
+
+    Markdown goes through the MDX transform below; anything else is stored as
+    it stands. That transform drops tags shaped like JSX components, which is
+    right for a documentation page and wrong for any other file that happens to
+    contain angle brackets.
+
+    Both ingest and drift go through here. Drift decides "edited" by hashing
+    what would be ingested now and comparing it with what was stored, so the
+    two rendering one file differently would read as the file having changed.
+    """
+    if relative_path.lower().endswith(MARKDOWN_SUFFIXES):
+        return to_document(source, relative_path, docs_url)
+    return source
 
 
 def to_document(source: str, relative_path: str, docs_url: Optional[str] = None) -> str:
@@ -58,28 +74,3 @@ def to_document(source: str, relative_path: str, docs_url: Optional[str] = None)
         page = re.sub(r"\.(mdx|md)$", "", relative_path)
         head.append(f"(Source: {docs_url.rstrip('/')}/{page})")
     return "\n\n".join([*head, body]).strip() + "\n"
-
-
-def list_pages(root: Path, excludes: tuple = DEFAULT_EXCLUDES) -> list[dict]:
-    """Every documentation page under root, newest-irrelevant, sorted by path.
-
-    Files under an excluded directory are listed but not selected by default -
-    hiding them would silently decide what the corpus contains.
-    """
-    pages = []
-    for path in sorted(root.rglob("*")):
-        if path.suffix not in (".mdx", ".md") or not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix()
-        top = relative.split("/")[0]
-        excluded = top in excludes or relative.startswith(".")
-        pages.append(
-            {
-                "path": relative,
-                "name": item_name(relative),
-                "folder": relative.rsplit("/", 1)[0] if "/" in relative else "(root)",
-                "bytes": path.stat().st_size,
-                "recommended": not excluded,
-            }
-        )
-    return pages
