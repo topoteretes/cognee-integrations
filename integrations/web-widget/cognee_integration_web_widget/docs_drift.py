@@ -60,13 +60,25 @@ def content_digest(text: str) -> str:
     return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
-def _source_file(root: Path, name: str) -> Optional[Path]:
-    """The documentation file an ingested item came from, if it still exists."""
+def _candidate_paths(name: str) -> list:
+    """The paths an item's name could have come from, likeliest first.
+
+    ``item_name`` strips ``.md`` and ``.mdx`` and no other suffix, so a
+    documentation page arrives here without its extension while every other
+    file - a .py, a .yml, a .txt - arrives with it. Trying only the two
+    markdown spellings meant no non-markdown file was ever matched to its
+    source: it read as "not from docs" while sitting in the docs folder.
+    """
     relative = name.replace("__", "/")
-    for extension in _EXTENSIONS:
-        candidate = root / (relative + extension)
-        if candidate.is_file():
-            return candidate
+    return [relative] + [relative + extension for extension in _EXTENSIONS]
+
+
+def _source_file(root: Path, name: str) -> Optional[Path]:
+    """The file an ingested item came from, if it still exists."""
+    for candidate in _candidate_paths(name):
+        path = root / candidate
+        if path.is_file():
+            return path
     return None
 
 
@@ -157,8 +169,9 @@ def drift_for_items(items: list, docs_path: Optional[str], docs_url: Optional[st
     if absent:
         seen = _paths_git_has_seen(root)
         for item_id, name in absent:
-            relative = name.replace("__", "/")
-            if any(f"{relative}{extension}" in seen for extension in _EXTENSIONS):
+            # Same spellings the lookup above tried, or a deleted .py would be
+            # called foreign for the reason a present one used to be.
+            if any(candidate in seen for candidate in _candidate_paths(name)):
                 states[item_id] = "removed"
                 removed += 1
             else:

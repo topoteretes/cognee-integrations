@@ -898,10 +898,12 @@ def test_analytics_excludes_other_sites_and_is_gated(analytics_client):
 def _ingested(root, relative, docs_url=None):
     """An item as cognee would report it after ingesting ``relative``."""
     from cognee_integration_web_widget.docs_drift import content_digest
-    from cognee_integration_web_widget.docs_ingest import item_name, to_document
+    from cognee_integration_web_widget.docs_ingest import item_name, render_for_ingest
 
+    # The same render ingest performs, which is the whole basis of the
+    # comparison: markdown transformed, everything else stored as it stands.
     text = (root / relative).read_text(encoding="utf-8")
-    digest = content_digest(to_document(text, relative, docs_url))
+    digest = content_digest(render_for_ingest(text, relative, docs_url))
     return {
         "id": relative,
         "name": item_name(relative),
@@ -1013,6 +1015,43 @@ def test_drift_says_nothing_about_an_item_with_no_digest(tmp_path):
     # Not comparable, so not counted as agreeing either.
     assert out["matched"] == 0
     assert out["drifted"] == 0
+
+
+def test_drift_matches_a_file_that_is_not_markdown(tmp_path):
+    """item_name strips .md and .mdx and nothing else, so a .py arrives with its
+    extension already in the name. Only ever appending the markdown spellings
+    meant no code file was matched to its source: every one read as "not from
+    docs" while sitting in the docs folder."""
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "guides.py").write_text("print('as ingested')")
+    (tmp_path / "page.mdx").write_text("# page")
+    items = [_ingested(tmp_path, "tests/guides.py"), _ingested(tmp_path, "page.mdx")]
+
+    out = drift_for_items(items, str(tmp_path))
+    assert out["matched"] == 2
+    assert set(out["states"].values()) == {"current"}
+
+    (tmp_path / "tests" / "guides.py").write_text("print('edited')")
+    assert drift_for_items(items, str(tmp_path))["states"]["tests/guides.py"] == "edited"
+
+
+def test_drift_tells_a_deleted_code_file_from_one_that_was_never_there(tmp_path):
+    import subprocess
+
+    from cognee_integration_web_widget.docs_drift import drift_for_items
+
+    (tmp_path / "script.py").write_text("x = 1")
+    items = [_ingested(tmp_path, "script.py")]
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"],
+                 ["add", "-A"], ["commit", "-qm", "add"]):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "script.py").unlink()
+
+    out = drift_for_items(items + [{"id": "seed", "name": "message"}], str(tmp_path))
+    assert out["states"]["script.py"] == "removed"
+    assert out["states"]["seed"] == "foreign"
 
 
 def test_drift_ignores_items_with_no_matching_file(tmp_path):
