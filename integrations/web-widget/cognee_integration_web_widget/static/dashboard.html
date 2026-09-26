@@ -1,0 +1,1988 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>cognee widget dashboard</title>
+<style>
+  /* One palette, defined once in light and re-pointed for dark, so nothing has
+     its only definition inside a media query. */
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --panel: #fff;
+    --ink: #18181b;
+    --muted: #6b7280;
+    --line: #e7e7e4;
+    --line-soft: #f1f1ef;
+    --accent: #2563eb;
+    --ok: #15803d;
+    --warn: #b45309;
+    --danger: #b91c1c;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 1px 12px rgba(0,0,0,.03);
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0b0d;
+      --panel: #131316;
+      --ink: #ededf0;
+      --muted: #8b8b95;
+      --line: #26262c;
+      --line-soft: #1c1c21;
+      --accent: #7aa2f7;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --shadow: none;
+    }
+  }
+
+  * { box-sizing: border-box }
+  body {
+    font: 14px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: 36px 28px 72px; background: var(--bg); color: var(--ink);
+    max-width: 1080px; margin-inline: auto;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header { margin-bottom: 28px }
+  h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 3px }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 }
+
+  section { margin-top: 26px }
+  .sec-head {
+    display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px;
+  }
+  h2 { font-size: 13px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+       color: var(--muted); margin: 0 }
+  .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+  }
+  .panel > .pad { padding: 14px 16px }
+
+  /* Configuration: a key/value grid reads faster than a table here. */
+  #config { display: grid; grid-template-columns: max-content 1fr; gap: 7px 22px;
+            padding: 15px 16px; margin: 0 }
+  #config dt { color: var(--muted); font-size: 13px }
+  #config dd { margin: 0; font-size: 13px; word-break: break-word }
+  #config dd.ok, #config dd.warn { display: flex; align-items: center; gap: 7px }
+  #config dd.ok::before, #config dd.warn::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%; flex: none;
+  }
+  #config dd.ok::before { background: var(--ok) }
+  #config dd.warn::before { background: var(--warn) }
+  #config dd.warn { color: var(--warn) }
+  #config dd code, .mono { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace }
+
+  table { border-collapse: collapse; width: 100% }
+  thead th {
+    text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .05em;
+    text-transform: uppercase; color: var(--muted); padding: 10px 14px;
+    border-bottom: 1px solid var(--line); cursor: pointer; user-select: none;
+    white-space: nowrap; background: var(--panel);
+  }
+  thead th:hover { color: var(--ink) }
+  thead th[data-dir] { color: var(--ink) }
+  tbody td { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top }
+  tbody tr:last-child td { border-bottom: 0 }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, transparent) }
+  td.act, thead th:last-child { text-align: right; width: 1%; white-space: nowrap }
+  td.act button + button { margin-left: 6px }
+  .num { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap }
+  .when { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums }
+
+  .src-name { font-weight: 550 }
+  .row-note { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+              color: var(--muted); margin-top: 2px; word-break: break-all }
+
+  button {
+    font: 500 12px/1 inherit; font-family: inherit; color: var(--ink);
+    border: 1px solid var(--line); background: var(--panel);
+    border-radius: 7px; padding: 6px 11px; cursor: pointer;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  button:hover { border-color: var(--muted) }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+  button.danger:hover { border-color: var(--danger); color: var(--danger);
+                        background: color-mix(in srgb, var(--danger) 7%, transparent) }
+  button[disabled] { opacity: .45; cursor: default }
+
+  .toolbar { display: flex; gap: 9px; align-items: center; margin-bottom: 9px }
+  input[type=search], input[type=text] {
+    font: inherit; font-size: 13px; padding: 7px 12px; flex: 1;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: inherit;
+  }
+  input[type=search]:focus, input[type=text]:focus {
+    outline: none; border-color: var(--accent);
+  }
+  input[type=search]::placeholder, input[type=text]::placeholder { color: var(--muted) }
+
+  .confirm-row { display: flex; gap: 8px; align-items: center; padding: 0 16px 14px }
+  .confirm-row input { max-width: 280px }
+
+  #sources-more { display: flex; gap: 9px; align-items: center;
+                  margin: 11px 2px 0; font-size: 12px }
+
+  /* Transcript: the two voices must be distinguishable at a glance. */
+  .transcript { padding: 4px 14px 14px; background: var(--bg); text-align: left }
+  .turn { padding: 12px 0; border-bottom: 1px solid var(--line-soft) }
+  .turn:last-child { border-bottom: 0 }
+  .role { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+          color: var(--muted); margin-bottom: 3px }
+  .q { font-weight: 600; margin-bottom: 9px }
+  .a { white-space: pre-wrap; color: var(--ink); max-width: 76ch;
+       border-left: 2px solid var(--line); padding-left: 12px;
+       overflow-wrap: anywhere }
+  .q { max-width: 76ch }
+  .turn-meta { font-size: 11px; color: var(--muted); margin-top: 7px }
+
+  .notice { color: var(--warn); padding: 13px 16px; margin: 0; font-size: 13px;
+            border-left: 3px solid var(--warn); background: var(--panel) }
+  .muted { color: var(--muted) }
+  .empty { color: var(--muted); padding: 14px; font-size: 13px }
+
+  /* Data-viz slots. One hue: these bars encode magnitude, not identity, so
+     colour carries no information and a categorical palette would imply one. */
+  .viz { --series-1: #2a78d6; --track: rgba(127,127,127,.12) }
+  @media (prefers-color-scheme: dark) { .viz { --series-1: #3987e5 } }
+
+  .chart { margin-top: 20px }
+  .chart-h { font-size: 12px; font-weight: 600; color: var(--muted);
+             margin-bottom: 9px; display: flex; gap: 8px; align-items: baseline }
+  .chart-h small { font-weight: 400 }
+  .bar-row { display: grid; grid-template-columns: 170px 1fr auto;
+             gap: 12px; align-items: center; padding: 3px 0 }
+  .bar-lab { font-size: 12px; color: var(--ink); overflow: hidden;
+             text-overflow: ellipsis; white-space: nowrap }
+  .bar-track { background: var(--track); border-radius: 4px; height: 12px }
+  .bar-fill { background: var(--series-1); height: 100%;
+              border-radius: 0 4px 4px 0; min-width: 2px }
+  .bar-val { font-size: 12px; color: var(--muted);
+             font-variant-numeric: tabular-nums; min-width: 5ch; text-align: right }
+  .chart-note { font-size: 11px; color: var(--muted); margin-top: 8px }
+
+  /* The composition is secondary detail, so it ships folded. summary carries
+     the headline counts, which cost nothing - they arrive with the main load. */
+  details.fold > summary { list-style: none; cursor: pointer; padding: 13px 16px;
+    display: flex; align-items: baseline; gap: 16px; user-select: none }
+  details.fold > summary::-webkit-details-marker { display: none }
+  details.fold > summary::before { content: "\25B8"; color: var(--muted);
+    font-size: 11px; transition: transform .15s; display: inline-block }
+  details.fold[open] > summary::before { transform: rotate(90deg) }
+  details.fold > summary:hover { background: color-mix(in srgb, var(--accent) 4%, transparent) }
+  .fold-body { padding: 2px 16px 16px; border-top: 1px solid var(--line-soft) }
+  .sum-n { font-variant-numeric: tabular-nums; font-weight: 600 }
+  .sum-l { color: var(--muted); font-size: 12px }
+  .fold-state { margin-left: auto; font-size: 11px; color: var(--muted) }
+
+  #graph-frame { width: 100%; height: 640px; border: 1px solid var(--line);
+                 border-radius: 8px; background: #fff; display: block; margin-top: 14px }
+  .viz-status { font-size: 11px; color: var(--muted); margin-left: 10px }
+
+  /* Two series, validated against both surfaces: CVD dE 24.7 light / 26.8 dark. */
+  .an { --s1: #2a78d6; --s2: #eb6834 }
+  @media (prefers-color-scheme: dark) { .an { --s1: #3987e5; --s2: #d95926 } }
+
+  .stats { display: flex; gap: 34px; flex-wrap: wrap; padding: 15px 16px }
+  .stat-v { font-size: 25px; font-weight: 600; letter-spacing: -.02em;
+            font-variant-numeric: tabular-nums; line-height: 1.25 }
+  .stat-l { font-size: 11px; color: var(--muted); letter-spacing: .04em;
+            text-transform: uppercase }
+  .stat-sub { font-size: 11px; color: var(--muted); margin-top: 1px }
+
+  .an-grid { display: grid; grid-template-columns: 1.55fr 1fr; gap: 14px; margin-top: 14px }
+  @media (max-width: 860px) { .an-grid { grid-template-columns: 1fr } }
+
+  .legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin-bottom: 10px }
+  .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px }
+
+  /* Daily columns. Gaps between bars are surface, per the mark spec, and a
+     zero day still gets a baseline tick so absence reads as measured. */
+  /* Columns are spread rather than stretched, so a short window gets narrow
+     marks instead of slabs. The cap lives on the column and the mark simply
+     fills it: sizing the mark inside a full-width column looked equivalent but
+     a very narrow flex column refuses to shrink its child below an intrinsic
+     floor, so at 90 days the marks overflowed and overlapped. */
+  .days { display: flex; align-items: flex-end; justify-content: space-evenly;
+          gap: 2px; height: 132px }
+  .day { flex: 1 1 0; max-width: 40px; display: flex; flex-direction: column;
+         justify-content: flex-end; gap: 2px; min-width: 0; height: 100% }
+  .day .seg { border-radius: 2px 2px 0 0; min-height: 0; width: 100% }
+  .day .seg.a { background: var(--s1) }
+  .day .seg.u { background: var(--s2) }
+  .day .zero { height: 2px; background: var(--line); border-radius: 1px; width: 100% }
+  .day-axis { display: flex; justify-content: space-evenly; gap: 2px; margin-top: 6px;
+              font-size: 10px; color: var(--muted) }
+  /* Same flex geometry as .day, so each label stays under its column. */
+  .day-axis span { flex: 1 1 0; max-width: 40px; text-align: center;
+                   min-width: 0; overflow: visible; white-space: nowrap }
+
+  .rank { display: grid; grid-template-columns: auto 1fr auto; gap: 10px;
+          align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line-soft);
+          font-size: 12px }
+  .rank:last-child { border-bottom: 0 }
+  .rank .i { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2ch }
+  .rank .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .rank .c { color: var(--muted); font-variant-numeric: tabular-nums }
+
+  .range { display: flex; margin-bottom: 10px }
+  .range select {
+    font: inherit; font-size: 12px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 7px; padding: 6px 30px 6px 11px; cursor: pointer;
+    appearance: none;
+    /* Chevron drawn in, so the control matches the chart chrome in both themes
+       rather than inheriting the OS widget. */
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+  .range select:hover { border-color: var(--muted) }
+  .range select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+
+  /* Per-mark hover, and the same detail on keyboard focus. */
+  .day:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px }
+  .day .seg, .day .zero { transition: filter .1s }
+  .day:hover .seg, .day:focus-visible .seg { filter: brightness(1.18) }
+  #tip {
+    position: fixed; pointer-events: none; z-index: 20; display: none;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 11px; font-size: 12px; line-height: 1.5;
+    box-shadow: 0 6px 22px rgba(0,0,0,.22); min-width: 120px;
+  }
+  #tip b { display: block; font-size: 11px; color: var(--muted); font-weight: 600;
+           letter-spacing: .03em; margin-bottom: 3px }
+  #tip .r { display: flex; align-items: center; gap: 7px; justify-content: space-between }
+  #tip .r i { width: 8px; height: 8px; border-radius: 2px; display: inline-block }
+  #tip .r span:last-child { font-variant-numeric: tabular-nums; font-weight: 600 }
+  /* Refetch holds the previous render at reduced opacity: no skeleton, no
+     layout jump, and the numbers never flash empty between periods. */
+  #an-scope { transition: opacity .12s }
+  #an-scope.loading { opacity: .45 }
+
+  /* Status, so it ships with a label and never rests on colour alone. */
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+          padding: 2px 9px 2px 7px; border-radius: 20px; border: 1px solid var(--line);
+          color: var(--muted); white-space: nowrap; cursor: default }
+  .pill i { width: 7px; height: 7px; border-radius: 50%; flex: none }
+  .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)) }
+  .pill.ok i { background: var(--ok) }
+  .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)) }
+  .pill.warn i { background: var(--warn) }
+
+  .pill.neutral { color: var(--muted) }
+  .pill.neutral i { background: var(--muted) }
+  .pill.sm { font-size: 10px; padding: 1px 7px 1px 6px; letter-spacing: .02em }
+
+  .corpus-actions { display: flex; gap: 8px; margin-left: auto }
+  .picker { margin-top: 12px; max-height: 340px; overflow: auto; border: 1px solid var(--line);
+            border-radius: 8px; padding: 10px 12px; background: var(--panel) }
+  .pick-folder { margin: 8px 0 3px; font-size: 11px; font-weight: 650; color: var(--muted);
+                 letter-spacing: .03em; display: flex; gap: 7px; align-items: center }
+  .pick-group > summary.pick-folder { cursor: pointer; list-style: none; user-select: none }
+  .pick-group > summary.pick-folder::-webkit-details-marker { display: none }
+  .pick-group > summary.pick-folder:hover { color: var(--ink) }
+  .pick-chev { display: inline-block; width: 8px; text-align: center;
+               transition: transform .12s }
+  .pick-group[open] > summary .pick-chev { transform: rotate(90deg) }
+  .pick-some { margin-left: auto; font-weight: 400; letter-spacing: 0 }
+  .pick-set { font-size: 10px; font-weight: 400; letter-spacing: 0; color: var(--muted);
+              background: var(--line-soft); border-radius: 5px; padding: 1px 6px }
+  /* One indent per level, drawn on the children rather than the folder, so a
+     folder's own row lines up with the files beside it. */
+  .pick-children { margin-left: 11px; border-left: 1px solid var(--line-soft);
+                   padding-left: 5px }
+  .pick-children .pick-file { padding-left: 4px }
+
+  .ingest-bar { height: 3px; margin: 0 16px 13px; border-radius: 2px;
+                background: var(--line-soft); overflow: hidden }
+  .ingest-bar i { display: block; height: 100%; width: 0; background: var(--accent);
+                  transition: width .25s }
+  .skipped { margin: 0 16px 13px; max-height: 190px; overflow: auto }
+  .tabs { display: flex; gap: 2px; margin: 0 0 11px;
+          border-bottom: 1px solid var(--line) }
+  .tabs button { background: none; border: 0; border-bottom: 2px solid transparent;
+                 border-radius: 0; margin-bottom: -1px; padding: 7px 12px;
+                 font: inherit; font-size: 12px; color: var(--muted); cursor: pointer }
+  .tabs button:hover { color: var(--ink) }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent) }
+  .tabs .tab-n { margin-left: 6px; font-size: 11px; color: var(--muted) }
+  .tabs button[aria-selected="true"] .tab-n { color: var(--accent) }
+  #corpus-repos .chart-note { margin: 11px 0 0 }
+  .repo-empty { color: var(--muted); font-size: 12px; padding: 14px 16px }
+  .repo-row { display: flex; gap: 10px; align-items: baseline; font-size: 12px;
+              padding: 3px 0 }
+  .repo-row .muted { font-size: 11px }
+  .pick-file { display: flex; gap: 7px; align-items: center; font-size: 12px;
+               padding: 1px 0 1px 18px }
+  .pick-file .muted { font-size: 11px }
+  .pick-bar { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 12px }
+  .pick-count { color: var(--muted) }
+
+  #toast {
+    position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: var(--bg);
+    padding: 10px 16px; border-radius: 9px; display: none; max-width: 60ch;
+    font-size: 13px; box-shadow: 0 8px 28px rgba(0,0,0,.18); z-index: 10;
+  }
+</style>
+
+<header>
+  <h1>cognee widget</h1>
+  <p class="sub">Read-only except where stated. Served by the widget backend, not the docs site.</p>
+</header>
+
+<section>
+  <div class="sec-head"><h2>Configuration</h2></div>
+  <div class="panel"><dl id="config"></dl></div>
+</section>
+
+<section>
+  <div class="sec-head"><h2>Corpus</h2><span class="count" id="corpus-count"></span><span id="corpus-sync"></span><span class="corpus-actions" id="corpus-actions"></span></div>
+  <div id="corpus-panel"></div>
+  <div id="corpus-warn"></div>
+  <div class="tabs" id="corpus-tabs" role="tablist"></div>
+  <div id="tab-files">
+    <div class="toolbar">
+      <input type="search" id="filter" placeholder="Filter sources…" />
+    </div>
+    <div class="panel">
+      <table id="sources">
+        <thead><tr>
+          <th data-sort="name">source</th>
+          <th data-sort="doc_state">status</th>
+          <th data-sort="updated">last synced</th>
+          <th data-sort="created">first ingested</th>
+          <th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p id="sources-more"></p>
+  </div>
+  <div id="tab-repos" hidden><div id="corpus-repos"></div></div>
+</section>
+
+<section class="an">
+  <div class="sec-head"><h2>Analytics</h2><span class="count" id="an-range"></span></div>
+  <div class="range" id="an-range-picker"></div>
+  <div id="an-scope">
+  <div class="panel"><div class="stats" id="an-stats"></div></div>
+  <div class="an-grid">
+    <div class="panel pad">
+      <div class="chart-h">Questions per day</div>
+      <div class="legend" id="an-legend"></div>
+      <div class="days" id="an-days"></div>
+      <div class="day-axis" id="an-axis"></div>
+    </div>
+    <div class="panel pad">
+      <div class="chart-h">Most asked</div>
+      <div id="an-top"></div>
+    </div>
+  </div>
+  </div>
+</section>
+
+<section class="viz">
+  <div class="sec-head"><h2>Knowledge graph</h2><span class="count" id="graph-when"></span></div>
+  <div class="panel">
+    <details class="fold" id="graph-fold">
+      <summary id="graph-summary"></summary>
+      <div class="fold-body">
+        <p id="graph-actions"></p>
+        <div id="graph-charts"></div>
+        <p id="graph-viz-actions"></p>
+        <div id="graph-frame-wrap"></div>
+      </div>
+    </details>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><h2>Conversations</h2><span class="count" id="sess-count"></span></div>
+  <div class="panel">
+    <table id="sessions">
+      <thead><tr>
+        <th data-sort="last_activity_at">last active</th>
+        <th data-sort="session_id">visitor / conversation</th>
+        <th data-sort="tokens_in">tokens (session)</th>
+        <th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<div id="tip"></div>
+<div id="toast"></div>
+
+<script>
+  // The token is whatever opened this page; never stored, just forwarded.
+  const TOKEN = new URLSearchParams(location.search).get("token") || "";
+  const api = (p) => p + (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN);
+  const $ = (s) => document.querySelector(s);
+  const text = (t) => document.createTextNode(t == null ? "" : String(t));
+
+  function toast(msg, isError) {
+    const t = $("#toast");
+    t.textContent = msg;
+    t.style.background = isError ? "#7f1d1d" : "#111827";
+    t.style.display = "block";
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => (t.style.display = "none"), 4000);
+  }
+
+  // Timestamps are ISO from cognee; show them as "3 hours ago" with the exact
+  // value on hover, because "is this stale" is the question being asked.
+  function ago(iso) {
+    if (!iso || iso === "None") return "—";
+    const then = Date.parse(iso);
+    if (isNaN(then)) return iso;
+    const s = (Date.now() - then) / 1000;
+    const units = [[31536000,"y"],[2592000,"mo"],[86400,"d"],[3600,"h"],[60,"m"]];
+    for (const [secs, label] of units) {
+      if (s >= secs) return Math.floor(s / secs) + label + " ago";
+    }
+    return "just now";
+  }
+
+  function cell(row, value, title) {
+    const td = row.insertCell();
+    td.appendChild(text(value));
+    if (title) td.title = title;
+    return td;
+  }
+
+  let corpus = { items: [] }, sessions = [], sortState = {};
+
+  function sortBy(list, key, dir) {
+    return list.slice().sort((a, b) => {
+      let x = a[key], y = b[key];
+      if (typeof x === "boolean" || typeof y === "boolean") {
+        x = x ? 1 : 0;
+        y = y ? 1 : 0;
+      }
+      if (key === "doc_state") {
+        // Severity order, so sorting surfaces what needs acting on first
+        // rather than whatever sorts alphabetically.
+        const rank = { removed: 0, edited: 1, foreign: 2, current: 3 };
+        x = rank[x] ?? 9;
+        y = rank[y] ?? 9;
+      }
+      const n = typeof x === "number" && typeof y === "number";
+      const c = n ? x - y : String(x ?? "").localeCompare(String(y ?? ""));
+      return dir === "desc" ? -c : c;
+    });
+  }
+
+  function wireSort(tableSel, getList, render) {
+    document.querySelectorAll(tableSel + " thead th[data-sort]").forEach((th) => {
+      th.onclick = () => {
+        const key = th.dataset.sort;
+        const dir = sortState[tableSel] && sortState[tableSel].key === key &&
+                    sortState[tableSel].dir === "asc" ? "desc" : "asc";
+        sortState[tableSel] = { key, dir };
+        document.querySelectorAll(tableSel + " thead th").forEach(h => h.removeAttribute("data-dir"));
+        th.setAttribute("data-dir", dir === "asc" ? " ▲" : " ▼");
+        render(sortBy(getList(), key, dir));
+      };
+    });
+  }
+
+  // A corpus is hundreds of pages; showing all of them buries the controls and
+  // makes the page unusable. Ten is enough to see the most recent state, and
+  // the filter searches the whole corpus rather than the visible slice.
+  const PAGE = 10;
+  let shown = PAGE;
+
+  // Green when the graph was built after the last ingest; amber when a source
+  // has changed since, which is what reingesting or deleting one does.
+  function renderSyncPill(sync) {
+    const box = $("#corpus-sync");
+    box.textContent = "";
+    if (!sync || sync.state === "unknown") return;
+    const stale = sync.state === "stale";
+    const pill = document.createElement("span");
+    pill.className = "pill " + (stale ? "warn" : "ok");
+    const dot = document.createElement("i");
+    const bits = [];
+    if (sync.drifted) bits.push(sync.drifted + " edited");
+    if (sync.removed) bits.push(sync.removed + " removed from docs");
+    pill.append(dot, text(stale ? bits.join(", ") : "up to date with the docs"));
+    pill.title = (stale
+      ? bits.join(" and ") + ", out of " + sync.matched + " matched sources."
+      : "All " + sync.matched + " matched sources render to exactly the bytes the " +
+        "corpus holds.") +
+      " Compares each page against the digest of what was ingested.";
+    box.appendChild(pill);
+  }
+
+  // Ingest. The operator picks a folder or a file with the OS chooser and the
+  // browser reads it; nothing here asks the backend to open a path. That is
+  // what lets any folder be a source without the dashboard becoming a way to
+  // read the host's disk, and it is the only arrangement that still works once
+  // the backend is hosted, where there is no operator disk to see.
+  //
+  // Names skipped by default rather than hidden: what goes into the corpus
+  // should be something the operator can see was decided.
+  const SKIP_DIRS = [".git", ".github", "node_modules", "snippets", ".mintlify-eval",
+                     "dist", "build", ".next", "__pycache__", ".venv"];
+  const BINARY_SUFFIXES = [".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".pdf",
+                           ".zip", ".gz", ".woff", ".woff2", ".ttf", ".mp4", ".mp3", ".lock"];
+  const MAX_PICK_BYTES = 2000000;
+
+  function skipByDefault(relative) {
+    const parts = relative.split("/");
+    const lower = relative.toLowerCase();
+    if (parts.some((p) => p.startsWith("."))) return "hidden";
+    if (parts.slice(0, -1).some((p) => SKIP_DIRS.indexOf(p) !== -1)) return "excluded folder";
+    if (BINARY_SUFFIXES.some((x) => lower.endsWith(x))) return "not text";
+    return null;
+  }
+
+  function openPicker() {
+    const box = $("#corpus-panel");
+    box.textContent = "";
+    const wrap = document.createElement("div");
+    wrap.className = "panel pad";
+    const p = document.createElement("p");
+    p.className = "chart-note";
+    p.appendChild(text(
+      "Choose a folder to ingest everything under it, or a single file. The " +
+      "browser reads what you pick and sends the text; the backend never opens " +
+      "anything on this machine."));
+
+    const row = document.createElement("div");
+    row.className = "pick-bar";
+    const folderBtn = document.createElement("button");
+    folderBtn.appendChild(text("Choose folder\u2026"));
+    const fileBtn = document.createElement("button");
+    fileBtn.appendChild(text("Choose file\u2026"));
+    const cancel = document.createElement("button");
+    cancel.appendChild(text("Cancel"));
+    cancel.onclick = () => { box.textContent = ""; };
+
+    // Two inputs rather than one: webkitdirectory turns the chooser into a
+    // directory chooser, so a file selection needs its own.
+    const dirInput = document.createElement("input");
+    dirInput.type = "file";
+    dirInput.multiple = true;
+    dirInput.webkitdirectory = true;
+    dirInput.setAttribute("webkitdirectory", "");
+    dirInput.hidden = true;
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.multiple = true;
+    fileInput.hidden = true;
+
+    folderBtn.onclick = () => dirInput.click();
+    fileBtn.onclick = () => fileInput.click();
+    dirInput.onchange = () => showSelection(box, wrap, [...dirInput.files], true);
+    fileInput.onchange = () => showSelection(box, wrap, [...fileInput.files], false);
+
+    row.append(folderBtn, fileBtn, cancel);
+    wrap.append(p, row, dirInput, fileInput);
+    box.appendChild(wrap);
+  }
+
+  // Indexing a repository is a different route through cognee, not another
+  // kind of file pick: content_type='code' refuses uploads and clones the
+  // repository itself, so there is nothing for the browser to read. Uploaded
+  // code files become prose that happens to contain code; this is what gives
+  // functions, classes and the edges between them.
+  function openRepo() {
+    const box = $("#corpus-panel");
+    box.textContent = "";
+    const wrap = document.createElement("div");
+    wrap.className = "panel";
+    const note = document.createElement("p");
+    note.className = "chart-note";
+    note.appendChild(text(
+      "cognee clones the repository and builds a code graph from it. A URL, " +
+      "not a folder: the clone happens on the cognee server, so a path on this " +
+      "machine would mean nothing to it. Public repositories only \u2014 a " +
+      "private one needs credentials on the tenant."));
+
+    const row = document.createElement("div");
+    row.className = "confirm-row";
+    const field = document.createElement("input");
+    field.type = "text";
+    field.placeholder = "https://github.com/owner/name";
+    field.setAttribute("aria-label", "Repository URL");
+    const go = document.createElement("button");
+    go.appendChild(text("Index repository"));
+    go.disabled = true;
+    const cancel = document.createElement("button");
+    cancel.appendChild(text("Cancel"));
+    cancel.onclick = () => { box.textContent = ""; };
+    const looksLikeRepo = (v) => /^https?:\/\/[^\s/]+\/[^\s/]+\/[^\s]+$/.test(v.trim());
+    field.oninput = () => { go.disabled = !looksLikeRepo(field.value); };
+    field.onkeydown = (e) => { if (e.key === "Enter" && !go.disabled) go.click(); };
+    go.onclick = () => runRepo(box, wrap, field.value.trim(), [field, go, cancel]);
+
+    row.append(field, go, cancel);
+    wrap.append(note, row);
+    box.appendChild(wrap);
+    field.focus();
+  }
+
+  async function runRepo(box, wrap, url, controls) {
+    controls.forEach((c) => (c.disabled = true));
+    const line = document.createElement("p");
+    line.className = "notice";
+    const bar = document.createElement("div");
+    bar.className = "ingest-bar";
+    const fill = document.createElement("i");
+    bar.appendChild(fill);
+    wrap.append(line, bar);
+    const say = (msg) => { line.textContent = ""; line.appendChild(text(msg)); };
+    const setBar = (done, total) => {
+      fill.style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+    };
+    say("Asking cognee to clone " + url + "\u2026");
+
+    let body;
+    try {
+      const r = await fetch(api("/api/dashboard/ingest-repo"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: url }),
+      });
+      body = await r.json();
+      if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+    } catch (e) {
+      say("Could not start: " + e.message);
+      controls.forEach((c) => (c.disabled = false));
+      return;
+    }
+    // A repository becomes graph nodes and no dataset items, so it will never
+    // appear in the sources table however long anyone waits for it.
+    say("Cloning and indexing " + body.repository + ". cognee does the clone, so " +
+        "this runs on its side \u2014 and a repository shows up in the Knowledge " +
+        "graph panel, not in the sources list below.");
+    markGraphStale();
+    load();
+    // The repository is walked by its own pipeline; watching the ordinary one
+    // would show a run that never starts.
+    await watchIngestProgress(say, setBar, wrap, "code_graph_pipeline");
+  }
+
+  function showSelection(box, wrap, files, fromFolder) {
+    if (!files.length) return;
+    // webkitRelativePath is prefixed with the chosen folder's own name. Dropping
+    // it makes paths relative to what was chosen, so picking the docs folder
+    // produces the same item names an earlier ingest of it did - and drift can
+    // still match them to files on disk.
+    const rel = (f) => {
+      const full = f.webkitRelativePath || f.name;
+      return fromFolder && full.indexOf("/") !== -1 ? full.slice(full.indexOf("/") + 1) : full;
+    };
+    const rootName = fromFolder && files[0].webkitRelativePath
+      ? files[0].webkitRelativePath.split("/")[0] : "";
+
+    const picked = files
+      .map((f) => ({ file: f, path: rel(f), skip: skipByDefault(rel(f)) }))
+      .filter((x) => x.path)
+      .sort((a, b) => a.path.localeCompare(b.path));
+
+    wrap.textContent = "";
+    const head = document.createElement("p");
+    head.className = "chart-note";
+    head.appendChild(text(
+      (rootName ? "Selected \u201c" + rootName + "\u201d \u2014 " : "Selected ") +
+      picked.length + (picked.length === 1 ? " file" : " files") +
+      ". Untick anything you do not want ingested. Each folder is tagged as its " +
+      "own node set, so it can be recalled on its own."));
+    wrap.appendChild(head);
+
+    // A real tree, not a flat list of full paths. A repository checkout puts
+    // hundreds of directories under .git alone, and each one arriving as its
+    // own top-level row is what made "I don't want any of .git" a scroll
+    // instead of a click. Nested folders fold and tick as one.
+    const list = document.createElement("div");
+    list.className = "picker";
+    const boxes = [];
+    const groups = [];
+    const dirs = [];
+    const startOpen = picked.length <= 25;
+
+    const root = { name: "", path: "", dirs: new Map(), files: [] };
+    picked.forEach((x) => {
+      const parts = x.path.split("/");
+      const leaf = parts.pop();
+      let node = root;
+      let prefix = "";
+      parts.forEach((part) => {
+        prefix = prefix ? prefix + "/" + part : part;
+        if (!node.dirs.has(part)) {
+          node.dirs.set(part, { name: part, path: prefix, dirs: new Map(), files: [] });
+        }
+        node = node.dirs.get(part);
+      });
+      node.files.push({ item: x, leaf: leaf });
+    });
+
+    function countBeneath(node) {
+      let n = node.files.length;
+      node.dirs.forEach((d) => (n += countBeneath(d)));
+      return n;
+    }
+
+    function fileRow(entry) {
+      const line = document.createElement("label");
+      line.className = "pick-file";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      const tooBig = entry.item.file.size > MAX_PICK_BYTES;
+      cb.checked = !entry.item.skip && !tooBig;
+      cb.dataset.path = entry.item.path;
+      cb._file = entry.item.file;
+      const why = document.createElement("span");
+      why.className = "muted";
+      why.appendChild(text(tooBig ? "too large" : (entry.item.skip || "")));
+      line.append(cb, text(entry.leaf), why);
+      cb.addEventListener("change", () => { syncAll(); count(); });
+      boxes.push(cb);
+      return { line: line, cb: cb };
+    }
+
+    // Each directory owns every checkbox beneath it, however deep, so ticking
+    // one is one decision about a whole subtree rather than a pass over it.
+    function renderDir(node, into) {
+      const group = document.createElement("details");
+      group.className = "pick-group";
+      const header = document.createElement("summary");
+      header.className = "pick-folder";
+      const chev = document.createElement("span");
+      chev.className = "pick-chev";
+      chev.appendChild(text("›"));
+      const all = document.createElement("input");
+      all.type = "checkbox";
+      // Inside a summary, a click is the fold's before it is the checkbox's.
+      all.onclick = (e) => e.stopPropagation();
+      const tally = document.createElement("span");
+      tally.className = "pick-some";
+      header.append(chev, all, text(node.name + "  (" + countBeneath(node) + ")"));
+      // Only a directory that holds files directly becomes a node set; one that
+      // holds nothing but other directories never names a tag.
+      if (node.files.length) {
+        const tag = [rootName, node.path].filter(Boolean).join("/");
+        const setName = document.createElement("code");
+        setName.className = "pick-set";
+        setName.appendChild(text(tag || "—"));
+        header.appendChild(setName);
+      }
+      header.appendChild(tally);
+      group.appendChild(header);
+
+      const body = document.createElement("div");
+      body.className = "pick-children";
+      group.appendChild(body);
+      const mine = renderInto(node, body);
+
+      all.onchange = () => {
+        mine.forEach((c) => (c.checked = all.checked));
+        syncAll();
+        count();
+      };
+      dirs.push({ box: all, tally: tally, mine: mine, group: group });
+      groups.push(group);
+      into.appendChild(group);
+      return mine;
+    }
+
+    // Directories first, then this directory's own files - the shape of the
+    // folder it is standing in.
+    function renderInto(node, into) {
+      const mine = [];
+      [...node.dirs.keys()].sort().forEach((key) => {
+        renderDir(node.dirs.get(key), into).forEach((c) => mine.push(c));
+      });
+      node.files
+        .sort((a, b) => a.leaf.localeCompare(b.leaf))
+        .forEach((entry) => {
+          const row = fileRow(entry);
+          into.appendChild(row.line);
+          mine.push(row.cb);
+        });
+      return mine;
+    }
+
+    function syncAll() {
+      dirs.forEach((d) => {
+        const on = d.mine.filter((c) => c.checked).length;
+        d.box.checked = on === d.mine.length && on > 0;
+        d.box.indeterminate = on > 0 && on < d.mine.length;
+        d.tally.textContent = on === 0 ? "none"
+          : on === d.mine.length ? "all" : on + " of " + d.mine.length;
+      });
+    }
+
+    renderInto(root, list);
+    syncAll();
+    // A folder with nothing ticked in it is one nobody needs to look inside -
+    // .git and node_modules are the whole point of this - so it starts shut
+    // whatever the selection size. The rest follow the small-selection rule.
+    dirs.forEach((d) => {
+      const anyOn = d.mine.some((c) => c.checked);
+      d.group.open = anyOn && startOpen;
+    });
+    wrap.appendChild(list);
+
+    if (groups.length > 1) {
+      const folds = document.createElement("p");
+      folds.className = "pick-bar";
+      const toggle = document.createElement("button");
+      const setAll = (open) => {
+        groups.forEach((g) => (g.open = open));
+        toggle.textContent = open ? "Collapse all" : "Expand all";
+      };
+      toggle.onclick = () => setAll(!groups.every((g) => g.open));
+      toggle.textContent = groups.every((g) => g.open) ? "Collapse all" : "Expand all";
+      folds.appendChild(toggle);
+      wrap.insertBefore(folds, list);
+    }
+
+    const bar = document.createElement("p");
+    bar.className = "pick-bar";
+    const label = document.createElement("span");
+    label.className = "pick-count";
+    const go = document.createElement("button");
+    const back = document.createElement("button");
+    back.appendChild(text("Choose again"));
+    back.onclick = () => openPicker();
+    const cancel = document.createElement("button");
+    cancel.appendChild(text("Cancel"));
+    cancel.onclick = () => { box.textContent = ""; };
+    const count = () => {
+      const n = boxes.filter((c) => c.checked).length;
+      label.textContent = n + " of " + boxes.length + " selected";
+      go.textContent = "Ingest " + n + (n === 1 ? " file" : " files");
+      go.disabled = !n;
+    };
+    go.onclick = () => runIngest(box, boxes.filter((c) => c.checked), go, count, rootName);
+    bar.append(go, back, cancel, label);
+    wrap.appendChild(bar);
+    count();
+  }
+
+  // Files go up in batches, not in one request. Each upload is a round trip
+  // costing about a second even with the backend sending four at a time, so a
+  // folder of 250 pages is minutes of work; sent as one request it was one
+  // opaque wait with "Queueing…" on a button and no way to tell progress from a
+  // hang. A batch is small enough to report between, large enough that the
+  // per-request overhead stays noise.
+  const INGEST_BATCH = 20;
+
+  async function runIngest(box, chosen, go, count, rootName) {
+    if (!confirm("Ingest " + chosen.length + " files into " + corpus.dataset + "?\n\n" +
+                 "Each file is processed by cognee, which costs credits and takes time. " +
+                 "Files already in the corpus with identical content are skipped.")) return;
+
+    // The outcome replaces the picker and stays there. It used to be a toast,
+    // which expired after four seconds and took the list of skipped files with
+    // it before anyone could read why anything had been skipped.
+    box.textContent = "";
+    const panel = document.createElement("div");
+    panel.className = "panel";
+    const line = document.createElement("p");
+    line.className = "notice";
+    const bar = document.createElement("div");
+    bar.className = "ingest-bar";
+    const fill = document.createElement("i");
+    bar.appendChild(fill);
+    const detail = document.createElement("div");
+    panel.append(line, bar, detail);
+    box.appendChild(panel);
+
+    const say = (msg) => { line.textContent = ""; line.appendChild(text(msg)); };
+    const setBar = (done, total) => {
+      fill.style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+    };
+
+    say("Reading " + chosen.length + (chosen.length === 1 ? " file…" : " files…"));
+    let payload;
+    try {
+      payload = await Promise.all(chosen.map(async (cb) => ({
+        path: cb.dataset.path, text: await cb._file.text(),
+      })));
+    } catch (e) {
+      say("Could not read the files: " + e.message);
+      return;
+    }
+
+    const queued = [];
+    const skipped = [];
+    const sets = new Set();
+    for (let i = 0; i < payload.length; i += INGEST_BATCH) {
+      const batch = payload.slice(i, i + INGEST_BATCH);
+      say("Uploading… " + i + " of " + payload.length);
+      setBar(i, payload.length);
+      let body;
+      try {
+        const r = await fetch(api("/api/dashboard/ingest"), {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ files: batch, root: rootName || "" }),
+        });
+        body = await r.json();
+        if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+      } catch (e) {
+        // Say how far it got. The batches before this one are already in
+        // cognee, so "failed" on its own would misdescribe the corpus.
+        setBar(i, payload.length);
+        say("Upload failed after " + queued.length + " of " + payload.length +
+            " files: " + e.message);
+        markGraphStale();
+        load();
+        return;
+      }
+      body.skipped.forEach((s) => skipped.push(s));
+      (body.node_sets || []).forEach((s) => sets.add(s));
+      for (let n = 0; n < body.queued; n++) queued.push(1);
+    }
+    setBar(1, 1);
+    say("Queued " + queued.length + (queued.length === 1 ? " file" : " files") +
+        " in " + sets.size + (sets.size === 1 ? " node set" : " node sets") +
+        (skipped.length ? ", " + skipped.length + " skipped" : "") +
+        ". cognee is building the graph.");
+    renderSkipped(detail, skipped);
+    markGraphStale();
+    load();
+    await watchIngestProgress(say, setBar, detail, "cognify_pipeline");
+  }
+
+  function renderSkipped(into, skipped) {
+    if (!skipped.length) return;
+    const fold = document.createElement("details");
+    fold.className = "pick-group skipped";
+    const head = document.createElement("summary");
+    head.className = "pick-folder";
+    head.appendChild(text(skipped.length + " skipped — why"));
+    fold.appendChild(head);
+    skipped.slice(0, 200).forEach((s) => {
+      const row = document.createElement("div");
+      row.className = "pick-file";
+      const why = document.createElement("span");
+      why.className = "muted";
+      why.appendChild(text(s.why || ""));
+      row.append(text(s.path), why);
+      fold.appendChild(row);
+    });
+    into.appendChild(fold);
+  }
+
+  // cognee accepts an upload and builds the graph after it, so the ingest is
+  // not over when the last batch lands. This follows the pipeline until it is,
+  // which is the difference between "queued" and "answerable".
+  async function watchIngestProgress(say, setBar, detail, pipeline) {
+    let lastCount = null;
+    let still = 0;
+    let countsWarned = false;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 6000));
+      let p;
+      try {
+        p = await fetch(api("/api/dashboard/ingest-progress") +
+                        "&pipeline=" + (pipeline || "cognify_pipeline")).then((r) => r.json());
+      } catch (e) {
+        continue;
+      }
+      if (p.status === "completed") {
+        setBar(1, 1);
+        say("Ingested. " + p.item_count + " sources in the corpus, graph built.");
+        markGraphStale();
+        load();
+        return;
+      }
+      if (p.status === "failed" || p.status === "errored") {
+        say("cognee reported the run failed. " + p.item_count + " sources are in the corpus.");
+        load();
+        return;
+      }
+      // total_items is null until the first in-flight tick, and on a cognee
+      // with no progress endpoint it never arrives at all - so the corpus count
+      // carries the report, and the reason it is carrying it is said once.
+      if (p.counts_available === false && !countsWarned) {
+        countsWarned = true;
+        const note = document.createElement("p");
+        note.className = "chart-note";
+        note.appendChild(text(
+          "This cognee reports the run's state but not its item counts, so the " +
+          "figure below is the corpus filling rather than the pipeline's own progress."));
+        if (detail) detail.appendChild(note);
+      }
+      if (p.total_items) {
+        setBar(p.completed_items || 0, p.total_items);
+        say("Building the graph… " + (p.completed_items || 0) + " of " + p.total_items +
+            (p.current_stage ? " — " + p.current_stage : ""));
+      } else {
+        say("Building the graph… " + p.item_count + " sources in the corpus so far.");
+      }
+      still = p.item_count === lastCount ? still + 1 : 0;
+      lastCount = p.item_count;
+      if (still >= 5 && p.status !== "running") break;
+    }
+    say("Still building after several minutes. The corpus fills as it goes — reload to check.");
+    load();
+  }
+
+  // Clearing the corpus is the slowest destructive thing here and the one that
+  // used to look most like nothing happening: a browser prompt, then an
+  // unmarked wait, then a toast that expired after four seconds. It confirms
+  // and reports in the page instead, where the outcome stays put.
+  function clearCorpus() {
+    const name = corpus.dataset;
+    const box = $("#corpus-panel");
+    box.textContent = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "panel";
+    const warn = document.createElement("p");
+    warn.className = "notice";
+    warn.appendChild(text(
+      "Deleting \u201c" + name + "\u201d removes all " + corpus.item_count +
+      " sources in it. The widget answers nothing until something is ingested " +
+      "again, and rebuilding the corpus costs another cognify run."));
+
+    const row = document.createElement("div");
+    row.className = "confirm-row";
+    const field = document.createElement("input");
+    field.type = "text";
+    field.placeholder = "type " + name + " to confirm";
+    field.setAttribute("aria-label", "Type the dataset name to confirm deletion");
+    const go = document.createElement("button");
+    go.className = "danger";
+    go.appendChild(text("Delete dataset"));
+    go.disabled = true;
+    const cancel = document.createElement("button");
+    cancel.appendChild(text("Cancel"));
+    cancel.onclick = () => { box.textContent = ""; };
+
+    // The name sits beside the field, so a typo is visible while it is being
+    // typed rather than coming back as a 400 once the button has been pressed.
+    field.oninput = () => { go.disabled = field.value !== name; };
+    field.onkeydown = (e) => { if (e.key === "Enter" && !go.disabled) go.click(); };
+    go.onclick = () => runClear(name, wrap, [field, go, cancel]);
+
+    row.append(field, go, cancel);
+    wrap.append(warn, row);
+    box.appendChild(wrap);
+    field.focus();
+  }
+
+  async function runClear(name, wrap, controls) {
+    controls.forEach((c) => (c.disabled = true));
+    const status = document.createElement("p");
+    status.className = "notice";
+    status.appendChild(text("Clearing " + name + "\u2026"));
+    wrap.appendChild(status);
+    const say = (msg) => { status.textContent = ""; status.appendChild(text(msg)); };
+
+    try {
+      const r = await fetch(api("/api/dashboard/clear"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: name }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+      // cognee accepts the delete and drains the dataset over the minutes that
+      // follow, so this reports what was queued rather than claiming a finish
+      // that has not happened. Without the watch below, the next render shows a
+      // half-emptied corpus, which reads as the clear having failed.
+      say("Clearing " + body.cleared + " \u2014 " + body.items_queued +
+          " sources queued. This continues in the background.");
+      await watchClearDrain(say);
+    } catch (e) {
+      // A timeout is not proof the delete did not start, so this says what is
+      // known rather than promising nothing happened.
+      say("Clear failed: " + e.message + ". Reload to see the corpus as it stands.");
+      controls.forEach((c) => (c.disabled = false));
+    }
+  }
+
+  async function watchClearDrain(say) {
+    let previous = null;
+    let unchanged = 0;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 6000));
+      let d;
+      try {
+        d = await fetch(api("/api/dashboard")).then((r) => r.json());
+      } catch (e) {
+        continue;
+      }
+      if (!d.corpus || !d.corpus.exists) {
+        say("Cleared. The dataset is gone \u2014 ingest something to start answering again.");
+        markGraphStale();
+        load();
+        return;
+      }
+      const left = d.corpus.item_count;
+      say("Clearing\u2026 " + left + " sources left.");
+      unchanged = left === previous ? unchanged + 1 : 0;
+      previous = left;
+      if (unchanged >= 3) break;
+    }
+    say("Still deleting after several minutes. Reload to check again.");
+    load();
+  }
+
+  function renderCorpusActions() {
+    const box = $("#corpus-actions");
+    box.textContent = "";
+    const ingest = document.createElement("button");
+    ingest.appendChild(text("Ingest"));
+    ingest.title = "Add a folder or a file to the corpus";
+    ingest.onclick = openPicker;
+    const clear = document.createElement("button");
+    const repoBtn = document.createElement("button");
+    repoBtn.appendChild(text("Index repository\u2026"));
+    repoBtn.title = "Build a code graph from a git repository";
+    repoBtn.onclick = openRepo;
+    clear.className = "danger";
+    clear.appendChild(text("Clear dataset"));
+    clear.title = "Delete the dataset and everything in it";
+    clear.onclick = clearCorpus;
+    box.append(ingest, repoBtn, clear);
+  }
+
+  function renderSources(items) {
+    const q = $("#filter").value.trim().toLowerCase();
+    const body = $("#sources tbody");
+    body.textContent = "";
+    const matches = items.filter((i) => !q || i.name.toLowerCase().includes(q));
+    const visible = matches.slice(0, shown);
+
+    const more = $("#sources-more");
+    more.textContent = "";
+    const label = document.createElement("span");
+    label.className = "muted";
+    label.appendChild(text(
+      matches.length === 0
+        ? "No sources match \u201c" + q + "\u201d"
+        : "Showing " + visible.length + " of " + matches.length +
+          (q ? " matching \u201c" + q + "\u201d" : " sources")));
+    more.appendChild(label);
+    if (matches.length > visible.length) {
+      const nextChunk = Math.min(PAGE, matches.length - visible.length);
+      const moreBtn = document.createElement("button");
+      moreBtn.appendChild(text("Show " + nextChunk + " more"));
+      moreBtn.onclick = () => { shown += PAGE; renderSources(items); };
+      const allBtn = document.createElement("button");
+      allBtn.appendChild(text("Show all " + matches.length));
+      allBtn.onclick = () => { shown = matches.length; renderSources(items); };
+      more.append(moreBtn, allBtn);
+    } else if (shown > PAGE && matches.length > PAGE) {
+      const lessBtn = document.createElement("button");
+      lessBtn.appendChild(text("Collapse"));
+      lessBtn.onclick = () => { shown = PAGE; renderSources(items); };
+      more.appendChild(lessBtn);
+    }
+
+    visible
+      .forEach((i) => {
+        const tr = body.insertRow();
+        const nameTd = cell(tr, i.name, i.source || "");
+        nameTd.firstChild && (nameTd.className = "src-name");
+        if (i.source) {
+          const note = document.createElement("div");
+          note.className = "row-note";
+          note.appendChild(text(i.source.replace(/^file:\/\//, "")));
+          nameTd.appendChild(note);
+        }
+        const st = tr.insertCell();
+        const STATES = {
+          current: ["ok", "current",
+            "The page renders to exactly the bytes the corpus holds."],
+          edited: ["warn", "edited",
+            "The page no longer renders to the bytes the corpus holds \u2014 " +
+            "reingest to pick up the change."],
+          removed: ["warn", "removed from docs",
+            "This page no longer exists in the repository, but its content is still " +
+            "in the corpus: the widget can answer from it and cite a URL that 404s. " +
+            "Delete it here."],
+          foreign: ["neutral", "not from docs",
+            "No documentation page behind this item \u2014 the demo seeds are the " +
+            "usual case. Nothing to compare it against."],
+          unknown: ["neutral", "not comparable",
+            "The page is there, but this item's stored copy carries no digest to " +
+            "compare it against, so nothing can be claimed either way."],
+        };
+        const spec = STATES[i.doc_state];
+        if (spec) {
+          const pill = document.createElement("span");
+          pill.className = "pill sm " + spec[0];
+          const dot = document.createElement("i");
+          pill.append(dot, text(spec[1]));
+          pill.title = spec[2];
+          st.appendChild(pill);
+        }
+        cell(tr, ago(i.updated), i.updated).className = "when";
+        cell(tr, ago(i.created), i.created).className = "when";
+
+        const actions = tr.insertCell();
+        actions.className = "act";
+
+        const re = document.createElement("button");
+        re.appendChild(text("Reingest"));
+        re.title = "Delete and re-add the stored copy, forcing a fresh pass. " +
+                   "Does not re-read the original page.";
+        re.onclick = async () => {
+          if (!confirm(
+                "Reingest \u201c" + i.name + "\u201d?\n\n" +
+                "cognee has no in-place refresh, so this deletes the item and adds its " +
+                "stored bytes back. It gets a new id and a fresh timestamp.\n\n" +
+                "It replays what is stored - it does NOT re-read the original page, so " +
+                "edits made to the docs will not appear.")) return;
+          re.disabled = true;
+          del.disabled = true;
+          re.textContent = "Reingesting\u2026";
+          try {
+            const r = await fetch(api("/api/dashboard/data/" + encodeURIComponent(i.id) +
+                                      "/reingest"), { method: "POST" });
+            const body = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(body.detail || "HTTP " + r.status);
+            toast("Reingested " + i.name + " (" + body.bytes + " bytes)");
+            // The item has a new id now, so the cached row is stale.
+            markGraphStale();
+            await load();
+          } catch (e) {
+            re.disabled = false;
+            del.disabled = false;
+            re.textContent = "Reingest";
+            toast("Reingest failed: " + e.message, true);
+          }
+        };
+        actions.appendChild(re);
+
+        var del = document.createElement("button");
+        del.className = "danger";
+        del.appendChild(text("Delete"));
+        del.onclick = async () => {
+          if (!confirm("Permanently delete \"" + i.name + "\" from the corpus?\n\n" +
+                       "This cannot be undone, and the widget will stop answering from it.")) return;
+          del.disabled = true;
+          del.textContent = "Deleting…";
+          try {
+            const r = await fetch(api("/api/dashboard/data/" + encodeURIComponent(i.id)),
+                                  { method: "DELETE" });
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            toast("Deleted " + i.name);
+            // Re-render rather than just fading the row, so the counts in the
+            // heading and the footer cannot drift from what is actually there.
+            corpus.items = corpus.items.filter((x) => x.id !== i.id);
+            corpus.item_count = corpus.items.length;
+            $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
+            // Drift is decided per item against the source files, so removing
+            // one changes a tally only the server can recompute. This used to
+            // patch a guess into corpus.sync using fields the pill does not
+            // read, which rendered as a warning with no text in it; saying
+            // nothing until the next load is the honest version.
+            corpus.sync = { state: "unknown" };
+            renderSyncPill(corpus.sync);
+            renderSources(corpus.items);
+            markGraphStale();
+          } catch (e) {
+            del.disabled = false;
+            del.textContent = "Delete";
+            toast("Delete failed: " + e.message, true);
+          }
+        };
+        actions.appendChild(del);
+      });
+  }
+
+  function renderSessions(list) {
+    const body = $("#sessions tbody");
+    body.textContent = "";
+    list.forEach((s) => {
+      const tr = body.insertRow();
+      cell(tr, ago(s.last_activity_at || s.started_at),
+           s.last_activity_at || s.started_at).className = "when";
+      // web:demo:visitor-x:conv-y -> the identifying half
+      cell(tr, s.session_id.replace(/^web:[^:]*:/, ""), s.session_id);
+      // msg_count is null on the list endpoint (only the detail carries it),
+      // so show tokens, which are populated, and let turns appear on expand.
+      cell(tr, (s.tokens_in || 0).toLocaleString() + " in / " +
+               (s.tokens_out || 0).toLocaleString() + " out",
+           "Totalled across every turn in this conversation, not the visible one")
+        .className = "num";
+      const actions = tr.insertCell();
+      actions.className = "act";
+      const btn = document.createElement("button");
+      btn.appendChild(text("View"));
+      let open = null;
+      btn.onclick = async () => {
+        if (open) { open.remove(); open = null; btn.textContent = "View"; return; }
+        btn.disabled = true;
+        try {
+          const r = await fetch(api("/api/dashboard/sessions/" + s.session_id));
+          const d = await r.json();
+          open = body.insertRow(tr.rowIndex);
+          const td = open.insertCell();
+          td.colSpan = 4;
+          td.className = "transcript";
+          if (!d.turns.length) {
+            td.appendChild(text("No recorded turns for this conversation."));
+            td.className = "empty";
+          }
+          d.turns.forEach((t) => {
+            const wrap = document.createElement("div");
+            wrap.className = "turn";
+            const qRole = document.createElement("div");
+            qRole.className = "role";
+            qRole.appendChild(text("visitor"));
+            const q = document.createElement("div");
+            q.className = "q";
+            q.appendChild(text(t.question));
+            const aRole = document.createElement("div");
+            aRole.className = "role";
+            aRole.appendChild(text("widget"));
+            const a = document.createElement("div");
+            a.className = "a";
+            a.appendChild(text(t.answer));
+            const when = document.createElement("div");
+            when.className = "turn-meta";
+            when.appendChild(text(ago(t.time) + (t.feedback_score != null
+              ? " · feedback " + t.feedback_score : "")));
+            wrap.append(qRole, q, aRole, a, when);
+            td.appendChild(wrap);
+          });
+          btn.textContent = "Hide";
+        } catch (e) {
+          toast("Could not load conversation: " + e.message, true);
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      actions.appendChild(btn);
+    });
+  }
+
+  // Horizontal bars: the categories are named, the values are magnitudes, and
+  // the labels are long - so bars run along the length the eye compares best.
+  function barChart(parent, heading, note, rows, total) {
+    const max = Math.max(...rows.map((r) => r.count), 1);
+    const box = document.createElement("div");
+    box.className = "chart";
+    const h = document.createElement("div");
+    h.className = "chart-h";
+    h.appendChild(text(heading));
+    if (note) {
+      const small = document.createElement("small");
+      small.appendChild(text(note));
+      h.appendChild(small);
+    }
+    box.appendChild(h);
+    rows.forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "bar-row";
+      const lab = document.createElement("div");
+      lab.className = "bar-lab";
+      lab.appendChild(text(r.name));
+      lab.title = r.name;
+      const track = document.createElement("div");
+      track.className = "bar-track";
+      const fill = document.createElement("div");
+      fill.className = "bar-fill";
+      fill.style.width = (r.count / max) * 100 + "%";
+      track.appendChild(fill);
+      const val = document.createElement("div");
+      val.className = "bar-val";
+      val.appendChild(text(r.count.toLocaleString()));
+      const share = total ? ((r.count / total) * 100).toFixed(1) + "% of " +
+                            total.toLocaleString() : "";
+      row.title = r.name + " - " + r.count.toLocaleString() + (share ? " (" + share + ")" : "");
+      row.append(lab, track, val);
+      box.appendChild(row);
+    });
+    parent.appendChild(box);
+  }
+
+  // cognee renders the graph page itself - the same HTML artifact the SDK
+  // writes - so it is embedded rather than reimplemented. It needs
+  // allow-same-origin: one of its scripts touches localStorage, which throws
+  // under an opaque origin and kills the render before it draws anything.
+  // The content is first-party (our backend fetched it from our tenant), so
+  // that is an acceptable trust boundary here; isolating it properly would
+  // mean serving it from a second origin.
+  async function loadGraphFrame(btn, status, refresh) {
+    btn.disabled = true;
+    const started = Date.now();
+    const tick = setInterval(() => {
+      status.textContent = "rendering on cognee\u2026 " +
+        Math.round((Date.now() - started) / 1000) + "s";
+    }, 1000);
+    status.textContent = "rendering on cognee\u2026";
+    try {
+      const r = await fetch(api("/api/dashboard/graph-html" + (refresh ? "&refresh=true" : "")));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const cached = (r.headers.get("X-Cache") || "").startsWith("hit");
+      const html = await r.text();
+      const wrap = $("#graph-frame-wrap");
+      wrap.textContent = "";
+      const f = document.createElement("iframe");
+      f.id = "graph-frame";
+      f.setAttribute("sandbox", "allow-scripts allow-same-origin");
+      f.setAttribute("title", "cognee knowledge graph");
+      f.srcdoc = html;
+      wrap.appendChild(f);
+      status.textContent = cached
+        ? "from cache \u00b7 " + Math.round(html.length / 1024) + " KB"
+        : "rendered in " + Math.round((Date.now() - started) / 1000) +
+          "s \u00b7 cached 15 min";
+      btn.textContent = "Rebuild graph";
+      btn.disabled = false;
+      btn.onclick = () => loadGraphFrame(btn, status, true);
+    } catch (e) {
+      status.textContent = "render failed (" + e.message + ")";
+      btn.disabled = false;
+    } finally {
+      clearInterval(tick);
+    }
+  }
+
+  function stat(parent, value, label, sub) {
+    const w = document.createElement("div");
+    const v = document.createElement("div");
+    v.className = "stat-v";
+    v.appendChild(text(value));
+    const l = document.createElement("div");
+    l.className = "stat-l";
+    l.appendChild(text(label));
+    w.append(v, l);
+    if (sub) {
+      const sb = document.createElement("div");
+      sb.className = "stat-sub";
+      sb.appendChild(text(sub));
+      w.appendChild(sb);
+    }
+    parent.appendChild(w);
+  }
+
+  // Per-mark hover. Native title() waits about a second and cannot be styled;
+  // this follows the pointer and answers the question the bar poses.
+  const tip = () => $("#tip");
+
+  function showTip(html, evt) {
+    const t = tip();
+    t.textContent = "";
+    t.appendChild(html);
+    t.style.display = "block";
+    moveTip(evt);
+  }
+
+  function moveTip(evt) {
+    const t = tip();
+    const r = t.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Prefer above-right of the pointer, flip when that would clip...
+    let x = evt.clientX + 14;
+    let y = evt.clientY - r.height - 12;
+    if (x + r.width > vw - 8) x = evt.clientX - r.width - 14;
+    if (y < 8) y = evt.clientY + 18;
+    // ...then clamp to the viewport regardless. Flipping alone still let the
+    // tooltip land off-screen near the bottom edge, where it silently showed
+    // nothing at all.
+    x = Math.max(8, Math.min(x, vw - r.width - 8));
+    y = Math.max(8, Math.min(y, vh - r.height - 8));
+    t.style.left = x + "px";
+    t.style.top = y + "px";
+  }
+
+  function hideTip() {
+    tip().style.display = "none";
+  }
+
+  function dayTip(d) {
+    const total = d.answered + d.unanswered;
+    const frag = document.createDocumentFragment();
+    const head = document.createElement("b");
+    head.appendChild(text(d.day));
+    frag.appendChild(head);
+    if (!total) {
+      const none = document.createElement("div");
+      none.className = "muted";
+      none.appendChild(text("no questions"));
+      frag.appendChild(none);
+      return frag;
+    }
+    [["answered", d.answered, "var(--s1)"], ["unanswered", d.unanswered, "var(--s2)"]]
+      .forEach(([name, n, col]) => {
+        if (!n && name === "unanswered") return;
+        const row = document.createElement("div");
+        row.className = "r";
+        const left = document.createElement("span");
+        const dot = document.createElement("i");
+        dot.style.background = col;
+        left.append(dot, text(name));
+        const right = document.createElement("span");
+        right.appendChild(text(n));
+        row.append(left, right);
+        frag.appendChild(row);
+      });
+    return frag;
+  }
+
+  // Presets, not a calendar: nobody fights a date grid for "last 7 days".
+  const RANGES = [
+    { days: 7, label: "Last 7 days" },
+    { days: 14, label: "Last 14 days" },
+    { days: 30, label: "Last 30 days" },
+    { days: 90, label: "Last 90 days" },
+  ];
+  const RANGE_KEY = "cognee-dash-range";
+  let rangeDays = 7;
+  try {
+    const saved = parseInt(localStorage.getItem(RANGE_KEY), 10);
+    if (RANGES.some((r) => r.days === saved)) rangeDays = saved;
+  } catch (e) {
+    /* storage blocked - the default stands */
+  }
+
+  function renderRangePicker() {
+    const box = $("#an-range-picker");
+    box.textContent = "";
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", "Analytics period");
+    RANGES.forEach((r) => {
+      const o = document.createElement("option");
+      o.value = String(r.days);
+      o.appendChild(text(r.label));
+      if (r.days === rangeDays) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => {
+      rangeDays = parseInt(sel.value, 10);
+      try { localStorage.setItem(RANGE_KEY, String(rangeDays)); } catch (e) { /* fine */ }
+      loadAnalytics();
+    };
+    box.appendChild(sel);
+  }
+
+  async function loadAnalytics() {
+    const scope = $("#an-scope");
+    scope.classList.add("loading");
+    // On the first load the panels are still empty, so dimming them alone
+    // shows nothing at all. Say what is happening, the way the graph fold does.
+    if (!$("#an-stats").childElementCount) $("#an-range").textContent = "counting…";
+    try {
+      const a = await fetch(api("/api/dashboard/analytics?days=" + rangeDays))
+        .then((r) => {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        });
+      renderAnalytics(a);
+    } catch (e) {
+      toast("Could not load analytics: " + e.message, true);
+    } finally {
+      scope.classList.remove("loading");
+    }
+  }
+
+  function renderAnalytics(a) {
+    const t = a.totals;
+    $("#an-range").textContent = "last " + a.days + " days";
+
+    const st = $("#an-stats");
+    st.textContent = "";
+    stat(st, t.conversations.toLocaleString(), "conversations");
+    stat(st, t.questions.toLocaleString(), "questions");
+    stat(st, t.visitors.toLocaleString(), "visitors");
+    // Answered/unanswered is the number worth acting on: an unanswered
+    // question is a documentation gap with a transcript attached.
+    const pct = t.questions ? Math.round((t.answered / t.questions) * 100) : 0;
+    stat(st, pct + "%", "answered",
+         t.unanswered + " of " + t.questions + " unanswered");
+    stat(st, (t.tokens_in + t.tokens_out).toLocaleString(), "tokens",
+         t.tokens_in.toLocaleString() + " in / " + t.tokens_out.toLocaleString() + " out");
+
+    const leg = $("#an-legend");
+    leg.textContent = "";
+    [["answered", "var(--s1)"], ["unanswered", "var(--s2)"]].forEach(([name, col]) => {
+      const w = document.createElement("span");
+      const i = document.createElement("i");
+      i.style.background = col;
+      w.append(i, text(name));
+      leg.appendChild(w);
+    });
+
+    const max = Math.max(1, ...a.per_day.map((d) => d.answered + d.unanswered));
+    const days = $("#an-days");
+    const axis = $("#an-axis");
+    days.textContent = "";
+    axis.textContent = "";
+    a.per_day.forEach((d, idx) => {
+      const total = d.answered + d.unanswered;
+      const col = document.createElement("div");
+      col.className = "day";
+      if (!total) {
+        const z = document.createElement("div");
+        z.className = "zero";
+        col.appendChild(z);
+      } else {
+        [["u", d.unanswered], ["a", d.answered]].forEach(([cls, n]) => {
+          if (!n) return;
+          const seg = document.createElement("div");
+          seg.className = "seg " + cls;
+          seg.style.height = (n / max) * 100 + "%";
+          col.appendChild(seg);
+        });
+      }
+      // Keyboard reaches the same detail as the pointer, and a screen reader
+      // gets it without either.
+      col.tabIndex = 0;
+      col.setAttribute("role", "img");
+      col.setAttribute("aria-label",
+        d.day + ": " + total + " question" + (total === 1 ? "" : "s") +
+        (d.unanswered ? ", " + d.unanswered + " unanswered" : ""));
+      col.removeAttribute("title");
+      col.addEventListener("mouseenter", (e) => showTip(dayTip(d), e));
+      col.addEventListener("mousemove", moveTip);
+      col.addEventListener("mouseleave", hideTip);
+      col.addEventListener("focus", () => {
+        const r = col.getBoundingClientRect();
+        showTip(dayTip(d), { clientX: r.left + r.width / 2, clientY: r.top });
+      });
+      col.addEventListener("blur", hideTip);
+      days.appendChild(col);
+      const lab = document.createElement("span");
+      // Only the ends and the middle get a label; 14 dates would collide.
+      const show = idx === 0 || idx === a.per_day.length - 1 ||
+                   idx === Math.floor(a.per_day.length / 2);
+      lab.appendChild(text(show ? d.day.slice(5) : ""));
+      axis.appendChild(lab);
+    });
+
+    const top = $("#an-top");
+    top.textContent = "";
+    if (!a.top_questions.length) {
+      top.className = "empty";
+      top.appendChild(text("No questions asked yet."));
+      return;
+    }
+    a.top_questions.forEach((q, i) => {
+      const row = document.createElement("div");
+      row.className = "rank";
+      const n = document.createElement("span");
+      n.className = "i";
+      n.appendChild(text(String(i + 1)));
+      const qq = document.createElement("span");
+      qq.className = "q";
+      qq.appendChild(text(q.question));
+      qq.title = q.question;
+      const c = document.createElement("span");
+      c.className = "c";
+      c.appendChild(text(q.count));
+      row.append(n, qq, c);
+      top.appendChild(row);
+    });
+  }
+
+  let compositionStarted = false;
+  // When the corpus last changed under the graph panel, so a recount can say
+  // whether cognee has had time to catch up.
+  let corpusChangedAt = 0;
+
+  function renderComposition(g) {
+    const charts = $("#graph-charts");
+    charts.textContent = "";
+    barChart(charts, "Nodes by type", "", g.node_types, g.node_total);
+    barChart(charts, "Edges by relationship", "top 10 of " + g.edge_label_distinct,
+             g.edge_labels, g.edge_total);
+    if (g.edge_label_other) {
+      const n = document.createElement("p");
+      n.className = "chart-note";
+      n.appendChild(text(g.edge_label_other.toLocaleString() +
+        " further edges across " + (g.edge_label_distinct - 10) +
+        " less common relationships are not shown."));
+      charts.appendChild(n);
+    }
+  }
+
+  // Background, after first paint, at most once. requestIdleCallback keeps it
+  // off the critical path; the timeout is the fallback where it is unsupported.
+  // A corpus change makes this panel wrong rather than merely old: the counts
+  // describe a corpus that no longer exists, and any rendered graph is a
+  // picture of it. The counts are recounted straight away because that costs
+  // seconds; the render is not, because it costs about forty and cognee builds
+  // the graph behind an ingest, so rebuilding now would draw the shape the
+  // ingest has not reached yet. The picture is labelled instead, and the button
+  // that rebuilds it is already there.
+  function markGraphStale() {
+    corpusChangedAt = Date.now();
+    const status = document.querySelector(".viz-status");
+    if ($("#graph-frame") && status) {
+      status.textContent = "rendered before the last corpus change — rebuild to update";
+    }
+    prefetchComposition(true);
+  }
+
+  // Two kinds of thing live in this corpus and they are not rows in one list.
+  // A file is one ingested document, with a status against its source and a
+  // data id behind Reingest and Delete; a repository is neither - it becomes
+  // graph nodes directly and owns no data id at all. Tabs keep both visible
+  // without the columns of one describing the other.
+  let corpusTab = "files";
+  let repoCount = 0;
+  // Repositories arrive with the graph breakdown, seconds after the page. Until
+  // then the count is not zero, it is unknown - showing 0 would report "none
+  // indexed" for a corpus that has one.
+  let reposKnown = false;
+
+  function renderCorpusTabs() {
+    const bar = $("#corpus-tabs");
+    bar.textContent = "";
+    // Both counts read "…" until known rather than 0. Repositories now arrive
+    // first - they come off a cache in a millisecond while the corpus is a
+    // round trip - so whichever is still missing would otherwise claim none.
+    [["files", "Documentation & files", corpus ? corpus.item_count : "\u2026"],
+     ["repos", "Repositories", reposKnown ? repoCount : "\u2026"]].forEach(([key, label, n]) => {
+      const b = document.createElement("button");
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", String(corpusTab === key));
+      b.appendChild(text(label));
+      const count = document.createElement("span");
+      count.className = "tab-n";
+      count.appendChild(text(String(n)));
+      b.appendChild(count);
+      b.onclick = () => { corpusTab = key; renderCorpusTabs(); };
+      bar.appendChild(b);
+    });
+    $("#tab-files").hidden = corpusTab !== "files";
+    $("#tab-repos").hidden = corpusTab !== "repos";
+  }
+
+  function showReposLoading() {
+    const box = $("#corpus-repos");
+    if (box.querySelector(".repo-row")) return;
+    box.textContent = "";
+    const waiting = document.createElement("p");
+    waiting.className = "repo-empty";
+    waiting.appendChild(text("Reading the graph\u2026"));
+    box.appendChild(waiting);
+  }
+
+  function renderRepositories(repos) {
+    repoCount = repos.length;
+    reposKnown = true;
+    const box = $("#corpus-repos");
+    box.textContent = "";
+    const panel = document.createElement("div");
+    panel.className = "panel pad";
+    if (!repos.length) {
+      const empty = document.createElement("p");
+      empty.className = "repo-empty";
+      empty.appendChild(text(
+        "No repositories indexed. \u201cIndex repository\u2026\u201d builds a code " +
+        "graph from a git URL: symbols, files and the dependencies between them."));
+      panel.appendChild(empty);
+    }
+    repos.forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "repo-row";
+      const name = document.createElement("code");
+      name.appendChild(text(r.origin || r.name));
+      const stat = document.createElement("span");
+      stat.className = "muted";
+      stat.appendChild(text(
+        (r.nodes ? r.nodes.toLocaleString() + " nodes, " : "") +
+        (r.edges ? r.edges.toLocaleString() + " edges" : "") +
+        (r.loaded_at ? " \u00b7 indexed " + ago(r.loaded_at) : "")));
+      row.append(name, stat);
+      panel.appendChild(row);
+    });
+    if (repos.length) {
+      const note = document.createElement("p");
+      note.className = "chart-note";
+      note.appendChild(text(
+        "Indexed as a code graph, so a repository has no rows under " +
+        "Documentation & files \u2014 its symbols, files and dependencies are " +
+        "nodes. Open the Knowledge graph panel to see them counted."));
+      panel.appendChild(note);
+    }
+    box.appendChild(panel);
+    renderCorpusTabs();
+  }
+
+  function prefetchComposition(force) {
+    if (compositionStarted && !force) return;
+    compositionStarted = true;
+    const state = () => $("#graph-state");
+    const go = async () => {
+      if (state()) state().textContent = "loading breakdown\u2026";
+      try {
+        const g = await fetch(api("/api/dashboard/graph")).then((r) => {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        });
+        renderComposition(g);
+        renderRepositories(g.repositories || []);
+        const sum = $("#graph-summary");
+        sum.textContent = "";
+        [[g.node_total, "nodes"], [g.edge_total, "edges"]].forEach(([n, label]) => {
+          const v = document.createElement("span");
+          v.className = "sum-n";
+          v.appendChild(text((n || 0).toLocaleString()));
+          const l = document.createElement("span");
+          l.className = "sum-l";
+          l.appendChild(text(label));
+          sum.append(v, l);
+        });
+        // Counted now, but cognee may not have finished rebuilding after a
+        // change, so a fresh count is not the same as a settled one.
+        const settling = corpusChangedAt && Date.now() - corpusChangedAt < 10 * 60 * 1000;
+        $("#graph-when").textContent = settling
+          ? "counted just now — cognee may still be building after the change"
+          : "counted just now";
+      } catch (e) {
+        // Quiet on purpose: this was never requested, so a failure gets a line
+        // inside the fold rather than a toast over the page.
+        if (state()) state().textContent = "breakdown unavailable";
+        const charts = $("#graph-charts");
+        charts.textContent = "";
+        const p = document.createElement("p");
+        p.className = "chart-note";
+        p.appendChild(text("Could not read the graph (" + e.message + ")."));
+        charts.appendChild(p);
+      }
+    };
+    if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 2500 });
+    else setTimeout(go, 400);
+  }
+
+  async function load() {
+    // The picker can be drawn before its data arrives; the analytics request
+    // itself is deliberately left until the page has painted, at the bottom of
+    // this function. See the note there.
+    renderRangePicker();
+
+    // Repositories first, and not awaited. It is a kilobyte off the backend's
+    // cache, or an immediate "not yet" - it never orders the 24-second graph
+    // fetch, the breakdown does that. Started here rather than after the corpus
+    // lands because that await is seconds long against a hosted tenant, and
+    // queueing a one-millisecond call behind it wasted all of them.
+    if (!reposKnown) {
+      showReposLoading();
+      fetch(api("/api/dashboard/repositories"))
+        .then((r) => r.json())
+        .then((body) => { if (body.ready) renderRepositories(body.repositories); })
+        .catch(() => { /* the breakdown is still coming */ });
+    }
+
+    // These two talk to cognee and neither needs the other's result, so
+    // they go out together; waiting for the first doubled time-to-paint.
+    const [d, s] = await Promise.all([
+      fetch(api("/api/dashboard")).then((r) => r.json()),
+      fetch(api("/api/dashboard/sessions")).then((r) => r.json()),
+    ]);
+    corpus = d.corpus;
+
+    const cfg = $("#config");
+    cfg.textContent = "";
+    const origins = (d.config.allowed_origins || []).join(", ");
+    // state: "ok" | "warn" | null. Only the rows that carry a judgement get a
+    // dot; the rest are plain facts and should not look like status.
+    const rows = [
+      ["cognee", d.config.cognee_base_url, null, true],
+      ["authenticated", d.config.authenticated ? "yes" : "no (no API key set)",
+        d.config.authenticated ? "ok" : "warn"],
+      ["reachable", d.config.cloud_reachable ? "yes" : "no — check key/URL",
+        d.config.cloud_reachable ? "ok" : "warn"],
+      ["docs dataset", d.config.docs_dataset, null, true],
+      ["site id", d.config.site_id, null, true],
+      ["seeds demo docs", d.config.seeds_demo_docs ? "yes — writes on every boot" : "no",
+        d.config.seeds_demo_docs ? "warn" : "ok"],
+      ["allowed origins", origins,
+        origins.trim() === "*" ? "warn" : "ok"],
+    ];
+    rows.forEach(([k, v, state, mono]) => {
+      const dt = document.createElement("dt");
+      dt.appendChild(text(k));
+      const dd = document.createElement("dd");
+      if (state) dd.className = state;
+      if (mono) {
+        const c = document.createElement("code");
+        c.appendChild(text(v));
+        dd.appendChild(c);
+      } else {
+        dd.appendChild(text(v));
+      }
+      cfg.append(dt, dd);
+    });
+
+    if (!corpus.exists) {
+      $("#corpus-warn").innerHTML = "";
+      const p = document.createElement("p");
+      p.className = "notice";
+      p.appendChild(text(
+        "Dataset " + corpus.dataset + " does not exist. Recall against a missing " +
+        "dataset returns no results, which reads as an empty-memory answer rather " +
+        "than an error — so this looks like a broken bot. Datasets this key can " +
+        "read: " + (corpus.all_datasets || []).join(", ")));
+      $("#corpus-warn").appendChild(p);
+    }
+    $("#corpus-count").textContent = corpus.item_count + " items in " + corpus.dataset;
+    renderSyncPill(corpus.sync);
+    renderCorpusActions();
+    renderCorpusTabs();
+
+    renderSources(sortBy(corpus.items, "updated", "desc"));
+
+    const sum = $("#graph-summary");
+    sum.textContent = "";
+    // Counts come from the breakdown, which counts the graph itself; the
+    // summary endpoint reports one pipeline run and goes stale.
+    const st = document.createElement("span");
+    st.className = "fold-state";
+    st.id = "graph-state";
+    sum.append(text("counting\u2026"), st);
+    // Prefetch the breakdown once the page has settled. It costs a few seconds
+    // against cognee, so it must not delay first paint, and it must fail
+    // quietly - nobody asked for it, so nobody should be told it broke.
+    prefetchComposition();
+
+    // The render itself is expensive, so it is never prefetched: the button
+    // appears when someone opens the fold, and acts on their click.
+    //
+    // This wiring sat beside the node and edge counts, and was switched off
+    // along with them when those counts turned out to be reporting a stale
+    // pipeline run. Nothing else creates the button, so the visualisation went
+    // silently with them - the fold still opened, onto an empty panel.
+    $("#graph-fold").addEventListener("toggle", function once() {
+      if (!$("#graph-fold").open) return;
+      $("#graph-fold").removeEventListener("toggle", once);
+      const act = $("#graph-viz-actions");
+      act.textContent = "";
+      const b = document.createElement("button");
+      b.appendChild(text("Load interactive graph"));
+      b.title = "cognee renders this server-side: ~40s the first time, " +
+                "then cached for 15 minutes";
+      const vizStatus = document.createElement("span");
+      vizStatus.className = "viz-status";
+      b.onclick = () => loadGraphFrame(b, vizStatus, false);
+      act.append(b, vizStatus);
+    });
+
+    sessions = s.sessions;
+    $("#sess-count").textContent = sessions.length + " conversations";
+    renderSessions(sessions);
+
+    // Analytics last, and never awaited. It is the most expensive thing on the
+    // page - one round trip per conversation in the window - and nothing else
+    // needs its result, so awaiting it with the rest held the whole dashboard
+    // blank for as long as it took. Starting it here rather than alongside the
+    // others also keeps its fan-out from competing for the tenant's
+    // concurrency with the two calls the first paint is actually waiting on.
+    loadAnalytics();
+  }
+
+  $("#filter").oninput = () => { shown = PAGE; renderSources(corpus.items); };
+  wireSort("#sources", () => corpus.items, renderSources);
+  wireSort("#sessions", () => sessions, renderSessions);
+  load().catch((e) => toast("Failed to load: " + e.message, true));
+</script>

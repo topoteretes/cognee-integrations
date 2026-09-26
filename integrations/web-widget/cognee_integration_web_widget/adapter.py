@@ -93,9 +93,18 @@ def _answer_text(results: Sequence[Any]) -> str:
 class ChatMemoryAdapter:
     """Thin answer / seed-docs / forget layer over a cognee server (HTTP)."""
 
-    def __init__(self, *, top_k: int = 8, client: Optional[CogneeHttpClient] = None) -> None:
+    def __init__(
+        self,
+        *,
+        top_k: int = 8,
+        client: Optional[CogneeHttpClient] = None,
+        docs_base_url: Optional[str] = None,
+    ) -> None:
         self.top_k = top_k
         self.client = client or CogneeHttpClient()
+        # Where the ingested pages are published, so a citation can link to
+        # the page a reader can actually open instead of naming a chunk.
+        self.docs_base_url = docs_base_url or None
 
     # -- session helpers ---------------------------------------------------
 
@@ -140,7 +149,7 @@ class ChatMemoryAdapter:
         results = await self.client.recall(
             query, datasets=datasets, session_id=session_id, top_k=self.top_k
         )
-        text, citations = split_evidence(_answer_text(results))
+        text, citations = split_evidence(_answer_text(results), self.docs_base_url)
         return Answer(text=text, citations=citations, session_id=conversation.session_id)
 
     # -- forget ------------------------------------------------------------

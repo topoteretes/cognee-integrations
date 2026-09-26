@@ -13,6 +13,11 @@
   var script = document.currentScript;
   var API = (script && script.getAttribute("data-api")) || window.location.origin;
   var SITE_ID = (script && script.getAttribute("data-site-id")) || "demo";
+  // Cited pages are resolved against the site the widget is embedded on, so
+  // the same backend serves a local preview and a deployed site and each
+  // links to itself. Override with data-docs-base when the docs are hosted
+  // somewhere other than the page carrying the widget.
+  var DOCS_BASE = (script && script.getAttribute("data-docs-base")) || window.location.origin;
 
   // Stable per-browser ids so a returning visitor keeps their conversation.
   function id(key, prefix) {
@@ -27,9 +32,14 @@
   var conversationId = id("cognee_conversation_id", "conv");
   var optIn = localStorage.getItem("cognee_opt_in") !== "0";
 
+  // The widget is embedded on sites whose themes we do not control, so every
+  // rule that paints a background must also set a colour: inheriting the
+  // host's text colour onto our own white panels renders the answer
+  // invisible on any dark-themed site. The colour is set once on the box and
+  // inherited; the few elements that want something else override it below.
   var css =
-    ".cognee-w{position:fixed;bottom:20px;right:20px;width:360px;max-width:92vw;font:14px/1.5 system-ui,sans-serif;z-index:2147483000}" +
-    ".cognee-box{display:none;flex-direction:column;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18);overflow:hidden}" +
+    ".cognee-w{position:fixed;bottom:20px;right:20px;width:360px;max-width:92vw;display:flex;flex-direction:column;align-items:flex-end;gap:10px;font:14px/1.5 system-ui,sans-serif;z-index:2147483000}" +
+    ".cognee-box{display:none;width:100%;flex-direction:column;background:#fff;color:#111827;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18);overflow:hidden}" +
     ".cognee-box.open{display:flex}" +
     ".cognee-head{background:#111827;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center}" +
     ".cognee-head b{font-weight:600}" +
@@ -39,11 +49,17 @@
     ".cognee-bot{background:#fff;border:1px solid #e5e7eb}" +
     ".cognee-cites{margin:4px 0 10px;font-size:12px;color:#6b7280}" +
     ".cognee-cite{border-left:3px solid #d1d5db;padding:2px 8px;margin:3px 0}" +
+    ".cognee-cite a{color:#2563eb;text-decoration:none}" +
+    ".cognee-cite a:hover{text-decoration:underline}" +
     ".cognee-in{display:flex;border-top:1px solid #e5e7eb}" +
-    ".cognee-in input{flex:1;border:0;padding:11px;outline:none}" +
+    ".cognee-in input{flex:1;border:0;padding:11px;outline:none;background:#fff;color:inherit}" +
     ".cognee-in button{border:0;background:#2563eb;color:#fff;padding:0 16px;cursor:pointer}" +
     ".cognee-bar{padding:6px 12px;font-size:12px;color:#6b7280;display:flex;justify-content:space-between;background:#fff;border-top:1px solid #f3f4f6}" +
     ".cognee-bar a{color:#2563eb;cursor:pointer;text-decoration:none}" +
+    ".cognee-acts{display:flex;align-items:center;gap:2px}" +
+    ".cognee-gear,.cognee-x{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;cursor:pointer;color:#fff;text-decoration:none;opacity:.7;font-size:15px;line-height:1}" +
+    ".cognee-gear:hover,.cognee-x:hover{opacity:1;background:rgba(255,255,255,.15)}" +
+    ".cognee-x{font-size:19px}" +
     ".cognee-launch{border:0;background:#111827;color:#fff;border-radius:24px;padding:12px 18px;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.2)}";
   var style = document.createElement("style");
   style.textContent = css;
@@ -54,7 +70,9 @@
   root.innerHTML =
     '<div class="cognee-box" id="cognee-box">' +
     '  <div class="cognee-head"><b>Ask our docs</b>' +
-    '    <span style="cursor:pointer" id="cognee-close">×</span></div>' +
+    '    <span class="cognee-acts">' +
+    '      <a class="cognee-gear" id="cognee-dash" target="_blank" rel="noopener" hidden>⚙</a>' +
+    '      <span class="cognee-x" id="cognee-close">×</span></span></div>' +
     '  <div class="cognee-log" id="cognee-log"></div>' +
     '  <div class="cognee-bar">' +
     '    <label><input type="checkbox" id="cognee-optin"> Remember this chat</label>' +
@@ -69,15 +87,47 @@
   var box = root.querySelector("#cognee-box");
   var log = root.querySelector("#cognee-log");
   var input = root.querySelector("#cognee-input");
+  // Operator dashboard link. Deliberately not shown to visitors: the token is
+  // never served to the page, so the gear appears only in a browser that was
+  // handed one out-of-band via ?cognee_dashboard_token=... (stored once, then
+  // stripped from the URL). The backend gates /dashboard on the same token, so
+  // this is a convenience, never the access control.
+  try {
+    var qp = new URLSearchParams(window.location.search);
+    var handed = qp.get("cognee_dashboard_token");
+    if (handed) {
+      localStorage.setItem("cognee_dashboard_token", handed);
+      qp.delete("cognee_dashboard_token");
+      var clean = window.location.pathname + (qp.toString() ? "?" + qp : "") + window.location.hash;
+      window.history.replaceState({}, "", clean);
+    }
+    var dashToken = localStorage.getItem("cognee_dashboard_token");
+    if (dashToken) {
+      var dash = root.querySelector("#cognee-dash");
+      dash.href = API + "/dashboard?token=" + encodeURIComponent(dashToken);
+      dash.title = "Widget dashboard";
+      dash.hidden = false;
+    }
+  } catch (e) {
+    /* storage blocked - the gear simply stays hidden */
+  }
+
   var optinBox = root.querySelector("#cognee-optin");
   optinBox.checked = optIn;
 
   function open(v) {
     box.classList.toggle("open", v);
+    var l = root.querySelector("#cognee-launch");
+    if (l) l.setAttribute("aria-expanded", v ? "true" : "false");
   }
-  root.querySelector("#cognee-launch").onclick = function () {
-    open(true);
-    input.focus();
+  var launcher = root.querySelector("#cognee-launch");
+  launcher.setAttribute("aria-expanded", "false");
+  launcher.onclick = function () {
+    // Toggle: the launcher stays visible while the panel is open, so a second
+    // click on it should close what the first click opened.
+    var nowOpen = !box.classList.contains("open");
+    open(nowOpen);
+    if (nowOpen) input.focus();
   };
   root.querySelector("#cognee-close").onclick = function () {
     open(false);
@@ -103,8 +153,28 @@
     wrap.className = "cognee-cites";
     wrap.appendChild(el("", "Sources:"));
     cites.slice(0, 4).forEach(function (c) {
-      var line = c.snippet + (c.document ? "  (" + c.document + ")" : "");
-      wrap.appendChild(el("cognee-cite", line));
+      // Prefer the readable page title over the flattened document name, and
+      // link it when the backend could resolve a published URL.
+      var label = c.title || c.document || "";
+      if (c.snippet) label = c.snippet + (label ? "  (" + label + ")" : "");
+      if (!label) return;
+
+      // An absolute url wins (the backend was told the docs live elsewhere);
+      // otherwise resolve the page path against DOCS_BASE.
+      var href = c.url || (c.path ? DOCS_BASE.replace(/\/+$/, "") + "/" + c.path : null);
+
+      var node = el("cognee-cite", "");
+      if (href) {
+        var a = document.createElement("a");
+        a.href = href;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = label;
+        node.appendChild(a);
+      } else {
+        node.textContent = label;
+      }
+      wrap.appendChild(node);
     });
     log.appendChild(wrap);
     log.scrollTop = log.scrollHeight;
