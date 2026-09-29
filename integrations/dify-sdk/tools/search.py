@@ -25,7 +25,7 @@ class SearchTool(Tool):
         query = tool_parameters["query"]
         datasets_str = tool_parameters.get("datasets", "")
         dataset_ids_str = tool_parameters.get("dataset_ids", "")
-        search_type = tool_parameters.get("search_type", "GRAPH_COMPLETION")
+        search_type = tool_parameters.get("search_type", "HYBRID_COMPLETION")
         system_prompt = tool_parameters.get("system_prompt", "")
         top_k = tool_parameters.get("top_k", 10)
         only_context = tool_parameters.get("only_context", "false") == "true"

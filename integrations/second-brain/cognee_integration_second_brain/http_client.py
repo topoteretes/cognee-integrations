@@ -74,7 +74,7 @@ class CogneeHttpClient:
             "datasets": [dataset_name],
             "top_k": top_k,
             "include_references": True,
-            "search_type": "GRAPH_COMPLETION",
+            "search_type": "HYBRID_COMPLETION",
         }
         if session_id is not None:
             body["session_id"] = session_id

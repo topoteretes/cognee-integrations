@@ -21,7 +21,7 @@ class SyncRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    search_type: str = "GRAPH_COMPLETION"
+    search_type: str = "HYBRID_COMPLETION"
     top_k: int = Field(default=10, ge=1)
 
 

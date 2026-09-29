@@ -45,7 +45,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: http-api
-    current_version: "1.6.1"
+    current_version: "1.6.2"
     migration_status: done
     notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
 
@@ -67,7 +67,7 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.7.1"
+    current_version: "1.7.2"
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
 
@@ -78,7 +78,7 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
     cognee_dependency: http-api
-    current_version: "1.3.1"
+    current_version: "1.3.2"
     migration_status: done
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: >-
@@ -171,7 +171,7 @@ integrations:
     registry: npm
     package_name: "n8n-nodes-cognee"
     cognee_dependency: http-api
-    current_version: "0.7.0"
+    current_version: "0.7.1"
     migration_status: done
     source_repo: https://github.com/topoteretes/cognee-n8n
     notes: "n8n community nodes – the Cognee action node (memory, datasets, search, sessions, skills) and the Cognee Memory sub-node for the AI Agent's memory port. Published via .github/workflows/n8n-publish.yml on `n8n-v*.*.*` tags."

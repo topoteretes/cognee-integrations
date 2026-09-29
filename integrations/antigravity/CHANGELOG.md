@@ -7,6 +7,13 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.2]
+
+### Changed
+- **Default search type is now `HYBRID_COMPLETION`.** The pre-compact hook's graph recall and the memory skill's `cognee-cli.sh search` example sent `GRAPH_COMPLETION`. `HYBRID_COMPLETION`
+  (passages + entities + an LLM answer) is the platform default for `/search`
+  and `/recall`; `GRAPH_COMPLETION` remains available by naming it explicitly.
+
 ## [1.6.1]
 
 ### Added

@@ -176,10 +176,11 @@ def build_openapi_spec(config: Config) -> dict:
                                         },
                                         "search_type": {
                                             "type": "string",
-                                            "default": "GRAPH_COMPLETION",
+                                            "default": "HYBRID_COMPLETION",
                                             "description": (
                                                 "Cognee SearchType name, e.g. "
-                                                "GRAPH_COMPLETION, CHUNKS, SUMMARIES."
+                                                "HYBRID_COMPLETION, GRAPH_COMPLETION, "
+                                                "CHUNKS, SUMMARIES."
                                             ),
                                         },
                                         "top_k": {

@@ -67,7 +67,7 @@ async def test_recall_returns_results_and_sends_expected_body():
     assert body["datasets"] == ["brain:alice"]
     assert body["top_k"] == 9
     assert body["include_references"] is True
-    assert body["search_type"] == "GRAPH_COMPLETION"
+    assert body["search_type"] == "HYBRID_COMPLETION"
     # Dataset-only recall: no session_id, so cognee resolves the graph source only.
     assert "session_id" not in body
 

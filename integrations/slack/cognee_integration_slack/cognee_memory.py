@@ -184,14 +184,14 @@ class CogneeChatMemory(ChatMemory):
     async def answer(self, ref: ConversationRef, *, query: str) -> Answer:
         """Answer ``query`` from the channel's memory, with source citations.
 
-        Two searches: GRAPH_COMPLETION for the prose answer, CHUNKS (filtered to
+        Two searches: HYBRID_COMPLETION for the prose answer, CHUNKS (filtered to
         this channel's node set) for the citable source messages. A channel with
         nothing ingested/cognified yet has no dataset; the client maps that
         (a 4xx) to no results, so the renderer shows a calm "no memory yet" reply.
         """
         prose_results = await self._client.search(
             query,
-            search_type="GRAPH_COMPLETION",
+            search_type="HYBRID_COMPLETION",
             dataset_name=ref.dataset_name,
             top_k=self._top_k,
         )

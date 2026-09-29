@@ -14,7 +14,7 @@ class SearchTool(Tool):
         query = tool_parameters["query"]
         datasets_str = tool_parameters.get("datasets", "")
         dataset_ids_str = tool_parameters.get("dataset_ids", "")
-        search_type = tool_parameters.get("search_type", "GRAPH_COMPLETION")
+        search_type = tool_parameters.get("search_type", "HYBRID_COMPLETION")
         system_prompt = tool_parameters.get("system_prompt", "")
         node_name_str = tool_parameters.get("node_name", "")
         top_k = tool_parameters.get("top_k", 10)

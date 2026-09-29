@@ -38,9 +38,9 @@ on the pinned 1.5.4):
 Note the field-name differences from the SDK: the endpoint calls them ``query``
 and ``search_type`` where the SDK says ``query_text`` and ``query_type``.
 
-**``search_type`` is always sent, null included.** The endpoint defaults a
-*missing* ``search_type`` to ``GRAPH_COMPLETION`` (deliberately, for backward
-compatibility with older clients); only an explicit null opts into the query
+**``search_type`` is always sent, null included.** Before cognee 1.6.0 the
+endpoint defaulted a *missing* ``search_type`` to a pinned type (GRAPH_COMPLETION
+on 1.4, HYBRID_COMPLETION on 1.5.x); only an explicit null opts into the query
 classifier. That default also decides whether the session cache is searched at
 all — cognee resolves an ``auto`` scope to graph-only unless the search type is
 null — so omitting the key costs both auto-routing and every session read.
@@ -49,7 +49,7 @@ null — so omitting the key costs both auto-routing and every session read.
 
 * ``auto_route`` — no such field on ``/api/v1/recall``, but the setting is still
   honoured, in both directions: ``auto_route=False`` becomes an explicit
-  ``search_type=GRAPH_COMPLETION`` (what it means server-side), and
+  ``search_type=HYBRID_COMPLETION`` (what it means server-side), and
   ``auto_route=True`` becomes an explicit ``search_type: null``. See
   :meth:`recall`.
 * ``session_ids`` on a *permanent* write — no such field on ``/api/v1/remember``
@@ -631,11 +631,11 @@ class HttpBackend(MemoryBackend):
         if not auto_route and not query_type:
             # /api/v1/recall has no auto_route field, but the setting is still
             # expressible: server-side, ``auto_route=False`` with no explicit type
-            # means "skip the query classifier and use GRAPH_COMPLETION". Naming
+            # means "skip the query classifier and use HYBRID_COMPLETION". Naming
             # that type directly bypasses the classifier too, so this is the same
             # retrieval path — only cognee's router-override counter differs,
             # which is pure telemetry.
-            query_type = "GRAPH_COMPLETION"
+            query_type = "HYBRID_COMPLETION"
 
         body: dict[str, Any] = {"query": query, "top_k": top_k}
         if session_id:
@@ -659,9 +659,9 @@ class HttpBackend(MemoryBackend):
             # guidance, built from ``session_id``); older servers return the
             # bare context. The per-prompt memory lane injects that verbatim.
             body["only_context"] = True
-        # Always sent, null included: the endpoint defaults a *missing*
-        # search_type to GRAPH_COMPLETION for backward compatibility, and only an
-        # explicit null opts into the query classifier. Omitting the key would
+        # Always sent, null included: before 1.6.0 the endpoint defaulted a
+        # *missing* search_type to a pinned type (HYBRID_COMPLETION on 1.5.x),
+        # and only an explicit null opts into the query classifier. Omitting the key would
         # therefore make auto_route=True behave exactly like auto_route=False.
         # An unknown name is rejected by the server's enum, so it is normalized
         # the way the SDK transport does.

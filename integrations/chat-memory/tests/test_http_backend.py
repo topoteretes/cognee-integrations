@@ -101,7 +101,7 @@ async def test_recall_parses_answer_and_source_citations():
     assert body["datasets"] == ["d"]
     assert "session_id" not in body  # dataset-scoped durable recall
     assert body["include_references"] is True
-    assert body["search_type"] == "GRAPH_COMPLETION"
+    assert body["search_type"] == "HYBRID_COMPLETION"
 
 
 @pytest.mark.asyncio

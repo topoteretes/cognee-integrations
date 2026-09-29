@@ -72,10 +72,16 @@ parameters:
       zh_Hans: "要执行的搜索类型"
       pt_BR: "O tipo de pesquisa a ser realizada"
       ja_JP: "実行する検索タイプ"
-    llm_description: "The search strategy: GRAPH_COMPLETION uses the knowledge graph, GRAPH_COMPLETION_COT uses chain-of-thought reasoning, RAG_COMPLETION uses retrieval-augmented generation"
+    llm_description: "The search strategy. HYBRID_COMPLETION (default) combines passages, entities and an LLM answer. GRAPH_COMPLETION uses the knowledge graph, GRAPH_COMPLETION_COT uses chain-of-thought reasoning, RAG_COMPLETION uses retrieval-augmented generation"
     form: form
-    default: "GRAPH_COMPLETION"
+    default: "HYBRID_COMPLETION"
     options:
+      - value: "HYBRID_COMPLETION"
+        label:
+          en_US: "Hybrid Completion"
+          zh_Hans: "混合补全"
+          pt_BR: "Completude Híbrida"
+          ja_JP: "ハイブリッド補完"
       - value: "GRAPH_COMPLETION"
         label:
           en_US: "Graph Completion"

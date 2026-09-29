@@ -602,14 +602,14 @@ async def dimension_mismatch_hint(engine=None) -> Optional[str]:
 def resolve_search_type(search_type: str):
     """Map a search-type name onto cognee's ``SearchType``, defaulting sanely.
 
-    An unrecognized name falls back to ``GRAPH_COMPLETION`` rather than failing the
+    An unrecognized name falls back to ``HYBRID_COMPLETION`` rather than failing the
     recall. Kept in the backend so the provider needs no cognee import — and so a
     future cognee search type keeps working without a provider change.
     """
     from cognee.modules.search.types import SearchType
 
     key = str(search_type).upper().strip()
-    return getattr(SearchType, key, SearchType.GRAPH_COMPLETION)
+    return getattr(SearchType, key, SearchType.HYBRID_COMPLETION)
 
 
 def build_backend(config: Optional[dict[str, Any]] = None):

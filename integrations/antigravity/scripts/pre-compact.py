@@ -117,7 +117,9 @@ async def _recall(
     """Thin wrapper around cognee.recall; tolerates empty/failed recalls."""
     try:
         if is_cloud_mode(config):
-            qtype = "GRAPH_COMPLETION" if "graph" in scope else None
+            # HYBRID_COMPLETION (BM25 + vector + graph): the platform default,
+            # and what the claude-code/codex pre-compact hooks send.
+            qtype = "HYBRID_COMPLETION" if "graph" in scope else None
             results = recall_via_http(
                 query,
                 session_id=session_id,
@@ -131,7 +133,7 @@ async def _recall(
             import cognee
             from cognee.modules.search.types import SearchType
 
-            query_type = SearchType.GRAPH_COMPLETION if "graph" in scope else None
+            query_type = SearchType.HYBRID_COMPLETION if "graph" in scope else None
             results = await cognee.recall(
                 query,
                 session_id=session_id,

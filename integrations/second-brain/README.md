@@ -87,7 +87,7 @@ python -m cognee_integration_second_brain
 ```
 
 The bot stores notes in a per-user cognee dataset (`brain:{user}`) and recalls
-them with graph completion (`search_type=GRAPH_COMPLETION`,
+them with hybrid completion (`search_type=HYBRID_COMPLETION`,
 `include_references=true`), so cross-source questions run as a real multi-hop
 traversal. Ingest is dataset-only (no session cache), so recall targets the
 whole brain — the persistence-across-sessions story this bot demonstrates.

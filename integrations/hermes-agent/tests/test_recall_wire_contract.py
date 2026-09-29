@@ -118,9 +118,9 @@ class TestRecallBodyMeansWhatWeIntend(unittest.TestCase):
         else:
             self.assertIsNotNone(parsed.search_type)
 
-    def test_auto_route_false_still_pins_graph_completion(self):
+    def test_auto_route_false_still_pins_hybrid_completion(self):
         dto = self._parse(_sent_body(auto_route=False))
-        self.assertEqual(str(dto.search_type), "SearchType.GRAPH_COMPLETION")
+        self.assertEqual(str(dto.search_type), "SearchType.HYBRID_COMPLETION")
 
     def test_the_graph_scope_resolves_to_the_graph_alone(self):
         # The session id travels (it is what gives the 1.6.0 graph item its
@@ -140,7 +140,7 @@ class TestRecallBodyMeansWhatWeIntend(unittest.TestCase):
         self.assertEqual(self._sources(dto), ["code"])
 
     def test_the_graph_scope_survives_a_pinned_search_type(self):
-        # COGNEE_AUTO_ROUTE=false pins GRAPH_COMPLETION; the sources still come
+        # COGNEE_AUTO_ROUTE=false pins HYBRID_COMPLETION; the sources still come
         # from the stated scope, not from the search type.
         dto = self._parse(_sent_body(auto_route=False))
         self.assertEqual(self._sources(dto), ["graph"])

@@ -10,6 +10,13 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.2]
+
+### Changed
+- **Default search type is now `HYBRID_COMPLETION`.** The memory skill's `cognee-cli.sh search` example sent `GRAPH_COMPLETION`. `HYBRID_COMPLETION`
+  (passages + entities + an LLM answer) is the platform default for `/search`
+  and `/recall`; `GRAPH_COMPLETION` remains available by naming it explicitly.
+
 ## [1.7.1]
 
 ### Added

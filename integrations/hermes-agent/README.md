@@ -420,7 +420,7 @@ these levers.
 > session respawns it. An index written with wrong settings stays wrong until
 > the dataset is rebuilt: follow [RUNBOOK.md](./RUNBOOK.md).
 
-**If recall is slow or times out**: the default `GRAPH_COMPLETION` search runs
+**If recall is slow or times out**: the default `HYBRID_COMPLETION` search runs
 an LLM per query, which local models make slow. `search_type=CHUNKS` returns
 matching stored text directly with no LLM in the loop; `COGNEE_RECALL_TIMEOUT`
 raises the deadline.

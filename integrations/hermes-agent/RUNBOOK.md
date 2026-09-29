@@ -61,13 +61,13 @@ stays wrong until re-embedded, which is why the rebuild below is not optional.
      `~/.cognee-plugin/hermes/server.log` during re-ingestion;
    - a `cognee_recall` with `search_type=CHUNKS` for known content returns the
      stored text within seconds;
-   - a default (`GRAPH_COMPLETION`) recall returns a cited answer within your
+   - a default (`HYBRID_COMPLETION`) recall returns a cited answer within your
      `COGNEE_RECALL_TIMEOUT`.
 
 6. **Resume ingestion** (restart the backfill job) only once step 5 passes.
 
 ## If recall is slow but the index is healthy
 
-The default `GRAPH_COMPLETION` search runs an LLM per query — slow on local
+The default `HYBRID_COMPLETION` search runs an LLM per query — slow on local
 models even with a good index. Use `search_type=CHUNKS` for fast raw-text
 retrieval, or raise `COGNEE_RECALL_TIMEOUT`.

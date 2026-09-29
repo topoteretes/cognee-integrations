@@ -96,7 +96,7 @@ Search within the cognee memory using one of 14 search strategies. Each strategy
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | Query | yes | | Natural language search query |
-| Search Type | yes | `GRAPH_COMPLETION` | Search strategy (see table below) |
+| Search Type | yes | `HYBRID_COMPLETION` | Search strategy (see table below) |
 | Datasets | no | | Comma-separated dataset names to search |
 | Dataset IDs | no | | Comma-separated dataset UUIDs to search |
 | System Prompt | no | | Custom system prompt for completion-type searches |

@@ -86,9 +86,9 @@ class TestRecallWireFormat(unittest.TestCase):
     def test_query_type_is_uppercased(self):
         self.assertEqual(self._recall_kwargs(query_type="chunks")["query_type"], "CHUNKS")
 
-    def test_unknown_query_type_falls_back_to_graph_completion(self):
+    def test_unknown_query_type_falls_back_to_hybrid_completion(self):
         kwargs = self._recall_kwargs(query_type="NOT_A_TYPE")
-        self.assertEqual(kwargs["query_type"], "GRAPH_COMPLETION")
+        self.assertEqual(kwargs["query_type"], "HYBRID_COMPLETION")
 
     def test_absent_query_type_is_omitted(self):
         self.assertNotIn("query_type", self._recall_kwargs(query_type=None))

@@ -116,7 +116,7 @@ cognee source checkout. They are not a reason to leave the server path: if no
 checkout exists, say the mode is unavailable and use the server search above.
 
 ```bash
-"${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}/scripts/cognee-cli.sh" search "<question>" -d <dataset-name> -t GRAPH_COMPLETION -f pretty
+"${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}/scripts/cognee-cli.sh" search "<question>" -d <dataset-name> -t HYBRID_COMPLETION -f pretty
 "${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}/scripts/cognee-cli.sh" search "<exact passage or citation need>" -d <dataset-name> -t CHUNKS -k 10 -f pretty
 "${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}/scripts/cognee-cli.sh" search "<code question>" -d <dataset-name> -t CODE -k 10 -f pretty
 ```

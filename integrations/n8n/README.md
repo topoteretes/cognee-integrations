@@ -173,7 +173,7 @@ Example body sent by the node:
 - **Operation**: Search
 - **Endpoint**: `POST /api/v1/search`
 - **Fields**:
-  - Search Type (`search_type`): Any Cognee search type, e.g. `GRAPH_COMPLETION` (default), `HYBRID_COMPLETION`, `GRAPH_COMPLETION_COT`, `RAG_COMPLETION`, `CHUNKS`, `SUMMARIES`, `TEMPORAL`, `FEELING_LUCKY`, `CODE`, `AGENTIC_COMPLETION`
+  - Search Type (`search_type`): Any Cognee search type, e.g. `HYBRID_COMPLETION` (default), `GRAPH_COMPLETION`, `GRAPH_COMPLETION_COT`, `RAG_COMPLETION`, `CHUNKS`, `SUMMARIES`, `TEMPORAL`, `FEELING_LUCKY`, `CODE`, `AGENTIC_COMPLETION`
   - Datasets (`datasets`, required, multiple): Dataset names (resolve only to datasets you own)
   - Query (`query`, required)
   - Top K (`top_k`, optional number): Defaults to 10

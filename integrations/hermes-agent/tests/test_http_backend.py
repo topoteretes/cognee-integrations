@@ -164,8 +164,8 @@ class TestRecallWireFormat(unittest.TestCase):
         self.assertNotIn("query_type", body)
 
     def test_absent_query_type_is_sent_as_an_explicit_null(self):
-        # Not omitted: a missing search_type defaults to GRAPH_COMPLETION
-        # server-side, which both disables auto-routing and drops the session
+        # Not omitted: before 1.6.0 a missing search_type defaulted to a pinned
+        # type server-side, which both disables auto-routing and drops the session
         # cache out of the server's source resolution.
         body = self._recall()[0].json_body("/api/v1/recall")
         self.assertIn("search_type", body)
@@ -192,13 +192,13 @@ class TestRecallWireFormat(unittest.TestCase):
         )
         self.assertEqual(results, [{"text": "one"}])
 
-    def test_auto_route_false_becomes_an_explicit_graph_completion(self):
+    def test_auto_route_false_becomes_an_explicit_hybrid_completion(self):
         # There is no auto_route field, but the setting is expressible: server-side
         # auto_route=False with no type means "skip the classifier, use
-        # GRAPH_COMPLETION", and naming that type bypasses the classifier too.
+        # HYBRID_COMPLETION", and naming that type bypasses the classifier too.
         opener, results = self._recall(auto_route=False)
         body = opener.json_body("/api/v1/recall")
-        self.assertEqual(body["search_type"], "GRAPH_COMPLETION")
+        self.assertEqual(body["search_type"], "HYBRID_COMPLETION")
         self.assertNotIn("auto_route", body)
         self.assertEqual(results, [{"text": "hit"}])
 
@@ -207,10 +207,10 @@ class TestRecallWireFormat(unittest.TestCase):
         self.assertEqual(body["search_type"], "CHUNKS")
 
     def test_auto_route_true_leaves_the_classifier_to_the_server(self):
-        # An explicit null is the *only* way to reach the classifier: the
-        # endpoint's search_type defaults to GRAPH_COMPLETION for backward
-        # compatibility, so omitting the key made auto_route=True and
-        # auto_route=False issue byte-identical requests.
+        # An explicit null is the *only* way to reach the classifier on
+        # servers before 1.6.0: their search_type defaulted to a pinned type,
+        # so omitting the key made auto_route=True and auto_route=False issue
+        # byte-identical requests.
         body = self._recall(auto_route=True)[0].json_body("/api/v1/recall")
         self.assertIn("search_type", body)
         self.assertIsNone(body["search_type"])
@@ -231,7 +231,7 @@ class TestRecallWireFormat(unittest.TestCase):
         # same whether or not a search strategy is pinned.
         body = self._recall(scope=["graph"], auto_route=False)[0].json_body("/api/v1/recall")
         self.assertEqual(body["scope"], ["graph"])
-        self.assertEqual(body["search_type"], "GRAPH_COMPLETION")
+        self.assertEqual(body["search_type"], "HYBRID_COMPLETION")
 
     def test_absent_scope_is_stated_as_the_graph(self):
         # Left out, the server would resolve the scope to ``auto`` and fold the

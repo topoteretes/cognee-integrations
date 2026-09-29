@@ -10,6 +10,13 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2]
+
+### Changed
+- **Default search type is now `HYBRID_COMPLETION`.** `COGNEE_AUTO_ROUTE=false` pinned `GRAPH_COMPLETION`, an unknown `search_type` fell back to it, and the docs called it the default; all now say `HYBRID_COMPLETION`, which is also what the server uses for `auto_route=false` with no type. `HYBRID_COMPLETION`
+  (passages + entities + an LLM answer) is the platform default for `/search`
+  and `/recall`; `GRAPH_COMPLETION` remains available by naming it explicitly.
+
 ## [1.3.1]
 
 ### Fixed

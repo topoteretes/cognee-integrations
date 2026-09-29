@@ -124,7 +124,7 @@ def _result_text(value: Any) -> str:
 def _recall_failure_advice(exc: Exception) -> str:
     """One actionable sentence appended to a timeout-shaped recall failure.
 
-    The default GRAPH_COMPLETION search runs an LLM per query, so on a local
+    The default completion search (HYBRID_COMPLETION) runs an LLM per query, so on a local
     model a timeout is usually the search strategy, not an outage — and the
     model reading this error can fix it on the retry. Covers the HTTP
     transport (CogneeUnreachable wraps urllib's "timed out") and the SDK
@@ -135,7 +135,7 @@ def _recall_failure_advice(exc: Exception) -> str:
         if "timed out" not in text and "timeout" not in text:
             return ""
     return (
-        " The default GRAPH_COMPLETION search runs an LLM per query and can be "
+        " The default HYBRID_COMPLETION search runs an LLM per query and can be "
         "slow on local models — retry with search_type='CHUNKS' (fast raw-text "
         "retrieval), or raise COGNEE_RECALL_TIMEOUT."
     )

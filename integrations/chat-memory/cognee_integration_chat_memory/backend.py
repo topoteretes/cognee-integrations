@@ -260,7 +260,8 @@ class CogneeHttpMemoryBackend:
         client: an injected ``httpx.AsyncClient``-like object (used by tests);
             when ``None`` a client is created per request.
         timeout: per-request timeout in seconds.
-        search_type: recall strategy passed to cognee (default ``GRAPH_COMPLETION``).
+        search_type: recall strategy passed to cognee (default ``HYBRID_COMPLETION``,
+            the platform default: passages + entities + an LLM answer).
     """
 
     def __init__(
@@ -270,7 +271,7 @@ class CogneeHttpMemoryBackend:
         *,
         client: Any = None,
         timeout: float = 120.0,
-        search_type: str = "GRAPH_COMPLETION",
+        search_type: str = "HYBRID_COMPLETION",
     ) -> None:
         self._base_url = (base_url or os.getenv("COGNEE_BASE_URL", "http://localhost:8000")).rstrip(
             "/"

@@ -127,7 +127,7 @@ def test_answer_round_trip_recovers_citation_from_chunk_provenance():
     )
     client = FakeCogneeClient(
         search_results={
-            "GRAPH_COMPLETION": ["The team decided to ship on Friday."],
+            "HYBRID_COMPLETION": ["The team decided to ship on Friday."],
             "CHUNKS": [_chunk_payload(stored)],
         }
     )
@@ -149,11 +149,11 @@ def test_answer_round_trip_recovers_citation_from_chunk_provenance():
     # Two searches, right types / scope / top_k.
     assert len(client.search_calls) == 2
     by_type = {c["search_type"]: c for c in client.search_calls}
-    assert set(by_type) == {"GRAPH_COMPLETION", "CHUNKS"}
+    assert set(by_type) == {"HYBRID_COMPLETION", "CHUNKS"}
     assert by_type["CHUNKS"]["dataset_name"] == "slack_C42"
     assert by_type["CHUNKS"]["node_name"] == ["C42"]
     assert by_type["CHUNKS"]["top_k"] == 5
-    assert by_type["GRAPH_COMPLETION"]["top_k"] == 5
+    assert by_type["HYBRID_COMPLETION"]["top_k"] == 5
 
 
 def test_answer_dedupes_multiple_chunks_from_one_message():
@@ -163,7 +163,7 @@ def test_answer_dedupes_multiple_chunks_from_one_message():
     )
     client = FakeCogneeClient(
         search_results={
-            "GRAPH_COMPLETION": ["answer"],
+            "HYBRID_COMPLETION": ["answer"],
             "CHUNKS": [_chunk_payload(stored, 0), _chunk_payload(stored, 1)],
         }
     )
@@ -177,7 +177,7 @@ def test_answer_chunk_without_provenance_degrades_to_text():
     # A chunk with no provenance header → plain-text citation, never a broken link.
     client = FakeCogneeClient(
         search_results={
-            "GRAPH_COMPLETION": ["here is what I found"],
+            "HYBRID_COMPLETION": ["here is what I found"],
             "CHUNKS": [_chunk_payload("orphan chunk text with no header")],
         }
     )
@@ -196,7 +196,7 @@ def test_answer_blank_permalink_degrades_to_text():
         "stored snippet", channel_id="C42", ts="1.0", author="alice", permalink=""
     )
     client = FakeCogneeClient(
-        search_results={"GRAPH_COMPLETION": ["a"], "CHUNKS": [_chunk_payload(stored)]}
+        search_results={"HYBRID_COMPLETION": ["a"], "CHUNKS": [_chunk_payload(stored)]}
     )
     memory = CogneeChatMemory(client)
     answer = asyncio.run(memory.answer(REF, query="q"))
@@ -230,7 +230,7 @@ def test_answer_handles_access_control_wrapper_shape():
     )
     client = FakeCogneeClient(
         search_results={
-            "GRAPH_COMPLETION": [
+            "HYBRID_COMPLETION": [
                 {"dataset_id": "d1", "dataset_name": "slack_C42", "search_result": "wrapped answer"}
             ],
             "CHUNKS": [

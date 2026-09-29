@@ -46,7 +46,7 @@ Search the Cognee memory for relevant information.
 - **Query** (required) — Natural language search query.
 - **Datasets** (optional) — Comma-separated list of dataset names to search.
 - **Dataset IDs** (optional) — Comma-separated list of dataset UUIDs to search.
-- **Search Type** (required, default: `GRAPH_COMPLETION`) — The search strategy. Options: `GRAPH_COMPLETION`, `GRAPH_COMPLETION_COT`, `GRAPH_COMPLETION_CONTEXT_EXTENSION`, `GRAPH_SUMMARY_COMPLETION`, `RAG_COMPLETION`, `TRIPLET_COMPLETION`, `SUMMARIES`, `CHUNKS`, `CHUNKS_LEXICAL`, `CYPHER`, `NATURAL_LANGUAGE`, `TEMPORAL`, `FEELING_LUCKY`, `CODING_RULES`
+- **Search Type** (required, default: `HYBRID_COMPLETION`) — The search strategy. Options: `HYBRID_COMPLETION`, `GRAPH_COMPLETION`, `GRAPH_COMPLETION_COT`, `GRAPH_COMPLETION_CONTEXT_EXTENSION`, `GRAPH_SUMMARY_COMPLETION`, `RAG_COMPLETION`, `TRIPLET_COMPLETION`, `SUMMARIES`, `CHUNKS`, `CHUNKS_LEXICAL`, `CYPHER`, `NATURAL_LANGUAGE`, `TEMPORAL`, `FEELING_LUCKY`, `CODING_RULES`
 - **System Prompt** (optional) — System prompt for Completion-type searches.
 - **Top K** (optional, default: 10) — Maximum number of results to return.
 - **Only Context** (optional, default: false) — Return raw context instead of LLM-generated completion.

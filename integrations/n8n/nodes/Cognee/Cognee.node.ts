@@ -1295,7 +1295,7 @@ export class Cognee implements INodeType {
           { name: 'Temporal', value: 'TEMPORAL' },
           { name: 'Triplet Completion', value: 'TRIPLET_COMPLETION' },
         ],
-        default: 'GRAPH_COMPLETION',
+        default: 'HYBRID_COMPLETION',
         description:
           'Retrieval strategy. Completion types return an LLM answer grounded in memory; Chunks, Summaries and Code return raw retrieval results.',
         displayOptions: {
