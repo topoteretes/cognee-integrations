@@ -60,6 +60,7 @@ null — so omitting the key costs both auto-routing and every session read.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -82,6 +83,12 @@ from .config import (  # noqa: F401 — DEFAULT_USER_* re-exported for callers/t
 logger = logging.getLogger(__name__)
 
 _API_KEY_NAME = "hermes-owner-bootstrap"
+
+# The search type the server itself substitutes when ``auto_route`` is off and
+# no type was named. Kept here rather than inline so the coupling to the
+# server's behaviour is visible in one place: if that default ever moves, this
+# is the line that has to move with it.
+_AUTO_ROUTE_OFF_SEARCH_TYPE = "GRAPH_COMPLETION"
 
 # How the server's login route phrases the two rejections a default-user login
 # can get (cognee 1.6.0 ``/api/v1/auth/login``, both HTTP 400). Matched
@@ -635,7 +642,13 @@ class HttpBackend(MemoryBackend):
             # that type directly bypasses the classifier too, so this is the same
             # retrieval path — only cognee's router-override counter differs,
             # which is pure telemetry.
-            query_type = "GRAPH_COMPLETION"
+            #
+            # Worth knowing which way this cuts: turning ``auto_route`` off does
+            # not make retrieval more literal, it pins the completion. A caller
+            # that wants raw stored text has to name a type -- per call, or once
+            # via the ``search_type`` setting, which reaches here as an explicit
+            # ``query_type`` and so pre-empts this branch entirely.
+            query_type = _AUTO_ROUTE_OFF_SEARCH_TYPE
 
         body: dict[str, Any] = {"query": query, "top_k": top_k}
         if session_id:
@@ -680,7 +693,15 @@ class HttpBackend(MemoryBackend):
         fields = {"datasetName": dataset}
         if session_id:
             fields["session_id"] = session_id
-        multipart = _multipart_body(fields, {"data": ("memory.txt", text.encode("utf-8"))})
+        # The upload name has to vary with the content. cognee >= 1.6.0 will not
+        # let ``add()`` replace a same-named document whose body differs -- it
+        # raises ``DocumentUpdateRequiredError`` (HTTP 409) instead. With a fixed
+        # name the first ``remember`` in a dataset wins and every later one with
+        # different text bounces off it, permanently. Recall keeps working
+        # throughout, so the store looks healthy and accepts nothing.
+        blob = text.encode("utf-8")
+        name = "memory-%s.txt" % hashlib.sha256(blob).hexdigest()[:16]
+        multipart = _multipart_body(fields, {"data": (name, blob)})
         payload = self._request("POST", "/api/v1/remember", timeout=timeout, multipart=multipart)
         return RememberResponse(payload if isinstance(payload, dict) else {})
 

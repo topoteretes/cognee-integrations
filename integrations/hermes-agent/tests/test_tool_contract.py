@@ -481,6 +481,19 @@ class TestRecallPayload(unittest.TestCase):
     def test_no_query_type_when_search_type_absent(self):
         self.assertIsNone(self._recall_kwargs({"query": "q"})["query_type"])
 
+    def test_the_configured_search_type_fills_in_when_the_caller_omits_one(self):
+        # An agent that forgets the argument used to get the server's classifier,
+        # which routes a short query to an LLM completion over the graph. The
+        # completion paraphrases, so names, ids and dates come back altered.
+        kwargs = self._recall_kwargs({"query": "q"}, search_type="CHUNKS")
+        self.assertEqual(kwargs["query_type"], "CHUNKS")
+
+    def test_an_explicit_search_type_still_beats_the_configured_one(self):
+        kwargs = self._recall_kwargs(
+            {"query": "q", "search_type": "INSIGHTS"}, search_type="CHUNKS"
+        )
+        self.assertEqual(kwargs["query_type"], "INSIGHTS")
+
 
 class TestTopKClamping(unittest.TestCase):
     def _top_k(self, args, configured=5):

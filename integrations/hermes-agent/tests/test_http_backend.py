@@ -290,6 +290,26 @@ class TestRememberWireFormat(unittest.TestCase):
         content_type = opener.request_for("/api/v1/remember")["headers"]["content-type"]
         self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
 
+    def _upload_name(self, text):
+        """The filename the server sees for one permanent write."""
+        opener = FakeOpener({"/api/v1/remember": {}})
+        _backend(opener).remember_permanent(
+            text=text, dataset="d", session_ids=[], timeout=_TIMEOUT
+        )
+        raw = opener.request_for("/api/v1/remember")["body"].decode("utf-8", errors="replace")
+        return raw.split('filename="', 1)[1].split('"', 1)[0]
+
+    def test_the_upload_name_is_derived_from_the_content(self):
+        # cognee >= 1.6.0 raises DocumentUpdateRequiredError (409) rather than
+        # replacing a same-named document whose body differs, so a fixed upload
+        # name lets the first write in a dataset win and rejects every later one.
+        # Recall is unaffected, so the store looks healthy and stores nothing.
+        self.assertNotEqual(self._upload_name("a fact"), self._upload_name("another fact"))
+
+    def test_the_upload_name_is_stable_for_identical_content(self):
+        # Re-remembering the same text must not create a second document.
+        self.assertEqual(self._upload_name("a fact"), self._upload_name("a fact"))
+
     def test_result_exposes_status_as_an_attribute(self):
         # The provider reads getattr(result, "status", "completed"); a bare dict
         # would silently report "completed" for every write.

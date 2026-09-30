@@ -160,7 +160,9 @@ class CogneeMemoryProvider(MemoryProvider):
         self._dataset = DEFAULT_DATASET
         self._top_k = 5
         self._auto_route = True
+        self._default_search_type = ""
         self._improve_on_end = True
+        self._session_writes = True
         self._writes_enabled = True
         self._hermes_home: str | None = None
         self._prefetch_result = ""
@@ -343,7 +345,9 @@ class CogneeMemoryProvider(MemoryProvider):
         self._dataset = self._default_dataset
         self._top_k = int(self._config.get("top_k") or 5)
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
+        self._default_search_type = str(self._config.get("search_type") or "").strip()
         self._improve_on_end = str_to_bool(self._config.get("improve_on_end"), True)
+        self._session_writes = str_to_bool(self._config.get("session_writes"), True)
         self._writes_enabled = kwargs.get("agent_context", "primary") in {"", "primary", None}
         self._session_cognee_id = self._build_cognee_session_id(session_id, **kwargs)
         self._apply_dataset_override()
@@ -566,7 +570,19 @@ class CogneeMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        if not self._is_usable() or not self._writes_enabled or self._is_breaker_open():
+        """Mirror one completed turn into the session cache.
+
+        ``session_writes`` gates this. It is the only switch that does:
+        ``improve_on_end`` governs promotion into the permanent dataset at
+        session end, not the per-turn write, so turning that off leaves this
+        running. ``on_delegation`` routes through here and is covered too.
+        """
+        if (
+            not self._is_usable()
+            or not self._writes_enabled
+            or not self._session_writes
+            or self._is_breaker_open()
+        ):
             return
 
         cognee_session_id = self._session_cognee_id_for(session_id)
@@ -868,8 +884,9 @@ class CogneeMemoryProvider(MemoryProvider):
         next to the cognified graph. The session id still travels: on cognee
         >= 1.6.0 the graph item's prompt then carries this conversation's
         history, and an explicit graph scope never returns raw session entries.
-        ``search_type`` is the caller's override or None for the query
-        classifier.
+        ``search_type`` is the caller's override; without one the configured
+        ``search_type`` applies, and without that either the server's query
+        classifier decides.
         """
         return self._backend.recall(
             query=query,
@@ -877,7 +894,7 @@ class CogneeMemoryProvider(MemoryProvider):
             datasets=[self._dataset],
             top_k=top_k,
             auto_route=self._auto_route,
-            query_type=search_type or None,
+            query_type=search_type or self._default_search_type or None,
             scope=["graph"],
             timeout=self._timeout("recall_timeout", 120),
         )

@@ -149,8 +149,18 @@ class TestDefaults(unittest.TestCase):
         self.assertEqual(cfg["write_timeout"], 120)
         self.assertEqual(cfg["improve_timeout"], 300)
         self.assertIs(cfg["auto_route"], True)
+        self.assertEqual(cfg["search_type"], "")
         self.assertIs(cfg["improve_on_end"], True)
+        self.assertIs(cfg["session_writes"], True)
         self.assertIs(cfg["embedded"], False)
+
+    def test_search_type_is_normalised_to_upper_case(self):
+        # The wire upper-cases it anyway; normalising here means a config written
+        # as "chunks" and one written as "CHUNKS" are the same setting.
+        self.assertEqual(_load(file_config={"search_type": " chunks "})["search_type"], "CHUNKS")
+
+    def test_search_type_comes_from_the_environment_too(self):
+        self.assertEqual(_load(env={"COGNEE_SEARCH_TYPE": "CHUNKS"})["search_type"], "CHUNKS")
 
     def test_improve_background_is_an_empty_tristate_by_default(self):
         # "" means auto (background in server/remote, synchronous in embedded).

@@ -218,6 +218,29 @@ class TestSyncTurn(unittest.TestCase):
         # permanent-graph path must not also have fired.
         self.assertEqual(fake.kwargs_for("remember_permanent"), [])
 
+    def test_session_writes_off_suppresses_the_write(self):
+        with fake_backend() as fake:
+            provider = make_provider(session_writes=False)
+            provider.sync_turn("u", "a")
+            assert_no_call(self, fake, "remember_session")
+
+    def test_improve_on_end_off_does_not_suppress_the_write(self):
+        # The distinction that matters: improve_on_end governs promotion at
+        # session end, so turning it off leaves the per-turn write running.
+        # Only session_writes stops it.
+        with fake_backend() as fake:
+            provider = make_provider(improve_on_end=False)
+            provider.sync_turn("u", "a")
+            self.assertTrue(fake.wait("remember_session"))
+
+    def test_session_writes_off_also_covers_delegation(self):
+        # on_delegation builds its content and hands it to sync_turn, so it must
+        # not be a second, unswitchable lane into the session cache.
+        with fake_backend() as fake:
+            provider = make_provider(session_writes=False)
+            provider.on_delegation("do the thing", "did the thing")
+            assert_no_call(self, fake, "remember_session")
+
     def test_open_breaker_suppresses_the_write(self):
         with fake_backend() as fake:
             provider = make_provider()
