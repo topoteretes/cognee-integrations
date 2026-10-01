@@ -394,6 +394,35 @@ describe("memory verbs send what the server expects", () => {
     expect(mock.assertCalled("POST", "/remember").body).not.toContain('name="chunk_size"');
   });
 
+  it("remember resolves dataId for Windows-style file paths", async () => {
+    mock.setResponse("POST", "/remember", {
+      datasetId: "ds-1",
+      items: [
+        {
+          id: "data-win-1",
+          name: "memory_2026-10-02-md",
+        },
+      ],
+    });
+
+    const result = await localClient().remember({
+      files: [
+        {
+          filePath: "memory\\2026-10-02.md",
+          data: "hello from Windows",
+        },
+      ],
+      datasetName: "ds",
+    });
+
+    expect(result.items).toEqual([
+      {
+        filePath: "memory\\2026-10-02.md",
+        uploadName: "memory_2026-10-02-md",
+        dataId: "data-win-1",
+      },
+    ]);
+  });
   it("health reads the status field", async () => {
     await expect(localClient().health()).resolves.toEqual({ status: "ok" });
   });
