@@ -93,9 +93,18 @@ def _answer_text(results: Sequence[Any]) -> str:
 class ChatMemoryAdapter:
     """Thin answer / seed-docs / forget layer over a cognee server (HTTP)."""
 
-    def __init__(self, *, top_k: int = 8, client: Optional[CogneeHttpClient] = None) -> None:
+    def __init__(
+        self,
+        *,
+        top_k: int = 8,
+        client: Optional[CogneeHttpClient] = None,
+        docs_base_url: Optional[str] = None,
+    ) -> None:
         self.top_k = top_k
         self.client = client or CogneeHttpClient()
+        # Where the ingested pages are published, so a citation can link to
+        # the page a reader can actually open instead of naming a chunk.
+        self.docs_base_url = docs_base_url or None
 
     # -- session helpers ---------------------------------------------------
 
@@ -104,6 +113,20 @@ class ChatMemoryAdapter:
 
     def docs_dataset(self, site_id: str) -> str:
         return f"web:{site_id}:docs"
+
+    def conversations_dataset(self, site_id: str) -> str:
+        """Where distillation moves conversations into permanent memory.
+
+        cognee's persisted copy of each distilled session and the lessons drawn
+        from it: one dataset, so a lesson cannot outlive the conversation it
+        cites and one clear disposes of all of it.
+
+        Deliberately not the docs corpus. ``answer`` names the docs dataset and
+        nothing else, so nothing stored here can become the source of a later
+        answer - which is the failure that matters: one wrong reply quoted back
+        as evidence for the next.
+        """
+        return f"web:{site_id}:conversations"
 
     # -- "ask our docs" corpus ---------------------------------------------
 
@@ -122,25 +145,32 @@ class ChatMemoryAdapter:
         conversation: Conversation,
         query: str,
         remember: bool = True,
-        use_docs: bool = True,
     ) -> Answer:
-        """Answer a query, scoped to this conversation and (optionally) the docs.
+        """Answer a query, scoped to this conversation and the docs corpus.
 
         With ``remember=True`` the ``session_id`` is passed so cognee's
         session-aware recall both uses and persists this conversation's history.
         ``remember=False`` is the opt-out: the turn is answered statelessly and
         nothing is stored.
 
+        The turn is stored by the caller, not here: ``answer`` stays a read.
+
         A docs corpus that was never seeded is reported by the server as a 4xx,
         which the HTTP client maps to no results — so the widget degrades to an
         "empty memory" answer rather than erroring.
         """
         session_id = conversation.session_id if remember else None
-        datasets = [self.docs_dataset(conversation.site_id)] if use_docs else None
+        # The dataset list is fixed here rather than taken from the caller.
+        # ``None`` means "every dataset this key can read", which would let the
+        # conversations corpus - and anything distilled from it - answer a
+        # visitor. Structural, not a default someone can switch off.
         results = await self.client.recall(
-            query, datasets=datasets, session_id=session_id, top_k=self.top_k
+            query,
+            datasets=[self.docs_dataset(conversation.site_id)],
+            session_id=session_id,
+            top_k=self.top_k,
         )
-        text, citations = split_evidence(_answer_text(results))
+        text, citations = split_evidence(_answer_text(results), self.docs_base_url)
         return Answer(text=text, citations=citations, session_id=conversation.session_id)
 
     # -- forget ------------------------------------------------------------

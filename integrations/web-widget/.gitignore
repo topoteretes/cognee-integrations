@@ -8,10 +8,15 @@ dist/
 .venv/
 venv/
 
-# Env / secrets
+# Env / secrets: every variant (.env.local, .env.bak-*, ...), not just .env.
+# Only the template is tracked.
 .env
+.env.*
+!.env.example
 
 # Tooling caches
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+widget-sync-state.json
+widget-sync-state.json.tmp
