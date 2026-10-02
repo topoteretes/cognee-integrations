@@ -859,7 +859,7 @@ export class CogneeHttpClient {
 // ---------------------------------------------------------------------------
 
 function sanitizeFilePath(filePath: string): string {
-  var mutatedPath = filePath.replace(/\//g, '_');
+  var mutatedPath = filePath.replace(/[\\/]/g, '_');
   mutatedPath = mutatedPath.replace(/\./g, '-');
   return mutatedPath;
 }
