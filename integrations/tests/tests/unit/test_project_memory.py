@@ -86,16 +86,134 @@ def test_verified_routes_capture_improve_and_dual_graph_recall(
         pm.route("primary", "s")
 
 
-def test_old_server_never_silently_drops_project_tags(
+def test_old_server_falls_back_to_capture_without_project_tags(
     suite, isolated_modules, monkeypatch, tmp_path
 ):
     pm, common = prepare_env(suite, isolated_modules, monkeypatch, tmp_path)
     monkeypatch.setenv("COGNEE_PROJECT_NODE_SET", "auto")
     pm.begin("primary", "s", str(tmp_path))
+    calls = []
+
+    def request(path, payload=None, **kwargs):
+        calls.append((path, payload))
+        if path == "/openapi.json":
+            return {
+                "components": {
+                    "schemas": {
+                        "QAEntry": {"properties": {}},
+                        "TraceEntry": {"properties": {}},
+                    }
+                }
+            }
+        return {"status": "session_stored"}
+
+    monkeypatch.setattr(common, "_json_http_request", request)
+    state = pm.prepare("primary", "s")
+    assert state["node_set"] == []
+    assert state["project_node_set_fallback"] is True
+    assert "without project tagging" in state["warning"]
+
+    common.remember_entry_via_http("primary", "s", {"type": "qa"})
+    write = calls[-1][1]
+    assert write["dataset_name"] == "primary"
+    assert "node_set" not in write["entry"]
+
+
+def test_malformed_openapi_does_not_weaken_isolation(
+    suite, isolated_modules, monkeypatch, tmp_path
+):
+    pm, common = prepare_env(suite, isolated_modules, monkeypatch, tmp_path)
+    monkeypatch.setenv("COGNEE_PROJECT_NODE_SET", "project-fixed")
+    pm.begin("primary", "s", str(tmp_path))
     monkeypatch.setattr(common, "_json_http_request", lambda *args, **kwargs: {})
-    pm.prepare("primary", "s")
-    with pytest.raises(RuntimeError, match="does not support"):
-        common.remember_entry_via_http("primary", "s", {"type": "qa"})
+
+    state = pm.prepare("primary", "s")
+    assert state["node_set"] == ["project-fixed"]
+    assert "could not be verified" in state["error"]
+    with pytest.raises(RuntimeError, match="could not be verified"):
+        pm.route("primary", "s")
+
+
+def test_project_tag_probe_failure_does_not_weaken_isolation(
+    suite, isolated_modules, monkeypatch, tmp_path
+):
+    pm, common = prepare_env(suite, isolated_modules, monkeypatch, tmp_path)
+    monkeypatch.setenv("COGNEE_PROJECT_NODE_SET", "project-fixed")
+    pm.begin("primary", "s", str(tmp_path))
+
+    def request(*args, **kwargs):
+        raise TimeoutError("temporary probe failure")
+
+    monkeypatch.setattr(common, "_json_http_request", request)
+    state = pm.prepare("primary", "s")
+    assert state["node_set"] == ["project-fixed"]
+    assert "could not be verified" in state["error"]
+    assert state["fallback"] == "TimeoutError"
+    with pytest.raises(RuntimeError, match="could not be verified"):
+        pm.route("primary", "s")
+
+
+def test_old_pinned_node_set_error_is_healed_when_backend_still_lacks_support(
+    suite, isolated_modules, monkeypatch, tmp_path
+):
+    pm, common = prepare_env(suite, isolated_modules, monkeypatch, tmp_path)
+    monkeypatch.setenv("COGNEE_PROJECT_NODE_SET", "project-fixed")
+    pm.begin("primary", "s", str(tmp_path))
+    path = pm._path("primary", "s")
+    state = common._load_json_file(path)
+    state["pending"] = False
+    state["identity"] = pm._identity()
+    state["error"] = "Backend does not support project node sets; capture remains queued"
+    common._write_json_file(path, state)
+    monkeypatch.setattr(
+        common,
+        "_json_http_request",
+        lambda *args, **kwargs: {
+            "components": {
+                "schemas": {
+                    "QAEntry": {"properties": {}},
+                    "TraceEntry": {"properties": {}},
+                }
+            }
+        },
+    )
+
+    healed = pm.prepare("primary", "s")
+    assert healed["node_set"] == []
+    assert healed["project_node_set_fallback"] is True
+    assert "error" not in healed
+    assert pm.route("primary", "s")["write"] == "primary"
+
+
+def test_old_pinned_node_set_error_recovers_tagging_after_backend_upgrade(
+    suite, isolated_modules, monkeypatch, tmp_path
+):
+    pm, common = prepare_env(suite, isolated_modules, monkeypatch, tmp_path)
+    monkeypatch.setenv("COGNEE_PROJECT_NODE_SET", "project-fixed")
+    pm.begin("primary", "s", str(tmp_path))
+    path = pm._path("primary", "s")
+    state = common._load_json_file(path)
+    state["pending"] = False
+    state["identity"] = pm._identity()
+    state["error"] = "Backend does not support project node sets; capture remains queued"
+    common._write_json_file(path, state)
+    monkeypatch.setattr(
+        common,
+        "_json_http_request",
+        lambda *args, **kwargs: {
+            "components": {
+                "schemas": {
+                    "QAEntry": {"properties": {"node_set": {}}},
+                    "TraceEntry": {"properties": {"node_set": {}}},
+                }
+            }
+        },
+    )
+
+    healed = pm.prepare("primary", "s")
+    assert healed["node_set"] == ["project-fixed"]
+    assert "project_node_set_fallback" not in healed
+    assert "error" not in healed
 
 
 def test_default_session_dataset_needs_no_companion(suite, isolated_modules, monkeypatch, tmp_path):
