@@ -31,6 +31,13 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   pulls in on its own. The claude-code and codex plugins move to the same pin.
 
 ### Fixed
+- **Long-running ingestion requests can exceed Node's 300s bundled-undici header timeout**
+  ([#429](https://github.com/topoteretes/cognee-integrations/issues/429)). Requests configured for
+  300 seconds or longer now use a package-local undici dispatcher with header/body
+  timeouts disabled, while the plugin's existing `AbortController` remains the configured
+  request deadline. Multipart
+  bodies are rebuilt with undici's own `FormData`, avoiding cross-version dispatcher/body
+  incompatibilities. This covers both `/remember` and `/update`.
 - **Documented settings no longer get the plugin quarantined**
   ([#438](https://github.com/topoteretes/cognee-integrations/issues/438)).
   `perAgentMemory`, `noiseTriggers` and `noisePatterns` are documented and read by

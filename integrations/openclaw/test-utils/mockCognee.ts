@@ -2,7 +2,7 @@
  * A real HTTP server standing in for Cognee.
  *
  * Deliberately a real `node:http` listener rather than a stubbed `global.fetch`.
- * `CogneeHttpClient` calls global `fetch` directly with no injectable transport,
+ * `CogneeHttpClient` uses real fetch transports rather than an injectable mock,
  * so a stub would only prove "the method built some arguments" — it could not
  * exercise the parts that actually break: header assembly, status-code handling,
  * the 401 re-login retry, timeout/abort behaviour, or multipart bodies. Those all
