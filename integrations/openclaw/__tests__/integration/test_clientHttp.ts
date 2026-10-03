@@ -380,6 +380,29 @@ describe("memory verbs send what the server expects", () => {
     expect(body).toContain('name="content_type"');
   });
 
+  it("fetchAPI bypasses Node global fetch for long-running multipart ingestion (#429)", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(async () => {
+      throw new Error("global fetch must not handle fetchAPI requests");
+    }) as typeof fetch;
+
+    try {
+      await expect(
+        new CogneeHttpClient(mock.url, "key-abc", undefined, undefined, 5_000, 300_000, LOCAL).remember({
+          files: [{ filePath: "memory/slow.md", data: "hello" }],
+          datasetName: "ds",
+        }),
+      ).resolves.toMatchObject({ datasetName: "ds" });
+
+      const call = mock.assertCalled("POST", "/remember");
+      expect(call.body).toContain('name="data"');
+      expect(call.body).toContain("hello");
+      expect(call.body).not.toBe("[object FormData]");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("remember sends chunk_size only when chunkSize is set (#428)", async () => {
     // The server's form default is 4096 tokens, which can exceed the embedding
     // model's input limit; unset must still leave that default alone.
