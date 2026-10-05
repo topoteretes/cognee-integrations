@@ -7,6 +7,15 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Project-tag capability fallback matches Codex on older Cognee servers.** If
+  typed QA/trace entries do not expose `node_set`, capture continues without the
+  project tag and emits an explicit prepared-state warning instead of queueing
+  forever; previously pinned unsupported-backend error states are re-probed so
+  upgraded backends retain tagging and still-incompatible backends fall back.
+
 ## [1.6.3]
 
 ### Added

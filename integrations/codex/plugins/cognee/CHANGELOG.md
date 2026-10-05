@@ -10,6 +10,17 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Older Cognee servers no longer wedge project-tagged capture into a permanent
+  queue** ([#442](https://github.com/topoteretes/cognee-integrations/issues/442)).
+  When the backend does not expose `node_set` on typed QA/trace entries, capture
+  continues without project tagging and the prepared project-memory state records
+  an explicit warning. Sessions pinned by older plugin versions to the former
+  "capture remains queued" error are re-probed: upgraded backends resume project
+  tagging, while still-incompatible backends fall back without losing capture.
+
 ## [1.7.4]
 
 ### Added

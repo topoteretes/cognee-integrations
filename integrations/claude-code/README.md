@@ -995,8 +995,11 @@ addition to socket timeouts; late read results are discarded.
 name plus a hash of the canonical path; a fixed value provides an explicit tag.
 The setting is pinned for the session, including buffered writes and detached
 improve workers. The backend must expose `node_set` on typed QA/trace entries and
-preserve it through improve. Older backends leave capture queued with an explicit
-`project_memory_prepared` error instead of silently losing the tags.
+preserve it through improve. Older backends now fall back to unscoped capture so
+memory keeps flowing; `project_memory_prepared` records an explicit warning that
+project tagging was disabled for the session. States written by older plugin
+versions with the former queued-capture error are re-probed on the next prepare:
+upgraded backends keep project tagging, while still-incompatible backends fall back.
 
 When a session names a project, **graph recall is scoped to it**: every prompt's
 graph lookup sends `node_name=[<project>, <shared sets>]` (OR-joined), so other

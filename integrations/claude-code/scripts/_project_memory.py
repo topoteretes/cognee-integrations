@@ -68,13 +68,38 @@ def begin(dataset: str, session_id: str, cwd: str) -> None:
     )
 
 
+_UNSUPPORTED_NODE_SET_ERROR = (
+    "Backend does not support project node sets; capture remains queued"
+)
+_NODE_SET_FALLBACK_WARNING = (
+    "Backend does not support project node sets; capture will continue without project tagging"
+)
+
+
+def _fallback_without_node_set(state: dict) -> None:
+    """Preserve capture on older backends while making the lost scope explicit."""
+    state.pop("error", None)
+    state["node_set"] = []
+    state["warning"] = _NODE_SET_FALLBACK_WARNING
+    state["project_node_set_fallback"] = True
+
+
 def prepare(dataset: str, session_id: str) -> dict:
     from _plugin_common import _json_http_request, _load_json_file, _write_json_file
 
     path = _path(dataset, session_id)
     state = _load_json_file(path)
-    if not state or not state.get("pending"):
+    if not state:
         return state
+    if not state.get("pending"):
+        # Re-probe known unsupported-backend states written by older plugin
+        # versions. The server may have been upgraded since the state was pinned;
+        # only fall back if the current schema still lacks node_set support.
+        if state.get("error") == _UNSUPPORTED_NODE_SET_ERROR:
+            state.pop("error", None)
+            state["pending"] = True
+        else:
+            return state
     state["identity"] = _identity()
     state["pending"] = False
     state["write"] = dataset
@@ -84,13 +109,16 @@ def prepare(dataset: str, session_id: str) -> dict:
             models = (
                 schema.get("components", {}).get("schemas", {}) if isinstance(schema, dict) else {}
             )
+            typed_models = [models.get(name) for name in ("QAEntry", "TraceEntry")]
             if not all(
-                "node_set" in models.get(name, {}).get("properties", {})
-                for name in ("QAEntry", "TraceEntry")
+                isinstance(model, dict) and isinstance(model.get("properties"), dict)
+                for model in typed_models
             ):
                 state["error"] = (
-                    "Backend does not support project node sets; capture remains queued"
+                    "Project tag capability could not be verified; capture remains queued"
                 )
+            elif not all("node_set" in model["properties"] for model in typed_models):
+                _fallback_without_node_set(state)
         if state.get("companion"):
             rows = _json_http_request("/api/v1/datasets", None, method="GET", timeout=5)
             matches = [row for row in rows or [] if row.get("name") == dataset]
@@ -114,6 +142,9 @@ def prepare(dataset: str, session_id: str) -> dict:
         # No local SQL queries and no speculative suffix routing on any failure.
         state["fallback"] = type(error).__name__
         if state.get("node_set") and "schema" not in locals():
+            # A transient probe failure is not evidence that project tagging is
+            # unsupported. Keep the explicit failure rather than silently
+            # weakening project isolation for the rest of the session.
             state["error"] = "Project tag capability could not be verified; capture remains queued"
     _write_json_file(path, state)
     return state
