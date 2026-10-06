@@ -19,4 +19,9 @@ def fake_client():
         remember=AsyncMock(return_value=None),
         recall=AsyncMock(return_value=[]),
         forget=AsyncMock(return_value=None),
+        # The dashboard reads these too; without them the fake raises
+        # AttributeError from inside an asyncio.gather, where the failure
+        # surfaces far from its cause.
+        graph_summary=AsyncMock(return_value={}),
+        graph=AsyncMock(return_value={"nodes": [], "edges": []}),
     )
