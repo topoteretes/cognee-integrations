@@ -141,6 +141,17 @@ integrations:
     migration_status: done
     source_repo: https://github.com/topoteretes/cognee-integration-strands
     notes: "Strands agent tools – remember, recall, session management (cognee v1.0)"
+
+  - slug: pydantic-ai
+    name: "Cognee Integration for Pydantic AI"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-pydantic-ai"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Pydantic AI memory toolset with scoped remember, search, forget and optional automatic recall"
   - slug: claude-agent-sdk
     name: "Cognee Integration for Claude Agent SDK"
     owner: cognee
