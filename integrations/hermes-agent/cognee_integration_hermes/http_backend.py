@@ -681,6 +681,16 @@ class HttpBackend(MemoryBackend):
         fields = {"datasetName": dataset}
         if session_id:
             fields["session_id"] = session_id
+        # A synchronous remember runs the whole cognify pipeline (several LLM
+        # calls per document) before answering, which on a slow or rate-limited
+        # LLM endpoint blows past the client's write timeout: the caller sees
+        # "Cognee remember failed: timed out" while the server finishes the
+        # write anyway — a reported failure for a write that landed, and the
+        # same connection-level timeout the claude-code integration fixed by
+        # backgrounding (#96). Backgrounding returns immediately with
+        # ``status: "running"`` and the pipeline completes server-side; the
+        # provider already surfaces the status field to the caller.
+        fields["run_in_background"] = "true"
         # The upload filename is the document's identity server-side, and cognee
         # >= 1.6.0 refuses (HTTP 409) to add a document whose name already exists
         # in the dataset with *different* content — so one fixed name meant the
