@@ -160,7 +160,7 @@ integrations:
     registry: npm
     package_name: "n8n-nodes-cognee"
     cognee_dependency: http-api
-    current_version: "0.7.1"
+    current_version: "0.8.0"
     migration_status: done
     source_repo: https://github.com/topoteretes/cognee-n8n
     notes: "n8n community nodes – the Cognee action node (memory, datasets, search, sessions, skills) and the Cognee Memory sub-node for the AI Agent's memory port. Published via .github/workflows/n8n-publish.yml on `n8n-v*.*.*` tags."
