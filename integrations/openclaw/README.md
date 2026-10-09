@@ -551,12 +551,14 @@ OpenClaw drives agents with synthetic prompts the user never typed: heartbeat pr
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `requestTimeoutMs` | number | `120000` | HTTP timeout for Cognee requests |
-| `ingestionTimeoutMs` | number | `300000` | HTTP timeout for add/update requests |
+| `ingestionTimeoutMs` | number | `300000` | HTTP timeout for long-running ingestion (`/remember`, add/update); may safely exceed 300s |
 | `chunkSize` | integer | unset | Maximum tokens per chunk when syncing memory files, sent as `chunk_size`. Unset keeps the server default (4096 tokens), which can exceed an embedding model's input limit (e.g. 1500 for `bge-m3`): oversized chunks are truncated or retrieve poorly. Smaller chunks mean more LLM passes when the graph is built. Applies to new files; a file updated in place is re-chunked at the server default, since `/update` takes no chunk size |
 
 ### Recall budget & circuit breaker
 
 Recall runs on the prompt hot path, so it is bounded: each recall call gets a short timeout, the whole recall step gets a wall-clock budget, and repeated failures open a circuit breaker that skips recall until the server recovers. Memories missed under the budget are dropped for that turn only — writes (traces, QA, file sync, improve) are never budgeted. The breaker state is shared with the claude-code and codex integrations via `~/.cognee-plugin/recall-breaker.json`, so all plugins using one Cognee server back off together.
+
+Long-running ingestion uses its own undici dispatcher rather than Node's bundled global `fetch`, so `ingestionTimeoutMs` values above five minutes are not cut off by undici's default 300-second response-header timeout. The configured AbortController timeout still applies.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -630,7 +632,7 @@ network and never spends anything.
 | Tier | What it drives |
 | --- | --- |
 | `unit` | pure functions plus the filesystem modules (`files`, `persistence`) over real temp directories |
-| `integration` | `CogneeHttpClient` against `MockCognee`, a real `node:http` server — the client calls global `fetch` with no injectable transport, so only a real socket exercises header assembly, the 401 re-login and timeouts |
+| `integration` | `CogneeHttpClient` against `MockCognee`, a real `node:http` server — long (≥300s) `fetchAPI` calls use a dedicated undici transport while shorter calls and health/login keep global `fetch`, so a real socket exercises header assembly, multipart encoding, 401 re-login and timeouts |
 | `e2e` | `register()` against a fake plugin API, then the nine lifecycle events and eight `cognee` subcommands fired at the collected handlers |
 | `live` | a real Cognee server, real LLM calls, a real graph — **excluded from every default run** |
 

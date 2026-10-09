@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Agent, FormData as UndiciFormData, fetch as undiciFetch } from "undici";
 import type {
   CogneeAddResponse,
   CogneeDataItem,
@@ -19,6 +20,42 @@ const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 3_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
+const NODE_GLOBAL_FETCH_HEADERS_TIMEOUT_MS = 300_000;
+
+// Node's bundled global fetch has an undici headersTimeout of 300s. Long-running
+// Cognee ingestion endpoints can legitimately wait longer than that before they
+// send response headers, so use a package-local undici dispatcher with its own
+// header/body limits disabled. The AbortController in fetchAPI remains the real
+// per-request timeout.
+const LONG_REQUEST_DISPATCHER = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+
+function bodyForUndici(body: BodyInit | null | undefined): unknown {
+  if (typeof FormData === "undefined" || !(body instanceof FormData)) return body;
+
+  // npm undici must receive its own FormData implementation; passing Node's
+  // global FormData can serialize as the literal string "[object FormData]" on
+  // versions where the bundled and package undici differ. Rebuild the form for
+  // every attempt so retries do not depend on body reusability.
+  const copied = new UndiciFormData();
+  body.forEach((value, name) => {
+    if (typeof value === "string") copied.append(name, value);
+    else copied.append(name, value, value.name);
+  });
+  return copied;
+}
+
+async function fetchWithLongRequestSupport(url: string, init: RequestInit): Promise<Response> {
+  // DOM RequestInit and npm undici's RequestInit are structurally compatible at
+  // runtime but come from different type declarations. Keep that bridge isolated
+  // here instead of leaking undici types through the client API.
+  const undiciInit = {
+    ...init,
+    body: bodyForUndici(init.body),
+    dispatcher: LONG_REQUEST_DISPATCHER,
+  } as unknown as Parameters<typeof undiciFetch>[1];
+  const response = await undiciFetch(url, undiciInit);
+  return response as unknown as Response;
+}
 
 // ---------------------------------------------------------------------------
 // CogneeHttpClient — shared HTTP transport with auth, retry, timeout
@@ -165,11 +202,15 @@ export class CogneeHttpClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(`${this.baseUrl}${path}`, {
+        const requestInit = {
           ...init,
           headers: { ...this.buildHeaders(), ...(init.headers as Record<string, string>) },
           signal: controller.signal,
-        });
+        };
+        const response =
+          timeoutMs >= NODE_GLOBAL_FETCH_HEADERS_TIMEOUT_MS
+            ? await fetchWithLongRequestSupport(`${this.baseUrl}${path}`, requestInit)
+            : await fetch(`${this.baseUrl}${path}`, requestInit);
 
         // On 401, try re-login once and retry
         if (response.status === 401 && !this.apiKey) {
@@ -181,11 +222,15 @@ export class CogneeHttpClient {
           const retryController = new AbortController();
           const retryTimeout = setTimeout(() => retryController.abort(), timeoutMs);
           try {
-            const retryResponse = await fetch(`${this.baseUrl}${path}`, {
+            const retryInit = {
               ...init,
               headers: { ...this.buildHeaders(), ...(init.headers as Record<string, string>) },
               signal: retryController.signal,
-            });
+            };
+            const retryResponse =
+              timeoutMs >= NODE_GLOBAL_FETCH_HEADERS_TIMEOUT_MS
+                ? await fetchWithLongRequestSupport(`${this.baseUrl}${path}`, retryInit)
+                : await fetch(`${this.baseUrl}${path}`, retryInit);
             if (!retryResponse.ok) {
               const errorText = await retryResponse.text();
               throw new Error(`Cognee request failed (${retryResponse.status}): ${errorText}`);
