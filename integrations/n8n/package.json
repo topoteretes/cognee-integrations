@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-cognee",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "n8n nodes for Cognee AI memory: the Cognee action node and a Cognee Memory sub-node for the AI Agent",
   "keywords": [
     "n8n-community-node-package"

@@ -25,6 +25,7 @@ import {
 import type { MultipartPart } from './multipart';
 import {
   buildForgetPayload,
+  buildImprovePayload,
   buildRecallPayload,
   buildRememberEntryPayload,
   parseGraphModel,
@@ -260,6 +261,33 @@ export async function simplifyRecallOutput(
   return hits.map((hit) => ({
     json: (simplify ? simplifyRecallResult(hit) : hit) as IDataObject,
   }));
+}
+
+/**
+ * preSend hook for Memory → Improve: POST /v1/improve (JSON). Session IDs
+ * arrive as a comma-separated string or, through an expression, as an array.
+ */
+export async function buildImproveBody(
+  this: IExecuteSingleFunctions,
+  requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+  const rawIds = this.getNodeParameter('improveSessionIds', '') as unknown;
+  const sessionIds = Array.isArray(rawIds)
+    ? rawIds.map((id) => String(id ?? ''))
+    : String(rawIds ?? '').split(',');
+  const additional = this.getNodeParameter('improveAdditionalFields', {}) as {
+    datasetId?: string;
+    runInBackground?: boolean;
+  };
+  const payload = withNodeError(this, () =>
+    buildImprovePayload({
+      sessionIds,
+      datasetName: this.getNodeParameter('improveDatasetName', '') as string,
+      datasetId: additional.datasetId,
+      runInBackground: additional.runInBackground !== false,
+    }),
+  );
+  return setJsonBody(requestOptions, payload);
 }
 
 /** preSend hook for Memory → Forget: POST /v1/forget (JSON). */
@@ -807,6 +835,24 @@ export class Cognee implements INodeType {
               },
               send: {
                 preSend: [buildForgetBody],
+              },
+            },
+          },
+          {
+            name: 'Improve',
+            value: 'improve',
+            action: 'Promote sessions into the knowledge graph',
+            description:
+              'Bridge the session memory of one or more sessions into a dataset\'s knowledge graph, so later recalls find what was said. Idempotent per session: a run only processes entries added since the previous one.',
+            routing: {
+              request: {
+                method: 'POST',
+                url: '/v1/improve',
+                headers: { 'Content-Type': 'application/json' },
+                timeout: 600000, // 10 minutes
+              },
+              send: {
+                preSend: [buildImproveBody],
               },
             },
           },
@@ -1930,6 +1976,67 @@ export class Cognee implements INodeType {
                 },
               },
             },
+          },
+        ],
+      },
+      // Memory → Improve fields
+      {
+        displayName: 'Session IDs',
+        name: 'improveSessionIds',
+        type: 'string',
+        default: '',
+        required: true,
+        placeholder: 'user-123, user-456',
+        description:
+          'Comma-separated session IDs to promote, or an expression resolving to an array (for example the session_id values of Session → Get Many)',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['improve'],
+          },
+        },
+      },
+      {
+        displayName: 'Dataset Name',
+        name: 'improveDatasetName',
+        type: 'string',
+        default: 'main_dataset',
+        description: 'Dataset whose knowledge graph receives the promoted sessions',
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['improve'],
+          },
+        },
+      },
+      {
+        displayName: 'Additional Fields',
+        name: 'improveAdditionalFields',
+        type: 'collection',
+        placeholder: 'Add Field',
+        default: {},
+        displayOptions: {
+          show: {
+            resource: ['memory'],
+            operation: ['improve'],
+          },
+        },
+        options: [
+          {
+            displayName: 'Dataset ID',
+            name: 'datasetId',
+            type: 'string',
+            default: '',
+            description:
+              'Target the dataset by UUID instead of by name. Required for a dataset shared with you; takes precedence over Dataset Name.',
+          },
+          {
+            displayName: 'Run in Background',
+            name: 'runInBackground',
+            type: 'boolean',
+            default: true,
+            description:
+              'Whether the graph-building stages run in the background after the request returns. Turn off to wait for them, which can take minutes.',
           },
         ],
       },

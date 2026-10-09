@@ -5,11 +5,11 @@ Use Cognee Cloud's AI memory and context engineering directly in your n8n workfl
 The package ships two nodes:
 
 - **Cognee** — an action node covering the Cognee `/api/v1` API (memory, datasets, search, skills)
-- **Cognee Memory** — an AI Agent **memory sub-node**: plug it into the Agent's Memory port and the conversation is stored in Cognee as a session, so chat history survives restarts and is readable from any Cognee client
+- **Cognee Memory** — an AI Agent **memory sub-node**: plug it into the Agent's Memory port and the agent remembers across conversations. Turns are stored in a Cognee session, relevant knowledge is recalled for every question, and sessions are promoted into the knowledge graph once a day
 
 This community node package lets you:
 
-- Give an **AI Agent durable chat memory** with the Cognee Memory sub-node — no separate Redis or Postgres needed if you already run Cognee
+- Give an **AI Agent long-term memory** with the Cognee Memory sub-node — what a user said last week is recalled in a new conversation, with no extra nodes and no separate Redis or Postgres
 - **Remember** text or files, **Recall** with knowledge-graph search, and **Forget** data — Cognee's memory API in three operations
 - Store session **Q&A, trace and feedback entries** and search them back with session-scoped Recall
 - Add text data to a Cognee dataset
@@ -65,30 +65,37 @@ Create credentials of type `Cognee API` in n8n. The node uses these values to au
 
 `Cognee Memory` is a memory sub-node for n8n's **AI Agent** node, built on [`@n8n/ai-node-sdk`](https://github.com/n8n-io/n8n/tree/master/packages/%40n8n/ai-node-sdk). It appears next to Simple Memory, Redis Chat Memory and Postgres Chat Memory when you click the Agent's **Memory** port.
 
-**Use it when** you already run Cognee and want durable chat history without standing up a second datastore. The conversation persists across restarts, and it is readable from Cognee's own tooling rather than sitting opaque in Redis.
-
-**It is not how the agent reaches your knowledge graph.** n8n's memory port carries chat history only, for every vendor. To let an agent search what you have ingested into Cognee, attach the **Cognee** node to the agent's **Tool** port. That is where the knowledge graph does its work, and it is independent of this sub-node.
+**Use it when** you want an agent that remembers across conversations. A stock memory sub-node replays one session's transcript. Cognee Memory does that too, and on top of it does what Cognee's coding-agent plugins do: it recalls relevant knowledge from the graph for every question, and it promotes the sessions it writes into the knowledge graph, so a user who comes back tomorrow under a new session ID is remembered.
 
 What it does per agent turn:
 
 - **Load**: `GET /api/v1/sessions/{sessionId}` — the last *Window Size* question/answer pairs of the session are handed to the agent as chat history
+- **Recall**: `POST /api/v1/recall` — a hybrid completion search for the incoming question with `only_context: true` and `context_format: "context"`; the retrieved context is appended to the history as one message, right before the question. Servers older than the context format option return the full prompt envelope instead, which the node trims to the retrieved context the same way the Cognee coding-agent plugins do.
 - **Save**: `POST /api/v1/remember/entry` — the user message and the agent's reply are stored as one `qa` session entry
+- **Promote** (end of execution, at most once per interval): `POST /api/v1/improve` with every session written since the last run — the server bridges those sessions into the dataset's knowledge graph
 
-The turns land in a Cognee session, so the same conversation is reachable from the **Cognee** node (Memory → Recall with the Session ID, Session → Get) and from any other Cognee client. The agent's memory is not locked inside n8n.
-
-Sessions are stored separately from a dataset's knowledge graph, and session entries do **not** become graph nodes on their own. To search a whole conversation, including turns older than the loaded window, use **Memory → Recall** with the same Session ID and the **session** scope. For knowledge the agent should search rather than replay, attach the Cognee node to the agent's **Tool** port and point it at a dataset you have ingested.
+The turns land in a Cognee session, so the same conversation is reachable from the **Cognee** node (Memory → Recall with the Session ID, Session → Get) and from any other Cognee client. Recalled context is handed to the agent only; it is never written into the session, so n8n's **Chat Memory Manager** still sees the real transcript.
 
 Parameters:
 
 - **Session ID** (required, default `{{ $json.sessionId }}`): the Cognee session to store the conversation under. Use the chat trigger's session ID or any stable per-user/per-conversation key.
-- **Options → Dataset Name** (default `main_dataset`): dataset this session is *attributed* to, recorded on the session the first time it is written. It does not scope the history: sessions are keyed per Cognee user and session ID, not per dataset, and a later write does not move an existing session. Reusing one Session ID under two dataset names mixes a single history rather than splitting it, so keep Session IDs globally unique or namespace them yourself.
+- **Options → Dataset Name** (default `main_dataset`): the dataset the session is *attributed* to and promoted into, and the dataset recall reads from unless Recall Datasets is set. It does not scope the history: sessions are keyed per Cognee user and session ID, not per dataset, and a later write does not move an existing session. Reusing one Session ID under two dataset names mixes a single history rather than splitting it, so keep Session IDs globally unique or namespace them yourself.
 - **Options → Dataset ID**: attribute by dataset UUID instead of by name. Required for a dataset shared with you, because a name only resolves among datasets you own. Takes precedence over Dataset Name.
-- **Options → Window Size** (default 10, max 20): number of recent Q&A pairs loaded into the agent context. Cognee's session detail endpoint returns the most recent 20 pairs.
+- **Options → Window Size** (default 5, max 20): number of recent Q&A pairs loaded into the agent context. Cognee's session detail endpoint returns the most recent 20 pairs. Older turns are reachable through recall once promoted.
+- **Options → Recall Context** (default on): recall knowledge for every question. **Recall Query** (default `{{ $json.chatInput }}`) is resolved from the item entering the agent, so it works with the Chat Trigger and with messaging triggers that put the message on the item; when it resolves to nothing, recall is skipped for that turn. **Recall Scope** (default Graph): the session scopes read the session the window already carries, so adding them mostly duplicates it. **Recall Datasets** (comma-separated, default the memory dataset), **Recall Top K** (default 5), **Max Context Characters** (default 12000, cut at a line break).
+- **Options → Inject Context As** (default System Message): the role of the message carrying the recalled context. Switch to User Message for chat models that reject a system message that is not the first message.
+- **Options → Promote To Graph** (default Every N Hours, with **Promote Every (Hours)** = 24): when sessions are promoted. *Every N Hours* promotes every session written since the last run at the end of the first execution after the interval has passed, in one request. *After Each Execution* promotes this session at the end of every execution, for immediate cross-conversation memory at the cost of one improve run per message. *Never* keeps turns in the session only; promote them with a separate workflow (Cognee → Memory → Improve) such as the shipped [nightly promotion workflow](../../n8n_workflows/cognee_nightly_memory_promotion).
 
 Notes:
 
+- The time of the last promotion and the sessions written since, grouped by the dataset they go into, are kept in the workflow's static data, which n8n only saves for **production** executions. Manual test runs from the editor promote every time, which is what you want when trying it out. n8n saves static data by overwriting it, so two executions finishing at the same instant can lose each other's queued session; the nightly workflow is the backstop for that.
+- Promotion sends one improve request per dataset, so a workflow whose Dataset Name is an expression (one dataset per customer, say) promotes each session into its own dataset. The last-run time only advances once every dataset was accepted. A busy server, one whose improve lock is held by another run, leaves the sessions queued and the next execution retries; a failed request does the same and logs a warning. If the queue reaches 1000 sessions, promotion runs at the next execution regardless of the interval, so nothing is dropped under normal load.
+- Promotion is traffic-driven: a conversation that goes quiet after the daily run is promoted when the next execution past the interval ends. The nightly workflow closes that gap at a fixed hour.
+- Recall and promotion never fail the agent's turn. A failed recall logs a warning and the agent gets its history; a failed promotion logs a warning and is retried on the next execution.
+- Improve is idempotent per session: every stage is guarded by a per-session watermark, so a run only processes the turns added since the previous one, and cost scales with what was said rather than with session length.
 - Works with n8n's **Chat Memory Manager** node for **Get Many Messages** and **Insert Messages**. A user message immediately followed by an assistant message is stored as one Q&A entry. Any other message is stored half-filled, with only the side it belongs to, so inserting messages one at a time reads back as exactly those messages. System and tool messages keep their role in the entry's context field. A message with no text is skipped, since there is nothing to store.
 - **Clearing a session is not supported yet**, because Cognee has no endpoint that deletes a single session. The Chat Memory Manager operations that wipe memory first — **Delete Messages**, and **Insert Messages** with **Override All Messages** — fail with an explanatory error rather than silently doing nothing. Start a new Session ID for a fresh conversation, or use Cognee → Memory → Forget on the dataset.
+- For retrieval the agent should *decide* to run, attach the **Cognee** node to the agent's **Tool** port as well. The memory port's recall is ambient context the agent always gets; a tool is a search the agent runs when it judges it needs one.
 - Requires n8n **2.16 or newer** (the release that made `@n8n/ai-node-sdk` available to community nodes). The Cognee action node itself has no such requirement.
 
 ## Operations
@@ -114,6 +121,10 @@ The memory-oriented API. **Remember** is the one-call path (add + cognify); **Re
 - **Operation: Forget** — `POST /api/v1/forget`
   - Fields: Forget (Dataset / Data Item / Everything), Identify Dataset By (Name or ID), Dataset Name or Dataset ID, Data ID, Memory Only
   - Memory Only clears graph and vector data but keeps raw files, so the dataset can be re-cognified. **Everything** requires the explicit confirmation toggle and permanently deletes all datasets and data you own.
+- **Operation: Improve** — `POST /api/v1/improve`
+  - Fields: Session IDs (comma-separated, or an expression resolving to an array), Dataset Name
+  - Additional Fields: Dataset ID, Run in Background (default on)
+  - Promotes the session memory of those sessions into the dataset's knowledge graph, so later recalls find what was said. The server reads its own session cache, so no session text travels in the request. Idempotent per session: a run only processes entries added since the previous one. This is what the Cognee Memory sub-node calls on its own schedule; use it directly from a scheduled workflow, see the shipped [nightly promotion workflow](../../n8n_workflows/cognee_nightly_memory_promotion).
 
 - **Operation: Update** — `PATCH /api/v1/update` (multipart/form-data)
   - Fields: Dataset Name or ID (dropdown), Data ID, Input Type (Text or Binary File), Text or Input Binary Field
@@ -251,15 +262,16 @@ Loop wiring: **Ingest Skill** → **Review Skill** → (score in n8n) → **Prop
 
 ## Usage examples
 
-Persistent chat memory for an AI Agent (recommended):
+Long-term memory for an AI Agent (recommended):
 
 1. **Chat Trigger** → **AI Agent**
 2. Click the Agent's **Memory** port and pick **Cognee Memory**
    - Credential: your `Cognee API` credential
    - Session ID: `{{ $json.sessionId }}` (the chat trigger's session)
-   - Options → Dataset Name: `support_chat`, Window Size: `10`
-3. Chat. Every turn is stored as a Cognee session entry attributed to `support_chat`.
-4. Add the **Cognee** node as an Agent **Tool** so the agent can search knowledge, not just replay the conversation. Point it at Memory → Recall over the datasets you have ingested. This is where Cognee's knowledge graph does its work; the Memory port only carries chat history.
+   - Options → Dataset Name: `support_chat`
+3. Chat: "I play tennis on Tuesdays." The turn is stored in the session and, at the end of the execution, promoted into `support_chat`.
+4. Open a **new** chat (a new session ID) and ask what sport you play. The recall step finds the promoted turn in the graph and the agent answers from it, with no Cognee tool attached.
+5. Optionally add the **Cognee** node as an Agent **Tool** (Memory → Recall over the datasets you have ingested) for searches the agent decides to run itself, and import the [nightly promotion workflow](../../n8n_workflows/cognee_nightly_memory_promotion) to promote at a fixed hour.
 
 Manual chat memory with the Cognee action node (when you need full control over what is recalled):
 
@@ -314,6 +326,7 @@ The package depends on `n8n-workflow` and `@n8n/ai-node-sdk` at runtime (peer de
 
 ## Version history
 
+- **0.8.0**: The **Cognee Memory** sub-node becomes long-term memory. It recalls graph context for every question (`POST /api/v1/recall`, hybrid completion, only context) and appends it to the loaded history, and promotes the sessions it writes into the knowledge graph (`POST /api/v1/improve`) at most once per interval (default 24 hours), covering every session written since the last run in one request; the last-run time lives in the workflow static data. Both are on by default and switchable in the options. Window Size default drops to 5. The action node gains **Memory → Improve**, and the repo ships a nightly promotion workflow.
 - **0.7.1**: Text uploads (Add Data, Remember) are named by a hash of their content instead of their position, so cognee >= 1.6.0 no longer refuses every text after the first run as a changed document.
 - **0.7.0**: Add the **Cognee Memory** sub-node for the AI Agent's Memory port, built on `@n8n/ai-node-sdk`: loads the last N Q&A pairs of a Cognee session (`GET /api/v1/sessions/{id}`) and stores each turn as a `qa` session entry (`POST /api/v1/remember/entry`), so the conversation survives restarts and is readable from any Cognee client. Session entries stay in the session cache, separate from a dataset's knowledge graph. Declares `n8n.aiNodeSdkVersion: 1`; the sub-node requires n8n ≥ 2.16.
 - **0.6.0**: Add the **Dataset** resource (Get Many, Create, Get Data Items, Get Status, Get Progress) and **Session** resource (Get Many, Get); Memify under Cognify; Update under Memory; Get Many and Delete Skill under Skill. Dataset ID fields become dropdowns loaded from your datasets. Add the **Memory** resource: Remember (text or binary file, multipart), Remember Entry (qa / trace / feedback session entries), Recall (all search types plus Auto routing, session scope, Simplify output) and Forget (dataset, data item, memory-only, or everything behind a confirmation toggle). Move Add Data, Cognify, Search and Delete to the `/api/v1` endpoints (the legacy `/api/add_text`, `/api/cognify`, `/api/search` routes are no longer served). Add Data now uploads text as multipart file parts and gains Node Set / Run in Background. Search exposes all Cognee search types plus Dataset IDs, System Prompt, Only Context, Node Sets, Session ID, Include References and Verbose. Cognify gains Dataset IDs, Custom Prompt, Chunk Size and Ontology Keys. Icons now have light/dark variants; toolchain upgraded to `@n8n/node-cli` 0.46 with vitest unit tests. Recall and Remember close topoteretes/cognee#3560.
