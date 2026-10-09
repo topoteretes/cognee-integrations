@@ -227,6 +227,7 @@ integrations/
   claude-code/        -> Cognee plugin for Claude Code
   codex/              -> Cognee plugin marketplace for Codex
   antigravity/        -> Cognee plugin for Antigravity
+  cursor/             -> Cognee plugin for Cursor (hooks + skills)
 ```
 
 ## Adding a New Integration

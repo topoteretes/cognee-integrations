@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "./scripts/run-cursor-hook session-start.py",
+        "timeout": 120
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "./scripts/run-cursor-hook session-context-lookup.py",
+        "timeout": 120
+      },
+      {
+        "command": "./scripts/run-cursor-hook store-user-prompt.py",
+        "timeout": 120
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "./scripts/run-cursor-hook store-to-session.py",
+        "timeout": 120
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "./scripts/run-cursor-hook store-to-session.py",
+        "timeout": 120
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "./scripts/run-cursor-hook store-to-session.py --stop",
+        "timeout": 120
+      }
+    ],
+    "stop": [
+      {
+        "command": "./scripts/run-cursor-hook store-to-session.py --stop",
+        "timeout": 120
+      },
+      {
+        "command": "./scripts/run-cursor-hook credits-refresh.py",
+        "timeout": 10
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "./scripts/run-cursor-hook pre-compact.py",
+        "timeout": 120
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "./scripts/run-cursor-hook sync-session-to-graph.py --session-end",
+        "timeout": 120
+      }
+    ]
+  }
+}

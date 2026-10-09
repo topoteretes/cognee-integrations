@@ -29,7 +29,11 @@ class VersionConsistencyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.plugin = {"source": "./integrations/claude-code", "version": "1.2.3"}
-        self.write_json(checker.MARKETPLACE, {"plugins": [self.plugin]})
+        for slug, (marketplace, source_dir) in checker.MARKETPLACES.items():
+            plugin = (
+                self.plugin if slug == "claude-code" else {"source": source_dir, "version": "1.2.3"}
+            )
+            self.write_json(marketplace, {"plugins": [plugin]})
 
     def write_json(self, path, data):
         target = self.root / path
@@ -58,6 +62,22 @@ class VersionConsistencyTests(unittest.TestCase):
             self.assertTrue(checker.check_versions(self.root))
         (self.root / checker.MARKETPLACE).unlink()
         self.assertTrue(checker.check_versions(self.root))
+
+    def test_every_marketplace_manifest_is_checked(self):
+        for slug, (marketplace, source_dir) in checker.MARKETPLACES.items():
+            with self.subTest(slug=slug):
+                good = json.loads((self.root / marketplace).read_text(encoding="utf-8"))
+                self.write_json(
+                    marketplace, {"plugins": [{"source": source_dir, "version": "0.0.1"}]}
+                )
+                errors = checker.check_versions(self.root)
+                self.assertTrue(any(slug in error and "0.0.1" in error for error in errors))
+                (self.root / marketplace).unlink()
+                self.assertTrue(
+                    any(marketplace in error for error in checker.check_versions(self.root))
+                )
+                self.write_json(marketplace, good)
+        self.assertEqual(checker.check_versions(self.root), [])
 
     def test_missing_or_malformed_manifest_fails(self):
         manifest = self.root / checker.MANIFESTS["codex"]
