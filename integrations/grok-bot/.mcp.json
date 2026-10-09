@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cognee-memory": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "if command -v python3 >/dev/null 2>&1; then exec python3 \"$0\"; else exec python \"$0\"; fi",
+        "${GROK_PLUGIN_ROOT}/scripts/cognee-mcp-launch.py"
+      ]
+    }
+  }
+}
