@@ -290,6 +290,18 @@ class TestRememberWireFormat(unittest.TestCase):
         content_type = opener.request_for("/api/v1/remember")["headers"]["content-type"]
         self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
 
+    def test_permanent_write_runs_in_the_background(self):
+        # A synchronous remember runs the full cognify (several LLM calls)
+        # before answering; on a slow or rate-limited LLM endpoint that exceeds
+        # the write timeout and the caller sees a failure for a write the server
+        # actually completes. The request must ask the server to background it.
+        opener = FakeOpener({"/api/v1/remember": {"status": "running"}})
+        result = _backend(opener).remember_permanent(
+            text="a fact", dataset="hermes", session_ids=[], timeout=_TIMEOUT
+        )
+        self.assertEqual(opener.multipart_fields("/api/v1/remember")["run_in_background"], "true")
+        self.assertEqual(result.status, "running")
+
     def test_result_exposes_status_as_an_attribute(self):
         # The provider reads getattr(result, "status", "completed"); a bare dict
         # would silently report "completed" for every write.
