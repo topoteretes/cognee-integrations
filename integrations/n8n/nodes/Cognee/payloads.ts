@@ -369,3 +369,105 @@ export function parseGraphModel(value: unknown): Record<string, unknown> | undef
   }
   return model;
 }
+
+// ---------------------------------------------------------------------------
+// Improve (session -> graph promotion)
+// ---------------------------------------------------------------------------
+
+export interface ImproveParams {
+  /** Sessions whose cache the server bridges into the dataset's graph. */
+  sessionIds: string[];
+  datasetName?: string;
+  /** Takes precedence over the name; required for a dataset shared with you. */
+  datasetId?: string;
+  /** Background the cognify-heavy stages (default true). */
+  runInBackground?: boolean;
+}
+
+/**
+ * POST /v1/improve body for promoting session memory into the knowledge
+ * graph. The server reads its own session cache, so no session text travels
+ * in the request. Improve is idempotent per session (every stage is guarded by
+ * a per-session watermark), so re-submitting a session only processes what was
+ * added since the last run.
+ */
+export function buildImprovePayload(params: ImproveParams): Record<string, unknown> {
+  const sessionIds = Array.from(new Set(cleanList(params.sessionIds)));
+  if (!sessionIds.length) throw new Error('At least one Session ID is required');
+
+  const payload: Record<string, unknown> = {
+    session_ids: sessionIds,
+    dataset_name: nonEmpty(params.datasetName) ?? DEFAULT_DATASET_NAME,
+    run_in_background: params.runInBackground !== false,
+  };
+  const datasetId = nonEmpty(params.datasetId);
+  if (datasetId) payload.dataset_id = datasetId;
+  return payload;
+}
+
+export interface ImproveOutcome {
+  /**
+   * `submitted`: the server accepted the run. `busy`: the server answered an
+   * empty object, meaning its per-session improve lock is held by another run
+   * that will persist everything above the watermark, so nothing is lost and
+   * nothing should be retried.
+   */
+  status: 'submitted' | 'busy';
+  /**
+   * On a busy answer, whether the run holding the lock was asked to run again
+   * afterwards (cognee >= 1.6 reports `rerun_requested`). Only then does a
+   * busy answer cover the submitted sessions.
+   */
+  rerunRequested: boolean;
+  /** Per-dataset pipeline statuses when the server reports them. */
+  datasets: Record<string, { status?: string; pipelineRunId?: string }>;
+}
+
+/**
+ * Collapse the `/v1/improve` response to one shape. Cognee 1.4 and 1.5 answer
+ * `{ "<dataset_uuid>": { status, pipeline_run_id, ... }, ... }`; 1.6 a flat
+ * `{ dataset_id, status, stages: [...] }`; older servers a flat
+ * `{ status, pipeline_run_id }`. A lock-skipped run is `{}` on older servers and
+ * a stage list of `lock_held` skips on 1.6.
+ */
+export function summarizeImproveResponse(body: unknown): ImproveOutcome {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { status: 'submitted', rerunRequested: false, datasets: {} };
+  }
+  const record = body as Record<string, unknown>;
+  const str = (value: unknown): string | undefined =>
+    typeof value === 'string' ? value : undefined;
+  const rerunRequested = record.rerun_requested === true;
+
+  if (Object.keys(record).length === 0) {
+    return { status: 'busy', rerunRequested: false, datasets: {} };
+  }
+
+  if (str(record.status) !== undefined || str(record.pipeline_run_id) !== undefined) {
+    // cognee >= 1.6 reports per-stage outcomes; a run that found the
+    // per-session lock held skips every stage with reason `lock_held`.
+    const stages = Array.isArray(record.stages) ? (record.stages as unknown[]) : [];
+    const lockHeld =
+      stages.length > 0 &&
+      stages.every((stage) => {
+        const s = stage as Record<string, unknown> | null;
+        return s?.status === 'skipped' && s?.reason === 'lock_held';
+      });
+    const key = str(record.dataset_id) ?? 'default';
+    return {
+      status: lockHeld ? 'busy' : 'submitted',
+      rerunRequested,
+      datasets: {
+        [key]: { status: str(record.status), pipelineRunId: str(record.pipeline_run_id) },
+      },
+    };
+  }
+
+  const datasets: ImproveOutcome['datasets'] = {};
+  for (const [datasetId, value] of Object.entries(record)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const inner = value as Record<string, unknown>;
+    datasets[datasetId] = { status: str(inner.status), pipelineRunId: str(inner.pipeline_run_id) };
+  }
+  return { status: 'submitted', rerunRequested, datasets };
+}
