@@ -93,7 +93,7 @@ def test_header_shape_is_unchanged_when_the_lane_is_off(suite, lookup, monkeypat
     header = _header(run.output)
     assert "code" not in header
     if not suite.has_rich_statusline:
-        assert "memory hit" in header and "turns had hits this session" in header
+        assert "Cognee memory: recall 1 memory" in header
     else:
         assert "Cognee memory: recall 1 memory; " in header
 

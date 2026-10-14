@@ -284,7 +284,7 @@ def test_trim_recall_text_reports_both_steps(rt):
     [("", 2000), ("1500", 1500), ("0", 0), ("junk", 2000), ("-5", 2000)],
 )
 def test_the_passage_cap_knob(rt, monkeypatch, raw, expected, suite):
-    if expected == 2000 and suite.name == "claude-code":
+    if expected == 2000 and suite.name in {"claude-code", "codex"}:
         expected = 1200
     monkeypatch.setenv("COGNEE_RECALL_PASSAGE_CHARS", raw)
     assert rt.passage_chars_limit() == expected
@@ -292,7 +292,7 @@ def test_the_passage_cap_knob(rt, monkeypatch, raw, expected, suite):
 
 def test_the_budget_knob_default(rt, monkeypatch, suite):
     monkeypatch.delenv("COGNEE_RECALL_CONTEXT_CHARS", raising=False)
-    assert rt.context_chars_limit() == (0 if suite.name == "claude-code" else 12000)
+    assert rt.context_chars_limit() == (0 if suite.name in {"claude-code", "codex"} else 12000)
     monkeypatch.setenv("COGNEE_RECALL_CONTEXT_CHARS", "0")
     assert rt.context_chars_limit() == 0
 

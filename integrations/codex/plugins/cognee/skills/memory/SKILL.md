@@ -219,3 +219,18 @@ is irreversible — use the narrowest scope possible and confirm first.
 
 Avoid the CLI's `forget --everything` unless the user explicitly asks to delete
 all Cognee data.
+
+
+## Inspect memory evidence
+
+Use the evidence helper for a compact index, batch expansion of versioned citations,
+or a body-free receipt explaining what was injected, skipped as duplicate, or dropped:
+
+```bash
+python3 "${PLUGIN_ROOT}/scripts/cognee-evidence.py" --help
+```
+
+Evidence needs the server's evidence endpoints. Unsupported servers keep normal recall;
+do not invent citations. Use the `cognee-report` skill to inspect session accounting or
+run matched outcome trials. Estimated tokens saved measure avoided duplicate context,
+not billed model usage.

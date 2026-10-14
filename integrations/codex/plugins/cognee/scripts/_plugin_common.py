@@ -1147,7 +1147,7 @@ def load_resolved(session_key: str = "", *, identity: bool = True) -> dict:
         conn = _json_http_request(
             f"/api/v1/agents/connections/me{query}",
             method="GET",
-            timeout=10.0,
+            timeout=15.0,
         )
         if isinstance(conn, dict):
             agent = conn.get("agent") if isinstance(conn.get("agent"), dict) else {}
@@ -1526,6 +1526,10 @@ def bump_save_counter(session_id: str, kind: str, *, buffered: bool = False) -> 
         kind = f"{kind}_buffered"
     if not session_id or kind not in ALL_SAVE_KINDS:
         return
+    if not buffered:
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), saves=1, metadata={"session_id": session_id})
     try:
         data = (
             json.loads(_SAVE_COUNTER.read_text(encoding="utf-8")) if _SAVE_COUNTER.exists() else {}
@@ -1614,6 +1618,14 @@ def warmup_backlog() -> dict:
                 age = max(0.0, now - buffered_at)
                 if oldest is None or age > oldest:
                     oldest = age
+    for path in (_PLUGIN_DIR / "spool").glob("*.json"):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+            result["pending"] += 1
+            age = max(0, now - float(item.get("created_at", path.stat().st_mtime)))
+            oldest = max(oldest or 0, age)
+        except (OSError, ValueError, TypeError):
+            continue
     result["oldest_age_seconds"] = oldest
     return result
 
@@ -3395,21 +3407,24 @@ def capture_policy_notice() -> str:
     return f"Cognee: automatic capture is off until this is fixed: {error}"
 
 
-def with_base_url_notice(output: dict | None, hook_event: str) -> dict | None:
+def with_base_url_notice(
+    output: dict | None, hook_event: str, *, notice: str | None = None
+) -> dict | None:
     """Add the session's notices to a hook's output (user- and model-visible).
 
     Covers ``base_url_change_notice`` and ``capture_policy_notice``.
     """
-    notices = []
-    for source in (base_url_change_notice, capture_policy_notice):
-        try:
-            text = source()
-        except Exception as exc:
-            hook_log("hook_notice_failed", {"source": source.__name__, "error": str(exc)[:200]})
-            continue
-        if text:
-            notices.append(text)
-    notice = "\n".join(notices)
+    if notice is None:
+        notices = []
+        for source in (base_url_change_notice, capture_policy_notice):
+            try:
+                text = source()
+            except Exception as exc:
+                hook_log("hook_notice_failed", {"source": source.__name__, "error": str(exc)[:200]})
+                continue
+            if text:
+                notices.append(text)
+        notice = "\n".join(notices)
     if not notice:
         return output
     result = dict(output or {})
@@ -3438,6 +3453,7 @@ def read_connection_state() -> dict:
         return {}
     if not isinstance(raw, dict):
         return {}
+    # Legacy marker (no 'state', has ready_at): treat as ready.
     if "state" not in raw and raw.get("ready_at"):
         raw["state"] = "ready"
     return raw
@@ -4517,6 +4533,7 @@ def remember_entry_via_http(
     *,
     dataset_id: str | None = None,
     timeout: float = 30.0,
+    client_event_id: str | None = None,
 ) -> dict | None:
     """Store a typed QA/trace entry through the backend API.
 
@@ -4527,25 +4544,12 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
-    from _project_memory import route
-
-    target = route(dataset, session_id)
-    dataset = target["write"]
-    if parse_dataset_id(dataset):
+    payload = prepare_remember_entry_payload(dataset, session_id, entry, dataset_id=dataset_id)
+    if payload.get("dataset_id") and not client_event_id:
         require_typed_dataset_id_support()
-    entry = _sanitize_value(entry)
-    if target.get("node_set") and entry.get("type") in ("qa", "trace"):
-        entry = {**entry, "node_set": target["node_set"]}
-    # The canonical UUID under shared memory (explicit, or resolved from the
-    # launch record) wins: a name only resolves among datasets the caller owns.
-    # Otherwise a UUID-shaped dataset is sent as an id and a name as a name.
-    resolved_id = dataset_id if dataset_id is not None else dataset_id_for(dataset)
-    fields = {"dataset_id": resolved_id} if resolved_id else write_fields(dataset)
-    return _json_http_request(
-        "/api/v1/remember/entry",
-        {"entry": entry, **fields, "session_id": session_id},
-        timeout=timeout,
-    )
+    if client_event_id:
+        payload["client_event_id"] = client_event_id
+    return _json_http_request("/api/v1/remember/entry", payload, timeout=timeout)
 
 
 def get_session_detail_via_http(session_id: str, *, timeout: float = 8.0) -> dict | None:
@@ -4797,6 +4801,7 @@ def recall_via_http(
     dataset_ids: list[str] | None = None,
     code_query: dict | None = None,
     timeout: float = 10.0,
+    evidence_mode: str | None = None,
 ) -> list:
     payload = {
         "query": query,
@@ -4805,6 +4810,10 @@ def recall_via_http(
         "scope": scope,
         "only_context": only_context,
     }
+    if evidence_mode:
+        payload["evidence_mode"] = evidence_mode
+    elif "graph" in scope and only_context:
+        payload["evidence_mode"] = "context"
     # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
     # the scope includes "code": the server rejects code_query without it.
     if code_query:
@@ -4860,7 +4869,8 @@ def recall_via_http(
     def fetch_scopes():
         started = time.monotonic()
         result = _json_http_request("/api/v1/recall", payload, timeout=timeout)
-        result = result if isinstance(result, list) else []
+        if evidence_mode != "index":
+            result = result if isinstance(result, list) else []
         if dataset != write_dataset and "graph" in scope:
             remaining = timeout - (time.monotonic() - started)
             if remaining > 0.05:
@@ -4868,10 +4878,17 @@ def recall_via_http(
                 primary_payload.pop("session_id", None)
                 try:
                     extra = _json_http_request("/api/v1/recall", primary_payload, timeout=remaining)
-                    if isinstance(extra, list):
+                    if isinstance(extra, list) and isinstance(result, list):
                         result.extend(extra)
+                    elif evidence_mode == "index" and isinstance(result, dict):
+                        from _evidence import merge_indexes
+
+                        result = merge_indexes(result, extra)
                 except (OSError, TimeoutError):
-                    pass
+                    if evidence_mode == "index" and isinstance(result, dict):
+                        result["partial"] = True
+            elif evidence_mode == "index" and isinstance(result, dict):
+                result["partial"] = True
         return result
 
     return bounded_call(fetch_scopes, timeout)
@@ -5438,6 +5455,9 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
         },
     )
     if ok:
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), improves_landed=1)
         record_improve_success(session_id, dataset, trigger)
         # Status-line credits: attribute the spend recorded since the previous
         # reading to this improve. Approximate on purpose — the submit is
@@ -5493,6 +5513,7 @@ _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS = 30 * 24 * 3600
 #: writer; this catches files that predate the cap and logs only ever written
 #: by a child process.
 _SWEEP_LOG_FILES = (
+    "cloud-worker.log",
     "hook.log",
     "bootstrap.log",
     "watcher.log",
@@ -5591,8 +5612,19 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             (_BRIDGE_DIR, "bridge"),
             (_PENDING_DIR, "pending"),
             (_IMPROVE_STATE_DIR, "improve_state"),
+            (_PLUGIN_DIR / "spool" / "expired", "expired_cloud_work"),
+            (_PLUGIN_DIR / "improve-wanted" / "expired", "expired_cloud_work"),
         ):
             _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
+        sessions = _PLUGIN_DIR / "sessions"
+        if sessions.is_dir():
+            for directory in sessions.iterdir():
+                if not directory.is_dir() or directory.is_symlink():
+                    continue
+                newest = max((p.stat().st_mtime for p in directory.iterdir()), default=0)
+                if now - newest > _SWEEP_SESSION_FILE_MAX_AGE_SECONDS:
+                    shutil.rmtree(directory)
+                    counts["sessions"] = counts.get("sessions", 0) + 1
         _sweep_pending_husks(counts)
         _sweep_launch_records(now, counts)
         for name in _SWEEP_LEGACY_FILES:
@@ -5615,3 +5647,22 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
     if counts:
         hook_log("state_sweep", counts)
     return counts
+
+
+def prepare_remember_entry_payload(
+    dataset: str, session_id: str, entry: dict, *, dataset_id: str | None = None
+) -> dict:
+    """Resolve the write target locally, so a queued capture can pin its request."""
+    from _project_memory import route
+
+    target = route(dataset, session_id)
+    dataset = target["write"]
+    entry = _sanitize_value(entry)
+    if target.get("node_set") and entry.get("type") in ("qa", "trace"):
+        entry = {**entry, "node_set": target["node_set"]}
+    # The canonical UUID under shared memory (explicit, or resolved from the
+    # launch record) wins: a name only resolves among datasets the caller owns.
+    # Otherwise a UUID-shaped dataset is sent as an id and a name as a name.
+    resolved_id = dataset_id if dataset_id is not None else dataset_id_for(dataset)
+    fields = {"dataset_id": resolved_id} if resolved_id else write_fields(dataset)
+    return {"entry": entry, **fields, "session_id": session_id}

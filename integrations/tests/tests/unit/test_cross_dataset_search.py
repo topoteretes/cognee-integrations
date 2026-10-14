@@ -319,7 +319,7 @@ def test_hits_still_offer_the_other_datasets(lookup, monkeypatch, suite):
     ctx = _context(run)
     assert (
         "=== Cognee memory ==="
-        if suite.name == "claude-code"
+        if suite.name in {"claude-code", "codex"}
         else "Relevant context from this session's memory"
     ) in ctx
     assert "Other Cognee datasets you can search" in ctx

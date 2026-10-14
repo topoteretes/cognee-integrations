@@ -67,7 +67,7 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.7.5"
+    current_version: "1.8.0"
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
 

@@ -18,15 +18,18 @@ import asyncio
 import json
 import os
 import sys
+import time
 import urllib.error
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
 from _plugin_common import (
     append_warmup_entry,
     bump_save_counter,
     bump_turn_counter,
     clear_payment_required,
+    elapsed_ms,
     get_session_key,
     hook_log,
     http_api_ready,
@@ -62,6 +65,12 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
     here leaves behind. Without server auth there is nothing to submit to —
     the session-end sync picks the session up once a key is available.
     """
+    if cloud_enabled():
+        from _cloud_worker import request_improve
+
+        request_improve(dataset, session_id, reason)
+        return
+    improve_start = time.monotonic()
     throttled = improve_throttle_reason(session_id)
     if throttled:
         hook_log(
@@ -83,12 +92,17 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
                 "via": "http_improve",
                 "wrote": wrote,
                 "outcome": str(outcome.get("reason") or ""),
+                "elapsed_ms": elapsed_ms(improve_start),
             },
         )
         if wrote:
             notify(f"session improve submitted ({reason})")
     except Exception as exc:
-        hook_log("auto_improve_error", {"reason": reason, "error": str(exc)[:200]})
+        # Emit elapsed_ms on the failure path too, so time-to-failure stays visible.
+        hook_log(
+            "auto_improve_error",
+            {"reason": reason, "error": str(exc)[:200], "elapsed_ms": elapsed_ms(improve_start)},
+        )
 
 
 def _truncate_str(value, cap: int) -> str:
@@ -142,9 +156,35 @@ def _load_session() -> tuple[str, str, str]:
     return session_id, dataset, user_id
 
 
+def _low_signal_trace(tool: str, output, status: str) -> bool:
+    if status != "success":
+        return False
+    if tool in {"Read", "Grep", "Glob"}:
+        return True
+    if tool != "Bash" or status != "success":
+        return False
+    if isinstance(output, dict):
+        if output.get("exit_code", 0) or output.get("exitCode", 0) or output.get("interrupted"):
+            return False
+        metadata = {"stdout", "stderr", "exit_code", "exitCode", "interrupted", "is_error"}
+        return (
+            set(output) <= metadata
+            and not str(output.get("stdout") or "").strip()
+            and not str(output.get("stderr") or "").strip()
+        )
+    return output is None or (isinstance(output, str) and not output.strip())
+
+
 async def _store_tool_call(payload: dict) -> None:
     """Write a PostToolUse event as a TraceEntry."""
     tool_name = payload.get("tool_name", "unknown")
+    shell_tool = tool_name in {
+        "Bash",
+        "exec_command",
+        "functions.exec_command",
+        "shell_command",
+        "shell",
+    }
     tool_input = payload.get("tool_input") or {}
     tool_output = payload.get("tool_output") or payload.get("tool_response") or ""
     from _capture_policy import (
@@ -170,10 +210,51 @@ async def _store_tool_call(payload: dict) -> None:
     tool_output = redact(tool_output)
     payload = redact(payload)
 
-    command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
+    command = (
+        str(tool_input.get("command") or tool_input.get("cmd") or "")
+        if isinstance(tool_input, dict)
+        else ""
+    )
     status, error_message = _infer_status(payload)
-    reason = is_plugin_invocation(command) if tool_name == "Bash" else ""
-    low_signal = tool_name == "Bash" and low_signal_bash(command, tool_output, status)
+    reason = is_plugin_invocation(command) if shell_tool else ""
+    low_signal = shell_tool and low_signal_bash(command, tool_output, status)
+    if (
+        shell_tool
+        and isinstance(tool_output, dict)
+        and str(tool_output.get("output") or "").strip()
+    ):
+        low_signal = False
+    low_signal = low_signal or (
+        cloud_enabled() and not shell_tool and _low_signal_trace(tool_name, tool_output, status)
+    )
+    from _session_stats import update
+
+    if shell_tool:
+        hook_log(
+            "bash_capture_decision",
+            {
+                "host_session_id": get_session_key(),
+                "outcome": "skipped_self"
+                if reason
+                else "skipped_low_signal"
+                if low_signal
+                else "captured",
+            },
+        )
+        update(
+            get_session_key(),
+            bash_post_tool_use=1,
+            bash_skipped_self=int(bool(reason)),
+            bash_skipped_low_signal=int(not reason and low_signal),
+            bash_traces_captured=int(not reason and not low_signal),
+        )
+    if reason or low_signal:
+        update(
+            get_session_key(),
+            traces_skipped=1,
+            traces_skipped_self=int(bool(reason)),
+            traces_skipped_low_signal=int(not reason),
+        )
     if reason:
         hook_log(
             "skip_self_cognee_bash", {"first_token": safe_first_token(command), "reason": reason}
@@ -203,6 +284,17 @@ async def _store_tool_call(payload: dict) -> None:
         return
 
     runtime = resolve_runtime_mode()
+    hook_log(
+        "mode_decision",
+        {
+            "hook": "store-to-session:tool",
+            "mode": runtime["mode"],
+            "base_url": runtime.get("base_url", ""),
+            "url_source": runtime.get("url_source", ""),
+            "key_source": runtime.get("key_source", ""),
+            "api_key_present": runtime.get("api_key_present", False),
+        },
+    )
     entry = {
         "type": "trace",
         "origin_function": tool_name,
@@ -215,6 +307,13 @@ async def _store_tool_call(payload: dict) -> None:
         # LLM summary can flip this in a future config.
         "generate_feedback_with_llm": False,
     }
+
+    if cloud_enabled(runtime):
+        from _cloud_worker import enqueue
+
+        enqueue(dataset, session_id, entry, "trace")
+        bump_save_counter(session_id, "trace", buffered=True)
+        return
 
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe — a stale marker
@@ -311,6 +410,17 @@ async def _store_assistant_stop(payload: dict) -> None:
         return
 
     runtime = resolve_runtime_mode()
+    hook_log(
+        "mode_decision",
+        {
+            "hook": "store-to-session:stop",
+            "mode": runtime["mode"],
+            "base_url": runtime.get("base_url", ""),
+            "url_source": runtime.get("url_source", ""),
+            "key_source": runtime.get("key_source", ""),
+            "api_key_present": runtime.get("api_key_present", False),
+        },
+    )
     pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))
 
     # Codex intentionally differs from Claude here: store one paired
@@ -322,6 +432,14 @@ async def _store_assistant_stop(payload: dict) -> None:
         "answer": msg,
         "context": redact(pending.get("context", "")),
     }
+
+    if cloud_enabled(runtime):
+        from _cloud_worker import enqueue, request_improve
+
+        enqueue(dataset, session_id, entry, "answer")
+        request_improve(dataset, session_id, "stop")
+        bump_save_counter(session_id, "answer", buffered=True)
+        return
 
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe): buffer the
@@ -453,7 +571,8 @@ def main():
                 asyncio.run(_store_assistant_stop(payload))
                 # End-of-turn code-graph freshness: independent of whether an
                 # assistant message was stored (edits happen either way).
-                _maybe_reingest_code_repo(payload)
+                if not cloud_enabled():
+                    _maybe_reingest_code_repo(payload)
             else:
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:

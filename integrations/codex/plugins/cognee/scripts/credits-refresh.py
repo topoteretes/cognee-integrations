@@ -24,6 +24,11 @@ from _plugin_common import hook_log, quiet_hook_output, refresh_credits
 
 def main():
     sys.stdin.read()  # consume the hook payload as the host requires
+    from _cloud_worker import enabled, ensure_worker
+
+    if enabled():
+        ensure_worker()
+        return
     try:
         with quiet_hook_output("credits-refresh"):
             marker = refresh_credits("turn")

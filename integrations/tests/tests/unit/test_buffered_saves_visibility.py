@@ -75,7 +75,7 @@ def test_buffered_bumps_land_under_their_own_kind(pc):
 def store(suite, hook_module, monkeypatch):
     """The store hook with its write seams stubbed; returns ``(module, bumps)``."""
     module = hook_module(suite, "store-to-session.py")
-    if suite.name == "claude-code":
+    if suite.name in {"claude-code", "codex"}:
         # Inline writes remain the local path; cloud spool outcomes have separate tests.
         monkeypatch.setattr(module, "cloud_enabled", lambda *args: False)
 
@@ -299,7 +299,7 @@ def lookup(suite, hook_module, monkeypatch):
 
 
 def _joiner(suite) -> str:
-    return "; " if suite.name == "claude-code" else " · "
+    return "; " if suite.name in {"claude-code", "codex"} else " · "
 
 
 def _message(suite, output: dict) -> str:

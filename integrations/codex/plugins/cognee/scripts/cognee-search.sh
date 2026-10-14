@@ -107,7 +107,7 @@ if not session_id and service_url and api_key:
             service_url.rstrip("/") + "/api/v1/agents/connections/me" + query,
             headers={"X-Api-Key": api_key},
         )
-        with urllib.request.urlopen(req, timeout=3.0, context=_ssl_ctx) as resp:
+        with urllib.request.urlopen(req, timeout=15.0, context=_ssl_ctx) as resp:
             payload = json.loads(resp.read().decode("utf-8") or "{}")
         if isinstance(payload, dict):
             agent = payload.get("agent") if isinstance(payload.get("agent"), dict) else {}

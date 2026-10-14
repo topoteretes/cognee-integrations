@@ -327,3 +327,14 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
+
+## Cloud memory pipeline
+
+- `capture.bash_decision`
+- `cloud.capture_spooled`
+- `cloud.cloud_capture_delivered`
+- `cloud.cloud_work_expired`
+- `cloud.cloud_work_retry`
+- `cloud.cloud_worker_error`
+- `cloud.injection_ledger_failed`
+- `recall.injection_receipt_failed`

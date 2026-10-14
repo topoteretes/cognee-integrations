@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def worker(suite, isolated_modules, monkeypatch):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("Cloud worker")
     worker = isolated_modules(suite, "_cloud_worker")
     monkeypatch.setenv("COGNEE_SESSION_KEY", "host-a")

@@ -193,7 +193,7 @@ def test_a_streak_of_slow_prompts_escalates_but_never_to_unreachable(lookup, mon
         slow_threshold=3,
     )
 
-    if suite.name == "claude-code":
+    if suite.name in {"claude-code", "codex"}:
         assert run.writes == [], "slow cloud recalls must not become a sticky outage"
     else:
         assert any(write[0] == "not_responding" for write in run.writes), run.writes
@@ -205,7 +205,7 @@ def test_a_streak_of_slow_prompts_escalates_but_never_to_unreachable(lookup, mon
 
 
 def test_claude_cloud_ignores_legacy_slow_marker(lookup, monkeypatch, suite):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("Claude cloud worker")
     monkeypatch.setattr(lookup, "cloud_enabled", lambda *_: True)
     run = drive_recall(

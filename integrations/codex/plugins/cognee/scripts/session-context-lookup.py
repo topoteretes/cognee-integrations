@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Search session + trace + agent guidance + graph for context relevant to the user's prompt.
 
-Runs on the Codex UserPromptSubmit hook. Two requests to ``/api/v1/recall`` in flight
+Runs on the UserPromptSubmit hook. Two requests to ``/api/v1/recall`` in flight
 together: ``scope=["graph"]`` with ``HYBRID_COMPLETION`` and ``only_context=True``
 but WITHOUT the session id, and ``scope=["session_context"]`` with it. On cognee
 >= 1.6.0 the graph item's ``text`` is the full LLM input the completion would
@@ -21,13 +21,18 @@ Configuration:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
+import re
 import sys
 import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
+from _evidence import evidence_items, render_item, write_receipt
+from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
@@ -65,7 +70,14 @@ from _plugin_common import (
     write_connection_state,
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
-from _recall_text import code_facts, format_code_facts, trim_recall_text
+from _recall_text import (
+    PASSAGE_SEPARATOR,
+    code_facts,
+    format_code_facts,
+    split_passages,
+    split_sections,
+    trim_recall_text,
+)
 from cognee_statusline_render import render_status_for_host
 from config import get_dataset, get_session_id, load_config
 
@@ -184,7 +196,7 @@ def _format_entry(entry: dict) -> str:
             mrv = json.dumps(mrv, default=str)
         mrv = str(mrv)[:TRUNCATE_RETURN]
         parts = [f"[trace] {origin} — {status}"]
-        if feedback:
+        if feedback and not re.fullmatch(r"\s*\w+ succeeded\.?\s*", str(feedback)):
             parts.append(f"  feedback: {feedback}")
         if mrv:
             parts.append(f"  output: {mrv}")
@@ -203,70 +215,174 @@ def _format_entry(entry: dict) -> str:
     return "\n".join(lines)
 
 
-def _plural(n: int, word: str) -> str:
-    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+def _line_entries(text: str) -> list[str]:
+    """Split fact/prose lines while keeping fenced code and entity records whole."""
+    if len(json.dumps(text)) <= 1024:
+        return [text.strip()] if text.strip() else []
+    entries, pending = [], []
+    fence = ""
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        marker = re.match(r"^(`{3,}|~{3,})", stripped)
+        if fence:
+            pending.append(line)
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                entries.append("\n".join(pending))
+                pending, fence = [], ""
+        elif marker:
+            pending.append(line)
+            fence = marker[1]
+        elif stripped.startswith("### "):
+            if pending:
+                entries.append("\n".join(pending))
+            pending = [line]
+        elif pending and pending[0].lstrip().startswith("### ") and stripped:
+            pending.append(line)
+        elif stripped:
+            entries.append("\n".join(pending + [line]))
+            pending = []
+    if pending:
+        entries.append("\n".join(pending))
+    return entries
 
 
-def _memory_summary(
-    total: int,
-    totals: dict,
-    saves: dict,
-    code_facts: int | None = None,
-    backlog: dict | None = None,
-) -> str:
-    """The one-line ``Cognee memory: …`` header, in plain words.
+def _injection_sections(by_source: dict) -> list[dict]:
+    """Expose bare records; shared labels belong to one section heading."""
+    grouped = {}
 
-    Codex has no glanceable status bar — this header, injected with the recalled
-    context, is where the user sees what memory did — so it carries the same
-    two numbers the Claude Code bar shows: this turn's hits and the session's
-    running hit ratio, plus what the previous turn persisted::
+    def add(source, kind, title, priority, entries, result_id, separator="\n\n"):
+        section = grouped.setdefault(
+            (source, kind),
+            {
+                "title": title,
+                "entries": [],
+                "priority": priority,
+                "source": source,
+                "entry_ids": {},
+                "separator": separator,
+            },
+        )
+        for entry in entries:
+            if entry.strip():
+                section["entries"].append(entry)
+                section["entry_ids"][entry] = result_id
 
-        Cognee memory: 5 memory hits · 12/40 turns had hits this session ·
-        saved last turn 1 prompt / 3 trace / 1 answer
+    for source, title, priority in (
+        ("code", "=== Code graph facts ===", 50),
+        ("graph_context", "=== Cognee memory ===", 40),
+        ("session_context", "=== Active agent guidance ===", 30),
+        ("session", "=== Prior session turns ===", 20),
+        ("trace", "=== Prior agent trace ===", 10),
+    ):
+        for result_id, entry in enumerate(by_source.get(source, [])):
+            items = evidence_items(entry)
+            available = [(render_item(item), item) for item in items or []]
+            available = [(text, item) for text, item in available if text]
+            if (
+                source == "graph_context"
+                and items
+                and any(item.get("status") not in {"unsupported", "error"} for item in items)
+            ):
+                for text, item in available:
+                    add(source, "evidence", title, priority, [text], result_id)
+                    grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
+                continue
+            if source == "graph_context":
+                text = str(entry.get("text") or entry.get("content") or "")
+                parts = split_sections(text)
+                if any(parts.get(k) is not None for k in ("passages", "entities", "facts")):
+                    for kind, heading, rank in (
+                        ("preamble", "", 40),
+                        ("entities", "## Relevant entities", 41),
+                        ("facts", "## Related facts", 41),
+                        ("passages", "## Relevant passages", 40),
+                    ):
+                        if parts.get(kind):
+                            items = (
+                                split_passages(parts[kind])
+                                if kind == "passages"
+                                else _line_entries(parts[kind])
+                            )
+                            label = f"=== Cognee memory: {kind} ===\n[cognee-memory]"
+                            if heading:
+                                label += "\n" + heading
+                            add(
+                                source,
+                                kind,
+                                label,
+                                rank,
+                                items,
+                                result_id,
+                                PASSAGE_SEPARATOR if kind == "passages" else "\n\n",
+                            )
+                    continue
+            formatted = _format_entry(entry)
+            if source in {"graph_context", "code", "session_context"}:
+                prefix, _, body = formatted.partition("\n")
+                add(source, "body", title + "\n" + prefix, priority, _line_entries(body), result_id)
+            else:
+                add(source, "body", title, priority, [formatted], result_id)
+    return list(grouped.values())
 
-    A session with no hit yet reads ``memory warming up (7 turns)`` instead of
-    a bare ``0/7``. When the repo code lane is armed, ``N code facts`` follows
-    the hit count (they are part of the total) so an indexed repo is visibly in
-    play even at zero.
 
-    Writes the server never received are not saves. When the previous turn's
-    trace/answer went to the warmup buffer, or entries still wait for replay
-    (``backlog``, a ``warmup_backlog`` result), that follows as its own
-    segments — ``buffered last turn 6 trace / 1 answer (not saved yet) · 7
-    awaiting replay, oldest 20d`` — and is absent when there is nothing to
-    say (SDK-467).
-    """
-    parts = [_plural(total, "memory hit")]
-    if code_facts is not None:
-        parts[0] += f", {_plural(int(code_facts or 0), 'code fact')}"
-    turns = int(totals.get("turns", 0) or 0)
-    with_hits = int(totals.get("turns_with_hits", 0) or 0)
-    if turns > 0:
-        if with_hits > 0:
-            parts.append(f"{with_hits}/{turns} turns had hits this session")
-        else:
-            parts.append(f"memory warming up ({_plural(turns, 'turn')})")
-    parts.append(saves_segment(saves))
-    parts.extend(buffered_saves_segments(saves, backlog))
-    return "Cognee memory: " + " · ".join(parts)
+def _recall_output(context: str, notice: str = "", *, status: str | None = None) -> dict:
+    """The exact printed envelope, including both user- and model-visible notices."""
+    if status is None:
+        status = render_status_for_host(get_session_key())
+        while len(json.dumps(status)) > 258:
+            status = status[:-1]
+    header = status + "\n" + context.split("\n", 1)[0]
+    return with_base_url_notice(
+        {
+            "systemMessage": header,
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": status + "\n" + context,
+            },
+        },
+        "UserPromptSubmit",
+        notice=notice,
+    )
 
 
-def _outage_output(state: str) -> dict:
+def _report_hint(prompt: str) -> str:
+    if os.environ.get("COGNEE_REPORT_HINT", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return ""
+    import re
+
+    evaluation = re.search(
+        r"\b(?:evaluate|grade|assess|audit|check on)\s+cognee\b|"
+        r"\bhow\s+is\s+cognee\s+(?:doing|performing)\b|"
+        r"\bis\s+cognee\s+worth\s+it\b|\bdid\s+the\s+update\s+help\b|"
+        r"\bcognee\s+stats\b|\bmemory\s+quality\b",
+        prompt,
+        re.IGNORECASE,
+    )
+    return "Use /cognee-report for an evaluation" if evaluation else ""
+
+
+def _bounded_notice(header: str, notice: str) -> str:
+    """Keep a visible diagnostic even when a long URL/pattern exhausts the budget."""
+    if len(json.dumps(_recall_output(header, notice))) + 1 <= injection_limit():
+        return notice
+    hook_log("hook_notice_failed", {"source": "injection_budget", "error": notice})
+    return "Cognee: configuration notice omitted to fit context; inspect hook.log for details."
+
+
+def _outage_output(state: str, notice: str = "") -> dict:
     """Envelope for a prompt whose recall was skipped: see ``outage_header``."""
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
-    summary = outage_header(state, saves, warmup_backlog(), " · ")
-    header = f"{render_status_for_host(get_session_key())}\n{summary}"
-    return {
-        "systemMessage": header,
-        "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": header},
-    }
+    header = outage_header(state, saves, warmup_backlog(), "; ")
+    return _recall_output(header, _bounded_notice(header, notice))
 
 
 def _has_entry_content(entry: dict) -> bool:
     """Return True when a recall entry has useful content to inject."""
     source = entry.get("source", "")
     if source == "graph_context":
+        if evidence_items(entry):
+            return True
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
@@ -286,9 +402,20 @@ def _has_entry_content(entry: dict) -> bool:
     return any(str(entry.get(field, "") or "").strip() for field in fields)
 
 
-async def _run(prompt: str, cwd: str = "") -> dict | None:
+async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     config = load_config()
     runtime = resolve_runtime_mode()
+    hook_log(
+        "mode_decision",
+        {
+            "hook": "session-context-lookup",
+            "mode": runtime["mode"],
+            "base_url": runtime.get("base_url", ""),
+            "url_source": runtime.get("url_source", ""),
+            "key_source": runtime.get("key_source", ""),
+            "api_key_present": runtime.get("api_key_present", False),
+        },
+    )
     # Readiness gate, redesigned (SDK-356): the recall attempt itself is the
     # probe. A fresh "ready" marker or a merely-stale/unknown state goes
     # STRAIGHT to recall — a successful scope call is an authenticated,
@@ -306,12 +433,15 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # tests/test_connection_target_match.py).
     prior_same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
     prior_state = str(prior.get("state") or ("ready" if prior.get("ready_at") else ""))
+    # Ignore legacy not_responding markers: a slow recall is not an outage.
     known_bad = prior_same_target and prior_state in (
         "auth_failed",
         "unreachable",
         "server_error",
-        "not_responding",
     )
+    if known_bad and cloud_enabled(runtime):
+        hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
+        return _outage_output(prior_state, notice)
     if known_bad:
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
         # auth_failed instead of being masked as "ready" by an unauthenticated
@@ -335,7 +465,9 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             # Report the outage instead of going quiet: the recorded failure
             # names it when the probe itself was inconclusive.
-            return _outage_output(state if state in DEFINITIVE_FAILURE_STATES else prior_state)
+            return _outage_output(
+                state if state in DEFINITIVE_FAILURE_STATES else prior_state, notice
+            )
 
     session_id = _load_session_id()
     if not session_id:
@@ -345,7 +477,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # NOTE: the warmup-buffer drain deliberately does NOT run here. This hook
     # is synchronous on the keystroke->answer path, and replaying N buffered
     # entries (~1s of server work each) stalled the prompt for 10-30s after any
-    # long turn (#298). The sibling hook on this same event
+    # long turn (#298). The async sibling hook on this same event
     # (store-user-prompt.py) drains instead; improve/SessionEnd re-drain too.
     saves_last_turn = read_and_reset_save_counter(session_id)
 
@@ -414,11 +546,11 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # very same interval. COGNEE_RECALL_TIMEOUT is NOT read here — it still
     # bounds the explicit cognee-search path (_cognee_client.py).
     #
-    # The default (20s) is sized for the graph scope, the only expensive call.
+    # Defaults are 45s for cloud and 20s for local graph recall.
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
-    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 20.0)
+    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 45.0 if cloud_enabled(runtime) else 20.0)
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
     # Respect the shared circuit breaker: when the server has been failing (tripped
@@ -644,18 +776,10 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             except Exception:
                 pass
         elif scope_timeouts and not scopes_answered_err:
-            # Every attempted scope timed out and none got an HTTP answer: no
-            # verdict on its own, but N consecutive such prompts are a pattern.
-            # Escalate to "not_responding" — deliberately distinct from
-            # "unreachable" (positively absent: refused/DNS): the server exists
-            # but is not answering. A lone timeout never writes anything.
+            # Timeouts describe latency, not an outage. Keep streak diagnostics
+            # without writing a failure marker that would block later recalls.
             streak = record_slow_probe(service_url)
             if streak >= slow_streak_threshold():
-                write_connection_state(
-                    "not_responding",
-                    service_url,
-                    detail="%d consecutive timeout-only prompts" % streak,
-                )
                 hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
     except Exception as exc:
         hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})
@@ -675,7 +799,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             continue
         # Work on a copy: the source is re-tagged and the text trimmed below,
         # and the caller's items are not ours to rewrite.
-        r = dict(r)
+        r = copy.deepcopy(r)
         src = r.get("source", "session")
         # The graph scope tags results source=graph; keep the historical
         # graph_context bucket name so the status line, last_recall.json
@@ -683,11 +807,18 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         if src == "graph":
             r["source"] = "graph_context"
             src = "graph_context"
+            # Preserve the own-session exclusion for structured source passages too.
+            for item in evidence_items(r) or []:
+                if (
+                    session_id
+                    and f"Session ID: {session_id}\n" in str(item.get("text") or "") + "\n"
+                ):
+                    item["status"] = "own_session"
             # Keep the retrieved context only (SDK-904): the question template
             # goes, own-session passages go, the rest is capped and pruned.
             # Unparsed text (a pre-1.6.0 bare context, an unknown template)
             # is injected whole — fail-open, logged.
-            if r.get("text"):
+            if r.get("text") and not any(render_item(i) for i in evidence_items(r) or []):
                 trimmed, guidance, stats = trim_recall_text(
                     str(r.get("text") or ""), prompt, session_id
                 )
@@ -710,37 +841,29 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     counts = {k: len(v) for k, v in by_source.items()}
     total = sum(counts.values())
 
-    # Session-cumulative counter: how many prompts this session has seen and on
-    # how many of them memory actually injected something — the "memory fired
-    # on 12 of 40 turns" activation number in the header. Carried forward from
-    # the marker only when the marker is ours (codex keeps a single shared
-    # file, so another terminal may have prompted last); keyed by host session,
-    # so a new session starts over and a resumed one continues. Read here,
-    # before the dataset hint, which it gates.
-    _session_key = get_session_key()
-    _totals = {"turns": 0, "turns_with_hits": 0}
-    _state = None
-    try:
-        from pathlib import Path as _Path
+    # Session-cumulative counter, carried forward from this session's own
+    # per-session marker: how many prompts this session has seen and on how
+    # many of them memory actually injected something. This is the "memory
+    # fired on 12 of 40 turns" activation number the status line shows next to
+    # the per-turn count — no extra calls, just the turn that was already
+    # counted. Keyed by host session, so /clear starts over and --resume
+    # continues. Read here, before the dataset hint, which it gates.
+    from pathlib import Path as _Path
 
-        _state = _Path.home() / ".cognee-plugin" / "codex" / "last_recall.json"
-        if _state.exists():
-            _prev = json.loads(_state.read_text(encoding="utf-8"))
-            _prev_totals = _prev.get("session_totals") if isinstance(_prev, dict) else None
-            if (
-                isinstance(_prev_totals, dict)
-                and _session_key
-                and str(_prev.get("session_key") or "") == _session_key
-            ):
-                _totals["turns"] = max(0, int(_prev_totals.get("turns", 0) or 0))
-                _totals["turns_with_hits"] = max(
-                    0, int(_prev_totals.get("turns_with_hits", 0) or 0)
-                )
-    except Exception:
-        pass
+    _state = _Path.home() / ".cognee-plugin" / "codex" / "last_recall.json"
+    _key = get_session_key()
+    _key_safe = bool(_key) and all(c.isalnum() or c in "._-" for c in _key)
+    _per = _state.parent / "recall" / f"{_key}.json" if _key_safe else None
+    _totals = {"turns": 0, "turns_with_hits": 0}
+    if _per is not None and _per.exists():
+        try:
+            _prev = json.loads(_per.read_text(encoding="utf-8")).get("session_totals")
+            if isinstance(_prev, dict):
+                _totals["turns"] = max(0, int(_prev.get("turns", 0) or 0))
+                _totals["turns_with_hits"] = max(0, int(_prev.get("turns_with_hits", 0) or 0))
+        except Exception:
+            pass
     _totals["turns"] += 1
-    if total > 0:
-        _totals["turns_with_hits"] += 1
 
     # Name the other datasets the user could search instead (see
     # _other_datasets_hint). The block is static text, so it rides along on
@@ -764,102 +887,175 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
             )
 
+    # Build a one-line visibility header so the user (via the assistant's
+    # context) can tell that memory fired on this turn — both what it
+    # recalled right now and what the previous turn persisted.
+    header = (
+        "Cognee memory: recall "
+        f"{counts['graph_context']} memory"
+        + (f" / {counts['code']} code" if code_lane else "")
+        + "; "
+        + saves_segment(saves_last_turn)
+    )
+    # Writes the server never received are not saves: a buffering outage gets
+    # its own segment, plus whatever still waits for replay (SDK-467).
+    for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
+        header += f"; {segment}"
+
+    if scope_timeouts:
+        header += "; memory recall timed out"
+    memory_sections = _injection_sections(by_source)
+    # Reserve the largest possible drop notice before fitting. Replacing it
+    # with the actual smaller count (or removing it) can only shrink output.
+    entry_count = sum(len(section["entries"]) for section in memory_sections)
+    reserved_drop = f"; {entry_count} dropped to fit" if entry_count else ""
+    header += reserved_drop
+    hint = _report_hint(prompt)
+    hint_sections = [{"entries": [hint], "required": True, "counted": False}] if hint else []
+    sections = [{"entries": [header], "required": True}] + hint_sections + memory_sections
+    if not total and not scope_timeouts:
+        sections.append(
+            {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
+        )
+    if dataset_hint:
+        sections.append({"entries": [dataset_hint], "priority": 0, "counted": False})
+    notice = _bounded_notice(header, notice)
+
+    def measure(text):
+        return len(json.dumps(_recall_output(text, notice, status=" " * 256))) + 1
+
+    if cloud_enabled(runtime) and _key_safe and total:
+        from _injection_ledger import render as render_deduped
+
+        try:
+            full_context, injection_stats, header = render_deduped(
+                _key,
+                header,
+                sections[1:],
+                injection_limit(),
+                measure=measure,
+            )
+        except (OSError, ValueError) as exc:
+            hook_log("injection_ledger_failed", {"error": str(exc)[:200]})
+            full_context, injection_stats = fit_sections(
+                sections, injection_limit(), measure=measure
+            )
+    else:
+        full_context, injection_stats = fit_sections(sections, injection_limit(), measure=measure)
+    if _key_safe:
+        try:
+            unavailable = [
+                item
+                for entries in by_source.values()
+                for entry in entries
+                for item in evidence_items(entry) or []
+                if item.get("status") != "available"
+            ]
+            write_receipt(_key, memory_sections, injection_stats, unavailable)
+        except (OSError, ValueError) as exc:
+            hook_log("injection_receipt_failed", {"error": str(exc)[:200]})
+    retrieved_counts = counts
+    retrieved_total = total
+    counts = {source: injection_stats["source_hits"].get(source, 0) for source in counts}
+    total = sum(counts.values())
+    dropped = injection_stats["entries_dropped"]
+    actual_header = full_context.split("\n", 1)[0]
+    actual_header = actual_header.replace(
+        f"recall {retrieved_counts['graph_context']} memory",
+        f"recall {counts['graph_context']} memory",
+        1,
+    )
+    if code_lane:
+        actual_header = actual_header.replace(
+            f" / {retrieved_counts['code']} code", f" / {counts['code']} code", 1
+        )
+    if reserved_drop:
+        actual_header = actual_header.replace(
+            reserved_drop, f"; {dropped} dropped to fit" if dropped else "", 1
+        )
+    full_context = actual_header + full_context[len(full_context.split("\n", 1)[0]) :]
+    injection_stats["context_chars"] = len(full_context)
+    if total:
+        _totals["turns_with_hits"] += 1
+
     # Write last-turn counts so the status line script can render them.
     # Best-effort; failure here must not break the hook output.
     try:
-        if _state is None:
-            from pathlib import Path as _Path
-
-            _state = _Path.home() / ".cognee-plugin" / "codex" / "last_recall.json"
         _state.parent.mkdir(parents=True, exist_ok=True)
-        _state.write_text(
-            json.dumps(
-                {
-                    "session_id": session_id,
-                    "session_key": _session_key,
-                    "ts": __import__("datetime")
-                    .datetime.now(__import__("datetime").timezone.utc)
-                    .isoformat(timespec="seconds"),
-                    "hits": counts,
-                    "per_scope": per_scope,
-                    "saves_last_turn": saves_last_turn,
-                    "session_totals": _totals,
-                }
-            ),
-            encoding="utf-8",
+        _payload = json.dumps(
+            {
+                "session_id": session_id,
+                # Host session key too: the marker is per-integration, so the
+                # status line needs this to tell "my counts" from another live
+                # session's before rendering them.
+                "session_key": _key,
+                "ts": __import__("datetime")
+                .datetime.now(__import__("datetime").timezone.utc)
+                .isoformat(timespec="seconds"),
+                "hits": counts,
+                "retrieved_hits": retrieved_counts,
+                "entries_dropped": dropped,
+                "per_scope": per_scope,
+                "saves_last_turn": saves_last_turn,
+                "session_totals": _totals,
+            }
         )
+        # Machine-wide copy: kept because cognee_plugin.py resolves the active
+        # session id from it.
+        _state.write_text(_payload, encoding="utf-8")
+        # Per-session copy, which is what the status line reads: with several
+        # terminals open the single shared file only ever holds the counts of
+        # whoever prompted last, so every other bar would show nothing (or, worse,
+        # a neighbour's numbers).
+        if _per is not None:
+            _per.parent.mkdir(parents=True, exist_ok=True)
+            _per.write_text(_payload, encoding="utf-8")
     except Exception as exc:
         hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
 
-    # Build a visibility header so the user (via the assistant's
-    # context) can tell that memory fired on this turn — both what it
-    # recalled right now and what the previous turn persisted.
-    status_line = render_status_for_host(_session_key)
-    header = f"{status_line}\n" + _memory_summary(
-        total,
-        _totals,
-        saves_last_turn,
-        code_facts=counts.get("code", 0) if code_lane else None,
-        backlog=warmup_backlog(),
+    hook_log(
+        "context_lookup_hit" if total else "context_lookup_empty",
+        {
+            "counts": counts,
+            "retrieved_hits": retrieved_total,
+            "per_scope": per_scope,
+            "saves_last_turn": saves_last_turn,
+            "elapsed_ms": elapsed_ms(recall_start),
+            **{
+                k: v
+                for k, v in injection_stats.items()
+                if k not in {"entries", "source_hits", "deduped_entries"}
+            },
+        },
+    )
+    message = (
+        f"injected context ({counts})"
+        if total
+        else "no recall matches"
+        if not retrieved_total
+        else "no new memory injected"
+    )
+    if dropped:
+        message += f"; {dropped} dropped to fit"
+    notify(f"{message}; saves last turn {saves_last_turn}")
+
+    from _session_stats import update as update_stats
+
+    update_stats(
+        _key,
+        recalls=1,
+        hits=int(total > 0),
+        entries_injected=injection_stats["entries_kept"],
+        entries_deduped=injection_stats.get("entries_deduped", 0),
+        chars_injected=len(full_context),
+        dedup_chars_saved=injection_stats.get("dedup_chars_saved", 0),
+        dedup_measurements=int("dedup_chars_saved" in injection_stats),
+        recall_ms=elapsed_ms(recall_start),
+        metadata={"dataset": session_dataset, "session_id": session_id, "server_url": service_url},
     )
 
-    section_lines = []
-    if by_source.get("code"):
-        section_lines.append("=== Code graph facts ===")
-        for e in by_source["code"]:
-            section_lines.append(_format_entry(e))
-            section_lines.append("")
-    if by_source.get("graph_context"):
-        section_lines.append("=== Cognee memory ===")
-        for e in by_source["graph_context"]:
-            section_lines.append(_format_entry(e))
-            section_lines.append("")
-    # A server older than 1.6.0 answers the graph scope with the bare context
-    # and nothing else arrives on this request; whatever a server does tag with
-    # another source is still rendered rather than dropped.
-    for src, title in (
-        ("session_context", "=== Active agent guidance ==="),
-        ("trace", "=== Prior agent trace ==="),
-        ("session", "=== Prior session turns ==="),
-    ):
-        if by_source.get(src):
-            section_lines.append(title)
-            for e in by_source[src]:
-                section_lines.append(_format_entry(e))
-                section_lines.append("")
-    if total > 0:
-        full_context = (
-            f"{header}\n\nRelevant context from this session's memory:\n\n"
-            + "\n".join(section_lines).strip()
-        )
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
-        hook_log(
-            "context_lookup_hit",
-            {
-                "counts": counts,
-                "session_totals": _totals,
-                "per_scope": per_scope,
-                "saves_last_turn": saves_last_turn,
-                "elapsed_ms": elapsed_ms(recall_start),
-            },
-        )
-        notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
-    else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
-        hook_log(
-            "context_lookup_empty",
-            {
-                "per_scope": per_scope,
-                "saves_last_turn": saves_last_turn,
-                "elapsed_ms": elapsed_ms(recall_start),
-            },
-        )
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
-
-    # Audit log: persist full recall details per turn for debugging.
+    # Audit log: persist full recall details per turn. The hook output stays a
+    # short summary because Codex renders additionalContext in the terminal.
     try:
         from datetime import datetime as _dt
         from datetime import timezone as _tz
@@ -880,27 +1076,17 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     "session_id": session_id,
                     "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
                     "hits": counts,
+                    "retrieved_hits": retrieved_counts,
                     "per_scope": per_scope,
                     "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                    **{k: v for k, v in injection_stats.items() if k != "entries"},
                 }
             ),
         )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 
-    # additionalContext is the MODEL injection channel and must carry the full
-    # recalled content — trimming it to the status line would silently disable
-    # memory for the model. systemMessage carries the short status for the
-    # terminal (mirrors the claude-code integration); hosts that render
-    # additionalContext directly will still show the full block.
-    output = {
-        "systemMessage": header,
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": full_context,
-        },
-    }
-    return output
+    return _recall_output(full_context, notice)
 
 
 def _recall_min_prompt_chars() -> int:
@@ -948,13 +1134,18 @@ def main():
         return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
 
+    notice_output = with_base_url_notice(None, "UserPromptSubmit") or {}
+    notice = str(notice_output.get("hookSpecificOutput", {}).get("additionalContext") or "")
     output = None
     try:
         with quiet_hook_output("session-context-lookup"):
-            output = asyncio.run(_run(prompt, cwd))
+            output = asyncio.run(_run(prompt, cwd, notice=notice))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
-    return with_base_url_notice(output, "UserPromptSubmit")
+    if output is None and notice:
+        header = "Cognee memory: recall unavailable"
+        output = _recall_output(header, _bounded_notice(header, notice))
+    return output
 
 
 if __name__ == "__main__":
@@ -962,10 +1153,7 @@ if __name__ == "__main__":
         json.dumps(
             main()
             or {
-                "hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": "",
-                }
+                "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ""}
             }
         )
     )

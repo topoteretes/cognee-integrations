@@ -10,6 +10,28 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0]
+
+### Added
+- Cloud capture spool and background worker with ordered retries, tenant isolation,
+  bounded retention, frozen event IDs and capability-gated server idempotency receipts.
+- Whole-record injection budgeting, per-session deduplication, reset on clear/compaction,
+  and a tenant-scoped startup digest refreshed in the background.
+- Evidence indexes, batch detail expansion, source/version citations and per-item receipts.
+- Per-session accounting and plain status labels: memories, sparks, pulses and estimated
+  tokens saved by deduplication. No measurements are backfilled from older sessions.
+- Cognee report skill, Codex rollout token accounting and repeated matched outcome trials
+  with citation/false-memory scoring, usage accounting and P50/P95 latency.
+
+### Changed
+- Cloud recall defaults to 45 seconds (local remains 20); connections/me gets 15 seconds.
+  Explicit recall budget overrides remain supported.
+- Capture recognizes native Codex shell tools and keeps meaningful output and failures.
+- Capture/improve work leaves the prompt path; queue entries count as saves only after ACK.
+- Timeout streaks remain diagnostics rather than blocking the next recall as an outage.
+- Keep Codex hook output, identity, local compaction behavior and configuration. Claude's
+  status-bar pinning, animations, observer and auto-memory settings are not installed.
+
 ## [1.7.5]
 
 ### Changed

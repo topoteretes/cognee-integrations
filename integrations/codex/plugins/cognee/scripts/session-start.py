@@ -1915,6 +1915,10 @@ async def _start(payload: dict | None = None) -> dict:
             "hookSpecificOutput": {"hookEventName": "SessionStart"},
         }
     os.environ["COGNEE_SESSION_KEY"] = session_key
+    if payload.get("source") in {"clear", "compact"}:
+        from _injection_ledger import reset
+
+        reset(session_key)
 
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
@@ -1951,6 +1955,40 @@ async def _start(payload: dict | None = None) -> dict:
             "dataset": dataset,
         },
     )
+
+    from _cloud_worker import enabled
+
+    if enabled({"base_url": target_url}):
+        from _cloud_worker import register_session
+        from _plugin_common import server_ready_hint
+
+        register_session(
+            {
+                "cwd": cwd,
+                "session_id": session_id,
+                "session_key": session_key,
+                "dataset": dataset,
+                "agent_session_name": agent_session_name,
+                "base_url": target_url,
+            }
+        )
+        touch_activity()
+        marker_ready = server_ready_hint(target_url)
+        message = (
+            "Cognee cloud memory ready; background synchronization active."
+            if marker_ready
+            else "Cognee cloud memory connecting in the background; captures are queued."
+        )
+        return {
+            "systemMessage": message,
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": render_status_for_host(session_key)
+                + "\n"
+                + message
+                + _update_nudge_suffix(),
+            },
+        }
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)
@@ -2166,6 +2204,34 @@ def main():
             output = asyncio.run(_start(payload)) or {}
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
+    if payload.get("source") != "resume":
+        from _cloud_worker import enabled
+        from _session_stats import previous, summary, update
+
+        config = load_config()
+        key = get_session_key()
+        last = summary(previous(key, get_dataset(config), str(config.get("base_url") or "")))
+        update(
+            key,
+            metadata={
+                "dataset": get_dataset(config),
+                "server_url": str(config.get("base_url") or ""),
+            },
+        )
+        extra = last
+        if enabled():
+            from _context_cache import inject
+
+            try:
+                digest = inject(get_dataset(config), key, source=payload.get("source", ""))
+                extra = "\n\n".join(part for part in (last, digest) if part)
+            except (OSError, ValueError):
+                pass
+        if extra:
+            hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+            hso["additionalContext"] = (
+                str(hso.get("additionalContext") or "") + "\n\n" + extra
+            ).strip()
     output = _apply_host_python_warning(output)
     print(json.dumps(output))
 

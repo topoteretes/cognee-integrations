@@ -10,7 +10,7 @@ import pytest
 
 @pytest.fixture
 def evidence(suite, isolated_modules):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("Claude evidence contract")
     return isolated_modules(suite, "_evidence")
 

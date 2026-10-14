@@ -20,6 +20,7 @@ from pathlib import Path
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
 from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _plugin_common import (
     bump_save_counter,
@@ -48,7 +49,7 @@ _WATCHER_SCRIPT = Path(__file__).with_name("idle-watcher.py")
 
 
 def _load_session() -> tuple[str, str, str, str]:
-    resolved = load_resolved()
+    resolved = load_resolved(identity=False) if cloud_enabled() else load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
@@ -73,6 +74,11 @@ def _watcher_alive() -> bool:
 
 def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: dict) -> None:
     """Start the idle watcher on a new prompt if the prior one exited after bridging."""
+    if cloud_enabled():
+        from _cloud_worker import touch_session
+
+        touch_session()
+        return
     if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() in ("1", "true", "yes"):
         return
     if not session_id or _watcher_alive():
@@ -148,6 +154,17 @@ async def _store(prompt: str, payload: dict):
     _ensure_idle_watcher(session_id, dataset, user_id, config)
 
     runtime = resolve_runtime_mode()
+    hook_log(
+        "mode_decision",
+        {
+            "hook": "store-user-prompt",
+            "mode": runtime["mode"],
+            "base_url": runtime.get("base_url", ""),
+            "url_source": runtime.get("url_source", ""),
+            "key_source": runtime.get("key_source", ""),
+            "api_key_present": runtime.get("api_key_present", False),
+        },
+    )
 
     # Round-trip through utf-8 with errors="replace": prompts pasted from
     # transcripts can carry lone surrogates, and one stored surrogate 500s
@@ -161,14 +178,17 @@ async def _store(prompt: str, payload: dict):
     )
     hook_log("prompt_pending", {"chars": len(prompt), "turn_id": payload.get("turn_id")})
     notify(f"user prompt pending ({len(prompt)} chars)")
+    if cloud_enabled(runtime):
+        # A pending prompt is durable locally, but is not a server save yet.
+        return
     bump_save_counter(session_id, "prompt")
 
-    # Replay any warmup-buffered entries. This hook is the sibling of
+    # Replay any warmup-buffered entries. This hook is the async sibling of
     # session-context-lookup on the same UserPromptSubmit event — identical
-    # trigger point, but the prompt's recall does not wait on it, so the drain
-    # (N sequential /remember/entry calls) can no longer starve recall (#298).
-    # It runs LAST so a mid-drain kill cannot cost the fast bookkeeping above;
-    # the drain itself is a cheap no-op on an empty buffer, preserves the
+    # trigger point, but nothing waits on it, so the drain (N sequential
+    # /remember/entry calls) can no longer stall the prompt (#298). It runs
+    # LAST so a mid-drain kill cannot cost the fast bookkeeping above; the
+    # drain itself is a cheap no-op on an empty buffer, preserves the
     # unreplayed tail on failure, and is single-flighted by its own lock
     # against the improve/SessionEnd paths that also drain.
     if server_usable(runtime.get("base_url", "")):
@@ -220,11 +240,6 @@ if __name__ == "__main__":
     main()
     print(
         json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": "",
-                }
-            }
+            {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ""}}
         )
     )

@@ -107,7 +107,9 @@ def plain(suite, statusline):
 def test_host_status_is_plain(plain, suite, monkeypatch, base_url, word):
     monkeypatch.setenv("COGNEE_BASE_URL", base_url)
     out = plain.render_status_for_host("s1")
-    assert out == f"cognee: {suite.default_dataset} · {word}", repr(out)
+    assert out.startswith(f"cognee: {suite.default_dataset} · {word}"), repr(out)
+    if suite.name == "codex":
+        assert "0 memories · 0 sparks · 0/0 pulses · tokens saved n/a" in out
 
 
 def test_no_escapes_even_with_every_signal_firing(plain, suite, monkeypatch):

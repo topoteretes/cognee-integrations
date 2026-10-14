@@ -554,13 +554,49 @@ def _top_up_hint() -> str:
     return f" · top up: {_billing_url()}"
 
 
+def _int(mapping, key) -> int:
+    try:
+        return int(mapping.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _tokens_saved(stats: dict, *, compact: bool = False) -> str:
+    if _int(stats, "dedup_measurements") <= 0:
+        return "saved n/a" if compact else "tokens saved n/a"
+    tokens = max(0, _int(stats, "dedup_chars_saved")) // 4
+    if tokens >= 1_000_000:
+        amount = f"{tokens // 100_000 / 10:g}m"
+    elif tokens >= 1000:
+        amount = f"{tokens // 100 / 10:g}k"
+    else:
+        amount = str(tokens)
+    return f"~{amount}t saved" if compact else f"~{amount} tokens saved"
+
+
+def _memory_activity(host_id: str) -> str:
+    # Read this session only; another terminal must never replace its counters.
+    if not _path_safe(host_id) or host_id in {".", ".."}:
+        return ""
+    stats = _read_json(_SHARED_ROOT / "codex" / "sessions" / host_id / "stats.json")
+    marker = _read_json(_SHARED_ROOT / "codex" / "recall" / (host_id + ".json"))
+    count = max(0, _int(stats, "entries_injected"))
+    hits = marker.get("hits")
+    sparks = sum(max(0, _int(hits, key)) for key in hits) if isinstance(hits, dict) else 0
+    pulses = max(0, _int(stats, "recalls"))
+    lit = min(pulses, max(0, _int(stats, "hits")))
+    noun = "memory" if count == 1 else "memories"
+    spark = "spark" if sparks == 1 else "sparks"
+    return f" · {count} {noun} · {sparks} {spark} · {lit}/{pulses} pulses · {_tokens_saved(stats)}"
+
+
 def render_status_for_host(host_id: str) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
     return (
         f"{_status_prefix(str(host_id or ''))}"
         f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
-        f"{_credits_segment()}{_update_segment()}"
+        f"{_memory_activity(str(host_id or ''))}{_credits_segment()}{_update_segment()}"
     )
 
 

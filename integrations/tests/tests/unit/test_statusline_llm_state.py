@@ -266,4 +266,6 @@ def test_render_status_for_host_places_the_glyph_before_the_label(suite, sl, mon
     _write_server(sl, {"state": "ready", "base_url": _LOCAL_URL})
     out = sl.render_status_for_host("session-key")
     expected_mode = mode_label(sl, "local")
-    assert out == f"{_llm_glyph(sl)}cognee: {suite.default_dataset} · {expected_mode}", repr(out)
+    assert out.startswith(f"{_llm_glyph(sl)}cognee: {suite.default_dataset} · {expected_mode}"), (
+        repr(out)
+    )

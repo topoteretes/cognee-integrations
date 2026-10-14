@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def cache(suite, isolated_modules, monkeypatch):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("Claude digest")
     module = isolated_modules(suite, "_context_cache")
     monkeypatch.setattr(module, "target", lambda: {"base_url": "https://cloud", "principal": "a"})

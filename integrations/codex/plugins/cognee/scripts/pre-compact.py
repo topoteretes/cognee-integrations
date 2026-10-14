@@ -51,7 +51,9 @@ def _load_resolved_fields() -> tuple[str, str, str]:
     if not get_session_key():
         hook_log("precompact_missing_session_key")
         return "", "", ""
-    resolved = load_resolved()
+    from _cloud_worker import enabled
+
+    resolved = load_resolved(identity=False) if enabled() else load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
@@ -64,6 +66,11 @@ def _load_resolved_fields() -> tuple[str, str, str]:
 
 def _spawn_background_sync(session_id: str, dataset: str, user_id: str) -> None:
     """Kick off session-to-graph sync without blocking the PreCompact hook."""
+    from _cloud_worker import enabled, request_improve
+
+    if enabled():
+        request_improve(dataset, session_id, "precompact")
+        return
     try:
         env = os.environ.copy()
         env.setdefault("COGNEE_SYNC_START_DELAY", _SYNC_START_DELAY_SECONDS)
@@ -164,6 +171,11 @@ async def _run():
     # down rather than paying recall timeouts for nothing.
     runtime = resolve_runtime_mode()
     service_url = runtime.get("base_url", "")
+    from _cloud_worker import enabled
+
+    if enabled(runtime):
+        _spawn_background_sync(session_id, dataset, user_id)
+        return ""
     if not server_usable(service_url):
         hook_log("precompact_server_unusable", {"base_url": service_url})
         return ""
@@ -226,6 +238,9 @@ def main():
     session_key_candidate, _ = resolve_session_key_from_payload(payload)
     if session_key_candidate:
         set_session_key(session_key_candidate)
+        from _injection_ledger import reset
+
+        reset(session_key_candidate)
 
     anchor = ""
     try:

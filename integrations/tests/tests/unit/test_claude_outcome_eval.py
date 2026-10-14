@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[3] / "claude-code/skills/cognee-report/scripts"
+HOST_PATH = (
+    "codex/plugins/cognee" if os.environ.get("COGNEE_TEST_SUITE") == "codex" else "claude-code"
+)
+SCRIPTS = Path(__file__).resolve().parents[3] / HOST_PATH / "skills/cognee-report/scripts"
 spec = importlib.util.spec_from_file_location("outcome_eval", SCRIPTS / "outcome_eval.py")
 oe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oe)

@@ -328,6 +328,20 @@ EVENT_NAMES = {
 }
 
 
+EVENT_NAMES.update(
+    {
+        "hook:injection_ledger_failed": "cloud.injection_ledger_failed",
+        "hook:injection_receipt_failed": "recall.injection_receipt_failed",
+        "hook:bash_capture_decision": "capture.bash_decision",
+        "hook:capture_spooled": "cloud.capture_spooled",
+        "hook:cloud_work_expired": "cloud.cloud_work_expired",
+        "hook:cloud_work_retry": "cloud.cloud_work_retry",
+        "hook:cloud_capture_delivered": "cloud.cloud_capture_delivered",
+        "hook:cloud_worker_error": "cloud.cloud_worker_error",
+    }
+)
+
+
 def event_fields(event: str, source: str = "hook") -> dict:
     canonical = EVENT_NAMES.get(source + ":" + event, source + "." + event)
     fields = {"event_name": canonical, "event_schema": 2}

@@ -466,7 +466,7 @@ files, or exceed 3000 source files. Explicit indexing has no size cap.
 
 ## Status visibility
 
-Cognee status is shown as `cognee: <dataset> · <mode>`, for example:
+Cognee status is injected as plain text through the hooks, for example:
 
 ```
 cognee: agent_sessions · local
@@ -689,9 +689,9 @@ Each operation has its own client timeout, tunable independently (all in seconds
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_RECALL_BUDGET` | `20` | Whole-recall deadline for the per-prompt lookup; a scope that overruns contributes no hits |
-| `COGNEE_RECALL_PASSAGE_CHARS` | `2000` | Per-passage cap on the retrieved context the prompt hook injects, cut at a paragraph break and marked with how much was cut; `0` disables. Bridged session chunks run 2k–20k chars each |
-| `COGNEE_RECALL_CONTEXT_CHARS` | `12000` | Soft budget for the whole injected memory block; passages are trimmed from the end (lowest ranked first) until it fits, entities and facts never; `0` disables |
+| `COGNEE_RECALL_BUDGET` | `45` cloud / `20` local | Whole-recall deadline for the per-prompt lookup; a scope that overruns contributes no hits |
+| `COGNEE_RECALL_PASSAGE_CHARS` | `1200` | Per-passage cap on the retrieved context the prompt hook injects, cut at a paragraph break and marked with how much was cut; `0` disables. Bridged session chunks run 2k–20k chars each |
+| `COGNEE_RECALL_CONTEXT_CHARS` | `0` | Soft budget for the whole injected memory block; passages are trimmed from the end (lowest ranked first) until it fits, entities and facts never; `0` disables |
 | `COGNEE_RECALL_TIMEOUT` | `120` | Client timeout for an explicit search (`cognee-search`); the per-prompt lookup uses `COGNEE_RECALL_BUDGET` instead |
 | `COGNEE_REMEMBER_TIMEOUT` | `120` | Client timeout for the explicit remember submit POST; with `COGNEE_REMEMBER_BACKGROUND` on (the default) it returns once the work is queued |
 | `COGNEE_REGISTER_TIMEOUT` | `15` | Client timeout for the session register call (session start and dataset switch) |
@@ -797,3 +797,47 @@ companion endpoint currently requires the primary owner and copies an ACL snapsh
 later sharing changes must be reconciled explicitly. Connection credentials are
 hashed in the local decision record, and a changed principal cannot reuse it.
 Defaults remain off. Start a new host session when changing project routing policy.
+
+
+## Cloud memory pipeline (1.8.0)
+
+Cloud startup, capture and improve use a durable per-user worker. Hooks queue captured
+traces and paired prompt/answer entries in `~/.cognee-plugin/codex/spool`; only an
+acknowledged write counts as saved. Work is scoped to the server and principal that
+created it. Failed work retries with backoff; work older than seven days moves to
+quarantine and is logged. A supported server advertises `capture_idempotency_v1`;
+its stable receipt makes retries after ambiguous writes safe. Older servers retain
+legacy verification, which does not provide the same transactional guarantee.
+
+Recall defaults to **45 seconds in cloud**, **20 locally**, with environment overrides
+preserved. `connections/me` gets 15 seconds. The serialized recall hook output is
+bounded by `COGNEE_INJECT_MAX_CHARS` (default 9,000; minimum 1,024), dropping whole
+records. Graph facts/entities take priority over passages. Cloud deduplication skips
+entries already in this session's context and resets on clear/compaction. Startup
+can inject a bounded digest cached for this tenant and dataset without a network wait.
+
+The status summary uses **memories** for cumulative injected entries, **sparks** for
+memory blocks delivered on the latest prompt, and **pulses** for prompts receiving
+memory / measured prompts. **Tokens saved** estimates positive context-size reductions
+from deduplication under the same injection budget (characters / 4, rounded down).
+It is not billed-token savings; `n/a` means no measurements yet. Reports and receipts
+show delivery evidence, not proof that memory improved an answer.
+
+Use `cognee-report` for local delivery/quality reports. It reads this plugin's telemetry
+and Codex session rollouts; absent hook timings and costs remain unmeasured. The default
+report omits the latency bar and Needs attention section while retaining the scorecard.
+For controlled task outcomes, see [the matched-trial protocol](plugins/cognee/skills/cognee-report/OUTCOMES.md).
+The included offline fixtures test the harness; use the live adapter or a coding-agent
+adapter for measured outcome claims. Live trials need an isolated evaluation backend.
+
+Evidence tools (run from the installed plugin root):
+
+```bash
+python3 scripts/cognee-evidence.py index "your question"
+python3 scripts/cognee-evidence.py details '<versioned citation>'
+python3 scripts/cognee-evidence.py explain --session-key '<host session ID>'
+```
+
+Indexes and detail expansion require the server evidence API; legacy recall continues
+when unsupported. Receipts explain injected, duplicate, over-budget, own-session and
+unavailable items without storing their source bodies. No Claude settings are changed.

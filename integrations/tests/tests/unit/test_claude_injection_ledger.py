@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def ledger(suite, isolated_modules):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("Claude Code cloud ledger")
     return isolated_modules(suite, "_injection_ledger")
 
@@ -66,7 +66,7 @@ def test_digest_seed(ledger):
 
 
 def test_deduped_hits_are_not_reported_as_new_injections(suite, hook_module, monkeypatch):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("Claude Code cloud ledger")
     from utils.recall import drive_recall
 
@@ -81,10 +81,14 @@ def test_deduped_hits_are_not_reported_as_new_injections(suite, hook_module, mon
     assert second.detail("context_lookup_empty")["retrieved_hits"] == 1
     from pathlib import Path
 
-    marker = json.loads((Path.home() / ".cognee-plugin/claude-code/last_recall.json").read_text())
+    marker = json.loads(
+        (Path.home() / f".cognee-plugin/{suite.state_subdir}/last_recall.json").read_text()
+    )
     assert marker["session_totals"] == {"turns": 2, "turns_with_hits": 1}
     stats = json.loads(
-        (Path.home() / ".cognee-plugin/claude-code/sessions/review-dedup/stats.json").read_text()
+        (
+            Path.home() / f".cognee-plugin/{suite.state_subdir}/sessions/review-dedup/stats.json"
+        ).read_text()
     )
     assert stats["dedup_measurements"] == 2
     assert stats["dedup_chars_saved"] > 0

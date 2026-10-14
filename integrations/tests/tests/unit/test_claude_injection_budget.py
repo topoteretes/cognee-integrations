@@ -83,7 +83,7 @@ def test_serialized_unicode_and_backslashes_stay_bounded():
 
 @pytest.fixture
 def lookup(suite, hook_module):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("Claude Code injection policy")
     return hook_module(suite, "session-context-lookup.py")
 
@@ -119,7 +119,9 @@ def test_relations_from_all_datasets_outlive_overflowing_passages(lookup):
         ("256", "Cognee: base URL changed: " + "https://cloud.example/" * 1000),
     ],
 )
-def test_final_recall_json_includes_notices_within_budget(lookup, monkeypatch, limit, notice):
+def test_final_recall_json_includes_notices_within_budget(
+    suite, lookup, monkeypatch, limit, notice
+):
     from utils.recall import drive_recall
 
     monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", limit)
@@ -133,12 +135,13 @@ def test_final_recall_json_includes_notices_within_budget(lookup, monkeypatch, l
     if notice and len(notice) < 1000:
         assert notice in context
         assert notice in run.output["systemMessage"]
-        assert notice in run.output["hookSpecificOutput"]["systemMessage"]
+        if suite.name == "claude-code":
+            assert notice in run.output["hookSpecificOutput"]["systemMessage"]
     elif notice:
         assert "configuration notice omitted" in context
 
 
-def test_main_consumes_notices_once_before_rendering(lookup, monkeypatch, capsys):
+def test_main_consumes_notices_once_before_rendering(suite, lookup, monkeypatch, capsys):
     import io
     import sys
 
@@ -161,8 +164,8 @@ def test_main_consumes_notices_once_before_rendering(lookup, monkeypatch, capsys
     monkeypatch.setattr(
         sys, "stdin", io.StringIO(json.dumps({"session_id": "session", "prompt": "recall memory"}))
     )
-    lookup.main()
-    output = json.loads(capsys.readouterr().out)
+    result = lookup.main()
+    output = result if suite.name == "codex" else json.loads(capsys.readouterr().out)
     assert output["hookSpecificOutput"]["additionalContext"].startswith(
         "URL notice\nCapture notice"
     )
@@ -203,7 +206,7 @@ def test_fenced_code_is_one_atomic_entry(lookup):
 
 
 @pytest.mark.parametrize("case,expected_hits", [("miss", 0), ("dropped", 0), ("partial", 1)])
-def test_status_counts_only_injected_results(lookup, monkeypatch, case, expected_hits):
+def test_status_counts_only_injected_results(suite, lookup, monkeypatch, case, expected_hits):
     from utils.recall import drive_recall
 
     monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", "1024")
@@ -220,7 +223,9 @@ def test_status_counts_only_injected_results(lookup, monkeypatch, case, expected
     run = drive_recall(lookup, monkeypatch, recall=recall)
     context = run.output["hookSpecificOutput"]["additionalContext"]
     assert f"recall {expected_hits} memory" in context
-    marker = json.loads((Path.home() / ".cognee-plugin/claude-code/last_recall.json").read_text())
+    marker = json.loads(
+        (Path.home() / f".cognee-plugin/{suite.state_subdir}/last_recall.json").read_text()
+    )
     assert marker["hits"]["graph_context"] == expected_hits
     assert marker["retrieved_hits"]["graph_context"] == len(items)
     assert marker["session_totals"]["turns_with_hits"] == expected_hits

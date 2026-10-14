@@ -15,10 +15,8 @@ Contract:
     than breaking the write;
   * the per-session copy is only written for a path-safe session key.
 
-Both suites keep the total. claude-code writes it to the per-session copy
-``recall/<session_key>.json`` (what its bar reads); codex has one shared
-``last_recall.json`` and carries the total forward only when that file is
-stamped with its own ``session_key``.
+Both suites keep totals in the per-session copy ``recall/<session_key>.json``.
+The shared marker is for legacy consumers and never supplies another session's totals.
 """
 
 from __future__ import annotations
@@ -48,7 +46,7 @@ def per_session(suite, state):
 
     def _read(key: str = SESSION_KEY) -> dict:
         path = state / "last_recall.json"
-        if suite.name == "claude-code":
+        if suite.name in {"claude-code", "codex"}:
             path = state / "recall" / f"{key}.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
@@ -62,7 +60,7 @@ def _shared(state: Path) -> dict:
 def _seed(state: Path, suite, payload: dict, key: str = SESSION_KEY) -> None:
     """Pre-write the marker a previous prompt of session ``key`` would have left."""
     path = state / "last_recall.json"
-    if suite.name == "claude-code":
+    if suite.name in {"claude-code", "codex"}:
         path = state / "recall" / f"{key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
@@ -113,7 +111,7 @@ def test_another_sessions_marker_is_not_the_source_of_the_total(
     assert _shared(state)["session_totals"] == {"turns": 1, "turns_with_hits": 1}
 
 
-def test_codex_continues_its_own_shared_marker(lookup, monkeypatch, suite, state, per_session):
+def test_codex_continues_its_own_session_marker(lookup, monkeypatch, suite, state, per_session):
     if suite.name != "codex":
         pytest.skip("claude-code keeps a per-session copy; covered by the accumulate test")
     _seed(
@@ -162,7 +160,7 @@ def test_negative_or_garbage_totals_are_clamped(lookup, monkeypatch, suite, stat
 
 
 def test_path_unsafe_session_key_writes_no_per_session_copy(lookup, monkeypatch, suite, state):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("codex has no per-session copy")
     monkeypatch.setattr(lookup, "get_session_key", lambda: "../escape")
     run = drive_recall(lookup, monkeypatch, recall=HIT)
@@ -196,8 +194,8 @@ def codex(suite):
 def test_codex_header_reads_in_plain_words(codex, lookup, monkeypatch, state):
     drive_recall(lookup, monkeypatch, recall=_graph("x", "y", "z"))
     assert _codex_header(state) == (
-        "Cognee memory: 3 memory hits · 1/1 turns had hits this session"
-        " · saved last turn 0 prompt / 0 trace / 0 answer"
+        "Cognee memory: recall 3 memory; saved last turn 0 prompt / 0 trace / 0 answer; "
+        "3 new, 0 already in context"
     )
 
 
@@ -205,11 +203,10 @@ def test_codex_header_says_warming_up_until_the_first_hit(codex, lookup, monkeyp
     drive_recall(lookup, monkeypatch, recall=_MISS)
     drive_recall(lookup, monkeypatch, recall=_MISS)
     assert _codex_header(state) == (
-        "Cognee memory: 0 memory hits · memory warming up (2 turns)"
-        " · saved last turn 0 prompt / 0 trace / 0 answer"
+        "Cognee memory: recall 0 memory; saved last turn 0 prompt / 0 trace / 0 answer"
     )
 
 
 def test_codex_header_is_singular_at_one_hit(codex, lookup, monkeypatch, state):
     drive_recall(lookup, monkeypatch, recall=_graph("Question: q"))
-    assert _codex_header(state).startswith("Cognee memory: 1 memory hit · 1/1 turns had hits")
+    assert _codex_header(state).startswith("Cognee memory: recall 1 memory;")

@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def stats(suite, isolated_modules):
-    if suite.name != "claude-code":
+    if suite.name not in {"claude-code", "codex"}:
         pytest.skip("Claude Code stats")
     return isolated_modules(suite, "_session_stats")
 

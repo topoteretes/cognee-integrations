@@ -390,6 +390,11 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
 
 
 def main():
+    from _cloud_worker import enabled, ensure_worker
+
+    if enabled():
+        ensure_worker()
+        return
     _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
 
     # Config passed as a single JSON arg to avoid shell-quoting hazards.
