@@ -721,52 +721,46 @@ event. Irrelevant background recall does not require an announcement.
 
 ## Status line
 
-The default status line highlights `cognee` between two purple squares, with bold
-dataset and location and one Claude-style imprint bar. At 80 columns it can read:
+The default status line highlights `cognee` between purple squares, with bold
+ dataset/location and one benchmark answer-improvement bar. For example:
 
 ```text
-■ cognee ■ manual·cloud·124 reminiscence · 34/46 imprints  ▰▰▰▰▱ · ~2.4kt saved
+■ cognee ■ manual · cloud · Improved ▰▰▰▱▱ 60% · benchmark · 10% worse
 ```
 
-- **Reminiscence**: cumulative memory entries injected into this session. This is not
-  a unique-memory count; an entry reinjected after compaction counts again.
+The percentage is the share of offline matched comparisons where Cognee improved
+the answer. Ties and regressions remain in the denominator. It is neither a grade
+for the current answer nor a claim about your own sessions. Missing results show
+`Improved: pending`; results older than 48 hours show `Improved: stale` without a
+percentage. At least 20 comparisons with no unjudgeable pairs are required to show
+a score; this threshold does not imply statistical significance.
+
+The cloud worker refreshes the small authenticated summary at most hourly. The
+renderer makes no network or model calls. The quality bar replaces the imprint
+ratio bar; memory counters and estimated savings remain where space permits:
+
+- **Reminiscence**: cumulative injected entries, including reinjection after compaction.
 - **Ideas**: memory blocks delivered for the latest prompt, not proof of use.
-- **Imprints**: prompts that received memory out of all prompts. The single bar
-  shows this fraction.
-- **Tokens saved**: estimated as **average tokens per recall × number of recalls × 6.9**.
-  Recall tokens mean memory context injected into Claude, estimated at one token
-  per four characters. The calculation is equivalent to cumulative injected
-  characters ÷ 4 × 6.9, rounded down after multiplication. For example, 100
-  tokens per recall across 10 recalls displays approximately 6,900 tokens saved.
-  Empty recalls contribute zero; variable-size recalls use their actual context
-  lengths. The 6.9 factor is a heuristic, not measured billing or task savings.
-  `saved n/a` means recall/context measurements are unavailable. Existing sessions
-  use their recorded cumulative recall context; no network requests are added.
+- **Imprints**: prompts receiving memory / total prompts.
+- **Tokens saved**: estimated average injected tokens per recall × recall count × 6.9,
+  equivalent to injected characters ÷ 4 × 6.9. This is a heuristic, not measured
+  billing savings. Missing measurements show `n/a`.
 
-A new successful recall shimmers the reminiscence count for ten seconds using the
-recall timestamp and current clock. The renderer only reads local counters;
-measurement happens in the existing recall hook without additional requests.
-
-The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
-The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xterm
-183. Failures remain red, update notices amber, and credits retain their semantic
-colours. Unknown connection health appears as `?`.
-
-`COLUMNS` controls the single-line width (80 by default, capped at 120). At 60
-columns decorations disappear first; dataset, mode, health and memory count
-are retained when they fit, alongside token savings. The highlighted brand stays visible; token units shorten and the latest-prompt
-ideas count is omitted before the bar and imprint ratio are dropped. Longer optional segments are
-then omitted, and very
-narrow lines are clipped. Wider terminals add no extra fields. Non-UTF-8 stdout
-uses ASCII (`#`, `-`, `[x]`) instead of block glyphs. A renderer error falls back
-to classic output.
+A new recall shimmers the reminiscence count for ten seconds. Dark/light palettes,
+red failures, amber updates and ASCII fallback are preserved. `COLUMNS` controls
+width (default 80, capped at 120); optional counters give way to quality and scope.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
+| `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` preserves the original renderer |
 | `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
-| `COGNEE_STATUSLINE_PIN` | `false` | `true` restores Cognee when another command replaces the user status line; opt-in |
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Ideas and imprint ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (reminiscence and token savings remain) |
+| `COGNEE_STATUSLINE_PIN` | `false` | `true` restores the selected Cognee status line |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Activity counters; `full` shows diagnostics; `false` hides them |
+
+Full cached sample counts, model, rubric and date:
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/_quality_summary.py"`.
+See [offline evaluation deployment](../evaluation/README.md) for the benchmark job,
+MotherDuck schema, costs and publication API.
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
 `cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /

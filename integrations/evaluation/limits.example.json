@@ -1,0 +1,9 @@
+{
+  "max_trials": 100,
+  "max_tokens": 1000000,
+  "max_usd": 10,
+  "trial_tokens": 10000,
+  "trial_usd": 0.1,
+  "judge_tokens": 4000,
+  "judge_usd": 0.01
+}

@@ -71,7 +71,8 @@ def test_palette_and_meaning(sl, monkeypatch, theme, color):
     assert "●" not in line
     assert "manual  ·  cloud  ·  124 reminiscence" in plain(sl, line)
     assert "124 reminiscence" in line and "8 ideas" in line and "34/46 imprints" in line
-    assert plain(sl, line).count("▰▰▰▰▱") == 1
+    assert "Improved: pending" in plain(sl, line)
+    assert "▰" not in line
     assert not any(c in plain(sl, line) for c in "[]▁▂▃▄▅▆▇█▔▀")
 
 
@@ -87,21 +88,49 @@ def test_brand_is_constant_across_recall_outcomes(sl, monkeypatch, hits):
 
 
 def test_width(sl, monkeypatch):
-    at80 = sl._tetris_line(SESSION)
-    assert sl._width(at80) <= 80
-    assert "▰" in at80
-    monkeypatch.setenv("COLUMNS", "120")
-    wide = sl._tetris_line(SESSION)
-    assert "~2.4k tokens saved" in wide
-    assert "~2.4kt saved" in at80
-    assert "34/46 imprints" in wide and "34/46 imprints" in at80
-    assert sl._width(wide) <= 120
-    monkeypatch.setenv("COLUMNS", "60")
-    line = sl._tetris_line(SESSION)
-    assert sl._width(line) <= 60 and "▰" not in line
-    assert all(text in line for text in ("cognee", "manual", "cloud", "124 reminiscence"))
-    monkeypatch.setenv("COLUMNS", "20")
-    assert sl._width(sl._tetris_line(SESSION)) <= 20
+    for width in (120, 80, 60, 20):
+        monkeypatch.setenv("COLUMNS", str(width))
+        line = sl._tetris_line(SESSION)
+        assert sl._width(line) <= width
+        if width >= 60:
+            assert "pending" in line and "cognee" in line
+        if width >= 80:
+            assert "saved" in line
+        assert "▰" not in line  # unavailable quality is not a zero-percent score
+
+
+def test_measured_quality_replaces_imprint_bar(sl, monkeypatch):
+    from datetime import datetime, timezone
+
+    from _quality_summary import cache_path
+
+    write_json(
+        cache_path(sl._SESSIONS_DIR.parent, "https://memory.example.test"),
+        {
+            "summary": {
+                "schema": 1,
+                "scope": "benchmark",
+                "source": "live",
+                "status": "ready",
+                "pairs": 20,
+                "better": 12,
+                "equivalent": 6,
+                "worse": 2,
+                "unjudgeable": 0,
+                "improvement_rate": 0.6,
+                "regression_rate": 0.1,
+                "evaluated_at": datetime.fromtimestamp(NOW, timezone.utc).isoformat(),
+            }
+        },
+    )
+    for width in (80, 120):
+        monkeypatch.setenv("COLUMNS", str(width))
+        line = sl._tetris_line(SESSION)
+        assert sl._width(line) <= width
+        assert plain(sl, line).count("▰▰▰▱▱") == 1
+        assert "▰▰▰▰▱" not in line
+        assert "60%" in line and "benchmark" in line and "10% worse" in line
+        assert "cognee" in line
 
 
 def test_stateless_shimmer(sl, monkeypatch):
@@ -113,7 +142,7 @@ def test_stateless_shimmer(sl, monkeypatch):
     monkeypatch.setenv("COLORTERM", "truecolor")
     assert "\033[38;2;208;180;255m124 reminiscence" in sl._tetris_line(SESSION, now=NOW)
     assert sl._tetris_line(SESSION, now=NOW + 10) == sl._tetris_line(SESSION, now=NOW + 60)
-    assert "▰▰▰▰▱" in sl._tetris_line(SESSION, now=NOW + 10)
+    assert "pending" in sl._tetris_line(SESSION, now=NOW + 10)
     assert sl._animation_phase(marker(hits={"session": 0}, ts=NOW), NOW) is None
 
 
@@ -232,7 +261,7 @@ def test_failure_at_60_keeps_identity_and_count(sl, monkeypatch):
     monkeypatch.setattr(sl, "_status_prefix", lambda _: sl._fail_glyph("server_error"))
     line = sl._tetris_line(SESSION)
     assert sl._width(line) <= 60
-    assert all(value in line for value in ("server_error", "manual", "cloud", "124 reminiscence"))
+    assert all(value in line for value in ("server_error", "cognee", "pending"))
 
 
 def test_home_without_markers(sl, suite, tmp_path):

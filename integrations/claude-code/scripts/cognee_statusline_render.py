@@ -1046,34 +1046,30 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
                 decoration = _ratio_bar(turns, with_hits)
             if decoration:
                 decoration = f"  {purple}{decoration}{_RESET}"
+    from _quality_summary import segment as quality_segment
+
+    quality_args = (_SESSIONS_DIR.parent, os.environ.get("COGNEE_BASE_URL", "").rstrip("/"))
+    quality = quality_segment(*quality_args, now=now, bar=columns > 60)
+    compact_quality = quality_segment(*quality_args, now=now, compact=True, bar=columns > 60)
+    quality = purple + quality + _RESET
+    compact_quality = purple + compact_quality + _RESET
     credits, update = _credits_segment(), _update_segment()
-    imprint_counts = re.sub(r" · \d+ ideas?", "", counts)
     savings = " · " + _tokens_saved(stats)
     short_savings = " · " + _tokens_saved(stats, compact=True)
-    # Keep the badge at every width. Shorten units and omit the latest-prompt
-    # count before dropping the single bar and cumulative imprint ratio.
-    candidates = []
-    if columns > 60:
-        candidates += [
-            core + counts + decoration + savings + credits + update,
-            core + counts + decoration + short_savings + credits + update,
-            core + imprint_counts + decoration + short_savings + credits + update,
-            core.replace(" · ", "·")
-            + imprint_counts
-            + decoration
-            + short_savings
-            + credits
-            + update,
-        ]
-    candidates += [
-        core + counts + savings + credits + update,
-        core + counts + short_savings + credits + update,
-        core + savings + credits + update,
-        core + short_savings + credits + update,
-        core + savings,
-        core + short_savings,
-        core,
-        core.replace(" · ", "·"),
+    # Exactly one bar: quality replaces the imprint ratio decoration. Keep the
+    # numeric imprint count where space permits; quality remains visible at 80.
+    quality_core = health + brand
+    imprint_counts = re.sub(r" · \d+ ideas?", "", counts)
+    candidates = [
+        core + counts + " · " + quality + savings + credits + update,
+        core + counts + " · " + compact_quality + short_savings + credits + update,
+        core + imprint_counts + " · " + compact_quality + short_savings + credits + update,
+        core + " · " + compact_quality + short_savings + credits + update,
+        quality_core + " · " + quality + short_savings + credits + update,
+        quality_core + " · " + compact_quality + short_savings + credits + update,
+        quality_core + " · " + compact_quality + short_savings,
+        quality_core + " · " + compact_quality,
+        health + badge + " · " + compact_quality,
     ]
     if columns > 60:
         candidates = [

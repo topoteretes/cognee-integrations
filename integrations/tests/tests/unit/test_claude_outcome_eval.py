@@ -263,6 +263,7 @@ def live_request(variant):
 def completion():
     return {
         "id": "completion",
+        "model": "pinned-model",
         "choices": [
             {
                 "message": {
@@ -299,7 +300,11 @@ def test_live_cognee_prepares_only_isolated_memory_and_enforces_deadline(live_ru
         calls.append((url, payload))
         if url.endswith("/health"):
             return {"capabilities": ["capture_idempotency_v1"]}
+        if url.endswith("/datasets"):
+            assert payload == {"name": "eval_trial"}
+            return {"id": "test-dataset"}
         if url.endswith("/remember/entry"):
+            assert payload["dataset_id"] == "test-dataset"
             assert payload["dataset_name"] == payload["session_id"] == "eval_trial"
             return {"entry_id": "receipt", "client_event_id": payload["client_event_id"]}
         if url.endswith("/improve"):

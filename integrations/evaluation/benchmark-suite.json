@@ -1,0 +1,418 @@
+{
+  "model": "SET_PINNED_MODEL_VERSION",
+  "max_tokens": 1024,
+  "variants": [
+    "no_memory",
+    "cognee"
+  ],
+  "cases": [
+    {
+      "id": "interrupted_task",
+      "prompt": "What is the next implementation step? Return claim id next.",
+      "memory": [
+        {
+          "id": "interrupted_task-handoff",
+          "text": "next=add retry tests"
+        }
+      ],
+      "expected": {
+        "next": {
+          "value": "add retry tests",
+          "sources": [
+            "interrupted_task-handoff"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "superseded_decision",
+      "prompt": "Which datastore is the current decision? Return claim id store.",
+      "memory": [
+        {
+          "id": "superseded_decision-old",
+          "text": "store=redis"
+        },
+        {
+          "id": "superseded_decision-new",
+          "text": "store=postgres"
+        }
+      ],
+      "expected": {
+        "store": {
+          "value": "postgres",
+          "sources": [
+            "superseded_decision-new"
+          ],
+          "false_values": [
+            "redis"
+          ]
+        }
+      }
+    },
+    {
+      "id": "exact_symbol",
+      "prompt": "Which symbol handles payment retries? Return claim id symbol.",
+      "memory": [
+        {
+          "id": "exact_symbol-old",
+          "text": "symbol=submit_payment"
+        },
+        {
+          "id": "exact_symbol-code",
+          "text": "symbol=retry_payment"
+        }
+      ],
+      "expected": {
+        "symbol": {
+          "value": "retry_payment",
+          "sources": [
+            "exact_symbol-code"
+          ],
+          "false_values": [
+            "submit_payment"
+          ]
+        }
+      }
+    },
+    {
+      "id": "paraphrase",
+      "prompt": "Where should delayed jobs go after a failed upload? Return claim id queue.",
+      "memory": [
+        {
+          "id": "paraphrase-old",
+          "text": "queue=memory_buffer"
+        },
+        {
+          "id": "paraphrase-decision",
+          "text": "queue=durable_spool"
+        }
+      ],
+      "expected": {
+        "queue": {
+          "value": "durable_spool",
+          "sources": [
+            "paraphrase-decision"
+          ],
+          "false_values": [
+            "memory_buffer"
+          ]
+        }
+      }
+    },
+    {
+      "id": "irrelevant_memory",
+      "prompt": "What is the value of 2 + 2? Return claim id arithmetic.",
+      "memory": [
+        {
+          "id": "irrelevant_memory-unrelated",
+          "text": "color=blue"
+        }
+      ],
+      "expected": {
+        "arithmetic": {
+          "value": "4",
+          "sources": [],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "stale_index",
+      "prompt": "What is the latest worker entry point? Return claim id entry.",
+      "memory": [
+        {
+          "id": "stale_index-stale",
+          "text": "entry=start_worker"
+        },
+        {
+          "id": "stale_index-fresh",
+          "text": "entry=run_worker"
+        }
+      ],
+      "expected": {
+        "entry": {
+          "value": "run_worker",
+          "sources": [
+            "stale_index-fresh"
+          ],
+          "false_values": [
+            "start_worker"
+          ]
+        }
+      }
+    },
+    {
+      "id": "cross_file_impact",
+      "prompt": "Which files need updating for a receipt contract change? Return claim id files.",
+      "memory": [
+        {
+          "id": "cross_file_impact-old",
+          "text": "files=worker.py"
+        },
+        {
+          "id": "cross_file_impact-dependency",
+          "text": "files=worker.py,api.py,storage.py"
+        }
+      ],
+      "expected": {
+        "files": {
+          "value": "worker.py,api.py,storage.py",
+          "sources": [
+            "cross_file_impact-dependency"
+          ],
+          "false_values": [
+            "worker.py"
+          ]
+        }
+      }
+    },
+    {
+      "id": "api_auth",
+      "prompt": "Which header authenticates the project cloud API? Return claim id header.",
+      "memory": [
+        {
+          "id": "api_auth-decision",
+          "text": "Approved project decision: header=X-Api-Key"
+        }
+      ],
+      "expected": {
+        "header": {
+          "value": "X-Api-Key",
+          "sources": [
+            "api_auth-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "connect_timeout",
+      "prompt": "What connect timeout did the team approve? Return claim id timeout.",
+      "memory": [
+        {
+          "id": "connect_timeout-decision",
+          "text": "Approved project decision: timeout=15 seconds"
+        }
+      ],
+      "expected": {
+        "timeout": {
+          "value": "15 seconds",
+          "sources": [
+            "connect_timeout-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "recall_timeout",
+      "prompt": "What is the approved cloud recall deadline? Return claim id deadline.",
+      "memory": [
+        {
+          "id": "recall_timeout-decision",
+          "text": "Approved project decision: deadline=45 seconds"
+        }
+      ],
+      "expected": {
+        "deadline": {
+          "value": "45 seconds",
+          "sources": [
+            "recall_timeout-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "context_cap",
+      "prompt": "What injected context cap does the plugin use? Return claim id cap.",
+      "memory": [
+        {
+          "id": "context_cap-decision",
+          "text": "Approved project decision: cap=9000 characters"
+        }
+      ],
+      "expected": {
+        "cap": {
+          "value": "9000 characters",
+          "sources": [
+            "context_cap-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "retry_identity",
+      "prompt": "Which field keeps capture retries idempotent? Return claim id field.",
+      "memory": [
+        {
+          "id": "retry_identity-decision",
+          "text": "Approved project decision: field=client_event_id"
+        }
+      ],
+      "expected": {
+        "field": {
+          "value": "client_event_id",
+          "sources": [
+            "retry_identity-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "payload_conflict",
+      "prompt": "What HTTP code does changed content under one event ID return? Return claim id code.",
+      "memory": [
+        {
+          "id": "payload_conflict-decision",
+          "text": "Approved project decision: code=409"
+        }
+      ],
+      "expected": {
+        "code": {
+          "value": "409",
+          "sources": [
+            "payload_conflict-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "storage_decision",
+      "prompt": "Which analytics warehouse did this project choose? Return claim id warehouse.",
+      "memory": [
+        {
+          "id": "storage_decision-decision",
+          "text": "Approved project decision: warehouse=MotherDuck"
+        }
+      ],
+      "expected": {
+        "warehouse": {
+          "value": "MotherDuck",
+          "sources": [
+            "storage_decision-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "quality_scope",
+      "prompt": "How must the initial quality indicator describe its scope? Return claim id scope.",
+      "memory": [
+        {
+          "id": "quality_scope-decision",
+          "text": "Approved project decision: scope=benchmark"
+        }
+      ],
+      "expected": {
+        "scope": {
+          "value": "benchmark",
+          "sources": [
+            "quality_scope-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "missing_measurement",
+      "prompt": "What should unavailable measured savings show? Return claim id value.",
+      "memory": [
+        {
+          "id": "missing_measurement-decision",
+          "text": "Approved project decision: value=n/a"
+        }
+      ],
+      "expected": {
+        "value": {
+          "value": "n/a",
+          "sources": [
+            "missing_measurement-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "quality_freshness",
+      "prompt": "How long can our quality summary remain fresh? Return claim id freshness.",
+      "memory": [
+        {
+          "id": "quality_freshness-decision",
+          "text": "Approved project decision: freshness=48 hours"
+        }
+      ],
+      "expected": {
+        "freshness": {
+          "value": "48 hours",
+          "sources": [
+            "quality_freshness-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "trace_policy",
+      "prompt": "Should ordinary live conversations generate evaluation candidates? Return claim id policy.",
+      "memory": [
+        {
+          "id": "trace_policy-decision",
+          "text": "Approved project decision: policy=no"
+        }
+      ],
+      "expected": {
+        "policy": {
+          "value": "no",
+          "sources": [
+            "trace_policy-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "migration_owner",
+      "prompt": "Which service owns the Cloud migration tree? Return claim id service.",
+      "memory": [
+        {
+          "id": "migration_owner-decision",
+          "text": "Approved project decision: service=cloud-saas-migrations"
+        }
+      ],
+      "expected": {
+        "service": {
+          "value": "cloud-saas-migrations",
+          "sources": [
+            "migration_owner-decision"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "deployment_owner",
+      "prompt": "Which deployment reconciler does this team use? Return claim id reconciler.",
+      "memory": [
+        {
+          "id": "deployment_owner-decision",
+          "text": "Approved project decision: reconciler=ArgoCD"
+        }
+      ],
+      "expected": {
+        "reconciler": {
+          "value": "ArgoCD",
+          "sources": [
+            "deployment_owner-decision"
+          ],
+          "false_values": []
+        }
+      }
+    }
+  ]
+}

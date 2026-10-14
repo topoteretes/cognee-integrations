@@ -1,0 +1,171 @@
+{
+  "model": "deterministic-smoke-only",
+  "max_tokens": 2048,
+  "variants": [
+    "no_memory",
+    "cognee"
+  ],
+  "cases": [
+    {
+      "id": "interrupted_task",
+      "prompt": "What is the next implementation step? Return claim id next.",
+      "memory": [
+        {
+          "id": "interrupted_task-handoff",
+          "text": "next=add retry tests"
+        }
+      ],
+      "expected": {
+        "next": {
+          "value": "add retry tests",
+          "sources": [
+            "interrupted_task-handoff"
+          ],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "superseded_decision",
+      "prompt": "Which datastore is the current decision? Return claim id store.",
+      "memory": [
+        {
+          "id": "superseded_decision-old",
+          "text": "store=redis"
+        },
+        {
+          "id": "superseded_decision-new",
+          "text": "store=postgres"
+        }
+      ],
+      "expected": {
+        "store": {
+          "value": "postgres",
+          "sources": [
+            "superseded_decision-new"
+          ],
+          "false_values": [
+            "redis"
+          ]
+        }
+      }
+    },
+    {
+      "id": "exact_symbol",
+      "prompt": "Which symbol handles payment retries? Return claim id symbol.",
+      "memory": [
+        {
+          "id": "exact_symbol-old",
+          "text": "symbol=submit_payment"
+        },
+        {
+          "id": "exact_symbol-code",
+          "text": "symbol=retry_payment"
+        }
+      ],
+      "expected": {
+        "symbol": {
+          "value": "retry_payment",
+          "sources": [
+            "exact_symbol-code"
+          ],
+          "false_values": [
+            "submit_payment"
+          ]
+        }
+      }
+    },
+    {
+      "id": "paraphrase",
+      "prompt": "Where should delayed jobs go after a failed upload? Return claim id queue.",
+      "memory": [
+        {
+          "id": "paraphrase-old",
+          "text": "queue=memory_buffer"
+        },
+        {
+          "id": "paraphrase-decision",
+          "text": "queue=durable_spool"
+        }
+      ],
+      "expected": {
+        "queue": {
+          "value": "durable_spool",
+          "sources": [
+            "paraphrase-decision"
+          ],
+          "false_values": [
+            "memory_buffer"
+          ]
+        }
+      }
+    },
+    {
+      "id": "irrelevant_memory",
+      "prompt": "What is the value of 2 + 2? Return claim id arithmetic.",
+      "memory": [
+        {
+          "id": "irrelevant_memory-unrelated",
+          "text": "color=blue"
+        }
+      ],
+      "expected": {
+        "arithmetic": {
+          "value": "4",
+          "sources": [],
+          "false_values": []
+        }
+      }
+    },
+    {
+      "id": "stale_index",
+      "prompt": "What is the latest worker entry point? Return claim id entry.",
+      "memory": [
+        {
+          "id": "stale_index-stale",
+          "text": "entry=start_worker"
+        },
+        {
+          "id": "stale_index-fresh",
+          "text": "entry=run_worker"
+        }
+      ],
+      "expected": {
+        "entry": {
+          "value": "run_worker",
+          "sources": [
+            "stale_index-fresh"
+          ],
+          "false_values": [
+            "start_worker"
+          ]
+        }
+      }
+    },
+    {
+      "id": "cross_file_impact",
+      "prompt": "Which files need updating for a receipt contract change? Return claim id files.",
+      "memory": [
+        {
+          "id": "cross_file_impact-old",
+          "text": "files=worker.py"
+        },
+        {
+          "id": "cross_file_impact-dependency",
+          "text": "files=worker.py,api.py,storage.py"
+        }
+      ],
+      "expected": {
+        "files": {
+          "value": "worker.py,api.py,storage.py",
+          "sources": [
+            "cross_file_impact-dependency"
+          ],
+          "false_values": [
+            "worker.py"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -643,6 +643,16 @@ def run() -> None:
                         elif health in DEFINITIVE_FAILURE_STATES:
                             write_connection_state(health, url)
                     refresh_credits()
+                    from _quality_summary import refresh as refresh_quality
+
+                    refresh_quality(
+                        root(),
+                        url,
+                        lambda: _json_http_request(
+                            "/api/v1/evaluations/summary", method="GET", timeout=3
+                        ),
+                        now=last_health,
+                    )
                     maintain_sessions()
                 drain(send, verify=verify, prepare=prepare)
                 process_improves(improve)

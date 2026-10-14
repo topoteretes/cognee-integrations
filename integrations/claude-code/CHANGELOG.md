@@ -10,6 +10,12 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.33]
+
+- Show cached benchmark answer improvements and regressions using the stripe's single bar; keep pending/stale states explicit.
+- Refresh summaries in the cloud worker at most hourly, without network calls from the renderer or evaluations during live conversations.
+- Add offline evaluation trace callbacks and bootstrap isolated datasets before live idempotent fixture capture.
+
 ## [1.6.32]
 
 - Highlight the plain `cognee` label between two purple squares, consistently across recall outcomes.
