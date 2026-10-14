@@ -20,7 +20,9 @@ Contract — what gets printed to stdout:
     the server was reachable and rejected/failed the request, so falling back to
     a (possibly different / local) backend would return wrong data or bypass the
     server-side authorization boundary. It is reported as an error, never as
-    "no results".
+    "no results". When the server's error body names a stable ``code`` (and
+    the ``param`` at fault), as CODE errors do on servers with SDK-1119, the
+    envelope carries both, so a caller can branch without matching message text.
 
 Diagnostics also go to stderr so the caller can surface them.
 """
@@ -170,17 +172,34 @@ def _searched_target(body):
 
 def _server_error_detail(error, limit=400):
     """The server's error message from an HTTPError body ('' when there is none)."""
+    return _server_error(error, limit)[0]
+
+
+def _server_error(error, limit=400):
+    """The server's message and stable error fields from an HTTPError body.
+
+    Returns ``(message, fields)``. ``fields`` holds the ``code`` and ``param``
+    strings a cognee error body carries next to ``detail`` on servers with
+    SDK-1119 (``{"detail": "... [CodeSearchValidationError]", "code":
+    "unknown_operation", "param": "operation"}``), and is empty on older
+    servers. The body is a stream, so both come from this one read.
+    """
     try:
         raw = error.read().decode("utf-8", errors="replace").strip()
     except Exception:
-        return ""
+        return "", {}
     if not raw:
-        return ""
+        return "", {}
     try:
         parsed = json.loads(raw)
     except ValueError:
         parsed = raw
+    fields = {}
     if isinstance(parsed, dict):
+        for key in ("code", "param"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                fields[key] = value.strip()
         for key in ("detail", "message", "error"):
             value = parsed.get(key)
             if isinstance(value, str) and value.strip():
@@ -190,7 +209,7 @@ def _server_error_detail(error, limit=400):
                 parsed = value["message"]
                 break
     text = parsed if isinstance(parsed, str) else json.dumps(parsed)
-    return " ".join(text.split())[:limit]
+    return " ".join(text.split())[:limit], fields
 
 
 def coerce_code_query(value):
@@ -310,6 +329,7 @@ def do_recall(
                 "[cognee-search] no graph for this dataset yet (HTTP 404) — empty result\n"
             )
             return []
+        fields = {}
         if e.code in (401, 403):
             msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
         else:
@@ -320,11 +340,14 @@ def do_recall(
             target = _searched_target(body)
             if target:
                 msg += " (searched %s)" % target
-            detail = _server_error_detail(e)
+            detail, fields = _server_error(e)
             if detail:
                 msg += ": " + detail
         sys.stderr.write("[cognee-search] %s — NOT falling back to local CLI\n" % msg)
-        return _error(e.code, msg)
+        envelope = _error(e.code, msg)
+        # Additive: only present when the server named them (see _server_error).
+        envelope.update(fields)
+        return envelope
     except Exception as e:
         verdict = classify_transport_exception(e)
         if verdict == DOWN:  # refused / DNS / unroutable → positively absent

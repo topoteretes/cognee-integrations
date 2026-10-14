@@ -7,9 +7,9 @@ description: >-
 when_to_use: >-
   E.g. "index this repo", "what calls or uses X?", "what breaks if I change X?", "how
   does A reach B?", "list all API endpoints", "what did the last re-index change?". Not
-  for overviews, hotspots, diagrams or a whole change's impact (cognee-architecture),
-  conceptual questions naming no symbol (cognee-search), storing one file
-  (cognee-remember), or ordinary edits or debugging.
+  for how code works (cognee-ask-code), overviews, hotspots, diagrams or a whole
+  change's impact (cognee-architecture), past decisions (cognee-search), storing one
+  file (cognee-remember), or edits or debugging.
 ---
 
 # Cognee Code Graph
@@ -48,7 +48,7 @@ accurately. Do not claim Cognee improved the answer merely because a search ran.
 - `--index-vectors`: also embeds the code facts so semantic/hybrid search can
   see them (needs an embedding provider). Without it, code knowledge is
   reachable ONLY through code search below — conceptual questions about the
-  code then rely on ingested docs/READMEs.
+  code then go to the **cognee-ask-code** skill, which needs no vectors.
 - The submit returns quickly (background pipeline). `--wait 60` polls until
   the graph is queryable. Poll manually via
   `GET /api/v1/datasets/status?dataset=<id>&pipeline=code_graph_pipeline`.
@@ -129,9 +129,12 @@ returns empty (not an error): the graph simply has no such symbol.
 
 - **Structural question naming a symbol/file** ("what calls X", "what breaks
   if I change X", "list all endpoints") → `--code`. Exact, instant, no tokens.
-- **Conceptual question naming nothing** ("how does auth work here?") →
-  regular `cognee-search.sh` (hybrid/graph). Remember: graph-only code is
-  invisible there unless indexed with `--index-vectors` or docs were ingested.
+- **How the code works, in plain words** ("how does auth work here?", "where
+  do we validate tokens?") → the **cognee-ask-code** skill: it finds the
+  symbols and flows in this graph and cites the lines to read. Notes and past
+  decisions stay with regular `cognee-search.sh` (hybrid/graph), where
+  graph-only code is invisible unless indexed with `--index-vectors` or docs
+  were ingested.
 - **Chain them**: hybrid discovers the name ("the payment flow" →
   `PaymentProcessor`), then `--code` gives the exact structure around it.
 - **Verify freshness**: after edits, `{"operation":"delta"}` shows what the

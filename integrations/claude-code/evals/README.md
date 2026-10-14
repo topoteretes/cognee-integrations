@@ -2,11 +2,12 @@
 
 These cases check that a request in plain words reaches the right Cognee skill,
 and that look-alike requests reach none. Each skill directory holds two cases
-that should load that skill. `negative/` holds four cases that should load no
+that should load that skill. `negative/` holds five cases that should load no
 `cognee-memory` skill: a git branch switch, a conversational "forget it", a git
-sync and a `CLAUDE.md` edit. Every case allows only the Skill tool and two
-turns, so nothing runs after the skill loads. Its grader checks which skill
-Claude invoked (`tool_used: Skill` with an `input_match` on the skill name).
+sync, a `CLAUDE.md` edit and a general question about how Python works. Every
+case allows only the Skill tool and two turns, so nothing runs after the skill
+loads. Its grader checks which skill Claude invoked (`tool_used: Skill` with an
+`input_match` on the skill name).
 
 ## Run
 
@@ -29,8 +30,8 @@ claude plugin eval integrations/claude-code --scaffold --ablation none --runs 1 
   `--case 'cognee-switch-datasets-*'` or `--case 'negative-*'`.
 - The first run asks you to trust the directory. In CI, pass `--trust-plugin`.
 - Each run is a real model call on your account. With `--runs 1`, one pass is
-  30 runs. Observed cost is about $0.09 to $0.25 per run, and about $4.65 for a
-  full 30-run pass. Reports go to `evals/results/`, which git ignores.
+  33 runs. Observed cost is about $0.09 to $0.25 per run, $0.16 on average, so
+  a full pass costs about $5. Reports go to `evals/results/`, which git ignores.
 
 A positive run normally stops at the two-turn cap after the skill loads. Claude
 then looks for a way to run the skill's script, and no shell is granted, so the

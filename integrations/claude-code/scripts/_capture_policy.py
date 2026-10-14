@@ -266,7 +266,7 @@ _PLUGIN_SCRIPTS = set(
     "cognee-search.sh cognee-remember.sh cognee-doctor.sh "
     "cognee-index-repo.sh cognee-forget.sh cognee-statusline.sh switch-dataset.py "
     "list-datasets.py plugin_eval.py cognee-recap.py hook_runner.py cognee-evidence.py "
-    "cognee-cli.sh sync-session-to-graph.py credits-refresh.py".split()
+    "cognee-cli.sh sync-session-to-graph.py credits-refresh.py cognee-ask-code.py".split()
 )
 # Plugin roots of every host: generic script names such as ``doctor.py`` count
 # only when they run from one of these.

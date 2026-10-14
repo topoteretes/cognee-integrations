@@ -2,14 +2,14 @@
 name: cognee-architecture
 description: >-
   Explain a repository's architecture (modules, routes, storage, services), find risky
-  hotspots, draw a Mermaid diagram of the code graph, or review how far a change
-  reaches, from Cognee's code graph.
+  hotspots, draw a Mermaid diagram, or review how far a change reaches, from Cognee's
+  code graph.
 when_to_use: >-
   E.g. "explain the architecture of this repo", "how is this codebase structured?",
   "where are the hotspots?", "which parts are riskiest to change?", "draw a diagram of
-  the code graph", "review my change's impact before I merge". Not for exact lookups
-  like callers or endpoints, or indexing (cognee-code); FigJam diagrams; a bug or
-  security review of a diff; or writing CLAUDE.md.
+  the code graph", "review my change's impact before I merge". Not for how a feature
+  works (cognee-ask-code); exact lookups or indexing (cognee-code); past decisions
+  (cognee-search); FigJam diagrams; bug or security reviews; or writing CLAUDE.md.
 ---
 
 # Explain architecture from code facts

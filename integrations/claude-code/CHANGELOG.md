@@ -13,6 +13,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Ask the code.** A `cognee-ask-code` skill answers questions such as "how does checkout
+  work in this repo?" or "where do we validate auth tokens?" from the code graph. Its
+  helper, `scripts/cognee-ask-code.py`, runs the server's navigation operations (`ask`,
+  `search`, `neighbors`, `subgraph`, `flows`, `hubs`, `capabilities`; SDK-1119) and prints
+  the matching symbols, entry-point flows and `path:line` citations, with a coverage line
+  for missing docstrings, unresolved calls and truncation. The skill has the agent read
+  every cited range before it describes what the code does, and name what a truncated
+  result left out. On a server without these operations the helper exits 3 and the skill
+  falls back to the `cognee-code` operations and grep. A repository indexed by git URL, as
+  on a cloud server, is found through the checkout's remotes, and automatic capture skips
+  the helper's calls like the plugin's other scripts. `cognee-code`, `cognee-architecture`
+  and `cognee-search` send these questions to it, and the routing evals gain two cases for
+  it plus a general Python question that should reach no skill (33 in all) (SDK-1120).
 - **Answers credit Cognee memory.** Every injected memory is tagged (`m1`, `m2`…) with
   where it came from, and on turns where memory was injected the agent is told how many
   memories Cognee found and asked to end an answer that used them with one

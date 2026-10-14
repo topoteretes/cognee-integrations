@@ -286,6 +286,18 @@ def test_a_glob_python_cannot_compile_is_a_pattern_error_not_a_crash(policy, mon
             '~/.claude/plugins/cache/cognee/cognee-memory/1/scripts/cognee-search.sh "q"',
             "plugin_script",
         ),
+        # Matched by name wherever the plugin is installed: a --plugin-dir checkout,
+        # another marketplace's cache, or a bare name after cd into scripts/.
+        (
+            'python3 "/src/cognee-integrations/integrations/claude-code/scripts/'
+            'cognee-ask-code.py" ask "how does checkout work?"',
+            "plugin_script",
+        ),
+        (
+            "cd ~/.claude/plugins/cache/cognee/cognee-memory/1/scripts && "
+            "python3 cognee-ask-code.py neighbors validate_token",
+            "plugin_script",
+        ),
         ("cognee-cli recall q", "cognee_cli"),
         ("uv run cognee-cli recall q", "cognee_cli"),
         ('python3 "$CLAUDE_PLUGIN_ROOT/scripts/custom.py"', "plugin_path"),

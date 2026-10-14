@@ -41,7 +41,7 @@ OVERLAP_GROUPS = {
     "search-or-switch": ("cognee-search", "cognee-switch-datasets"),
     "memory-writers": ("cognee-remember", "cognee-handoff", "cognee-sync"),
     "evaluation-or-recaps": ("cognee-report", "cognee-standup", "cognee-digest", "cognee-timeline"),
-    "code-graph": ("cognee-code", "cognee-architecture"),
+    "code-questions": ("cognee-ask-code", "cognee-code", "cognee-architecture", "cognee-search"),
     "forget-or-switch": ("cognee-forget", "cognee-switch-datasets"),
     "plugin-or-performance": ("cognee-how-it-works", "cognee-report"),
 }
@@ -259,7 +259,7 @@ def test_every_skill_has_two_routing_evals_that_match_only_it(skill):
 
 def test_negative_routing_evals_forbid_every_cognee_skill():
     cases = eval_cases("negative")
-    assert len(cases) == 4
+    assert len(cases) == 5
     for case in cases:
         fields = grader(case / "graders" / "no-cognee-skill.md")
         assert (fields["type"], fields["tool"]) == ("tool_used", "Skill")
@@ -282,7 +282,7 @@ def test_the_isolation_scaffold_is_one_script_that_never_replaces_a_real_config(
     """The harness passes no COGNEE_* variable from the shell and runs only a
     scaffold inside the case directory, hence one identical copy per case."""
     scripts = {(case / "isolate.sh").read_text(encoding="utf-8") for case in ALL_CASES}
-    assert len(ALL_CASES) == 2 * len(SKILLS) + 4 and len(scripts) == 1
+    assert len(ALL_CASES) == 2 * len(SKILLS) + 5 and len(scripts) == 1
     (script,) = scripts
     for setting in (
         "COGNEE_CAPTURE=false",

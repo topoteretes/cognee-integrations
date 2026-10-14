@@ -149,3 +149,51 @@ def test_rejection_names_the_dataset_and_the_servers_reason(rh):
 def test_rejection_without_a_body_keeps_the_plain_message(rh):
     out = _recall(rh, _raises(_http_error(500, b"")))
     assert out["error"] == "server returned HTTP 500 for /api/v1/recall"
+
+
+def _code_recall(rh, body: bytes):
+    return rh.do_recall(
+        "http://x",
+        "",
+        "q",
+        "",
+        '["code"]',
+        "5",
+        dataset="codebase-shop",
+        code_query={"operation": "ask", "question": "q"},
+        opener=_raises(_http_error(422, body)),
+    )
+
+
+def test_rejection_carries_the_servers_stable_code_and_param(rh, suite):
+    """A CODE error names a stable code next to its message (SDK-1119); callers
+    branch on it instead of matching the message text."""
+    if suite.name != "claude-code":
+        pytest.skip("the stable error fields ship in the Claude Code copy of _recall_http")
+    body = (
+        b'{"detail": "Unsupported CODE operation \'ask\'; expected one of architecture, '
+        b'delta. [CodeSearchValidationError]", "code": "unknown_operation", '
+        b'"param": "operation"}'
+    )
+    out = _code_recall(rh, body)
+    assert out["status"] == 422 and out["authoritative"] is False
+    assert out["code"] == "unknown_operation" and out["param"] == "operation"
+    # The message is read from the same (single-read) body as the fields.
+    assert "Unsupported CODE operation 'ask'" in out["error"]
+    assert "searched dataset codebase-shop" in out["error"]
+
+
+def test_rejection_from_an_older_server_keeps_the_envelope_shape(rh):
+    """No code in the body (cognee 1.6.3), no new keys: current callers see no change."""
+    body = b'{"detail": "Unsupported CODE operation \'ask\'. [CodeSearchValidationError]"}'
+    out = _code_recall(rh, body)
+    assert set(out) == {"error", "status", "authoritative"}
+    assert "Unsupported CODE operation 'ask'" in out["error"]
+
+
+def test_stable_fields_must_be_strings(rh, suite):
+    """Only non-empty strings are passed on; anything else is not a stable code."""
+    if suite.name != "claude-code":
+        pytest.skip("the stable error fields ship in the Claude Code copy of _recall_http")
+    out = _code_recall(rh, b'{"detail": "boom", "code": 2, "param": ""}')
+    assert "code" not in out and "param" not in out and out["error"].endswith(": boom")

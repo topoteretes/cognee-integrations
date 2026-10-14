@@ -7,9 +7,9 @@ description: >-
 when_to_use: >-
   E.g. "search Cognee for X", "what do you remember about X?", "dig deeper in memory",
   "only my saved preferences", "show the sources for that memory", "check <dataset> for
-  X" (once, without switching). Not for making another dataset active
-  (cognee-switch-datasets), a topic's history (cognee-timeline), exact code lookups
-  (cognee-code), or file, code or web search.
+  X" (once, without switching). Not for making a dataset active
+  (cognee-switch-datasets), a topic's history (cognee-timeline), the code
+  (cognee-ask-code, cognee-code, cognee-architecture), or file or web search.
 ---
 
 # Cognee Memory Search
@@ -73,8 +73,10 @@ Use the wrapper below: it queries the server, scoped to the **plugin's dataset**
 **Structural code questions belong to `--code`, not here.** "What calls X",
 "what breaks if I change X", "list all endpoints" are answered exactly and
 token-free by the code graph — see the **cognee-code** skill for the
-operations and for indexing a repository. Use this skill's semantic search for
-conceptual questions that name no symbol ("how does auth work here?").
+operations and for indexing a repository. How the code works ("how does auth
+work here?") belongs to the **cognee-ask-code** skill. Use this skill's
+semantic search for what memory holds about the code: notes, past decisions
+and ingested docs.
 
 ### Filter by category (optional)
 

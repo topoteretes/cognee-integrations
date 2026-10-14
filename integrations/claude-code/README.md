@@ -513,6 +513,7 @@ command, such as `/cognee-memory:cognee-search <query>`.
 | `cognee-switch-datasets` | "switch to research", "use project-alpha from now on" |
 | `cognee-code` | "index this repo", "what calls or uses process_payment?" |
 | `cognee-architecture` | "explain the architecture of this repo", "where are the hotspots?" |
+| `cognee-ask-code` | "how does checkout work in this repo?", "where do we validate auth tokens?" |
 | `cognee-standup` | "prep my standup", "what did I work on yesterday?" |
 | `cognee-digest` | "recap my week", "what did we ship and decide this week?" |
 | `cognee-timeline` | "how did the retry policy evolve?", "when did we first discuss dataset switching?" |
@@ -521,7 +522,7 @@ command, such as `/cognee-memory:cognee-search <query>`.
 
 The standup, digest and timeline recaps are covered in
 [Recaps](#recaps-standup-digest-timeline) below. [`evals/`](evals/README.md) holds a
-`claude plugin eval` suite that checks this routing: two requests per skill, plus four
+`claude plugin eval` suite that checks this routing: two requests per skill, plus five
 look-alike requests that should reach no Cognee skill.
 
 ## Recaps: standup, digest, timeline
@@ -605,6 +606,13 @@ Query it with `cognee-search.sh ... --code` (see the `cognee-code` skill for the
 operations: `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
 `delta`). Prompts that mention an identifier-shaped token inside an indexed repo also
 get code facts injected automatically by the per-prompt recall hook.
+
+Questions in plain words ("how does checkout work in this repo?") go to the
+`cognee-ask-code` skill. Its helper, `scripts/cognee-ask-code.py`, runs the server's code
+navigation operations (`ask`, `search`, `neighbors`, `subgraph`, `flows`, `hubs`,
+`capabilities`) and prints the matching symbols, entry-point flows and `path:line`
+citations, which the skill reads before it answers. On a server without these operations
+the helper exits 3 and the skill falls back to the operations above and grep.
 
 Each indexed repository gets its own dataset, named
 `codebase-<repo-name>-<digest>` where the digest identifies the indexed path.
@@ -778,13 +786,14 @@ the shim, checks that `claude` can actually answer (one tiny real call), or stop
 
 ## Visible Cognee searches
 
-The search, code-graph and architecture skills ask Claude to name Cognee in its
-normal user-visible progress text before a search, for example “Searching Cognee
-for the earlier decision…”. Session-start guidance also asks for a natural
-acknowledgement when supplied memory actually informs the response. This uses
-assistant progress text; it does not add a native host chip or change the
-host's private reasoning display. It is model guidance, not a guaranteed host UI
-event. Irrelevant background recall does not require an announcement.
+The search, code-graph, ask-the-code and architecture skills ask Claude to name
+Cognee in its normal user-visible progress text before a search, for example
+“Searching Cognee for the earlier decision…”. Session-start guidance also asks
+for a natural acknowledgement when supplied memory actually informs the
+response. This uses assistant progress text; it does not add a native host chip
+or change the host's private reasoning display. It is model guidance, not a
+guaranteed host UI event. Irrelevant background recall does not require an
+announcement.
 
 ## Status line
 
