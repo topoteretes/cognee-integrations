@@ -163,7 +163,7 @@ def test_native_shell_evidence_is_queued(
 def test_report_without_install_marker(report, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     info = report.load_install_info(tmp_path)
-    assert info["plugin"] == "cognee" and info["version"] == "1.8.0"
+    assert info["plugin"] == "cognee" and info["version"] == "1.8.2"
     assert info["last_updated"] is None
 
 

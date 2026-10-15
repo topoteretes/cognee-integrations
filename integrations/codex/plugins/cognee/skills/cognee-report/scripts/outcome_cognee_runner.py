@@ -60,6 +60,8 @@ def run(request):
         health = request_json(url + "/health", key)
         if "capture_idempotency_v1" not in health.get("capabilities", []):
             raise ValueError("The evaluation server needs capture_idempotency_v1")
+        dataset = request_json(url + "/api/v1/datasets", key, {"name": request["dataset_name"]})
+        dataset_id = dataset["id"]
         for evidence in request["memory_seed"]:
             event_id = str(
                 uuid.uuid5(uuid.NAMESPACE_URL, request["session_id"] + ":" + evidence["id"])
@@ -68,6 +70,7 @@ def run(request):
                 "dataset_name": request["dataset_name"],
                 "session_id": request["session_id"],
                 "client_event_id": event_id,
+                "dataset_id": dataset_id,
                 "entry": {
                     "type": "qa",
                     "question": "Saved evidence",
@@ -143,6 +146,8 @@ def run(request):
         },
         bearer=True,
     )
+    if completion.get("model") != request["model"]:
+        raise ValueError("provider changed the pinned answer model")
     answer = json.loads(completion["choices"][0]["message"]["content"])
     usage = completion.get("usage") or {}
     cost = usage.get("cost")
@@ -178,6 +183,8 @@ def run(request):
         "session_id": request["session_id"],
         "dataset_name": request["dataset_name"],
         "claims": answer.get("claims", []),
+        "answer": completion["choices"][0]["message"]["content"],
+        "injected_context": memory,
         "retrieved_ids": recalled,
         "recall_ms": recall_ms,
         "usage": [client, *server],

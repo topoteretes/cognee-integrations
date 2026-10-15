@@ -262,7 +262,18 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def run_trials(suite, command, out_dir, *, repetitions=3, seed=42, timeout=300, server_url=""):
+def run_trials(
+    suite,
+    command,
+    out_dir,
+    *,
+    repetitions=3,
+    seed=42,
+    timeout=300,
+    server_url="",
+    before_trial=None,
+    on_trial=None,
+):
     if repetitions < 2 or timeout <= 0:
         raise ValueError("use at least two repetitions and a positive task timeout")
     variants = suite["variants"]
@@ -307,6 +318,8 @@ def run_trials(suite, command, out_dir, *, repetitions=3, seed=42, timeout=300, 
             order = list(variants)
             rng.shuffle(order)
             for variant in order:
+                if before_trial is not None:
+                    before_trial(case, repetition, variant)
                 trial_id = uuid.uuid4().hex
                 trial_dir = out_dir / trial_id
                 workspace = trial_dir / "workspace"
@@ -472,6 +485,8 @@ def run_trials(suite, command, out_dir, *, repetitions=3, seed=42, timeout=300, 
                     "usage": usage,
                     "usage_complete": bool(complete),
                 }
+                if on_trial is not None:
+                    on_trial(record, request, response)
                 records.append(record)
                 with (out_dir / "trials.jsonl").open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(record, allow_nan=False) + "\n")

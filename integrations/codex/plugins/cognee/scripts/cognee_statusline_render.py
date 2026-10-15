@@ -593,10 +593,20 @@ def _memory_activity(host_id: str) -> str:
 def render_status_for_host(host_id: str) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
+    from _quality_summary import cache_scope, segment
+    from _plugin_common import _local_api_url
+
+    quality = segment(
+        _SHARED_ROOT / "codex",
+        _local_api_url(),
+        now=time.time(),
+        compact=True,
+        **cache_scope(str(host_id or "")),
+    )
     return (
         f"{_status_prefix(str(host_id or ''))}"
         f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
-        f"{_memory_activity(str(host_id or ''))}{_credits_segment()}{_update_segment()}"
+        f"{_memory_activity(str(host_id or ''))} · {quality}{_credits_segment()}{_update_segment()}"
     )
 
 
@@ -625,11 +635,7 @@ def main() -> None:
     # The host session id (when the context carries one) selects this launch's
     # record, so the dataset shown follows a switch.
     host_id = str(ctx.get("session_id") or ctx.get("thread_id") or "")
-    sys.stdout.write(
-        f"{_status_prefix()}"
-        f"cognee: {_active_dataset(host_id)} · {_active_mode()}"
-        f"{_credits_segment()}{_update_segment()}"
-    )
+    sys.stdout.write(render_status_for_host(host_id))
 
 
 if __name__ == "__main__":

@@ -31,6 +31,8 @@ from .suites import Suite
 #: Module names the suites expose under their scripts dir. All carry import-time
 #: state (dir constants, env reads), so they are popped/reloaded together.
 ISOLATED_MODULES = (
+    "_quality_summary",
+    "_evaluation_capture",
     "config",
     "_plugin_common",
     "_cognee_client",

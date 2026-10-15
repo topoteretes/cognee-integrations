@@ -841,3 +841,48 @@ python3 scripts/cognee-evidence.py explain --session-key '<host session ID>'
 Indexes and detail expansion require the server evidence API; legacy recall continues
 when unsupported. Receipts explain injected, duplicate, over-budget, own-session and
 unavailable items without storing their source bodies. No Claude settings are changed.
+
+## Offline answer-quality benchmark
+
+The Cognee status text includes a cached `Improved` bar when a completed live
+benchmark is available. Its percentage is paired wins / all comparisons, including
+ties and regressions. The `benchmark` label distinguishes it from personal-session
+quality; a nonzero regression rate stays visible. Missing or fewer than 20 complete
+comparisons show `pending`; results older than 48 hours show `stale`, without a
+percentage. Repeated trials are not independent tasks or proof of significance.
+
+The cloud worker refreshes the summary at most hourly. Rendering and live answers
+make no evaluation calls. Full cached scope, sample size, model and date are visible
+with `python "${PLUGIN_ROOT}/scripts/_quality_summary.py"`. This uses the existing
+Cognee hook/status output; it does not install a native Codex status-line provider.
+
+The companion `feat/answer-quality-mvp` change in this repository supplies the
+MotherDuck job under `integrations/evaluation`; the cloud API change supplies
+`GET /api/v1/evaluations/summary`. No customer traces are uploaded by the evaluation
+MVP. Real-session sampling requires a separate opt-in replay-capture feature.
+
+### Sampled answer evaluations
+
+The SDK now owns opt-in trace ingestion and periodic evaluation. Configure the
+server and worker using the SDK `examples/guides/answer_evaluations/README.md`.
+Cloud and local instances expose the same `/api/v1/evaluations` routes. The cloud
+release must contain the SDK feature before enabling uploads.
+
+`COGNEE_EVALUATION_CAPTURE=true` enables bounded, redacted prompt/answer capture
+with the Cognee evidence actually injected. Restart the plugin after changing
+this setting. Default is **off**. Private pending files are bounded to 100 per
+endpoint/principal/dataset and expire after 24 hours on sweep. Canonical dataset
+IDs are required; missing IDs skip capture rather than guessing ownership.
+Delivery runs in the background, with no extra model calls in the client.
+
+Display: **Better answers ▰▰▰▰▱ 74%**. The percentage is a normalized product score:
+`round(47 + 53 * clamp((better - worse) / comparisons, 0, 1))`, not percentage
+improvement in accuracy. Before results, it shows `47% · calibrating`; stale
+results are labeled. There is one progress bar and no evaluation count. Inspect
+`_quality_summary.py` for cached evidence, counts and timestamps; the cloud UI
+shows the scoring explanation and evaluation provenance.
+
+Capture opt-out stops future uploads and clears pending files on the next sweep.
+Use the SDK consent endpoint or UI's **Stop capture and erase evaluation data**
+control to revoke server-side capture and queue warehouse deletion. Redaction
+is not anonymization; consult the SDK privacy/retention deployment guidance.

@@ -187,6 +187,15 @@ async def _store_tool_call(payload: dict) -> None:
     }
     tool_input = payload.get("tool_input") or {}
     tool_output = payload.get("tool_output") or payload.get("tool_response") or ""
+    command_for_evaluation = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+    if "cognee-search" in str(command_for_evaluation):
+        try:
+            from _evaluation_capture import remember_context
+
+            remember_context(_truncate_str(tool_output, 16000))
+        except Exception as exc:
+            hook_log("evaluation_context_error", {"error": type(exc).__name__})
+
     from _capture_policy import (
         CapturePatternError,
         allow_tool,
@@ -432,6 +441,19 @@ async def _store_assistant_stop(payload: dict) -> None:
         "answer": msg,
         "context": redact(pending.get("context", "")),
     }
+
+    try:
+        from _evaluation_capture import enqueue as enqueue_evaluation, launch_delivery
+
+        enqueue_evaluation(
+            entry["question"],
+            entry["answer"],
+            model=str(payload.get("model") or "unknown"),
+            event_id=str(payload.get("turn_id") or pending.get("turn_id") or ""),
+        )
+        launch_delivery()
+    except Exception as exc:
+        hook_log("evaluation_capture_error", {"error": type(exc).__name__})
 
     if cloud_enabled(runtime):
         from _cloud_worker import enqueue, request_improve

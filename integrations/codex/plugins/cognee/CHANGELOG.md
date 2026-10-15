@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.2
+
+- Opt-in sampled answer traces for local/cloud SDK evaluation APIs.
+- Better answers percentage and one progress bar on the normalized 47–100 scale.
+- Bind quality caches to endpoint, credential and dataset.
+
 All notable changes to the **cognee** Codex CLI plugin are documented here.
 
 The version here matches the `version` field in `.codex-plugin/plugin.json`. Note
@@ -9,6 +15,12 @@ is the cache key and semver record, bumped on each release, not the update trigg
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
+
+## [1.8.1]
+
+- Display cached benchmark answer-improvement results with scope and regression rate; no evaluation calls run during live answers.
+- Refresh quality summaries in the cloud worker at most hourly and hide percentages for unavailable, synthetic or stale results.
+- Add optional evaluation trace callbacks and create isolated datasets before idempotent live fixture seeding.
 
 ## [1.8.0]
 

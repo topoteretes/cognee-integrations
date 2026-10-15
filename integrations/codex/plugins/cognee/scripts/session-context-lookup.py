@@ -327,6 +327,12 @@ def _injection_sections(by_source: dict) -> list[dict]:
 
 def _recall_output(context: str, notice: str = "", *, status: str | None = None) -> dict:
     """The exact printed envelope, including both user- and model-visible notices."""
+    try:
+        from _evaluation_capture import remember_context
+
+        remember_context(context)
+    except Exception:
+        pass
     if status is None:
         status = render_status_for_host(get_session_key())
         while len(json.dumps(status)) > 258:
