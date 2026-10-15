@@ -990,6 +990,8 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST |
 | recall minimum prompt length | `COGNEE_RECALL_MIN_PROMPT_CHARS` | `5` | Prompts shorter than this (surrounding whitespace not counted) skip the per-prompt recall. Values below `5` or non-numeric fall back to `5`. Capture is unaffected. |
+| recall strip tags | `COGNEE_RECALL_STRIP_TAGS` | unset | Comma-separated tag names whose blocks (`<tag ...>...</tag>`) are removed from the prompt before recall, e.g. `system-reminder`. Capture is unaffected. |
+| recall query pattern | `COGNEE_RECALL_QUERY_PATTERN` | unset | Regex for hosts that wrap prompts in markup. When it matches, the non-empty groups of every match (the whole match if it has no groups), HTML-unescaped and joined by blank lines, are searched instead of the prompt; otherwise (no match, an invalid pattern, or only empty groups) the prompt is searched as left after stripping. A prompt made only of stripped blocks skips recall, and the minimum length (including the default `5`) applies to the extracted query. Capture is unaffected. |
 
 ### Per-operation timeouts
 

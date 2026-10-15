@@ -21,8 +21,10 @@ Configuration:
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
+import re
 import sys
 import time
 
@@ -868,6 +870,52 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     return output
 
 
+def _recall_query(prompt: str) -> str:
+    """The text recall searches for this prompt (capture still stores the prompt as sent).
+
+    Hosts that wrap prompts in markup (agent harnesses with routing envelopes,
+    injected reminder blocks) can point recall at the part a person wrote:
+
+    - COGNEE_RECALL_STRIP_TAGS: comma-separated tag names whose blocks
+      (<tag ...>...</tag>) are removed first.
+    - COGNEE_RECALL_QUERY_PATTERN: a regex searched across the remaining text. When
+      it matches, the non-empty groups of every match (the whole match if the
+      pattern has no groups), html-unescaped and joined by blank lines, become the
+      query. Text the pattern does not match (or an invalid pattern, or a match
+      whose groups are all empty) is searched as left after stripping.
+
+    Both unset, the prompt is returned unchanged. Returns "" when stripping leaves
+    nothing, so a prompt made only of stripped blocks skips recall.
+    """
+    text = prompt
+    tags = [
+        t.strip() for t in os.environ.get("COGNEE_RECALL_STRIP_TAGS", "").split(",") if t.strip()
+    ]
+    for tag in tags:
+        name = re.escape(tag)
+        text = re.sub(r"<{0}(?:\s[^>]*)?>.*?</{0}\s*>".format(name), "", text, flags=re.S)
+    if not text.strip():
+        return ""
+    pattern = os.environ.get("COGNEE_RECALL_QUERY_PATTERN", "").strip()
+    if pattern:
+        try:
+            matches = list(re.finditer(pattern, text, flags=re.S))
+        except re.error:
+            matches = []
+        if matches:
+            parts = []
+            for m in matches:
+                groups = [g for g in m.groups() if g] if m.re.groups else [m.group(0)]
+                parts.extend(html.unescape(g).strip() for g in groups)
+            extracted = "\n\n".join(p for p in parts if p)
+            if extracted:
+                text = extracted
+    text = text.strip()
+    if text == prompt.strip():
+        return prompt
+    return text
+
+
 def _recall_min_prompt_chars() -> int:
     """Prompts shorter than this skip recall (capture keeps its own 5-char floor).
 
@@ -907,6 +955,18 @@ def main():
     prompt = payload.get("prompt", "")
     if not prompt or len(prompt) < 5:
         return
+    query = _recall_query(prompt)
+    if query != prompt:
+        hook_log(
+            "context_lookup_query_extracted", {"chars_in": len(prompt), "chars_out": len(query)}
+        )
+        # The stock 5-character gate above measured the wrapped prompt; apply it
+        # (or a raised floor) to what recall would actually search.
+        floor = max(5, _recall_min_prompt_chars())
+        if len(query) < floor:
+            hook_log("context_lookup_short_prompt", {"chars": len(query), "min": floor})
+            return
+        prompt = query
     # Only a raised floor applies here: the stock gate above keeps its exact
     # behavior (whitespace counts), so an unset variable changes nothing.
     min_chars = _recall_min_prompt_chars()

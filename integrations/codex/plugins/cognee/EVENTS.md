@@ -88,6 +88,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:context_lookup_missing_session_key` | `recall.lookup_missing_session_key` |
 | `hook:context_lookup_session_key` | `recall.lookup_session_key` |
 | `hook:context_lookup_short_prompt` | `recall.lookup_short_prompt` |
+| `hook:context_lookup_query_extracted` | `recall.lookup_query_extracted` |
 | `hook:control_plane_request_failed` | `shared_memory.control_plane_request_failed` |
 | `hook:credits_fetch_empty` | `credits.fetch_empty` |
 | `hook:credits_fetch_failed` | `credits.fetch_failed` |
