@@ -20,6 +20,7 @@ Covers, for both suites:
 from __future__ import annotations
 
 import json
+import urllib.error
 
 import pytest
 
@@ -192,6 +193,72 @@ def test_list_writable_without_user_id_is_unfiltered(pc, monkeypatch):
     _serve(pc, monkeypatch, [{"name": "x", "id": "1", "ownerId": "someone"}])
     out = pc.list_writable_datasets("")
     assert [r["name"] for r in out["datasets"]] == ["x"] and out["filtered"] is False
+
+
+def _identity_server(pc, monkeypatch, routes: dict):
+    """Serve ``routes`` (path -> body, or an exception to raise) and record each path."""
+    calls = []
+
+    def response(path, *args, **kwargs):
+        calls.append(path)
+        answer = routes.get(path)
+        if isinstance(answer, Exception):
+            raise answer
+        if answer is None:
+            raise AssertionError(path)
+        return answer
+
+    monkeypatch.setattr(pc, "_json_http_request", response)
+    return calls
+
+
+def _http_404(path):
+    return urllib.error.HTTPError(path, 404, "Not Found", {}, None)
+
+
+def test_listing_without_user_id_resolves_principal_from_any_connection(suite, pc, monkeypatch):
+    if suite.name != "codex":
+        pytest.skip("PR #524 changes the Codex plugin only")
+    row = {"name": "prod", "id": "dataset-1", "ownerId": "me"}
+    calls = _identity_server(
+        pc,
+        monkeypatch,
+        {
+            "/api/v1/datasets/": [row],
+            "/api/v1/agents/connections/me": {"agent": {"user_id": "me"}},
+            "/api/v1/permissions/principals/me/datasets?permission_name=write": [row],
+        },
+    )
+
+    out = pc.list_writable_datasets("")
+
+    assert [r["name"] for r in out["datasets"]] == ["prod"]
+    assert out["principal_id"] == "me" and out["filtered"] is True
+    assert "/api/v1/users/me" not in calls
+
+
+def test_current_user_id_falls_back_to_users_me_without_a_connection(suite, pc, monkeypatch):
+    if suite.name != "codex":
+        pytest.skip("PR #524 changes the Codex plugin only")
+    path = "/api/v1/agents/connections/me"
+    calls = _identity_server(
+        pc, monkeypatch, {path: _http_404(path), "/api/v1/users/me": {"id": "user-2"}}
+    )
+
+    assert pc.current_user_id() == "user-2"
+    assert calls == [path, "/api/v1/users/me"]
+
+
+def test_current_user_id_is_empty_when_no_lookup_names_a_user(suite, pc, monkeypatch):
+    if suite.name != "codex":
+        pytest.skip("PR #524 changes the Codex plugin only")
+    # Cognee Cloud: no active connection, and its /users/me carries no id.
+    path = "/api/v1/agents/connections/me"
+    _identity_server(
+        pc, monkeypatch, {path: _http_404(path), "/api/v1/users/me": {"isSeenWelcome": True}}
+    )
+
+    assert pc.current_user_id() == ""
 
 
 # ── launch discovery without a hook payload ────────────────────────────────

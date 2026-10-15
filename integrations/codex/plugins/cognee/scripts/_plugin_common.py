@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -827,6 +828,38 @@ def list_readable_datasets(*, timeout: float = 15.0) -> list[dict]:
     return rows
 
 
+def current_user_id(*, timeout: float = 10.0) -> str:
+    """The id of the user the API key authenticates as, or "".
+
+    ``load_resolved`` looks the user up through this launch's own connection,
+    which the tenant does not know when the launch registered on another
+    server (a session moved from local to cloud). The unnamed
+    ``/agents/connections/me`` answers with any active connection of this
+    user, on cloud tenants and local servers alike; ``/users/me`` covers a
+    user with no active connection on servers whose ``/users/me`` carries an
+    ``id`` (Cognee Cloud's does not).
+    """
+
+    def agent_user(body: dict) -> str:
+        agent = body.get("agent")
+        return _row_str(agent, "user_id", "userId") if isinstance(agent, dict) else ""
+
+    lookups = (
+        ("/api/v1/agents/connections/me", agent_user),
+        ("/api/v1/users/me", lambda body: _row_str(body, "id")),
+    )
+    for path, pick in lookups:
+        try:
+            body = _json_http_request(path, method="GET", timeout=timeout)
+        except Exception as exc:
+            hook_log("current_user_lookup_failed", {"path": path, "error": str(exc)[:200]})
+            continue
+        ident = pick(body) if isinstance(body, dict) else ""
+        if ident:
+            return ident
+    return ""
+
+
 def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
     """Use effective permissions. Ownership cannot prove absence of write access.
 
@@ -838,14 +871,14 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
     owner match is the only evidence, and ``writable`` stays None when even that
     cannot be judged. Returns::
 
-        {"datasets": [{"name", "id", "owner_id", "writable": True|None}],
+        {"principal_id": str,
+         "datasets": [{"name", "id", "owner_id", "writable": True|None}],
          "readonly": [names], "readonly_ids": [ids], "hidden_readonly": N,
          "filtered": bool}
     """
     items = list_readable_datasets(timeout=timeout)
     if not user_id:
-        me = _json_http_request("/api/v1/users/me", method="GET", timeout=timeout)
-        user_id = str(me.get("id") or "") if isinstance(me, dict) else ""
+        user_id = current_user_id(timeout=timeout)
     writable_ids = None
     if user_id:
         try:
@@ -882,6 +915,7 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
             writable = True if owner and (owner == user_id or via_role) else None
         rows.append({**item, "writable": writable})
     return {
+        "principal_id": user_id,
         "datasets": [row for row in rows if row["writable"] is not False],
         "readonly": [row["name"] for row in rows if row["writable"] is False],
         "readonly_ids": [row["id"] for row in rows if row["writable"] is False],
@@ -1757,6 +1791,31 @@ def outage_header(state: str, saves: dict, backlog: dict | None, joiner: str) ->
     parts = [f"recall skipped ({describe_connection_failure(state)})", saves_segment(saves)]
     parts.extend(buffered_saves_segments(saves, backlog))
     return "Cognee memory: " + joiner.join(parts)
+
+
+# The visible status receipt the prompt hook asks Codex to end an answer with:
+# ``> 🧠 ● cognee: <dataset> · <mode> · Cognee memory: …`` (or ``✕ (<reason>)``
+# in the glyph slot). It is plugin chrome, not conversation, so the Stop hook
+# strips it before the answer is stored. A credit line (``> 🧠 Cognee memory
+# [mN]: …``) does not match: it has no ``cognee:`` status segment.
+STATUS_RECEIPT_PREFIX = "> 🧠 "
+_STATUS_RECEIPT_RE = re.compile(
+    r"^[ \t]*>[ \t]*🧠[ \t]*(?:●[ \t]*|✕[ \t]*\([^)\n]*\)[ \t]*)?cognee:[^\n]*(?:\n|$)",
+    re.M,
+)
+
+
+def status_receipt(header: str) -> str:
+    """The one-line receipt for a (possibly multi-line) status header."""
+    compact = " · ".join(line.strip() for line in header.splitlines() if line.strip())
+    return f"{STATUS_RECEIPT_PREFIX}{compact}"
+
+
+def strip_status_receipt(answer: str) -> str:
+    """``answer`` without the model-rendered status receipt line(s)."""
+    if "🧠" not in answer:
+        return answer
+    return _STATUS_RECEIPT_RE.sub("", answer).rstrip()
 
 
 def _pending_keys(session_id: str, turn_id: str = "") -> tuple[str, str]:

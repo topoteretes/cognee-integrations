@@ -43,6 +43,7 @@ from _plugin_common import (
     run_session_improve_detailed,
     server_usable,
     set_session_key,
+    strip_status_receipt,
     touch_activity,
     write_outcome_ambiguous,
 )
@@ -329,6 +330,11 @@ async def _store_assistant_stop(payload: dict) -> None:
     payload = redact(payload)
     msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
     if not msg or msg == "null":
+        return
+    # The visible status receipt is plugin chrome: storing it would put a status
+    # line into every captured answer, and recall would bring those back.
+    msg = strip_status_receipt(msg)
+    if not msg:
         return
 
     msg = _truncate_str(msg, _MAX_ASSISTANT_BYTES)

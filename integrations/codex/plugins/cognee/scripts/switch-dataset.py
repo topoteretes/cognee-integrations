@@ -309,6 +309,7 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     # guaranteed writable; anything else is refused up front rather than failing
     # half-way through.
     listing = list_writable_datasets(user_id)
+    user_id = user_id or str(listing.get("principal_id") or "")
     from _dataset_access import dataset_id
 
     matches = [row for row in listing["datasets"] if target in (row["id"], row["name"])]
