@@ -1,0 +1,16 @@
+{
+  "name": "cognee-memory",
+  "description": "Cognee knowledge graph memory for Grok — session-aware capture of prompts, tool traces and answers, auto-recall on every prompt, and persistent learning across sessions. Hook-based in Grok Build; MCP-based on Grok Bot. Supports local mode and Cognee Cloud.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Cognee",
+    "url": "https://www.cognee.ai"
+  },
+  "homepage": "https://docs.cognee.ai",
+  "repository": "https://github.com/topoteretes/cognee-integrations",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "knowledge-graph", "cognee", "reasoning", "session", "mcp"],
+  "skills": "./skills/",
+  "agents": "./agents/",
+  "hooks": "./hooks/hooks.json"
+}
