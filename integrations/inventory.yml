@@ -153,6 +153,17 @@ integrations:
     source_repo: https://github.com/topoteretes/cognee-integration-claude
     notes: "Claude Agent SDK tools – remember, recall, session management (cognee v1.0)"
 
+  - slug: smolagents
+    name: "Cognee Integration for smolagents"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-smolagents"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "cognee_remember/cognee_search/cognee_forget Tool subclasses for CodeAgent/ToolCallingAgent (cognee v1.0)"
+
   - slug: n8n
     name: "Cognee Nodes for n8n"
     owner: cognee
