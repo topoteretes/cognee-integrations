@@ -15,11 +15,64 @@ yet" state, so ``recall`` returns ``[]`` and ``forget`` is a no-op for 4xx. Only
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Optional
 
 logger = logging.getLogger("web_widget.http_client")
+
+# Memory sources every recall asks for. "graph" is the docs answer; "code" adds a
+# deterministic query over the code graph of any repository ingested into the
+# same dataset. cognee never implies "code" from "auto" or "all", so it has to
+# be named. Code entries come back tagged source="code", next to the answer
+# rather than inside it.
+# WIDGET_RECALL_SCOPE overrides it as a comma-separated list, e.g. "graph" to
+# answer from the docs graph alone.
+RECALL_SCOPE = tuple(
+    part.strip()
+    for part in os.getenv("WIDGET_RECALL_SCOPE", "graph,code").split(",")
+    if part.strip()
+)
+
+# How the dataset ("graph" scope) is searched. Pinned to GRAPH_COMPLETION by
+# default; WIDGET_SEARCH_TYPE overrides it, and an empty value (or "auto") leaves
+# it out so cognee routes the question itself - HYBRID_COMPLETION unless a rule
+# matches - which also lets a "session" scope contribute next to the graph.
+_SEARCH_TYPE = os.getenv("WIDGET_SEARCH_TYPE", "GRAPH_COMPLETION").strip()
+RECALL_SEARCH_TYPE = None if _SEARCH_TYPE.lower() in ("", "auto") else _SEARCH_TYPE
+
+# The instruction the answering model gets. Unset, nothing is sent and cognee uses
+# its own default ("Answer the question using the provided context. Be as brief
+# as possible."). It replaces that default rather than adding to it; the Evidence
+# block behind citations is appended by cognee after the answer, so it is
+# unaffected.
+RECALL_SYSTEM_PROMPT = os.getenv("WIDGET_SYSTEM_PROMPT") or None
+
+# The most items cognee's dataset-data endpoint returns per request.
+DATASET_PAGE_SIZE = 1000
+
+
+def normalise_run_status(value) -> str:
+    """One vocabulary for a pipeline state, whichever endpoint reported it.
+
+    ``/status`` answers DATASET_PROCESSING_COMPLETED where ``/status/progress``
+    answers "completed", and a page should not have to know which it is talking
+    to. Completed is tested before running because the long form contains both
+    words.
+    """
+    text = str(value or "").lower()
+    if not text:
+        return "unknown"
+    if "completed" in text or "finished" in text:
+        return "completed"
+    if "error" in text or "fail" in text:
+        return "failed"
+    if "processing" in text or "running" in text or "started" in text:
+        return "running"
+    if "pending" in text or "queued" in text or "waiting" in text:
+        return "pending"
+    return "unknown"
 
 
 class CogneeHttpClient:
@@ -41,22 +94,34 @@ class CogneeHttpClient:
         self._timeout = timeout
 
     async def remember(
-        self, text: str, *, dataset_name: str, session_id: Optional[str] = None
+        self,
+        text: str,
+        *,
+        dataset_name: str,
+        session_id: Optional[str] = None,
+        run_in_background: bool = False,
+        filename: str = "message.txt",
     ) -> None:
         """Durably store ``text`` in ``dataset_name`` (cognee add + cognify).
 
         When ``session_id`` is set the server also attributes the memory to that
         session; the widget uses this only for conversation-scoped writes, and
         leaves it unset when seeding the shared, read-only docs corpus.
+
+        With ``run_in_background`` the call returns once cognee has accepted the
+        text rather than once the graph is built. A visitor waiting on a reply
+        must not also wait on a cognify.
         """
         data = {"datasetName": dataset_name}
         if session_id:
             data["session_id"] = session_id
+        if run_in_background:
+            data["run_in_background"] = "true"
         response = await self._request(
             "POST",
             "/api/v1/remember",
             data=data,
-            files={"data": ("message.txt", text.encode("utf-8"), "text/plain")},
+            files={"data": (filename, text.encode("utf-8"), "text/plain")},
         )
         response.raise_for_status()
 
@@ -85,7 +150,9 @@ class CogneeHttpClient:
                 "session_id": session_id,
                 "top_k": top_k,
                 "include_references": True,
-                "search_type": "GRAPH_COMPLETION",
+                "scope": list(RECALL_SCOPE),
+                **({"search_type": RECALL_SEARCH_TYPE} if RECALL_SEARCH_TYPE else {}),
+                **({"system_prompt": RECALL_SYSTEM_PROMPT} if RECALL_SYSTEM_PROMPT else {}),
             },
         )
         if response.status_code >= 500:
@@ -120,6 +187,330 @@ class CogneeHttpClient:
                 response.status_code,
             )
 
+    # -- read-only introspection (dashboard) -------------------------------
+
+    async def list_datasets(self) -> list[Any]:
+        """Every dataset this key can read. ``[]`` rather than raising on 4xx."""
+        response = await self._request("GET", "/api/v1/datasets/")
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        items = data.get("datasets", data) if isinstance(data, dict) else data
+        return list(items) if isinstance(items, list) else []
+
+    async def dataset_data(self, dataset_id: str) -> list[Any]:
+        """Every item ingested into one dataset.
+
+        The endpoint is paginated - ``limit`` defaults to 100 - so a single call
+        returned the first 100 items as if they were the whole dataset, and the
+        dashboard's count and drift badge stopped there. This pages with
+        ``offset`` until a short page. A server that ignores ``offset`` hands the
+        same first page back, which would loop forever; seeing an item twice ends
+        it.
+
+        ``[]`` when the dataset is missing (4xx on the first page). A failure
+        after that raises: returning the pages read so far would be the same
+        silent truncation this exists to prevent.
+        """
+        items: list[Any] = []
+        seen: set[str] = set()
+        while True:
+            response = await self._request(
+                "GET",
+                f"/api/v1/datasets/{dataset_id}/data",
+                params={"limit": DATASET_PAGE_SIZE, "offset": len(items)},
+            )
+            if response.status_code >= 400:
+                if not items:
+                    return []
+                raise RuntimeError(
+                    f"listing dataset {dataset_id} failed at offset {len(items)} "
+                    f"(HTTP {response.status_code})"
+                )
+            data = response.json()
+            page = data.get("data", data) if isinstance(data, dict) else data
+            page = list(page) if isinstance(page, list) else []
+            ids = [str(i.get("id")) for i in page if isinstance(i, dict) and i.get("id")]
+            if ids and seen.intersection(ids):
+                break
+            seen.update(ids)
+            items.extend(page)
+            if len(page) < DATASET_PAGE_SIZE:
+                break
+        return items
+
+    async def recall_history(self) -> list[Any]:
+        """Questions this key's principal has asked, newest-first per the server.
+
+        cognee records every recall it answers, so this is the widget's question
+        log without the widget storing anything itself.
+        """
+        response = await self._request("GET", "/api/v1/recall")
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        items = data.get("results", data) if isinstance(data, dict) else data
+        return list(items) if isinstance(items, list) else []
+
+    async def delete_data(self, *, dataset_id: str, data_id: str) -> bool:
+        """Permanently remove one ingested item. True when the server accepted it."""
+        response = await self._request("DELETE", f"/api/v1/datasets/{dataset_id}/data/{data_id}")
+        return response.status_code < 400
+
+    async def fetch_raw(self, *, dataset_id: str, data_id: str) -> Optional[bytes]:
+        """The bytes originally ingested for one item, or None if unavailable."""
+        response = await self._request("GET", f"/api/v1/datasets/{dataset_id}/data/{data_id}/raw")
+        if response.status_code >= 400:
+            return None
+        return response.content
+
+    async def remember_bytes(
+        self, content: bytes, *, dataset_name: str, filename: str, content_type: str
+    ) -> None:
+        """Store raw bytes under ``filename``, preserving the original type.
+
+        ``remember`` encodes a str as message.txt; re-ingesting an existing item
+        has to keep its own name, or the corpus fills with items called
+        "message" and the source becomes unidentifiable in the dashboard.
+        """
+        response = await self._request(
+            "POST",
+            "/api/v1/remember",
+            data={"datasetName": dataset_name},
+            files={"data": (filename, content, content_type)},
+        )
+        response.raise_for_status()
+
+    async def graph(self, dataset_id: str) -> dict:
+        """The whole knowledge graph. Megabytes - never fetch this on page load."""
+        response = await self._request("GET", f"/api/v1/datasets/{dataset_id}/graph")
+        if response.status_code >= 400:
+            return {}
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    async def visualize_html(self, dataset_id: str) -> Optional[str]:
+        """cognee's own rendered graph page - the same artifact the SDK writes.
+
+        Slow enough that the caller must cache it; see the dashboard route.
+        """
+        response = await self._request(
+            "GET",
+            "/api/v1/visualize",
+            params={"dataset_id": dataset_id},
+            timeout_override=180.0,
+        )
+        if response.status_code >= 400:
+            return None
+        return response.text
+
+    async def forget_dataset(self, dataset_name: str) -> bool:
+        """Delete an entire dataset and everything in it."""
+        response = await self._request(
+            "POST", "/api/v1/forget", json={"dataset": dataset_name, "everything": False}
+        )
+        return response.status_code < 400
+
+    async def remember_background(
+        self,
+        content: bytes,
+        *,
+        dataset_name: str,
+        filename: str,
+        node_set: Optional[list[str]] = None,
+        external_metadata: Optional[dict] = None,
+    ) -> bool:
+        """Queue one document for ingest without waiting for its graph build.
+
+        A bulk ingest is hundreds of these, and each one cognifies. Waiting
+        would hold the request open for the whole run, so the server is asked to
+        process in the background and the upload returns as soon as it is
+        accepted.
+
+        ``external_metadata`` is stored on the item and comes back on a read.
+
+        ``node_set`` tags the nodes this document produces. cognee takes the
+        field repeated, once per tag, and ``recall``'s ``node_name`` filters on
+        the same values, so a tag written here is what makes part of a corpus
+        retrievable on its own later.
+        """
+        data: dict = {"datasetName": dataset_name, "run_in_background": "true"}
+        if node_set:
+            data["node_set"] = list(node_set)
+        if external_metadata:
+            # A JSON array paired positionally with the uploads, and this sends
+            # one file per call. It is where the source path goes: cognee strips
+            # a trailing extension off the filename to make the name, so the
+            # name alone cannot say which file an item came from.
+            data["external_metadata"] = json.dumps([external_metadata])
+        response = await self._request(
+            "POST",
+            "/api/v1/remember",
+            data=data,
+            files={"data": (filename, content, "text/plain")},
+            timeout_override=120.0,
+        )
+        return response.status_code < 400
+
+    async def remember_repo(self, repo_url: str, *, dataset_name: str) -> tuple[bool, str]:
+        """Index a git repository as a code graph.
+
+        A different route through the same endpoint: ``content_type='code'``
+        takes repository specs in ``raw_data`` and refuses file uploads, because
+        cognee clones the repository and walks it itself rather than being
+        handed bytes. That is why the browser-reads-the-files arrangement the
+        rest of ingest uses cannot reach this - a code graph needs the
+        repository, not its contents.
+
+        No node_set is sent. The field is accepted by the endpoint and dropped
+        on this path - a repository indexed with one produces no NodeSet node
+        and nothing recall can filter on - so sending it would only promise a
+        tag that does not exist. Code nodes carry ``repo`` instead.
+
+        Returns whether it was accepted and what cognee said if it was not, so
+        the page can show the reason rather than a status code.
+        """
+        data: dict = {
+            "datasetName": dataset_name,
+            "run_in_background": "true",
+            "content_type": "code",
+            "raw_data": [repo_url],
+        }
+        response = await self._request(
+            "POST", "/api/v1/remember", data=data, timeout_override=120.0
+        )
+        if response.status_code < 400:
+            return True, ""
+        try:
+            detail = str(response.json().get("detail") or "")[:300]
+        except ValueError:
+            detail = response.text[:300]
+        return False, detail or f"cognee answered {response.status_code}"
+
+    async def ensure_dataset(self, name: str) -> Optional[str]:
+        """The id of dataset ``name``, creating it if it does not exist.
+
+        cognee's create returns the existing dataset for a name already taken,
+        so this is safe to call every time. ``None`` if cognee refused.
+        """
+        # The trailing slash matters: without it cognee answers 307 with an
+        # empty body, and this client does not follow redirects.
+        response = await self._request("POST", "/api/v1/datasets/", json={"name": name})
+        if not 200 <= response.status_code < 300:
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        return str(data.get("id")) if isinstance(data, dict) and data.get("id") else None
+
+    async def dataset_progress(self, dataset_id: str, pipeline: str = "cognify_pipeline") -> dict:
+        """How far cognee has got building the graph for ``dataset_id``.
+
+        ``remember`` with ``run_in_background`` returns once the upload is
+        accepted, so this is the only way to see the work that follows it.
+
+        Two endpoints, because not every cognee has both. ``/status/progress``
+        carries item counts and a stage; where it is missing - it 404s on the
+        deployment this was built against - ``/status`` still answers with the
+        state alone. Which one answered is reported rather than hidden: a
+        deployment that cannot count items and a run that has not started are
+        different things, and collapsing them into one empty answer made the
+        page wait for numbers that were never coming.
+        """
+        response = await self._request(
+            "GET",
+            "/api/v1/datasets/status/progress",
+            params={"dataset": dataset_id, "pipeline": pipeline},
+        )
+        if response.status_code == 404:
+            return await self._dataset_status(dataset_id, pipeline)
+        if response.status_code >= 400:
+            return {"status": "", "progress": None, "counts_available": False}
+        body = response.json()
+        entry = (body.get(dataset_id) or {}) if isinstance(body, dict) else {}
+        return {
+            "status": normalise_run_status(entry.get("status")),
+            "progress": entry.get("progress") or None,
+            "counts_available": True,
+        }
+
+    async def _dataset_status(self, dataset_id: str, pipeline: str) -> dict:
+        """The state of a run, with no item counts, from the older endpoint."""
+        response = await self._request(
+            "GET",
+            "/api/v1/datasets/status",
+            params={"dataset": dataset_id, "pipeline": pipeline},
+        )
+        if response.status_code >= 400:
+            return {"status": "", "progress": None, "counts_available": False}
+        body = response.json()
+        value = body.get(dataset_id) if isinstance(body, dict) else None
+        if isinstance(value, dict):
+            value = value.get(pipeline)
+        return {
+            "status": normalise_run_status(value),
+            "progress": None,
+            "counts_available": False,
+        }
+
+    async def list_sessions(self) -> list[Any]:
+        """Every session this key can see, widget conversations among them."""
+        response = await self._request("GET", "/api/v1/sessions")
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        items = data.get("sessions", data.get("results", data)) if isinstance(data, dict) else data
+        return list(items) if isinstance(items, list) else []
+
+    async def improve_session(self, session_id: str, *, dataset_id: str) -> tuple[str, str]:
+        """Run cognee's improve over one session, distillation included.
+
+        Returns ``(outcome, status)``. ``outcome`` is ``"started"``, ``"busy"``
+        when another improve of this session holds its lock (cognee answers
+        ``{}`` and skips), or ``"failed"``. ``status`` is the pipeline status
+        cognee reported for the run, when it reported one - the only account of
+        how the run went, because cognee Cloud returns a pipeline run rather
+        than per-stage results.
+
+        Distillation runs inside the request even with ``run_in_background``,
+        which only detaches the cognify that follows it, so this can take
+        minutes. Each stage keeps a per-session watermark, so a session with
+        nothing new since its last run costs no LLM calls.
+        """
+        response = await self._request(
+            "POST",
+            "/api/v1/improve",
+            json={
+                "dataset_id": dataset_id,
+                "session_ids": [session_id],
+                "run_in_background": True,
+            },
+            timeout_override=420.0,
+        )
+        if response.status_code >= 400:
+            return "failed", f"HTTP {response.status_code}"
+        data = response.json()
+        if isinstance(data, dict) and not data:
+            return "busy", ""
+        # {"<dataset id>": {"status": "PipelineRunCompleted", ...}} on cognee
+        # Cloud; the documented ImproveResult carries a status too.
+        status = ""
+        if isinstance(data, dict):
+            run = data.get(dataset_id) if isinstance(data.get(dataset_id), dict) else data
+            status = str(run.get("status") or "")
+        return "started", status
+
+    async def session_detail(self, session_id: str) -> dict:
+        """One session, including its ``qas`` — both sides of each exchange."""
+        from urllib.parse import quote
+
+        response = await self._request("GET", f"/api/v1/sessions/{quote(session_id, safe='')}")
+        if response.status_code >= 400:
+            return {}
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
     # -- transport ---------------------------------------------------------
     def _headers(self) -> dict:
         return {"X-Api-Key": self.api_key} if self.api_key else {}
@@ -127,9 +518,11 @@ class CogneeHttpClient:
     async def _request(self, method: str, path: str, **kwargs):
         import httpx
 
+        timeout = kwargs.pop("timeout_override", None) or self._timeout
+
         url = self.base_url + path
         headers = {**self._headers(), **kwargs.pop("headers", {})}
         if self._client is not None:
             return await self._client.request(method, url, headers=headers, **kwargs)
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             return await client.request(method, url, headers=headers, **kwargs)

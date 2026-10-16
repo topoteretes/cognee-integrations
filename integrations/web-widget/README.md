@@ -69,6 +69,44 @@ The widget is embedded cross-origin, so the backend enables CORS for `/api/*`
 restrict it in production). The backend binds `127.0.0.1` by default — set
 `WEB_HOST` / `WEB_PORT` to change it.
 
+Settings are read from the environment and from a `.env` file in the directory
+the backend starts in; a variable set in the environment wins over `.env`.
+`WIDGET_ENV_FILE` points at a different file, or turns `.env` loading off when
+set to an empty value.
+
+### How answers are recalled
+
+Three settings control the recall each chat message runs against cognee:
+
+| Variable | Default | Effect |
+| -------- | ------- | ------ |
+| `WIDGET_RECALL_SCOPE` | `graph,code` | Memory sources to recall from, comma-separated. `graph` is the docs answer; `code` adds results from the code graph of any repository ingested into the same dataset, returned next to the answer rather than in it; `session` adds the conversation's own history. |
+| `WIDGET_SEARCH_TYPE` | `GRAPH_COMPLETION` | How the dataset is searched. Empty or `auto` lets cognee choose per question (usually `HYBRID_COMPLETION`). |
+| `WIDGET_SYSTEM_PROMPT` | unset | The instruction the answering model gets. Unset, cognee's own default prompt is used ("Answer the question using the provided context. Be as brief as possible."). A value replaces that default; citations are unaffected. |
+
+### Rate limits
+
+`/api/chat` and `/api/forget` need no login, and every chat message runs a
+cognee recall billed to your cognee account. Two guards keep that bounded:
+
+| Variable | Default | Limits |
+| -------- | ------- | ------ |
+| `WIDGET_RATE_LIMIT_PER_IP_HOUR` | `20` | requests per visitor IP per hour (chat and forget together) |
+| `WIDGET_RATE_LIMIT_PER_IP_DAY` | `100` | requests per visitor IP per day |
+| `WIDGET_RATE_LIMIT_GLOBAL_HOUR` | `500` | chat requests per hour across all visitors |
+
+`0` turns a limit off; any other value that is not a whole number stops the
+backend at startup. A request over a limit gets `429` with a `Retry-After`
+header and `{error, scope, message, retry_after}`, where `scope` is `visitor` or
+`global`; the widget shows the message in the chat. The counters are kept in
+the backend process, so run a single instance.
+
+Behind a reverse proxy every request arrives from the proxy, so all visitors
+would share one per-IP limit. Set `WIDGET_TRUSTED_PROXIES` to the proxy's IPs
+or CIDR ranges (comma-separated), or `*` to believe whichever peer connects, and
+the visitor's IP is read from `X-Forwarded-For`. Leave it unset when the backend
+is reached directly: anyone can send that header.
+
 ### Seed your real docs
 
 ```python
@@ -79,12 +117,45 @@ adapter = ChatMemoryAdapter()
 asyncio.run(adapter.ingest_docs(site_id="acme", documents=["...your docs text..."]))
 ```
 
+### Keep the docs in sync with GitHub
+
+Point a GitHub push webhook at the backend and every push to the docs branch
+updates the corpus: an added or edited page replaces the item ingested from the
+same path, and a deleted page is deleted. Without this, re-ingesting an edited
+page adds a second item next to the old one (cognee deduplicates by content, not
+by path), and both keep answering.
+
+1. Pick a random secret and set it as `WIDGET_GITHUB_WEBHOOK_SECRET`.
+2. In the repository: **Settings → Webhooks → Add webhook**. Payload URL
+   `https://<widget-host>/api/github/webhook`, content type `application/json`,
+   the same secret, **Just the push event**.
+
+| Variable | Default | Effect |
+| -------- | ------- | ------ |
+| `WIDGET_GITHUB_WEBHOOK_SECRET` | unset | Shared webhook secret. Unset, `/api/github/webhook` returns `404`. |
+| `WIDGET_GITHUB_TOKEN` | unset | Token used to read changed files (`contents: read`). Required for a private repository; without one GitHub also allows only 60 reads an hour. |
+| `WIDGET_GITHUB_DOCS_DIR` | repository root | Folder inside the repository the corpus mirrors. Paths are relative to it, like the folder a dashboard ingest picks. |
+| `WIDGET_GITHUB_BRANCH` | the repository's default branch | Branch whose pushes are applied. |
+| `WIDGET_GITHUB_REPO` | any | `owner/name` to accept pushes from; others are ignored. |
+| `WIDGET_GITHUB_EXTENSIONS` | `.md,.mdx` | File types that are documentation. |
+| `WIDGET_GITHUB_ROOT` | the docs folder's name | Node-set root for pages the corpus does not hold yet; existing pages keep theirs. |
+
+Each changed file is read at the pushed commit and rendered as a dashboard ingest
+renders it. A page whose content did not change is left alone. An edited page is
+uploaded first and the old item deleted only once the upload is accepted, so a
+refused upload leaves the old version answering rather than nothing. The webhook
+answers `202` with the planned changes straight away and applies them in the
+background; the outcome is in the server log and under `config.github_sync` in
+`/api/dashboard`. Pages are matched to items by the path ingest records on them,
+or by name for items ingested before paths were recorded.
+
 ## HTTP API
 
 | Method | Path          | Body                                                                | Returns                          |
 | ------ | ------------- | ------------------------------------------------------------------- | -------------------------------- |
-| POST   | `/api/chat`   | `{message, conversation_id, visitor_id, site_id, opt_in, use_docs}` | `{answer, citations, session_id}`|
-| POST   | `/api/forget` | `{conversation_id, visitor_id, site_id}`                            | `{cleared, session_id}`          |
+| POST   | `/api/chat`   | `{message, conversation_id, visitor_id, site_id, opt_in, use_docs}` | `{answer, citations, session_id}`, or `429` over a [rate limit](#rate-limits) |
+| POST   | `/api/forget` | `{conversation_id, visitor_id, site_id}`                            | `{cleared, session_id}`, or `429` over a [rate limit](#rate-limits) |
+| POST   | `/api/github/webhook` | a GitHub push event, signed with `X-Hub-Signature-256` | `202 {sha, upserts, removals}`; `200 {ignored}` for anything else it was sent; `401` for a bad signature, `404` when [GitHub sync](#keep-the-docs-in-sync-with-github) is off |
 | GET    | `/`           | —                                                                   | demo "ask our docs" page         |
 | GET    | `/widget.js`  | —                                                                   | the embeddable snippet           |
 
