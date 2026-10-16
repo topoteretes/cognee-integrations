@@ -49,6 +49,22 @@ integrations:
     migration_status: done
     notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
 
+  - slug: cursor
+    name: "Cognee Plugin for Cursor"
+    owner: cognee
+    language: python
+    registry: none
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: >-
+      Cursor plugin (.cursor-plugin/plugin.json + hooks/hooks.json) built on the Codex
+      hook runtime. cursor_hook.py adapts Cursor's camelCase hook payloads (conversation_id,
+      generation_id, Shell/Task tool names, afterAgentResponse + transcript tail for the
+      final answer) to the shared Cognee hook contract; install-cursor-hooks.py writes the
+      same hooks into a user or project hooks.json.
+
   - slug: vellum-assistant
     name: "Cognee Plugin for Vellum Assistant"
     owner: vellum
