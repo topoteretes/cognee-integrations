@@ -126,6 +126,59 @@ def cloud_api_key() -> str:
     return os.environ.get("COGNEE_LIVE_API_KEY", "").strip()
 
 
+def uses_cloud_worker(suite: Suite) -> bool:
+    """True when ``suite``'s server calls go through its detached cloud worker.
+
+    That is claude-code against a tenant (SDK-1090): every hook only writes to
+    disk, so a scenario that waits on hook-side sync events would wait forever.
+    """
+    return suite.has_cloud_worker and bool(cloud_base_url())
+
+
+def cloud_worker_record(suite: Suite, home: Path, session_id: str) -> dict:
+    """The launch record SessionStart hands the cloud worker ({} if none)."""
+    path = state_dir(suite, home) / "sessions" / session_id / "worker.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def cloud_worker_pids(suite: Suite, home: Path) -> list[str]:
+    """Pids of this HOME's cloud worker and its improve pass, found by their locks.
+
+    Both hold a ``flock`` on their lock file for as long as they run, so
+    ``lsof`` on those files names exactly this test's processes and never a
+    developer's own worker under their real HOME.
+    """
+    state = state_dir(suite, home)
+    locks = [str(state / name) for name in ("cloud-worker.lock", "improve-pass.lock")]
+    locks = [path for path in locks if os.path.exists(path)]
+    if not locks:
+        return []
+    found = subprocess.run(["lsof", "-t", *locks], capture_output=True, text=True).stdout
+    return sorted(set(found.split()))
+
+
+def reap_cloud_worker(suite: Suite, home: Path) -> list[str]:
+    """Kill this HOME's cloud worker and improve pass; return the pids killed.
+
+    The worker is detached and idles for 30 minutes before exiting on its own,
+    so without this every test would leave one behind. Loops briefly because
+    the worker may spawn an improve pass between the lookup and the kill.
+    """
+    killed: list[str] = []
+    for _ in range(3):
+        pids = [pid for pid in cloud_worker_pids(suite, home) if pid not in killed]
+        if not pids:
+            break
+        for pid in pids:
+            subprocess.run(["kill", pid], capture_output=True)
+        killed.extend(pids)
+        time.sleep(0.5)
+    return killed
+
+
 #: Every dataset this tier creates is named ``live_<uuid12>``. Cleanup deletes
 #: exactly the datasets matching this prefix and nothing else, so the tier is safe
 #: to point at a tenant that also holds real data.
@@ -260,6 +313,12 @@ def build_live_env(
         }
     )
     env.pop("VIRTUAL_ENV", None)
+    if uses_cloud_worker(suite):
+        # COGNEE_IDLE_DISABLED also stops ensure_worker() from spawning the cloud
+        # worker, and on a tenant nothing else reaches the server: the hooks
+        # would spool every capture and none would ever be sent. Teardown reaps
+        # the worker (reap_cloud_worker).
+        env.pop("COGNEE_IDLE_DISABLED", None)
     if api_key:
         env["COGNEE_API_KEY"] = api_key
     if extra:
@@ -550,9 +609,38 @@ class LiveSession:
         )
 
     # -- observability -----------------------------------------------------
+    @property
+    def plugin_session_id(self) -> str:
+        """The session id the plugin uses server-side (``<prefix>_<host id>``)."""
+        return f"{self.suite.session_prefix}_{self.session_id}"
+
+    def improves_landed(self) -> list[dict]:
+        """This session's successful cloud-worker improves, oldest first."""
+        return [
+            detail
+            for event, detail in hook_events(self.suite, self.home)
+            if event == "improve_fired"
+            and detail.get("ok")
+            and detail.get("session") == self.plugin_session_id
+        ]
+
     def wait_for_sync(self, *, deadline: float = 600.0) -> dict | None:
-        """Wait for the detached worker to report the session was bridged."""
-        return wait_for_event(self.suite, self.home, "sync_bridge_done", deadline=deadline)
+        """Wait for the detached worker to report the session was bridged.
+
+        Through the cloud worker that report is a successful ``improve_fired``
+        for this session; elsewhere it is the sync worker's ``sync_bridge_done``.
+        Either way it says the request went through, not that the graph is
+        readable yet: follow it with ``GraphClient.wait_until_recalled``.
+        """
+        if not uses_cloud_worker(self.suite):
+            return wait_for_event(self.suite, self.home, "sync_bridge_done", deadline=deadline)
+        end = time.monotonic() + deadline
+        while time.monotonic() < end:
+            landed = self.improves_landed()
+            if landed:
+                return landed[0]
+            time.sleep(2.0)
+        return None
 
 
 @dataclass

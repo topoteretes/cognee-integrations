@@ -1,16 +1,70 @@
 """Cloud hook subprocesses stay usable with no network or background worker."""
 
+import contextlib
 import json
+import socket
 import time
 
 import pytest
+
+#: Every network timeout the hooks could wait on, pinned through the env so the
+#: cost of a synchronous call is known: a hook that waits on the server pays at
+#: least this long. The hooks must instead hand the work to the background
+#: worker and return in roughly the time it takes to start an interpreter.
+NETWORK_TIMEOUT = 8.0
+#: A start that finishes inside half the network timeout cannot have waited on
+#: the server. Generous enough for a slow CI runner (Windows spawns an
+#: interpreter and the detached worker in 1-1.5 s), and an order of magnitude
+#: below what one blocking call costs.
+START_BUDGET = NETWORK_TIMEOUT / 2
+
+
+@contextlib.contextmanager
+def black_hole_server():
+    """A local URL whose server accepts connections and never answers.
+
+    A refused port (``127.0.0.1:1``) fails a request instantly, so a hook that
+    had regressed into waiting on the network would still look fast. A listener
+    that never reads makes any synchronous request hang for its full timeout,
+    which is what the budget below is measured against.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(8)
+        yield f"http://127.0.0.1:{sock.getsockname()[1]}"
+    finally:
+        sock.close()
+
+
+def _blocks_for_timeout(url: str) -> bool:
+    """Sanity check of the black hole itself: a plain request waits the timeout."""
+    import urllib.error
+    import urllib.request
+
+    started = time.monotonic()
+    try:
+        urllib.request.urlopen(url, timeout=0.5)
+    except (urllib.error.URLError, OSError, TimeoutError):
+        pass
+    return time.monotonic() - started >= 0.4
 
 
 def test_offline_start_capture_and_end_are_local(suite, run_hook, temp_home):
     if suite.name != "claude-code":
         pytest.skip("Claude cloud hooks")
-    env = {"COGNEE_BACKEND": "cloud", "COGNEE_IDLE_DISABLED": "1"}
-    url = "http://127.0.0.1:1"
+    env = {
+        "COGNEE_BACKEND": "cloud",
+        "COGNEE_IDLE_DISABLED": "1",
+        "COGNEE_REACHABLE_TIMEOUT": str(NETWORK_TIMEOUT),
+        "COGNEE_REGISTER_TIMEOUT": str(NETWORK_TIMEOUT),
+    }
+    with black_hole_server() as url:
+        assert _blocks_for_timeout(url), "the black-hole listener answered or refused"
+        _offline_start_capture_and_end_are_local(suite, run_hook, temp_home, env, url)
+
+
+def _offline_start_capture_and_end_are_local(suite, run_hook, temp_home, env, url):
     payload = {"session_id": "offline-host", "cwd": str(temp_home), "source": "startup"}
     samples = []
     for _ in range(5):
@@ -19,7 +73,10 @@ def test_offline_start_capture_and_end_are_local(suite, run_hook, temp_home):
         samples.append(time.monotonic() - started)
         assert result.returncode == 0, result.stderr
         assert "background" in result.stdout
-    assert max(samples) < 1.0, samples
+    assert max(samples) < START_BUDGET, (
+        f"session start waited on the server: {samples} (budget {START_BUDGET}s, "
+        f"a blocking call costs >= {NETWORK_TIMEOUT}s)"
+    )
     prompt = {**payload, "prompt": "Remember our reliable offline session."}
     assert (
         run_hook(suite, "store-user-prompt.py", stdin=prompt, service_url=url, env=env).returncode
@@ -69,7 +126,7 @@ def test_offline_start_capture_and_end_are_local(suite, run_hook, temp_home):
             env=env,
             stdin={**payload, "session_id": f"warm-{index}"},
         )
-        assert time.monotonic() - started < 1.0
+        assert time.monotonic() - started < START_BUDGET, "warm start waited on the server"
         assert "transaction safety" in warm.stdout
         ledger = root / "sessions" / f"warm-{index}" / "injected.json"
         assert "f" * 16 in json.loads(ledger.read_text())["entry_hashes"]

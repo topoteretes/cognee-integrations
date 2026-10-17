@@ -17,10 +17,11 @@ dataset recalls nothing until one sync has built its graph (``synced_turn``).
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from utils.live import read_last_recall
-from utils.statusline import write_json
+from utils.statusline import strip_ansi, write_json
 
 pytestmark = pytest.mark.live
 
@@ -91,7 +92,12 @@ def test_the_status_line_renders_against_a_real_server(recalled_session, live_su
     bar = session.run("cognee_statusline_render.py", {"session_id": session.session_id})
     assert bar.ok, f"status line render failed (rc={bar.returncode}): {bar.stderr[:500]}"
     assert "Traceback" not in bar.stderr, f"renderer raised:\n{bar.stderr[:800]}"
-    assert "cognee:" in bar.stdout, f"unrecognisable status line: {bar.stdout!r}"
+    # Codex and Antigravity print ``cognee: <dataset> · <mode>``; Claude Code's
+    # default bar styles the wordmark and drops the colon (``cognee <dataset> ·
+    # <mode>``, the colon form is its classic style only).
+    assert re.search(r"\bcognee:? \S+\s+·", strip_ansi(bar.stdout)), (
+        f"unrecognisable status line: {bar.stdout!r}"
+    )
 
 
 def test_the_status_line_shows_what_a_real_recall_did(recalled_session, live_suite):

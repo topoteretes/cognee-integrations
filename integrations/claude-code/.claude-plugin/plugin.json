@@ -2,7 +2,7 @@
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
   "description": "Cognee knowledge graph memory for Claude Code — session-aware storage, auto-routing recall, and persistent learning across sessions. Supports local mode and Cognee Cloud.",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -26,11 +26,7 @@
       "type": "string",
       "title": "Cognee mark",
       "description": "The cognee waveform icon on the status row in the Desktop app (the official SVG). A terminal shows the wordmark alone either way; nothing stands in for the mark in text.",
-      "default": "wave",
-      "options": [
-        "wave",
-        "none"
-      ]
+      "default": "wave"
     },
     "band": {
       "type": "boolean",

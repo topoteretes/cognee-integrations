@@ -15,7 +15,7 @@ from __future__ import annotations
 import concurrent.futures
 
 import pytest
-from utils.live import hook_events, wait_for_event_count
+from utils.live import hook_events, uses_cloud_worker, wait_for_event_count
 
 pytestmark = pytest.mark.live
 
@@ -84,6 +84,19 @@ def test_each_session_claims_its_own_final_sync(started_session, live_suite, liv
 
     a.end()
     b.end()
+
+    if uses_cloud_worker(live_suite):
+        # The cloud worker has no claim marker: each session's final improve is
+        # its own request, keyed by session. Too broad a key would merge the
+        # two, and one session's improve would never fire.
+        for session in (a, b):
+            landed = session.wait_for_sync(deadline=600.0)
+            events = [event for event, _ in hook_events(live_suite, live_home)]
+            assert landed is not None, (
+                f"session {session.session_id} never got its own final improve — its "
+                f"request was merged into the other session's. Events: {events[-14:]}"
+            )
+        return
 
     # Wait on the *count*, not on presence: each claim happens inside a detached
     # worker after COGNEE_SYNC_START_DELAY, and session A's claim is already in

@@ -20,8 +20,10 @@ for a real cognify.
 
 from __future__ import annotations
 
+import time
+
 import pytest
-from utils.live import GraphClient, hook_events, wait_for_event
+from utils.live import GraphClient, hook_events, uses_cloud_worker, wait_for_event
 
 pytestmark = pytest.mark.live
 
@@ -117,6 +119,10 @@ def test_a_session_runs_exactly_one_final_sync(
     assert session.wait_for_sync(deadline=600.0) is not None, "first sync never completed"
     graph.wait_until_recalled(f"What is the retry budget for {nonce}?", "7", deadline=600.0)
 
+    if uses_cloud_worker(live_suite):
+        _assert_cloud_worker_runs_one_final_improve(session, graph, live_suite, live_home, nonce)
+        return
+
     # Second SessionEnd for the very same session, nothing captured in between.
     again = session.end()
     assert again.ok, f"second SessionEnd failed (rc={again.returncode}): {again.stderr[:500]}"
@@ -140,5 +146,45 @@ def test_a_session_runs_exactly_one_final_sync(
     )
 
     # And the memory itself survived being synced twice.
+    body = graph.recall(f"What is the retry budget for {nonce}?")
+    assert "7" in body, f"the fact vanished after a second sync:\n{body[:800]}"
+
+
+def _assert_cloud_worker_runs_one_final_improve(session, graph, suite, home, nonce) -> None:
+    """The cloud worker's form of the guarantee: no claim marker, one request.
+
+    A session has one improve request file, so a repeated SessionEnd rewrites
+    it instead of queueing a second; the worker then drops that final improve
+    because no entry landed since the last one (``no_new_entries``).
+    """
+
+    def throttled() -> int:
+        return sum(
+            1
+            for event, detail in hook_events(suite, home)
+            if event == "auto_improve_throttled"
+            and detail.get("session") == session.plugin_session_id
+            and detail.get("why") == "no_new_entries"
+        )
+
+    before = throttled()
+    again = session.end()
+    assert again.ok, f"second SessionEnd failed (rc={again.returncode}): {again.stderr[:500]}"
+
+    deadline = time.monotonic() + 120.0
+    while throttled() <= before and time.monotonic() < deadline:
+        time.sleep(2.0)
+    events = [event for event, _ in hook_events(suite, home)]
+    assert throttled() > before, (
+        "the repeated SessionEnd's improve was never dropped as having nothing "
+        f"new, so a duplicate improve can run. Events: {events[-12:]}"
+    )
+
+    landed = len(session.improves_landed())
+    assert landed == 1, (
+        f"expected exactly one improve for the session, saw {landed}. A second "
+        f"means the worker re-ran the whole improve. Events: {events[-12:]}"
+    )
+
     body = graph.recall(f"What is the retry budget for {nonce}?")
     assert "7" in body, f"the fact vanished after a second sync:\n{body[:800]}"

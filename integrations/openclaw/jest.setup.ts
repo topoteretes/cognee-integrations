@@ -41,3 +41,27 @@ jest.mock("node:os", () => ({
 
 // Surfaced so a failing test can report where its state actually went.
 (globalThis as Record<string, unknown>).__COGNEE_SANDBOX_HOME__ = sandboxHome;
+
+/**
+ * The plugin reads these from the environment and lets them override config, so
+ * a developer shell that exports any of them (e.g. COGNEE_PLUGIN_DATASET from
+ * another Cognee plugin) silently changes the dataset, mode or recall caps the
+ * tests assert on. Tests that need one set it themselves.
+ */
+for (const key of [
+  "COGNEE_PLUGIN_DATASET",
+  "COGNEE_MODE",
+  "COGNEE_AGENT_MODE",
+  "COGNEE_BASE_URL",
+  "COGNEE_API_KEY",
+  "COGNEE_USERNAME",
+  "COGNEE_PASSWORD",
+  "COGNEE_RECALL_PASSAGE_CHARS",
+  "COGNEE_RECALL_CONTEXT_CHARS",
+  "COGNEE_RECALL_BACKOFF_MS",
+  "COGNEE_RECALL_RETRIES",
+  "OPENCLAW_AGENT_ID",
+  "OPENCLAW_USER_ID",
+]) {
+  delete process.env[key];
+}

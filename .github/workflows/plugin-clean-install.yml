@@ -15,6 +15,13 @@ name: Plugin Clean Install
 # sparse checkout, so CI never saw what users saw.
 #
 # Nothing here may enable core.longpaths: users don't have it, so neither does CI.
+#
+# The second regression it guards against: a manifest key only a recent CLI
+# understands. cognee-memory 1.7.0 declared a `userConfig` option with an
+# `options` list, which Claude Code added in 2.1.271; every older Claude Code
+# rejected the whole manifest (`userConfig.icon: Invalid input`) and the plugin
+# could not be installed at all. CI never saw it because it installed the newest
+# CLI. So the install now runs against five CLI releases, oldest to newest.
 
 on:
   pull_request:
@@ -64,12 +71,34 @@ jobs:
           fi
 
   clean-install:
+    name: clean-install (${{ matrix.os }}, claude ${{ matrix.cli.claude }}, codex ${{ matrix.cli.codex }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # Five releases of each CLI, oldest first: the floor, a mid-year
+        # release, the two releases either side of the recent plugin-system
+        # changes, and latest. The oldest legs are the floor the plugins
+        # promise to install on:
+        #   - Claude Code 2.1.83 (2026-03-24) introduced plugin options
+        #     (`userConfig`); every manifest key we use loads there.
+        #   - Codex 0.139.0 (2026-06-09) is the first release where
+        #     `plugin marketplace add` and `plugin add` take `--json`, which the
+        #     steps below parse. 0.135.0 has the plugin commands without it.
+        # Claude Code 2.1.270 (2026-09-12) is the last release before the
+        # `options` key on a userConfig field (2.1.271), the one that broke
+        # cognee-memory 1.7.0; 2.1.290 (2026-10-05) is the first with mods on,
+        # so the hooks module loads there. The newest leg stays at `latest` so a
+        # new CLI release is covered by the nightly run. When raising the floor,
+        # drop the oldest row and add one near the newest pinned release.
+        cli:
+          - { claude: '2.1.83', codex: '0.139.0' }
+          - { claude: '2.1.200', codex: '0.146.0' }
+          - { claude: '2.1.270', codex: '0.151.0' }
+          - { claude: '2.1.290', codex: '0.159.3' }
+          - { claude: latest, codex: latest }
     defaults:
       run:
         shell: bash
@@ -99,7 +128,7 @@ jobs:
 
       - name: Install the Codex and Claude Code CLIs
         run: |
-          npm install -g @openai/codex @anthropic-ai/claude-code
+          npm install -g "@openai/codex@${{ matrix.cli.codex }}" "@anthropic-ai/claude-code@${{ matrix.cli.claude }}"
           codex --version
           claude --version
 
@@ -159,10 +188,12 @@ jobs:
           fi
 
       # The marketplace source is ./integrations/claude-code, so this installs
-      # the plugin tree of the revision just cloned.
+      # the plugin tree of the revision just cloned. No `--json` on the install:
+      # `plugin install` only takes it from 2.1.270 on, and the result is read
+      # from `plugin list --json` below, which every pinned release supports.
       - name: "Claude Code: install cognee-memory@cognee"
         run: |
-          claude plugin install cognee-memory@cognee --json
+          claude plugin install cognee-memory@cognee
           claude plugin list --json | node -e '
             let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
               const p = JSON.parse(s).find(p => p.id === "cognee-memory@cognee" && p.enabled);

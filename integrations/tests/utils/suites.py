@@ -118,6 +118,13 @@ class Suite:
     #: then (SDK-1071: a "0 hits" line on most turns read as "Cognee does
     #: nothing"); the user still sees the header.
     injects_empty_recall: bool
+    #: Behaviour (SDK-1090): against a remote tenant the hooks only spool to disk
+    #: and one detached per-user worker (``_cloud_worker.py``) does every server
+    #: call. SessionStart registers the launch with it and returns without picking
+    #: an endpoint, and the graph bridge is the worker's ``improve_fired``, not the
+    #: local path's ``sync_bridge_done`` / ``final_sync_once_*`` events. codex and
+    #: Antigravity still talk to the tenant from the hooks.
+    has_cloud_worker: bool
 
 
 CLAUDE = Suite(
@@ -142,6 +149,7 @@ CLAUDE = Suite(
     has_recap_skills=True,
     cites_memory_by_default=True,
     injects_empty_recall=True,
+    has_cloud_worker=True,
 )
 
 CODEX = Suite(
@@ -171,6 +179,7 @@ CODEX = Suite(
     has_recap_skills=True,
     cites_memory_by_default=False,
     injects_empty_recall=False,
+    has_cloud_worker=False,
 )
 
 ANTIGRAVITY = Suite(
@@ -195,6 +204,7 @@ ANTIGRAVITY = Suite(
     has_recap_skills=False,
     cites_memory_by_default=False,
     injects_empty_recall=True,
+    has_cloud_worker=False,
 )
 
 ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY]
