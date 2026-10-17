@@ -1044,8 +1044,9 @@ On the desktop the row leads with cognee's waveform mark, the official icon
 itself (an inline SVG from `assets/icon-lavender.svg`, read once at session
 start), then the wordmark in the brand lavender. A terminal gets the wordmark
 alone: no character looks like the mark, so none stands in for it, there or
-after the spinner or in toasts. The `icon` row in `/config` (`wave` or `none`)
-switches the desktop mark off; the text line has no mark either, only the
+after the spinner or in toasts (the credit line under an answer is the one
+place a terminal draws the display logotype). The `icon` row in `/config`
+(`wave` or `none`) switches both off; the text line has no mark either, only the
 glyph and the wordmark. The module runs the plugin's own
 renderer in `--json` mode and lays the result
 out: the dataset, mode, tokens-saved estimate, credits,
@@ -1090,7 +1091,8 @@ The module also adds, on both surfaces:
 
 The credit inside an answer that used memory (`🧠 Cognee memory [m2]: …`) is the
 agent's own, asked for by the recall hook; see [Credit in the answer](#credit-in-the-answer).
-The module adds nothing under answers.
+The module only redraws that line: the wave mark on the desktop, the display
+logotype in a terminal (see [Dataset picker and tools](#dataset-picker-and-tools)).
 
 **A `see fix` button beside every red ✕.** When the row shows a failure, a small
 `[ see fix ]` button right after `✕ (<reason>)` opens a dialog above the prompt
@@ -1182,12 +1184,16 @@ does not load mods and for the judgement the skill text carries.
 | `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from the active dataset.` then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
 | `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
 
-On the desktop, the credit line the model writes under an answer that used
-memory (`> 🧠 Cognee memory [m4, m5]: …`) is drawn as the wave mark and the
-note alone, the label and the tags left to the stored line: the engine still
-draws the reply, with the line taken off its text, and the mod draws the row
-under it. A terminal
-draws no vector image and keeps the line as written. The stored message is
+The credit line the model writes under an answer that used memory
+(`> 🧠 Cognee memory [m4, m5]: …`) is drawn as the mark and the note alone, the
+label and the tags left to the stored line: the engine still draws the reply,
+with the line taken off its text, and the mod draws the row under it. The mark
+is the wave on the desktop; a terminal draws no vector image, so there it is
+the display logotype from the brand resources, which is built on a grid of
+squares, in two rows of braille (11 columns, one dot a square), bold in the
+darker brand purple so the thin dots read on light and dark backgrounds, the
+letters in the logotype's own proportions. Other surfaces keep the line as
+written. The stored message is
 never changed, so ctrl+o shows the original and the Stop hook's credit check
 reads what the model wrote. The `icon` row in `/config` turns the mark off
 here as in the band.

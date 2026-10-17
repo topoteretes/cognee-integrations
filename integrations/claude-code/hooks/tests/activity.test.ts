@@ -290,11 +290,29 @@ test('on the desktop the credit line under an answer carries the wave mark inste
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...CREDIT_ANSWER })
   expect(await ui.find({ type: 'Svg' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^the July notes on \/users\/me/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^The July notes on \/users\/me/ })).toBeDefined()
   // The label and the tags stay in the stored line only.
   expect(await ui.find({ type: 'Text', text: /Cognee memory|\[m4, m5\]/ })).toBeUndefined()
   // The brain is gone from what is drawn; the reply's own text is still the engine's.
   expect(await ui.find({ type: 'Text', text: /🧠/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('in a terminal the credit line under an answer carries the display logotype instead of the brain', async ($, on) => {
+  const state = { marker: '' }
+  wire(on, state)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...CREDIT_ANSWER })
+  // Two rows of braille, the first opening the "c".
+  expect(await ui.find({ type: 'Text', text: /^⡏⠁⡏⡇/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^⠉⠁⠉⠁/ })).toBeDefined()
+  // Centred on a note longer than the mark.
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('"alignSelf":"center"')
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^The July notes on \/users\/me/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Cognee memory|\[m4, m5\]|🧠/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -313,12 +331,12 @@ test('an answer without a credit line is left to the engine', async ($, on) => {
   await ui.unmount()
 })
 
-test('a terminal keeps the credit line as the model wrote it', async ($, on) => {
+test('the mobile app keeps the credit line as the model wrote it', async ($, on) => {
   const state = { marker: '' }
   wire(on, state)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/work', surface: 'mobile', isInteractive: true })
 
-  const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...CREDIT_ANSWER })
+  const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'mobile', ...CREDIT_ANSWER })
   expect(await ui.find({ type: 'Svg' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^the July notes/ })).toBeUndefined()
   await ui.unmount()

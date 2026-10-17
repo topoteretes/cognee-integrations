@@ -10,6 +10,24 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.2]
+
+### Added
+- **The Cognee logotype on the credit line in a terminal.** The line the model writes
+  under an answer that used memory (`> 🧠 Cognee memory [m4, m5]: …`) is drawn in a
+  terminal as the display logotype from the brand resources and the note alone, as
+  the Desktop app already draws it with the wave mark. The logotype is built from
+  squares on a grid, so each square is one braille dot: 11 columns by 2 rows, the
+  letters in the logotype's own proportions, bold in the darker brand purple so the
+  thin dots read on light and dark backgrounds, centred beside a note that runs
+  longer. The stored message is unchanged (ctrl+o, the Stop hook's credit check),
+  and the `icon` row in `/config` turns the logotype off with the wave.
+
+### Changed
+- **The credit note opens with a capital letter.** The model writes the note as the
+  end of the `Cognee memory [mN]:` sentence; drawn without that label, on the desktop
+  and in a terminal, its first letter is now capitalised.
+
 ## [1.7.0]
 
 ### Added

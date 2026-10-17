@@ -180,6 +180,7 @@ let warmupUntil = 0
 // itself, the official SVG on the desktop row, read from the plugin's assets
 // at session start. Text gets no stand-in: no glyph in a terminal, nothing
 // after the spinner or in toasts (a character never looks like the mark).
+// The terminal's credit line draws the display logotype instead (LOGOTYPE).
 let markOn = true
 let waveSvg = ''
 let purple = PURPLE_DARK
@@ -400,12 +401,22 @@ function activity(phase: Phase): Activity {
 // Returns the text without it, the tags and the note; null when the text
 // does not end with one.
 const CREDIT_LINE = /^(?:>\s*)?🧠\s*Cognee memory \[([^\]]+)\]:\s*(.*)$/u
+
+// The display logotype from cognee.ai/brand-resources (logotype-lavender.svg),
+// which is built from squares on a grid, in braille: one square is one dot (a
+// cell holds 2 x 4, so a dot is about square). The letters keep the SVG's
+// widths (c, o, g 3 squares, n 4, e 2); the gap between letters is one dot,
+// the smallest there is (the SVG's is 0.59 of a square).
+const LOGOTYPE = ['⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯', '⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉']
 function splitCredit(text: string): { body: string; tags: string; note: string } | null {
   const lines = text.replace(/\s+$/u, '').split('\n')
   const last = lines[lines.length - 1] ?? ''
   const m = CREDIT_LINE.exec(last.trim())
   if (!m) return null
-  return { body: lines.slice(0, -1).join('\n').replace(/\s+$/u, ''), tags: (m[1] ?? '').trim(), note: (m[2] ?? '').trim() }
+  // The note continues the label's sentence ("...[m4]: the July notes"); drawn
+  // without the label it opens one, so its first letter is capitalised.
+  const note = (m[2] ?? '').trim().replace(/^\p{Ll}/u, c => c.toUpperCase())
+  return { body: lines.slice(0, -1).join('\n').replace(/\s+$/u, ''), tags: (m[1] ?? '').trim(), note }
 }
 
 // Whether the row should use the light-background purple: the env override
@@ -1352,18 +1363,35 @@ export const register: Register = (on, options) => {
   // phase; in a terminal only for the async phases, whose settings hooks show
   // no statusMessage of their own there.
   // The credit line under an answer that used memory ("> 🧠 Cognee memory
-  // [m4]: …", written by the model on the recall hook's instruction): on the
-  // desktop the brain gives way to the wave mark. The engine still draws the
+  // [m4]: …", written by the model on the recall hook's instruction): the
+  // brain gives way to the wave mark on the desktop and to the display
+  // logotype in a terminal, which draws no Svg. The engine still draws the
   // reply, with the line taken off its text; the line is drawn under it as a
-  // row of its own. A terminal draws no Svg and keeps the line as written,
-  // and the stored message is never changed (ctrl+o, the Stop hook's check).
+  // row of its own. The stored message is never changed (ctrl+o, the Stop
+  // hook's check).
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (e.surface !== 'desktop' || !markOn || !waveSvg || e.props.isSummary) return next(e)
+    if (!markOn || e.props.isSummary) return next(e)
+    if (e.surface !== 'desktop' && e.surface !== 'terminal') return next(e)
     const split = splitCredit(e.props.text)
     if (!split) return next(e)
     const els = $.ui.resolve(e) as any
     const { Box, Text } = els
-    if (!els.Svg) return next(e)
+    let mark: RenderElement
+    if (e.surface === 'desktop') {
+      if (!waveSvg || !els.Svg) return next(e)
+      mark = els.Svg({ source: waveSvg, alt: 'cognee', width: 30, height: 30 })
+    } else {
+      mark = Box({
+        flexDirection: 'column',
+        flexShrink: 0,
+        // Centred on the note when it runs longer than the mark; the rule on
+        // the left still spans the whole row.
+        alignSelf: 'center',
+        // Braille dots are thin: bold and the darker purple on every theme
+        // (the lavender washes out on a light background).
+        children: LOGOTYPE.map(row => Text({ color: PURPLE_LIGHT, bold: true, children: [row] })),
+      })
+    }
     const theirs = await next({ ...e, props: { ...e.props, text: split.body } })
     // Set off from the reply the way a quote is: two blank lines above and a
     // rule down its left edge (a one-cell box with a background; a row's
@@ -1371,12 +1399,12 @@ export const register: Register = (on, options) => {
     // the answer.
     const credit = Box({
       flexDirection: 'row',
-      marginTop: 2,
+      marginTop: e.surface === 'desktop' ? 2 : 1,
       children: [
         Box({ width: 1, flexShrink: 0, backgroundColor: 'gray' }),
         Text({ children: ['  '] }),
-        els.Svg({ source: waveSvg, alt: 'cognee', width: 30, height: 30 }),
-        Text({ children: [' '] }),
+        mark,
+        Text({ children: [e.surface === 'desktop' ? ' ' : '  '] }),
         // The mark says whose memory it is; the tags are bookkeeping the Stop
         // hook reads from the stored line, not something to show. One text,
         // so the note wraps as one paragraph beside the mark; lighter than the
