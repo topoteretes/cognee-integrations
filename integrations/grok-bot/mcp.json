@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "cognee": {
+      "url": "${COGNEE_MCP_URL}",
+      "headers": {
+        "X-Api-Key": "${COGNEE_API_KEY}"
+      }
+    }
+  }
+}

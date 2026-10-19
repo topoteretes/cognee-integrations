@@ -1,0 +1,31 @@
+{
+  "name": "cognee-memory",
+  "description": "Cognee knowledge graph memory for Grok Bot — remember, recall and forget against your Cognee server over MCP, with skills that teach the agent when to store and when to search.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Cognee"
+  },
+  "homepage": "https://docs.cognee.ai",
+  "repository": "https://github.com/topoteretes/cognee-integrations",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "knowledge-graph", "cognee", "mcp"],
+  "skills": "./skills/",
+  "agents": "./agents/",
+  "mcpServers": "./mcp.json",
+  "variables": {
+    "type": "object",
+    "required": ["COGNEE_MCP_URL"],
+    "properties": {
+      "COGNEE_MCP_URL": {
+        "type": "string",
+        "title": "Cognee MCP endpoint",
+        "description": "Public HTTPS URL of a cognee-mcp server running with --transport http (for example https://memory.example.com/mcp). Grok Bot runs in the cloud and cannot reach localhost or private addresses."
+      },
+      "COGNEE_API_KEY": {
+        "type": "string",
+        "title": "Cognee API key",
+        "description": "Optional. Sent as the X-Api-Key header; only used by endpoints that authenticate per request."
+      }
+    }
+  }
+}
