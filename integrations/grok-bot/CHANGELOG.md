@@ -7,6 +7,14 @@ The version here must match the `version` field in `.cursor-plugin/plugin.json`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.3]
+
+### Fixed
+- `.cursor-plugin/plugin.json` lists the rule file in `rules`
+  (`./rules/cognee-memory.mdc`). The manifest had no `rules` field and relied on
+  discovery of the `rules/` folder, and Grok Bot did not appear to load the rule:
+  the bot did not follow it.
+
 ## [0.1.2]
 
 ### Changed

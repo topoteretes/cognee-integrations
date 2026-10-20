@@ -72,6 +72,9 @@ def test_the_only_component_is_one_always_on_rule():
     assert not (PLUGIN / "skills").exists()
     rules = sorted((PLUGIN / "rules").iterdir())
     assert [rule.name for rule in rules] == ["cognee-memory.mdc"]
+    # Listed file by file: Grok Bot did not pick the rule up by folder discovery.
+    listed = _json(PLUGIN / ".cursor-plugin/plugin.json")["rules"]
+    assert [(PLUGIN / path).resolve() for path in listed] == [rules[0].resolve()]
     fields = _frontmatter(rules[0])
     assert fields["alwaysApply"] == "true"
     assert fields["description"]
