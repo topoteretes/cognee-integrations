@@ -27,6 +27,28 @@ integrations:
     migration_status: done
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
+  - slug: backend-core
+    name: "Cognee Backend Core (shared adapter layer)"
+    owner: cognee
+    language: python
+    registry: none
+    package_name: "cognee-integration-backend-core"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Standardized cognee access layer for integrations: local/HTTP/fake adapters behind one contract, result-shape helpers, single-user runtime posture. Spotlight builds on it; second-brain and chat-memory are migration candidates."
+
+  - slug: spotlight
+    name: "Cognee Spotlight for macOS"
+    owner: cognee
+    language: swift+python
+    registry: none
+    package_name: null
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Spotlight-style macOS app (menu bar, global hotkey, floating search panel) backed by a local FastAPI bridge to cognee (local SDK, cognee cloud over HTTP, or offline fake mode)"
+
   - slug: claude-code
     name: "Cognee Plugin for Claude Code"
     owner: cognee
