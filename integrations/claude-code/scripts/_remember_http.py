@@ -230,8 +230,17 @@ def do_remember(
                 content = fh.read()
         except OSError as e:
             return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
+    from _capture_policy import redact
+    from _env_file import load_env_file
+
+    load_env_file()
+    if isinstance(content, bytes):
+        try:
+            content = content.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
     if isinstance(content, str):
-        content = content.encode("utf-8")
+        content = redact(content).encode("utf-8")
     # Hash only when the name needs it: a --file upload keeps its basename.
     filename = os.path.basename(str(file_path).rstrip("/")) if file_path else ""
     filename = filename or text_upload_name(node_set, content)
