@@ -14,6 +14,7 @@ dependencies = [
     "fastapi>=0.110,<1",
     "uvicorn>=0.27,<1",
     "httpx>=0.27,<1",
+    "python-dotenv>=1,<2",
 ]
 
 [project.scripts]
@@ -29,7 +30,7 @@ include = ["cognee_integration_web_widget*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-cognee_integration_web_widget = ["static/*"]
+cognee_integration_web_widget = ["static/*", "static/vendor/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
