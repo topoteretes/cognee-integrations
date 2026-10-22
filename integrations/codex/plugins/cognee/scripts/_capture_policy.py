@@ -278,6 +278,9 @@ _PLUGIN_PATH_MARKERS = (
     "$CODEX_PLUGIN_ROOT/",
     "${CODEX_PLUGIN_ROOT}/",
     "/.codex/plugins/cognee/",
+    "$CURSOR_PLUGIN_ROOT/",
+    "${CURSOR_PLUGIN_ROOT}/",
+    "/.cursor/plugins/local/cognee-memory/",
     "COGNEE_ANTIGRAVITY_PLUGIN_ROOT",
     "/.gemini/config/plugins/cognee",
 )

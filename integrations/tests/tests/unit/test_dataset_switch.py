@@ -273,7 +273,9 @@ def test_host_key_from_env_session_key(pc, monkeypatch):
     assert pc.resolve_host_key_outside_hook() == (HOST, "env_session_key")
 
 
-def test_host_key_from_claude_session_export(pc, monkeypatch):
+def test_host_key_from_claude_session_export(suite, pc, monkeypatch):
+    if suite.name == "cursor":
+        pytest.skip("cursor: Cursor exports no session id to the agent's shell")
     pc.ensure_launch_record(HOST, "/w", dataset="a")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", HOST)
     assert pc.resolve_host_key_outside_hook() == (HOST, "CLAUDE_CODE_SESSION_ID")

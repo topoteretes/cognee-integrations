@@ -34,7 +34,7 @@ Usage::
     common: [--json] [--all-sessions] [--max-sessions N] [--session-key <host id>]
 
 Sessions default to the coding-agent ones (``claude_``/``codex_``/
-``antigravity_``/``agy_`` ids); ``--all-sessions`` includes every session the
+``cursor_``/``antigravity_``/``agy_`` ids); ``--all-sessions`` includes every session the
 identity can see (MCP, maintenance jobs, …). Stdlib only; server-first with no
 CLI fallback — a recap that quietly answered from a different backend would
 be worse than none.
@@ -67,7 +67,7 @@ from _plugin_common import (  # noqa: E402
     urlopen_following_307,
 )
 
-AGENT_PREFIXES = ("claude_", "codex_", "antigravity_", "agy_")
+AGENT_PREFIXES = ("claude_", "codex_", "cursor_", "antigravity_", "agy_")
 #: Tools whose ``file_path`` argument means "this file was changed".
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 DEFAULT_SINCE = {"standup": "24h", "digest": "7d", "timeline": "30d"}
@@ -585,7 +585,7 @@ def launch_cwds() -> dict:
     """session_id -> cwd from the local launch records (fallback when prompts carry none)."""
     out: dict = {}
     root = Path.home() / ".cognee-plugin"
-    for sub in ("claude-code", "codex", "antigravity"):
+    for sub in ("claude-code", "codex", "cursor", "antigravity"):
         for path in (root / sub / "sessions").glob("*.json"):
             try:
                 rec = json.loads(path.read_text(encoding="utf-8"))
@@ -974,7 +974,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _doctor_hint() -> str:
     """Name the doctor this plugin ships: Claude Code wraps it as ``cognee-doctor.sh``,
-    Codex exposes ``doctor.py`` directly. Same script, so the hint follows the tree."""
+    Codex and Cursor expose ``doctor.py`` directly. Same script, so the hint follows the tree."""
     here = Path(__file__).resolve().parent
     tool = "cognee-doctor.sh" if (here / "cognee-doctor.sh").is_file() else "doctor.py"
     return f"{tool} --json shows the mode/URL"

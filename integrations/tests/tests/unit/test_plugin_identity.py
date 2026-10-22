@@ -27,7 +27,12 @@ import urllib.error
 import pytest
 
 #: Self-declared connection type per suite (KNOWN_AGENT_CONNECTION_TYPES).
-CONNECTION_TYPE = {"claude-code": "claude_code", "codex": "codex", "antigravity": "antigravity"}
+CONNECTION_TYPE = {
+    "claude-code": "claude_code",
+    "codex": "codex",
+    "antigravity": "antigravity",
+    "cursor": "cursor",
+}
 
 #: Provision route per suite (the plugin key is the suite name for both).
 PROVISION_PATH = {

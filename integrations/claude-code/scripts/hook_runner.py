@@ -21,8 +21,8 @@ The runner:
 * leaves an explicit ``sys.exit(code)`` from the script untouched.
 
 Stdlib only, and nothing from the plugin is imported here: this file has to
-work precisely when the plugin's own modules don't. The Codex and Claude Code
-plugins carry identical copies apart from ``_STATE_SUBDIR``.
+work precisely when the plugin's own modules don't. The Claude Code, Codex and
+Cursor plugins carry identical copies apart from ``_STATE_SUBDIR``.
 """
 
 from __future__ import annotations
