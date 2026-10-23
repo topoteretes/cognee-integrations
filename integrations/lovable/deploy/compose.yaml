@@ -1,0 +1,48 @@
+# Lovable memory connector + persistent receipt ledger.
+#
+#   cp deploy/.env.example deploy/.env   # fill in the values
+#   docker compose -f deploy/compose.yaml up -d
+#
+# The connector listens on 127.0.0.1:8787 (plain HTTP). Lovable needs an HTTPS
+# URL, so put a TLS reverse proxy in front (see deploy/Caddyfile.example and the
+# README) and set LOVABLE_PUBLIC_URL to the public https:// address.
+services:
+  lovable-memory:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: cognee/lovable-memory:0.1.0
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LOVABLE_MCP_HOST: 0.0.0.0
+      LOVABLE_MCP_PORT: "8787"
+      LOVABLE_RECEIPTS_PATH: /data/receipts.sqlite
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - lovable-memory-receipts:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Optional: a self-hosted cognee server next to the connector. Remove this
+  # service (and point COGNEE_BASE_URL at your tenant) when using Cognee Cloud.
+  # cognee:
+  #   image: cognee/cognee:1.6.5
+  #   environment:
+  #     LLM_API_KEY: ${LLM_API_KEY}
+  #     DEFAULT_USER_EMAIL: default_user@example.com
+  #     DEFAULT_USER_PASSWORD: ${COGNEE_DEFAULT_USER_PASSWORD:-change-me}
+  #     CACHING: "true"
+  #   volumes:
+  #     - cognee-data:/app/.cognee_system
+  #   ports:
+  #     - "127.0.0.1:8000:8000"
+
+volumes:
+  lovable-memory-receipts:
+  # cognee-data:

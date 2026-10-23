@@ -1,0 +1,58 @@
+{
+  "name": "@cognee/lovable-memory",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Remote MCP connector that gives the Lovable builder a scoped, source-backed product memory on Cognee: recall product context, remember accepted decisions, and check indexing status, over cognee's HTTP API.",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Cognee",
+    "url": "https://www.cognee.ai"
+  },
+  "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/lovable#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/topoteretes/cognee-integrations.git",
+    "directory": "integrations/lovable"
+  },
+  "bugs": {
+    "url": "https://github.com/topoteretes/cognee-integrations/issues"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "lovable-memory": "dist/src/operator-cli.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "files": [
+    "dist",
+    "examples",
+    "deploy",
+    "README.md",
+    "COMPATIBILITY.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit --skipLibCheck",
+    "test": "npm run build && node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
+    "test:live": "npm run build && COGNEE_LIVE=1 node --disable-warning=ExperimentalWarning --test tests/live/*.test.mjs",
+    "start": "node --disable-warning=ExperimentalWarning dist/src/operator-cli.js serve"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}

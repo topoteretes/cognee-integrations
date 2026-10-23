@@ -1,0 +1,16 @@
+# TLS termination for the connector with automatic Let's Encrypt certificates.
+#   caddy run --config deploy/Caddyfile.example
+# Replace memory.example.com with the hostname in LOVABLE_PUBLIC_URL.
+memory.example.com {
+	# Lovable only needs /mcp; /health is useful for your own monitoring.
+	@allowed path /mcp /health
+	handle @allowed {
+		reverse_proxy 127.0.0.1:8787 {
+			# Streamable HTTP responses may be server-sent events: do not buffer.
+			flush_interval -1
+		}
+	}
+	handle {
+		respond 404
+	}
+}
