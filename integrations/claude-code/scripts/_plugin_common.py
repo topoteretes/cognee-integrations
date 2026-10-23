@@ -5600,7 +5600,7 @@ def drain_warmup_entries(
     ``deduped``). If the detail read fails, everything replays as before: a
     rare duplicate beats a lost turn.
     """
-    from _capture_policy import CapturePatternError, allow_tool, capture_enabled, redact
+    from _capture_policy import CapturePatternError, allow_tool, capture_enabled, sanitize
 
     if not capture_enabled():
         return 0, 0
@@ -5684,7 +5684,7 @@ def drain_warmup_entries(
                 ):
                     deduped += 1
                     continue
-                send_entry = redact(send_entry)
+                send_entry = sanitize(send_entry)
                 remember_entry_via_http(
                     dataset,
                     session_id,

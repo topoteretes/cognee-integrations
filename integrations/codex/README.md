@@ -800,6 +800,10 @@ A pattern that is not understood turns capture off and is reported on the next p
 `COGNEE_CAPTURE_REDACT=true` is the default; common secrets are redacted before
 truncation and storage. `COGNEE_CAPTURE_REDACT_PATTERNS` accepts a JSON array of
 additional regexes. Invalid expressions prevent affected content from being stored.
+Text inside `<private>…</private>` is replaced with `[private]` before it is logged,
+stored, sent as a query or uploaded, for automatic capture and explicit remember
+alike; neither switch turns that off, and a `--file` upload is sent unchanged (see
+[private spans](../claude-code/README.md#private-spans)).
 Redaction is best effort; the master switch is the strict opt-out. This does not
 erase existing memory or buffers, and path exclusions inspect structured tool path
 arguments rather than arbitrary shell commands.

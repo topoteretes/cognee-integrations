@@ -217,6 +217,13 @@ if [ -z "$QUERY" ]; then
     exit 1
 fi
 
+# A query is sent like any other text: <private> spans and secret shapes are
+# removed first, for the server and the CLI fallback alike.
+QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" "$QUERY")" || exit 1
+if [ -n "$CODE_QUERY" ]; then
+    CODE_QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" "$CODE_QUERY")" || exit 1
+fi
+
 # The session id is bound to the active dataset, and the server rejects it
 # against another one — so a foreign target is read without it. The active
 # dataset named by hand (its name or one of its UUIDs) keeps the session id.

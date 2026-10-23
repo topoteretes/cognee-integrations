@@ -48,7 +48,7 @@ Pick the dataset whose `name` matches `${COGNEE_PLUGIN_DATASET:-agent_sessions}`
 ${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh data <dataset_id>
 ```
 
-Each item has an `id` (the data id) and metadata. **Don't raw-fetch every document in a large dataset** — narrow first: a `cognee-search.sh "<topic>"` recall confirms the topic exists in memory and its hits hint at which sessions/documents hold it, and the listing's metadata (`name`, `createdAt`, and a session id field when present) lets you prioritize. Then download the raw content of the candidates (the original stored text, e.g. the session transcript) and check whether it mentions what the user wants forgotten:
+Each item has an `id` (the data id) and metadata. **Don't raw-fetch every document in a large dataset** — narrow first: a `cognee-search.sh "<topic>"` recall confirms the topic exists in memory and its hits hint at which sessions/documents hold it, and the listing's metadata (`name`, `createdAt`, and a session id field when present) lets you prioritize. When the thing to forget is a secret, search for what surrounds it (e.g. `"staging database URL"`), never the value itself: the query is sent to the server, and only recognised secret shapes are redacted from it. Then download the raw content of the candidates (the original stored text, e.g. the session transcript) and check whether it mentions what the user wants forgotten:
 
 ```bash
 ${CODEX_PLUGIN_ROOT}/scripts/cognee-forget.sh raw <dataset_id> <data_id>

@@ -7,6 +7,29 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.6]
+
+### Security
+- **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
+  wrap in the tag is replaced with `[private]` before the plugin writes it to a file or
+  log, sends it as a query, or stores it; the text around it is kept. Spans nest, cross
+  lines and may carry attributes, and one with no closing tag hides the rest of the
+  text. No setting turns this off.
+- **Explicit remember is sanitized like automatic capture.** `cognee-remember.sh` text,
+  and its `cognee-cli` fallback, now goes through the same `<private>` stripping and
+  secret patterns, whatever `COGNEE_CAPTURE` says. So does text passed to
+  `cognee-cli.sh remember|add|recall|search`, the source-checkout fallback; a file path
+  given there, like a `--file` upload, is still sent byte for byte.
+- **Queries are sanitized**: the per-prompt recall and `cognee-search.sh` with its CLI
+  fallback.
+- **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it
+  keeps; the `sync_payload` line in `hook.log` records field names and size instead of
+  the payload's first 200 characters.
+
+### Changed
+- `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
+  affects `<private>` spans.
+
 ## [1.6.5]
 
 ### Changed

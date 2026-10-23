@@ -19,11 +19,14 @@ open items, and concrete next steps. Include repository/branch and relevant path
 or PR links. Separate verified results from untested assumptions. Omit credentials
 and raw tool output.
 
-Store the note as project knowledge using a temporary UTF-8 Markdown file and the
-existing wrapper. Use shell-safe paths; do not interpolate the note into a command.
+Store the note as project knowledge: write it to a temporary UTF-8 Markdown file,
+then pass the file's text as the content, quoted exactly as below so the shell
+never interprets the note. Pass it as text, not with `--file`: inline text is
+sanitized before upload (`<private>` spans and secret patterns are removed),
+while a `--file` upload is sent byte for byte.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh" --file /tmp/cognee-handoff.md --node-set project_docs
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh" "$(cat /tmp/cognee-handoff.md)" --node-set project_docs
 ```
 
 Report the write's actual status: queued is not yet queryable. If the wrapper says

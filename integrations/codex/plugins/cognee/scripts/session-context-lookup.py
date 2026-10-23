@@ -927,6 +927,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
+        from _capture_policy import sanitize as _sanitize
         from _logfiles import append_line as _append_log_line
 
         _audit = _Path.home() / ".cognee-plugin" / "codex" / "recall-audit.log"
@@ -946,7 +947,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     # The header the user sees: an empty recall no longer
                     # puts it in the injected context (SDK-1071).
                     "header": header,
-                    "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                    "context": _audit_clip(_sanitize(full_context), _AUDIT_CONTEXT_CHARS),
                 }
             ),
         )
@@ -1010,6 +1011,14 @@ def main():
         return
 
     prompt = payload.get("prompt", "")
+    try:
+        from _capture_policy import sanitize
+
+        # Every recall lane, the audit line and the tags see only this copy.
+        prompt = sanitize(prompt) if isinstance(prompt, str) else ""
+    except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
+        hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})
+        return
     if not prompt or len(prompt) < 5:
         return
     # Only a raised floor applies here: the stock gate above keeps its exact

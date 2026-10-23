@@ -10,6 +10,25 @@ if [[ "${1:-}" == "doctor" ]]; then
   exec python3 "${SELF_DIR}/doctor.py" "$@"
 fi
 
+# Text handed to remember/add/recall/search is sanitized like everywhere else in
+# the plugin (<private> spans, then secret patterns). Options and existing paths
+# pass unchanged: a file goes up byte for byte, as with cognee-remember.sh --file.
+# Checked before the cd below, so relative paths resolve where they were typed.
+if [[ "${1:-}" =~ ^(remember|add|recall|search)$ ]]; then
+  SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+  args=("$1")
+  shift
+  for arg in "$@"; do
+    if [[ "$arg" == -* || -e "$arg" ]]; then
+      args+=("$arg")
+    else
+      clean="$(python3 "${SELF_DIR}/_capture_policy.py" "$arg")" || exit 1
+      args+=("$clean")
+    fi
+  done
+  set -- "${args[@]}"
+fi
+
 if [[ -n "${COGNEE_REPO_ROOT:-}" ]]; then
   cd "$COGNEE_REPO_ROOT"
 elif [[ -f pyproject.toml ]] && grep -q '^name = "cognee"$' pyproject.toml; then

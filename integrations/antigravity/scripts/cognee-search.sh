@@ -204,6 +204,13 @@ if [ -z "$QUERY" ]; then
     exit 1
 fi
 
+# A query is sent like any other text: <private> spans and secret shapes are
+# removed first, for the server and the CLI fallback alike.
+QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" "$QUERY")" || exit 1
+if [ -n "$CODE_QUERY" ]; then
+    CODE_QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" "$CODE_QUERY")" || exit 1
+fi
+
 # Search scope from MODE. Graph and code only: the session cache is never a
 # search source (its history reaches the model through the graph item's
 # prompt on cognee >= 1.6.0, and through the sync bridge before that).

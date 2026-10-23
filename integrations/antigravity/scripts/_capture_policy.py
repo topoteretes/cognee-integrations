@@ -1,4 +1,9 @@
-"""Client-side automatic capture controls. Explicit remember is independent."""
+"""Client-side capture controls and the text sanitizer.
+
+The capture switches and tool/path filters govern automatic capture only;
+explicit remember ignores them. :func:`sanitize` is different: every text the
+plugin writes, logs or sends goes through it, explicit remember included.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from pathlib import PurePosixPath
 
 _FALSE = {"0", "false", "no", "off"}
@@ -260,6 +266,81 @@ def redact(value):
     return value
 
 
+PRIVATE_PLACEHOLDER = "[private]"
+# ``<private>`` and ``<private attr=...>`` open a span, ``</private>`` closes
+# one; ``<private/>`` is empty. ``<privateer>`` is not a tag.
+_PRIVATE_TAG = re.compile(r"(?i)<(/?)private(?=[\s/>])[^>]*?(/?)>")
+
+
+def strip_private(text: str, placeholder: str = PRIVATE_PLACEHOLDER) -> str:
+    """Remove ``<private>…</private>`` spans, leaving ``placeholder`` per outermost span.
+
+    Spans nest (the outermost close ends them), cross lines, and may carry
+    attributes. An unclosed span hides everything to the end of the text, so a
+    forgotten close tag fails safe. A stray close tag outside any span is dropped.
+    """
+    if "<" not in text:
+        return text
+    out = []
+    depth = 0
+    pos = 0
+    for tag in _PRIVATE_TAG.finditer(text):
+        if depth == 0:
+            out.append(text[pos : tag.start()])
+        closing, self_closing = tag.group(1), tag.group(2)
+        if closing:
+            depth = max(depth - 1, 0)
+        elif not self_closing:
+            if depth == 0:
+                out.append(placeholder)
+            depth += 1
+        pos = tag.end()
+    if depth == 0:
+        out.append(text[pos:])
+    return "".join(out)
+
+
+def _strip_private_tree(value):
+    if isinstance(value, str):
+        return strip_private(value)
+    if isinstance(value, dict):
+        return {key: _strip_private_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_strip_private_tree(item) for item in value]
+    return value
+
+
+def sanitize(value):
+    """Everything that leaves the hook as text goes through here: plugin files,
+    logs, request bodies, queries.
+
+    ``<private>`` spans are always removed: they are the user's explicit
+    instruction, so neither ``COGNEE_CAPTURE`` nor ``COGNEE_CAPTURE_REDACT``
+    turns that off. The secret patterns of :func:`redact` run on what is left
+    and keep their own switch. Strings, dicts and lists are walked like
+    :func:`redact`; spans go first so a secret split by a span still matches.
+    """
+    return redact(_strip_private_tree(value))
+
+
+def _main(argv) -> int:
+    """``python3 _capture_policy.py <text>`` prints ``sanitize(text)``.
+
+    For the shell scripts (search queries, the remember CLI fallback). A failure
+    exits non-zero with nothing on stdout, so the caller stops instead of
+    sending the raw text.
+    """
+    try:
+        from _env_file import load_env_file
+
+        load_env_file()  # custom patterns may live in ~/.cognee/.env
+        sys.stdout.write(sanitize(argv[0] if argv else ""))
+    except Exception as exc:
+        sys.stderr.write(f"[cognee] could not sanitize the text: {exc}\n")
+        return 1
+    return 0
+
+
 # Only command positions count: grep patterns, Python source and ordinary repo
 # paths mentioning Cognee are evidence, not recursive plugin invocations.
 _PLUGIN_SCRIPTS = set(
@@ -480,3 +561,7 @@ def low_signal_bash(command: str, output, status: str) -> bool:
     if first == "env":
         return not args
     return True
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))

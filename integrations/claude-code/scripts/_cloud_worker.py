@@ -176,7 +176,7 @@ def touch_session() -> None:
 
 
 def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
-    from _capture_policy import redact
+    from _capture_policy import sanitize
     from _plugin_common import _sanitize_value, get_session_key
 
     key = get_session_key()
@@ -186,7 +186,7 @@ def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
         "dataset": dataset,
         "session_id": session_id,
         "host_key": key,
-        "entry": _sanitize_value(redact(entry)),
+        "entry": _sanitize_value(sanitize(entry)),
         "kind": kind,
         "target": target(),
         "created_at": created,
@@ -292,7 +292,7 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
     A session waiting on a retry holds back only its own later events; a server-wide
     failure ends the pass; a payload the server will never accept is expired.
     """
-    from _capture_policy import allow_tool, capture_enabled, redact
+    from _capture_policy import allow_tool, capture_enabled, sanitize
 
     now = time.time() if now is None else now
     capturing = capture_enabled()
@@ -325,7 +325,7 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                 _expire(path, "capture_disabled_by_policy")
                 _mark_capture_unsaved(item, buffered=False)
                 continue
-            redacted = redact(item["entry"])
+            redacted = sanitize(item["entry"])
             if item.get("request") and redacted != item["entry"]:
                 # Never change a payload after its event ID may have committed.
                 _expire(path, "capture_policy_changed")

@@ -28,7 +28,8 @@ runs no code from anywhere else.
 filtered by the [capture controls](#automatic-capture-controls)), and Claude's
 answers, plus a short memory anchor before compaction. Credentials, private keys and
 database URLs are redacted before anything is stored or uploaded, and `.env`,
-credential and key files are never captured. `COGNEE_CAPTURE=false` turns automatic
+credential and key files are never captured. Text you wrap in `<private>…</private>`
+never leaves the hooks; see [private spans](#private-spans). `COGNEE_CAPTURE=false` turns automatic
 capture off; recall and explicit remember keep working.
 
 **Where it goes.** To the Cognee server you configure, and nowhere else.
@@ -1481,7 +1482,7 @@ win over the shared file. Changes apply when a new hook process starts.
 | `COGNEE_CAPTURE_TOOLS` | all registered tools | Pipe-separated allowlist of tool names, globs or `Tool(prefix:*)` command matchers, e.g. `Bash(git:*)\|Bash(pytest:*)\|Read\|Edit`; everything else is not captured. |
 | `COGNEE_CAPTURE_DENY_TOOLS` | empty | Same syntax, applied after the allowlist: a matching call is not captured, e.g. `Bash(rg:*)\|Bash(grep:*)\|Bash(cat:*)` keeps every Bash call except search and inspection. |
 | `COGNEE_CAPTURE_DENY_PATHS` | sensitive file patterns | Comma-separated patterns or a JSON array extending the built-in `.env`, credential and private-key exclusions. |
-| `COGNEE_CAPTURE_REDACT` | `true` | Redacts common credentials, authorization values, database URLs and private-key blocks before truncation, persistence or upload. |
+| `COGNEE_CAPTURE_REDACT` | `true` | Redacts common credentials, authorization values, database URLs and private-key blocks before truncation, persistence or upload. `false` turns these patterns off; `<private>` spans are removed regardless. |
 | `COGNEE_CAPTURE_REDACT_PATTERNS` | empty | JSON array of additional regular expressions. Invalid expressions prevent the affected content from being captured. |
 
 `Tool(prefix:*)` borrows Claude Code's permission spelling: `Bash(git:*)` matches a
@@ -1498,6 +1499,26 @@ where automatic content capture is inappropriate. Disabling capture does not era
 existing memory or retained buffers; use the forget workflow to remove stored data.
 Sensitive-path exclusions inspect structured tool path arguments, not arbitrary
 shell command syntax.
+
+#### Private spans
+
+Wrap anything you don't want remembered in `<private>…</private>`, in a prompt or in
+text you ask Claude to remember:
+
+```
+Deploy with the staging key <private>the value is in 1Password under "staging"</private>.
+```
+
+The span is replaced with `[private]` before the text is written to a plugin file or
+log, sent as a recall or search query, or stored, and the text around it is kept.
+This applies to automatic capture and to explicit remember (`/cognee-remember`,
+`/cognee-handoff`) alike, and neither `COGNEE_CAPTURE` nor `COGNEE_CAPTURE_REDACT`
+turns it off. Spans may nest, cross lines and carry attributes (`<private reason="x">`);
+a span with no closing tag hides everything to the end of the text. The secret patterns
+above then run on what is left.
+
+Two limits: Claude itself still sees the span in the live turn, and a `--file` upload
+(`cognee-remember.sh --file`) is sent byte for byte.
 
 ### HTTP backend compatibility
 
