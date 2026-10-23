@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check inventory and release versions for the six in-repository plugin release surfaces.
+"""Check inventory and release versions for the seven in-repository plugin release surfaces.
 
 Run ``python scripts/check_version_consistency.py`` from any directory.
 The inventory scanner supports its existing flat ``slug``/``current_version``
@@ -21,6 +21,7 @@ MANIFESTS = {
     "n8n": "integrations/n8n/package.json",
     "opencode": "integrations/opencode/package.json",
     "antigravity": "integrations/antigravity/plugin.json",
+    "lovable": "integrations/lovable/package.json",
 }
 MARKETPLACE = ".claude-plugin/marketplace.json"
 

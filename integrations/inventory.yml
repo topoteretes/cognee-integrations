@@ -203,6 +203,26 @@ integrations:
       cognee_remember tools. Talks to a cognee server over the HTTP API
       (/recall, /remember, /datasets, /forget); no cognee SDK dependency.
 
+  - slug: lovable
+    name: "Cognee Product Memory Connector for Lovable"
+    owner: cognee
+    language: typescript
+    registry: npm
+    package_name: "@cognee/lovable-memory"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: >-
+      Remote MCP connector (Streamable HTTP, bearer token) that Lovable's custom
+      MCP chat connector attaches to: recall_product_context /
+      remember_product_decision / memory_status over one fixed project dataset
+      plus explicit read-only shared datasets. SQLite receipt ledger, operator CLI
+      with verified targeted deletion, Docker/Compose deployment. Talks to a
+      cognee server over the HTTP API (verified on 1.6.5); no cognee SDK
+      dependency. Requires Node 22.13+ (node:sqlite). The Supabase
+      application-memory template from the plan is a follow-on, not in this
+      release. Published to npm from CI on lovable-v* tags (lovable-publish.yml).
+
   - slug: tapes-cassette
     name: "Cognee Cassette for Paper's Tapes"
     owner: cognee
