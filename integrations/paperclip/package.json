@@ -1,0 +1,63 @@
+{
+  "name": "@cognee/paperclip-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Paperclip plugin that turns completed tasks and marked decisions into shared company knowledge on Cognee, and gives agents scoped cognee_recall / cognee_remember_decision tools.",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Cognee",
+    "url": "https://www.cognee.ai"
+  },
+  "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/paperclip#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/topoteretes/cognee-integrations.git",
+    "directory": "integrations/paperclip"
+  },
+  "bugs": {
+    "url": "https://github.com/topoteretes/cognee-integrations/issues"
+  },
+  "main": "dist/lib/index.js",
+  "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/lib/index.js"
+    },
+    "./manifest": "./dist/manifest.js",
+    "./worker": "./dist/worker.js"
+  },
+  "paperclipPlugin": {
+    "manifest": "dist/manifest.js",
+    "worker": "dist/worker.js"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "files": [
+    "dist",
+    "migrations",
+    "skills",
+    "examples",
+    "README.md",
+    "COMPATIBILITY.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "npm run build:lib && npm run build:bundle",
+    "build:lib": "tsc -p tsconfig.json",
+    "build:bundle": "node scripts/bundle.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit --skipLibCheck -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "test:live": "npm run build && COGNEE_LIVE=1 node --test tests/live/*.test.mjs"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "2026.1012.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}

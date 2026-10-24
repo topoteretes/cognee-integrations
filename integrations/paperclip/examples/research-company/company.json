@@ -1,0 +1,60 @@
+{
+  "$comment": "An importable example company for the Cognee company-memory plugin: research → product decision → marketing brief. Ids are stable UUIDs so the walkthrough's config and curl commands line up. Seed it into a dev host with `paperclipai` (see README.md in this folder) or into the SDK test harness (tests/live/live.test.mjs uses the same shapes).",
+  "company": {
+    "id": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10",
+    "name": "Northwind Research Co",
+    "status": "active"
+  },
+  "projects": [
+    { "id": "6a1c3b2d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10", "name": "Customer research", "status": "active" },
+    { "id": "7b2d4c3e-5f6a-4b7c-9d8e-0f1a2b3c4d5e", "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10", "name": "Product", "status": "active" },
+    { "id": "8c3e5d4f-6a7b-4c8d-ae9f-1a2b3c4d5e6f", "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10", "name": "Marketing", "status": "active" }
+  ],
+  "agents": [
+    { "id": "a1a1a1a1-1111-4111-8111-111111111111", "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10", "name": "Researcher", "role": "researcher", "adapterType": "codex_local", "status": "active" },
+    { "id": "a2a2a2a2-2222-4222-8222-222222222222", "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10", "name": "Product lead", "role": "product", "adapterType": "codex_local", "status": "active" },
+    { "id": "a3a3a3a3-3333-4333-8333-333333333333", "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10", "name": "Marketer", "role": "marketing", "adapterType": "codex_local", "status": "active" }
+  ],
+  "issues": [
+    {
+      "id": "11111111-aaaa-4aaa-8aaa-111111111111",
+      "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10",
+      "projectId": "6a1c3b2d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+      "identifier": "RES-1",
+      "title": "Interview 12 onboarding drop-off customers",
+      "status": "done",
+      "assigneeAgentId": "a1a1a1a1-1111-4111-8111-111111111111",
+      "description": "Findings: 9 of 12 interviewed customers abandoned onboarding at the password step; 7 cited password-manager friction on mobile; 4 asked for a magic link. Support tickets tagged 'password reset' were 31% of onboarding tickets in September. Transcripts: research-drive/onboarding-2026-09.\n\n#remember Password friction is the leading onboarding drop-off cause (9/12 interviews, 31% of onboarding tickets)."
+    },
+    {
+      "id": "22222222-bbbb-4bbb-8bbb-222222222222",
+      "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10",
+      "projectId": "7b2d4c3e-5f6a-4b7c-9d8e-0f1a2b3c4d5e",
+      "identifier": "PROD-7",
+      "title": "Decide the onboarding login method",
+      "status": "done",
+      "assigneeAgentId": "a2a2a2a2-2222-4222-8222-222222222222",
+      "description": "Decision: ship passwordless magic-link login as the default onboarding path in Q4; keep password login behind 'Other options'. Rationale: RES-1 evidence (password friction leading drop-off cause) and the support cost of resets. Risks: email deliverability; mitigated with a resend flow."
+    },
+    {
+      "id": "33333333-cccc-4ccc-8ccc-333333333333",
+      "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10",
+      "projectId": "8c3e5d4f-6a7b-4c8d-ae9f-1a2b3c4d5e6f",
+      "identifier": "MKT-3",
+      "title": "Write the launch brief for passwordless onboarding",
+      "status": "todo",
+      "assigneeAgentId": "a3a3a3a3-3333-4333-8333-333333333333",
+      "description": "Draft the launch brief. Use cognee_recall first: the research evidence (RES-1) and the product decision (PROD-7) are in company memory. Cite both tasks."
+    }
+  ],
+  "comments": [
+    {
+      "id": "c1c1c1c1-dddd-4ddd-8ddd-c1c1c1c1c1c1",
+      "issueId": "22222222-bbbb-4bbb-8bbb-222222222222",
+      "companyId": "0d9f2a4e-7c1b-4b6e-9a3f-5e2d8c1a7b10",
+      "authorType": "agent",
+      "authorAgentId": "a2a2a2a2-2222-4222-8222-222222222222",
+      "body": "#remember Magic-link login is the default onboarding path from Q4 2026; password login stays available under 'Other options'. Evidence: RES-1 interviews and September support-ticket share."
+    }
+  ]
+}
