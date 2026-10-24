@@ -163,11 +163,13 @@ jobs:
       # n8n's dev toolchain (@n8n/node-cli -> n8n-workflow 2.x -> @n8n/expression-runtime)
       # pulls in isolated-vm 7, a native module that requires Node >= 24 and compiles
       # from source at install time. Node 20 fails that compile, so n8n gets Node 24
-      # (the version n8n 2.x itself requires); the other integrations stay on 20.
+      # (the version n8n 2.x itself requires). paperclip's @paperclipai/plugin-sdk
+      # declares engines node >= 24.11, so it gets Node 24 too; the other
+      # integrations stay on 20.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.integration == 'n8n' && '24' || '20' }}
+          node-version: ${{ (matrix.integration == 'n8n' || matrix.integration == 'paperclip') && '24' || '20' }}
 
       - name: Build local dependencies
         if: matrix.integration == 'openclaw-skills'
@@ -191,7 +193,7 @@ jobs:
         working-directory: integrations/${{ matrix.integration }}
         run: |
           case "${{ matrix.integration }}" in
-            n8n|opencode) npm test --if-present ;;
+            n8n|opencode|paperclip) npm test --if-present ;;
             *) npm test --if-present -- --passWithNoTests ;;
           esac
 

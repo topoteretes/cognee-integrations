@@ -203,6 +203,27 @@ integrations:
       cognee_remember tools. Talks to a cognee server over the HTTP API
       (/recall, /remember, /datasets, /forget); no cognee SDK dependency.
 
+  - slug: paperclip
+    name: "Cognee Company Memory Plugin for Paperclip"
+    owner: cognee
+    language: typescript
+    registry: npm
+    package_name: "@cognee/paperclip-plugin"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: >-
+      Native Paperclip worker plugin (@paperclipai/plugin-sdk 2026.1012.0, Node
+      24): captures completed issues and #remember-marked comments from enabled
+      projects into per-project cognee datasets with provenance links, gives
+      agents scoped cognee_recall / cognee_remember_decision tools, and keeps a
+      durable ingestion ledger in the plugin's database namespace with verified
+      retirement of replaced sources and an operator cleanup action. Talks to a
+      cognee server over the HTTP API (verified on 1.6.5); no cognee SDK
+      dependency. Verified with the SDK test harness and a live cognee server,
+      not yet on a real Paperclip host. Published to npm from CI on paperclip-v*
+      tags (paperclip-publish.yml).
+
   - slug: tapes-cassette
     name: "Cognee Cassette for Paper's Tapes"
     owner: cognee

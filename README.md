@@ -53,6 +53,7 @@ Install these from their public registries — you do **not** need to clone this
 | n8n | `n8n-nodes-cognee` | install via n8n community nodes |
 | Dify (Cloud) | `cognee` | install from the Dify marketplace |
 | Dify (self-hosted) | `cognee-sdk` | install from the Dify marketplace |
+| Paperclip | `@cognee/paperclip-plugin` | `npx paperclipai plugin install @cognee/paperclip-plugin` (see [`integrations/paperclip/`](integrations/paperclip/README.md)) |
 
 Each integration has its own `README.md` under `integrations/<name>/` with the full tool
 reference and runnable examples. The table above is generated from
