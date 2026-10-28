@@ -1,41 +1,32 @@
-"""Tests for CogneeMemoryAdapter: recall injection, QA capture, improve, proxying.
+"""Tests for CogneeMemoryAdapter: recall injection, QA capture, improve, and the
+band-sdk 6.x lifecycle (startup, cleanup ownership, teardown).
 
-Fakes mirror the verified band-sdk 1.5.0 shapes (frozen dataclasses AgentInput
-and PlatformMessage; the Agent drives adapters via duck typing), so the tests
-run without band-sdk installed.
+Runs against the real band-sdk types and runtime startup/disposal functions;
+only the inner adapter and the Cognee client are fakes.
 """
 
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
 
 import pytest
+from band.core.simple_adapter import SimpleAdapter
+from band.core.types import AgentInput, HistoryProvider, PlatformMessage
+from band.runtime.startup import accept_adapter, dispose_adapter, start_adapter
 from cognee_band.adapter import CogneeMemoryAdapter, render_memory_block
 from cognee_band.config import CogneeSettings
 
 
-@dataclass(frozen=True)
-class PlatformMessage:
-    id: str = "m1"
-    room_id: str = "room1"
-    content: str = "hello"
-    sender_id: str = "u1"
-    sender_type: str = "user"
-    sender_name: str = "alice"
-    message_type: str = "text"
-    metadata: Any = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-@dataclass(frozen=True)
-class AgentInput:
-    msg: PlatformMessage
-    tools: Any
-    history: Any = None
-    participants_msg: str = None
-    contacts_msg: str = None
-    is_session_bootstrap: bool = False
-    room_id: str = "room1"
+def make_msg(content="hello", message_type="text", room_id="room1"):
+    return PlatformMessage(
+        id="m1",
+        room_id=room_id,
+        content=content,
+        sender_id="u1",
+        sender_type="User",
+        sender_name="alice",
+        message_type=message_type,
+        metadata={},
+        created_at=datetime.now(timezone.utc),
+    )
 
 
 class FakeTools:
@@ -49,50 +40,66 @@ class FakeTools:
         pass
 
 
-class FakeInnerAdapter:
+class FakeInnerAdapter(SimpleAdapter[list]):
     """Records what reaches it and replies via tools.send_message."""
 
     def __init__(self, reply="the answer"):
+        super().__init__()
         self.reply = reply
         self.seen = []
-        self.started = None
+        self.calls = []
         self.cleaned_rooms = []
-        self.cleanup_all_called = False
+
+    async def startup(self, *args, **kwargs):
+        self.calls.append("startup")
+        await super().startup(*args, **kwargs)
 
     async def on_started(self, agent_name, agent_description):
-        self.started = (agent_name, agent_description)
+        await super().on_started(agent_name, agent_description)
+        self.calls.append(("on_started", agent_name, agent_description))
 
     async def on_event(self, inp):
         self.seen.append(inp)
         if self.reply:
             await inp.tools.send_message(self.reply)
 
+    async def on_message(self, *args, **kwargs):
+        raise AssertionError("turns are routed through on_event")
+
     async def on_cleanup(self, room_id):
         self.cleaned_rooms.append(room_id)
 
     async def cleanup_all(self):
-        self.cleanup_all_called = True
+        self.calls.append("cleanup_all")
 
 
 class FakeClient:
-    """Stands in for CogneeClient; records calls."""
+    """Stands in for CogneeClient; records calls in order."""
 
-    def __init__(self, recall_result=None):
+    def __init__(self, recall_result=None, store_delay=0.0):
         self.recall_result = recall_result if recall_result is not None else []
+        self.store_delay = store_delay
         self.recalls = []
         self.stored_qa = []
         self.improved = []
+        self.log = []
 
     def recall(self, query, *, session_id="", top_k=0):
         self.recalls.append((query, session_id))
         return self.recall_result
 
     def store_qa(self, question, answer, *, session_id, context=""):
+        if self.store_delay:
+            import time
+
+            time.sleep(self.store_delay)
         self.stored_qa.append((question, answer, session_id))
+        self.log.append(("store", session_id))
         return {}
 
     def improve(self, session_id):
         self.improved.append(session_id)
+        self.log.append(("improve", session_id))
         return {"ok": True}
 
 
@@ -103,16 +110,82 @@ def make_adapter(inner=None, client=None):
     return CogneeMemoryAdapter(inner, settings=settings, client=client), inner, client
 
 
-async def run_turn(adapter, content="hello", message_type="text", room_id="room1"):
+async def run_turn(adapter, content="hello", message_type="text", room_id="room1", drain=True):
     tools = FakeTools()
     inp = AgentInput(
-        msg=PlatformMessage(content=content, message_type=message_type, room_id=room_id),
+        msg=make_msg(content=content, message_type=message_type, room_id=room_id),
         tools=tools,
+        history=HistoryProvider(raw=[]),
+        participants_msg=None,
+        contacts_msg=None,
+        is_session_bootstrap=False,
         room_id=room_id,
     )
     await adapter.on_event(inp)
-    await adapter._drain_pending()
+    if drain:
+        await adapter._drain_pending()
     return tools
+
+
+# -- band-sdk 6.x lifecycle -----------------------------------------------------
+
+
+def test_wrapper_is_a_simple_adapter():
+    adapter, _, _ = make_adapter()
+    assert isinstance(adapter, SimpleAdapter)
+
+
+def test_rejects_non_simple_adapter():
+    with pytest.raises(TypeError):
+        CogneeMemoryAdapter(object(), settings=CogneeSettings(base_url="http://x"))
+
+
+def test_adopts_inner_features():
+    adapter, inner, _ = make_adapter()
+    assert adapter.features is inner.features
+
+
+async def test_runtime_startup_reaches_inner():
+    adapter, inner, _ = make_adapter()
+    adapter.platform = "CONN"  # the runtime injects this on the wrapper
+    await start_adapter(adapter, agent_name="bot", agent_description="desc", feature_flags={})
+    assert ("on_started", "bot", "desc") in inner.calls
+    assert inner.platform == "CONN"
+    assert inner.agent_name == "bot"
+
+
+async def test_cleanup_ownership_and_registered_resources_reach_inner():
+    adapter, inner, _ = make_adapter()
+    released = []
+
+    async def release():
+        released.append(True)
+
+    inner.add_cleanup(release)
+    assert accept_adapter(adapter, owner := object()) is True
+    await start_adapter(adapter, agent_name="bot", agent_description="d", feature_flags={})
+    await dispose_adapter(adapter)
+    assert "cleanup_all" in inner.calls
+    assert released == [True]
+    del owner
+
+
+async def test_control_and_interrupt_forward_to_inner():
+    class Controlled(FakeInnerAdapter):
+        async def try_handle_control(self, msg, tools):
+            self.calls.append("control")
+            return True
+
+        async def on_interrupt(self, room_id, mode):
+            self.calls.append(("interrupt", room_id))
+
+    adapter, inner, _ = make_adapter(inner=Controlled())
+    assert await adapter.try_handle_control(make_msg(), FakeTools()) is True
+    await adapter.on_interrupt("r1", None)
+    assert inner.calls == ["control", ("interrupt", "r1")]
+
+
+# -- memory behaviour --------------------------------------------------------------
 
 
 async def test_recall_injected_above_message():
@@ -165,13 +238,8 @@ async def test_qa_stored_even_when_inner_raises():
 
 async def test_non_text_messages_pass_through_without_memory():
     adapter, inner, client = make_adapter()
-    tools = FakeTools()
-    inp = AgentInput(
-        msg=PlatformMessage(message_type="tool_result", content="x"),
-        tools=tools,
-    )
-    await adapter.on_event(inp)
-    assert inner.seen[0] is inp  # untouched, same object
+    await run_turn(adapter, message_type="tool_result", content="x")
+    assert inner.seen[0].msg.content == "x"
     assert client.recalls == [] and client.stored_qa == []
 
 
@@ -181,38 +249,33 @@ async def test_reply_still_reaches_platform_through_capture_proxy():
     assert tools.sent == ["the answer"]
 
 
-async def test_on_cleanup_improves_room_session():
-    adapter, inner, client = make_adapter()
-    await run_turn(adapter, room_id="r9")
+async def test_on_cleanup_drains_room_writes_before_improve():
+    adapter, inner, client = make_adapter(client=FakeClient(store_delay=0.2))
+    await run_turn(adapter, room_id="r9", drain=False)  # write still in flight
     await adapter.on_cleanup("r9")
     assert inner.cleaned_rooms == ["r9"]
-    assert client.improved == ["band-r9"]
+    assert client.log == [("store", "band-r9"), ("improve", "band-r9")]
+
+
+async def test_on_cleanup_does_not_wait_for_other_rooms():
+    adapter, _, client = make_adapter(client=FakeClient(store_delay=0.3))
+    await run_turn(adapter, room_id="slow", drain=False)
+    await adapter.on_cleanup("other")
+    assert client.improved == ["band-other"]
+    assert client.stored_qa == []  # the slow room's write has not landed yet
+    await adapter._drain_pending()
 
 
 async def test_cleanup_all_improves_active_rooms_after_drain():
-    adapter, inner, client = make_adapter()
-    await run_turn(adapter, room_id="a")
-    await run_turn(adapter, room_id="b")
-    await adapter.cleanup_all()
-    assert inner.cleanup_all_called
+    adapter, inner, client = make_adapter(client=FakeClient(store_delay=0.1))
+    await run_turn(adapter, room_id="a", drain=False)
+    await run_turn(adapter, room_id="b", drain=False)
+    await start_adapter(adapter, agent_name="bot", agent_description="d", feature_flags={})
+    await dispose_adapter(adapter)
+    assert "cleanup_all" in inner.calls
     assert sorted(client.improved) == ["band-a", "band-b"]
     # QA stores landed before improve bridged them
-    assert len(client.stored_qa) == 2
-
-
-async def test_attribute_proxying_both_directions():
-    adapter, inner, _ = make_adapter()
-    # Band's Agent.start does setattr(adapter, "_band_agent_id", ...)
-    adapter._band_agent_id = "agent-42"
-    assert inner._band_agent_id == "agent-42"
-    inner.some_flag = True
-    assert adapter.some_flag is True
-
-
-async def test_on_started_delegates():
-    adapter, inner, _ = make_adapter()
-    await adapter.on_started("bot", "desc")
-    assert inner.started == ("bot", "desc")
+    assert [kind for kind, _ in client.log] == ["store", "store", "improve", "improve"]
 
 
 def test_render_memory_block_shapes():
