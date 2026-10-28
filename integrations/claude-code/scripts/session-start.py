@@ -197,6 +197,12 @@ def _detect_required_extras() -> list:
     return extras
 
 
+# Installed beside cognee so the venv's CA bundle never lags the pin: cognee
+# floats certifi, and a venv built before 2026.10.19 still trusts the
+# compromised eMudhra intermediates (SDK-1220).
+_CERTIFI_MIN_SPEC = "certifi>=2026.10.19"
+
+
 def _cognee_install_spec() -> str:
     """The pip requirement to install: the pinned cognee, plus the extras the
     configured providers need."""
@@ -599,6 +605,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "--python",
                         str(_VENV_PYTHON),
                         _cognee_install_spec(),
+                        _CERTIFI_MIN_SPEC,
                     ],
                     env=env,
                     cwd=str(_GLOBAL_STATE_DIR),
@@ -638,6 +645,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                         "install",
                         "--upgrade",
                         _cognee_install_spec(),
+                        _CERTIFI_MIN_SPEC,
                     ],
                     check=True,
                     capture_output=True,
