@@ -1,6 +1,9 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["band-sdk[anthropic]", "cognee-integration-band"]
+# dependencies = [
+#   "band-sdk[anthropic]>=6.0.1",
+#   "cognee-integration-band @ git+https://github.com/topoteretes/cognee-integrations#subdirectory=integrations/band",
+# ]
 # ///
 """Band agent with shared Cognee memory.
 
@@ -28,7 +31,7 @@ import asyncio
 import os
 
 from band import Agent, configure_logging
-from band.adapters import AnthropicAdapter
+from band.adapters import AnthropicAdapter, AnthropicAdapterConfig
 from cognee_band import CogneeClient, CogneeMemoryAdapter, CogneeSettings, cognee_tools
 
 configure_logging()
@@ -39,11 +42,13 @@ async def main() -> None:
     client = CogneeClient(settings)
 
     inner = AnthropicAdapter(
-        prompt=(
-            "You are a helpful assistant with persistent memory. Blocks labeled "
-            "'Cognee memory' contain context recalled from past sessions — treat "
-            "them as your own memory. Use cognee_search for explicit lookups and "
-            "cognee_remember to store facts worth keeping."
+        AnthropicAdapterConfig(
+            custom_section=(
+                "You are a helpful assistant with persistent memory. Blocks labeled "
+                "'Cognee memory' contain context recalled from past sessions — treat "
+                "them as your own memory. Use cognee_search for explicit lookups and "
+                "cognee_remember to store facts worth keeping."
+            ),
         ),
         additional_tools=cognee_tools(client),
     )

@@ -7,11 +7,11 @@ name = "cognee-integration-band"
 version = "0.1.0"
 description = "Cognee memory adapter for Band (band.ai) agents."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "Cognee team"}
 ]
-dependencies = []
+dependencies = ["band-sdk>=6.0.1"]
 
 [tool.setuptools.packages.find]
 where = ["."]
