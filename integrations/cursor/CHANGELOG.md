@@ -8,6 +8,34 @@ The version here matches the `version` field in `.cursor-plugin/plugin.json` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1]
+
+### Security
+- **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
+  wrap in the tag is replaced with `[private]` before the plugin writes it to a file or
+  log, sends it as a query, or stores it; the text around it is kept. Spans nest, cross
+  lines and may carry attributes, and one with no closing tag hides the rest of the
+  text. No setting turns this off. Cursor still sees the span in the live turn.
+- **Explicit remember is sanitized like automatic capture.** `cognee-remember.sh` text,
+  and its `cognee-cli` fallback, now goes through the same `<private>` stripping and
+  secret patterns, whatever `COGNEE_CAPTURE` says. So does text passed to
+  `cognee-cli.sh remember|add|recall|search`, the source-checkout fallback; a file path
+  given there, like a `--file` upload, is still sent byte for byte.
+- **Queries are sanitized**: the per-prompt recall, `cognee-search.sh` and its CLI
+  fallback, and the timeline topic. A `--code-query` (here or through `cognee-cli.sh`)
+  is sanitized field by field, so it stays valid JSON.
+- **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it
+  keeps; the `sync_payload` line in `hook.log` records field names and size instead of
+  the payload's first 200 characters.
+
+### Changed
+- `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
+  affects `<private>` spans.
+- The `cognee-forget` skill searches for what surrounds a secret, never the value itself.
+- An unclosed span that hides more than 200 characters logs `capture_private_unclosed` to
+  `hook.log` with the hidden length, never the text, so a capture cut short by a mere
+  mention of the tag is visible.
+
 ## [0.1.0]
 
 ### Added

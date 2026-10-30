@@ -5,6 +5,8 @@ import json
 from unittest.mock import Mock
 
 import pytest
+from utils.hooklog import hook_events
+from utils.suites import state_dir
 
 
 @pytest.fixture
@@ -479,6 +481,30 @@ def test_private_spans_nest_and_an_unclosed_one_runs_to_the_end(policy):
     assert result == "a [private] b\n[private]"
 
 
+def test_a_mentioned_tag_hides_the_rest_of_the_text(policy):
+    # Deliberate: an opener without a close may sit next to what it was meant to
+    # hide, and the policy cannot tell a mention from a forgotten close.
+    text = "PR #547 adds `<private>` span support. Next: SENTINEL-3c1d"
+    assert policy.sanitize(text) == "PR #547 adds `[private]"
+
+
+def test_a_long_unclosed_span_logs_its_length_but_never_the_text(
+    suite, isolated_modules, temp_home
+):
+    isolated_modules(suite, "_plugin_common")  # hook.log under temp_home
+    policy = isolated_modules(suite, "_capture_policy")
+    hidden = "<private>SENTINEL-3c1d " + "x" * 300
+
+    policy.sanitize("short <private>SENTINEL-3c1d")
+    assert not [e for e, _ in hook_events(suite, temp_home) if e == "capture_private_unclosed"]
+
+    assert policy.sanitize("keep " + hidden) == "keep [private]"
+    logged = [d for e, d in hook_events(suite, temp_home) if e == "capture_private_unclosed"]
+    assert logged == [{"hidden_chars": len(hidden)}]
+    log = (state_dir(suite, temp_home) / "hook.log").read_text(encoding="utf-8")
+    assert "SENTINEL-3c1d" not in log
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [
@@ -545,11 +571,13 @@ def test_sanitize_cli_prints_the_clean_text_and_fails_closed(suite, temp_home):
 
 
 def test_shared_policy_modules_are_identical_across_hosts():
-    from utils.suites import ANTIGRAVITY, CLAUDE, CODEX
+    from utils.suites import ALL_SUITES, CLAUDE
 
     for name in ("_capture_policy.py", "_remember_http.py"):
         reference = (CLAUDE.scripts_dir / name).read_bytes()
-        for other in (CODEX, ANTIGRAVITY):
+        for other in ALL_SUITES:
+            if other is CLAUDE:
+                continue
             assert (other.scripts_dir / name).read_bytes() == reference, f"{other.name}/{name}"
 
 

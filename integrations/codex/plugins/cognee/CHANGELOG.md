@@ -34,6 +34,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
   affects `<private>` spans.
 - The forget skill searches for what surrounds a secret, never the value itself.
+- An unclosed span that hides more than 200 characters logs `capture_private_unclosed` to
+  `hook.log` with the hidden length, never the text, so a capture cut short by a mere
+  mention of the tag is visible.
 
 ## [1.7.7]
 

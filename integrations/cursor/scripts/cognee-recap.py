@@ -403,10 +403,13 @@ class Server:
 
         Sent without a session id on purpose: a session that names a project
         would scope the graph lane to that project's node set, and a topic's
-        history spans every project this identity worked in.
+        history spans every project this identity worked in. The topic is
+        sanitized like any query; matching prompts locally keeps the raw one.
         """
+        from _capture_policy import sanitize
+
         results = recall_via_http(
-            topic,
+            sanitize(topic),
             session_id="",
             top_k=top_k,
             scope=["graph"],

@@ -56,7 +56,7 @@ integrations:
     registry: cursor-marketplace
     package_name: null
     cognee_dependency: http-api
-    current_version: "0.1.0"
+    current_version: "0.1.1"
     migration_status: done
     notes: >-
       Cursor plugin (.cursor-plugin/plugin.json + hooks/hooks.json) built on the Codex

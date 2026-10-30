@@ -97,6 +97,7 @@ EVENT_NAMES = {
     "hook:buffer_lock_error": "buffer.lock_error",
     "hook:buffer_lock_release_failed": "buffer.lock_release_failed",
     "hook:buffer_lock_timeout": "buffer.lock_timeout",
+    "hook:capture_private_unclosed": "capture.private_unclosed",
     "hook:capture_tools_invalid": "capture.tools_invalid",
     "hook:code_autoindex": "code.autoindex",
     "hook:code_autoindex_error": "code.autoindex_error",
