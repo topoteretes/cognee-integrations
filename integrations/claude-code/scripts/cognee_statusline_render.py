@@ -735,7 +735,10 @@ def _activity(session_id: str) -> dict:
     """What to show: ``{"kind": "active"|"result", "text": ..., "age": s}`` or {}.
 
     An active phase wins; otherwise the most recent result. A stale active phase
-    (a hook that died) is ignored rather than shown forever.
+    (a hook that died) is ignored rather than shown forever. A failed ``ready``
+    result is ignored once the connection marker says the server is up: the
+    verdict predates the marker (a boot that finished after the hook gave up),
+    and "memory unavailable" next to a green ● would contradict it.
     """
     marker = _phase_marker(session_id)
     if not marker:
@@ -759,7 +762,7 @@ def _activity(session_id: str) -> dict:
     results = marker.get("results")
     if not isinstance(results, dict):
         return {}
-    latest_kind, latest, latest_at = "", {}, -1.0
+    finished: list[tuple[float, str, dict]] = []
     for kind, entry in results.items():
         if not isinstance(entry, dict):
             continue
@@ -767,8 +770,14 @@ def _activity(session_id: str) -> dict:
             at = float(entry.get("at") or 0)
         except (TypeError, ValueError):
             continue
-        if at > latest_at:
-            latest_kind, latest, latest_at = str(kind), entry, at
+        finished.append((at, str(kind), entry))
+    finished.sort(key=lambda item: item[0], reverse=True)
+    latest_kind, latest, latest_at = "", {}, -1.0
+    for at, kind, entry in finished:
+        if kind == "ready" and entry.get("ok", True) is False and "●" in _health_prefix(session_id):
+            continue
+        latest_kind, latest, latest_at = kind, entry, at
+        break
     text = _result_label(latest_kind, latest) if latest_kind else ""
     if not text:
         return {}
@@ -1160,22 +1169,6 @@ def _clip(value: str, width: int) -> str:
     return "".join(output) + _RESET
 
 
-def _tokens_saved(stats: dict, *, compact: bool = False) -> str:
-    if _int(stats, "recalls") <= 0 or "chars_injected" not in stats:
-        return "saved n/a" if compact else "tokens saved n/a"
-    # Average context tokens per recall * recall count * 6.9 simplifies to
-    # total context tokens * 6.9. Estimate tokens at four characters each;
-    # multiply before rounding so small recalls retain their contribution.
-    tokens = max(0, _int(stats, "chars_injected")) * 69 // 40
-    if tokens >= 1_000_000:
-        amount = f"{tokens // 100_000 / 10:g}m"
-    elif tokens >= 1000:
-        amount = f"{tokens // 100 / 10:g}k"
-    else:
-        amount = str(tokens)
-    return f"~{amount}t saved" if compact else f"~{amount} tokens saved"
-
-
 def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     del now  # kept for callers; the line no longer animates
     purple = _purple()
@@ -1196,34 +1189,26 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     dataset = _clean_label(_active_dataset(session_id))
     badge = f"{lead}{purple}\033[1mcognee{_RESET}"
     brand = f"{badge} {dataset} · {purple}\033[1m{_active_mode()}{_RESET}"
-    stats = (
-        _read_json(_SESSIONS_DIR / session_id / "stats.json")
-        if _path_safe(session_id) and session_id not in {".", ".."}
-        else {}
-    )
     core = health + brand
-    # No counters: the activity segment says what the last recall did, and the
-    # estimate below says what memory has saved. (The classic line keeps its own.)
+    # No counters: the activity segment says what the last recall did. (The
+    # classic line keeps its own.)
     credits, update = _credits_segment(), _update_segment()
-    # The estimate and, after it, what memory is doing right now, both in the
-    # brand purple at rest (an active phase keeps its accent colour).
+    # What memory is doing right now, in the brand purple at rest (an active
+    # phase keeps its accent colour).
     emphasis = f"{purple}\033[1m"
     activity = _activity_segment(session_id, style=emphasis)
-    savings = f" · {emphasis}{_tokens_saved(stats)}{_RESET}" + activity
-    short_savings = f" · {emphasis}{_tokens_saved(stats, compact=True)}{_RESET}" + activity
     # No reported width (the normal Claude Code case) shows the full line.
     wide = columns is None or columns > 60
-    # Keep the badge at every width: shorten the token units, then compact the
-    # spacing, before dropping the estimate.
+    # Keep the badge at every width: compact the spacing before dropping the
+    # activity.
     candidates = [
-        core + savings + credits + update,
-        core + short_savings + credits + update,
-        core.replace(" · ", "·") + short_savings + credits + update,
+        core + activity + credits + update,
+        core.replace(" · ", "·") + activity + credits + update,
     ]
     # A credit warning or update notice is never dropped to save width: they are
     # the segments a user has to act on.
     if not credits and not update:
-        candidates += [core + savings, core + short_savings, core, core.replace(" · ", "·")]
+        candidates += [core, core.replace(" · ", "·")]
     else:
         candidates += [
             core.replace(" · ", "·") + credits + update,
@@ -1270,7 +1255,6 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
     else:
         state, reason = "", ""
     activity = _activity(session_id)
-    counts = _counts(session_id)
     raw_credits = _credits_segment()
     credits = _plain(raw_credits).strip(" ·")
     # The text line paints the balance green, or red once exhausted or refused;
@@ -1296,20 +1280,8 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         "credits_exhausted": credits_exhausted,
         "billing_url": billing_url,
         "activity": activity,
-        "counts": counts,
         "update": update,
         "text": line,
-    }
-
-
-def _counts(session_id: str) -> dict:
-    """The estimated tokens saved as data, for the row the hooks module draws.
-    Same source as ``_tetris_line``."""
-    safe = _path_safe(session_id) and session_id not in {".", ".."}
-    stats = _read_json(_SESSIONS_DIR / session_id / "stats.json") if safe else {}
-    return {
-        "tokens_saved": _tokens_saved(stats),
-        "tokens_saved_short": _tokens_saved(stats, compact=True),
     }
 
 

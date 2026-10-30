@@ -77,7 +77,8 @@ def test_palette_and_meaning(sl, monkeypatch, theme, color):
     # The dataset is plain, as in the picker above the prompt; the mode purple.
     assert "cognee\033[0m manual" in line and f"\033[38;5;{color}m\033[1mmanual" not in line
     assert f"\033[38;5;{color}m\033[1mcloud" in line
-    assert "manual  ·  cloud  ·  ~2.4k tokens saved" in plain(sl, line)
+    assert "manual  ·  cloud" in plain(sl, line)
+    assert "tokens saved" not in line
     assert "reminiscence" not in line
     # The per-prompt count and the turn ratio are not shown.
     assert "ideas" not in line and "imprints" not in line and "▰" not in line
@@ -98,10 +99,8 @@ def test_brand_is_constant_across_recall_outcomes(sl, monkeypatch, hits):
 def test_width(sl, monkeypatch):
     at80 = sl._tetris_line(SESSION)
     assert sl._width(at80) <= 80
-    assert "~2.4k tokens saved" in at80
     monkeypatch.setenv("COLUMNS", "120")
     wide = sl._tetris_line(SESSION)
-    assert "~2.4k tokens saved" in wide
     assert sl._width(wide) <= 120
     monkeypatch.setenv("COLUMNS", "60")
     line = sl._tetris_line(SESSION)
@@ -118,7 +117,7 @@ def test_counts_modes(sl, monkeypatch, mode):
     line = sl._tetris_line(SESSION)
     # The counts switch is the classic line's: the badge line shows neither
     # the per-scope strip nor the turn ratio in any mode.
-    assert "~2.4k tokens saved" in line
+    assert "tokens saved" not in line
     assert "recall 8s/0t/0g/0a" not in line and "imprints" not in line and "▰" not in line
 
 
@@ -183,13 +182,13 @@ def test_cp1252_stdout_still_renders_utf8(sl, suite, temp_home):
     )
     assert result.returncode == 0 and result.stderr == b""
     output = result.stdout.decode("utf-8")
-    assert "tokens saved" in output
+    assert "cognee" in output and "·" in output
 
 
 def test_ascii_fallback_when_stdout_cannot_be_switched(sl, monkeypatch):
     monkeypatch.setattr(sl, "_unicode_output", lambda: False)
     line = sl._tetris_line(SESSION)
-    assert line.isascii() and "tokens saved" in line
+    assert line.isascii() and "cognee" in line
 
 
 def test_credit_and_update_notices_survive_without_a_reported_width(sl, monkeypatch):
@@ -226,7 +225,7 @@ def test_classic_byte_identical_to_1_6_21(sl, suite, temp_home, counts, url):
 @pytest.mark.parametrize("corrupt", ["{partial", "[]", '{"entries_injected":"bad"}'])
 def test_corrupt_stats_keep_bar(sl, corrupt):
     (sl._SESSIONS_DIR / SESSION / "stats.json").write_text(corrupt)
-    assert "tokens saved n/a" in sl._tetris_line(SESSION)
+    assert "cognee" in sl._tetris_line(SESSION)
 
 
 def test_render_makes_no_writes(sl):
@@ -251,38 +250,5 @@ def test_home_without_markers(sl, suite, tmp_path):
     )
     result = run_renderer(suite, fresh, sl.__file__, "{}")
     assert result.returncode == 0 and result.stderr == b""
-    assert "tokens saved n/a" in result.stdout.decode()
+    assert "cognee" in result.stdout.decode()
     assert len(result.stdout.splitlines()) == 1
-
-
-@pytest.mark.parametrize(
-    "chars,label",
-    [
-        (0, "~0 tokens saved"),
-        (400, "~690 tokens saved"),
-        (4000, "~6.9k tokens saved"),
-        (1440, "~2.4k tokens saved"),
-        (4_000_000, "~6.9m tokens saved"),
-        (7, "~12 tokens saved"),
-    ],
-)
-def test_saved_token_estimate(sl, chars, label):
-    assert sl._tokens_saved({"chars_injected": chars, "recalls": 1}) == label
-    assert sl._tokens_saved({"entries_deduped": 100}) == "tokens saved n/a"
-
-
-def test_missing_savings_are_not_fabricated(sl):
-    write_json(sl._SESSIONS_DIR / SESSION / "stats.json", {"entries_injected": 124})
-    line = sl._tetris_line(SESSION)
-    assert "saved n/a" in line and "~0" not in line
-
-
-def test_saved_tokens_apply_multiplier_to_total_once(sl):
-    # 100 context tokens/recall * 10 recalls * 6.9 = 6900.
-    assert sl._tokens_saved({"chars_injected": 4000, "recalls": 10}) == "~6.9k tokens saved"
-    # Changing the distribution (including empty recalls) does not change the sum.
-    assert sl._tokens_saved({"chars_injected": 4000, "recalls": 20}) == "~6.9k tokens saved"
-    assert (
-        sl._tokens_saved({"dedup_chars_saved": 99999, "dedup_measurements": 1})
-        == "tokens saved n/a"
-    )

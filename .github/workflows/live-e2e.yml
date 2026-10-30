@@ -38,10 +38,19 @@ concurrency:
   group: live-e2e
   cancel-in-progress: false
 
+# The four tiers are pinned to ubuntu-24.04 rather than ubuntu-latest. On
+# 2026-10-23 ubuntu-latest moved to 26.04, where /tmp is a RAM-backed tmpfs of
+# ~7.8 GB with a per-user quota (actions/runner-images#14777, fix not yet
+# deployed). The local tier builds one plugin venv per test HOME under
+# /tmp/pytest-of-runner and a cognee install is several GB, so every test died
+# with "Disk quota exceeded"; the openclaw tier restored a venv cached on 24.04
+# whose interpreter symlink pointed nowhere on 26.04. Both tiers were green on
+# the same commit the night before. Lift the pin once the image keeps /tmp on
+# disk again, and keep the image id in the venv cache keys below either way.
 jobs:
   local:
     name: live tier (local server)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A failure here fails the run. These tiers are not on pull_request, so this
     # gates nothing — it only decides whether a nightly regression is visible or
     # silent, and silent is the worse failure mode. The known product gaps are
@@ -72,13 +81,21 @@ jobs:
       # SessionStart, which takes minutes. Locally the harness symlinks the
       # developer's; in CI there is none, so cache it across runs instead.
       # COGNEE_LIVE_ALLOW_BUILD lets the first (cache-miss) run build it.
+      # The venv's bin/python is a symlink into the runner image (its system or
+      # tool-cache interpreter), so a venv cached on one image is dangling on
+      # the next OS release. ImageOS (e.g. ubuntu24) is set by the runner; it
+      # changes with the OS, not with every image build.
+      - name: Read the runner image id
+        id: image
+        run: echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
       - name: Cache the plugin runtime venv
         uses: actions/cache@v4
         with:
           path: ~/.cognee-plugin/venv
-          key: cognee-plugin-venv-${{ runner.os }}-${{ hashFiles('integrations/claude-code/scripts/session-start.py') }}
+          key: cognee-plugin-venv-${{ runner.os }}-${{ steps.image.outputs.os }}-${{ hashFiles('integrations/claude-code/scripts/session-start.py') }}
           restore-keys: |
-            cognee-plugin-venv-${{ runner.os }}-
+            cognee-plugin-venv-${{ runner.os }}-${{ steps.image.outputs.os }}-
 
       - name: Install test dependencies
         working-directory: integrations/tests
@@ -169,7 +186,7 @@ jobs:
 
   cloud:
     name: live tier (cloud tenant)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: false
     # No venv to build and no server to boot, but NOT the fast half: the scenarios
     # are the same 40-odd graph round trips as the local job, and each cognify
@@ -268,7 +285,7 @@ jobs:
   # opt-in gate its tests already ship with (COGNEE_RUN_INTEGRATION).
   hermes:
     name: live tier (hermes-agent)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: false
     # Seven tests, but LLM-bound ones: the suite budgets 120s for a cold server
     # boot, 600s for a graph write and 900s for an improve. Its own per-test
@@ -357,7 +374,7 @@ jobs:
   # the runner is near it.
   openclaw:
     name: live tier (openclaw)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: false
     # Three scenarios, each allowed 15m by the suite itself, and a graph write is
     # polled for up to 10m before it gives up. A cache-miss run also pays the venv
@@ -393,15 +410,21 @@ jobs:
       # check. COGNEE_LIVE_SERVER_HOME points the boot at the runner's real home
       # because the suite otherwise sandboxes it into a temp dir the cache step
       # would never see.
+      # Same image-scoped key as the local tier: the cached venv's interpreter
+      # symlink only resolves on the OS release that built it.
+      - name: Read the runner image id
+        id: image
+        run: echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
       - name: Cache the plugin runtime venv
         uses: actions/cache@v4
         with:
           path: |
             ~/.cognee-plugin/venv
             ~/.cognee-plugin/.venv-ready.json
-          key: cognee-openclaw-venv-${{ runner.os }}-${{ hashFiles('integrations/openclaw/src/server.ts') }}
+          key: cognee-openclaw-venv-${{ runner.os }}-${{ steps.image.outputs.os }}-${{ hashFiles('integrations/openclaw/src/server.ts') }}
           restore-keys: |
-            cognee-openclaw-venv-${{ runner.os }}-
+            cognee-openclaw-venv-${{ runner.os }}-${{ steps.image.outputs.os }}-
 
       - name: Install openclaw dependencies
         working-directory: integrations/openclaw

@@ -76,13 +76,15 @@ def _crash_log(suite, home: Path) -> Path:
 
 
 def test_runner_copies_differ_only_in_the_state_dir():
-    """Both plugins ship the runner; a fix to one copy must reach the other."""
-    by_name = {s.name: s for s in ALL_SUITES}
+    """Every plugin that ships the runner (Cursor's adapter launches its inner
+    hooks through it too); a fix to one copy must reach the others."""
+    shipping = [s for s in ALL_SUITES if (s.scripts_dir / _RUNNER).is_file()]
+    assert {s.name for s in shipping} >= set(hl.PLACEHOLDERS) | {"cursor"}
     texts = {}
-    for name in hl.PLACEHOLDERS:
-        path = by_name[name].scripts_dir / _RUNNER
-        texts[name] = path.read_text(encoding="utf-8").replace(
-            f'_STATE_SUBDIR = "{by_name[name].state_subdir}"', '_STATE_SUBDIR = "<plugin>"'
+    for suite in shipping:
+        path = suite.scripts_dir / _RUNNER
+        texts[suite.name] = path.read_text(encoding="utf-8").replace(
+            f'_STATE_SUBDIR = "{suite.state_subdir}"', '_STATE_SUBDIR = "<plugin>"'
         )
     assert len(set(texts.values())) == 1, "hook_runner.py copies have drifted apart"
 

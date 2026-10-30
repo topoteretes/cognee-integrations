@@ -22,7 +22,12 @@ def test_shell_beats_dotenv_and_legacy_json(suite, isolated_modules, monkeypatch
 def test_plugin_specific_backend_wins(suite, isolated_modules, monkeypatch):
     config = isolated_modules(suite, "config")
     monkeypatch.setenv("COGNEE_BACKEND", "cloud")
-    target = {"claude-code": "CLAUDE", "codex": "CODEX", "antigravity": "ANTIGRAVITY"}[suite.name]
+    target = {
+        "claude-code": "CLAUDE",
+        "codex": "CODEX",
+        "antigravity": "ANTIGRAVITY",
+        "cursor": "CURSOR",
+    }[suite.name]
     monkeypatch.setenv("COGNEE_" + target + "_BACKEND", "local")
     monkeypatch.setenv("COGNEE_BASE_URL", "https://cloud.example")
     cfg = config.load_config()

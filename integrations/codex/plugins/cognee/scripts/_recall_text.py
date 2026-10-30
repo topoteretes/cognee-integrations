@@ -399,7 +399,12 @@ _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.
 #: Only the credit line counts: ``arr[m1]`` in code, or the instruction's own
 #: example quoted back, is not a citation.
 _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
-_AGENTS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity"}
+_AGENTS = {
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "cursor": "Cursor",
+    "antigravity": "Antigravity",
+}
 
 CREDIT_INSTRUCTION = (
     "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "

@@ -16,10 +16,6 @@ const SNAPSHOT = {
   credits: '',
   update: '',
   text: 'cognee: agent_sessions · local',
-  counts: {
-    tokens_saved: 'tokens saved n/a',
-    tokens_saved_short: 'saved n/a',
-  },
 }
 
 const SWITCH_LIST = {
@@ -52,6 +48,8 @@ const BAND = {
 
 type Call = { argv: readonly string[]; stdin?: string }
 type Write = { path: string; text: string }
+// The mark the engine's session start leaves among the calls (see wire).
+const HOOK_RAN = '<SessionStart hook ran>'
 
 function ok(stdout: string) {
   return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -66,10 +64,18 @@ function wire(
   registrations: { tools: string[]; commands: string[] } = { tools: [], commands: [] },
   // The tool labels the engine's own row renderer would receive, in order.
   toolRows: string[] = [],
+  // What a read of a file answers; undefined reads as empty.
+  readFile: (path: string) => string | undefined = () => undefined,
 ) {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   mock.env(on, { HOME })
-  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  // The engine's own session start, where the settings hooks (SessionStart)
+  // run: it leaves a mark among the calls so a test can tell what ran before
+  // it and what after.
+  on('session.start', ($, e) => {
+    calls.push({ argv: [HOOK_RAN] })
+    return { cwd: e.cwd }
+  })
   on('turn.complete', () => ({ text: '' }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('ui.render', ($, e) => {
@@ -80,7 +86,7 @@ function wire(
   on('session.id', () => ({ value: SESSION }))
   // No marker and no env file: an empty read (a throw from a bottom hook
   // inside a timer would end the timer in the kit, which no real file does).
-  on('fs.read', () => ({ value: '' }))
+  on('fs.read', ($, e) => ({ value: readFile(e.path) ?? '' }))
   // The registrations session start makes; a test that inspects them
   // passes `registrations` and reads it back.
   on('tool.register', ($, e) => {
@@ -138,6 +144,15 @@ function fakeStore(on: Parameters<Parameters<typeof test>[1]>[1], entries: Recor
 
 function argvOf(calls: Call[], script: string): readonly string[] | undefined {
   return calls.find(c => c.argv.some(a => a.endsWith(`/scripts/${script}`)))?.argv
+}
+
+// The switch script's calls: every listing, or the one switch among them.
+function listCalls(calls: Call[]): Call[] {
+  return calls.filter(c => c.argv.some(a => a.endsWith('/scripts/switch-dataset.py')) && c.argv.includes('--list'))
+}
+
+function switchArgv(calls: Call[]): readonly string[] | undefined {
+  return calls.find(c => c.argv.some(a => a.endsWith('/scripts/switch-dataset.py')) && !c.argv.includes('--list'))?.argv
 }
 
 function argsAfter(argv: readonly string[], script: string): string[] {
@@ -325,7 +340,9 @@ test('the transcript row of a plugin tool call is labelled plainly, not as an MC
   }
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...row })
   await ui.unmount()
-  expect(seen).toEqual(['Cognee remember'])
+  // Drawn once, or again when the dataset listing started at session start
+  // lands and redraws: the label is the same each time.
+  expect([...new Set(seen)]).toEqual(['Cognee remember'])
 
   // A call to any other tool is handed on as it came.
   seen.length = 0
@@ -356,7 +373,7 @@ test('/cognee-dataset <name> switches from the prompt', async ($, on) => {
 
   const answer = await $.command.run({ command: 'cognee-dataset', args: 'demo' })
   expect(answer.text).toBe('Cognee: switched to demo.')
-  expect(argsAfter(argvOf(calls, 'switch-dataset.py')!, 'switch-dataset.py')).toEqual(['demo', '--json', '--session-key', SESSION])
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['demo', '--json', '--session-key', SESSION])
   expect(toasts.some(t => t.includes('switched to demo'))).toBe(true)
   // The status row is re-read after a switch.
   expect(argvOf(calls, 'cognee_statusline_render.py')).toBeDefined()
@@ -521,14 +538,14 @@ test('the first session on a machine gets the tour under the row, once', async (
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /The dataset name is a picker ↑/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The dataset name ↑ is a picker/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
 
   await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
   expect(await ui.find({ type: 'Text', text: /means memory is connected/ })).toBeDefined()
   await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
-  expect(await ui.find({ type: 'Text', text: /Claude uses memories recalled by Cognee on every prompt/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Claude uses what Cognee recalls on every prompt/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /\/cognee-tour replays this tutorial/ })).toBeDefined()
   expect((await ui.find({ type: 'Button', key: 'tourNext' }))!.props.label).toBe('done')
   await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
@@ -574,7 +591,7 @@ test('/cognee-tour replays it, and the tour row in /config turns it off', async 
   const answer = await $.command.run({ command: 'cognee-tour', args: '' })
   expect(answer.text).toContain('tour')
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /The dataset name is a picker ↑/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The dataset name ↑ is a picker/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -809,11 +826,6 @@ test('credits read green on the row, red once exhausted, the last cost plain', a
   expect(balance!.props.color).toBe('green')
   const last = await ui.find({ type: 'Text', text: /last improve ~\$0.03/ })
   expect(last!.props.color).toBeUndefined()
-  // The estimate keeps the brand colour and weight even when unmeasured.
-  const estimate = await ui.find({ type: 'Text', text: /tokens saved n\/a/ })
-  expect(estimate!.props.color).toBe('#bc9bff')
-  expect(estimate!.props.bold).toBe(true)
-  expect(estimate!.props.dimColor).toBeUndefined()
   await ui.unmount()
 
   exhausted = true
@@ -850,20 +862,19 @@ test('out of credits, the row links to billing where the text line prints the UR
   }
 })
 
-test('a session that reports no surface at start (the Desktop app) lists when the band is first drawn', async ($, on) => {
+test('a session that reports no surface at start (the Desktop app) has its list when the band is first drawn', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)
   await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
-  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
+  expect(argvOf(calls, 'switch-dataset.py')).toContain('--list')
 
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
-  await ui.unmount()
-  expect(argvOf(calls, 'switch-dataset.py')).toContain('--list')
-  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  await ui.unmount()
   // Drawn again, the band does not list again.
-  expect(calls.filter(c => c.argv.some(a => a.endsWith('/scripts/switch-dataset.py'))).length).toBe(1)
+  expect(listCalls(calls).length).toBe(1)
 })
 
 test('in a terminal the band is the whole status row, the dataset name a picker', async ($, on) => {
@@ -919,11 +930,15 @@ test('with the band off no session is marked: the settings status line stays', {
   await ui.unmount()
 })
 
-test('in a terminal nothing is listed at session start: the first draw of the band does that', async ($, on) => {
+test('the listing starts once the SessionStart hook has run, which writes the record it reads', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
+  const hookAt = calls.findIndex(c => c.argv[0] === HOOK_RAN)
+  const listAt = calls.findIndex(c => c.argv.some(a => a.endsWith('/scripts/switch-dataset.py')))
+  expect(hookAt).toBeGreaterThanOrEqual(0)
+  expect(listAt).toBeGreaterThan(hookAt)
+  expect(listCalls(calls).length).toBe(1)
 })
 
 test('the band falls back to the name as text until the datasets are listed', async ($, on) => {
@@ -934,5 +949,212 @@ test('the band falls back to the name as text until the datasets are listed', as
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^agent_sessions$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a listing that finds no launch record yet is tried again, and the picker appears', async ($, on) => {
+  const calls: Call[] = []
+  let answers = 0
+  const clock = wire(on, calls, {
+    'switch-dataset.py': () => {
+      answers += 1
+      // The record is there from the second try on.
+      return answers < 2 ? ok(JSON.stringify({ error: 'no launch record found (not_found)', code: 2 })) : ok(JSON.stringify(SWITCH_LIST))
+    },
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  expect(listCalls(calls).length).toBe(1)
+
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeUndefined()
+  await ui.unmount()
+  // The first retry comes five seconds after the failure, on the poll.
+  for (let i = 0; i < 7; i += 1) await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(2)
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  await ui.unmount()
+  // Listed: no more tries.
+  for (let i = 0; i < 30; i += 1) await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(2)
+})
+
+test('a listing that keeps failing stops after its attempts, until the next prompt or /cognee-dataset', async ($, on) => {
+  const calls: Call[] = []
+  const clock = wire(on, calls, { 'switch-dataset.py': () => ok(JSON.stringify({ error: 'GET /api/v1/datasets failed (HTTP 503)', code: 1 })) })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  // The wait grows: 5 s, 10 s, 15 s, 20 s. Four tries fit the poll's window
+  // after session start (at 0, 5, 15 and 30 s); the fifth comes at the prompt.
+  for (let i = 0; i < 120; i += 1) await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(4)
+  await $.prompt.submit({ text: 'hello' })
+  for (let i = 0; i < 120; i += 1) await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(5)
+  // The attempts are spent: the next prompt starts them over (four more in
+  // its window, as after session start), and /cognee-dataset does too.
+  await $.prompt.submit({ text: 'again' })
+  for (let i = 0; i < 120; i += 1) await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(9)
+  const answer = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(answer.text).toContain('no datasets listed')
+  expect(listCalls(calls).length).toBe(10)
+})
+
+test('a listing waits for a boot the hook handed to its worker instead of spending its attempts on it', async ($, on) => {
+  const calls: Call[] = []
+  let up = false
+  let markerText = ''
+  const clock = wire(
+    on,
+    calls,
+    { 'switch-dataset.py': () => (up ? ok(JSON.stringify(SWITCH_LIST)) : ok(JSON.stringify({ error: 'GET /api/v1/datasets failed (connection refused)', code: 1 }))) },
+    [],
+    undefined,
+    undefined,
+    path => (path.endsWith(`/phase/${SESSION}.json`) ? markerText : undefined),
+  )
+  const began = clock.now() / 1000
+  // What the worker's heartbeat does: the phase stays fresh while it boots.
+  const touch = () => {
+    markerText = JSON.stringify({
+      session_key: SESSION,
+      active: { phase: 'setting_up', detail: 'starting memory server', started_at: began, updated_at: clock.now() / 1000 },
+      results: {},
+    })
+  }
+  touch()
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  // Four minutes of boot, well past where five tries would have run out: no
+  // listing is run against a server that is not listening.
+  for (let s = 1; s <= 240; s += 1) {
+    await clock.advance(1000)
+    if (s % 15 === 0) touch()
+  }
+  expect(listCalls(calls).length).toBe(0)
+  // The worker registered the session and ended the phase: the poll tick
+  // that sees the phase end lists at once (it is also the poll's last tick),
+  // and the picker appears.
+  up = true
+  markerText = JSON.stringify({ session_key: SESSION, active: null, results: { ready: { at: clock.now() / 1000, ok: true } } })
+  await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(1)
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a listing that times out keeps the list the row had', async ($, on) => {
+  const calls: Call[] = []
+  let slow = false
+  wire(on, calls, {
+    'switch-dataset.py': argv => {
+      if (!argv.includes('--list')) return ok(JSON.stringify({ switched: true, dataset: 'demo', session_id: 'c2', previous: { dataset: 'agent_sessions', synced: true } }))
+      if (slow) throw new Error('process timed out after 45000ms')
+      return ok(JSON.stringify(SWITCH_LIST))
+    },
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
+  await ui.unmount()
+
+  // The listing after the switch runs past its time: the picker stays.
+  slow = true
+  await $.command.run({ command: 'cognee-dataset', args: 'demo' })
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker).toBeDefined()
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toContain('demo')
+  await ui.unmount()
+})
+
+test('the active dataset heads the picker when the writable list lacks it', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': () =>
+      ok(JSON.stringify({ ...SWITCH_LIST, current: 'agent_sessions', datasets: [{ name: 'demo', id: 'd2', writable: true, current: false }] })),
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker).toBeDefined()
+  expect(picker!.props.value).toBe('agent_sessions')
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['agent_sessions', 'demo', '+ new dataset…'])
+  await ui.unmount()
+})
+
+test('a narrow band drops the last cost, then the balance, then the activity, and never splits a segment', async ($, on) => {
+  const calls: Call[] = []
+  let exhausted = false
+  wire(on, calls, {
+    'cognee_statusline_render.py': () =>
+      ok(JSON.stringify({ ...SNAPSHOT, credits: 'credits: $9.76 · last improve ~$0.00', credits_exhausted: exhausted, update: '' })),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  // Wide: everything. "● cognee " + "agent_sessions ▾" + " · local" is 33 cells.
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /credits: \$9.76/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /last improve/ })).toBeDefined()
+  await ui.unmount()
+
+  // 60 cells: the last cost (22 cells) goes first.
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 60 } })
+  expect(await ui.find({ type: 'Text', text: /credits: \$9.76/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /last improve/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  await ui.unmount()
+
+  // 45 cells: the balance goes too; the badge, the dataset and the mode stay.
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 45 } })
+  expect(await ui.find({ type: 'Text', text: /credits/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
+  await ui.unmount()
+
+  // An exhausted balance is something to act on: it stays at any width.
+  exhausted = true
+  await $.prompt.submit({ text: 'x' }).catch(() => undefined)
+  await $.command.run({ command: 'cognee-dataset', args: 'demo' })
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 45 } })
+  const balance = await ui.find({ type: 'Text', text: /credits: \$9.76/ })
+  expect(balance).toBeDefined()
+  expect(balance!.props.color).toBe('red')
+  expect(await ui.find({ type: 'Text', text: /last improve/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the row wraps by whole segments: each segment is a box that does not shrink', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  const row = await ui.find({ type: 'Box', text: /cognee/ })
+  expect(row).toBeDefined()
+  expect(row!.props.flexWrap).toBe('wrap')
+  const children = row!.children as { type: string; props: { flexShrink?: number } }[]
+  expect(children.length).toBeGreaterThanOrEqual(3)
+  for (const child of children) {
+    expect(child.type).toBe('Box')
+    expect(child.props.flexShrink).toBe(0)
+  }
+  await ui.unmount()
+})
+
+test('the tour hint wraps as a paragraph beside buttons that keep their cells', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  fakeStore(on)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 60 } })
+  const hint = await ui.find({ type: 'Text', text: /The dataset name ↑ is a picker/ })
+  expect(hint).toBeDefined()
+  expect(hint!.props.wrap).toBe('wrap')
+  expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'tourSkip' })).toBeDefined()
   await ui.unmount()
 })

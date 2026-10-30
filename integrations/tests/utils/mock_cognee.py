@@ -244,57 +244,10 @@ class MockCogneeServer:
         # health / reachability
         route("/health", "GET", self._health)
         route("/docs", "GET", self._docs)
-        route(
-            "/openapi.json",
-            "GET",
-            lambda req: _json(
-                200,
-                {
-                    "paths": {
-                        **(
-                            {
-                                "/api/v1/integrations/plugins/{plugin_key}/provision": {
-                                    "post": {"parameters": [{"name": "create_only", "in": "query"}]}
-                                }
-                            }
-                            if self.identity.plugin_provisioning
-                            else {}
-                        ),
-                        **(
-                            {
-                                # As a real server describes it: the entry's
-                                # request body, behind a $ref, lists dataset_id.
-                                "/api/v1/remember/entry": {
-                                    "post": {
-                                        "requestBody": {
-                                            "content": {
-                                                "application/json": {
-                                                    "schema": {"$ref": _ENTRY_SCHEMA_REF}
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if self.identity.typed_dataset_ids
-                            else {}
-                        ),
-                    },
-                    "components": {
-                        "schemas": {
-                            "RememberEntryPayload": {
-                                "properties": {
-                                    "dataset_id": {},
-                                    "dataset_name": {},
-                                    "entry": {},
-                                    "session_id": {},
-                                }
-                            }
-                        }
-                    },
-                },
-            ),
-        )
+        # No client under test reads capabilities off the spec any more; it
+        # stays served (empty) so a regression into probing it is visible as
+        # a recorded request rather than a 404.
+        route("/openapi.json", "GET", self._openapi)
 
         # auth + identity (single-principal-key flow)
         route("/api/v1/auth/login", "POST", self._login)
@@ -308,8 +261,22 @@ class MockCogneeServer:
         route("/api/v1/agents/connections/me", "GET", self._agents_connections_me)
 
         # plugin identity provisioning (per-plugin agent sub-user + key).
+        route(
+            re.compile(r"^/api/v1/integrations/plugins/[^/]+/keys/[^/]+$"),
+            "DELETE",
+            self._plugin_key_revoke,
+        )
+        route(
+            re.compile(r"^/api/v1/integrations/plugins/[^/]+/keys$"),
+            "GET",
+            self._plugin_keys_list,
+        )
+        route("/api/v1/integrations/status", "GET", self._integrations_status)
         # Exact-path routing, so each known plugin key gets its own route.
-        for plugin_key in ("claude-code", "codex", "antigravity"):
+        # "cursor" is what the Cursor plugin sends; cognee's KNOWN_PLUGINS
+        # (cognee/modules/integrations/plugins.py) has to list it as well, or a
+        # real server answers 404 and the plugin stays on the principal's key.
+        for plugin_key in ("claude-code", "codex", "antigravity", "cursor"):
             route(
                 f"/api/v1/integrations/plugins/{plugin_key}/provision",
                 "POST",
@@ -404,7 +371,21 @@ class MockCogneeServer:
 
     def _agents_register(self, req: Request) -> Response:
         self._record(req)
-        status, body = self.identity.agents_register(req.get_json(silent=True) or {})
+        if self.identity.register_checks_keys and not self.identity.user_id_for_key(
+            req.headers.get("X-Api-Key")
+        ):
+            return _json(401, {"detail": "invalid api key"})
+        payload = req.get_json(silent=True) or {}
+        if self.identity.register_checks_datasets:
+            caller = self.identity.user_id_for_key(req.headers.get("X-Api-Key"))
+            for name in payload.get("dataset_names") or []:
+                owned = any(
+                    row["name"] == name and row["ownerId"] == caller
+                    for row in self.identity.dataset_rows.values()
+                )
+                if not owned:
+                    return _json(403, {"detail": f"Dataset '{name}' not accessible."})
+        status, body = self.identity.agents_register(payload)
         return _json(status, body)
 
     def _agents_unregister(self, req: Request) -> Response:
@@ -417,15 +398,66 @@ class MockCogneeServer:
         status, body = self.identity.agents_connections_me(req.args.get("agent_session_name"))
         return _json(status, body)
 
+    def _openapi(self, req: Request) -> Response:
+        self._record(req)
+        paths: dict[str, Any] = {}
+        if self.identity.additive_keys:
+            paths["/api/v1/integrations/plugins/{plugin_key}/provision"] = {
+                "post": {"x-cognee-additive-plugin-keys": True}
+            }
+        if self.identity.typed_dataset_ids:
+            # As a real server describes it: the entry's request body, behind a
+            # $ref, lists dataset_id.
+            paths["/api/v1/remember/entry"] = {
+                "post": {
+                    "requestBody": {
+                        "content": {"application/json": {"schema": {"$ref": _ENTRY_SCHEMA_REF}}}
+                    }
+                }
+            }
+        return _json(
+            200,
+            {
+                "paths": paths,
+                "components": {
+                    "schemas": {
+                        "RememberEntryPayload": {
+                            "properties": {
+                                "dataset_id": {},
+                                "dataset_name": {},
+                                "entry": {},
+                                "session_id": {},
+                            }
+                        }
+                    }
+                },
+            },
+        )
+
+    def _plugin_keys_list(self, req: Request) -> Response:
+        self._record(req)
+        parts = req.path.rstrip("/").split("/")
+        status, body = self.identity.plugin_keys_list(parts[-2], req.headers.get("X-Api-Key"))
+        return _json(status, body)
+
+    def _integrations_status(self, req: Request) -> Response:
+        self._record(req)
+        status, body = self.identity.integrations_status(req.headers.get("X-Api-Key"))
+        return _json(status, body)
+
+    def _plugin_key_revoke(self, req: Request) -> Response:
+        self._record(req)
+        parts = req.path.rstrip("/").split("/")
+        status, body = self.identity.plugin_key_revoke(
+            parts[-3], req.headers.get("X-Api-Key"), parts[-1]
+        )
+        return _json(status, body)
+
     def _plugins_provision(self, req: Request) -> Response:
         self._record(req)
         # /api/v1/integrations/plugins/{plugin_key}/provision
         plugin_key = req.path.rstrip("/").split("/")[-2]
-        status, body = self.identity.plugins_provision(
-            plugin_key,
-            req.headers.get("X-Api-Key"),
-            create_only=req.args.get("create_only") == "true",
-        )
+        status, body = self.identity.plugins_provision(plugin_key, req.headers.get("X-Api-Key"))
         return _json(status, body)
 
     def _plugins_disconnect(self, req: Request) -> Response:

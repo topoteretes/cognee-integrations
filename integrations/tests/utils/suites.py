@@ -207,7 +207,38 @@ ANTIGRAVITY = Suite(
     has_cloud_worker=False,
 )
 
-ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY]
+#: Cursor runs a copy of the codex runtime behind ``cursor_hook.py``, the adapter
+#: that turns Cursor's native hook payloads into the Claude Code contract the
+#: shared scripts read. The shared tests drive those scripts directly, so they
+#: hold the copy to the codex behaviour; the adapter and the Cursor-format
+#: ``hooks.json`` have their own contract tests (``test_cursor_*.py``).
+CURSOR = Suite(
+    name="cursor",
+    # Cursor's native format: event -> [{"command", "timeout"}], no matcher groups.
+    hook_manifest_style="cursor",
+    scripts_dir=_INTEGRATIONS / "cursor" / "scripts",
+    hooks_json=_INTEGRATIONS / "cursor" / "hooks" / "hooks.json",
+    plugin_manifest=_INTEGRATIONS / "cursor" / ".cursor-plugin" / "plugin.json",
+    state_subdir="cursor",
+    default_dataset="agent_sessions",
+    agent_name="cursor-agent",
+    session_prefix="cursor",
+    cwd_env="CURSOR_CWD",
+    session_suffix="_cursor",
+    host_stem="cursor",
+    has_async_hooks=False,
+    has_rich_statusline=False,
+    has_precompact_http=True,
+    has_single_submit_improve=True,
+    has_local_sdk_recall=False,
+    has_cross_dataset_search=True,
+    has_recap_skills=False,
+    cites_memory_by_default=False,
+    injects_empty_recall=False,
+    has_cloud_worker=False,
+)
+
+ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY, CURSOR]
 
 
 def plugin_root(home: Path | str) -> Path:

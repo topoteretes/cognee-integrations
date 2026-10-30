@@ -2,9 +2,11 @@
 the `statusLine` entry into the host's `~/.claude/settings.json`.
 
 One row, whichever can be drawn: in a session whose row the hooks module draws
-above the prompt (its `band/<session>.json` marker exists) the settings file is
-left alone; otherwise the line below the prompt is installed. Beyond that, the
-plugin owns exactly what it wrote and nothing else:
+above the prompt (its `band/<session>.json` marker exists) the plugin's own
+entry is removed, since Claude Code keeps the status-line row reserved as long
+as the entry exists (a blank row under the prompt otherwise); otherwise the
+line below the prompt is installed. Beyond that, the plugin owns exactly what
+it wrote and nothing else:
   * absent entry → write ours;
   * anything the user put there (dict, bare string, a similarly-named command, or
     a cognee mention outside the command itself) → left untouched;
@@ -148,12 +150,38 @@ def test_nothing_is_written_for_a_session_the_module_draws(ss, settings, temp_ho
     assert not settings.exists()
 
 
-def test_an_existing_entry_is_left_alone_for_a_session_the_module_draws(ss, settings, temp_home):
+def test_our_own_entry_is_removed_for_a_session_the_module_draws(ss, settings, temp_home):
+    """An entry from before the module keeps a blank status-line row reserved
+    under the prompt (the renderer prints nothing for a band session), so it
+    goes; the rest of the settings file is untouched."""
     _mark_band(temp_home)
-    stale = {"type": "command", "command": "/old/cognee-statusline.sh"}
-    _write(settings, {"statusLine": stale})
+    ours = {"type": "command", "command": "/old/cognee-statusline.sh", "refreshInterval": 2}
+    _write(settings, {"statusLine": ours, "theme": "dark"})
     ss._ensure_statusline_configured(SESSION)
-    assert _status_line(settings) == stale
+    written = json.loads(settings.read_text(encoding="utf-8"))
+    assert "statusLine" not in written
+    assert written["theme"] == "dark"
+
+
+def test_a_user_entry_is_kept_for_a_session_the_module_draws(ss, settings, temp_home):
+    _mark_band(temp_home)
+    theirs = {"type": "command", "command": "~/.claude/statusline-chain.sh"}
+    _write(settings, {"statusLine": theirs})
+    ss._ensure_statusline_configured(SESSION)
+    assert _status_line(settings) == theirs
+
+
+def test_no_settings_file_is_created_by_the_eviction(ss, settings, temp_home):
+    _mark_band(temp_home)
+    ss._ensure_statusline_configured(SESSION)
+    assert not settings.exists()
+
+
+def test_corrupt_settings_survive_the_eviction(ss, settings, temp_home):
+    _mark_band(temp_home)
+    _write(settings, "{not json", raw=True)
+    ss._ensure_statusline_configured(SESSION)
+    assert settings.read_text(encoding="utf-8") == "{not json"
 
 
 def test_the_line_is_installed_for_a_session_the_module_does_not_draw(ss, settings, temp_home):

@@ -17,10 +17,6 @@ const SNAPSHOT = {
   credits: '',
   update: '',
   text: 'cognee: agent_sessions · local',
-  counts: {
-    tokens_saved: '~2.4k tokens saved',
-    tokens_saved_short: '~2.4kt saved',
-  },
 }
 
 const BAND = {
@@ -46,7 +42,7 @@ function marker(nowMs: number, body: Record<string, unknown>): string {
 
 // The world beneath the plugin: a clock that moves only when a test moves it,
 // the home directory, the session id, the marker file and the renderer.
-function wire(on: Parameters<Parameters<typeof test>[1]>[1], state: { marker: string }) {
+function wire(on: Parameters<Parameters<typeof test>[1]>[1], state: { marker: string }, snapshotOf: () => object = () => SNAPSHOT) {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   mock.env(on, { HOME })
   // The engine's own behaviour at the bottom of each chain the module joins.
@@ -71,7 +67,7 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], state: { marker: st
   on('tool.register', ($, e) => ({ value: { tool: `mcp__cognee-memory__${e.name}` } }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('process.run', () => ({
-    value: { exitCode: 0, stdout: JSON.stringify(SNAPSHOT), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    value: { exitCode: 0, stdout: JSON.stringify(snapshotOf()), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   return clock
 }
@@ -85,11 +81,11 @@ test('the desktop band shows the row the terminal status line shows', async ($, 
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
   // The mark (the official SVG on the desktop), the wordmark, the dataset,
-  // the mode, the estimate and the activity.
+  // the mode and the activity.
   expect(await ui.find({ type: 'Svg' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /~2.4k tokens saved/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /tokens saved/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /3 memories used/ })).toBeDefined()
   // Healthy leads with the green dot, as on the text line.
   expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
@@ -247,6 +243,79 @@ test('a stale active phase is ignored rather than shown forever', async ($, on) 
   expect(saved).toBeDefined()
   expect(saved!.props.dimColor).toBe(true)
   await ui.unmount()
+})
+
+test('a failed ready verdict is not shown next to a green dot', async ($, on) => {
+  // The hook recorded "not ready" while the server was still booting, then
+  // the boot finished and the connection marker confirmed it: the marker
+  // wins, and the stale setting-up phase is not shown either.
+  const state = { marker: '' }
+  const clock = wire(on, state)
+  const now = clock.now()
+  const stale = (now - 3 * 60_000) / 1000
+  const verdict = (now - 2 * 60_000) / 1000
+  state.marker = marker(now, {
+    active: { phase: 'setting_up', detail: 'starting memory server', started_at: stale, updated_at: stale },
+    results: { ready: { at: verdict, ok: false } },
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /memory unavailable/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /setting up memory/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the row follows a boot the hook handed to its worker past the warm-up, until the phase ends', async ($, on) => {
+  const state = { marker: '' }
+  let ready = false
+  let renders = 0
+  const clock = wire(on, state, () => {
+    renders += 1
+    return ready ? SNAPSHOT : { ...SNAPSHOT, state: '' }
+  })
+  const began = clock.now() / 1000
+  // What the worker's heartbeat does: the phase stays fresh while it boots.
+  const touch = () => {
+    state.marker = marker(clock.now(), {
+      active: { phase: 'setting_up', detail: 'starting memory server', started_at: began, updated_at: clock.now() / 1000 },
+      results: {},
+    })
+  }
+  touch()
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  // Four minutes of boot, touched every fifteen seconds.
+  for (let s = 1; s <= 240; s += 1) {
+    await clock.advance(1000)
+    if (s % 15 === 0) touch()
+  }
+  let ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /setting up memory · starting memory server…/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /memory unavailable/ })).toBeUndefined()
+  await ui.unmount()
+  // The snapshot was retaken through the warm-up (every 5 s for two
+  // minutes) and, more slowly, past it (every 30 s), so the row can turn
+  // green the moment the connection marker lands.
+  expect(renders).toBeGreaterThanOrEqual(1 + 24 + 4)
+  const during = renders
+
+  // The worker registers the session: the phase ends ready, the marker is there.
+  ready = true
+  state.marker = marker(clock.now(), { active: null, results: { ready: { at: clock.now() / 1000, ok: true } } })
+  for (let s = 0; s < 3; s += 1) await clock.advance(1000)
+  ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /memory ready/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /setting up/ })).toBeUndefined()
+  await ui.unmount()
+  expect(renders).toBeGreaterThan(during)
+
+  // And the poll stops with the phase: nothing runs while the session idles.
+  const settled = renders
+  for (let s = 0; s < 60; s += 1) await clock.advance(1000)
+  expect(renders).toBe(settled)
 })
 
 test('a result older than five minutes leaves the row', async ($, on) => {

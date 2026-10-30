@@ -2,7 +2,7 @@
 name: cognee-report
 description: >-
   Evaluate Cognee itself from local telemetry: recall hit rate, latency, saves, injected
-  context, tokens saved, a scorecard and grade, before vs after an update, and why a
+  context, token overhead, a scorecard and grade, before vs after an update, and why a
   memory was or wasn't injected last turn.
 when_to_use: >-
   E.g. "evaluate Cognee", "how is Cognee doing?", "grade, assess or audit Cognee", "is

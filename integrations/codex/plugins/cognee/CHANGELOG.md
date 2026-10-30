@@ -10,7 +10,7 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.7.7]
+## [1.7.8]
 
 ### Security
 - **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
@@ -34,6 +34,50 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
   affects `<private>` spans.
 - The forget skill searches for what surrounds a secret, never the value itself.
+
+## [1.7.7]
+
+### Changed
+- **Plugin identity provisioning no longer waits on cognee#4942** (SDK-1002). Effective
+  write permissions are computed on the plugin side from routes released servers already
+  have, and `create_only` is replaced by per-machine keys (cognee#6113):
+  - **Every machine holds its own key; provisioning never logs another one out.** The
+    plugin provisions only against a server whose provision route adds keys and revokes
+    none (`x-cognee-additive-plugin-keys` in its OpenAPI; cognee#6113). Released servers
+    rotate every key on provision, so against them the plugin runs as the principal
+    (`auto`) or raises (`true`) instead of provisioning. A key the server rejects (401) is
+    replaced in the same session start. A full agent (409) runs as the principal and is
+    not silent: every session start warns that this machine is on the personal key and
+    points at the `cognee-keys` skill, and the doctor's Memory Sharing line names the key
+    limit, until the machine gets its own key.
+  - **New `cognee-keys` skill and `scripts/plugin-keys.py`.** Lists the plugin agent's
+    keys most recently used first (this machine's marked; `--all` covers every plugin
+    agent of the user) and revokes the one the user chooses — the way to free a slot.
+  - **Shared-memory registration works on cognee 1.6.3.** The agent registers its session
+    with the canonical dataset by UUID only. Since 1.6.3 the server resolves dataset names
+    among the caller's own datasets, and the canonical dataset belongs to the parent, so
+    sending the name too made every agent registration fail with 403 and the launch fall
+    back to the principal.
+  - **A refused registration (403) never discards a working key.** Only a 401 marks the
+    key dead; blocking it on 403 would make every launch mint another key.
+  - **Reverting a fresh identity revokes only that key** (by id), never the plugin's other
+    machines' keys.
+  - **Effective write permissions.** The dataset picker and the dataset readiness check
+    union the identity's direct grants with the shared role's and the tenant's, asked for
+    from the server (`GET /permissions/principals/{role|tenant}/datasets`), instead of
+    trusting the marker's memo of attempted grants.
+
+- New hook events: `plugin_identity_blocked` (a rejected credential set aside),
+  `plugin_identity_reprovisioned` (replaced in the same launch), `plugin_key_revoke_failed`
+  and `plugin_capability_probe_failed` (the server's OpenAPI could not be read; no
+  provisioning in that launch). `plugin_disconnect_failed` is gone: the plugin no longer
+  disconnects itself.
+
+### Fixed
+- **A failed venv build logs why.** `cognee_install_failed` now carries the last 300
+  characters of what `uv` / `pip` printed, next to the exception. The exception alone
+  was the command and its exit status, which could not distinguish a missing
+  interpreter from a full disk when the runtime failed to build on Ubuntu 26.04.
 
 ## [1.7.6]
 

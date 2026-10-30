@@ -20,10 +20,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -54,6 +56,7 @@ from _plugin_common import (
     managed_endpoint_enabled,
     phase_begin,
     phase_end,
+    phase_touch,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
@@ -100,6 +103,10 @@ _BOOTSTRAP_ARG = "--bootstrap"
 _BOOTSTRAP_LOCK = _GLOBAL_STATE_DIR / "server-bootstrap-worker.lock"
 _SERVER_BOOT_DEADLINE_SECONDS = float(os.environ.get("COGNEE_SERVER_BOOT_DEADLINE", "") or 600.0)
 _BOOTSTRAP_LOCK_STALE_SECONDS = _SERVER_BOOT_DEADLINE_SECONDS + 60.0
+# How often the bootstrap worker refreshes the ``setting_up`` phase while it
+# boots: well inside the 90 s after which the status surfaces call an active
+# phase dead (``_plugin_common._PHASE_STALE_SECONDS``).
+_SETTING_UP_HEARTBEAT_SECONDS = 15.0
 _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() not in (
     "0",
     "false",
@@ -301,6 +308,29 @@ def _refuse_fallback_venv() -> None:
         hook_log("host_python_marker_write_failed", {"error": str(exc)[:200]})
 
 
+def _apply_key_limit_warning(output: dict) -> dict:
+    """Warn (systemMessage) while this machine runs on the personal key because
+    the server refused it a key of its own: the plugin's agent is full (409).
+
+    Read from a marker so a detached bootstrap's verdict reaches the user too —
+    on the next launch — and repeated every launch until a key is provisioned.
+    """
+    from _plugin_common import key_limit_message
+
+    message = key_limit_message()
+    if not message:
+        return output
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{message}" if top else message
+    return result
+
+
 def _apply_host_python_warning(output: dict) -> dict:
     """Append the recorded fallback refusal (if any) to the hook's systemMessage.
 
@@ -330,6 +360,18 @@ def _apply_host_python_warning(output: dict) -> dict:
     top = str(result.get("systemMessage") or "").strip()
     result["systemMessage"] = "{}\n\n{}".format(top, message) if top else message
     return result
+
+
+def _install_failure(via: str, exc: BaseException) -> dict:
+    """hook.log detail for a failed venv build: the exception and the tail of
+    what uv / pip said. CalledProcessError's str() is just the command and exit
+    status; the reason (no matching interpreter, disk quota, resolver error) is
+    only in stderr, and without it a failed build on a new runner image or a
+    new OS cannot be diagnosed from the log alone."""
+    stderr = getattr(exc, "stderr", "") or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    return {"via": via, "error": str(exc)[:300], "stderr": str(stderr).strip()[-300:]}
 
 
 def _venv_cognee_version() -> str:
@@ -567,7 +609,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 )
                 installed_via_uv = True
             except Exception as exc:
-                hook_log("cognee_install_failed", {"via": "uv", "error": str(exc)[:300]})
+                hook_log("cognee_install_failed", _install_failure("uv", exc))
 
         if not installed_via_uv and not _VENV_PYTHON.exists():
             # Fallback: stdlib venv + pip, from a Python 3.10+ already on the
@@ -603,7 +645,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     timeout=timeout,
                 )
             except Exception as exc:
-                hook_log("cognee_install_failed", {"via": "venv_pip", "error": str(exc)[:300]})
+                hook_log("cognee_install_failed", _install_failure("venv_pip", exc))
 
         version = _venv_cognee_version()
         if not version:
@@ -1012,10 +1054,9 @@ async def _ensure_plugin_identity(service_url: str, config: dict, principal_key:
 
     ``plugin_identity`` / ``COGNEE_PLUGIN_IDENTITY`` selects the policy:
       - ``false``: principal only; a cached identity is ignored.
-      - ``true``: explicit identity. Provision (create-only — never rotating a
-        key another machine may hold) when none is cached. Anything that
-        prevents that — a server without the create-only contract, a cached
-        key bound to another principal, a key the server rejected — is an
+      - ``true``: explicit identity. Provision when none is cached. Anything
+        that prevents that — a server that does not add keys (cognee#6113), an
+        agent at its key limit, a cached key bound to another principal — is an
         error, never a silent fall back to the owner's authority.
       - ``auto`` (default): identity in service of shared agent memory. With
         shared memory on, provision when none is cached; the caller then wires
@@ -1025,40 +1066,44 @@ async def _ensure_plugin_identity(service_url: str, config: dict, principal_key:
         foreign cached key is not used: the launch runs as the principal and
         says so in the log.
 
-    A cached key that passes its checks always wins — provisioning again would
-    rotate it out from under every other machine of this user.
+    A cached key that passes its checks always wins. A cached key the server
+    rejected (``blocked``) is replaced through the same provisioning, which
+    adds one more key and touches no other machine's.
     """
     from _plugin_common import (
         _AGENT_KEY_CACHE,
+        PLUGIN_KEY,
         _installed_plugin_version,
         _load_json_file,
         _principal_fingerprint,
+        clear_key_limit,
         load_cached_agent_key,
         load_cached_api_key,
         load_shared_memory_marker,
         plugin_identity_lock,
         plugin_identity_mode,
         provision_plugin_agent_via_http,
+        record_key_limit,
         save_cached_agent_key,
         save_cached_api_key,
         shared_memory_enabled,
     )
 
     mode = plugin_identity_mode(config)
+    # Re-decided every launch: only a 409 below writes it back.
+    clear_key_limit()
     if mode == "disabled":
         return ""
     strict = mode == "enabled"
     with plugin_identity_lock():
         key = load_cached_agent_key(service_url)
         record = _load_json_file(_AGENT_KEY_CACHE)
+        if key and record.get("blocked"):
+            # Revoked out-of-band (or pruned server-side). Never reused;
+            # provisioning below decides whether it is replaced.
+            hook_log("plugin_identity_blocked", {"reprovision": "by_server"})
+            key = ""
         if key:
-            if record.get("blocked"):
-                if strict:
-                    raise RuntimeError(
-                        "Plugin identity is disconnected; explicit reconnect is required"
-                    )
-                hook_log("plugin_identity_skipped", {"reason": "blocked"})
-                return ""
             if record.get("principal_fingerprint") != _principal_fingerprint(principal_key):
                 if strict:
                     raise RuntimeError(
@@ -1084,19 +1129,33 @@ async def _ensure_plugin_identity(service_url: str, config: dict, principal_key:
             principal_key=principal_key, service_url=service_url
         )
         if status != "provisioned":
+            if status == "limit":
+                # Surfaced to the user by SessionStart (``_apply_key_limit_warning``)
+                # and the doctor until this machine gets its own key again.
+                record_key_limit(service_url)
             if strict:
+                if status == "limit":
+                    raise RuntimeError(
+                        "Plugin identity holds the maximum number of keys; revoke an old "
+                        f"machine's key (GET/DELETE /api/v1/integrations/plugins/"
+                        f"{PLUGIN_KEY}/keys) and start a new session"
+                    )
                 raise RuntimeError(
                     f"Plugin provisioning {status}; owner fallback is disabled. "
-                    "Safe create-only SDK support is required."
+                    "A cognee server that adds plugin keys per machine is required."
                 )
-            # ``auto``: no identity on this server (no create-only contract, or
-            # an agent that already exists without a key here) — the principal
-            # sees everything anyway, so shared memory has nothing to add.
+            # ``auto``: no identity on this server (one that rotates keys, or an
+            # agent at its key limit) — the principal sees everything anyway,
+            # so shared memory has nothing to add.
             hook_log("plugin_provision_skipped", {"status": status})
             return ""
         key = str(body.get("api_key") or "").strip()
         save_cached_agent_key(
-            service_url, key, str(body.get("agent_id") or ""), principal_key=principal_key
+            service_url,
+            key,
+            str(body.get("agent_id") or ""),
+            principal_key=principal_key,
+            key_id=str(body.get("key_id") or ""),
         )
         # Keep the PRINCIPAL reachable for later control-plane work (grant
         # backfills from the idle watcher): an env-provided key only lives in
@@ -1185,25 +1244,42 @@ async def _ensure_agent_credentials_and_register(
         "dataset_id": "",
         "dataset_ids": [],
     }
-    if agent_key:
-        shared = _wire_shared_memory(service_url, config, principal_key, agent_key, session_key)
+
+    def _wire(key: str) -> tuple[str, dict]:
+        """Wire ``key``'s agent into shared memory; revert a fresh, unwired key.
+
+        Returns the key to run as ("" when reverted) and the wiring outcome.
+        """
+        wired = _wire_shared_memory(service_url, config, principal_key, key, session_key)
         if (
-            shared["mode"] != "shared"
+            wired["mode"] != "shared"
             and config.get("_provisioned_now")
             and plugin_identity_mode(config) != "enabled"
         ):
             hook_log(
                 "plugin_identity_reverted",
-                {"reason": shared["reason"], "detail": "shared memory unavailable"},
+                {"reason": wired["reason"], "detail": "shared memory unavailable"},
             )
-            from _plugin_common import disconnect_plugin_agent_via_http
+            from _plugin_common import (
+                _AGENT_KEY_CACHE,
+                _load_json_file,
+                revoke_minted_agent_key,
+            )
 
-            # Nobody will hold the key just minted: revoke it server-side (the
-            # agent user stays for a later, successful migration).
-            disconnect_plugin_agent_via_http(principal_key=principal_key)
+            # Nobody will hold the key just minted: revoke it — only it, by id;
+            # other machines hold keys for the same agent (the agent user stays
+            # for a later, successful migration).
+            revoke_minted_agent_key(
+                principal_key=principal_key,
+                key_id=str(_load_json_file(_AGENT_KEY_CACHE).get("key_id") or ""),
+            )
             clear_cached_agent_key()
-            agent_key = ""
             set_launch_dataset_ids(session_key, "", [])
+            return "", wired
+        return key, wired
+
+    if agent_key:
+        agent_key, shared = _wire(agent_key)
     api_key = agent_key or principal_key
 
     os.environ["COGNEE_API_KEY"] = api_key
@@ -1227,31 +1303,62 @@ async def _ensure_agent_credentials_and_register(
 
     registered, registration = _register()
     if not registered and registration.get("auth_failed") and agent_key:
-        # The provisioned key was revoked out-of-band (dashboard disconnect or
-        # a rotation elsewhere). It is blocked so no later hook reuses it, and
-        # never re-provisioned: the create-only contract refuses an agent that
-        # already exists, and rotating would revoke another machine's key.
-        block_cached_agent_key(agent_key)
-        if plugin_identity_mode(config) == "enabled":
-            raise RuntimeError(
-                "Plugin identity rejected; automatic re-provision and owner fallback are disabled"
+        # 401: the key itself is dead — revoked out-of-band (dashboard
+        # disconnect or revoke) or pruned server-side. It is blocked so no
+        # later hook reuses it, and replaced.
+        # 403: the key works but the server refused this registration; the key
+        # is kept — blocking it would make every launch mint another one.
+        key_rejected = registration.get("status_code") == 401
+        replacement = ""
+        if key_rejected:
+            # One more key for this machine revokes nothing: replace it now
+            # (once) instead of running this launch degraded. The cache is
+            # re-read under the identity lock, so a key another session of this
+            # machine already replaced is reused rather than minted again.
+            block_cached_agent_key(agent_key)
+            config.pop("_provisioned_now", None)
+            replacement = await _ensure_plugin_identity(service_url, config, principal_key)
+            if replacement:
+                replacement, shared = _wire(replacement)
+        if replacement:
+            hook_log("plugin_identity_reprovisioned", {"after": "auth_rejected"})
+            agent_key = api_key = replacement
+            os.environ["COGNEE_API_KEY"] = api_key
+            config["api_key"] = api_key
+            user_id = await _user_id_via_api(service_url, api_key)
+            registered, registration = _register()
+            if not registered and registration.get("status_code") == 401:
+                block_cached_agent_key(agent_key)
+        if not registered and registration.get("auth_failed"):
+            if plugin_identity_mode(config) == "enabled":
+                raise RuntimeError(
+                    "Plugin identity rejected and could not be replaced; owner fallback is disabled"
+                    if key_rejected
+                    else "Plugin identity was refused registration (403); owner fallback "
+                    "is disabled"
+                )
+            # ``auto``: this launch runs as the principal; shared memory is off
+            # until the identity is replaced (401) or the server accepts it (403).
+            hook_log(
+                "plugin_identity_rejected_fallback",
+                {
+                    "agent_key_blocked": key_rejected,
+                    "status": registration.get("status_code"),
+                },
             )
-        # ``auto``: this launch runs as the principal; shared memory is off
-        # until the identity is reconnected explicitly.
-        hook_log("plugin_identity_rejected_fallback", {"agent_key_blocked": True})
-        agent_key = ""
-        api_key = principal_key
-        shared = {
-            "mode": "separated",
-            "reason": "identity_rejected",
-            "dataset_id": "",
-            "dataset_ids": [],
-        }
-        set_launch_dataset_ids(session_key, "", [])
-        os.environ["COGNEE_API_KEY"] = api_key
-        config["api_key"] = api_key
-        user_id = await _user_id_via_api(service_url, api_key)
-        registered, registration = _register()
+            agent_key = ""
+            api_key = principal_key
+            shared = {
+                "mode": "separated",
+                "reason": "identity_rejected",
+                "dataset_id": "",
+                "dataset_ids": [],
+            }
+            set_launch_dataset_ids(session_key, "", [])
+            os.environ["COGNEE_API_KEY"] = api_key
+            config["api_key"] = api_key
+            user_id = await _user_id_via_api(service_url, api_key)
+            registered, registration = _register()
     # Optional lifecycle routes (older / minimal servers, lifecycle_supported is
     # False): the session runs unregistered rather than failing. Anything else
     # is a real failure on a server that has the route — raise with the HTTP
@@ -1641,10 +1748,15 @@ async def _run_heavy(
     *,
     managed_endpoint: bool,
     boot_timeout: float,
+    on_registered: Callable[[], None] | None = None,
 ) -> tuple[str, str, bool]:
     """Slow session bootstrap shared by the inline (legacy) path and the
     detached worker: server boot wait, cognee init, agent registration, dataset
     creation, and the server-ready marker.
+
+    ``on_registered`` runs once the session is registered and the connection
+    state recorded, before the code-graph pass: memory is usable from then on,
+    and the worker uses it to say so without waiting for the index.
 
     Returns ``(user_id, agent_api_key, ok)``. ``ok`` is False only on a hard
     cloud-registration failure (mirrors the legacy early-abort).
@@ -1791,6 +1903,12 @@ async def _run_heavy(
     elif service_url and probe_health(service_url, timeout=1.5) == "ready":
         write_connection_state("ready", service_url)
 
+    if on_registered is not None:
+        try:
+            on_registered()
+        except Exception as exc:
+            hook_log("phase_end_failed", {"phase": "setting_up", "error": str(exc)[:200]})
+
     # Code graph: index the repository this session opened in, or refresh it if
     # the tree moved while the agent was away. Deliberately last and inside the
     # detached worker — it must never delay the first prompt — and best-effort:
@@ -1838,43 +1956,92 @@ async def _run_bootstrap(bootstrap: dict) -> None:
     config["base_url"] = service_url
     os.environ["COGNEE_BASE_URL"] = service_url
 
-    # 1. Ensure the server is up. Only the single-flight winner spawns uvicorn;
-    #    everyone else waits for /health (the winner may still be migrating).
-    if not _health_ok(health_url):
-        with _bootstrap_singleflight() as acquired:
-            if acquired:
-                try:
-                    _ensure_local_server_running(
-                        config, health_timeout=_SERVER_BOOT_DEADLINE_SECONDS
-                    )
-                except Exception as exc:
-                    hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
-            else:
-                hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
-        if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
-            hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
-            phase_end("setting_up", session_key=session_key, ok=False)
-            return
+    # The hook began ``setting_up`` and handed the verdict to this worker. A
+    # boot (an install on a cold start) runs for minutes, past the stale window
+    # the status surfaces give an active phase; a heartbeat keeps the phase
+    # fresh until the session is registered, so the row keeps saying "setting
+    # up memory" instead of falling back to an old result.
+    heartbeat_stop = threading.Event()
 
-    # 2. Register this agent/session. Runs for every agent — NOT gated by the
-    #    boot single-flight. _run_heavy's _ensure_local_server_running is a
-    #    no-op now that the server is healthy.
-    try:
-        await _run_heavy(
-            config,
-            cwd,
-            session_id,
-            agent_session_name,
-            session_key,
-            dataset,
-            managed_endpoint=False,
-            boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
-        )
-        hook_log("bootstrap_complete", {"session_id": session_id})
+    def _heartbeat() -> None:
+        while not heartbeat_stop.wait(_SETTING_UP_HEARTBEAT_SECONDS):
+            phase_touch("setting_up", session_key=session_key)
+
+    heartbeat = threading.Thread(target=_heartbeat, name="cognee-setting-up", daemon=True)
+    heartbeat.start()
+
+    def _stop_heartbeat() -> None:
+        # ``set()`` wakes the thread but does not interrupt a touch already
+        # past its read: that touch would write ``active: setting_up`` back
+        # over the result ``phase_end`` records next, and the row would say
+        # "setting up memory" until the phase went stale. The thread leaves
+        # its wait at once, so the join returns as soon as any touch lands.
+        heartbeat_stop.set()
+        heartbeat.join(timeout=1.0)
+
+    def _registered() -> None:
+        # Memory is usable from here: the code-graph pass that follows is
+        # best-effort and must not hold the verdict back.
+        _stop_heartbeat()
+        hook_log("bootstrap_registered", {"session_id": session_id})
         phase_end("setting_up", session_key=session_key)
-    except Exception as exc:
-        hook_log("bootstrap_failed", {"error": str(exc)[:300]})
-        phase_end("setting_up", session_key=session_key, ok=False)
+
+    try:
+        # 1. Ensure the server is up. Only the single-flight winner spawns uvicorn;
+        #    everyone else waits for /health (the winner may still be migrating).
+        if not _health_ok(health_url):
+            with _bootstrap_singleflight() as acquired:
+                if acquired:
+                    try:
+                        _ensure_local_server_running(
+                            config, health_timeout=_SERVER_BOOT_DEADLINE_SECONDS
+                        )
+                    except Exception as exc:
+                        hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
+                else:
+                    hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
+            if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
+                hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
+                _stop_heartbeat()
+                phase_end("setting_up", session_key=session_key, ok=False)
+                return
+
+        # 2. Register this agent/session. Runs for every agent — NOT gated by the
+        #    boot single-flight. _run_heavy's _ensure_local_server_running is a
+        #    no-op now that the server is healthy.
+        try:
+            _, _, registered = await _run_heavy(
+                config,
+                cwd,
+                session_id,
+                agent_session_name,
+                session_key,
+                dataset,
+                managed_endpoint=False,
+                boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
+                on_registered=_registered,
+            )
+            hook_log(
+                "bootstrap_complete", {"session_id": session_id, "registered": bool(registered)}
+            )
+            if not heartbeat_stop.is_set():
+                if registered:
+                    # The heavy path came back ready without calling back.
+                    _registered()
+                else:
+                    # A refused registration is a False return, not an
+                    # exception: _run_heavy reports it and records the
+                    # connection state itself. Nothing is registered, so
+                    # memory is not ready.
+                    hook_log("bootstrap_registration_failed", {"session_id": session_id})
+                    _stop_heartbeat()
+                    phase_end("setting_up", session_key=session_key, ok=False)
+        except Exception as exc:
+            hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+            _stop_heartbeat()
+            phase_end("setting_up", session_key=session_key, ok=False)
+    finally:
+        _stop_heartbeat()
 
 
 def _running_server_observer(target_url: str) -> tuple[bool, bool | None]:
@@ -2133,17 +2300,19 @@ def _ensure_statusline_configured(session_id: str = "") -> None:
     """Write the statusLine entry to ~/.claude/settings.json when safe.
 
     One row, whichever can be drawn: where the hooks module draws the row above
-    the prompt for this session, the settings file is left alone (the renderer
-    prints nothing for such a session anyway); where it does not, the line below
-    the prompt is installed, or refreshed when the plugin moved. Claude Code
-    hot-reloads settings.json, so the line becomes active on the next status
-    refresh without a restart.
+    the prompt for this session, the plugin's own entry is removed (Claude Code
+    keeps a status-line row reserved as long as the entry exists, even when the
+    renderer prints nothing for the session, which leaves a blank row under the
+    prompt); where it does not, the line below the prompt is installed, or
+    refreshed when the plugin moved. Claude Code hot-reloads settings.json, so
+    either change lands on the next status refresh without a restart. An entry
+    the user wrote is never touched either way.
     """
     if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
         hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
         return
     if _band_draws_this_session(session_id):
-        hook_log("statusline_setup_skipped", {"reason": "band_draws_row"})
+        _evict_own_statusline(reason="band_draws_row")
         return
 
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
@@ -2200,20 +2369,53 @@ def _ensure_statusline_configured(session_id: str = "") -> None:
             return
 
         settings["statusLine"] = desired
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2)
-                f.write("\n")
-            os.replace(tmp, settings_path)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        _write_settings(settings_path, settings)
         hook_log("statusline_configured", {"path": str(statusline_sh)})
+    except Exception as exc:
+        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
+
+
+def _write_settings(settings_path: Path, settings: dict) -> None:
+    """Replace ~/.claude/settings.json atomically (never a torn file)."""
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, settings_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _evict_own_statusline(reason: str) -> None:
+    """Remove the plugin's own ``statusLine`` entry from ~/.claude/settings.json.
+
+    Only an entry that runs ``cognee-statusline.sh`` is ours; a line the user
+    set themselves (a chain script of their own included) is left alone, with
+    a log line saying so. Best-effort: a settings file that cannot be read or
+    written is left as it is.
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    try:
+        if not settings_path.exists():
+            return
+        text = settings_path.read_text(encoding="utf-8").strip()
+        settings = json.loads(text) if text else {}
+        existing = settings.get("statusLine")
+        if not existing:
+            return
+        existing_command = existing.get("command") if isinstance(existing, dict) else None
+        if not (isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command):
+            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
+            return
+        settings.pop("statusLine", None)
+        _write_settings(settings_path, settings)
+        hook_log("statusline_evicted", {"reason": reason})
     except Exception as exc:
         hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
 
@@ -2531,11 +2733,17 @@ async def _start(payload: dict | None = None) -> dict:
                 ),
             },
         }
+    # Whether a detached bootstrap worker owns the "memory ready" verdict: it
+    # ends ``setting_up`` once the server answers and the session is
+    # registered. This hook then records no verdict of its own: the server is
+    # still booting here, and an ``ok=False`` written now would outlive the
+    # phase and read as "memory unavailable" next to a live server.
+    worker_owns_ready = False
     if will_boot and _LAZY_BOOTSTRAP:
-        # The detached worker ends this phase once the server answers and the
-        # session is registered; the status surfaces show it meanwhile.
+        # The status surfaces show the phase meanwhile.
         phase_begin("setting_up", "starting memory server", session_key=session_key)
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+        worker_owns_ready = True
         user_id = os.environ.get("COGNEE_USER_ID", "")
     else:
         user_id, agent_api_key, ok = await _run_heavy(
@@ -2553,6 +2761,7 @@ async def _start(payload: dict | None = None) -> dict:
                 # Inline attempt failed; retry the heavy path out of band.
                 phase_begin("setting_up", "starting memory server", session_key=session_key)
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+                worker_owns_ready = True
             else:
                 phase_end("connecting", session_key=session_key, ok=False)
                 return {}
@@ -2596,7 +2805,10 @@ async def _start(payload: dict | None = None) -> dict:
     )
 
     ready = server_live or server_ready_hint(str(config.get("base_url", "") or ""))
-    phase_end("connecting", session_key=session_key, ok=bool(ready))
+    if worker_owns_ready:
+        hook_log("bootstrap_owns_ready", {"session_id": session_id, "ready_now": bool(ready)})
+    else:
+        phase_end("connecting", session_key=session_key, ok=bool(ready))
     return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
 
 
@@ -2749,6 +2961,7 @@ def main():
     output = _apply_sync_notice(output, payload)
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
+    output = _apply_key_limit_warning(output)
     print(json.dumps(output or {}))
 
 

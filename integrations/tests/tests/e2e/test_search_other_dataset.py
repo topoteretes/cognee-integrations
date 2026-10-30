@@ -47,6 +47,16 @@ def run_search(suite, *args, home, service_url, api_key="k", extra=None):
     )
 
 
+def _results(suite, stdout: str):
+    """The JSON results. Cursor prints the credit instruction on the line above
+    them: a large result reaches the agent as a file, away from the hook's memory
+    block."""
+    if suite.name == "cursor":
+        header, _, stdout = stdout.partition("\n")
+        assert header.startswith("Cognee memory search results"), header
+    return json.loads(stdout)
+
+
 def _recall_body(mock_server) -> dict:
     call = mock_server.assert_called("POST", "/api/v1/recall")
     return call["json"]
@@ -68,7 +78,7 @@ def test_foreign_dataset_is_a_graph_only_read_by_uuid(
         extra={"COGNEE_SESSION_ID": "pinned_session"},
     )
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == [{"source": "graph", "content": "from elsewhere"}]
+    assert _results(suite, result.stdout) == [{"source": "graph", "content": "from elsewhere"}]
     body = _recall_body(mock_server)
     assert body["dataset_ids"] == [OTHER_ID]
     assert body["scope"] == ["graph"]

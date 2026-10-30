@@ -10,7 +10,7 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.7.5]
+## [1.7.6]
 
 ### Security
 - **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
@@ -38,6 +38,112 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
   affects `<private>` spans.
 - `/cognee-forget` searches for what surrounds a secret, never the value itself.
+
+## [1.7.5]
+
+### Changed
+- **Plugin identity provisioning no longer waits on cognee#4942** (SDK-1002). Effective
+  write permissions are computed on the plugin side from routes released servers already
+  have, and `create_only` is replaced by per-machine keys (cognee#6113):
+  - **Every machine holds its own key; provisioning never logs another one out.** The
+    plugin provisions only against a server whose provision route adds keys and revokes
+    none (`x-cognee-additive-plugin-keys` in its OpenAPI; cognee#6113). Released servers
+    rotate every key on provision, so against them the plugin runs as the principal
+    (`auto`) or raises (`true`) instead of provisioning. A key the server rejects (401) is
+    replaced in the same session start. A full agent (409) runs as the principal and is
+    not silent: every session start warns that this machine is on the personal key and
+    points at the `cognee-keys` skill, and the doctor's Memory Sharing line names the key
+    limit, until the machine gets its own key.
+  - **New `cognee-keys` skill and `scripts/plugin-keys.py`.** Lists the plugin agent's
+    keys most recently used first (this machine's marked; `--all` covers every plugin
+    agent of the user) and revokes the one the user chooses — the way to free a slot.
+  - **Shared-memory registration works on cognee 1.6.3.** The agent registers its session
+    with the canonical dataset by UUID only. Since 1.6.3 the server resolves dataset names
+    among the caller's own datasets, and the canonical dataset belongs to the parent, so
+    sending the name too made every agent registration fail with 403 and the launch fall
+    back to the principal.
+  - **A refused registration (403) never discards a working key.** Only a 401 marks the
+    key dead; blocking it on 403 would make every launch mint another key.
+  - **Reverting a fresh identity revokes only that key** (by id), never the plugin's other
+    machines' keys.
+  - **Effective write permissions.** The dataset picker and the dataset readiness check
+    union the identity's direct grants with the shared role's and the tenant's, asked for
+    from the server (`GET /permissions/principals/{role|tenant}/datasets`), instead of
+    trusting the marker's memo of attempted grants.
+
+- New hook events: `plugin_identity_blocked` (a rejected credential set aside),
+  `plugin_identity_reprovisioned` (replaced in the same launch), `plugin_key_revoke_failed`
+  and `plugin_capability_probe_failed` (the server's OpenAPI could not be read; no
+  provisioning in that launch). `plugin_disconnect_failed` is gone: the plugin no longer
+  disconnects itself.
+
+### Fixed
+- **The dataset name on the status row is a picker again, reliably.** The writable
+  datasets were listed before the SessionStart hook had written the launch record
+  the listing reads, and a failed listing was never retried, so the name stayed plain
+  text for the session. The listing now starts once the hook has run, is retried
+  (five times, with a growing wait) while a server is still starting, keeps the list
+  it had when a run times out, and shows the picker whenever the server listed
+  anything, with the active dataset at the top even when it is not in the writable
+  list (SDK-1244). A boot the hook handed to its worker does not spend those
+  attempts: the listing waits for the `setting up memory` phase to end and runs
+  the moment it does, and a prompt starts the attempts over, so a slow boot never
+  leaves the name plain text for the session.
+- **No more "memory unavailable" next to a live server.** When session start handed
+  a cold boot to its bootstrap worker it still recorded "not ready" on its way out;
+  once the `setting up memory` phase went stale the row fell back to that verdict.
+  The worker now owns the verdict: it keeps the phase fresh while the server boots
+  (a heartbeat every 15 s), says `memory ready` as soon as the session is registered
+  (before the code-graph pass), and the row and the text line both ignore a failed
+  verdict once the connection marker confirms the server. The row keeps watching a
+  hand-off boot past the two-minute warm-up, until the phase ends. A registration
+  the server refuses (a 403, a bad key) is reported as not ready, never as `memory
+  ready`, and the heartbeat is stopped before the verdict is written so a touch in
+  flight cannot bring the phase back over it.
+- **The status row no longer breaks words in a narrow terminal.** Each segment of the
+  row is a box that never shrinks; a row too wide for the terminal drops the least
+  useful segments first (the last operation's cost, a healthy balance, the last
+  activity) and wraps the rest as whole segments. The tour hints wrap as a paragraph
+  beside their buttons, and are shorter.
+- **No blank row under the prompt.** A session whose row the hooks module draws now
+  removes the plugin's own `statusLine` entry from `~/.claude/settings.json` (Claude
+  Code reserves the row for as long as the entry exists, even when the renderer
+  prints nothing). A user's own entry is never touched; a later session without the
+  module installs the plugin's entry again (two sessions open at once, one with the
+  module and one without, each write what they need; the README says so).
+- **The cloud worker creates the session's dataset before it registers the
+  session.** Registration lists that dataset, and a server that only accepts a
+  connection on a dataset the caller can already read (Cognee Cloud does) answered
+  the first attempt with `403 Forbidden`; the retry only went through once the
+  first capture had created the dataset as a side effect. The worker now issues the
+  idempotent dataset create first, so a fresh session registers on its first attempt
+  and the nightly live tier no longer logs `agent_register_failed` for every
+  claude-code session.
+- **"Saved last turn" counts what the cloud worker delivered.** In cloud mode the
+  hooks only spool a capture (`answer_buffered` / `trace_buffered`), and the delivery
+  bumped the session's aggregate save count but never the per-kind counters, so the
+  next recall reported `0 prompt / 0 trace / 0 answer` for a turn the server already
+  held. The worker now records each delivered trace and answer (and the prompt a qa
+  entry carries) the way the direct path does when its POST returns.
+- **A failed venv build logs why.** `cognee_install_failed` now carries the last 300
+  characters of what `uv` / `pip` printed, next to the exception. The exception alone
+  was the command and its exit status, which could not distinguish a missing
+  interpreter from a full disk when the runtime failed to build on Ubuntu 26.04.
+- **A session file is not lost to a briefly held handle on Windows.** Replacing a
+  freshly written counters or ledger file fails on Windows while another handle is
+  open on it (a reader, the indexer, an antivirus scan). The write now waits and
+  tries again a few times before giving up, so a parallel store hook keeps its count.
+
+## [1.7.4]
+
+### Removed
+- **The tokens-saved estimate is gone from the status line and the row above the
+  prompt.** It was not a measurement, so the row no longer shows it. The row keeps the
+  connection glyph, dataset, mode, credits and what memory is doing.
+
+### Changed
+- **Clearer first-run tour.** The arrow now sits right after the dataset name it points
+  to, and the last hint says typing `/cognee` shows the plugin's commands.
 
 ## [1.7.3]
 
@@ -104,9 +210,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   a terminal alike, with a braille spinner while an operation runs. In a terminal
   the module marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`)
   and the renderer, run as a settings-file status line, prints nothing for a
-  marked session, so the row is not shown twice. The row carries the wordmark, the
-  counters and the tokens-saved estimate the text line shows (below), the
-  dataset as a picker, and what memory is doing; the credit inside an answer that
+  marked session, so the row is not shown twice. The row carries the wordmark and
+  the counters the text line shows (below), the dataset as a picker, and what memory is doing; the credit inside an answer that
   used memory stays the agent's own (below). It also adds what memory is doing
   after the spinner while Claude works (on the desktop for every phase; in a
   terminal only for the async phases, whose hooks show no status message of
@@ -232,13 +337,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   a dim `○` while unknown, and on a failure the red `✕ (<reason>)` leads the line
   (the row above the prompt opens with the brain and `cognee` in the brand
   lavender). No counters: the activity segment (`3 memories used`) says what
-  the latest prompt got and the tokens-saved estimate what memory spared; a
-  session total, a per-prompt hit count and a turn ratio are not shown. The
+  the latest prompt got; a session total, a per-prompt hit count and a turn ratio are not shown. The
   classic line keeps its own counters.
-- **Estimated tokens saved.** The line shows an estimate computed as injected context
-  tokens (four characters per token) × 6.9; it is a heuristic, not measured billing,
-  and shows `n/a` when unmeasured. Recall also records how much context session
-  deduplication kept out (`dedup_chars_saved`).
+- Recall records how much context session deduplication kept out
+  (`dedup_chars_saved`).
 - **Cognee searches are named in progress text.** The search, code and architecture
   skills and the session-start guidance ask the agent to say "Searching Cognee…"
   before an explicit search, and to credit recalled memory only when it was used.

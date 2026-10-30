@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { CogneePluginKey } from "./plugin-keys.js";
 import type { RecapApi } from "./recap.js";
 import { Agent, FormData as UndiciFormData, fetch as undiciFetch } from "undici";
 import type {
@@ -889,6 +890,55 @@ export class CogneeHttpClient {
       body: JSON.stringify({ name }),
     });
     return typeof ds?.id === "string" ? ds.id : undefined;
+  }
+
+  // -- Plugin agent keys (cognee#6113) -------------------------------------
+  //
+  // Every machine a cognee plugin runs on holds its own API key for that
+  // plugin's agent; the server caps them. These let a user free a slot for any
+  // plugin agent of theirs. They authenticate as the principal — the plugin
+  // agent cannot manage its own keys — which is what this client is.
+
+  /** Plugin keys the server knows (`GET /integrations/status`), provisioned or not. */
+  async listPluginStatuses(): Promise<{ key: string; connected: boolean }[]> {
+    const path = this.isCloud ? "/integrations/status" : "/api/v1/integrations/status";
+    const body = await this.fetchAPI<{ plugins?: { key?: string; connected?: boolean }[] }>(path, { method: "GET" });
+    return (body.plugins ?? [])
+      .filter((p) => typeof p.key === "string" && p.key)
+      .map((p) => ({ key: p.key as string, connected: p.connected === true }));
+  }
+
+  /** The keys of `plugin`'s agent, metadata only. Empty when the server has no key routes. */
+  async listPluginKeys(plugin: string): Promise<CogneePluginKey[]> {
+    const base = this.isCloud ? "/integrations/plugins" : "/api/v1/integrations/plugins";
+    let body: { keys?: Record<string, unknown>[] };
+    try {
+      body = await this.fetchAPI<{ keys?: Record<string, unknown>[] }>(`${base}/${encodeURIComponent(plugin)}/keys`, { method: "GET" });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes("(404)") || msg.includes("(405)")) return [];
+      throw error;
+    }
+    return (body.keys ?? []).map((k) => ({
+      plugin,
+      id: String(k.id ?? ""),
+      label: String(k.label ?? ""),
+      createdAt: String(k.created_at ?? k.createdAt ?? ""),
+      lastUsedAt: String(k.last_used_at ?? k.lastUsedAt ?? ""),
+    }));
+  }
+
+  /** Revoke one key of `plugin`'s agent. `found: false` when there is no such key. */
+  async revokePluginKey(plugin: string, keyId: string): Promise<{ found: boolean }> {
+    const base = this.isCloud ? "/integrations/plugins" : "/api/v1/integrations/plugins";
+    try {
+      await this.fetchAPI<unknown>(`${base}/${encodeURIComponent(plugin)}/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+      return { found: true };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes("(404)")) return { found: false };
+      throw error;
+    }
   }
 
   async listDatasets(): Promise<{ id: string; name: string }[]> {

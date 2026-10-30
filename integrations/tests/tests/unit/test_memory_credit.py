@@ -31,6 +31,7 @@ for the suites whose recall hook uses it (claude-code and codex).
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -123,19 +124,183 @@ def _session_tags(rt, this_turn=("m1", "m2"), earlier=("m3",)):
         ("use `arr[m1]`; cite several tags as [m1, m3]", [], [], []),
     ],
 )
-def test_check_credits(rt, answer, valid, invented, earlier):
+def test_check_credits(suite, rt, answer, valid, invented, earlier):
+    if suite.name == "cursor":
+        pytest.skip("cursor: the credit line carries the logo, not tags")
     result = rt.check_credits(answer, _session_tags(rt))
     assert (result["valid"], result["invented"], result["earlier"]) == (valid, invented, earlier)
     assert result["available"] == 2
 
 
-def test_credit_state_round_trip(rt, tmp_path):
+def test_credit_state_round_trip(suite, rt, tmp_path):
+    if suite.name == "cursor":
+        pytest.skip("cursor: covered by test_cursor_credit_state_round_trip")
     assert not rt.has_credited(tmp_path, SESSION_KEY)
     rt.record_credit(tmp_path, SESSION_KEY, {"valid": []})
     assert not rt.has_credited(tmp_path, SESSION_KEY)  # an invented-only turn doesn't count
     rt.record_credit(tmp_path, SESSION_KEY, {"valid": ["m1"]})
     assert rt.has_credited(tmp_path, SESSION_KEY)
     assert (tmp_path / "sessions" / SESSION_KEY / "credit.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("answer", "credited"),
+    [
+        ("done.\n> [\u200b](https://www.cognee.ai) On Oct 3 you chose the server.", True),
+        ("> [](https://cognee.ai/) you chose the server.", True),  # zero-width space dropped
+        ("  >  [\u200b](https://www.cognee.ai) indented quote", True),
+        ("a plain answer", False),
+        ("> [\u200b](https://www.cognee.ai)", False),  # the logo with nothing after it
+        ("see [\u200b](https://www.cognee.ai) inline", False),  # not a quoted credit line
+        ("> [Cognee](https://www.cognee.ai) docs", False),
+    ],
+)
+def test_cursor_check_credits(suite, rt, answer, credited):
+    if suite.name != "cursor":
+        pytest.skip("only cursor credits with the logo alone")
+    result = rt.check_credits(answer, _session_tags(rt))
+    assert result == {"credited": credited, "available": 2, "known": 3}
+
+
+def test_cursor_instruction_asks_for_the_logo_alone(suite, rt):
+    if suite.name != "cursor":
+        pytest.skip("only cursor credits with the logo alone")
+    text = rt.credit_instruction(first_in_session=False, found=2, dataset="agent_sessions")
+    assert f"> {rt.LOGOTYPE} <what you remembered>, based on the agent_sessions dataset." in text
+    assert "Cognee memory [mN]" not in text and "[m1, m3]" not in text
+
+
+@pytest.mark.parametrize(
+    ("dataset", "source"),
+    [
+        ("agent_sessions", "the agent_sessions dataset"),
+        # By UUID the agent names the dataset itself rather than print the UUID.
+        ("821104a2-2961-5854-82ec-ab6ef24fccec", "the <name of the dataset you searched> dataset"),
+        ("", "Cognee memory"),
+    ],
+)
+def test_cursor_credit_names_the_dataset(suite, rt, dataset, source):
+    if suite.name != "cursor":
+        pytest.skip("only cursor names the dataset in the credit line")
+    assert rt.credit_source(dataset) == source
+    assert f"based on {source}." in rt.search_credit_header(True, dataset)
+    assert f"Saved to {source}:" in rt.save_receipt_header(True, dataset)
+
+
+def test_cursor_credit_state_round_trip(suite, rt, tmp_path):
+    if suite.name != "cursor":
+        pytest.skip("only cursor credits with the logo alone")
+    rt.record_credit(tmp_path, SESSION_KEY, {"credited": True, "known": 0})
+    assert not rt.has_credited(tmp_path, SESSION_KEY)  # nothing was ever handed out
+    rt.record_credit(tmp_path, SESSION_KEY, {"credited": False, "known": 3})
+    assert not rt.has_credited(tmp_path, SESSION_KEY)
+    rt.record_credit(tmp_path, SESSION_KEY, {"credited": True, "known": 3})
+    assert rt.has_credited(tmp_path, SESSION_KEY)
+
+
+CURSOR_INSTRUCTION_KW = {"first_in_session": True, "found": 7}
+
+
+@pytest.mark.parametrize(
+    ("text", "stored"),
+    [
+        (
+            "Mika likes Yuji.\n\n> [\u200b](https://www.cognee.ai) Mika likes Yuji.",
+            "Mika likes Yuji.",
+        ),
+        ("Mika likes Yuji.\n> 🧠 Cognee memory [m1, m6]: from the graph.", "Mika likes Yuji."),
+        (
+            "Yuji.\n\n> ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯ Cognee memory [m1]: the graph.\\\n> ⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉",
+            "Yuji.",
+        ),
+        ("a plain answer", "a plain answer"),
+        ("see https://www.cognee.ai for docs", "see https://www.cognee.ai for docs"),
+        ("Cognee memory [m1] in prose stays", "Cognee memory [m1] in prose stays"),
+    ],
+)
+def test_cursor_strip_credit(suite, rt, text, stored):
+    if suite.name != "cursor":
+        pytest.skip("only cursor strips credit text before storing")
+    assert rt.strip_credit(text) == stored
+
+
+def test_cursor_strip_credit_cuts_the_pasted_instruction(suite, rt):
+    if suite.name != "cursor":
+        pytest.skip("only cursor strips credit text before storing")
+    pasted = f"why no logo?\n\n{rt.credit_instruction(**CURSOR_INSTRUCTION_KW)}\n\nthanks"
+    assert rt.strip_credit(pasted) == "why no logo?\n\nthanks"
+
+
+def test_cursor_search_credit_header(suite, rt):
+    if suite.name != "cursor":
+        pytest.skip("only cursor heads its search output with the credit instruction")
+    header = rt.search_credit_header(True)
+    assert "\n" not in header and rt.LOGOTYPE in header
+    assert "Cognee memory [" not in header
+    # Off, the header says so: memory still shows answers that had a credit line.
+    off = rt.search_credit_header(False)
+    assert off.startswith("Cognee memory search results") and rt.CREDITS_OFF_NOTE in off
+    assert rt.LOGOTYPE not in off
+
+
+def test_cursor_save_receipt_header(suite, rt):
+    if suite.name != "cursor":
+        pytest.skip("only cursor ends a save with a receipt")
+    header = rt.save_receipt_header(True, "agent_sessions")
+    assert "\n" not in header and f"> {rt.LOGOTYPE} Saved to the agent_sessions dataset:" in header
+    off = rt.save_receipt_header(False, "agent_sessions")
+    assert rt.CREDITS_OFF_NOTE in off and rt.LOGOTYPE not in off
+
+
+def test_cursor_save_receipt_is_not_a_memory_credit(suite, rt):
+    if suite.name != "cursor":
+        pytest.skip("only cursor ends a save with a receipt")
+    receipt = f"Saved.\n> {rt.LOGOTYPE} Saved to the agent_sessions dataset: Yuna likes Yukki."
+    assert rt.check_credits(receipt, _session_tags(rt))["credited"] is False
+
+
+def test_cursor_strip_credit_cuts_receipts_headers_and_the_off_note(suite, rt):
+    if suite.name != "cursor":
+        pytest.skip("only cursor strips credit text before storing")
+    receipt = f"Saved.\n\n> {rt.LOGOTYPE} Saved to the agent_sessions dataset: Yuna likes Yukki."
+    assert rt.strip_credit(receipt) == "Saved."
+    for header in (
+        rt.search_credit_header(True, "agent_sessions"),
+        rt.search_credit_header(False),
+        rt.save_receipt_header(True, "agent_sessions"),
+        rt.save_receipt_header(False),
+    ):
+        printed = f"NLINES 2\nLINE0 {header}\nlist len 1\n"
+        assert rt.strip_credit(printed) == "NLINES 2\nLINE0 list len 1"
+        # An old trace holds the printed output JSON-escaped.
+        stored = rt.strip_credit(json.dumps({"output": printed}))
+        assert "Cognee memory search results" not in stored and "Saved to Cognee" not in stored
+        assert "list len 1" in stored
+
+
+def test_cursor_strip_credit_cuts_credits_inside_escaped_tool_output(suite, rt):
+    if suite.name != "cursor":
+        pytest.skip("only cursor strips credit text before storing")
+    trace = (
+        'Bash succeeded. Output: {"stdout": "m4 Cursor session | Answer: Mika likes Yuji. '
+        "> \U0001f9e0 Cognee memory [m6]: Mika likes Yuji, from the knowledge graph\\n"
+        f'next line > {rt.LOGOTYPE} Mika likes Yuji, based on the agent_sessions dataset.\\n"}}'
+    )
+    stored = rt.strip_credit(trace)
+    assert "Cognee memory [m6]" not in stored and "cognee.ai)" not in stored
+    assert "Answer: Mika likes Yuji." in stored and "next line" in stored
+
+
+def test_cursor_strip_credit_deep(suite, rt):
+    if suite.name != "cursor":
+        pytest.skip("only cursor strips credit text before storing")
+    header = rt.search_credit_header(True, "agent_sessions")
+    value = {"command": "cat out.txt", "output": [f"{header}\n[{{}}]", 3], "ok": True}
+    assert rt.strip_credit_deep(value) == {
+        "command": "cat out.txt",
+        "output": ["[{}]", 3],
+        "ok": True,
+    }
 
 
 @pytest.mark.parametrize("key", ["../escape", "..", "", "a/b"])
@@ -145,7 +310,8 @@ def test_unsafe_session_keys_write_nothing(rt, tmp_path, key):
     tags.add("memory", "Cognee memory", "x")
     tags.save(state, key)
     rt.begin_turn(state, key)
-    rt.record_credit(state, key, {"valid": ["m1"]})
+    # Both shapes: tags (claude-code, codex) and the logo alone (cursor).
+    rt.record_credit(state, key, {"valid": ["m1"], "credited": True, "known": 1})
     assert not any(tmp_path.rglob("*.json"))
 
 
@@ -199,7 +365,7 @@ def test_hit_is_tagged_and_carries_the_first_credit_instruction(lookup, monkeypa
     _tag_of(ctx, "Claude Code session learning, 2026-10-03")
     _tag_of(ctx, "knowledge graph entities")
     assert "Cognee found 5 memories for this prompt" in ctx
-    assert "> 🧠 Cognee memory [mN]:" in ctx
+    assert "Cognee memory [mN]:" in ctx
     assert "first Cognee credit in this session" in ctx
     tags = _saved(rt, lookup)
     assert len(tags.records) == 5
@@ -241,7 +407,7 @@ def test_an_earlier_turn_keeps_its_tag_by_server_id(lookup, monkeypatch, rt):
 def test_after_a_credit_the_short_instruction(lookup, monkeypatch, rt):
     rt.record_credit(_state_dir(lookup), SESSION_KEY, {"valid": ["m1"]})
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert "> 🧠 Cognee memory [mN]:" in ctx
+    assert "Cognee memory [mN]:" in ctx
     assert "first Cognee credit" not in ctx
 
 
@@ -269,7 +435,7 @@ def test_a_recall_that_returns_early_still_starts_a_new_turn(lookup, monkeypatch
 def test_opt_out(lookup, monkeypatch, rt):
     monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "off")
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert not re.search(r"\[m\d+ · ", ctx) and "🧠" not in ctx
+    assert not re.search(r"\[m\d+ · ", ctx) and "Cognee memory [mN]" not in ctx
     assert PASSAGE_CODEX in ctx  # memory itself is unchanged
 
 
@@ -475,3 +641,37 @@ def test_only_a_resume_shows_the_notice(start, source):
 
 def test_a_new_chat_shows_nothing(start):
     assert start._apply_sync_notice({}, RESUME) == {}
+
+
+# ── the trace store ────────────────────────────────────────────────────────
+
+
+def test_cursor_trace_is_stored_without_credit_text(suite, hook_module, monkeypatch, rt):
+    """An agent that prints a search's output stores the credit instruction in that
+    trace; stored, it comes back in later recalls as a rule, even with credits off."""
+    import asyncio
+
+    if suite.name != "cursor":
+        pytest.skip("only cursor strips credit text from traces")
+    module = hook_module(suite, "store-to-session.py")
+    sent: list = []
+    monkeypatch.setattr(module, "_load_session", lambda: ("cursor_s1", "agent_sessions", "u1"))
+    monkeypatch.setattr(module, "server_usable", lambda *_: True)
+    monkeypatch.setattr(module, "resolve_runtime_mode", lambda: {"base_url": "http://x"})
+    monkeypatch.setattr(
+        module, "remember_entry_via_http", lambda dataset, sid, entry: sent.append(entry) or {}
+    )
+    header = rt.search_credit_header(True, "agent_sessions")
+    asyncio.run(
+        module._store_tool_call(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "python3 -c 'print(open(\"out.txt\").read())'"},
+                "tool_output": f'{header}\n[{{"text": "Mika likes Yuji."}}]',
+            }
+        )
+    )
+    assert len(sent) == 1
+    stored = json.dumps(sent[0], ensure_ascii=False)
+    assert "Cognee memory search results" not in stored and "cognee.ai)" not in stored
+    assert "Mika likes Yuji." in stored

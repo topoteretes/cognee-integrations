@@ -1,0 +1,17 @@
+{
+  "name": "cognee-grok-bot",
+  "displayName": "Cognee Memory for Grok Bot",
+  "description": "Cognee knowledge-graph memory for Grok Bot. Connects the hosted Cognee MCP server (sign in with your Cognee account, no API key or install) and adds a skill that makes Cognee the bot's memory. Version 0.1.3.",
+  "version": "0.1.3",
+  "author": {
+    "name": "Cognee"
+  },
+  "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/grok-bot",
+  "repository": "https://github.com/topoteretes/cognee-integrations",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "knowledge-graph", "cognee", "mcp", "grok"],
+  "logo": "assets/logo.png",
+  "mcpServers": {
+    "cognee": { "url": "https://mcp.aws.cognee.ai/mcp" }
+  }
+}

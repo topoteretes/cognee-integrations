@@ -1,0 +1,26 @@
+{
+  "name": "cognee",
+  "description": "Cognee integrations for Grok.",
+  "owner": {
+    "name": "Cognee"
+  },
+  "plugins": [
+    {
+      "name": "cognee-grok-bot",
+      "description": "Cognee knowledge-graph memory for Grok Bot over the hosted Cognee MCP server.",
+      "category": "memory",
+      "source": "./integrations/grok-bot",
+      "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/grok-bot",
+      "keywords": [
+        "memory",
+        "knowledge-graph",
+        "cognee",
+        "mcp",
+        "grok"
+      ],
+      "domains": [
+        "cognee.ai"
+      ]
+    }
+  ]
+}

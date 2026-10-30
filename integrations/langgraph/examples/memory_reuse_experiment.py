@@ -85,7 +85,7 @@ supervisor_user = None
 # 1. INCIDENTS  (demo tenant_acme only)
 # ---------------------------------------------------------------------------
 
-DEMO_DATA_DIR = Path(__file__).resolve().parent / "data" / "cognee_mock_saas_entitlements_demo"
+DEMO_DATA_DIR = Path(__file__).resolve().parent / "data" / "saas_demo"
 TENANT_ACME = DEMO_DATA_DIR / "tenant_acme"
 
 

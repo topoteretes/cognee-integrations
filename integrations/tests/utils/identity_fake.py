@@ -109,16 +109,34 @@ class IdentityFake:
         # A password that does not match the stored one (fastapi-users detail).
         self.wrong_password = False
         self.tenant_id = "tenant-test"
-        # False -> provision answers 404, like a server that predates plugin
-        # provisioning; the client must stay on the principal key.
+        # False -> the plugin routes answer 404, like a server that predates
+        # plugin provisioning; the client must stay on the principal key.
         self.plugin_provisioning = True
         # False -> every /permissions route answers 404, like a server that
         # predates tenants/roles; the client must stay on separated memory.
         self.permissions_api = True
-        # False -> /openapi.json does not advertise x-cognee-session-dataset-ids
-        # on /remember/entry, like an SDK that rejects typed session writes by
+        # True (default) -> the server of cognee#6113: provision only ADDS a key
+        # (never revokes another) and advertises x-cognee-additive-plugin-keys on
+        # the provision operation; a full agent answers 409. False models the
+        # released servers, which rotate every key on provision — the plugin
+        # must never provision against them.
+        self.additive_keys = True
+        # False -> /openapi.json's POST /remember/entry lists no dataset_id in
+        # its request body, like an SDK that rejects typed session writes by
         # dataset UUID; shared memory must not wire on such a server.
         self.typed_dataset_ids = True
+        # True -> /agents/register authenticates the caller's key like the real
+        # route (401 for an invalid key). Off by default: most tests seed no keys.
+        self.register_checks_keys = False
+        # True -> /agents/register resolves dataset NAMES only among datasets the
+        # caller owns, like the real route since cognee 1.6.3 (403 otherwise);
+        # a shared dataset must go by id.
+        self.register_checks_datasets = False
+        self.max_agent_keys = 10
+        # key -> server-side key id (additive servers return it; revoke-one uses it)
+        self.key_ids: dict[str, str] = {}
+        # key -> {"created_at", "last_used_at"} as the keys listing reports them
+        self.key_meta: dict[str, dict[str, Any]] = {}
 
     # -- id helpers --------------------------------------------------------
     def _new_id(self, prefix: str) -> str:
@@ -230,14 +248,14 @@ class IdentityFake:
             self.current_agent = ""
         return 200, {"activeAgents": len(self.registered_agents)}
 
-    def plugins_provision(
-        self, plugin_key: str, api_key: str | None, *, create_only: bool = False
-    ) -> tuple[int, dict[str, Any]]:
+    def plugins_provision(self, plugin_key: str, api_key: str | None) -> tuple[int, dict[str, Any]]:
         """POST /api/v1/integrations/plugins/{plugin_key}/provision.
 
         Mirrors the real endpoint: idempotent get-or-create of an agent
-        sub-user for the calling principal, ROTATING the key on every call
-        (old keys are revoked). Response is an OutDTO -> camelCase fields.
+        sub-user for the calling principal. ``additive_keys`` (cognee#6113)
+        adds one key per call and revokes none; otherwise every call ROTATES
+        (old keys are revoked), like the released servers. Response is an
+        OutDTO -> camelCase fields.
         """
         if not self.plugin_provisioning:
             return 404, {"detail": "Not Found"}
@@ -246,8 +264,13 @@ class IdentityFake:
             return 401, {"detail": "invalid api key"}
 
         record = self.plugin_agents.get(plugin_key)
-        if record and create_only:
-            return 409, {"detail": "Identity already exists"}
+        if record and self.additive_keys:
+            live = [k for k in record["keys"] if self.valid_keys.get(k, {}).get("valid")]
+            if len(live) + 1 > self.max_agent_keys:
+                return 409, {
+                    "detail": f"The {plugin_key!r} agent already holds the maximum of "
+                    f"{self.max_agent_keys} API keys."
+                }
         created = record is None
         if record is None:
             owner_id = self.users.get(entry["owner"], {}).get("id", "user")
@@ -266,16 +289,86 @@ class IdentityFake:
 
         new_key = self._new_key("agentkey")
         self.valid_keys[new_key] = {"owner": record["agent_email"], "valid": True}
-        for old_key in record["keys"]:
-            self.invalidate_key(old_key)
-        record["keys"] = [new_key]
+        key_id = self._new_id("key")
+        self.key_ids[new_key] = key_id
+        if self.additive_keys:
+            record["keys"].append(new_key)
+        else:
+            for old_key in record["keys"]:
+                self.invalidate_key(old_key)
+            record["keys"] = [new_key]
 
-        return 201, {
+        body = {
             "pluginKey": plugin_key,
             "agentId": record["agent_id"],
             "apiKey": new_key,
             "created": created,
         }
+        if self.additive_keys:
+            body["keyId"] = key_id
+        return 201, body
+
+    def plugin_keys_list(self, plugin_key: str, api_key: str | None) -> tuple[int, dict[str, Any]]:
+        """GET /integrations/plugins/{plugin_key}/keys: the caller's agent's keys,
+        metadata only, camelCase like the real OutDTO. ``key_meta`` holds the
+        timestamps a test seeds per key (created_at / last_used_at)."""
+        if not self.additive_keys:
+            return 404, {"detail": "Not Found"}
+        if not self.user_id_for_key(api_key):
+            return 401, {"detail": "invalid api key"}
+        record = self.plugin_agents.get(plugin_key) or {"keys": []}
+        keys = []
+        for key in record["keys"]:
+            if not self.valid_keys.get(key, {}).get("valid"):
+                continue
+            meta = self.key_meta.get(key, {})
+            keys.append(
+                {
+                    "id": self.key_ids.get(key, ""),
+                    "name": plugin_key,
+                    "label": key[:8] + "****",
+                    "createdAt": meta.get("created_at"),
+                    "lastUsedAt": meta.get("last_used_at"),
+                }
+            )
+        return 200, {"keys": keys}
+
+    def integrations_status(self, api_key: str | None) -> tuple[int, dict[str, Any]]:
+        """GET /integrations/status: one row per KNOWN plugin (provisioned or not)."""
+        if not self.plugin_provisioning:
+            return 404, {"detail": "Not Found"}
+        if not self.user_id_for_key(api_key):
+            return 401, {"detail": "invalid api key"}
+        known = ["claude-code", "codex", "antigravity", "cursor", "openclaw", "mcp", "api"]
+        plugins = []
+        for plugin_key in known:
+            record = self.plugin_agents.get(plugin_key)
+            held = (record or {"keys": []})["keys"]
+            live = [k for k in held if self.valid_keys.get(k, {}).get("valid")]
+            plugins.append(
+                {
+                    "key": plugin_key,
+                    "connected": bool(live),
+                    "agentId": record["agent_id"] if record else None,
+                    "source": "identity" if record else None,
+                }
+            )
+        return 200, {"integrations": [], "plugins": plugins}
+
+    def plugin_key_revoke(
+        self, plugin_key: str, api_key: str | None, key_id: str
+    ) -> tuple[int, dict[str, Any]]:
+        """DELETE /integrations/plugins/{plugin_key}/keys/{key_id} (additive servers)."""
+        if not self.additive_keys:
+            return 404, {"detail": "Not Found"}
+        if not self.user_id_for_key(api_key):
+            return 401, {"detail": "invalid api key"}
+        record = self.plugin_agents.get(plugin_key) or {"keys": []}
+        for key in record["keys"]:
+            if self.key_ids.get(key) == key_id and self.valid_keys.get(key, {}).get("valid"):
+                self.invalidate_key(key)
+                return 200, {"revoked": True}
+        return 404, {"detail": "API key not found"}
 
     def plugins_disconnect(
         self, plugin_key: str, api_key: str | None

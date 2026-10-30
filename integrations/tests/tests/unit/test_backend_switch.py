@@ -26,6 +26,7 @@ OWN_BACKEND_VAR = {
     "claude-code": "COGNEE_CLAUDE_BACKEND",
     "codex": "COGNEE_CODEX_BACKEND",
     "antigravity": "COGNEE_ANTIGRAVITY_BACKEND",
+    "cursor": "COGNEE_CURSOR_BACKEND",
 }
 BACKEND_VARS = tuple(OWN_BACKEND_VAR.values())
 

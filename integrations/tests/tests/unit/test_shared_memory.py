@@ -258,7 +258,13 @@ def test_older_server_without_permissions_api_stays_on_the_principal(
     _uid, api_key, _n, ok = run({})
     assert ok and not api_key.startswith("agentkey-")
     mock_server.assert_called("POST", f"/api/v1/integrations/plugins/{suite.name}/provision")
-    mock_server.assert_called("DELETE", f"/api/v1/integrations/plugins/{suite.name}")
+    # Only the fresh key is revoked, by id — never the plugin as a whole.
+    mock_server.assert_not_called("DELETE", f"/api/v1/integrations/plugins/{suite.name}")
+    assert any(
+        c["method"] == "DELETE"
+        and c["path"].startswith(f"/api/v1/integrations/plugins/{suite.name}/keys/")
+        for c in mock_server.calls
+    )
     assert pc.load_shared_memory_marker(mock_server.url).get("reason") == "unsupported"
     assert pc.resolve_active_dataset_ids("host-shared-1") == ("", [])
     assert pc.load_cached_agent_key(mock_server.url) == ""
@@ -444,19 +450,27 @@ def test_tenantless_user_with_agent_owned_data_stays_separated(
     assert ident.active_tenant.get(body["agentId"]) is None
 
 
-def test_reverted_migration_revokes_the_unused_agent_key(
-    suite, bootstrap, mock_server, monkeypatch
-):
+def test_revert_revokes_only_the_key_it_minted(suite, bootstrap, mock_server, monkeypatch):
+    """Shared memory could not be wired, so the fresh key is reverted. Other
+    machines hold keys for the same agent: the revert revokes the fresh key by
+    id, never every key of the agent."""
     monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
-    mock_server.identity.permissions_api = False
+    ident = mock_server.identity
+    other_machine = ident.plugins_provision(suite.name, PRINCIPAL_KEY)[1]["apiKey"]
+    ident.permissions_api = False
     module, run = bootstrap
     _uid, api_key, _n, ok = run({"api_key": PRINCIPAL_KEY})
     assert ok and api_key == PRINCIPAL_KEY
-    mock_server.assert_called("DELETE", f"/api/v1/integrations/plugins/{suite.name}")
-    record = mock_server.identity.plugin_agents[suite.name]
-    assert record["keys"] and all(
-        not mock_server.identity.valid_keys[k]["valid"] for k in record["keys"]
-    )
+    mock_server.assert_not_called("DELETE", f"/api/v1/integrations/plugins/{suite.name}")
+    revoked = [
+        c
+        for c in mock_server.calls
+        if c["method"] == "DELETE" and "/keys/" in c["path"] and suite.name in c["path"]
+    ]
+    assert len(revoked) == 1
+    assert ident.valid_keys[other_machine]["valid"] is True
+    minted = [k for k in ident.plugin_agents[suite.name]["keys"] if k != other_machine]
+    assert minted and all(not ident.valid_keys[k]["valid"] for k in minted)
 
 
 @pytest.mark.parametrize("suite", ALL_SUITES, ids=lambda s: s.name)
@@ -497,28 +511,108 @@ def test_auto_mode_fails_loudly_when_identity_unusable_and_no_principal(
     assert pc._api_key_with_source(mock_server.url) == (PRINCIPAL_KEY, "env_api_key")
 
 
-def test_parent_dataset_is_writable_via_role_only_once_granted(pc, mock_server, monkeypatch):
+def test_parent_dataset_is_writable_via_the_role_grant_the_server_reports(
+    pc, mock_server, monkeypatch
+):
+    """The agent's own permission query lists direct grants only; the shared
+    role's grants are asked for separately (a member may query its own role)
+    and unioned in. The marker's memo of attempted grants is not evidence."""
     rows = [{"id": "ds-parent", "name": "shared", "ownerId": "parent"}]
-    monkeypatch.setattr(
-        pc,
-        "_json_http_request",
-        lambda path, *a, **k: rows if path == "/api/v1/datasets/" else [],
-    )
+    role_grants: list[dict] = []
+    queried = []
+
+    def request(path, *a, **k):
+        if path == "/api/v1/datasets/":
+            return rows
+        queried.append(path)
+        if path.startswith("/api/v1/permissions/principals/role-1/"):
+            return role_grants
+        return []
+
+    monkeypatch.setattr(pc, "_json_http_request", request)
     marker = {
         "base_url": mock_server.url,
         "mode": "shared",
         "role_id": "role-1",
         "agent_id": "agent-1",
         "parent_user_id": "parent",
-        "granted": {},
+        "granted": {"ds-parent": "ok"},
     }
     pc._save_shared_memory_marker(dict(marker))
-    # Grant not (yet) confirmed: not offered as writable.
+    # The server does not report the grant: not writable, whatever the memo says.
     assert pc.list_writable_datasets("agent-1")["readonly_ids"] == ["ds-parent"]
-    pc._save_shared_memory_marker({**marker, "granted": {"ds-parent": "ok"}})
+    assert any(path.startswith("/api/v1/permissions/principals/role-1/") for path in queried)
+    role_grants.append({"id": "ds-parent"})
     listing = pc.list_writable_datasets("agent-1")
     assert [row["id"] for row in listing["datasets"]] == ["ds-parent"]
     assert listing["datasets"][0]["writable"] is True
+
+
+def test_tenant_wide_write_grant_counts_as_writable(pc, mock_server, monkeypatch):
+    """A dataset shared with the whole tenant is writable through the tenant
+    principal, which the own-user query does not list either."""
+    rows = [{"id": "ds-org", "name": "org", "ownerId": "someone"}]
+    queried = []
+
+    def request(path, *a, **k):
+        if path == "/api/v1/datasets/":
+            return rows
+        queried.append(path)
+        if path.startswith("/api/v1/permissions/principals/tenant-1/"):
+            return [{"id": "ds-org"}]
+        return []
+
+    monkeypatch.setattr(pc, "_json_http_request", request)
+    pc._save_shared_memory_marker(
+        {
+            "base_url": mock_server.url,
+            "mode": "shared",
+            "role_id": "role-1",
+            "tenant_id": "tenant-1",
+            "agent_id": "agent-1",
+            "parent_user_id": "parent",
+        }
+    )
+    listing = pc.list_writable_datasets("agent-1")
+    assert [row["id"] for row in listing["datasets"]] == ["ds-org"]
+    assert any(path.startswith("/api/v1/permissions/principals/role-1/") for path in queried)
+    # Separated memory asks about neither principal: the grants are the agent's own.
+    queried.clear()
+    pc._save_shared_memory_marker({"base_url": mock_server.url, "mode": "separated"})
+    assert pc.list_writable_datasets("agent-1")["readonly_ids"] == ["ds-org"]
+    assert all("/principals/agent-1/" in path for path in queried)
+
+
+def test_role_query_forbidden_means_no_role_grants(pc, mock_server, monkeypatch):
+    """An agent that left the role is refused the role query (403): its own
+    grants still count, the role's simply do not reach it — no error."""
+    from urllib.error import HTTPError
+
+    rows = [
+        {"id": "ds-parent", "name": "shared", "ownerId": "parent"},
+        {"id": "ds-own", "name": "own", "ownerId": "agent-1"},
+    ]
+
+    def request(path, *a, **k):
+        if path == "/api/v1/datasets/":
+            return rows
+        if path.startswith("/api/v1/permissions/principals/role-1/"):
+            raise HTTPError(path, 403, "not a member", {}, None)
+        return [{"id": "ds-own"}]
+
+    monkeypatch.setattr(pc, "_json_http_request", request)
+    pc._save_shared_memory_marker(
+        {
+            "base_url": mock_server.url,
+            "mode": "shared",
+            "role_id": "role-1",
+            "agent_id": "agent-1",
+            "parent_user_id": "parent",
+        }
+    )
+    listing = pc.list_writable_datasets("agent-1")
+    assert [row["id"] for row in listing["datasets"]] == ["ds-own"]
+    assert listing["readonly_ids"] == ["ds-parent"]
 
 
 def test_ungranted_same_named_dataset_is_kept_out_of_recall(

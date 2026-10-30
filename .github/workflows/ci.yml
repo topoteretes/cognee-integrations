@@ -46,10 +46,10 @@ jobs:
 
           for dir in $CHANGED_DIRS; do
             [ ! -d "integrations/$dir" ] && continue
-            # claude-code, codex, and antigravity have no pyproject of their own; their shared
-            # pytest suite lives in integrations/tests and must run when they change.
+            # claude-code, codex, antigravity, grok-bot and cursor have no pyproject of their own; their
+            # shared pytest suite lives in integrations/tests and must run when they change.
             case "$dir" in
-              claude-code|codex|antigravity|tests) RUN_SHARED=1 ;;
+              claude-code|codex|antigravity|grok-bot|cursor|tests) RUN_SHARED=1 ;;
             esac
             if [ -f "integrations/$dir/pyproject.toml" ]; then
               PY_LIST="${PY_LIST}\"${dir}\","
@@ -124,7 +124,9 @@ jobs:
   test-hooks-python39:
     needs: detect-changes
     if: ${{ contains(needs.detect-changes.outputs.python, '"tests"') }}
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest is Ubuntu 26.04, for which setup-python has no
+    # 3.9 build (3.9 is end-of-life; builds stop at 24.04).
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout code

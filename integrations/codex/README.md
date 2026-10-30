@@ -19,6 +19,7 @@ The integration:
 - injects relevant context on prompt submit
 - syncs session memory into graph memory on session end/final exit
 - deletes memory on request via the `cognee-forget` skill ("forget what we talked about X")
+- lists and revokes the plugin agent's per-machine API keys via the `cognee-keys` skill (when a session start reports the agent is full)
 - recaps your recorded sessions on request via the `cognee-standup`, `cognee-digest` and `cognee-timeline` skills ("what did I work on yesterday?", "weekly digest", "how did X evolve?")
 
 ## Install
@@ -142,20 +143,34 @@ Key resolution order for data-plane traffic:
 Provisioning policy:
 - `COGNEE_PLUGIN_IDENTITY` selects the identity policy:
   - `auto` (default) — an identity **in service of shared agent memory** (below). When
-    shared memory is on, session start provisions one (create-only, never rotating a key
-    another machine holds), wires the shared role, and pins the canonical dataset; if that
+    shared memory is on, session start provisions one (never revoking a key
+    another machine holds — see "Keys and multiple machines" below), wires the shared role, and pins the canonical dataset; if that
     wiring cannot be done (older server, not the tenant owner, tenant-less user who already
     owns data) the plugin stays on the principal key and says why in the doctor output. With
     shared memory off it stays on the principal.
   - `true` — explicit identity: provisioning is required and never falls back to the owner.
-    Servers without the SDK's `create_only` capability, a cached credential bound to another
-    principal, or rejected credentials stop with an error instead of rotating keys or
-    silently using the owner's authority.
+    A server that does not add plugin keys per machine, an identity at its key limit, a
+    cached credential bound to another principal, or rejected credentials that cannot be
+    replaced stop with an error instead of revoking keys or silently using the owner's
+    authority.
   - `false` — principal mode; a cached identity is ignored.
-- A cached credential is bound to its server and principal. Under `auto`, a credential the
-  server rejected or that belongs to another account is not used and the plugin runs as
-  the principal (logged); under `true` that is an error, and reconnecting a revoked
-  identity requires explicit reconnection.
+- A cached credential is bound to its server and principal. A credential that belongs to
+  another account is never used.
+- **Keys and multiple machines.** Every machine holds its own key for the plugin's agent.
+  The plugin provisions only against a cognee server whose provision route adds keys and
+  never revokes one (it advertises `x-cognee-additive-plugin-keys`; cognee#6113). On older
+  servers, where provisioning would log every other machine out, the plugin runs as the
+  principal.
+  - A new machine never logs out another. When the agent is full, the server prunes keys
+    unused for 30 days (24 hours if never used) to make room.
+  - A key the server rejects (401: revoked from the dashboard, or pruned) is replaced in the
+    same session start. A refused registration (403) never discards a working key.
+  - A full agent (10 keys in use) makes the plugin run as the principal. Every session start
+    then warns about it, and the doctor's Memory Sharing line names the key limit, until
+    this machine gets its own key. Free a slot with the `cognee-keys` skill: it lists the
+    agent's keys most recently used first (this machine's marked), and revokes the one you
+    choose (`scripts/plugin-keys.py list` / `revoke <id>`; `--all` covers every plugin
+    agent of your user).
 - Use dataset UUIDs for shared write targets. Dataset switching checks effective write
   permissions. Set `COGNEE_PLUGIN_READ_DATASET_IDS` to a JSON array of allowed UUIDs for
   graph recall across datasets you granted yourself; it takes precedence over the datasets
@@ -199,7 +214,7 @@ setting only matters once an identity exists.
 | `COGNEE_PLUGIN_IDENTITY` \ `COGNEE_SHARED_AGENT_MEMORY` | `true` (default) | `false` |
 |---|---|---|
 | `auto` (default) | **Shared memory, graceful.** Provisions an identity when the server allows it, wires the shared role, and falls back to your principal key whenever that cannot be done. | **Principal, unless already provisioned.** A fresh install never provisions (`auto` provisions only in service of sharing). An identity provisioned earlier is kept, leaves the shared role, and writes to its own private dataset. |
-| `true` | **Shared memory, strict.** Same wiring; any obstacle (no `create_only` support, a credential bound to another principal, a rejected key) is an error — never a silent fall back to the owner's key. | **Separated identities, strict.** Each plugin is its own agent with its own private memory, blind to your other datasets. This is the isolation mode: a leaked or revoked plugin key affects only that plugin. |
+| `true` | **Shared memory, strict.** Same wiring; any obstacle (a server that does not add plugin keys per machine, an identity at its key limit, a credential bound to another principal, a rejected key that cannot be replaced) is an error — never a silent fall back to the owner's key. | **Separated identities, strict.** Each plugin is its own agent with its own private memory, blind to your other datasets. This is the isolation mode: a leaked or revoked plugin key affects only that plugin. |
 | `false` | **Principal only.** The sharing setting has no effect. | **Principal only.** Identical to the cell above. |
 
 Practical reading: leave both at their defaults for one memory across all of your plugins;

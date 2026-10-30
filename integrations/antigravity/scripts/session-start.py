@@ -297,6 +297,29 @@ def _refuse_fallback_venv() -> None:
         hook_log("host_python_marker_write_failed", {"error": str(exc)[:200]})
 
 
+def _apply_key_limit_warning(output: dict) -> dict:
+    """Warn (systemMessage) while this machine runs on the personal key because
+    the server refused it a key of its own: the plugin's agent is full (409).
+
+    Read from a marker so a detached bootstrap's verdict reaches the user too —
+    on the next launch — and repeated every launch until a key is provisioned.
+    """
+    from _plugin_common import key_limit_message
+
+    message = key_limit_message()
+    if not message:
+        return output
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{message}" if top else message
+    return result
+
+
 def _apply_host_python_warning(output: dict) -> dict:
     """Append the recorded fallback refusal (if any) to the hook's systemMessage.
 
@@ -326,6 +349,18 @@ def _apply_host_python_warning(output: dict) -> dict:
     top = str(result.get("systemMessage") or "").strip()
     result["systemMessage"] = "{}\n\n{}".format(top, message) if top else message
     return result
+
+
+def _install_failure(via: str, exc: BaseException) -> dict:
+    """hook.log detail for a failed venv build: the exception and the tail of
+    what uv / pip said. CalledProcessError's str() is just the command and exit
+    status; the reason (no matching interpreter, disk quota, resolver error) is
+    only in stderr, and without it a failed build on a new runner image or a
+    new OS cannot be diagnosed from the log alone."""
+    stderr = getattr(exc, "stderr", "") or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    return {"via": via, "error": str(exc)[:300], "stderr": str(stderr).strip()[-300:]}
 
 
 def _venv_cognee_version() -> str:
@@ -563,7 +598,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 )
                 installed_via_uv = True
             except Exception as exc:
-                hook_log("cognee_install_failed", {"via": "uv", "error": str(exc)[:300]})
+                hook_log("cognee_install_failed", _install_failure("uv", exc))
 
         if not installed_via_uv and not _VENV_PYTHON.exists():
             # Fallback: stdlib venv + pip, from a Python 3.10+ already on the
@@ -599,7 +634,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     timeout=timeout,
                 )
             except Exception as exc:
-                hook_log("cognee_install_failed", {"via": "venv_pip", "error": str(exc)[:300]})
+                hook_log("cognee_install_failed", _install_failure("venv_pip", exc))
 
         version = _venv_cognee_version()
         if not version:
@@ -994,10 +1029,9 @@ async def _ensure_plugin_identity(service_url: str, config: dict, principal_key:
 
     ``plugin_identity`` / ``COGNEE_PLUGIN_IDENTITY`` selects the policy:
       - ``false``: principal only; a cached identity is ignored.
-      - ``true``: explicit identity. Provision (create-only — never rotating a
-        key another machine may hold) when none is cached. Anything that
-        prevents that — a server without the create-only contract, a cached
-        key bound to another principal, a key the server rejected — is an
+      - ``true``: explicit identity. Provision when none is cached. Anything
+        that prevents that — a server that does not add keys (cognee#6113), an
+        agent at its key limit, a cached key bound to another principal — is an
         error, never a silent fall back to the owner's authority.
       - ``auto`` (default): identity in service of shared agent memory. With
         shared memory on, provision when none is cached; the caller then wires
@@ -1007,40 +1041,44 @@ async def _ensure_plugin_identity(service_url: str, config: dict, principal_key:
         foreign cached key is not used: the launch runs as the principal and
         says so in the log.
 
-    A cached key that passes its checks always wins — provisioning again would
-    rotate it out from under every other machine of this user.
+    A cached key that passes its checks always wins. A cached key the server
+    rejected (``blocked``) is replaced through the same provisioning, which
+    adds one more key and touches no other machine's.
     """
     from _plugin_common import (
         _AGENT_KEY_CACHE,
+        PLUGIN_KEY,
         _installed_plugin_version,
         _load_json_file,
         _principal_fingerprint,
+        clear_key_limit,
         load_cached_agent_key,
         load_cached_api_key,
         load_shared_memory_marker,
         plugin_identity_lock,
         plugin_identity_mode,
         provision_plugin_agent_via_http,
+        record_key_limit,
         save_cached_agent_key,
         save_cached_api_key,
         shared_memory_enabled,
     )
 
     mode = plugin_identity_mode(config)
+    # Re-decided every launch: only a 409 below writes it back.
+    clear_key_limit()
     if mode == "disabled":
         return ""
     strict = mode == "enabled"
     with plugin_identity_lock():
         key = load_cached_agent_key(service_url)
         record = _load_json_file(_AGENT_KEY_CACHE)
+        if key and record.get("blocked"):
+            # Revoked out-of-band (or pruned server-side). Never reused;
+            # provisioning below decides whether it is replaced.
+            hook_log("plugin_identity_blocked", {"reprovision": "by_server"})
+            key = ""
         if key:
-            if record.get("blocked"):
-                if strict:
-                    raise RuntimeError(
-                        "Plugin identity is disconnected; explicit reconnect is required"
-                    )
-                hook_log("plugin_identity_skipped", {"reason": "blocked"})
-                return ""
             if record.get("principal_fingerprint") != _principal_fingerprint(principal_key):
                 if strict:
                     raise RuntimeError(
@@ -1066,19 +1104,33 @@ async def _ensure_plugin_identity(service_url: str, config: dict, principal_key:
             principal_key=principal_key, service_url=service_url
         )
         if status != "provisioned":
+            if status == "limit":
+                # Surfaced to the user by SessionStart (``_apply_key_limit_warning``)
+                # and the doctor until this machine gets its own key again.
+                record_key_limit(service_url)
             if strict:
+                if status == "limit":
+                    raise RuntimeError(
+                        "Plugin identity holds the maximum number of keys; revoke an old "
+                        f"machine's key (GET/DELETE /api/v1/integrations/plugins/"
+                        f"{PLUGIN_KEY}/keys) and start a new session"
+                    )
                 raise RuntimeError(
                     f"Plugin provisioning {status}; owner fallback is disabled. "
-                    "Safe create-only SDK support is required."
+                    "A cognee server that adds plugin keys per machine is required."
                 )
-            # ``auto``: no identity on this server (no create-only contract, or
-            # an agent that already exists without a key here) — the principal
-            # sees everything anyway, so shared memory has nothing to add.
+            # ``auto``: no identity on this server (one that rotates keys, or an
+            # agent at its key limit) — the principal sees everything anyway,
+            # so shared memory has nothing to add.
             hook_log("plugin_provision_skipped", {"status": status})
             return ""
         key = str(body.get("api_key") or "").strip()
         save_cached_agent_key(
-            service_url, key, str(body.get("agent_id") or ""), principal_key=principal_key
+            service_url,
+            key,
+            str(body.get("agent_id") or ""),
+            principal_key=principal_key,
+            key_id=str(body.get("key_id") or ""),
         )
         # Keep the PRINCIPAL reachable for later control-plane work (grant
         # backfills from the idle watcher): an env-provided key only lives in
@@ -1167,25 +1219,42 @@ async def _ensure_agent_credentials_and_register(
         "dataset_id": "",
         "dataset_ids": [],
     }
-    if agent_key:
-        shared = _wire_shared_memory(service_url, config, principal_key, agent_key, session_key)
+
+    def _wire(key: str) -> tuple[str, dict]:
+        """Wire ``key``'s agent into shared memory; revert a fresh, unwired key.
+
+        Returns the key to run as ("" when reverted) and the wiring outcome.
+        """
+        wired = _wire_shared_memory(service_url, config, principal_key, key, session_key)
         if (
-            shared["mode"] != "shared"
+            wired["mode"] != "shared"
             and config.get("_provisioned_now")
             and plugin_identity_mode(config) != "enabled"
         ):
             hook_log(
                 "plugin_identity_reverted",
-                {"reason": shared["reason"], "detail": "shared memory unavailable"},
+                {"reason": wired["reason"], "detail": "shared memory unavailable"},
             )
-            from _plugin_common import disconnect_plugin_agent_via_http
+            from _plugin_common import (
+                _AGENT_KEY_CACHE,
+                _load_json_file,
+                revoke_minted_agent_key,
+            )
 
-            # Nobody will hold the key just minted: revoke it server-side (the
-            # agent user stays for a later, successful migration).
-            disconnect_plugin_agent_via_http(principal_key=principal_key)
+            # Nobody will hold the key just minted: revoke it — only it, by id;
+            # other machines hold keys for the same agent (the agent user stays
+            # for a later, successful migration).
+            revoke_minted_agent_key(
+                principal_key=principal_key,
+                key_id=str(_load_json_file(_AGENT_KEY_CACHE).get("key_id") or ""),
+            )
             clear_cached_agent_key()
-            agent_key = ""
             set_launch_dataset_ids(session_key, "", [])
+            return "", wired
+        return key, wired
+
+    if agent_key:
+        agent_key, shared = _wire(agent_key)
     api_key = agent_key or principal_key
 
     os.environ["COGNEE_API_KEY"] = api_key
@@ -1209,31 +1278,62 @@ async def _ensure_agent_credentials_and_register(
 
     registered, registration = _register()
     if not registered and registration.get("auth_failed") and agent_key:
-        # The provisioned key was revoked out-of-band (dashboard disconnect or
-        # a rotation elsewhere). It is blocked so no later hook reuses it, and
-        # never re-provisioned: the create-only contract refuses an agent that
-        # already exists, and rotating would revoke another machine's key.
-        block_cached_agent_key(agent_key)
-        if plugin_identity_mode(config) == "enabled":
-            raise RuntimeError(
-                "Plugin identity rejected; automatic re-provision and owner fallback are disabled"
+        # 401: the key itself is dead — revoked out-of-band (dashboard
+        # disconnect or revoke) or pruned server-side. It is blocked so no
+        # later hook reuses it, and replaced.
+        # 403: the key works but the server refused this registration; the key
+        # is kept — blocking it would make every launch mint another one.
+        key_rejected = registration.get("status_code") == 401
+        replacement = ""
+        if key_rejected:
+            # One more key for this machine revokes nothing: replace it now
+            # (once) instead of running this launch degraded. The cache is
+            # re-read under the identity lock, so a key another session of this
+            # machine already replaced is reused rather than minted again.
+            block_cached_agent_key(agent_key)
+            config.pop("_provisioned_now", None)
+            replacement = await _ensure_plugin_identity(service_url, config, principal_key)
+            if replacement:
+                replacement, shared = _wire(replacement)
+        if replacement:
+            hook_log("plugin_identity_reprovisioned", {"after": "auth_rejected"})
+            agent_key = api_key = replacement
+            os.environ["COGNEE_API_KEY"] = api_key
+            config["api_key"] = api_key
+            user_id = await _user_id_via_api(service_url, api_key)
+            registered, registration = _register()
+            if not registered and registration.get("status_code") == 401:
+                block_cached_agent_key(agent_key)
+        if not registered and registration.get("auth_failed"):
+            if plugin_identity_mode(config) == "enabled":
+                raise RuntimeError(
+                    "Plugin identity rejected and could not be replaced; owner fallback is disabled"
+                    if key_rejected
+                    else "Plugin identity was refused registration (403); owner fallback "
+                    "is disabled"
+                )
+            # ``auto``: this launch runs as the principal; shared memory is off
+            # until the identity is replaced (401) or the server accepts it (403).
+            hook_log(
+                "plugin_identity_rejected_fallback",
+                {
+                    "agent_key_blocked": key_rejected,
+                    "status": registration.get("status_code"),
+                },
             )
-        # ``auto``: this launch runs as the principal; shared memory is off
-        # until the identity is reconnected explicitly.
-        hook_log("plugin_identity_rejected_fallback", {"agent_key_blocked": True})
-        agent_key = ""
-        api_key = principal_key
-        shared = {
-            "mode": "separated",
-            "reason": "identity_rejected",
-            "dataset_id": "",
-            "dataset_ids": [],
-        }
-        set_launch_dataset_ids(session_key, "", [])
-        os.environ["COGNEE_API_KEY"] = api_key
-        config["api_key"] = api_key
-        user_id = await _user_id_via_api(service_url, api_key)
-        registered, registration = _register()
+            agent_key = ""
+            api_key = principal_key
+            shared = {
+                "mode": "separated",
+                "reason": "identity_rejected",
+                "dataset_id": "",
+                "dataset_ids": [],
+            }
+            set_launch_dataset_ids(session_key, "", [])
+            os.environ["COGNEE_API_KEY"] = api_key
+            config["api_key"] = api_key
+            user_id = await _user_id_via_api(service_url, api_key)
+            registered, registration = _register()
     # Optional lifecycle routes (older / minimal servers, lifecycle_supported is
     # False): the session runs unregistered rather than failing. Anything else
     # is a real failure on a server that has the route — raise with the HTTP
@@ -2120,6 +2220,7 @@ def main():
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     output = _apply_host_python_warning(output)
+    output = _apply_key_limit_warning(output)
     print(json.dumps(output))
 
 

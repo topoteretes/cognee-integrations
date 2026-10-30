@@ -26,6 +26,7 @@ Migrated from {claude-code,codex}/tests/test_statusline_llm_state.py.
 
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
@@ -266,4 +267,7 @@ def test_render_status_for_host_places_the_glyph_before_the_label(suite, sl, mon
     _write_server(sl, {"state": "ready", "base_url": _LOCAL_URL})
     out = sl.render_status_for_host("session-key")
     expected_mode = mode_label(sl, "local")
-    assert out == f"{_llm_glyph(sl)}cognee: {suite.default_dataset} · {expected_mode}", repr(out)
+    expected = f"{_llm_glyph(sl)}cognee: {suite.default_dataset} · {expected_mode}"
+    # Plain text: it lands in the model's context, so a renderer that styles its
+    # terminal bar (cursor's) strips the escapes here.
+    assert out == re.sub(r"\x1b\[[0-9;]*m", "", expected), repr(out)

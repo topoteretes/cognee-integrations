@@ -187,6 +187,36 @@ def test_failed_ready_says_unavailable(sl):
     assert sl._activity_segment(_SESSION) == " · memory unavailable"
 
 
+def _connected(sl, monkeypatch, url="http://127.0.0.1:8000"):
+    """This session's own connection record says the server is up."""
+    monkeypatch.setenv("COGNEE_BASE_URL", url)
+    now = time.time()
+    write_json(
+        sl._CONN_STATE_DIR / f"{_SESSION}.json",
+        {
+            "state": "ready",
+            "base_url": url,
+            "checked_at": now,
+            "ready_at": now,
+            "session_key": _SESSION,
+        },
+    )
+
+
+def test_failed_ready_is_dropped_once_the_connection_is_confirmed(sl, monkeypatch):
+    """The hook gave up on a boot that then finished: the marker that confirms
+    the server beats the older verdict, so no "memory unavailable" next to ●."""
+    _connected(sl, monkeypatch)
+    _marker(sl, results={"ready": _result(ok=False)})
+    assert sl._activity_segment(_SESSION) == ""
+    # The next most recent result stands in for it.
+    _marker(sl, results={"ready": _result(ok=False, age=1), "recalled": _result(count=2, age=10)})
+    assert sl._activity_segment(_SESSION) == " · 2 memories used"
+    # A confirmed-ready result is shown as before.
+    _marker(sl, results={"ready": _result(ok=True)})
+    assert sl._activity_segment(_SESSION) == " · memory ready"
+
+
 @pytest.mark.parametrize(
     "kind, text",
     [

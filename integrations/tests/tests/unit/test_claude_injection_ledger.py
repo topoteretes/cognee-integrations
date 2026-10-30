@@ -149,3 +149,53 @@ def test_guidance_is_identified_by_source_not_priority(ledger):
     ledger.render("session-a", "header", [{**guidance("Use SQLite"), "priority": 35}], 9000)
     data = json.loads((ledger.session_dir("session-a") / "injected.json").read_text())
     assert data["guidance_hashes"] == [ledger.entry_hash("Use SQLite")]
+
+
+def test_atomic_json_outlasts_a_briefly_held_target_on_windows(ledger, tmp_path, monkeypatch):
+    # Windows refuses os.replace while another handle is open on the target
+    # (a reader, the indexer, an antivirus scan); the write is retried, and
+    # the file ends up with the new value rather than the hook losing it.
+    real_replace = ledger.os.replace
+    refusals = {"left": 3}
+
+    def flaky_replace(src, dst):
+        if refusals["left"]:
+            refusals["left"] -= 1
+            raise PermissionError(13, "The process cannot access the file")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(ledger, "_RETRY_REPLACE", True)
+    monkeypatch.setattr(ledger.os, "replace", flaky_replace)
+    monkeypatch.setattr(ledger.time, "sleep", lambda _: None)
+    target = tmp_path / "ledger" / "stats.json"
+    ledger.atomic_json(target, {"saves": 1})
+    assert json.loads(target.read_text(encoding="utf-8")) == {"saves": 1}
+    assert refusals["left"] == 0
+    assert [p.name for p in target.parent.iterdir()] == ["stats.json"]
+
+
+def test_atomic_json_gives_up_after_the_last_refusal(ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(ledger, "_RETRY_REPLACE", True)
+    monkeypatch.setattr(
+        ledger.os, "replace", lambda s, d: (_ for _ in ()).throw(PermissionError(13, "held"))
+    )
+    monkeypatch.setattr(ledger.time, "sleep", lambda _: None)
+    target = tmp_path / "ledger" / "stats.json"
+    with pytest.raises(PermissionError):
+        ledger.atomic_json(target, {"saves": 1})
+    # The temporary file is cleaned up even when the write is abandoned.
+    assert not list(target.parent.iterdir())
+
+
+def test_atomic_json_does_not_retry_off_windows(ledger, tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    def refuse(src, dst):
+        calls["n"] += 1
+        raise PermissionError(13, "held")
+
+    monkeypatch.setattr(ledger, "_RETRY_REPLACE", False)
+    monkeypatch.setattr(ledger.os, "replace", refuse)
+    with pytest.raises(PermissionError):
+        ledger.atomic_json(tmp_path / "stats.json", {"saves": 1})
+    assert calls["n"] == 1

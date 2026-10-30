@@ -151,6 +151,117 @@ def _connect_backend():
     return backend
 
 
+# -- plugin agent keys -------------------------------------------------------
+#
+# Every machine a cognee plugin (Claude Code, Codex, ...) runs on holds its own
+# API key for that plugin's agent (cognee#6113). The server caps them; when an
+# agent is full of keys still in use, a new machine is refused one and runs on
+# the user's personal key until an old machine's key is revoked. These commands
+# are how a Hermes user frees a slot — for any plugin agent of their user, since
+# Hermes itself registers as the principal and provisions no agent.
+
+#: Plugins whose agents are listed when the server's own listing cannot be read.
+FALLBACK_PLUGIN_KEYS = ("claude-code", "codex", "opencode", "openclaw", "mcp", "api", "desktop")
+
+
+def _known_plugin_keys(backend) -> list[str]:
+    try:
+        status = backend._request("GET", "/api/v1/integrations/status", timeout=20)
+        rows = (status.get("plugins") if isinstance(status, dict) else None) or []
+        keys = [str(r.get("key") or "") for r in rows if isinstance(r, dict)]
+        keys = [k for k in keys if k]
+        if keys:
+            return keys
+    except Exception:
+        pass
+    return list(FALLBACK_PLUGIN_KEYS)
+
+
+def _plugin_keys(backend, plugin: str) -> list[dict]:
+    """``plugin``'s agent keys, or [] when the server has no key routes for it."""
+    from .http_backend import CogneeHttpError
+
+    try:
+        body = backend._request("GET", f"/api/v1/integrations/plugins/{plugin}/keys", timeout=20)
+    except CogneeHttpError as exc:
+        if exc.status in (404, 405):
+            return []
+        raise
+    rows = body.get("keys") if isinstance(body, dict) else None
+    return [
+        {
+            "plugin": plugin,
+            "id": str(r.get("id") or ""),
+            "label": str(r.get("label") or ""),
+            "created_at": str(r.get("created_at") or r.get("createdAt") or ""),
+            "last_used_at": str(r.get("last_used_at") or r.get("lastUsedAt") or ""),
+        }
+        for r in rows or []
+        if isinstance(r, dict)
+    ]
+
+
+def sort_keys_by_last_use(rows: list[dict]) -> list[dict]:
+    """Most recently used first; never-used keys last, newest of those first."""
+    return sorted(
+        rows,
+        key=lambda r: (1, r["last_used_at"]) if r["last_used_at"] else (0, r["created_at"]),
+        reverse=True,
+    )
+
+
+def _fmt_stamp(value: str) -> str:
+    return value.replace("T", " ")[:16] if value else "never"
+
+
+def _run_keys_list(args) -> int:
+    backend = _connect_backend()
+    try:
+        plugin = str(getattr(args, "plugin", "") or "")
+        rows = []
+        for key in [plugin] if plugin else _known_plugin_keys(backend):
+            rows.extend(_plugin_keys(backend, key))
+        rows = sort_keys_by_last_use(rows)
+    finally:
+        backend.close()
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, "keys": rows}))
+        return 0
+    if not rows:
+        print("No plugin agent keys" + (f" for {plugin!r}." if plugin else "."))
+        return 0
+    print(f"{'#':>2}  {'last used':<16}  {'created':<16}  {'plugin':<12}  id")
+    for n, row in enumerate(rows, 1):
+        print(
+            f"{n:>2}  {_fmt_stamp(row['last_used_at']):<16}  {_fmt_stamp(row['created_at']):<16}  "
+            f"{row['plugin']:<12}  {row['id']}"
+        )
+    print("\nRevoke one: hermes cognee keys revoke <id> --plugin <plugin>")
+    return 0
+
+
+def _run_keys_revoke(args) -> int:
+    from .http_backend import CogneeHttpError
+
+    plugin, key_id = str(args.plugin), str(args.key_id)
+    backend = _connect_backend()
+    try:
+        backend._request(
+            "DELETE", f"/api/v1/integrations/plugins/{plugin}/keys/{key_id}", timeout=20
+        )
+    except CogneeHttpError as exc:
+        if exc.status == 404:
+            print(
+                f"No key {key_id} on the {plugin!r} agent (already revoked, or another plugin's)."
+            )
+            return 3
+        raise
+    finally:
+        backend.close()
+    print(f"Revoked key {key_id} of the {plugin!r} agent.")
+    return 0
+
+
 def _run_index_repo(args) -> int:
     """Index one repository into a deterministic code graph (cognee >= 1.5.4)."""
     spec = code_graph.canonical_spec(str(args.repo))
@@ -310,6 +421,9 @@ def cognee_command(args) -> None:
         _print_version(args)
     elif sub == "index-repo":
         raise SystemExit(_run_index_repo(args))
+    elif sub == "keys":
+        action = getattr(args, "keys_command", None)
+        raise SystemExit(_run_keys_revoke(args) if action == "revoke" else _run_keys_list(args))
     elif sub in recap.RECAP_KINDS:
         raise SystemExit(_run_recap(args))
     else:
@@ -353,6 +467,21 @@ def register_cli(subparser) -> None:
         default=0.0,
         metavar="SECONDS",
         help="Wait up to SECONDS for the indexing pipeline to finish",
+    )
+    keys = subs.add_parser(
+        "keys",
+        help="List or revoke the per-machine API keys of your cognee plugin agents",
+    )
+    keys_subs = keys.add_subparsers(dest="keys_command")
+    keys_list = keys_subs.add_parser(
+        "list", help="List keys, most recently used first (every plugin agent by default)"
+    )
+    keys_list.add_argument("--plugin", default="", help="One plugin's agent (e.g. claude-code)")
+    keys_list.add_argument("--json", action="store_true")
+    keys_revoke = keys_subs.add_parser("revoke", help="Revoke one key by id")
+    keys_revoke.add_argument("key_id")
+    keys_revoke.add_argument(
+        "--plugin", required=True, help="The plugin whose agent holds the key (e.g. claude-code)"
     )
     recap_help = {
         "standup": "What was worked on and left open (default: last 24h)",

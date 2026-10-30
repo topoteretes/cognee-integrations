@@ -148,6 +148,7 @@ def _resolve_memory_sharing() -> str:
     from _plugin_common import (
         AGENT_ROLE_NAME,
         active_agent_key,
+        key_limit_message,
         load_shared_memory_marker,
         shared_memory_enabled,
     )
@@ -155,6 +156,8 @@ def _resolve_memory_sharing() -> str:
     if not shared_memory_enabled():
         return "separated (opt-out)"
     marker = load_shared_memory_marker()
+    if not active_agent_key() and key_limit_message():
+        return "principal (plugin key limit reached: free a slot with the cognee-keys skill)"
     if not active_agent_key():
         # An install that could not be wired (or whose identity is blocked or
         # bound to another principal) runs as the principal; say why, so "no

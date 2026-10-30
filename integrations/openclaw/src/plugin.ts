@@ -8,6 +8,7 @@ import type { AgentSyncIndexes, CogneeSearchResult, MemoryScope, ScopedSyncIndex
 // SyncResult is used as the return type of the per-agent sync helpers below.
 import { MEMORY_SCOPES } from "./types.js";
 import { CogneeHttpClient, requestErrorStatus } from "./client.js";
+import { sortPluginKeysByLastUse } from "./plugin-keys.js";
 import { resolveConfig } from "./config.js";
 import { collectMemoryFiles } from "./files.js";
 import { buildMemoryFlushPlan } from "./flush-plan.js";
@@ -1246,6 +1247,54 @@ const memoryCogneePlugin = {
           }
         });
 
+      cognee
+        .command("keys")
+        .description("List the per-machine API keys of your cognee plugin agents (Claude Code, Codex, ...), most recently used first; --revoke <id> --plugin <key> revokes one.")
+        .option("--plugin <key>", "One plugin's agent (e.g. claude-code); required with --revoke")
+        .option("--revoke <id>", "Revoke this key id instead of listing")
+        .option("--json", "Print JSON")
+        .action(async (opts: { plugin?: string; revoke?: string; json?: boolean }) => {
+          // A plugin agent full of keys in use refuses a new machine a key, which
+          // then runs on the user's personal key until an old machine's key is
+          // revoked. OpenClaw registers as the principal and provisions no agent
+          // of its own, so this manages the keys of every plugin agent of that user.
+          if (opts.revoke && !opts.plugin) {
+            console.log("--revoke needs --plugin <key> (the plugin whose agent holds the key).");
+            process.exit(1);
+            return;
+          }
+          let code = 0;
+          try {
+            if (opts.revoke) {
+              const { found } = await client.revokePluginKey(opts.plugin!, opts.revoke);
+              console.log(
+                found
+                  ? `Revoked key ${opts.revoke} of the "${opts.plugin}" agent.`
+                  : `No key ${opts.revoke} on the "${opts.plugin}" agent (already revoked, or another plugin's).`,
+              );
+              code = found ? 0 : 3;
+            } else {
+              const plugins = opts.plugin ? [opts.plugin] : (await client.listPluginStatuses()).map((p) => p.key);
+              const keys = sortPluginKeysByLastUse((await Promise.all(plugins.map((p) => client.listPluginKeys(p)))).flat());
+              if (opts.json) {
+                console.log(JSON.stringify({ ok: true, keys }));
+              } else if (keys.length === 0) {
+                console.log(opts.plugin ? `No keys for the "${opts.plugin}" agent.` : "No plugin agent keys.");
+              } else {
+                const stamp = (v: string) => (v ? v.replace("T", " ").slice(0, 16) : "never");
+                console.log(` #  ${"last used".padEnd(16)}  ${"created".padEnd(16)}  ${"plugin".padEnd(12)}  id`);
+                keys.forEach((k, i) => {
+                  console.log(`${String(i + 1).padStart(2)}  ${stamp(k.lastUsedAt).padEnd(16)}  ${stamp(k.createdAt).padEnd(16)}  ${k.plugin.padEnd(12)}  ${k.id}`);
+                });
+                console.log("\nRevoke one: openclaw cognee keys --revoke <id> --plugin <plugin>");
+              }
+            }
+          } catch (error) {
+            console.log(`Keys failed: ${error instanceof Error ? error.message : String(error)}`);
+            code = 1;
+          }
+          process.exit(code);
+        });
       // Recaps of the sessions Cognee recorded — the same code as the
       // memory_recap tool (and the claude-code/codex recap skills).
       const recapCommand = (kind: "standup" | "digest" | "timeline", description: string) => {

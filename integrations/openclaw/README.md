@@ -39,7 +39,8 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Code graph**: `openclaw cognee index-repo <path|url>` indexes a repository into a deterministic code graph; `memory_code_search` answers callers/impact/path/endpoint questions exactly, and an identifier-gated recall lane injects code facts when a prompt names a symbol
 - **Memory steer**: a cached system-prompt line on every run asserting Cognee as the authoritative memory and pointing the model at the memory tools
 - **Version & update hint**: `openclaw cognee status` / `openclaw cognee version` show the installed version and, when npm has a newer release, how to upgrade
-- **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee version`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`, `openclaw cognee standup`, `openclaw cognee digest`, `openclaw cognee timeline`
+- **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee version`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`, `openclaw cognee standup`, `openclaw cognee digest`, `openclaw cognee timeline`, `openclaw cognee keys`
+- **Plugin agent keys**: `openclaw cognee keys` lists the per-machine API keys of every cognee plugin agent of your user (Claude Code, Codex, …), most recently used first; `openclaw cognee keys --revoke <id> --plugin <key>` revokes one. A plugin agent full of keys in use refuses a new machine a key (that machine then runs on your personal key and says so) — this is how you free a slot from OpenClaw
 
 ## What this plugin runs, stores and sends
 

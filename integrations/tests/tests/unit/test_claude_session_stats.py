@@ -12,7 +12,13 @@ def stats(suite, isolated_modules):
     return isolated_modules(suite, "_session_stats")
 
 
-def test_concurrent_writers_do_not_lose_saves(stats):
+def test_concurrent_writers_do_not_lose_saves(stats, monkeypatch):
+    # Fifty read-modify-write cycles, each with an fsync, queue up behind one
+    # lock; on a slow Windows runner that is longer than the production wait
+    # (which caps how long a store hook may block), and the writer that gave up
+    # reported a lost save that was only a late one. The test is about the
+    # count, so the wait is lifted out of the way.
+    monkeypatch.setattr(stats, "_LOCK_TIMEOUT_SECONDS", 120.0)
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert all(pool.map(lambda _: stats.update("one", saves=1), range(50)))
     assert stats.read("one")["saves"] == 50

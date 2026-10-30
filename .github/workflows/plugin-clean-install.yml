@@ -16,6 +16,13 @@ name: Plugin Clean Install
 #
 # Nothing here may enable core.longpaths: users don't have it, so neither does CI.
 #
+# The same limit bit again on 2026-10-24 without any change to the repo: Codex
+# 0.164.0 moved its marketplace clone into a deeper staging directory
+# (`.staging\marketplace-windows-XXXXXX\checkout`, openai/codex#55689) and a
+# 148-char langgraph example path landed exactly on Git's 248-char directory
+# limit. The repo-hygiene budget below is derived from that layout, and the
+# `codex latest` leg is the only one that sees a new layout, so keep it.
+#
 # The second regression it guards against: a manifest key only a recent CLI
 # understands. cognee-memory 1.7.0 declared a `userConfig` option with an
 # `options` list, which Claude Code added in 2.1.271; every older Claude Code
@@ -38,11 +45,18 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Longest tracked path allowed. Codex clones into
-  #   <home>\.codex\.tmp\marketplaces\.staging\marketplace-add-XXXXXX\
-  # which is ~81 chars for C:\Users\<15-char name>. 81 + 160 leaves ~20 chars of
-  # headroom under MAX_PATH for longer profile names.
-  MAX_REPO_PATH: 160
+  # Longest tracked path allowed. Since Codex 0.164.0 a marketplace add clones
+  # into
+  #   <home>\.codex\.tmp\marketplaces\.staging\marketplace-windows-XXXXXX\checkout\
+  # which is 94 chars for C:\Users\<15-char name> (109 on this job's runner, see
+  # "Create a fresh user profile"). Git refuses to *create a directory* whose
+  # full path reaches 248 chars (MAX_PATH minus an 8.3 name) and a file at 260,
+  # so with core.longpaths off the deepest tracked directory must stay under
+  # 248 - 109 = 139 chars here. 130 keeps the whole tracked path (file included)
+  # under that with ~30 chars of headroom for longer profile names. The 160 that
+  # preceded it assumed the pre-0.164 staging path and let a 148-char example
+  # file through that failed this job's `codex latest` leg on Windows.
+  MAX_REPO_PATH: 130
 
 jobs:
   repo-hygiene:

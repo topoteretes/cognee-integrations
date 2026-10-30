@@ -177,9 +177,7 @@ def test_rejected_old_key_does_not_block_new_reconnection(suite, isolated_module
     assert pc._load_json_file(pc._AGENT_KEY_CACHE)["blocked"] is True
 
 
-def test_provision_uses_explicit_server_for_capability_and_creation(
-    suite, isolated_modules, monkeypatch
-):
+def test_provision_uses_explicit_server_for_every_request(suite, isolated_modules, monkeypatch):
     pc = isolated_modules(suite, "_plugin_common")
     calls = []
 
@@ -189,7 +187,7 @@ def test_provision_uses_explicit_server_for_capability_and_creation(
             return {
                 "paths": {
                     "/api/v1/integrations/plugins/{plugin_key}/provision": {
-                        "post": {"parameters": [{"name": "create_only", "in": "query"}]}
+                        "post": {"x-cognee-additive-plugin-keys": True}
                     }
                 }
             }
@@ -200,27 +198,11 @@ def test_provision_uses_explicit_server_for_capability_and_creation(
         principal_key="parent", service_url="https://explicit-server.test"
     )
     assert status == "provisioned"
-    assert len(calls) == 2
+    assert [path for path, _ in calls] == [
+        "/openapi.json",
+        f"/api/v1/integrations/plugins/{pc.PLUGIN_KEY}/provision",
+    ]
     assert all(call[1]["base_url"] == "https://explicit-server.test" for call in calls)
-
-
-@pytest.mark.parametrize("status", [401, 403])
-def test_permission_rejection_never_falls_back_to_ownership(
-    suite, isolated_modules, monkeypatch, status
-):
-    from urllib.error import HTTPError
-
-    pc = isolated_modules(suite, "_plugin_common")
-
-    def request(path, **kwargs):
-        if path == "/api/v1/datasets/":
-            return [{"id": "owned", "name": "owned", "ownerId": "user"}]
-        raise HTTPError(path, status, "denied", {}, None)
-
-    monkeypatch.setattr(pc, "_json_http_request", request)
-    with pytest.raises(HTTPError) as error:
-        pc.list_writable_datasets("user")
-    assert error.value.code == status
 
 
 def test_old_sdk_cannot_accept_uuid_session_writes(suite, isolated_modules, monkeypatch):

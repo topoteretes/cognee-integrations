@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from _file_lock import file_lock
@@ -26,6 +27,26 @@ def session_dir(session_id: str) -> Path:
     return Path.home() / ".cognee-plugin" / "claude-code" / "sessions" / session_id
 
 
+# On Windows a file another process has open (a reader, the indexer, an
+# antivirus scan of a file just written) cannot be replaced: os.replace raises
+# PermissionError for the few milliseconds the handle is held. Tried again with
+# a short, growing wait before the write is given up.
+_REPLACE_ATTEMPTS = 8
+_REPLACE_WAIT_SECONDS = 0.01
+_RETRY_REPLACE = os.name == "nt"
+
+
+def _replace(temporary: str, path: Path) -> None:
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if not _RETRY_REPLACE or attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_WAIT_SECONDS * (attempt + 1))
+
+
 def atomic_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix="." + path.name + "-")
@@ -34,7 +55,7 @@ def atomic_json(path: Path, value: dict) -> None:
             json.dump(value, stream)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _replace(temporary, path)
     finally:
         try:
             os.unlink(temporary)

@@ -1,8 +1,8 @@
 /**
  * The `cognee` CLI subcommands — the surface a user actually types.
  *
- * Eight subcommands exist (`index status health visualise setup scopes forget
- * improve`) and only `setup` had a test. These are the plugin's whole
+ * Nine subcommands exist (`index status health visualise setup scopes forget
+ * improve keys`) and only `setup` had a test. These are the plugin's whole
  * human-facing interface: unlike a missed recall, a broken subcommand is
  * immediately visible to whoever ran it.
  *
@@ -50,6 +50,25 @@ function clientStub() {
     recall: jest.fn(async (_p: unknown) => []),
     rememberEntry: jest.fn(async (_p: unknown) => ({ entryId: "e1" })),
     remember: jest.fn(async (_p: unknown) => ({ datasetId: "ds-1", items: [] })),
+    listPluginStatuses: jest.fn(async () => [
+      { key: "claude-code", connected: true },
+      { key: "codex", connected: true },
+      { key: "openclaw", connected: false },
+    ]),
+    listPluginKeys: jest.fn(async (plugin: string) => {
+      if (plugin === "claude-code") {
+        return [
+          { plugin, id: "k-old", label: "aaaa****", createdAt: "2026-08-01T10:00:00Z", lastUsedAt: "2026-09-20T09:00:00Z" },
+          { plugin, id: "k-new", label: "bbbb****", createdAt: "2026-09-01T10:00:00Z", lastUsedAt: "2026-10-20T09:00:00Z" },
+          { plugin, id: "k-unused", label: "cccc****", createdAt: "2026-10-19T10:00:00Z", lastUsedAt: "" },
+        ];
+      }
+      if (plugin === "codex") {
+        return [{ plugin, id: "codex-1", label: "dddd****", createdAt: "2026-10-01T00:00:00Z", lastUsedAt: "2026-10-10T00:00:00Z" }];
+      }
+      return [];
+    }),
+    revokePluginKey: jest.fn(async (_plugin: string, keyId: string) => ({ found: keyId !== "nope" })),
   };
 }
 
@@ -120,6 +139,7 @@ describe("registration", () => {
       "improve",
       "index",
       "index-repo",
+      "keys",
       "scopes",
       "setup",
       "standup",
@@ -294,5 +314,74 @@ describe("cognee forget", () => {
     await harness.runCli("forget", { everything: true, confirm: true }).catch(() => undefined);
 
     expect(stub.forget).toHaveBeenCalledWith(expect.objectContaining({ everything: true }));
+  });
+});
+
+describe("cognee keys", () => {
+  // A plugin agent full of keys in use refuses a new machine a key (cognee#6113);
+  // from OpenClaw a user frees a slot for any plugin agent of theirs.
+  it("lists every plugin agent's keys, most recently used first, never-used last", async () => {
+    const harness = createPluginApi(plugin);
+    await harness.runCli("keys", { json: true });
+    const out = JSON.parse(printed()) as { ok: boolean; keys: { plugin: string; id: string }[] };
+    expect(out.ok).toBe(true);
+    expect(out.keys.map((k) => `${k.plugin}:${k.id}`)).toEqual([
+      "claude-code:k-new",
+      "codex:codex-1",
+      "claude-code:k-old",
+      "claude-code:k-unused",
+    ]);
+    expect(stub.listPluginKeys).toHaveBeenCalledTimes(3);
+    expect(exitCodes()).toEqual([0]);
+  });
+
+  it("prints a table the user can pick from", async () => {
+    const harness = createPluginApi(plugin);
+    await harness.runCli("keys", {});
+    const out = printed();
+    expect(out.indexOf("k-new")).toBeLessThan(out.indexOf("k-old"));
+    expect(out.indexOf("k-old")).toBeLessThan(out.indexOf("k-unused"));
+    expect(out).toContain("never");
+    expect(out).toContain("openclaw cognee keys --revoke <id> --plugin <plugin>");
+    expect(exitCodes()).toEqual([0]);
+  });
+
+  it("--plugin lists one agent without consulting the status listing", async () => {
+    const harness = createPluginApi(plugin);
+    await harness.runCli("keys", { plugin: "codex", json: true });
+    expect(stub.listPluginStatuses).not.toHaveBeenCalled();
+    expect((JSON.parse(printed()) as { keys: unknown[] }).keys).toHaveLength(1);
+  });
+
+  it("revokes one key of the named plugin's agent", async () => {
+    const harness = createPluginApi(plugin);
+    await harness.runCli("keys", { plugin: "claude-code", revoke: "k-old" });
+    expect(stub.revokePluginKey).toHaveBeenCalledWith("claude-code", "k-old");
+    expect(printed()).toContain("Revoked key k-old");
+    expect(exitCodes()).toEqual([0]);
+  });
+
+  it("refuses to revoke without naming the plugin", async () => {
+    useStrictExit();
+    const harness = createPluginApi(plugin);
+    await expect(harness.runCli("keys", { revoke: "k-old" })).rejects.toBeInstanceOf(ProcessExited);
+    expect(stub.revokePluginKey).not.toHaveBeenCalled();
+    expect(printed()).toContain("--plugin");
+    expect(exitCodes()).toEqual([1]);
+  });
+
+  it("reports a key that is already gone and exits 3", async () => {
+    const harness = createPluginApi(plugin);
+    await harness.runCli("keys", { plugin: "codex", revoke: "nope" });
+    expect(printed()).toContain("No key nope");
+    expect(exitCodes()).toEqual([3]);
+  });
+
+  it("reports a failed request and exits 1", async () => {
+    stub.listPluginStatuses.mockRejectedValueOnce(new Error("Cognee request failed (503): down"));
+    const harness = createPluginApi(plugin);
+    await harness.runCli("keys", {});
+    expect(printed()).toContain("Keys failed");
+    expect(exitCodes()).toEqual([1]);
   });
 });

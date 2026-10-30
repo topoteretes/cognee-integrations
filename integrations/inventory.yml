@@ -23,7 +23,7 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.10.19"
+    current_version: "2026.10.26"
     migration_status: done
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
@@ -34,7 +34,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "1.7.5"
+    current_version: "1.7.6"
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
@@ -45,9 +45,25 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: http-api
-    current_version: "1.6.6"
+    current_version: "1.6.7"
     migration_status: done
     notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
+
+  - slug: cursor
+    name: "Cognee Plugin for Cursor"
+    owner: cognee
+    language: python
+    registry: cursor-marketplace
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: >-
+      Cursor plugin (.cursor-plugin/plugin.json + hooks/hooks.json) built on the Codex
+      hook runtime. cursor_hook.py adapts Cursor's camelCase hook payloads (conversation_id,
+      generation_id, Shell/Task tool names, afterAgentResponse + transcript tail for the
+      final answer) to the shared Cognee hook contract; install-cursor-hooks.py writes the
+      same hooks into a user or project hooks.json.
 
   - slug: vellum-assistant
     name: "Cognee Plugin for Vellum Assistant"
@@ -67,9 +83,20 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.7.7"
+    current_version: "1.7.8"
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
+
+  - slug: grok-bot
+    name: "Cognee Plugin for Grok Bot"
+    owner: cognee
+    language: markdown
+    registry: cursor-marketplace
+    package_name: null
+    cognee_dependency: mcp
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Cursor-format plugin (Grok Bot's plugin catalog) that attaches the hosted Cognee MCP server (OAuth, no API key) plus a memory skill that makes Cognee the bot's memory; listed in the root .cursor-plugin/marketplace.json and .grok-plugin/marketplace.json"
 
   - slug: hermes-agent
     name: "Cognee Memory Plugin for Hermes Agent"
@@ -78,7 +105,7 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
     cognee_dependency: http-api
-    current_version: "1.3.2"
+    current_version: "1.3.3"
     migration_status: done
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: >-

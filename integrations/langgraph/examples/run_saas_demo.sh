@@ -28,7 +28,7 @@ fi
 echo "Step 1: Loading demo data into Cognee..."
 echo "This may take a few minutes..."
 echo ""
-cd data/cognee_mock_saas_entitlements_demo
+cd data/saas_demo
 python load_into_cognee.py
 
 if [ $? -ne 0 ]; then

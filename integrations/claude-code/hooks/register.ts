@@ -6,8 +6,8 @@
 //
 //   * the status row, above the prompt on every surface: it runs the plugin's
 //     own status-line renderer in `--json` mode and lays the result out, so
-//     the band shows the row the settings-file status line shows (the badge,
-//     the counters and the tokens-saved estimate included). In a
+//     the band shows the row the settings-file status line shows (the badge
+//     included). In a
 //     terminal the module marks its session (`band/<session>.json`) and the
 //     renderer then prints nothing for it, so the row is never drawn twice;
 //     with the `band` option off the settings status line is back below;
@@ -31,10 +31,12 @@
 //
 // Everything the module runs is one of the plugin's own scripts, as a local
 // process; the only network traffic is theirs, on the person's or the model's
-// explicit action, plus one listing of the writable datasets for the picker. Nothing here runs on a fixed timer while the session is
+// explicit action, plus the listing of the writable datasets for the picker
+// (once the SessionStart hook has run; a few more tries while a server is
+// still starting). Nothing here runs on a fixed timer while the session is
 // idle: the marker is read on the events the hooks fire, and polled once a
-// second only while an operation is running or for a short window after one
-// was started.
+// second only while an operation is running (a server boot the hook handed
+// off included) or for a short window after one was started.
 //
 // Only native events are hooked (prompt.submit, tool.call, turn.complete,
 // session.compact, session.start, session.end), never the classic.* mirrors
@@ -44,11 +46,6 @@
 import type { Register, RenderElement } from 'claude-code'
 
 type Activity = { kind: 'active' | 'result'; phase: string; text: string; age: number; ok: boolean; count?: number }
-
-type Counts = {
-  tokens_saved: string
-  tokens_saved_short: string
-}
 
 type Snapshot = {
   enabled: boolean
@@ -61,7 +58,6 @@ type Snapshot = {
   billing_url?: string
   update: string
   text: string
-  counts?: Counts
 }
 
 // The brand lavender (#BC9BFF), a deeper violet on a light theme so it keeps
@@ -84,9 +80,13 @@ const POLL_WINDOW_MS = 30_000
 // After a session start the connection marker lands when the SessionStart
 // hook finishes, which can be well after the module's first snapshot. While
 // the row still says "unknown", the snapshot is retaken every few seconds for
-// this long, then left to the next prompt.
+// this long, then left to the next prompt. A server the hook handed to its
+// bootstrap worker keeps the `setting_up` phase alive for as long as it boots
+// (minutes on a cold start); the poll follows that phase past the warm-up,
+// retaking the snapshot every half minute, and stops when the phase ends.
 const WARMUP_MS = 120_000
 const WARMUP_RETRY_TICKS = 5
+const BOOT_RETRY_TICKS = 30
 // Mirrors the renderer: an active phase older than this is a hook that died.
 const STALE_MS = 90_000
 const DIM_AFTER_MS = 60_000
@@ -142,7 +142,17 @@ const REMEMBER_SESSION_CALLS = 5
 const REMEMBER_SESSION_BYTES = 64_000
 let rememberCalls = 0
 let rememberBytes = 0
-const LIST_TIMEOUT_MS = 20_000
+// The listing makes several HTTP calls of up to 15 s each; its budget sits
+// above their sum, so a slow server is a late list, not a wiped one.
+const LIST_TIMEOUT_MS = 45_000
+// A listing that fails is tried again: it runs before the SessionStart hook
+// has written the launch record it needs, or against a server that is up but
+// not answering. The wait grows with each attempt (5 s, 10 s, ...), and after
+// the last the name stays plain text until the next prompt, /cognee-dataset
+// or a switch starts the attempts over. A boot the hook handed to its worker
+// is not an attempt: the listing waits for the `setting_up` phase to end.
+const LIST_RETRY_MS = 5_000
+const LIST_MAX_ATTEMPTS = 5
 // A switch syncs the session it leaves first; that can take minutes.
 const SWITCH_TIMEOUT_MS = 600_000
 const NODE_SETS: Record<string, string> = {
@@ -206,9 +216,9 @@ let pickerOpen = false
 // bump TOUR_VERSION to show a rewritten tour once more. -1 is "not showing".
 const TOUR_VERSION = 1
 const TOUR_STEPS = [
-  'The dataset name is a picker ↑: pick another dataset, or "+ new dataset…" to create one',
-  '↑ ● means memory is connected · local/cloud shows you where your memory lives · the end of the row says what memory is doing',
-  'Claude uses memories recalled by Cognee on every prompt · /cognee-dataset <name> switches by name · /cognee-tour replays this tutorial',
+  'The dataset name ↑ is a picker: pick another, or "+ new dataset…" to create one',
+  '↑ ● means memory is connected · local/cloud is where it lives · the row ends with what memory is doing',
+  'Claude uses what Cognee recalls on every prompt · type /cognee to see its commands · /cognee-tour replays this tutorial',
 ]
 let tourOn = true
 let tourStep = -1
@@ -299,9 +309,23 @@ let fixOpen = false
 let doctorOutput = ''
 let doctorRunning = false
 let fixNote: { text: string; isError: boolean } | null = null
-// One listing per session, refreshed after a switch or by the pane's refresh.
+// One successful listing per session, refreshed after a switch or by
+// /cognee-dataset; a failed one is retried a few times (LIST_MAX_ATTEMPTS).
 let datasetsListed = false
 let datasetsListing = false
+let datasetsInFlight: Promise<void> | null = null
+let datasetsAttempts = 0
+let datasetsRetryAt = 0
+// A listing put off because the worker was still booting the server.
+let datasetsWaitingForBoot = false
+
+function resetDatasets(): void {
+  switchTargets = []
+  datasetsListed = false
+  datasetsAttempts = 0
+  datasetsRetryAt = 0
+  datasetsWaitingForBoot = false
+}
 
 // ── pure helpers ────────────────────────────────────────────────────────────
 function plural(n: number, word: string): string {
@@ -619,10 +643,21 @@ async function startPoll($: any, windowMs: number): Promise<void> {
     pollTicks += 1
     if (active?.phase === 'saving' && !markerActive && at - activeSince > STALE_MS) clearActive($)
     // Warming up: the connection is unconfirmed until the SessionStart hook
-    // writes its marker; retake the snapshot every few ticks until it is.
+    // writes its marker; retake the snapshot every few ticks until it is. A
+    // boot the hook handed off keeps `setting_up` alive past the warm-up: the
+    // poll runs for as long as the phase does (the `active` check below), and
+    // the snapshot is retaken less often meanwhile.
     const settled = snapshot?.state === 'ok' || snapshot?.state === 'fail'
-    if (at < warmupUntil && !settled && pollTicks % WARMUP_RETRY_TICKS === 0) {
-      await refreshSnapshot($)
+    if (!settled && (at < warmupUntil || active?.phase === 'setting_up')) {
+      const every = at < warmupUntil ? WARMUP_RETRY_TICKS : BOOT_RETRY_TICKS
+      if (pollTicks % every === 0) await refreshSnapshot($)
+    }
+    // The picker's listing failed (the launch record was not written yet, the
+    // server was still booting): try again once its wait is over, or as soon
+    // as the boot it was waiting for ends (the poll may stop on this tick).
+    const bootEnded = datasetsWaitingForBoot && active?.phase !== 'setting_up'
+    if (!datasetsListed && !datasetsListing && datasetsAttempts < LIST_MAX_ATTEMPTS && (at >= datasetsRetryAt || bootEnded)) {
+      void loadDatasets($)
     }
     if (!active && at > pollUntil && poll) {
       poll.cancel()
@@ -809,22 +844,58 @@ function sessionKeyArgs(): string[] {
 }
 
 // The datasets the picker offers: the writable ones, from the plugin's own
-// switch script, once when the band is first drawn and after each switch.
+// switch script, once the SessionStart hook has run (it writes the launch
+// record the script reads) and after each switch. A run that fails, times
+// out or cannot start keeps the list it had and is tried again later; only
+// an answer replaces it.
 async function loadDatasets($: any): Promise<void> {
-  if (datasetsListing) return
-  datasetsListing = true
-  const switchable = await runPython($, [`${$.plugin.root}/scripts/switch-dataset.py`, '--list', '--json', ...sessionKeyArgs()], {
-    timeoutMs: LIST_TIMEOUT_MS,
-  })
-  try {
-    const parsed = switchable && switchable !== 'timeout' && switchable.stdout.trim() ? JSON.parse(switchable.stdout) : {}
-    if (!parsed.error) switchTargets = datasetRows(parsed)
-  } catch {
-    // the name stays plain text
+  if (!sessionId) return
+  // A listing already running answers for this call too.
+  if (datasetsInFlight) return datasetsInFlight
+  // The server is not listening yet: the hook handed its boot to a worker,
+  // which keeps `setting_up` alive for as long as the boot runs (minutes on a
+  // cold start). Every try meanwhile would fail at once and spend the
+  // attempts before the server is up, so none is made; the poll, which runs
+  // for as long as the phase does, asks again once this wait is over.
+  if (active?.phase === 'setting_up') {
+    datasetsWaitingForBoot = true
+    datasetsRetryAt = (await $.clock.now()) + LIST_RETRY_MS
+    return
   }
-  datasetsListed = true
-  datasetsListing = false
-  redraw($)
+  datasetsWaitingForBoot = false
+  datasetsListing = true
+  datasetsAttempts += 1
+  datasetsInFlight = (async () => {
+    let listed = false
+    try {
+      const switchable = await runPython($, [`${$.plugin.root}/scripts/switch-dataset.py`, '--list', '--json', ...sessionKeyArgs()], {
+        timeoutMs: LIST_TIMEOUT_MS,
+      })
+      const parsed = switchable && switchable !== 'timeout' && switchable.stdout.trim() ? JSON.parse(switchable.stdout) : null
+      if (parsed && typeof parsed === 'object' && !parsed.error) {
+        switchTargets = datasetRows(parsed)
+        listed = true
+      }
+    } catch {
+      // the name stays plain text until the next try
+    }
+    datasetsListed = listed
+    if (!listed) datasetsRetryAt = (await $.clock.now()) + LIST_RETRY_MS * datasetsAttempts
+    datasetsListing = false
+    datasetsInFlight = null
+    redraw($)
+  })()
+  return datasetsInFlight
+}
+
+// A listing asked for outright (/cognee-dataset, the end of a switch) starts
+// the attempts over.
+async function relistDatasets($: any): Promise<void> {
+  if (datasetsInFlight) await datasetsInFlight
+  datasetsListed = false
+  datasetsAttempts = 0
+  datasetsRetryAt = 0
+  await loadDatasets($)
 }
 
 // Move the session to another dataset: the plugin's switch script, which
@@ -862,7 +933,7 @@ async function switchDataset($: any, target: string): Promise<string> {
     clearActive($)
   }
   await refreshSnapshot($)
-  void loadDatasets($)
+  void relistDatasets($)
   return line
 }
 
@@ -885,6 +956,7 @@ export const register: Register = (on, options) => {
       spin = null
     }
     pollTicks = 0
+    resetDatasets()
     // The brand lavender reads on a dark background; a light one gets the
     // darker purple. COGNEE_STATUSLINE_THEME says which; without it, Claude
     // Code's own theme does (a light theme, or auto on a light system, is
@@ -901,11 +973,6 @@ export const register: Register = (on, options) => {
     await bindSession($)
     await readPhase($)
     await refreshSnapshot($)
-    // The band's dataset picker needs the writable datasets: one listing, not
-    // awaited (the session must not wait on a slow server). The Desktop app
-    // reports no surface at start (it attaches after), so the band's first
-    // draw starts the listing too; this covers a session that does say desktop.
-    if (bandOn && e.surface === 'desktop') void loadDatasets($)
     await $.command.register({
       name: 'cognee-dataset',
       description: 'Switch this session to another Cognee dataset; without a name, list them.',
@@ -962,7 +1029,13 @@ export const register: Register = (on, options) => {
     // keep retaking the snapshot until the connection is confirmed.
     warmupUntil = (await $.clock.now()) + WARMUP_MS
     await startPoll($, snapshot?.state === 'ok' && !active ? POLL_WINDOW_MS : WARMUP_MS)
-    return next(e)
+    // next(e) runs the plugin's SessionStart hook, which writes the launch
+    // record the dataset listing reads: the listing starts after it, not
+    // awaited (the session must not wait on a slow server). On a Desktop app
+    // that reports no surface yet the band's first draw would start it too.
+    const started = await next(e)
+    if (bandOn) void loadDatasets($)
+    return started
   })
 
   on('command.run', { command: 'cognee-tour' }, $ => {
@@ -977,8 +1050,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'cognee-dataset' }, async ($, e) => {
     const name = e.args.trim()
     if (!name) {
-      datasetsListed = false
-      await loadDatasets($)
+      await relistDatasets($)
       if (switchTargets.length === 0) return { text: 'Cognee: no datasets listed (is memory connected?).' }
       const rows = switchTargets.map(r => (r.current ? `  * ${r.name} (current)` : `  - ${r.name}`)).join('\n')
       pickerOpen = true
@@ -1089,6 +1161,16 @@ export const register: Register = (on, options) => {
     // Not awaited: a process spawn on the path from prompt to answer only
     // updates the row, and the poll below refreshes it a second later anyway.
     void refreshSnapshot($)
+    // A listing that never landed gets another go once the person is back at
+    // the prompt: the attempts start over, so the cap is per prompt rather
+    // than per session.
+    if (!datasetsListed && !datasetsListing) {
+      if (datasetsAttempts >= LIST_MAX_ATTEMPTS) {
+        datasetsAttempts = 0
+        datasetsRetryAt = 0
+      }
+      void loadDatasets($)
+    }
     // The turn's tool calls are saved as they happen; watch for them.
     await startPoll($, POLL_WINDOW_MS)
     return ran
@@ -1125,6 +1207,8 @@ export const register: Register = (on, options) => {
       sessionId = ''
       rememberCalls = 0
       rememberBytes = 0
+      // The next session has a launch record of its own: list again for it.
+      resetDatasets()
     }
     return next(e)
   })
@@ -1195,15 +1279,28 @@ export const register: Register = (on, options) => {
     const els = $.ui.resolve(e) as any
     const { Box, Text, Select, Input, Button, Link } = els
     const snap = snapshot
-    const parts: RenderElement[] = []
-    if (!datasetsListed && !datasetsListing) void loadDatasets($)
+    // The row is laid out in segments that are never split: each is a Box
+    // that does not shrink, with its " · " separator inside, so a narrow
+    // terminal wraps whole segments onto a second line (or drops the least
+    // useful ones first, below) instead of breaking "agent_sessions" into
+    // "agent_sess / ions". `width` is the segment's estimate in cells; `drop`
+    // ranks what goes when the row is too wide, 0 being never.
+    type Segment = { width: number; drop: number; children: RenderElement[] }
+    const segments: Segment[] = []
+    const segment = (width: number, drop: number, ...children: RenderElement[]) => segments.push({ width, drop, children })
+    if (!datasetsListed && !datasetsListing && datasetsAttempts < LIST_MAX_ATTEMPTS && datasetsRetryAt === 0) void loadDatasets($)
     void startTourIfFirstRun($)
     const current = switchTargets.find(r => r.current)?.name ?? snap?.dataset ?? ''
-    const canPick = switchTargets.length > 0 && switchTargets.some(r => r.name === current)
+    // A picker whenever the server listed anything. The active dataset may be
+    // missing from the writable list (read-only, or created since the
+    // listing); it heads the options anyway, so the row still reads and the
+    // other datasets stay reachable.
+    const canPick = switchTargets.length > 0
+    const options = current && !switchTargets.some(r => r.name === current) ? [{ name: current, id: '', current: true }, ...switchTargets] : switchTargets
     const picker = () =>
       Select({
         key: 'dataset',
-        options: [...switchTargets.map(r => ({ value: r.name, label: r.name })), { value: NEW_DATASET, label: NEW_DATASET }],
+        options: [...options.map(r => ({ value: r.name, label: r.name })), { value: NEW_DATASET, label: NEW_DATASET }],
         value: current,
         ...(e.surface === 'terminal' ? { autoFocus: true as const } : {}),
         onSelect: (value: string) => {
@@ -1264,93 +1361,129 @@ export const register: Register = (on, options) => {
     // The health slot, as the text line draws it: the spinner while something
     // runs, a green ● once the server is confirmed up and authenticated, the
     // red verdict with its button on a failure, and a dim ○ while nothing is
-    // known yet (warming up, no marker).
+    // known yet (warming up, no marker). One segment with the mark and the
+    // wordmark after it: the official waveform as an inline SVG where the
+    // surface draws one (the desktop; the terminal's table lists an Svg too,
+    // but draws it as an empty box, so a terminal gets the wordmark alone),
+    // then "cognee" bold in the brand lavender.
+    const badge: RenderElement[] = []
+    let badgeWidth = 2
     if (active) {
-      parts.push(Text({ color: 'yellow', children: [`${FRAMES[frame % FRAMES.length] ?? '⠋'} `] }))
+      badge.push(Text({ color: 'yellow', children: [`${FRAMES[frame % FRAMES.length] ?? '⠋'} `] }))
     } else if (snap?.state === 'ok') {
-      parts.push(Text({ color: 'green', bold: true, children: ['● '] }))
+      badge.push(Text({ color: 'green', bold: true, children: ['● '] }))
     } else if (snap?.state === 'fail') {
       // The verdict stays red text: a button's text takes the surface's own
       // colour on the desktop, whatever is put inside it. The small button
       // right after it is the press that opens the fix dialog.
-      parts.push(Text({ color: 'red', bold: true, children: [`✕ (${snap.reason})`] }))
-      parts.push(Text({ children: [' '] }))
-      parts.push(Button({ key: 'fix', label: 'see fix', variant: 'secondary', onPress: () => void openFix($, snap.reason) }))
-      parts.push(Text({ children: [' '] }))
+      badge.push(Text({ color: 'red', bold: true, children: [`✕ (${snap.reason})`] }))
+      badge.push(Text({ children: [' '] }))
+      badge.push(Button({ key: 'fix', label: 'see fix', variant: 'secondary', onPress: () => void openFix($, snap.reason) }))
+      badge.push(Text({ children: [' '] }))
+      badgeWidth = 4 + snap.reason.length + 11
     } else {
-      parts.push(Text({ dimColor: true, children: ['○ '] }))
+      badge.push(Text({ dimColor: true, children: ['○ '] }))
     }
-    // The mark, then the wordmark: the official waveform as an inline SVG
-    // where the surface draws one (the desktop), the block-alphabet wave in
-    // the brand colour elsewhere; "cognee" bold in the brand lavender after
-    // it (the text line's ■ cognee ■ chip is a terminal device).
-    // The terminal's table lists an Svg too, but draws it as an empty box;
-    // a terminal gets the wordmark alone.
     if (markOn && waveSvg && els.Svg && e.surface === 'desktop') {
-      parts.push(els.Svg({ source: waveSvg, alt: 'cognee', width: 18, height: 18 }))
-      parts.push(Text({ children: [' '] }))
+      badge.push(els.Svg({ source: waveSvg, alt: 'cognee', width: 18, height: 18 }))
+      badge.push(Text({ children: [' '] }))
+      badgeWidth += 3
     }
-    parts.push(Text({ bold: true, color: purple, children: ['cognee '] }))
+    badge.push(Text({ bold: true, color: purple, children: ['cognee '] }))
+    segment(badgeWidth + 7, 0, ...badge)
+    // The dataset: a control when there is a list, the name otherwise.
     if (canPick) {
       const open = e.surface !== 'terminal' || pickerOpen
-      parts.push(namingDataset ? namer() : open ? picker() : closedPicker())
+      segment(namingDataset ? 26 : current.length + 2, 0, namingDataset ? namer() : open ? picker() : closedPicker())
     } else {
-      parts.push(Text({ children: [snap?.dataset ?? 'memory'] }))
+      const name = snap?.dataset ?? 'memory'
+      segment(name.length, 0, Text({ children: [name] }))
     }
-    parts.push(Text({ children: [' · '] }))
-    parts.push(Text({ bold: true, color: purple, children: [snap?.mode ?? '…'] }))
-    const counts = snap?.counts
-    if (counts) {
-      parts.push(Text({ color: purple, bold: true, children: [` · ${counts.tokens_saved}`] }))
-    }
+    const mode = snap?.mode ?? '…'
+    segment(3 + mode.length, 0, Text({ children: [' · '] }), Text({ bold: true, color: purple, children: [mode] }))
     if (snap?.credits) {
       // As on the text line: the balance green, red once exhausted or a
       // request was refused; the last-operation cost after it at normal
       // weight. The text line's "top up: <url>" becomes a link here, the way
       // out one click away (an anchor on the desktop, OSC 8 in a terminal).
-      const [balance, ...rest] = snap.credits.split(' · ')
-      parts.push(Text({ color: snap.credits_exhausted ? 'red' : 'green', children: [` · ${balance}`] }))
+      // A balance that is out, or a refusal, is something to act on: it is
+      // never dropped for width; a healthy balance goes before the activity,
+      // the last-operation cost before both.
+      const [balance = '', ...rest] = snap.credits.split(' · ')
+      segment(3 + balance.length, snap.credits_exhausted ? 0 : 2, Text({ color: snap.credits_exhausted ? 'red' : 'green', children: [` · ${balance}`] }))
       for (const part of rest) {
         if (part.startsWith('top up:') && snap.billing_url && Link) {
-          parts.push(Text({ children: [' · '] }))
-          parts.push(Link({ href: snap.billing_url, label: 'top up' }))
+          segment(9, 0, Text({ children: [' · '] }), Link({ href: snap.billing_url, label: 'top up' }))
         } else {
-          parts.push(Text({ children: [` · ${part}`] }))
+          segment(3 + part.length, 3, Text({ children: [` · ${part}`] }))
         }
       }
     }
+    // What memory is doing, or did last. A failed `ready` result is not
+    // shown next to a green ●: the verdict predates the connection marker
+    // (a boot that finished after the hook gave up), and the marker wins.
+    const shownResult =
+      result && result.age * 1000 < HIDE_AFTER_MS && !(result.phase === 'ready' && !result.ok && snap?.state === 'ok') ? result : null
     if (active) {
-      parts.push(Text({ color: 'yellow', children: [` · ${active.text}`] }))
-    } else if (result && result.age * 1000 < HIDE_AFTER_MS) {
-      // At rest the result reads in the brand colour and bold, like the estimate.
-      parts.push(Text({ color: purple, bold: true, dimColor: result.age * 1000 >= DIM_AFTER_MS, children: [` · ${result.text}`] }))
+      segment(3 + active.text.length, 1, Text({ color: 'yellow', children: [` · ${active.text}`] }))
+    } else if (shownResult) {
+      // At rest the result reads in the brand colour and bold.
+      segment(
+        3 + shownResult.text.length,
+        1,
+        Text({ color: purple, bold: true, dimColor: shownResult.age * 1000 >= DIM_AFTER_MS, children: [` · ${shownResult.text}`] }),
+      )
     }
-    if (snap?.update) parts.push(Text({ color: 'yellow', children: [` · ${snap.update}`] }))
+    if (snap?.update) segment(3 + snap.update.length, 0, Text({ color: 'yellow', children: [` · ${snap.update}`] }))
 
-    const row = Box({ flexDirection: 'row', width: e.props.bodyColumns, children: parts })
+    // Fit: while the row runs past the band's width, the segment that is
+    // least worth its cells goes first (the highest `drop`, the last of equals).
+    // What must stay (drop 0) wraps as whole segments instead.
+    const columns = e.props.bodyColumns
+    let shown = segments
+    const widthOf = (list: Segment[]) => list.reduce((sum, s) => sum + s.width, 0)
+    while (widthOf(shown) > columns) {
+      let victim = -1
+      for (let i = 0; i < shown.length; i += 1) {
+        if (shown[i]!.drop > 0 && (victim < 0 || shown[i]!.drop >= shown[victim]!.drop)) victim = i
+      }
+      if (victim < 0) break
+      shown = shown.filter((_, i) => i !== victim)
+    }
+    const parts = shown.map(s => Box({ flexDirection: 'row', flexShrink: 0, children: s.children }))
+    const row = Box({ flexDirection: 'row', flexWrap: 'wrap', width: columns, children: parts })
     const rows: RenderElement[] = [row]
     const hint = TOUR_STEPS[tourStep]
     if (hint !== undefined) {
+      // The hint wraps as a paragraph in the room the buttons leave; the
+      // buttons keep their cells and never split.
       const last = tourStep === TOUR_STEPS.length - 1
       rows.push(
         Box({
           flexDirection: 'row',
-          width: e.props.bodyColumns,
+          width: columns,
           children: [
-            Text({ dimColor: true, children: [`${hint}  `] }),
-            Button({
-              key: 'tourNext',
-              label: last ? 'done' : 'next',
-              onPress: () => {
-                if (last) void endTour($, true)
-                else {
-                  tourStep += 1
-                  redraw($)
-                }
-              },
+            Box({ flexGrow: 1, flexShrink: 1, children: [Text({ dimColor: true, wrap: 'wrap', children: [hint] })] }),
+            Box({
+              flexDirection: 'row',
+              flexShrink: 0,
+              children: [
+                Text({ children: ['  '] }),
+                Button({
+                  key: 'tourNext',
+                  label: last ? 'done' : 'next',
+                  onPress: () => {
+                    if (last) void endTour($, true)
+                    else {
+                      tourStep += 1
+                      redraw($)
+                    }
+                  },
+                }),
+                Text({ children: [' '] }),
+                Button({ key: 'tourSkip', label: 'skip', plain: true, dimColor: true, onPress: () => void endTour($, false) }),
+              ],
             }),
-            Text({ children: [' '] }),
-            Button({ key: 'tourSkip', label: 'skip', plain: true, dimColor: true, onPress: () => void endTour($, false) }),
           ],
         }),
       )

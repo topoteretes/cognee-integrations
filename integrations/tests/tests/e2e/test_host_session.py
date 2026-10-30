@@ -47,6 +47,28 @@ def _context(output: dict) -> str:
     return output["hookSpecificOutput"]["additionalContext"]
 
 
+def test_a_full_plugin_agent_is_reported_to_the_user(host, private_mock_server, tmp_path):
+    """The server refuses this machine a key (409: the plugin's agent already
+    holds one per machine, all in use). The session still works on the personal
+    key, and the user is told so in the SessionStart systemMessage the host shows."""
+    mock = private_mock_server
+    mock.identity.max_agent_keys = 1
+    mock.identity.plugins_provision(host.name, DEFAULT_TEST_API_KEY)  # another machine
+    home = make_home(tmp_path, "cognee")
+    write_env_file(home, mock.url, DEFAULT_TEST_API_KEY)
+    project = home / "projects" / "app"
+    project.mkdir(parents=True)
+
+    session = HostSession(host, home, project, mock)
+    session.start()
+    session.assert_every_hook_succeeded()
+    (output,) = session.outputs("SessionStart", "session-start.py")
+    assert "personal API key" in output["systemMessage"], output
+    assert "cognee-keys" in output["systemMessage"]
+    registered = session.calls("/api/v1/agents/register")
+    assert registered, "the session did not register on the personal key"
+
+
 # --- the lifecycle, from an ordinary and an awkward profile path ----------------
 
 

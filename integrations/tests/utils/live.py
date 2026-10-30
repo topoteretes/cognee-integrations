@@ -568,8 +568,13 @@ class LiveSession:
         )
 
     def answer(self, text: str, *, turn_id: str = "t1") -> HookRun:
-        """Stop — capture the assistant's answer for this turn."""
-        return self.run(
+        """Stop — capture the assistant's answer for this turn.
+
+        Returns once the answer is on the server: directly, or, through the
+        cloud worker, once the worker has delivered the spooled entry.
+        """
+        delivered_before = self._deliveries("answer")
+        run = self.run(
             "store-to-session.py",
             self._payload(
                 hook_event_name="Stop",
@@ -580,10 +585,13 @@ class LiveSession:
             "--stop",
             timeout=300,
         )
+        self._await_cloud_delivery("answer", delivered_before)
+        return run
 
     def tool(self, name: str, tool_input: Any, output: Any, *, turn_id: str = "t1") -> HookRun:
-        """PostToolUse — capture one tool trace."""
-        return self.run(
+        """PostToolUse — capture one tool trace (delivered, like ``answer``)."""
+        delivered_before = self._deliveries("trace")
+        run = self.run(
             "store-to-session.py",
             self._payload(
                 hook_event_name="PostToolUse",
@@ -595,6 +603,37 @@ class LiveSession:
             ),
             timeout=300,
         )
+        self._await_cloud_delivery("trace", delivered_before)
+        return run
+
+    def _deliveries(self, kind: str) -> int:
+        """How many ``kind`` captures the cloud worker has delivered for this session."""
+        if not uses_cloud_worker(self.suite):
+            return 0
+        return sum(
+            1
+            for event, detail in hook_events(self.suite, self.home)
+            if event == "cloud_capture_delivered"
+            and detail.get("session") == self.plugin_session_id
+            and detail.get("kind") == kind
+        )
+
+    def _await_cloud_delivery(self, kind: str, before: int, *, deadline: float = 120.0) -> None:
+        """Through the cloud worker a capture hook only spools; wait for the delivery.
+
+        Keeps ``answer()``/``tool()`` meaning "the server has it" on every suite:
+        the direct path returns after its own POST, and a test that recalls
+        right after a turn (or reads the per-turn save counters that the
+        delivery bumps) must not race the worker's next pass. A timeout is not
+        an error here — the test's own assertion names what is missing.
+        """
+        if not uses_cloud_worker(self.suite):
+            return
+        end = time.monotonic() + deadline
+        while time.monotonic() < end:
+            if self._deliveries(kind) > before:
+                return
+            time.sleep(1.0)
 
     def end(self, reason: str = "exit") -> HookRun:
         """SessionEnd — hands the graph write to a detached worker and returns.
@@ -638,7 +677,11 @@ class LiveSession:
         while time.monotonic() < end:
             landed = self.improves_landed()
             if landed:
-                return landed[0]
+                # Same shape as ``sync_bridge_done`` so a test can assert on
+                # ``wrote`` whichever worker bridged the session. The cloud
+                # worker's ``improve_fired`` carries ``ok`` instead, and
+                # ``improves_landed`` already keeps only ``ok: true``.
+                return {**landed[0], "wrote": True, "via": "cloud_worker"}
             time.sleep(2.0)
         return None
 

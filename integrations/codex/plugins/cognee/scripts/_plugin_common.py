@@ -84,6 +84,14 @@ _AGENT_KEY_CACHE = _PLUGIN_DIR / "agent_key.json"
 # session start / watcher refresh only issues the calls that are still missing.
 AGENT_ROLE_NAME = "cognee-agent"
 _SHARED_MEMORY_MARKER = _PLUGIN_DIR / "shared_memory.json"
+#: Written when the server refused this machine a key because the plugin's
+#: agent is full (409); SessionStart warns from it until the machine gets its
+#: own key again.
+_KEY_LIMIT_MARKER = _PLUGIN_DIR / "key_limit.json"
+#: How the plugin is named in user-facing messages.
+#: How a user invokes the key management command (``plugin-keys.py``) here.
+KEYS_COMMAND_HINT = "the cognee-keys skill"
+PLUGIN_LABEL = "Codex"
 # Host-session-id -> generated Cognee session-id map. The host (Claude/Codex)
 # session id is used ONLY as a local correlation key so every hook process of a
 # single launch resolves the SAME Cognee session id; it is never sent to Cognee
@@ -827,16 +835,84 @@ def list_readable_datasets(*, timeout: float = 15.0) -> list[dict]:
     return rows
 
 
+def _principal_write_dataset_ids(
+    principal_id: str,
+    *,
+    api_key=None,
+    service_url: str = "",
+    timeout: float,
+    tolerate_forbidden: bool = False,
+) -> set[str] | None:
+    """Ids of the datasets ``principal_id`` holds a direct write grant on.
+
+    None when the server has no permissions route (404/405). Any other
+    rejection propagates — a denied permission query must never downgrade to
+    an ownership guess — except a 403 on a query the caller may legitimately
+    be refused (``tolerate_forbidden``: the shared role, after the agent left
+    it), which is an empty answer: those grants simply do not reach the caller.
+    """
+    try:
+        allowed = _json_http_request(
+            f"/api/v1/permissions/principals/{urllib.parse.quote(principal_id, safe='')}/datasets"
+            "?permission_name=write",
+            method="GET",
+            timeout=timeout,
+            api_key=api_key,
+            base_url=service_url or _local_api_url(),
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 405):
+            return None
+        if exc.code == 403 and tolerate_forbidden:
+            return set()
+        raise
+    if not isinstance(allowed, list):
+        return set()
+    return {str(row.get("id")) for row in allowed if isinstance(row, dict)}
+
+
+def effective_write_dataset_ids(
+    user_id: str, *, api_key=None, service_url: str = "", timeout: float = 15.0
+) -> set[str] | None:
+    """Every dataset id the identity can write: direct, role and tenant grants.
+
+    ``GET /permissions/principals/{user}/datasets`` lists a user's DIRECT write
+    grants only; a grant held through a role — shared agent memory's
+    ``cognee-agent`` role on the parent user's datasets — or through the tenant
+    (a dataset shared tenant-wide) does not appear there. The server lets a
+    member ask about its own role and its own tenant, so under a live shared
+    marker both are fetched and unioned in. None when the server has no
+    permissions route at all.
+    """
+    writable = _principal_write_dataset_ids(
+        user_id, api_key=api_key, service_url=service_url, timeout=timeout
+    )
+    if writable is None:
+        return None
+    shared = load_shared_memory_marker(service_url)
+    if not (shared_memory_enabled() and shared.get("mode") == "shared"):
+        return writable
+    for principal_id in (shared.get("role_id"), shared.get("tenant_id")):
+        if not principal_id:
+            continue
+        granted = _principal_write_dataset_ids(
+            str(principal_id),
+            api_key=api_key,
+            service_url=service_url,
+            timeout=timeout,
+            tolerate_forbidden=True,
+        )
+        writable = writable | (granted or set())
+    return writable
+
+
 def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
     """Use effective permissions. Ownership cannot prove absence of write access.
 
-    ``GET /permissions/principals/{user}/datasets?permission_name=write`` lists
-    the caller's DIRECT write grants. A grant held through a role — shared agent
-    memory's ``cognee-agent`` role on the parent user's datasets — does not
-    appear there, so under a live shared-memory marker the parent's datasets
-    count as writable too. Without the permissions route (older server) the
-    owner match is the only evidence, and ``writable`` stays None when even that
-    cannot be judged. Returns::
+    Writable is what the server grants the identity directly plus through the
+    shared-memory role (see ``effective_write_dataset_ids``). Without the
+    permissions route (older server) the owner match is the only evidence, and
+    ``writable`` stays None when even that cannot be judged. Returns::
 
         {"datasets": [{"name", "id", "owner_id", "writable": True|None}],
          "readonly": [names], "readonly_ids": [ids], "hidden_readonly": N,
@@ -870,40 +946,15 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
             user_id = str(me.get("id") or "") if isinstance(me, dict) else ""
         except urllib.error.HTTPError as exc:
             hook_log("users_me_lookup_failed", {"status": exc.code, "where": "list_datasets"})
-    writable_ids = None
-    if user_id:
-        try:
-            allowed = _json_http_request(
-                f"/api/v1/permissions/principals/{urllib.parse.quote(user_id, safe='')}/datasets"
-                "?permission_name=write",
-                method="GET",
-                timeout=timeout,
-            )
-            if isinstance(allowed, list):
-                writable_ids = {str(row.get("id")) for row in allowed}
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (404, 405):
-                raise
-    shared_parent = ""
-    role_granted: dict = {}
-    shared = load_shared_memory_marker()
-    if shared_memory_enabled() and shared.get("mode") == "shared":
-        shared_parent = str(shared.get("parent_user_id") or "")
-        role_granted = shared.get("granted") if isinstance(shared.get("granted"), dict) else {}
+    writable_ids = effective_write_dataset_ids(user_id, timeout=timeout) if user_id else None
     rows = []
     for item in items:
         owner = item["owner_id"]
         ident = item["id"]
-        # Writable through the shared role only once the grant is confirmed —
-        # a transient failure leaves a parent-owned dataset ungranted until the
-        # next refresh, and it must not be offered as writable meanwhile.
-        via_role = (
-            bool(shared_parent) and owner == shared_parent and role_granted.get(ident) == "ok"
-        )
         if writable_ids is not None:
-            writable = ident in writable_ids or via_role
+            writable = ident in writable_ids
         else:
-            writable = True if owner and (owner == user_id or via_role) else None
+            writable = True if owner and owner == user_id else None
         rows.append({**item, "writable": writable})
     return {
         "user_id": user_id,
@@ -2131,7 +2182,12 @@ def load_cached_agent_id(service_url: str = "") -> str:
 
 
 def save_cached_agent_key(
-    service_url: str, key: str, agent_id: str = "", *, principal_key: str = ""
+    service_url: str,
+    key: str,
+    agent_id: str = "",
+    *,
+    principal_key: str = "",
+    key_id: str = "",
 ) -> None:
     if not str(key or "").strip():
         return
@@ -2140,6 +2196,9 @@ def save_cached_agent_key(
             "base_url": _normalize_service_url(service_url),
             "api_key": str(key).strip(),
             "agent_id": str(agent_id or ""),
+            # The server-side id of this machine's key (additive servers): what a
+            # revert revokes, so no other machine's key is touched.
+            "key_id": str(key_id or ""),
             "plugin_key": PLUGIN_KEY,
             "principal_fingerprint": _principal_fingerprint(principal_key),
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -4724,24 +4783,106 @@ def write_outcome_ambiguous(exc: Exception) -> bool:
     return True
 
 
-def disconnect_plugin_agent_via_http(*, principal_key: str, timeout: float = 20.0) -> bool:
-    """DELETE /api/v1/integrations/plugins/{PLUGIN_KEY}: revoke this plugin's agent keys.
+def revoke_minted_agent_key(*, principal_key: str, key_id: str, timeout: float = 20.0) -> bool:
+    """Revoke the key this machine just minted and nobody will hold. Best-effort.
 
-    The agent user and its data stay (re-provisioning later revives the same
-    identity with a fresh key). Used when SessionStart discards a key it just
-    minted, so no valid key nobody holds is left behind. Best-effort.
+    Only that key goes (``DELETE /plugins/{plugin_key}/keys/{key_id}``): other
+    machines hold keys for the same agent, and disconnecting the plugin would
+    log every one of them out. Without an id there is nothing safe to revoke;
+    the unused key is pruned server-side once the agent fills up.
     """
-    if not str(principal_key or "").strip():
+    if not str(principal_key or "").strip() or not str(key_id or "").strip():
         return False
     status, _ = _control_plane_request(
-        f"/api/v1/integrations/plugins/{PLUGIN_KEY}",
+        f"/api/v1/integrations/plugins/{PLUGIN_KEY}/keys/{urllib.parse.quote(key_id, safe='')}",
         api_key=principal_key,
         method="DELETE",
         timeout=timeout,
     )
     if status != 200:
-        hook_log("plugin_disconnect_failed", {"status": status})
+        hook_log("plugin_key_revoke_failed", {"status": status, "key_id": key_id})
     return status == 200
+
+
+#: OpenAPI marker the server sets on the provision operation (cognee#6113):
+#: provisioning only ever adds a key and never revokes another, so any machine
+#: may provision. Servers without it rotate every key on provision; the plugin
+#: never provisions against them.
+ADDITIVE_KEYS_MARKER = "x-cognee-additive-plugin-keys"
+_PROVISION_OPERATION = "/api/v1/integrations/plugins/{plugin_key}/provision"
+_ADDITIVE_KEYS_CAPABILITY: dict[str, bool] = {}
+
+
+def additive_plugin_keys_supported(
+    *, principal_key: str, service_url: str = "", timeout: float = 10.0
+) -> bool:
+    """Does this server's provision route only ADD keys (never revoke others)?
+
+    Read from the marker on the provision operation in ``/openapi.json`` and
+    remembered per server for this process. Anything short of an explicit
+    ``true`` — an older server, an unreadable spec, a failed request — is
+    False, and the plugin does not provision.
+    """
+    base_url = _normalize_service_url(service_url or _local_api_url())
+    if base_url in _ADDITIVE_KEYS_CAPABILITY:
+        return _ADDITIVE_KEYS_CAPABILITY[base_url]
+    try:
+        spec = _json_http_request(
+            "/openapi.json",
+            method="GET",
+            api_key=principal_key or None,
+            base_url=base_url,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        hook_log("plugin_capability_probe_failed", {"error": str(exc)[:200]})
+        # Not cached: a transient failure must not keep this process from
+        # provisioning once the server answers again.
+        return False
+    operation = (
+        spec.get("paths", {}).get(_PROVISION_OPERATION, {}).get("post", {})
+        if isinstance(spec, dict)
+        else {}
+    )
+    supported = isinstance(operation, dict) and operation.get(ADDITIVE_KEYS_MARKER) is True
+    _ADDITIVE_KEYS_CAPABILITY[base_url] = supported
+    return supported
+
+
+def record_key_limit(service_url: str) -> None:
+    """Remember that the server refused this machine a key: the agent is full."""
+    _write_json_file(
+        _KEY_LIMIT_MARKER,
+        {
+            "base_url": _normalize_service_url(service_url),
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
+
+
+def clear_key_limit() -> None:
+    try:
+        _KEY_LIMIT_MARKER.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def key_limit_message() -> str:
+    """The user-facing warning while this machine runs on the personal key
+    because the plugin's agent is full; "" when it is not."""
+    marker = _load_json_file(_KEY_LIMIT_MARKER)
+    if not marker:
+        return ""
+    base_url = str(marker.get("base_url") or "") or "the Cognee server"
+    return (
+        f"Cognee: this machine is using your personal API key, not its own "
+        f"{PLUGIN_LABEL} key. {base_url} refused a new key because your "
+        f"{PLUGIN_LABEL} agent already holds the maximum number (one per machine, "
+        "all in use). Memory still works, but what this machine stores is attributed "
+        f"to you rather than to {PLUGIN_LABEL}. To give it its own key, revoke an old "
+        f"machine's key: {KEYS_COMMAND_HINT} lists them (most recently used first) and "
+        "revokes the one you choose. Then start a new session."
+    )
 
 
 def provision_plugin_agent_via_http(
@@ -4750,51 +4891,45 @@ def provision_plugin_agent_via_http(
     service_url: str = "",
     timeout: float = 20.0,
 ) -> tuple[str, dict]:
-    """Create this plugin's identity without rotating an existing key.
+    """Add a key for this plugin's agent, as the user principal.
 
-    Authenticate as the user principal and require the server's advertised
-    create_only contract before POSTing. OpenAPI is a capability declaration;
-    its enforcement is covered by the SDK's provisioning regression tests.
-    Unsupported/failed provisioning must fail closed in the caller.
+    Only against a server that advertises ``ADDITIVE_KEYS_MARKER``: there every
+    provision adds one key and revokes none, so each machine holds its own key
+    and provisioning is always safe. On any other server provisioning revokes
+    every other machine's key, so it is not attempted (``unsupported``).
+
+    Verdicts: ``provisioned`` (body: ``api_key``, ``agent_id``, ``key_id``,
+    ``created``), ``limit`` (the agent is full of keys in use — 409),
+    ``unsupported`` (no plugin routes, or a server that rotates keys) and
+    ``failed``. Anything but ``provisioned`` must fail closed in the caller.
     """
     if not str(principal_key or "").strip():
         return "failed", {}
+    base_url = service_url or _local_api_url()
+    if not additive_plugin_keys_supported(
+        principal_key=principal_key, service_url=base_url, timeout=timeout
+    ):
+        hook_log("plugin_provision_skipped", {"reason": "no_additive_keys"})
+        return "unsupported", {}
     try:
-        # Older servers ignore unknown query parameters and rotate keys. Verify
-        # the create-only contract BEFORE sending any provisioning request.
-        spec = _json_http_request(
-            "/openapi.json",
-            method="GET",
-            api_key=principal_key,
-            base_url=service_url or _local_api_url(),
-            timeout=timeout,
-        )
-        operation = (
-            spec.get("paths", {})
-            .get("/api/v1/integrations/plugins/{plugin_key}/provision", {})
-            .get("post", {})
-        )
-        if not any(
-            p.get("name") == "create_only" and p.get("in") == "query"
-            for p in operation.get("parameters", [])
-        ):
-            return "unsupported", {}
         result = _json_http_request(
-            f"/api/v1/integrations/plugins/{PLUGIN_KEY}/provision?create_only=true",
+            f"/api/v1/integrations/plugins/{PLUGIN_KEY}/provision",
             {},
             method="POST",
             timeout=timeout,
             api_key=principal_key,
-            base_url=service_url or _local_api_url(),
+            base_url=base_url,
         )
         reason = "not_an_object"
         if isinstance(result, dict):
             body = {
                 "api_key": str(result.get("api_key") or result.get("apiKey") or "").strip(),
                 "agent_id": str(result.get("agent_id") or result.get("agentId") or ""),
+                "key_id": str(result.get("key_id") or result.get("keyId") or ""),
+                # False when an existing agent got one more key.
                 "created": bool(result.get("created")),
             }
-            if not (body["api_key"] and body["created"]):
+            if not body["api_key"]:
                 reason = "incomplete"
             elif not body["agent_id"]:
                 # Shared memory wires the agent by id; without one the launch
@@ -4816,10 +4951,13 @@ def provision_plugin_agent_via_http(
         )
         return "failed", {}
     except urllib.error.HTTPError as exc:
-        # 404/405: the server predates plugin provisioning (or the route set
-        # differs) — a capability verdict, not a fault.
         if exc.code in (404, 405):
             return "unsupported", {}
+        if exc.code == 409:
+            # The agent holds the maximum number of keys and too few are stale
+            # to prune; an old machine's key must be revoked.
+            hook_log("plugin_provision_skipped", {"reason": "key_limit"})
+            return "limit", {}
         hook_log("plugin_provision_failed", {"status": exc.code, "error": str(exc)[:200]})
         return "failed", {}
     except Exception as exc:
@@ -4857,13 +4995,17 @@ def register_agent_via_http(
             payload["dataset_ids"] = ids
     if dataset_ids:
         # The canonical dataset under shared memory — bound by UUID so the
-        # connection registry points at the dataset actually written to.
+        # connection registry points at the dataset actually written to. Its
+        # name is dropped: the server resolves names only among datasets the
+        # CALLER owns (cognee >= 1.6.3), and the canonical dataset belongs to
+        # the parent, so registering the agent by name answers 403.
         payload["dataset_ids"] = list(
             dict.fromkeys(
                 [*payload.get("dataset_ids", [])]
                 + [str(x).strip() for x in dataset_ids if str(x).strip()]
             )
         )
+        payload.pop("dataset_names", None)
 
     try:
         result = _json_http_request(

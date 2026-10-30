@@ -324,18 +324,19 @@ async def ensure_dataset_ready_via_api(service_url: str, api_key: str, dataset: 
 
     ident = dataset_id(dataset)
     if ident:
-        from _plugin_common import require_typed_dataset_id_support
+        from _plugin_common import effective_write_dataset_ids, require_typed_dataset_id_support
 
         require_typed_dataset_id_support(service_url=service_url, api_key=api_key)
+
         user_id = await _user_id_via_api(service_url, api_key)
         if not user_id:
             raise RuntimeError("Cannot authorize dataset ID without authenticated identity")
-        status, text = _cloud_http_request(
-            f"{base}/api/v1/permissions/principals/{user_id}/datasets?permission_name=write",
-            api_key=api_key,
-            timeout=15.0,
+        # Direct grants plus the shared role's: a parent-owned dataset is
+        # writable through the role, not through the agent's own ACL rows.
+        writable = effective_write_dataset_ids(
+            user_id, api_key=api_key, service_url=service_url, timeout=15.0
         )
-        if status != 200 or not any(str(row.get("id")) == ident for row in json.loads(text)):
+        if not writable or ident not in writable:
             raise RuntimeError("403: no verified write permission on selected dataset")
         return
     status, text = _cloud_http_request(

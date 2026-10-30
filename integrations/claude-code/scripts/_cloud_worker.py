@@ -391,12 +391,31 @@ def _after_delivery(item: dict, verified: bool) -> None:
     not send the event through the retry path, which would write it back.
     """
     try:
-        from _plugin_common import bump_turn_counter, clear_payment_required, phase_end
-        from _session_stats import update
+        from _plugin_common import (
+            bump_save_counter,
+            bump_turn_counter,
+            clear_payment_required,
+            phase_end,
+            set_session_key,
+        )
 
         # The status row: the turn's save landed (the Stop hook only spooled it).
         phase_end("saving", count=1, session_key=item["host_key"])
-        update(item["host_key"], saves=1, metadata={"session_id": item["session_id"]})
+        # The per-kind counters the next recall reports as "saved last turn".
+        # The hooks could only record the spool (``<kind>_buffered``); the
+        # delivery is the save, so count it here, the way the direct path does
+        # when its POST returns. A qa entry carries the turn's prompt too, which
+        # the prompt hook deliberately does not count in cloud mode. Each bump
+        # also adds one to the session's aggregate ``saves``.
+        set_session_key(item["host_key"])
+        kinds = [item["kind"]]
+        if (
+            item["kind"] == "answer"
+            and str((item.get("entry") or {}).get("question") or "").strip()
+        ):
+            kinds.append("prompt")
+        for kind in kinds:
+            bump_save_counter(item["session_id"], kind)
         count, every_n = bump_turn_counter(item["session_id"])
         clear_payment_required()
         log(
@@ -726,6 +745,21 @@ def _bootstrap_sessions() -> None:
             continue
         try:
             set_session_key(state["session_key"])
+            # Registration lists the session's dataset, and the server only
+            # accepts a connection on a dataset the caller can already read
+            # (``PermissionDeniedError`` → 403 otherwise). A fresh session's
+            # dataset does not exist until its first capture lands, which is
+            # why the first attempt used to fail and only the retry — after the
+            # spool had created the dataset as a side effect — went through.
+            # Create it first; the POST is idempotent and failures are logged
+            # by the helper, so a dataset that truly cannot be created still
+            # surfaces in the registration's own error.
+            try:
+                from _plugin_common import ensure_dataset_via_http
+
+                ensure_dataset_via_http(state["dataset"])
+            except Exception as exc:
+                log("cloud_dataset_ensure_failed", dataset=state["dataset"], error=str(exc)[:200])
             spec = importlib.util.spec_from_file_location(
                 "cloud_session_start", Path(__file__).with_name("session-start.py")
             )

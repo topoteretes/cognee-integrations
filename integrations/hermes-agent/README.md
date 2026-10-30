@@ -604,6 +604,8 @@ hermes cognee setup
 hermes cognee config
 hermes cognee install
 hermes cognee index-repo <path-or-url> [--dataset D] [--index-vectors] [--wait SECONDS]
+hermes cognee keys list [--plugin KEY] [--json]      # per-machine keys of your plugin agents, most recently used first
+hermes cognee keys revoke <key_id> --plugin KEY      # revoke one (frees a slot on a full agent)
 hermes cognee standup  [--since 24h] [--projects P,…] [--all-sessions] [--json]
 hermes cognee digest   [--since 7d] [--max-learnings N] [--json]
 hermes cognee timeline <topic> [--since 30d] [--json]
@@ -618,6 +620,12 @@ clients' sessions in it (Claude Code, Codex). The server cannot filter sessions
 by dataset, so a recap reads up to 2,500 of the newest sessions and says so when
 it had more. The same recaps are available to the agent as the `cognee_recap`
 tool.
+
+`keys` manages the API keys of your cognee plugin agents (Claude Code, Codex, …):
+every machine a plugin runs on holds its own key for that plugin's agent, and the
+server caps them. A full agent refuses a new machine a key — that machine then runs on
+your personal key and says so at session start — until an old machine's key is revoked,
+which you can do from here.
 
 For pip installations, `status` and `version` include an update hint when PyPI has a newer release
 (checked at most once per `COGNEE_UPDATE_CHECK_INTERVAL`, never from a live

@@ -65,8 +65,8 @@ Antigravity follows the same identity model as the Claude Code and Codex plugins
 
 - `COGNEE_PLUGIN_IDENTITY` — `auto` (default) provisions a dedicated agent identity only
   in service of shared agent memory and falls back to your principal key when that
-  cannot be wired; `true` requires an identity (create-only, never rotating a key
-  another machine holds) and never falls back to the owner; `false` runs as the
+  cannot be wired; `true` requires an identity (never revoking a key another
+  machine holds; see the Claude Code plugin README, "Keys and multiple machines") and never falls back to the owner; `false` runs as the
   principal. The server's plugin registry must list `antigravity` for provisioning to
   succeed; until it does, `auto` stays on the principal.
 - `COGNEE_SHARED_AGENT_MEMORY` — on by default: every plugin agent of your user joins
@@ -76,6 +76,9 @@ Antigravity follows the same identity model as the Claude Code and Codex plugins
   the shared role). See the Claude Code plugin README for the full description.
 - `COGNEE_PLUGIN_READ_DATASET_IDS` — a JSON array of dataset UUIDs for federated graph
   recall; session history stays scoped to its own dataset.
+- The `cognee-keys` skill lists and revokes the plugin agent's per-machine API keys
+  (`scripts/plugin-keys.py list` / `revoke <id>`) — the way out when a session start
+  reports the agent is full of keys in use.
 
 The doctor shows the effective state under **API Key Source** and **Memory Sharing**.
 
@@ -89,7 +92,7 @@ setting only matters once an identity exists.
 | `COGNEE_PLUGIN_IDENTITY` \ `COGNEE_SHARED_AGENT_MEMORY` | `true` (default) | `false` |
 |---|---|---|
 | `auto` (default) | **Shared memory, graceful.** Provisions an identity when the server allows it, wires the shared role, and falls back to your principal key whenever that cannot be done. | **Principal, unless already provisioned.** A fresh install never provisions (`auto` provisions only in service of sharing). An identity provisioned earlier is kept, leaves the shared role, and writes to its own private dataset. |
-| `true` | **Shared memory, strict.** Same wiring; any obstacle (no `create_only` support, a credential bound to another principal, a rejected key) is an error — never a silent fall back to the owner's key. | **Separated identities, strict.** Each plugin is its own agent with its own private memory, blind to your other datasets. This is the isolation mode: a leaked or revoked plugin key affects only that plugin. |
+| `true` | **Shared memory, strict.** Same wiring; any obstacle (a server that does not add plugin keys per machine, an identity at its key limit, a credential bound to another principal, a rejected key that cannot be replaced) is an error — never a silent fall back to the owner's key. | **Separated identities, strict.** Each plugin is its own agent with its own private memory, blind to your other datasets. This is the isolation mode: a leaked or revoked plugin key affects only that plugin. |
 | `false` | **Principal only.** The sharing setting has no effect. | **Principal only.** Identical to the cell above. |
 
 Practical reading: leave both at their defaults for one memory across all of your plugins;
