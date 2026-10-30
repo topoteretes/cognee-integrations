@@ -15,9 +15,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Security
 - **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
   wrap in the tag is replaced with `[private]` before the plugin writes it to a file or
-  log, sends it as a query, or stores it; the text around it is kept. Spans nest, cross
-  lines and may carry attributes, and one with no closing tag hides the rest of the
-  text. No setting turns this off. Claude still sees the span in the live turn.
+  log, sends it as a query, or stores it; the text around it is kept. One span runs from
+  the first opener to the last close, so tags inside it and text between two spans are
+  hidden too; it may cross lines and carry attributes. An opener with no close is left
+  as plain text. No setting turns this off. Claude still sees the span in the live turn.
 - **Explicit remember is sanitized like automatic capture.** `/cognee-remember` text,
   and its `cognee-cli` fallback, used to be uploaded exactly as given, credentials
   included. It now goes through the same `<private>` stripping and secret patterns,
@@ -38,9 +39,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
   affects `<private>` spans.
 - `/cognee-forget` searches for what surrounds a secret, never the value itself.
-- An unclosed span that hides more than 200 characters logs `capture_private_unclosed` to
-  `hook.log` with the hidden length, never the text, so a capture cut short by a mere
-  mention of the tag is visible.
 
 ## [1.7.5]
 

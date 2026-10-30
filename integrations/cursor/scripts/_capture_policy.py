@@ -270,52 +270,36 @@ PRIVATE_PLACEHOLDER = "[private]"
 # ``<private>`` and ``<private attr=...>`` open a span, ``</private>`` closes
 # one; ``<private/>`` is empty. ``<privateer>`` is not a tag.
 _PRIVATE_TAG = re.compile(r"(?i)<(/?)private(?=[\s/>])[^>]*?(/?)>")
-#: An unclosed span that hides more than this many characters is logged (the
-#: count only), so a capture cut short by a mere mention of the tag is visible.
-_UNCLOSED_SPAN_LOG_CHARS = 200
+
+
+def _is_opener(tag: re.Match) -> bool:
+    return not tag.group(1) and not tag.group(2)
+
+
+def _drop_loose_tags(text: str) -> str:
+    """Outside the span, close tags and ``<private/>`` are dropped; openers stay."""
+    return _PRIVATE_TAG.sub(lambda tag: tag.group(0) if _is_opener(tag) else "", text)
 
 
 def strip_private(text: str, placeholder: str = PRIVATE_PLACEHOLDER) -> str:
-    """Remove ``<private>…</private>`` spans, leaving ``placeholder`` per outermost span.
+    """Replace the first ``<private>`` through the last ``</private>`` with ``placeholder``.
 
-    Spans nest (the outermost close ends them), cross lines, and may carry
-    attributes. An unclosed span hides everything to the end of the text, so a
-    forgotten close tag fails safe; so does a tag that is only mentioned, like
-    ``<private>`` in backticks. Hiding more than ``_UNCLOSED_SPAN_LOG_CHARS``
-    that way logs ``capture_private_unclosed`` with the hidden length. A stray
-    close tag outside any span is dropped.
+    Spans don't nest: tags inside are part of the hidden text, and so is the text
+    between two spans. The span crosses lines and its tags may carry attributes.
+    An opener with no close after it is plain text, whether a forgotten close or a
+    mention such as ``<private>`` in backticks; the secret patterns still run on
+    it. A close tag before the first opener, and ``<private/>``, are dropped.
     """
     if "<" not in text:
         return text
-    out = []
-    depth = 0
-    pos = 0
-    opened_at = 0
-    for tag in _PRIVATE_TAG.finditer(text):
-        if depth == 0:
-            out.append(text[pos : tag.start()])
-        closing, self_closing = tag.group(1), tag.group(2)
-        if closing:
-            depth = max(depth - 1, 0)
-        elif not self_closing:
-            if depth == 0:
-                out.append(placeholder)
-                opened_at = tag.start()
-            depth += 1
-        pos = tag.end()
-    if depth == 0:
-        out.append(text[pos:])
-    elif len(text) - opened_at > _UNCLOSED_SPAN_LOG_CHARS:
-        _log_unclosed_span(len(text) - opened_at)
-    return "".join(out)
-
-
-def _log_unclosed_span(hidden_chars: int) -> None:
-    try:
-        from _plugin_common import hook_log
-    except Exception:  # no hook.log here: stripping must not depend on logging
-        return
-    hook_log("capture_private_unclosed", {"hidden_chars": hidden_chars})
+    tags = list(_PRIVATE_TAG.finditer(text))
+    first = next((tag for tag in tags if _is_opener(tag)), None)
+    last = next((tag for tag in reversed(tags) if tag.group(1)), None)
+    if first is None or last is None or last.start() < first.end():
+        return _drop_loose_tags(text)
+    head = _drop_loose_tags(text[: first.start()])
+    tail = _drop_loose_tags(text[last.end() :])
+    return head + placeholder + tail
 
 
 def _strip_private_tree(value):

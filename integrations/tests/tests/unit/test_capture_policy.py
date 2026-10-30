@@ -5,8 +5,6 @@ import json
 from unittest.mock import Mock
 
 import pytest
-from utils.hooklog import hook_events
-from utils.suites import state_dir
 
 
 @pytest.fixture
@@ -473,36 +471,40 @@ def test_inspection_options_do_not_hide_writes(policy, command, skip):
 # --- <private> spans and sanitize() (SDK-1100) -------------------------------
 
 
-def test_private_spans_nest_and_an_unclosed_one_runs_to_the_end(policy):
-    text = "a <private>x <private>y</private> z</private> b\n<private>tail"
-    result = policy.sanitize(text)
-    for hidden in ("x", "y", "z", "tail"):
-        assert hidden not in result
-    assert result == "a [private] b\n[private]"
+def test_a_span_runs_from_the_first_opener_to_the_last_close(policy):
+    # No nesting: inner tags are just part of the hidden text, so a "nested"
+    # span hides exactly what one flat span around it would.
+    nested = "a <private>x <private>y</private> z</private> b"
+    assert policy.sanitize(nested) == "a [private] b"
+    assert policy.sanitize(nested) == policy.sanitize("a <private>x y z</private> b")
 
 
-def test_a_mentioned_tag_hides_the_rest_of_the_text(policy):
-    # Deliberate: an opener without a close may sit next to what it was meant to
-    # hide, and the policy cannot tell a mention from a forgotten close.
-    text = "PR #547 adds `<private>` span support. Next: SENTINEL-3c1d"
-    assert policy.sanitize(text) == "PR #547 adds `[private]"
+def test_text_between_two_spans_is_hidden_with_them(policy):
+    text = "before <private>a</private> keep <private>b</private> after"
+    assert policy.sanitize(text) == "before [private] after"
 
 
-def test_a_long_unclosed_span_logs_its_length_but_never_the_text(
-    suite, isolated_modules, temp_home
-):
-    isolated_modules(suite, "_plugin_common")  # hook.log under temp_home
-    policy = isolated_modules(suite, "_capture_policy")
-    hidden = "<private>SENTINEL-3c1d " + "x" * 300
+@pytest.mark.parametrize(
+    "text",
+    [
+        "keep <private>secret and more",
+        "PR #547 adds `<private>` span support. Next: port it to Cursor.",
+    ],
+    ids=["forgotten-close", "mention"],
+)
+def test_an_opener_without_a_close_is_plain_text(policy, text):
+    assert policy.sanitize(text) == text
 
-    policy.sanitize("short <private>SENTINEL-3c1d")
-    assert not [e for e, _ in hook_events(suite, temp_home) if e == "capture_private_unclosed"]
 
-    assert policy.sanitize("keep " + hidden) == "keep [private]"
-    logged = [d for e, d in hook_events(suite, temp_home) if e == "capture_private_unclosed"]
-    assert logged == [{"hidden_chars": len(hidden)}]
-    log = (state_dir(suite, temp_home) / "hook.log").read_text(encoding="utf-8")
-    assert "SENTINEL-3c1d" not in log
+def test_an_opener_after_the_last_close_is_plain_text(policy):
+    text = "<private>a</private> b <private>c"
+    assert policy.sanitize(text) == "[private] b <private>c"
+
+
+def test_an_unclosed_opener_still_gets_the_secret_patterns(policy):
+    result = policy.sanitize("<private>token=hunter2")
+    assert result.startswith("<private>")
+    assert "hunter2" not in result
 
 
 @pytest.mark.parametrize(
