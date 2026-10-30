@@ -471,17 +471,22 @@ def test_inspection_options_do_not_hide_writes(policy, command, skip):
 # --- <private> spans and sanitize() (SDK-1100) -------------------------------
 
 
-def test_a_span_runs_from_the_first_opener_to_the_last_close(policy):
-    # No nesting: inner tags are just part of the hidden text, so a "nested"
-    # span hides exactly what one flat span around it would.
+def test_a_span_ends_at_the_first_close(policy):
+    # No nesting: an opener inside a span is part of the hidden text, and the
+    # first close ends the span. The later close is a stray and is dropped.
     nested = "a <private>x <private>y</private> z</private> b"
-    assert policy.sanitize(nested) == "a [private] b"
-    assert policy.sanitize(nested) == policy.sanitize("a <private>x y z</private> b")
+    assert policy.sanitize(nested) == "a [private] z b"
 
 
-def test_text_between_two_spans_is_hidden_with_them(policy):
-    text = "before <private>a</private> keep <private>b</private> after"
-    assert policy.sanitize(text) == "before [private] after"
+def test_text_between_two_spans_is_kept(policy):
+    text = "key <private>SEC1</private> deploy friday, token <private>SEC2</private> end"
+    assert policy.sanitize(text) == "key [private] deploy friday, token [private] end"
+
+
+def test_a_forgotten_close_is_ended_by_the_next_close(policy):
+    # The closed secret must not leak because an earlier span was left open.
+    text = "note <private>forgot to close. later <private>SEC</private> done"
+    assert policy.sanitize(text) == "note [private] done"
 
 
 @pytest.mark.parametrize(

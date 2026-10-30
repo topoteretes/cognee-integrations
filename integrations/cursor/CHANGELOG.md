@@ -13,10 +13,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Security
 - **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
   wrap in the tag is replaced with `[private]` before the plugin writes it to a file or
-  log, sends it as a query, or stores it; the text around it is kept. One span runs from
-  the first opener to the last close, so tags inside it and text between two spans are
-  hidden too; it may cross lines and carry attributes. An opener with no close is left
-  as plain text. No setting turns this off. Cursor still sees the span in the live turn.
+  log, sends it as a query, or stores it; the text around it is kept. Spans don't nest:
+  each opener ends at the next close, and text between two spans is kept; a span may
+  cross lines and carry attributes. An opener with no close is left as plain text. No setting turns this off. Cursor still sees the span in the live turn.
 - **Explicit remember is sanitized like automatic capture.** `cognee-remember.sh` text,
   and its `cognee-cli` fallback, now goes through the same `<private>` stripping and
   secret patterns, whatever `COGNEE_CAPTURE` says. So does text passed to

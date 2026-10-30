@@ -277,29 +277,36 @@ def _is_opener(tag: re.Match) -> bool:
 
 
 def _drop_loose_tags(text: str) -> str:
-    """Outside the span, close tags and ``<private/>`` are dropped; openers stay."""
+    """Outside a span, close tags and ``<private/>`` are dropped; openers stay."""
     return _PRIVATE_TAG.sub(lambda tag: tag.group(0) if _is_opener(tag) else "", text)
 
 
 def strip_private(text: str, placeholder: str = PRIVATE_PLACEHOLDER) -> str:
-    """Replace the first ``<private>`` through the last ``</private>`` with ``placeholder``.
+    """Replace each ``<private>…</private>`` span with ``placeholder``.
 
-    Spans don't nest: tags inside are part of the hidden text, and so is the text
-    between two spans. The span crosses lines and its tags may carry attributes.
-    An opener with no close after it is plain text, whether a forgotten close or a
-    mention such as ``<private>`` in backticks; the secret patterns still run on
-    it. A close tag before the first opener, and ``<private/>``, are dropped.
+    Spans don't nest: an opener pairs with the next close, and an opener inside
+    a span is part of the hidden text. Text between two spans is kept. A span
+    crosses lines and its tags may carry attributes. An opener with no close
+    after it is plain text, whether a forgotten close or a mention such as
+    ``<private>`` in backticks; the secret patterns still run on it. A close
+    tag outside a span, and ``<private/>``, are dropped.
     """
     if "<" not in text:
         return text
-    tags = list(_PRIVATE_TAG.finditer(text))
-    first = next((tag for tag in tags if _is_opener(tag)), None)
-    last = next((tag for tag in reversed(tags) if tag.group(1)), None)
-    if first is None or last is None or last.start() < first.end():
-        return _drop_loose_tags(text)
-    head = _drop_loose_tags(text[: first.start()])
-    tail = _drop_loose_tags(text[last.end() :])
-    return head + placeholder + tail
+    out = []
+    pos = 0
+    opener = None
+    for tag in _PRIVATE_TAG.finditer(text):
+        if opener is None:
+            if _is_opener(tag):
+                opener = tag
+        elif tag.group(1):
+            out.append(_drop_loose_tags(text[pos : opener.start()]))
+            out.append(placeholder)
+            pos = tag.end()
+            opener = None
+    out.append(_drop_loose_tags(text[pos:]))
+    return "".join(out)
 
 
 def _strip_private_tree(value):

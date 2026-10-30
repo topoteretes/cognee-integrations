@@ -1546,10 +1546,10 @@ The span is replaced with `[private]` before the text is written to a plugin fil
 log, sent as a recall or search query, or stored, and the text around it is kept.
 This applies to automatic capture and to explicit remember (`/cognee-remember`,
 `/cognee-handoff`) alike, and neither `COGNEE_CAPTURE` nor `COGNEE_CAPTURE_REDACT`
-turns it off. Everything from the first `<private>` to the last `</private>` is one span:
-tags inside it and text between two spans are hidden too. A span may cross lines and its
-tags may carry attributes (`<private reason="x">`). An opener with no closing tag is left
-as plain text, so close every span you open. The secret patterns
+turns it off. Spans don't nest: each `<private>` ends at the next `</private>`, so an
+opener inside a span is hidden with it, and text between two spans is kept. A span may
+cross lines and its tags may carry attributes (`<private reason="x">`). An opener with no
+closing tag is left as plain text, so close every span you open. The secret patterns
 above then run on what is left.
 
 Two limits: Claude itself still sees the span in the live turn, and a `--file` upload
