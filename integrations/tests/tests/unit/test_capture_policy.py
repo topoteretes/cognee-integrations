@@ -519,6 +519,9 @@ def test_an_unclosed_opener_still_gets_the_secret_patterns(policy):
         ("line1\r\n<private>\r\nhidden\r\n</private>\r\nline2", "line1\r\n[private]\r\nline2"),
         ("<PRIVATE>hidden</Private>shown", "[private]shown"),
         ("empty <private/> tag", "empty  tag"),
+        ("keep < private >one</ private > end", "keep [private] end"),
+        ("keep <private>one</ private> end", "keep [private] end"),
+        ("empty < private / > tag", "empty  tag"),
         ("stray </private> close", "stray  close"),
         ("<privateer>not a span</privateer>", "<privateer>not a span</privateer>"),
         ("no tags at all", "no tags at all"),
@@ -536,6 +539,11 @@ def test_sanitize_walks_containers_and_still_redacts_secrets(policy):
         "n": 3,
     }
     assert policy.sanitize(["<private>a</private>b"]) == ["[private]b"]
+
+
+def test_spans_in_dict_keys_are_stripped_too(policy):
+    value = {"<private>SEC</private> note": "v", "plain": {"in <private>x</private>": 1}}
+    assert policy.sanitize(value) == {"[private] note": "v", "plain": {"in [private]": 1}}
 
 
 @pytest.mark.parametrize("variable", ["COGNEE_CAPTURE", "COGNEE_CAPTURE_REDACT"])

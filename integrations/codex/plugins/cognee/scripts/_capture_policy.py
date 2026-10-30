@@ -268,8 +268,9 @@ def redact(value):
 
 PRIVATE_PLACEHOLDER = "[private]"
 # ``<private>`` and ``<private attr=...>`` open a span, ``</private>`` closes
-# one; ``<private/>`` is empty. ``<privateer>`` is not a tag.
-_PRIVATE_TAG = re.compile(r"(?i)<(/?)private(?=[\s/>])[^>]*?(/?)>")
+# one; ``<private/>`` is empty. Whitespace around the name and slashes is
+# allowed (``< private >``, ``</ private>``). ``<privateer>`` is not a tag.
+_PRIVATE_TAG = re.compile(r"(?i)<\s*(/?)\s*private(?=[\s/>])[^>]*?(/?)\s*>")
 
 
 def _is_opener(tag: re.Match) -> bool:
@@ -313,7 +314,7 @@ def _strip_private_tree(value):
     if isinstance(value, str):
         return strip_private(value)
     if isinstance(value, dict):
-        return {key: _strip_private_tree(item) for key, item in value.items()}
+        return {_strip_private_tree(key): _strip_private_tree(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_strip_private_tree(item) for item in value]
     return value
