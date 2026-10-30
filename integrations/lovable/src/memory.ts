@@ -328,8 +328,14 @@ export class MemoryService {
       return { receiptId: "", status: "failed", dataset, deduplicated: false, message: "content is empty", error: "content is empty" };
     }
 
+    // Identity = the normalized decision itself. The serialized document also
+    // carries the capture time, which must NOT take part in the hash: two
+    // identical decisions saved a second apart are one record, not two
+    // (review finding). The upload name follows the same hash, so a replay
+    // after a lost ledger reuses the existing document's name instead of
+    // creating a sibling.
+    const contentHash = hashContent(`${kind}\n${content}\n${rationale}\n${sourceRef}`);
     const body = this.buildDocument({ kind, content, rationale, sourceRef });
-    const contentHash = hashContent(body.text);
     const uploadName = `${kind}-${contentHash.slice(0, 32)}`;
     const requestId = (input.requestId ?? "").trim().slice(0, 128) || `content:${contentHash}`;
 
@@ -440,8 +446,20 @@ export class MemoryService {
       const pipeline = await this.client.datasetStatus(datasetId, opts);
       let dataId = receipt.dataId;
       if (!dataId) {
-        const item = await this.client.findDataItemByName(datasetId, receipt.uploadName, opts);
-        dataId = item?.id ?? null;
+        const lookup = await this.client.findDataItemByName(datasetId, receipt.uploadName, opts);
+        if (lookup.status === "exhausted") {
+          // The listing was too long to finish: not finding the document says
+          // nothing about whether it exists. Keep the status, say why.
+          return (
+            this.store.update(receipt.id, {
+              datasetId,
+              lastCheckedAt: checkedAt,
+              bumpChecks: true,
+              error: `dataset listing exhausted after ${lookup.pagesRead} pages; presence could not be verified`,
+            }) ?? receipt
+          );
+        }
+        dataId = lookup.item?.id ?? null;
       }
       let status: ReceiptStatus;
       let error: string | null = null;
@@ -511,10 +529,14 @@ export class MemoryService {
     }
     try {
       await this.client.forgetDocument(current.datasetId, current.dataId, opts);
-      const stillThere = await this.client.findDataItemByName(current.datasetId, current.uploadName, opts);
-      if (stillThere && stillThere.id === current.dataId) {
+      const lookup = await this.client.findDataItemByName(current.datasetId, current.uploadName, opts);
+      if (lookup.status === "found" && lookup.item?.id === current.dataId) {
         this.store.update(receipt.id, { error: "forget reported success but the document is still listed" });
         return { receiptId: receipt.id, verified: false, status: current.status, message: "the backend still lists the document after deletion; not marking it deleted" };
+      }
+      if (lookup.status === "exhausted") {
+        this.store.update(receipt.id, { error: `delete sent, but the dataset listing was exhausted after ${lookup.pagesRead} pages; absence not verified` });
+        return { receiptId: receipt.id, verified: false, status: current.status, message: "delete sent, but the dataset listing is too long to verify absence; not marking it deleted" };
       }
       this.store.update(receipt.id, { status: "deleted", content: null, rationale: null, error: null });
       this.logger.info("decision deleted", { receiptId: receipt.id });

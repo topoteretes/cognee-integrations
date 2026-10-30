@@ -94,8 +94,31 @@ test("findDataItemByName pages through the listing and stops at a short page", a
   for (let i = 0; i < 150; i += 1) fake.state.data.push({ id: `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, "0")}`, name: `doc-${i}`, datasetId: fake.datasetId });
   const client = make(fake.fetchImpl);
   const hit = await client.findDataItemByName(fake.datasetId, "doc-149");
-  assert.equal(hit.name, "doc-149");
-  assert.equal(await client.findDataItemByName(fake.datasetId, "doc-999"), undefined);
+  assert.equal(hit.status, "found");
+  assert.equal(hit.item.name, "doc-149");
+  assert.equal((await client.findDataItemByName(fake.datasetId, "doc-999")).status, "absent");
   const pages = fake.calls.filter((c) => c.path.includes("/data?")).length;
   assert.ok(pages >= 2 && pages <= 4, `expected 2-4 listing pages, got ${pages}`);
+});
+
+test("the deadline covers the response body: a stalled stream times out instead of hanging", async () => {
+  // Headers arrive at once; the body never completes. Before the fix the abort
+  // timer was cleared on headers and the read waited forever.
+  const stalled = () =>
+    new Response(new ReadableStream({ start() { /* never enqueue, never close */ } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  const client = make(async () => stalled(), { requestTimeoutMs: 20 });
+  const started = Date.now();
+  await assert.rejects(client.listDatasets(), (error) => error instanceof CogneeApiError && error.kind === "timeout");
+  assert.ok(Date.now() - started < 1000, "timed out promptly");
+});
+
+test("findDataItemByName distinguishes a verified miss from an exhausted listing", async () => {
+  const fake = fakeCognee();
+  for (let i = 0; i < 250; i += 1) fake.state.data.push({ id: `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, "0")}`, name: `doc-${i}`, datasetId: fake.datasetId });
+  const client = make(fake.fetchImpl);
+  assert.equal((await client.findDataItemByName(fake.datasetId, "doc-249")).status, "found");
+  assert.equal((await client.findDataItemByName(fake.datasetId, "doc-999")).status, "absent");
+  const capped = await client.findDataItemByName(fake.datasetId, "doc-999", { maxPages: 1 });
+  assert.equal(capped.status, "exhausted");
+  assert.equal(capped.pagesRead, 1);
 });

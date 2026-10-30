@@ -49,6 +49,13 @@ export interface DataItemDTO {
   [key: string]: unknown;
 }
 
+/** Outcome of a by-name document lookup; `exhausted` is not evidence of absence. */
+export interface DataItemLookup {
+  status: "found" | "absent" | "exhausted";
+  item?: DataItemDTO;
+  pagesRead: number;
+}
+
 export interface RememberResponse {
   status?: string;
   dataset_id?: string | null;
@@ -199,17 +206,22 @@ export class CogneeClient {
     return Array.isArray(body) ? (body.filter((row) => row && typeof row === "object") as DataItemDTO[]) : [];
   }
 
-  /** Walk the dataset listing until `name` is found or `maxPages` is exhausted. */
-  async findDataItemByName(datasetId: string, name: string, opts: RequestOptions & { maxPages?: number } = {}): Promise<DataItemDTO | undefined> {
+  /**
+   * Walk the dataset listing until `name` is found or the listing ends. The
+   * result distinguishes a verified miss (`absent`: a short page ended the
+   * listing) from giving up (`exhausted`: the safety cap of `maxPages` pages
+   * was hit first) — callers must never read `exhausted` as "not there".
+   */
+  async findDataItemByName(datasetId: string, name: string, opts: RequestOptions & { maxPages?: number } = {}): Promise<DataItemLookup> {
     const limit = 100;
-    const maxPages = opts.maxPages ?? 20;
+    const maxPages = opts.maxPages ?? 500;
     for (let page = 0; page < maxPages; page += 1) {
       const rows = await this.listDatasetData(datasetId, { limit, offset: page * limit }, opts);
       const hit = rows.find((row) => row.name === name);
-      if (hit) return hit;
-      if (rows.length < limit) return undefined;
+      if (hit) return { status: "found", item: hit, pagesRead: page + 1 };
+      if (rows.length < limit) return { status: "absent", pagesRead: page + 1 };
     }
-    return undefined;
+    return { status: "exhausted", pagesRead: maxPages };
   }
 
   // -- transport ------------------------------------------------------------
@@ -266,31 +278,36 @@ export class CogneeClient {
     }
     if (opts.auth && this.apiKey) headers["X-Api-Key"] = this.apiKey;
 
+    // One deadline covers the whole exchange: connecting, headers AND the body.
+    // Clearing the timer as soon as headers arrive would let a backend or proxy
+    // that stalls mid-body hang a tool call indefinitely (review finding).
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? this.requestTimeoutMs);
     let response: Response;
+    let text: string;
     try {
-      // `redirect: "manual"`: the API key must never follow a redirect to
-      // another origin. A 3xx is reported as such instead.
-      response = await this.fetchImpl(url, { method, headers, body, signal: controller.signal, redirect: "manual" });
-    } catch (error) {
-      clearTimeout(timer);
-      const aborted = (error as { name?: string })?.name === "AbortError" || controller.signal.aborted;
-      throw new CogneeApiError(
-        aborted ? `${method} ${path} timed out` : `${method} ${path} failed: ${(error as Error)?.message ?? String(error)}`.slice(0, 300),
-        { kind: aborted ? "timeout" : "network", method, path },
-      );
+      try {
+        // `redirect: "manual"`: the API key must never follow a redirect to
+        // another origin. A 3xx is reported as such instead.
+        response = await this.fetchImpl(url, { method, headers, body, signal: controller.signal, redirect: "manual" });
+      } catch (error) {
+        const aborted = (error as { name?: string })?.name === "AbortError" || controller.signal.aborted;
+        throw new CogneeApiError(
+          aborted ? `${method} ${path} timed out` : `${method} ${path} failed: ${(error as Error)?.message ?? String(error)}`.slice(0, 300),
+          { kind: aborted ? "timeout" : "network", method, path },
+        );
+      }
+
+      if (response.status >= 300 && response.status < 400) {
+        throw new CogneeApiError(`${method} ${path} redirected (HTTP ${response.status}); credentials are not forwarded across origins`, {
+          kind: "redirect", status: response.status, method, path,
+        });
+      }
+
+      text = await this.readBounded(response, method, path, controller.signal);
     } finally {
       clearTimeout(timer);
     }
-
-    if (response.status >= 300 && response.status < 400) {
-      throw new CogneeApiError(`${method} ${path} redirected (HTTP ${response.status}); credentials are not forwarded across origins`, {
-        kind: "redirect", status: response.status, method, path,
-      });
-    }
-
-    const text = await this.readBounded(response, method, path);
     let parsed: unknown = null;
     if (text) {
       try {
@@ -310,18 +327,32 @@ export class CogneeClient {
     return { status: response.status, body: parsed };
   }
 
-  private async readBounded(response: Response, method: string, path: string): Promise<string> {
+  private async readBounded(response: Response, method: string, path: string, signal: AbortSignal): Promise<string> {
     const declared = Number(response.headers.get("content-length") ?? "0");
     if (declared > this.maxResponseBytes) {
       throw new CogneeApiError(`${method} ${path} response too large (${declared} bytes)`, { kind: "malformed", method, path });
     }
     if (!response.body) return "";
     const reader = response.body.getReader();
+    // The deadline must also end a body read: abort cancels the reader so a
+    // stalled stream rejects instead of waiting forever.
+    const onAbort = () => void reader.cancel().catch(() => undefined);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
     const chunks: Uint8Array[] = [];
     let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      for (;;) {
+        let step: ReadableStreamReadResult<Uint8Array>;
+        try {
+          step = await reader.read();
+        } catch (error) {
+          if (signal.aborted) throw new CogneeApiError(`${method} ${path} timed out while reading the response`, { kind: "timeout", method, path });
+          throw new CogneeApiError(`${method} ${path} body read failed: ${(error as Error)?.message ?? String(error)}`.slice(0, 300), { kind: "network", method, path });
+        }
+        if (signal.aborted) throw new CogneeApiError(`${method} ${path} timed out while reading the response`, { kind: "timeout", method, path });
+        const { done, value } = step;
+        if (done) break;
       if (value) {
         total += value.byteLength;
         if (total > this.maxResponseBytes) {
@@ -330,6 +361,9 @@ export class CogneeClient {
         }
         chunks.push(value);
       }
+      }
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
     return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
   }

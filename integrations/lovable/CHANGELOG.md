@@ -26,3 +26,14 @@ follows [Semantic Versioning](https://semver.org/).
   project knowledge.
 - Wire contract verified live against cognee 1.6.5; captured fixtures under
   `fixtures/cognee-1.6.5/` drive the unit and protocol tests.
+
+### Fixed (pre-release review)
+- The request deadline now covers the response body as well as the headers: a
+  backend or proxy that stalls mid-body times out instead of hanging a tool call.
+- Content deduplication hashes the normalized decision (kind, content, rationale,
+  source reference), not the serialized document, so identical decisions saved at
+  different times are one record; the capture time is still stored in the text.
+- Document lookups report `found`, `absent` or `exhausted` (listing longer than the
+  safety cap of 500 pages). `memory_status` keeps a receipt's status and records
+  the reason when the listing is exhausted, and `forget` does not claim a verified
+  deletion on an exhausted listing.

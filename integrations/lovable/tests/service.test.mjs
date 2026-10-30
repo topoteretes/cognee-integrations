@@ -231,3 +231,34 @@ test("concurrent writes with different content get distinct receipts", async () 
   assert.equal(new Set(results.map((r) => r.receiptId)).size, 3);
   assert.ok(results.every((r) => r.status === "accepted"));
 });
+
+test("identical decisions saved at different times are one record", async () => {
+  const { fake, service, advance } = build();
+  await service.prepare();
+  const first = await service.rememberDecision({ content: "Use magic-link login.", rationale: "12 interviews" });
+  advance(1000);
+  const second = await service.rememberDecision({ content: "Use magic-link login.", rationale: "12 interviews" });
+  assert.equal(second.deduplicated, true);
+  assert.equal(second.receiptId, first.receiptId);
+  assert.equal(fake.calls.filter((c) => c.path === "/api/v1/remember").length, 1);
+  // The stored document still records when it was captured.
+  const text = await fake.calls.find((c) => c.path === "/api/v1/remember").body.get("data").text();
+  assert.match(text, /Recorded: 2026-10-23T12:00:00/);
+});
+
+test("an exhausted dataset listing never counts as absence", async () => {
+  const { fake, service } = build({}, { "POST /api/v1/remember": () => json(fixture("remember-background.json")) });
+  await service.prepare();
+  for (let i = 0; i < 150; i += 1) fake.state.data.push({ id: `bbbbbbbb-0000-4000-8000-${String(i).padStart(12, "0")}`, name: `other-${i}`, datasetId: fake.datasetId });
+  const original = service.client.findDataItemByName.bind(service.client);
+  service.client.findDataItemByName = (datasetId, name, opts = {}) => original(datasetId, name, { ...opts, maxPages: 1 });
+  const r = await service.rememberDecision({ content: "Hidden decision" });
+  const status = await service.status(r.receiptId);
+  assert.equal(status.status, "accepted");
+  assert.match(service.store.get(r.receiptId).error, /listing exhausted/);
+  service.store.update(r.receiptId, { dataId: "d03f564c-ff7b-4810-ac63-000000000099" });
+  const result = await service.forget(r.receiptId);
+  assert.equal(result.verified, false);
+  assert.match(result.message, /too long to verify/);
+  assert.notEqual(service.store.get(r.receiptId).status, "deleted");
+});
