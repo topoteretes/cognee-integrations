@@ -6,9 +6,9 @@ export { manifest, DECISION_MARKER_DEFAULT, JOB_DRAIN, JOB_RECONCILE, TOOL_RECAL
 export { createPlugin, type CreatePluginOptions, type CreatedPlugin, type PluginRuntime } from "./plugin.js";
 export { resolveConfig, parseConfig, validateConfig, redactConfig, isSecretRef, DEFAULTS, type PluginConfig, type CaptureMode } from "./config.js";
 export { ScopePolicy, datasetFor } from "./scope.js";
-export { CogneeClient, requireUuid, type RecallItem, type DatasetDTO, type DataItemDTO, type RememberResponse } from "./cognee-client.js";
+export { CogneeClient, requireUuid, type RecallItem, type DatasetDTO, type DataItemDTO, type DataItemLookup, type DataItemListing, type RememberResponse } from "./cognee-client.js";
 export { CogneeApiError, ConfigError, describeError } from "./errors.js";
-export { InMemoryLedger, PluginDbLedger, LEDGER_TABLE, LIVE_STATUSES, PENDING_READINESS, type Ledger, type LedgerRow, type LedgerStatus, type PluginDb } from "./ledger.js";
+export { InMemoryLedger, PluginDbLedger, LEDGER_TABLE, LIVE_STATUSES, BLOCKING_STATUSES, PENDING_READINESS, LIST_PAGE_MAX, type Ledger, type LedgerRow, type LedgerStatus, type LedgerFilter, type PluginDb } from "./ledger.js";
 export { Outbox, type DrainSummary, type ReconcileSummary, type CleanupSummary, type CompanyBackend, type BackendResolver } from "./outbox.js";
 export { issueRecord, commentRecord, decisionRecord, isMarkedComment, stripMarker, issueLink, hashText, normalizeText, type SourceRecord, type SourceType } from "./records.js";
 export { handleIssueUpdated, handleCommentCreated, syncProject } from "./capture.js";

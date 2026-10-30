@@ -8,7 +8,7 @@
 import type { PluginConfig } from "./config.js";
 import type { CogneeClient } from "./cognee-client.js";
 import { CogneeApiError, describeError } from "./errors.js";
-import { type Clock, type Ledger, type LedgerRow, type LedgerStatus, PENDING_READINESS } from "./ledger.js";
+import { type Clock, type Ledger, type LedgerFilter, type LedgerRow, type LedgerStatus, LIST_PAGE_MAX, PENDING_READINESS } from "./ledger.js";
 import type { SourceRecord } from "./records.js";
 import type { ScopePolicy } from "./scope.js";
 
@@ -61,7 +61,19 @@ export interface CleanupSummary {
   deleted: number;
   verifiedAbsent: number;
   stillPresent: number;
+  /** True when the backend listing could not be walked to the end: deletion was attempted for what was seen, but nothing is marked retired and coverage is not guaranteed. */
+  incomplete: boolean;
   errors: string[];
+}
+
+/** Walk a ledger filter to the end, page by page, so a large scope is never silently truncated. */
+async function listAll(ledger: Ledger, filter: Omit<LedgerFilter, "limit" | "offset">): Promise<LedgerRow[]> {
+  const out: LedgerRow[] = [];
+  for (let offset = 0; ; offset += LIST_PAGE_MAX) {
+    const page = await ledger.list({ ...filter, limit: LIST_PAGE_MAX, offset });
+    out.push(...page);
+    if (page.length < LIST_PAGE_MAX) return out;
+  }
 }
 
 const MAX_SEND_ATTEMPTS = 5;
@@ -114,7 +126,7 @@ export class Outbox {
 
   /** Send every company's pending rows (jobs carry no company id: companies come from the rows). */
   async drainAll(limitPerCompany?: number): Promise<DrainSummary> {
-    const rows = await this.ledger.list({ status: ["pending", "superseded"], limit: 5000 });
+    const rows = await listAll(this.ledger, { status: ["pending", "superseded"] });
     const companies = Array.from(new Set(rows.map((row) => row.companyId)));
     const summary: DrainSummary = { companies: companies.length, sent: 0, retired: 0, held: 0, failed: 0, conflicts: 0, errors: [] };
     for (const companyId of companies) {
@@ -156,7 +168,10 @@ export class Outbox {
       else summary.held += 1;
     }
 
-    // 2. Send pending rows whose predecessors are gone.
+    // 2. Send pending rows whose predecessors are gone. `otherRevisions` returns
+    //    superseded rows as well as live ones, so a held retirement (old document
+    //    temporarily invisible) keeps its replacement pending rather than letting
+    //    both versions contribute contradictory knowledge.
     for (const row of await this.ledger.list({ companyId, status: "pending", limit: batch })) {
       const blockers = (await this.ledger.otherRevisions(row.companyId, row.sourceType, row.sourceId, row.revision)).filter((other) => other.status === "superseded" || other.status === "conflict");
       if (blockers.length) {
@@ -185,14 +200,15 @@ export class Outbox {
     try {
       const response = await backend.client.remember({ datasetName: row.dataset, filename: `${row.uploadName}.txt`, text: row.content }, { timeoutMs: backend.config.writeTimeoutMs });
       const datasetId = typeof response.dataset_id === "string" ? response.dataset_id : null;
-      await this.ledger.update(row.id, { status: "accepted", datasetId, error: null, bumpAttempts: true });
+      await this.ledger.update(row.id, { status: "accepted", datasetId, error: null, sentAt: this.clock().toISOString(), bumpAttempts: true });
       this.logger.info("memory write accepted", { rowId: row.id, companyId: row.companyId, sourceType: row.sourceType, dataset: row.dataset });
       return "accepted";
     } catch (error) {
       const description = describeError(error);
       if (error instanceof CogneeApiError) {
         if (error.outcomeUncertain) {
-          await this.ledger.update(row.id, { status: "uncertain", error: description, bumpAttempts: true });
+          // The request may have reached the server: the grace period counts from this send.
+          await this.ledger.update(row.id, { status: "uncertain", error: description, sentAt: this.clock().toISOString(), bumpAttempts: true });
           this.logger.warn("memory write outcome uncertain", { rowId: row.id, error: description });
           return "uncertain";
         }
@@ -236,7 +252,19 @@ export class Outbox {
         return "retired";
       }
       let dataId = row.dataId;
-      if (!dataId) dataId = (await backend.client.findDataItemByName(datasetId, row.uploadName, opts))?.id ?? null;
+      if (!dataId) {
+        const lookup = await backend.client.findDataItemByName(datasetId, row.uploadName, opts);
+        if (lookup.status === "exhausted") {
+          // Nothing is known about the document: never report it retired on that basis.
+          if (row.attempts + 1 >= MAX_RETIRE_ATTEMPTS) {
+            await this.ledger.update(row.id, { status: "conflict", datasetId, error: `dataset listing exhausted after ${lookup.pagesRead} pages; the document could not be located for retirement`, bumpAttempts: true });
+            return "conflict";
+          }
+          await this.ledger.update(row.id, { datasetId, error: "dataset listing exhausted; retirement retried later", bumpAttempts: true });
+          return "held";
+        }
+        dataId = lookup.status === "found" ? lookup.item.id : null;
+      }
       if (!dataId) {
         if (row.attempts + 1 >= MAX_RETIRE_ATTEMPTS || row.status === "pending") {
           await this.ledger.update(row.id, { status: "retired", content: null, error: "no remote document found for this revision" });
@@ -247,7 +275,12 @@ export class Outbox {
       }
       await backend.client.forgetDocument(datasetId, dataId, opts);
       const still = await backend.client.findDataItemByName(datasetId, row.uploadName, opts);
-      if (still && still.id === dataId) {
+      if (still.status === "exhausted") {
+        // Deletion was requested but could not be verified: not retired, not clean.
+        await this.ledger.update(row.id, { status: "conflict", datasetId, dataId, error: "forget sent, but the dataset listing was exhausted before the document could be verified gone", bumpAttempts: true });
+        return "conflict";
+      }
+      if (still.status === "found" && still.item.id === dataId) {
         await this.ledger.update(row.id, { status: "conflict", datasetId, dataId, error: "forget reported success but the document is still listed", bumpAttempts: true });
         return "conflict";
       }
@@ -292,8 +325,10 @@ export class Outbox {
       else if (status === "failed") summary.failed += 1;
     }
     if (this.sourceExists) {
-      for (const row of await this.ledger.list({ status: "ready", limit })) {
-        if (row.sourceType === "decision") continue;
+      // Rotate through ready rows by their last source check (never-checked first),
+      // excluding decisions in the query, so every row is eventually re-verified
+      // instead of the same oldest page being re-checked on every run.
+      for (const row of await this.ledger.list({ status: "ready", excludeSourceTypes: ["decision"], orderBy: "lastSourceCheckAt", limit })) {
         let exists: boolean | undefined;
         try {
           exists = await this.sourceExists(row);
@@ -301,6 +336,7 @@ export class Outbox {
           summary.errors.push(`source check ${row.id}: ${describeError(error)}`);
           continue;
         }
+        await this.ledger.update(row.id, { lastSourceCheckAt: this.clock().toISOString() });
         if (exists === false) {
           const backend = await resolve(row.companyId);
           if (!backend) continue;
@@ -322,7 +358,17 @@ export class Outbox {
       // No dataset on the backend means the write never landed: same handling as a
       // document that is not listed (below), not an early return.
       const pipeline = datasetId ? await backend.client.datasetStatus(datasetId, opts) : "";
-      const dataId = datasetId ? (row.dataId ?? (await backend.client.findDataItemByName(datasetId, row.uploadName, opts))?.id ?? null) : null;
+      let dataId = row.dataId;
+      if (!dataId && datasetId) {
+        const lookup = await backend.client.findDataItemByName(datasetId, row.uploadName, opts);
+        if (lookup.status === "exhausted") {
+          // The listing could not be walked to the end: the document may well be
+          // there. Keep the status; never count this toward "never appeared".
+          await this.ledger.update(row.id, { datasetId, lastCheckedAt: checkedAt, error: `dataset listing exhausted after ${lookup.pagesRead} pages; status unchanged` });
+          return row.status;
+        }
+        dataId = lookup.status === "found" ? lookup.item.id : null;
+      }
       let status: LedgerStatus;
       let error: string | null = null;
       if (dataId && pipeline === COMPLETED) status = "ready";
@@ -331,7 +377,11 @@ export class Outbox {
         error = "graph pipeline reported an error for this dataset";
       } else if (dataId) status = "indexing";
       else {
-        const ageMs = this.clock().getTime() - new Date(row.updatedAt).getTime();
+        // Age since the write was last SENT (not since the last check, which every
+        // refresh rewrites): frequent reconciliation must not keep a lost write
+        // "accepted" forever. Rows from before `sent_at` existed fall back to their
+        // creation time.
+        const ageMs = this.clock().getTime() - new Date(row.sentAt ?? row.createdAt).getTime();
         if (ageMs > UNCERTAIN_GRACE_MS) {
           // The document never appeared: the write did not land. The upload name is
           // content-derived, so resending the same content is safe (identical content
@@ -359,8 +409,8 @@ export class Outbox {
    * document in that project's dataset and verify by re-listing.
    */
   async cleanupScope(companyId: string, projectId: string): Promise<CleanupSummary> {
-    const summary: CleanupSummary = { revoked: 0, deleted: 0, verifiedAbsent: 0, stillPresent: 0, errors: [] };
-    for (const row of await this.ledger.list({ companyId, projectId, status: ["pending", "superseded", "uncertain", "conflict"], limit: 5000 })) {
+    const summary: CleanupSummary = { revoked: 0, deleted: 0, verifiedAbsent: 0, stillPresent: 0, incomplete: false, errors: [] };
+    for (const row of await listAll(this.ledger, { companyId, projectId, status: ["pending", "superseded", "uncertain", "conflict"] })) {
       await this.ledger.update(row.id, { status: "revoked", content: null, error: "revoked by cleanup" });
       summary.revoked += 1;
     }
@@ -376,7 +426,12 @@ export class Outbox {
     try {
       const datasetId = (await backend.client.listDatasets(opts)).find((entry) => entry.name === dataset)?.id;
       if (!datasetId) return summary;
-      const owned = (await backend.client.listDataItemsByPrefix(datasetId, "", opts)).filter((item) => OWNED_PREFIXES.some((prefix) => item.name.startsWith(prefix)));
+      const enumeration = await backend.client.listDataItemsByPrefix(datasetId, "", opts);
+      if (!enumeration.complete) {
+        summary.incomplete = true;
+        summary.errors.push("the dataset listing could not be walked to the end; cleanup deleted what it saw but coverage is not guaranteed — run cleanup-scope again");
+      }
+      const owned = enumeration.items.filter((item) => OWNED_PREFIXES.some((prefix) => item.name.startsWith(prefix)));
       for (const item of owned) {
         try {
           await backend.client.forgetDocument(datasetId, item.id, opts);
@@ -385,12 +440,22 @@ export class Outbox {
           summary.errors.push(`forget ${item.name}: ${describeError(error)}`);
         }
       }
-      const remaining = new Set((await backend.client.listDataItemsByPrefix(datasetId, "", opts)).map((item) => item.id));
+      const verification = await backend.client.listDataItemsByPrefix(datasetId, "", opts);
+      const remaining = new Set(verification.items.map((item) => item.id));
+      const rows = await listAll(this.ledger, { companyId, projectId, status: ["accepted", "indexing", "ready"] });
+      if (!verification.complete) {
+        // Absence from a truncated listing proves nothing: leave every row needing
+        // reconciliation rather than marking any of them retired.
+        summary.incomplete = true;
+        summary.errors.push("the verification listing could not be walked to the end; no row was marked retired — run cleanup-scope again");
+        for (const row of rows) await this.ledger.update(row.id, { status: "conflict", error: "cleanup verification incomplete: the dataset listing was exhausted before this document could be confirmed gone" });
+        return summary;
+      }
       for (const item of owned) {
         if (remaining.has(item.id)) summary.stillPresent += 1;
         else summary.verifiedAbsent += 1;
       }
-      for (const row of await this.ledger.list({ companyId, projectId, status: ["accepted", "indexing", "ready"], limit: 5000 })) {
+      for (const row of rows) {
         const gone = !row.dataId || !remaining.has(row.dataId);
         await this.ledger.update(row.id, gone ? { status: "retired", content: null, error: null } : { status: "conflict", error: "cleanup could not remove this document" });
       }

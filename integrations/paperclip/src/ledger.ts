@@ -25,6 +25,8 @@ export type LedgerStatus =
   | "revoked"; // never sent: revoked by cleanup or disable
 
 export const LIVE_STATUSES: readonly LedgerStatus[] = ["pending", "accepted", "indexing", "ready", "uncertain", "conflict"];
+/** Rows that block a newer revision of the same source from being sent: live ones plus those awaiting retirement. */
+export const BLOCKING_STATUSES: readonly LedgerStatus[] = [...LIVE_STATUSES, "superseded"];
 export const PENDING_READINESS: readonly LedgerStatus[] = ["accepted", "indexing", "uncertain"];
 
 export interface LedgerRow {
@@ -47,6 +49,10 @@ export interface LedgerRow {
   createdAt: string;
   updatedAt: string;
   lastCheckedAt: string | null;
+  /** When the write was last sent to the backend; the uncertain-recovery grace counts from here, not from the last check. */
+  sentAt: string | null;
+  /** When reconcile last verified the Paperclip source still exists; the pass rotates through rows oldest-check first. */
+  lastSourceCheckAt: string | null;
 }
 
 export interface NewLedgerRow {
@@ -62,21 +68,28 @@ export interface NewLedgerRow {
   link: string | null;
 }
 
-export type LedgerPatch = Partial<Pick<LedgerRow, "status" | "datasetId" | "dataId" | "error" | "content" | "lastCheckedAt">> & { bumpAttempts?: boolean };
+export type LedgerPatch = Partial<Pick<LedgerRow, "status" | "datasetId" | "dataId" | "error" | "content" | "lastCheckedAt" | "sentAt" | "lastSourceCheckAt">> & { bumpAttempts?: boolean };
 
 export interface LedgerFilter {
   companyId?: string;
   projectId?: string;
   dataset?: string;
   status?: LedgerStatus | LedgerStatus[];
+  /** Source types to leave out of the page (so they never consume the limit). */
+  excludeSourceTypes?: SourceType[];
+  /** `createdAt` (default) or `lastSourceCheckAt` (never-checked rows first, then oldest check first). */
+  orderBy?: "createdAt" | "lastSourceCheckAt";
   limit?: number;
+  offset?: number;
 }
+
+export const LIST_PAGE_MAX = 5000;
 
 export interface Ledger {
   /** Insert; returns the existing row unchanged when the unique key already exists. */
   upsert(input: NewLedgerRow): Promise<{ row: LedgerRow; created: boolean }>;
   get(id: string): Promise<LedgerRow | undefined>;
-  /** Every live row for the same source other than `revision` (the ones a new revision replaces). */
+  /** Every live or superseded row for the same source other than `revision` (the ones a new revision replaces or waits on). */
   otherRevisions(companyId: string, sourceType: SourceType, sourceId: string, revision: string): Promise<LedgerRow[]>;
   update(id: string, patch: LedgerPatch): Promise<LedgerRow | undefined>;
   list(filter?: LedgerFilter): Promise<LedgerRow[]>;
@@ -99,7 +112,7 @@ export class InMemoryLedger implements Ledger {
     const key = this.key(input);
     for (const row of this.rows.values()) if (this.key(row) === key) return { row, created: false };
     const now = this.clock().toISOString();
-    const row: LedgerRow = { id: randomUUID(), ...input, status: "pending", datasetId: null, dataId: null, error: null, attempts: 0, createdAt: now, updatedAt: now, lastCheckedAt: null };
+    const row: LedgerRow = { id: randomUUID(), ...input, status: "pending", datasetId: null, dataId: null, error: null, attempts: 0, createdAt: now, updatedAt: now, lastCheckedAt: null, sentAt: null, lastSourceCheckAt: null };
     this.rows.set(row.id, row);
     return { row, created: true };
   }
@@ -109,7 +122,7 @@ export class InMemoryLedger implements Ledger {
   }
 
   async otherRevisions(companyId: string, sourceType: SourceType, sourceId: string, revision: string): Promise<LedgerRow[]> {
-    return [...this.rows.values()].filter((row) => row.companyId === companyId && row.sourceType === sourceType && row.sourceId === sourceId && row.revision !== revision && LIVE_STATUSES.includes(row.status));
+    return [...this.rows.values()].filter((row) => row.companyId === companyId && row.sourceType === sourceType && row.sourceId === sourceId && row.revision !== revision && BLOCKING_STATUSES.includes(row.status));
   }
 
   async update(id: string, patch: LedgerPatch): Promise<LedgerRow | undefined> {
@@ -123,13 +136,23 @@ export class InMemoryLedger implements Ledger {
 
   async list(filter: LedgerFilter = {}): Promise<LedgerRow[]> {
     const statuses = filter.status === undefined ? null : Array.isArray(filter.status) ? filter.status : [filter.status];
+    const excluded = filter.excludeSourceTypes ?? [];
+    const byCreated = (a: LedgerRow, b: LedgerRow) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);
+    const bySourceCheck = (a: LedgerRow, b: LedgerRow) => {
+      if (a.lastSourceCheckAt === b.lastSourceCheckAt) return byCreated(a, b);
+      if (a.lastSourceCheckAt === null) return -1;
+      if (b.lastSourceCheckAt === null) return 1;
+      return a.lastSourceCheckAt < b.lastSourceCheckAt ? -1 : 1;
+    };
     const out = [...this.rows.values()]
       .filter((row) => (filter.companyId ? row.companyId === filter.companyId : true))
       .filter((row) => (filter.projectId ? row.projectId === filter.projectId : true))
       .filter((row) => (filter.dataset ? row.dataset === filter.dataset : true))
       .filter((row) => (statuses ? statuses.includes(row.status) : true))
-      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
-    return out.slice(0, Math.max(1, Math.min(filter.limit ?? 500, 5000)));
+      .filter((row) => !excluded.includes(row.sourceType))
+      .sort(filter.orderBy === "lastSourceCheckAt" ? bySourceCheck : byCreated);
+    const offset = Math.max(0, filter.offset ?? 0);
+    return out.slice(offset, offset + Math.max(1, Math.min(filter.limit ?? 500, LIST_PAGE_MAX)));
   }
 
   async countByStatus(companyId?: string): Promise<Record<string, number>> {
@@ -170,8 +193,15 @@ function toRow(raw: Record<string, unknown>): LedgerRow {
     attempts: Number(raw.attempts ?? 0),
     createdAt: raw.created_at instanceof Date ? raw.created_at.toISOString() : String(raw.created_at ?? ""),
     updatedAt: raw.updated_at instanceof Date ? raw.updated_at.toISOString() : String(raw.updated_at ?? ""),
-    lastCheckedAt: raw.last_checked_at ? (raw.last_checked_at instanceof Date ? raw.last_checked_at.toISOString() : String(raw.last_checked_at)) : null,
+    lastCheckedAt: timestamp(raw.last_checked_at),
+    sentAt: timestamp(raw.sent_at),
+    lastSourceCheckAt: timestamp(raw.last_source_check_at),
   };
+}
+
+function timestamp(value: unknown): string | null {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString() : String(value);
 }
 
 /**
@@ -199,7 +229,7 @@ export class PluginDbLedger implements Ledger {
     const found = rows[0] ? toRow(rows[0]) : undefined;
     if (!found) {
       // The harness's db stores nothing; report the row we tried to insert so callers can proceed.
-      return { row: { id, ...input, status: "pending", datasetId: null, dataId: null, error: null, attempts: 0, createdAt: now, updatedAt: now, lastCheckedAt: null }, created: result.rowCount > 0 };
+      return { row: { id, ...input, status: "pending", datasetId: null, dataId: null, error: null, attempts: 0, createdAt: now, updatedAt: now, lastCheckedAt: null, sentAt: null, lastSourceCheckAt: null }, created: result.rowCount > 0 };
     }
     return { row: found, created: result.rowCount > 0 };
   }
@@ -210,10 +240,10 @@ export class PluginDbLedger implements Ledger {
   }
 
   async otherRevisions(companyId: string, sourceType: SourceType, sourceId: string, revision: string): Promise<LedgerRow[]> {
-    const placeholders = LIVE_STATUSES.map((_, index) => `$${index + 5}`).join(", ");
+    const placeholders = BLOCKING_STATUSES.map((_, index) => `$${index + 5}`).join(", ");
     const rows = await this.db.query(
       `SELECT * FROM ${LEDGER_TABLE} WHERE company_id = $1 AND source_type = $2 AND source_id = $3 AND revision <> $4 AND status IN (${placeholders})`,
-      [companyId, sourceType, sourceId, revision, ...LIVE_STATUSES],
+      [companyId, sourceType, sourceId, revision, ...BLOCKING_STATUSES],
     );
     return rows.map(toRow);
   }
@@ -221,7 +251,7 @@ export class PluginDbLedger implements Ledger {
   async update(id: string, patch: LedgerPatch): Promise<LedgerRow | undefined> {
     const sets: string[] = [];
     const params: unknown[] = [];
-    const columns: Array<[keyof LedgerPatch, string]> = [["status", "status"], ["datasetId", "dataset_id"], ["dataId", "data_id"], ["error", "error"], ["content", "content"], ["lastCheckedAt", "last_checked_at"]];
+    const columns: Array<[keyof LedgerPatch, string]> = [["status", "status"], ["datasetId", "dataset_id"], ["dataId", "data_id"], ["error", "error"], ["content", "content"], ["lastCheckedAt", "last_checked_at"], ["sentAt", "sent_at"], ["lastSourceCheckAt", "last_source_check_at"]];
     for (const [key, column] of columns) {
       if (key in patch) {
         params.push(patch[key] ?? null);
@@ -259,8 +289,19 @@ export class PluginDbLedger implements Ledger {
       });
       where.push(`status IN (${placeholders.join(", ")})`);
     }
-    params.push(Math.max(1, Math.min(filter.limit ?? 500, 5000)));
-    const sql = `SELECT * FROM ${LEDGER_TABLE}${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at ASC LIMIT $${params.length}`;
+    const excluded = filter.excludeSourceTypes ?? [];
+    if (excluded.length) {
+      const placeholders = excluded.map((sourceType) => {
+        params.push(sourceType);
+        return `$${params.length}`;
+      });
+      where.push(`source_type NOT IN (${placeholders.join(", ")})`);
+    }
+    const order = filter.orderBy === "lastSourceCheckAt" ? "last_source_check_at ASC NULLS FIRST, created_at ASC" : "created_at ASC";
+    params.push(Math.max(1, Math.min(filter.limit ?? 500, LIST_PAGE_MAX)));
+    const limitParam = params.length;
+    params.push(Math.max(0, filter.offset ?? 0));
+    const sql = `SELECT * FROM ${LEDGER_TABLE}${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY ${order} LIMIT $${limitParam} OFFSET $${params.length}`;
     const rows = await this.db.query(sql, params);
     return rows.map(toRow);
   }

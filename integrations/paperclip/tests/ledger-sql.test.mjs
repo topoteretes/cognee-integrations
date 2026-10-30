@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { PluginDbLedger, LEDGER_TABLE, LIVE_STATUSES } from "../dist/lib/index.js";
+import { PluginDbLedger, LEDGER_TABLE, BLOCKING_STATUSES } from "../dist/lib/index.js";
 
 /** A scripted ctx.db: records SQL, returns what the test queues. */
 function fakeDb() {
@@ -50,16 +50,22 @@ test("update builds a positional SET list and bumps attempts; list filters are p
   assert.match(fake.executes[0].sql, /UPDATE memory_ledger SET status = \$1, dataset_id = \$2, attempts = attempts \+ 1, updated_at = \$3 WHERE id = \$4/);
   assert.deepEqual(fake.executes[0].params.slice(0, 2), ["accepted", "d"]);
   await ledger.list({ companyId: "c", status: ["pending", "superseded"], limit: 10 });
-  assert.match(fake.queries.at(-1).sql, /WHERE company_id = \$1 AND status IN \(\$2, \$3\) ORDER BY created_at ASC LIMIT \$4/);
-  assert.deepEqual(fake.queries.at(-1).params, ["c", "pending", "superseded", 10]);
+  assert.match(fake.queries.at(-1).sql, /WHERE company_id = \$1 AND status IN \(\$2, \$3\) ORDER BY created_at ASC LIMIT \$4 OFFSET \$5/);
+  assert.deepEqual(fake.queries.at(-1).params, ["c", "pending", "superseded", 10, 0]);
+  await ledger.list({ status: "ready", excludeSourceTypes: ["decision"], orderBy: "lastSourceCheckAt", limit: 200, offset: 400 });
+  assert.match(fake.queries.at(-1).sql, /status IN \(\$1\) AND source_type NOT IN \(\$2\) ORDER BY last_source_check_at ASC NULLS FIRST, created_at ASC LIMIT \$3 OFFSET \$4/);
+  assert.deepEqual(fake.queries.at(-1).params, ["ready", "decision", 200, 400]);
+  await ledger.update("r1", { sentAt: "2026-10-23T00:00:00.000Z", lastSourceCheckAt: null });
+  assert.match(fake.executes.at(-1).sql, /SET sent_at = \$1, last_source_check_at = \$2, updated_at = \$3 WHERE id = \$4/);
   await ledger.otherRevisions("c", "issue", "i", "rev");
   assert.ok(fake.queries.at(-1).sql.includes("revision <> $4"));
-  assert.equal(fake.queries.at(-1).params.length, 4 + LIVE_STATUSES.length);
+  assert.equal(fake.queries.at(-1).params.length, 4 + BLOCKING_STATUSES.length);
+  assert.ok(fake.queries.at(-1).params.includes("superseded"), "superseded predecessors block a replacement");
 });
 
 test("the migration creates the table with the unique constraint the ledger relies on", () => {
   const sql = readFileSync(new URL("../migrations/001_memory_ledger.sql", import.meta.url), "utf8");
   assert.match(sql, /CREATE TABLE IF NOT EXISTS memory_ledger/);
   assert.match(sql, /UNIQUE \(company_id, source_type, source_id, revision\)/);
-  for (const column of ["upload_name", "dataset_id", "data_id", "status", "attempts", "last_checked_at"]) assert.ok(sql.includes(column), column);
+  for (const column of ["upload_name", "dataset_id", "data_id", "status", "attempts", "last_checked_at", "sent_at", "last_source_check_at"]) assert.ok(sql.includes(column), column);
 });

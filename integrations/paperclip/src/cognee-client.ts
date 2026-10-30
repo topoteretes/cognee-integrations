@@ -46,6 +46,18 @@ export interface DataItemDTO {
   [key: string]: unknown;
 }
 
+export type DataItemLookup = { status: "found"; item: DataItemDTO } | { status: "absent" } | { status: "exhausted"; pagesRead: number };
+
+export interface DataItemListing {
+  items: DataItemDTO[];
+  /** False when the page cap stopped the walk before the end of the listing. */
+  complete: boolean;
+}
+
+const LIST_PAGE_SIZE = 100;
+/** 500 pages × 100 = 50,000 documents before a lookup reports `exhausted`. */
+const DEFAULT_MAX_PAGES = 500;
+
 export interface RememberResponse {
   status?: string;
   dataset_id?: string | null;
@@ -161,29 +173,39 @@ export class CogneeClient {
     return Array.isArray(body) ? (body.filter((row) => row && typeof row === "object") as DataItemDTO[]) : [];
   }
 
-  async findDataItemByName(datasetId: string, name: string, opts: RequestOptions & { maxPages?: number } = {}): Promise<DataItemDTO | undefined> {
-    const limit = 100;
-    const maxPages = opts.maxPages ?? 20;
+  /**
+   * Look a document up by its upload name. `absent` means the whole listing was
+   * walked and the name is not there; `exhausted` means the safety cap stopped
+   * the walk first, so nothing about the document is known — callers must not
+   * treat that as absence.
+   */
+  async findDataItemByName(datasetId: string, name: string, opts: RequestOptions & { maxPages?: number } = {}): Promise<DataItemLookup> {
+    const limit = LIST_PAGE_SIZE;
+    const maxPages = opts.maxPages ?? DEFAULT_MAX_PAGES;
     for (let page = 0; page < maxPages; page += 1) {
       const rows = await this.listDatasetData(datasetId, { limit, offset: page * limit }, opts);
       const hit = rows.find((row) => row.name === name);
-      if (hit) return hit;
-      if (rows.length < limit) return undefined;
+      if (hit) return { status: "found", item: hit };
+      if (rows.length < limit) return { status: "absent" };
     }
-    return undefined;
+    return { status: "exhausted", pagesRead: maxPages };
   }
 
-  /** Every data item in a dataset whose name starts with `prefix` (plugin-owned documents). */
-  async listDataItemsByPrefix(datasetId: string, prefix: string, opts: RequestOptions & { maxPages?: number } = {}): Promise<DataItemDTO[]> {
-    const limit = 100;
-    const maxPages = opts.maxPages ?? 50;
-    const out: DataItemDTO[] = [];
+  /**
+   * Every data item in a dataset whose name starts with `prefix` (plugin-owned
+   * documents). `complete` is false when the safety cap stopped the walk before
+   * a short page, i.e. the result may be missing items.
+   */
+  async listDataItemsByPrefix(datasetId: string, prefix: string, opts: RequestOptions & { maxPages?: number } = {}): Promise<DataItemListing> {
+    const limit = LIST_PAGE_SIZE;
+    const maxPages = opts.maxPages ?? DEFAULT_MAX_PAGES;
+    const items: DataItemDTO[] = [];
     for (let page = 0; page < maxPages; page += 1) {
       const rows = await this.listDatasetData(datasetId, { limit, offset: page * limit }, opts);
-      out.push(...rows.filter((row) => typeof row.name === "string" && row.name.startsWith(prefix)));
-      if (rows.length < limit) break;
+      items.push(...rows.filter((row) => typeof row.name === "string" && row.name.startsWith(prefix)));
+      if (rows.length < limit) return { items, complete: true };
     }
-    return out;
+    return { items, complete: false };
   }
 
   // -- transport ------------------------------------------------------------
@@ -229,27 +251,32 @@ export class CogneeClient {
     }
     if (opts.auth && this.apiKey) headers["X-Api-Key"] = this.apiKey;
 
+    // One deadline covers the whole exchange, headers and body alike: a backend or
+    // proxy that answers headers and then stalls must not hold a tool call or a
+    // job open indefinitely. The timer is cleared only after the body is consumed.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? this.requestTimeoutMs);
     let response: Response;
+    let text: string;
     try {
-      response = await this.fetchImpl(url, { method, headers, body, signal: controller.signal, redirect: "manual" });
-    } catch (error) {
-      clearTimeout(timer);
-      const aborted = (error as { name?: string })?.name === "AbortError" || controller.signal.aborted;
-      throw new CogneeApiError(
-        aborted ? `${method} ${path} timed out` : `${method} ${path} failed: ${(error as Error)?.message ?? String(error)}`.slice(0, 300),
-        { kind: aborted ? "timeout" : "network", method, path },
-      );
+      try {
+        response = await this.fetchImpl(url, { method, headers, body, signal: controller.signal, redirect: "manual" });
+      } catch (error) {
+        const aborted = (error as { name?: string })?.name === "AbortError" || controller.signal.aborted;
+        throw new CogneeApiError(
+          aborted ? `${method} ${path} timed out` : `${method} ${path} failed: ${(error as Error)?.message ?? String(error)}`.slice(0, 300),
+          { kind: aborted ? "timeout" : "network", method, path },
+        );
+      }
+
+      if (response.status >= 300 && response.status < 400) {
+        throw new CogneeApiError(`${method} ${path} redirected (HTTP ${response.status}); credentials are not forwarded across origins`, { kind: "redirect", status: response.status, method, path });
+      }
+
+      text = await this.readBounded(response, method, path, controller.signal);
     } finally {
       clearTimeout(timer);
     }
-
-    if (response.status >= 300 && response.status < 400) {
-      throw new CogneeApiError(`${method} ${path} redirected (HTTP ${response.status}); credentials are not forwarded across origins`, { kind: "redirect", status: response.status, method, path });
-    }
-
-    const text = await this.readBounded(response, method, path);
     let parsed: unknown = null;
     if (text) {
       try {
@@ -265,24 +292,42 @@ export class CogneeClient {
     return { status: response.status, body: parsed };
   }
 
-  private async readBounded(response: Response, method: string, path: string): Promise<string> {
+  private async readBounded(response: Response, method: string, path: string, signal: AbortSignal): Promise<string> {
     const declared = Number(response.headers.get("content-length") ?? "0");
     if (declared > this.maxResponseBytes) throw new CogneeApiError(`${method} ${path} response too large (${declared} bytes)`, { kind: "malformed", method, path });
     if (!response.body) return "";
     const reader = response.body.getReader();
+    const timeout = () => new CogneeApiError(`${method} ${path} timed out while reading the response body`, { kind: "timeout", method, path });
+    // A body stream does not necessarily observe the fetch signal (a stalled
+    // proxy, or a test double), so the read itself races the deadline and the
+    // reader is cancelled when it fires.
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(timeout());
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+    aborted.catch(() => undefined);
     const chunks: Uint8Array[] = [];
     let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        total += value.byteLength;
-        if (total > this.maxResponseBytes) {
-          await reader.cancel().catch(() => undefined);
-          throw new CogneeApiError(`${method} ${path} response too large (> ${this.maxResponseBytes} bytes)`, { kind: "malformed", method, path });
+    try {
+      for (;;) {
+        const { done, value } = await Promise.race([reader.read(), aborted]);
+        if (done) break;
+        if (value) {
+          total += value.byteLength;
+          if (total > this.maxResponseBytes) {
+            throw new CogneeApiError(`${method} ${path} response too large (> ${this.maxResponseBytes} bytes)`, { kind: "malformed", method, path });
+          }
+          chunks.push(value);
         }
-        chunks.push(value);
       }
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      if (signal.aborted && !(error instanceof CogneeApiError && error.kind === "malformed")) throw timeout();
+      throw error;
+    } finally {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
     }
     return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
   }

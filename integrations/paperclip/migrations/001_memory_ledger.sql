@@ -23,9 +23,12 @@ CREATE TABLE IF NOT EXISTS memory_ledger (
   created_at      TIMESTAMPTZ NOT NULL,
   updated_at      TIMESTAMPTZ NOT NULL,
   last_checked_at TIMESTAMPTZ,
+  sent_at         TIMESTAMPTZ,             -- last time the write was sent; the uncertain-recovery grace counts from here
+  last_source_check_at TIMESTAMPTZ,        -- last time reconcile verified the Paperclip source still exists (rotation cursor)
   CONSTRAINT memory_ledger_source_revision UNIQUE (company_id, source_type, source_id, revision)
 );
 
 CREATE INDEX IF NOT EXISTS memory_ledger_status ON memory_ledger (status);
 CREATE INDEX IF NOT EXISTS memory_ledger_company_project ON memory_ledger (company_id, project_id);
 CREATE INDEX IF NOT EXISTS memory_ledger_source ON memory_ledger (company_id, source_type, source_id);
+CREATE INDEX IF NOT EXISTS memory_ledger_source_check ON memory_ledger (status, last_source_check_at);

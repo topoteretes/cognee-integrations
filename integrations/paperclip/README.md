@@ -112,7 +112,7 @@ Every capture is a row in the plugin's database namespace before anything is sen
 | `accepted` | The backend stored the upload; graph indexing not yet confirmed |
 | `indexing` | Document listed in the dataset; the cognify pipeline is running |
 | `ready` | Indexed; `cognee_recall` can return it |
-| `uncertain` | The write timed out or lost the connection. `reconcile-sources` (hourly) looks for the document by its upload name; after 15 minutes without it, the same content is resent (identical content is a no-op on the backend) |
+| `uncertain` | The write timed out or lost the connection. `reconcile-sources` (hourly) looks for the document by its upload name; 15 minutes after the **send** (`sent_at`, not the last check, so frequent reconciliation cannot postpone recovery) without it, the same content is resent (identical content is a no-op on the backend). A dataset listing that cannot be walked to the end (50,000 documents) leaves the status unchanged with an `exhausted` note instead of counting as "never appeared" |
 | `failed` | Rejected (401/403/400) or gave up after repeated transient errors; an operator inspects |
 | `conflict` | Backend 409, or a retirement/cleanup whose document is still listed afterwards; stops retrying and needs reconciliation |
 | `superseded` | An older revision of an edited source, awaiting verified retirement |
@@ -124,7 +124,9 @@ previous document is deleted and verified gone *before* the new one is sent. If 
 document cannot be removed, the replacement is held and the source shows as `conflict`
 rather than two contradictory records contributing to recall.
 
-**Deleted sources.** `reconcile-sources` re-reads each `ready` issue/comment through the
+**Deleted sources.** `reconcile-sources` rotates through `ready` issues/comments by their
+last source check (never-checked rows first, decisions excluded up front), so every row is
+re-verified eventually no matter how many there are. It re-reads each one through the
 host and retires records whose source no longer exists.
 
 **Health.** `onHealth` reports `degraded` whenever `conflict` or `failed` rows exist, with
@@ -136,7 +138,7 @@ for UI.
 | Action | Params | Effect |
 |---|---|---|
 | `sync-project` | `projectId` | Queue every `done` issue of an enabled project (backfill or re-sync) and send |
-| `cleanup-scope` | `projectId`, `confirm: true` | Revoke every queued or pending write for the project first, then delete every plugin-owned document in the project's dataset and verify by re-listing. Only that project's dataset is touched; the shared dataset is never written or cleaned by the plugin |
+| `cleanup-scope` | `projectId`, `confirm: true` | Revoke every queued or pending write for the project first, then delete every plugin-owned document in the project's dataset and verify by re-listing, paging both the ledger and the backend listing to the end. The result carries `incomplete: true` when the backend listing could not be walked to the end: deletion was attempted for what was seen, no row is marked `retired`, and the action should be run again. Only that project's dataset is touched; the shared dataset is never written or cleaned by the plugin |
 
 Uninstalling the plugin disables capture and leaves remote data intact; run `cleanup-scope`
 per project first if you want it removed.
