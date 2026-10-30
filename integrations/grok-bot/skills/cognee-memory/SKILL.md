@@ -44,7 +44,9 @@ asked you not to keep.
 
 ## Show what Cognee did
 
-End the answer with one line for each of these, so the user sees Cognee's part:
+End the answer with one line for each of these, so the user sees Cognee's part.
+Put a blank line before each one, so each renders on its own line instead of
+running into the answer or the line above:
 
 - When the answer used something `recall` returned:
   `> 🧠 Cognee memory (<dataset>): <what you used, in a few words>`
@@ -55,6 +57,7 @@ For example:
 
 ```
 > 🧠 Cognee memory (london_community): Ana runs the Thursday meetups at Expedite.
+
 > 🧠 Saved to Cognee (london_community): the next meetup moves to 29 October.
 ```
 

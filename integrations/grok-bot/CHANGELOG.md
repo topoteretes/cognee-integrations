@@ -7,6 +7,14 @@ The version here must match the `version` field in `.cursor-plugin/plugin.json`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.4]
+
+### Fixed
+- The 🧠 lines at the end of an answer each start on their own line. The skill
+  now asks for a blank line before each one: consecutive `> ` lines are one
+  Markdown blockquote paragraph, so the recall and save lines rendered as a single
+  run-on line.
+
 ## [0.1.3]
 
 ### Changed
