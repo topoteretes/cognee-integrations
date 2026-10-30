@@ -10,6 +10,18 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.6]
+
+### Fixed
+- **New cloud sessions no longer start with a false `✕ (server_error)`.** Cognee's
+  `/health` answers 503 when one of the server's own component checks fails, even while
+  the API serves normally. Session start recorded that as `server_error`, so the status
+  line stayed red for the first seconds of every session until the cloud worker's next
+  check turned it green. A 5xx at session start is now checked once more against the
+  authenticated endpoint the hooks use (`GET /api/v1/datasets`); if that answers, the
+  session is recorded as ready. A 5xx that the re-check confirms still shows
+  `server_error`.
+
 ## [1.7.5]
 
 ### Changed

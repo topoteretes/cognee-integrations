@@ -48,6 +48,7 @@ from _plugin_common import (
     _is_loopback_host,
     _reexec_into_venv,
     apply_cognee_env,
+    authed_liveness,
     clear_server_pidfile,
     ensure_launch_record,
     get_session_key,
@@ -1884,7 +1885,22 @@ async def _run_heavy(
     if not service_url and not managed_endpoint:
         service_url = _LOCAL_SERVICE_URL
     if is_cloud_mode(config):
-        if _conn_state and _conn_state != "ready":
+        if _conn_state == "server_error" and service_url:
+            # One startup call answered 5xx. Most often that is /health, which
+            # returns 503 when one of the server's own component checks fails
+            # while the API serves fine. Ask the authenticated endpoint the
+            # hooks actually use before turning the line red: the cloud
+            # worker's periodic check asks the same thing and would flip the
+            # line back to ready seconds later anyway.
+            api_key = agent_api_key or str(config.get("api_key", "") or "")
+            if authed_liveness(service_url, api_key, timeout=2) == "ready":
+                hook_log(
+                    "conn_state_5xx_overruled", {"base_url": service_url, "detail": _conn_detail}
+                )
+                _conn_state = "ready"
+        if _conn_state == "ready":
+            write_connection_state("ready", service_url)
+        elif _conn_state:
             write_connection_state(
                 _conn_state, str(config.get("base_url", "") or ""), detail=_conn_detail
             )

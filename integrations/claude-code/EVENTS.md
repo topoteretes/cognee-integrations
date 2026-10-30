@@ -93,6 +93,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:cognee_venv_unusable` | `cognee.venv_unusable` |
 | `hook:cognee_version_probe_failed` | `cognee.version_probe_failed` |
 | `hook:cognify_poll_transient` | `cognify.poll_transient` |
+| `hook:conn_state_5xx_overruled` | `conn.state_5xx_overruled` |
 | `hook:conn_state_unverified` | `conn.state_unverified` |
 | `hook:connection_state_write_failed` | `connection.state_write_failed` |
 | `hook:context_lookup_empty` | `recall.lookup_empty` |
