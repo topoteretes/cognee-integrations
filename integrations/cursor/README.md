@@ -170,6 +170,7 @@ Everything goes to the Cognee server at `COGNEE_BASE_URL`: your own local server
 - **Sent per turn:** your prompt, the agent's final answer, and each tool call with its input and output (truncated), as session memory in the active dataset (`agent_sessions` by default). When the conversation ends, that session memory is turned into graph memory on the server.
 - **Sent per prompt:** the prompt as a recall query, to fetch the memory the agent gets.
 - **Redacted first:** API keys, tokens, private keys, connection strings, `Authorization` headers and similar secrets are replaced with `[redacted:<kind>]` before anything is sent. Credit lines and the plugin's own instructions are removed as well.
+- **Private spans:** text inside `<private>…</private>` is replaced with `[private]` before it is logged, stored, sent as a query or uploaded, for automatic capture and explicit remember alike; neither `COGNEE_CAPTURE` nor `COGNEE_CAPTURE_REDACT` turns that off, and a `--file` upload is sent unchanged (see [private spans](../claude-code/README.md#private-spans)). The agent still sees the span in the live turn.
 - **Not sent:** reads of sensitive paths such as `.env` files and key files, and the plugin's own Cognee commands.
 - **Kept locally:** logs and per-session state under `~/.cognee-plugin/cursor/`. The API key stays in `~/.cognee/.env` or your shell, never in the plugin.
 
@@ -179,7 +180,7 @@ Everything goes to the Cognee server at `COGNEE_BASE_URL`: your own local server
 | `COGNEE_CAPTURE_TOOLS` / `COGNEE_CAPTURE_DENY_TOOLS` | which tool calls are stored, e.g. `COGNEE_CAPTURE_DENY_TOOLS=Bash(curl:*)` |
 | `COGNEE_CAPTURE_DENY_PATHS` | more paths whose reads are never stored |
 | `COGNEE_CAPTURE_REDACT_PATTERNS` | your own regexes to redact, one per line |
-| `COGNEE_CAPTURE_REDACT=false` | turn redaction off (not recommended) |
+| `COGNEE_CAPTURE_REDACT=false` | turn the secret patterns off (not recommended); `<private>` spans are removed regardless |
 
 Forget something with the `cognee-forget` skill ("forget what we said about X"), which deletes the matching documents and the graph built from them.
 

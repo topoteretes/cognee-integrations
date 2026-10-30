@@ -466,3 +466,151 @@ def test_skip_logs_never_include_command_text(
 )
 def test_inspection_options_do_not_hide_writes(policy, command, skip):
     assert policy.low_signal_bash(command, {"exit_code": 0}, "success") is skip
+
+
+# --- <private> spans and sanitize() (SDK-1100) -------------------------------
+
+
+def test_a_span_ends_at_the_first_close(policy):
+    # No nesting: an opener inside a span is part of the hidden text, and the
+    # first close ends the span. The later close is a stray and is dropped.
+    nested = "a <private>x <private>y</private> z</private> b"
+    assert policy.sanitize(nested) == "a [private] z b"
+
+
+def test_text_between_two_spans_is_kept(policy):
+    text = "key <private>SEC1</private> deploy friday, token <private>SEC2</private> end"
+    assert policy.sanitize(text) == "key [private] deploy friday, token [private] end"
+
+
+def test_a_forgotten_close_is_ended_by_the_next_close(policy):
+    # The closed secret must not leak because an earlier span was left open.
+    text = "note <private>forgot to close. later <private>SEC</private> done"
+    assert policy.sanitize(text) == "note [private] done"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "keep <private>secret and more",
+        "PR #547 adds `<private>` span support. Next: port it to Cursor.",
+    ],
+    ids=["forgotten-close", "mention"],
+)
+def test_an_opener_without_a_close_is_plain_text(policy, text):
+    assert policy.sanitize(text) == text
+
+
+def test_an_opener_after_the_last_close_is_plain_text(policy):
+    text = "<private>a</private> b <private>c"
+    assert policy.sanitize(text) == "[private] b <private>c"
+
+
+def test_an_unclosed_opener_still_gets_the_secret_patterns(policy):
+    result = policy.sanitize("<private>token=hunter2")
+    assert result.startswith("<private>")
+    assert "hunter2" not in result
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("keep <private attr=1>one\r\ntwo</private> end", "keep [private] end"),
+        ("line1\r\n<private>\r\nhidden\r\n</private>\r\nline2", "line1\r\n[private]\r\nline2"),
+        ("<PRIVATE>hidden</Private>shown", "[private]shown"),
+        ("empty <private/> tag", "empty  tag"),
+        ("keep < private >one</ private > end", "keep [private] end"),
+        ("keep <private>one</ private> end", "keep [private] end"),
+        ("empty < private / > tag", "empty  tag"),
+        ("stray </private> close", "stray  close"),
+        ("<privateer>not a span</privateer>", "<privateer>not a span</privateer>"),
+        ("no tags at all", "no tags at all"),
+    ],
+)
+def test_private_span_forms(policy, text, expected):
+    assert policy.sanitize(text) == expected
+
+
+def test_sanitize_walks_containers_and_still_redacts_secrets(policy):
+    value = {"prompt": "ok <private>hidden</private> password=hunter2", "api_key": "v", "n": 3}
+    assert policy.sanitize(value) == {
+        "prompt": "ok [private] [redacted:credential]",
+        "api_key": "[redacted:credential]",
+        "n": 3,
+    }
+    assert policy.sanitize(["<private>a</private>b"]) == ["[private]b"]
+
+
+def test_spans_in_dict_keys_are_stripped_too(policy):
+    value = {"<private>SEC</private> note": "v", "plain": {"in <private>x</private>": 1}}
+    assert policy.sanitize(value) == {"[private] note": "v", "plain": {"in [private]": 1}}
+
+
+@pytest.mark.parametrize("variable", ["COGNEE_CAPTURE", "COGNEE_CAPTURE_REDACT"])
+def test_spans_are_stripped_whatever_the_capture_switches_say(policy, monkeypatch, variable):
+    monkeypatch.setenv(variable, "false")
+    result = policy.sanitize("a <private>hidden</private> password=hunter2")
+    assert "hidden" not in result
+    if variable == "COGNEE_CAPTURE_REDACT":
+        assert "password=hunter2" in result  # the switch still turns off the patterns
+    else:
+        assert "hunter2" not in result
+
+
+def test_sanitize_cli_prints_the_clean_text_and_fails_closed(suite, temp_home):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    def cli(*args, **env):
+        return subprocess.run(
+            [sys.executable, str(suite.scripts_dir / "_capture_policy.py"), *args],
+            env={**os.environ, "HOME": str(temp_home), **env},
+            capture_output=True,
+            text=True,
+        )
+
+    ok = cli("find <private>SENTINEL</private> token=abc")
+    assert ok.returncode == 0 and ok.stdout == "find [private] [redacted:credential]"
+    bad = cli("<private>SENTINEL</private>", COGNEE_CAPTURE_REDACT_PATTERNS='["["]')
+    assert bad.returncode != 0 and bad.stdout == ""
+    assert "SENTINEL" not in bad.stderr
+    # --json walks the document, so a credential cannot eat its closing quote and brace.
+    doc = cli("--json", '{"q": "<private>SENTINEL</private> token=abc", "api_key": "abc12345"}')
+    assert json.loads(doc.stdout) == {
+        "q": "[private] [redacted:credential]",
+        "api_key": "[redacted:credential]",
+    }
+    assert cli("--json", "find <private>SENTINEL</private> {").stdout == "find [private] {"
+
+
+def test_shared_policy_modules_are_identical_across_hosts():
+    from utils.suites import ALL_SUITES, CLAUDE
+
+    for name in ("_capture_policy.py", "_remember_http.py"):
+        reference = (CLAUDE.scripts_dir / name).read_bytes()
+        for other in ALL_SUITES:
+            if other is CLAUDE:
+                continue
+            assert (other.scripts_dir / name).read_bytes() == reference, f"{other.name}/{name}"
+
+
+def test_sync_payload_log_names_fields_but_never_their_values(suite, run_hook, temp_home):
+    result = run_hook(
+        suite,
+        "sync-session-to-graph.py",
+        stdin={"session_id": "s1", "prompt": "SENTINEL-4b2e <private>x</private>"},
+    )
+    assert result.returncode == 0, result.stderr
+    lines = [
+        json.loads(line)
+        for path in temp_home.rglob("hook.log")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if '"sync_payload"' in line
+    ]
+    assert lines
+    log_text = json.dumps(lines)
+    assert "payload_preview" not in log_text
+    assert "SENTINEL-4b2e" not in log_text
+    assert "prompt" in log_text and "payload_bytes" in log_text

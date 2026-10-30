@@ -10,6 +10,7 @@ Migrated from claude-code/tests/test_remember_http.py.
 
 from __future__ import annotations
 
+import io
 import urllib.error
 
 import pytest
@@ -56,3 +57,34 @@ def test_timeout_wrapped_in_urlerror_does_not_fall_back(rh):
 def test_connection_failure_is_unreachable(rh):
     res = _remember(rh, _raises(urllib.error.URLError("Connection refused")))
     assert res == rh.UNREACHABLE
+
+
+def _capturing(bodies):
+    """An opener that keeps each request body and answers 200 ``{}``."""
+
+    def _open(req, timeout=None):
+        bodies.append(req.data)
+        return io.BytesIO(b"{}")
+
+    return _open
+
+
+def test_inline_text_is_sanitized_even_with_capture_off(rh, monkeypatch):
+    monkeypatch.setenv("COGNEE_CAPTURE", "false")
+    bodies = []
+    text = "keep <private>SENTINEL</private> password=hunter2"
+    res = rh.do_remember("http://x", "", text, "ds", "user_context", opener=_capturing(bodies))
+    assert res == {"ok": True}
+    assert b"keep [private]" in bodies[0]
+    assert b"SENTINEL" not in bodies[0] and b"hunter2" not in bodies[0]
+
+
+def test_file_upload_stays_byte_identical(rh, tmp_path):
+    raw = b"x = '<private>SENTINEL</private>'\npassword = 'hunter2'\n\xff\xfe"
+    path = tmp_path / "keep.py"
+    path.write_bytes(raw)
+    bodies = []
+    rh.do_remember(
+        "http://x", "", "", "ds", "project_docs", file_path=str(path), opener=_capturing(bodies)
+    )
+    assert raw in bodies[0]

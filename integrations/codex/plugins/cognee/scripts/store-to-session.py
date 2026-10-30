@@ -153,8 +153,8 @@ async def _store_tool_call(payload: dict) -> None:
         allow_tool,
         is_plugin_invocation,
         low_signal_bash,
-        redact,
         safe_first_token,
+        sanitize,
     )
 
     try:
@@ -167,9 +167,9 @@ async def _store_tool_call(payload: dict) -> None:
         return
     if not allowed:
         return
-    tool_input = redact(tool_input)
-    tool_output = redact(tool_output)
-    payload = redact(payload)
+    tool_input = sanitize(tool_input)
+    tool_output = sanitize(tool_output)
+    payload = sanitize(payload)
 
     command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
     status, error_message = _infer_status(payload)
@@ -322,11 +322,11 @@ def _check_memory_credit(payload: dict) -> None:
 
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
-    from _capture_policy import capture_enabled, redact
+    from _capture_policy import capture_enabled, sanitize
 
     if not capture_enabled():
         return
-    payload = redact(payload)
+    payload = sanitize(payload)
     msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
     if not msg or msg == "null":
         return
@@ -346,9 +346,9 @@ async def _store_assistant_stop(payload: dict) -> None:
     # separate question-only and answer-only QA entries for the same turn.
     entry = {
         "type": "qa",
-        "question": redact(pending.get("prompt", "")),
+        "question": sanitize(pending.get("prompt", "")),
         "answer": msg,
-        "context": redact(pending.get("context", "")),
+        "context": sanitize(pending.get("context", "")),
     }
 
     if not server_usable(runtime.get("base_url", "")):

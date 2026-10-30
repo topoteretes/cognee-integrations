@@ -1,4 +1,9 @@
-"""Client-side automatic capture controls. Explicit remember is independent."""
+"""Client-side capture controls and the text sanitizer.
+
+The capture switches and tool/path filters govern automatic capture only;
+explicit remember ignores them. :func:`sanitize` is different: every text the
+plugin writes, logs or sends goes through it, explicit remember included.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from pathlib import PurePosixPath
 
 _FALSE = {"0", "false", "no", "off"}
@@ -260,6 +266,105 @@ def redact(value):
     return value
 
 
+PRIVATE_PLACEHOLDER = "[private]"
+# ``<private>`` and ``<private attr=...>`` open a span, ``</private>`` closes
+# one; ``<private/>`` is empty. Whitespace around the name and slashes is
+# allowed (``< private >``, ``</ private>``). ``<privateer>`` is not a tag.
+_PRIVATE_TAG = re.compile(r"(?i)<\s*(/?)\s*private(?=[\s/>])[^>]*?(/?)\s*>")
+
+
+def _is_opener(tag: re.Match) -> bool:
+    return not tag.group(1) and not tag.group(2)
+
+
+def _drop_loose_tags(text: str) -> str:
+    """Outside a span, close tags and ``<private/>`` are dropped; openers stay."""
+    return _PRIVATE_TAG.sub(lambda tag: tag.group(0) if _is_opener(tag) else "", text)
+
+
+def strip_private(text: str, placeholder: str = PRIVATE_PLACEHOLDER) -> str:
+    """Replace each ``<private>…</private>`` span with ``placeholder``.
+
+    Spans don't nest: an opener pairs with the next close, and an opener inside
+    a span is part of the hidden text. Text between two spans is kept. A span
+    crosses lines and its tags may carry attributes. An opener with no close
+    after it is plain text, whether a forgotten close or a mention such as
+    ``<private>`` in backticks; the secret patterns still run on it. A close
+    tag outside a span, and ``<private/>``, are dropped.
+    """
+    if "<" not in text:
+        return text
+    out = []
+    pos = 0
+    opener = None
+    for tag in _PRIVATE_TAG.finditer(text):
+        if opener is None:
+            if _is_opener(tag):
+                opener = tag
+        elif tag.group(1):
+            out.append(_drop_loose_tags(text[pos : opener.start()]))
+            out.append(placeholder)
+            pos = tag.end()
+            opener = None
+    out.append(_drop_loose_tags(text[pos:]))
+    return "".join(out)
+
+
+def _strip_private_tree(value):
+    if isinstance(value, str):
+        return strip_private(value)
+    if isinstance(value, dict):
+        return {_strip_private_tree(key): _strip_private_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_strip_private_tree(item) for item in value]
+    return value
+
+
+def sanitize(value):
+    """Everything that leaves the hook as text goes through here: plugin files,
+    logs, request bodies, queries.
+
+    ``<private>`` spans are always removed: they are the user's explicit
+    instruction, so neither ``COGNEE_CAPTURE`` nor ``COGNEE_CAPTURE_REDACT``
+    turns that off. The secret patterns of :func:`redact` run on what is left
+    and keep their own switch. Strings, dicts and lists are walked like
+    :func:`redact`; spans go first so marked content disappears entirely instead
+    of leaking its kind and position as a ``[redacted:...]`` marker. A secret cut
+    by a span is not rejoined: a fixed-shape token (an AWS key ID, say) is left
+    in two pieces, while a ``key=value`` or URL secret still matches around the
+    ``[private]`` placeholder.
+    """
+    return redact(_strip_private_tree(value))
+
+
+def _main(argv) -> int:
+    """``python3 _capture_policy.py [--json] <text>`` prints ``sanitize(text)``.
+
+    For the shell scripts (search queries, the remember CLI fallback). A failure
+    exits non-zero with nothing on stdout, so the caller stops instead of
+    sending the raw text. With ``--json`` an object or array is sanitized field
+    by field, so it stays valid JSON.
+    """
+    as_json = argv[:1] == ["--json"]
+    text = "".join(argv[1:2] if as_json else argv[:1])
+    try:
+        from _env_file import load_env_file
+
+        load_env_file()  # custom patterns may live in ~/.cognee/.env
+        try:
+            parsed = json.loads(text) if as_json else None
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            sys.stdout.write(json.dumps(sanitize(parsed), ensure_ascii=False))
+        else:
+            sys.stdout.write(sanitize(text))
+    except Exception as exc:
+        sys.stderr.write(f"[cognee] could not sanitize the text: {exc}\n")
+        return 1
+    return 0
+
+
 # Only command positions count: grep patterns, Python source and ordinary repo
 # paths mentioning Cognee are evidence, not recursive plugin invocations.
 _PLUGIN_SCRIPTS = set(
@@ -483,3 +588,7 @@ def low_signal_bash(command: str, output, status: str) -> bool:
     if first == "env":
         return not args
     return True
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))
