@@ -538,7 +538,7 @@ class MemoryRun:
             scope_key=self.scope_key,
             run_id=self.run_id,
             kind=RecordKind.OBSERVATION,
-            task=cap_text(self.task, 500),
+            task=clean_for_memory(self.task, 500),
             summary=summary,
             outcome="agent-proposed observation during the run",
             source_urls=sanitize_urls([source_url], 1),
@@ -635,7 +635,9 @@ class MemoryRun:
             kind = RecordKind.FAILED_ATTEMPT
             outcome = outcome or f"failed with {type(error).__name__}"
             if not summary:
-                summary = f"The run failed: {str(error)[:300]}"
+                # Exception text can quote a URL or a form field: it is page-derived
+                # input like any other and goes through the same redaction.
+                summary = clean_for_memory(f"The run failed: {str(error)[:300]}", 400)
         elif successful is True:
             kind = RecordKind.PROCEDURE if is_done else RecordKind.RESEARCH_FINDING
             outcome = outcome or "completed successfully (agent-reported)"
@@ -660,9 +662,11 @@ class MemoryRun:
             scope_key=self.scope_key,
             run_id=self.run_id,
             kind=kind,
-            task=cap_text(self.task, 1000),
-            summary=summary,
-            outcome=outcome,
+            # Every text field is redacted at this boundary, not only the summary:
+            # a task like "log in with password=..." must not reach the graph.
+            task=clean_for_memory(self.task, 1000),
+            summary=clean_for_memory(summary, limits.max_summary_chars),
+            outcome=clean_for_memory(outcome, 300),
             source_urls=urls,
             verification=verification,
             steps=int(steps) if isinstance(steps, int) else None,

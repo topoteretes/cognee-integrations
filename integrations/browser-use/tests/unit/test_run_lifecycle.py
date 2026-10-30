@@ -306,3 +306,33 @@ async def test_health_reports_in_memory_store(fake):
 
 def test_record_verification_default():
     assert Verification.UNVERIFIED.value == "unverified"
+
+
+async def test_task_outcome_and_error_text_are_redacted_before_capture(fake):
+    """Every text field is sanitized at the record boundary, not only the summary."""
+    task = "Log in with password=hunter2 token=abcdef and read the catalog price"
+    agent = FakeAgent(
+        steps=1, history=FakeHistory(final="Price is 12 EUR api_key=sk-livekey1234567890")
+    )
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task=task, scope=SCOPE)
+        await run.execute(agent, max_steps=5, summarizer=lambda h: "Done; secret=topsecret123")
+        text = fake.data[0]["text"]
+        for leaked in ("hunter2", "abcdef", "topsecret123", "sk-livekey1234567890"):
+            assert leaked not in text
+        assert "<redacted>" in text
+        assert "read the catalog price" in text
+
+    failing = FakeAgent(
+        steps=3,
+        history=FakeHistory(final=""),
+        fail_with=RuntimeError("login rejected for password=hunter2"),
+    )
+    fake.data.clear()
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        with pytest.raises(RuntimeError):
+            await run.execute(failing, max_steps=5)
+        text = fake.data[0]["text"]
+        assert "hunter2" not in text
+        assert "The run failed" in text

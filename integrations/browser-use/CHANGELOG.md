@@ -28,3 +28,9 @@ follows [Semantic Versioning](https://semver.org/).
   `forget_record()` with ownership check and deletion verified by re-listing.
 - Examples (`repeated_supplier_research.py`, `custom_run_loop.py`), a three-condition
   evaluation harness skeleton under `evals/`, unit, contract and opt-in live tests.
+
+### Fixed (pre-release review)
+- Every text field of a memory record is redacted at the serialization boundary:
+  the task, the outcome, the summary and exception-derived fallback text, not only
+  the summary. A task such as `login password=... token=...` no longer persists
+  those values.
