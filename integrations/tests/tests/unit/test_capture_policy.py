@@ -546,6 +546,15 @@ def test_spans_in_dict_keys_are_stripped_too(policy):
     assert policy.sanitize(value) == {"[private] note": "v", "plain": {"in [private]": 1}}
 
 
+def test_secrets_in_dict_keys_are_redacted_too(policy):
+    dsn = "postgresql://admin:hunter2@db.internal/app"
+    assert policy.sanitize({"pools": {dsn: {"size": 5}}}) == {
+        "pools": {"[redacted:connection]": {"size": 5}}
+    }
+    # A key that names a secret still blanks its value.
+    assert policy.redact({"password": "x", 3: "y"}) == {"password": "[redacted:credential]", 3: "y"}
+
+
 @pytest.mark.parametrize("variable", ["COGNEE_CAPTURE", "COGNEE_CAPTURE_REDACT"])
 def test_spans_are_stripped_whatever_the_capture_switches_say(policy, monkeypatch, variable):
     monkeypatch.setenv(variable, "false")

@@ -1395,12 +1395,14 @@
       "env": {
         "COGNEE_CAPTURE_REDACT_PATTERNS": "[\"[\"]"
       },
-      "input": {
-        "n": 1
-      },
-      "expected": {
-        "n": 1
-      }
+      "input": [
+        1,
+        null
+      ],
+      "expected": [
+        1,
+        null
+      ]
     },
     {
       "note": "AWS credentials file body",

@@ -258,7 +258,7 @@ def redact(value):
         return value
     if isinstance(value, dict):
         return {
-            key: "[redacted:credential]" if _SECRET_KEY.match(str(key)) else redact(item)
+            redact(key): "[redacted:credential]" if _SECRET_KEY.match(str(key)) else redact(item)
             for key, item in value.items()
         }
     if isinstance(value, list):
