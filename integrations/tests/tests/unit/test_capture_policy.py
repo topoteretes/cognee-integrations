@@ -555,6 +555,15 @@ def test_secrets_in_dict_keys_are_redacted_too(policy):
     assert policy.redact({"password": "x", 3: "y"}) == {"password": "[redacted:credential]", 3: "y"}
 
 
+def test_keys_that_sanitize_to_the_same_text_keep_the_last_value(policy):
+    # Accepted trade-off: keys that differ only inside a span or a secret
+    # collapse into one, and the last value wins. Nothing hidden leaks.
+    value = {"note <private>A</private>": "won", "note <private>B</private>": "lost"}
+    assert policy.sanitize(value) == {"note [private]": "lost"}
+    dsns = {"postgres://u:p1@h/a": 1, "postgres://u:p2@h/b": 2}
+    assert policy.sanitize(dsns) == {"[redacted:connection]": 2}
+
+
 @pytest.mark.parametrize("variable", ["COGNEE_CAPTURE", "COGNEE_CAPTURE_REDACT"])
 def test_spans_are_stripped_whatever_the_capture_switches_say(policy, monkeypatch, variable):
     monkeypatch.setenv(variable, "false")
