@@ -103,11 +103,11 @@ Each run leaves one record:
 
 | Field | Purpose |
 |---|---|
-| `record_id`, `run_id` | Receipt tracking |
+| `record_id`, `run_id`, `observed_at` | Receipt tracking, in the ledger only. They are not written into the document, so identical content is byte-identical under one content-derived name and the server stores it once |
 | `content_hash` | Deduplication: a hash of scope, kind, verification, task, summary, outcome and source URLs (not of the id or time), so an identical observation from a later run or a repeated `cognee_remember` call reuses the existing record instead of paying for a second cognify pass |
 | `kind` | `research_finding`, `procedure`, `failed_attempt`, `interrupted_run`, `observation` (from `cognee_remember`), `preference` |
 | `task`, `summary`, `outcome` | What was attempted and observed (size-capped; credentials, bearer tokens, connection strings, vendor keys and private keys redacted) |
-| `source_urls`, `observed_at` | Provenance and freshness (userinfo and secret-looking query parameters stripped) |
+| `source_urls` | Provenance (userinfo and secret-looking query parameters stripped) |
 | `verification` | `unverified` (default), `agent_reported` (agent said done+success), `application_validated` (your `validator` returned true) |
 | `scope_key` | The authorized memory scope |
 
@@ -128,7 +128,7 @@ never treat in-memory mode as durable capture.
 | `ready` | Listed, and the dataset's most recent cognify run completed. cognee 1.6.5 reports pipeline status per dataset, not per document, so this is the strongest statement available |
 | `failed` | The backend rejected the write |
 | `unknown` | The write timed out, lost the connection or was cancelled in flight, or the document never appeared within 15 minutes. Not treated as live: the same content is uploaded again by a later run (the upload name is content-derived, so the server keeps one document) |
-| `deleted` | Removed by `forget_record()` and verified absent from a complete dataset listing |
+| `deleted` | Removed by `forget_record()` and verified: no document of that name is left in a complete dataset listing |
 
 ```python
 receipt = await memory.record_status(record_id)  # refreshes pending receipts
@@ -162,7 +162,7 @@ Precedence per field: constructor keyword → environment → default.
 | `COGNEE_BROWSER_USE_RECALL` / `recall_enabled` | `true` | Automatic recall before the run |
 | `COGNEE_BROWSER_USE_RECALL_TOP_K` / `recall_top_k` | 5 | Hits injected |
 | `COGNEE_BROWSER_USE_RECALL_MAX_CHARS` / `recall_max_chars` | 6000 | Evidence budget |
-| `COGNEE_BROWSER_USE_RECALL_TIMEOUT_S` / `recall_timeout_s` | 8 | Deadline over the whole recall (one request; a scope with nothing stored answers 404 and reads as empty) |
+| `COGNEE_BROWSER_USE_RECALL_TIMEOUT_S` / `recall_timeout_s` | 8 | Deadline over the whole recall (one request; a 404 naming the dataset or `NoDataError` reads as empty, any other 404 is reported as an error) |
 | `COGNEE_BROWSER_USE_CAPTURE` / `capture_enabled` | `true` | Final-outcome capture |
 | `COGNEE_BROWSER_USE_REMEMBER_TOOL` / `remember_tool_enabled` | `false` | Expose `cognee_remember` to the model |
 | `COGNEE_BROWSER_USE_MAX_REMEMBER_CALLS` / `max_remember_calls_per_run` | 3 | New documents `cognee_remember` may create per run (each is a cognify pass); deduplicated repeats are free and the final-outcome record is not counted |

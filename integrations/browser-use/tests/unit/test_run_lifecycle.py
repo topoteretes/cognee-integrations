@@ -133,7 +133,8 @@ async def test_execute_composes_hooks_captures_and_returns_history(fake):
         assert "token=secret123" not in text
         assert "https://supplier-a.example/catalog" in text
         assert "Verification: agent_reported" in text
-        assert "Run: " + run.run_id in text
+        # Identity and time stay in the ledger: identical content must be identical bytes.
+        assert run.run_id not in text and "Observed:" not in text and "Record:" not in text
         assert upload["headers"]["x-api-key"]
         # Second finalize is a no-op.
         assert await run.finalize(agent.history) is None
@@ -388,12 +389,25 @@ async def test_identical_content_is_one_document_and_one_cognify_pass(fake):
         uploads = [c for c in fake.calls if c["path"] == "/api/v1/remember"]
         assert len(uploads) == 2
         assert run_a.status.receipts[0].record_id == run_b.status.receipts[0].record_id
+        # And had the ledger not known (another process), the bytes would still be
+        # identical under the same name, so the server keeps one document.
+        other_process = make_memory(fake)
+        run_d = other_process.new_run(task="lead time", scope=SCOPE)
+        await run_d.execute(FakeAgent(steps=1, history=history))
+        await other_process.close()
+        uploads = [c for c in fake.calls if c["path"] == "/api/v1/remember"]
+        assert len(uploads) == 3
+        from tests.conftest import _multipart_file_text
+
+        bodies = [_multipart_file_text(u["raw"].decode()) for u in uploads[1:]]
+        assert bodies[0] == bodies[1]
+        assert len([d for d in fake.data if d["name"] == run_d.status.receipts[0].upload_name]) == 1
         # A different observation is a different record.
         run_c = memory.new_run(task="lead time", scope=SCOPE)
         await run_c.execute(
             FakeAgent(steps=1, history=FakeHistory(final="Supplier A ships in 5 days."))
         )
-        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 3
+        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 4
 
 
 async def test_remember_tool_budget_caps_new_documents_per_run(fake):
@@ -592,3 +606,50 @@ async def test_receipt_store_batches_reconcile_updates_and_runs_off_loop(fake, t
         memory.store.get = spy  # type: ignore[method-assign]
         await memory.record_status("rec_nope")
     assert seen and all(name.startswith("cognee-receipts") for name in seen)
+
+
+async def test_forget_is_not_verified_while_a_same_named_document_remains(fake):
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        await run.execute(FakeAgent(steps=1))
+        receipt = run.status.receipts[0]
+        ready = await memory.record_status(receipt.record_id)
+        # A second document under the same name (legacy data, or a server that
+        # did not dedupe): deleting ours must not read as "nothing left".
+        fake.data.append(
+            {
+                "id": "d03f564c-ff7b-4810-ac63-00000000dup1",
+                "name": receipt.upload_name,
+                "datasetId": ready.dataset_id,
+                "text": "same",
+            }
+        )
+        result = await memory.forget_record(receipt.record_id, scope=SCOPE)
+        assert result["verified"] is False
+        assert "same name" in result["message"] and "dup1" in result["message"]
+        assert memory.store.get(receipt.record_id).status != ReceiptStatus.DELETED
+        assert len([d for d in fake.data if d["name"] == receipt.upload_name]) == 1
+        # Once nothing of that name is listed, the deletion verifies.
+        fake.data.clear()
+        assert (await memory.forget_record(receipt.record_id, scope=SCOPE))["verified"] is True
+
+
+async def test_only_known_404_bodies_read_as_empty_memory(fake):
+    import httpx
+
+    fake.overrides["POST /api/v1/recall"] = lambda **_: httpx.Response(
+        404, json={"detail": "Not Found"}
+    )
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task="anything", scope=SCOPE)
+        context = await run.recall_context()
+        assert context.status == "error"
+        assert "404" in context.error
+        assert run.status.ok is False
+    fake.overrides["POST /api/v1/recall"] = lambda **_: httpx.Response(
+        404, json=fixture("recall-dataset-not-found.json")["body"]
+    )
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task="anything", scope=SCOPE)
+        assert (await run.recall_context()).status == "empty"
+        assert run.status.ok is True

@@ -122,6 +122,22 @@ class CogneeError(Exception):
             re.search(r"no searchable memory|no data has been added|NoDataError", self.detail, re.I)
         )
 
+    @property
+    def is_dataset_not_found(self) -> bool:
+        """The 404 cognee answers for a dataset name that does not exist (yet)."""
+        return self.is_not_found and bool(
+            re.search(r"DatasetNotFoundError|dataset\(s\) not found", self.detail, re.I)
+        )
+
+    @property
+    def means_nothing_stored(self) -> bool:
+        """A 404 whose body says the scope simply has no memory yet.
+
+        Any other 404 (a base URL missing its path prefix, a proxy, a removed
+        route) is an error and must be reported as one.
+        """
+        return self.is_no_searchable_memory or self.is_dataset_not_found
+
     def describe(self) -> str:
         where = f" ({self.method} {self.path})" if self.method else ""
         status = f" HTTP {self.status}" if self.status else ""

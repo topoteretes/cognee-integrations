@@ -333,13 +333,23 @@ class CogneeBrowserMemory:
             still = await self.backend.find_data_item(
                 current.dataset_id, current.upload_name, timeout_s=self.config.status_timeout_s
             )
-            if still.status == "found" and still.data_id == current.data_id:
-                await self._db(
-                    self.store.update,
-                    record_id,
-                    error="forget reported success but the document is still listed",
+            if still.status == "found":
+                # Verified means no document of this name is left. A row with
+                # another id under the same name is this record's content too
+                # (bytes are content-derived), so it counts as still present.
+                message = (
+                    "forget reported success but the document is still listed"
+                    if still.data_id == current.data_id
+                    else "forget removed this document but another with the same name "
+                    f"is still listed (id {still.data_id}); the content is still recallable"
                 )
-                return {"record_id": record_id, "verified": False, "status": current.status.value}
+                await self._db(self.store.update, record_id, error=message)
+                return {
+                    "record_id": record_id,
+                    "verified": False,
+                    "status": current.status.value,
+                    "message": message,
+                }
             if still.status == "exhausted":
                 # The forget endpoint says success for unknown ids, so only a complete
                 # listing proves anything. Keep the receipt live and say so.
@@ -453,9 +463,10 @@ class MemoryRun:
 
     def _query(self, query: Optional[str]) -> str:
         # The backend keeps a history of search queries, so a query is as much
-        # "content that leaves the process" as a record is: same redaction.
-        base = redact_text((query or self.task or "").strip())
-        hints = " ".join(redact_text(h) for h in self.query_hints if h)
+        # "content that leaves the process" as a record is: same redaction, and
+        # capped first so the regexes never see an unbounded task string.
+        base = redact_text(cap_text(query or self.task or "", 1000, marker=""))
+        hints = " ".join(redact_text(cap_text(h, 200, marker="")) for h in self.query_hints if h)
         return cap_text(f"{base} {hints}".strip(), 500, marker="")
 
     async def recall_context(
@@ -473,7 +484,7 @@ class MemoryRun:
             return RecallContext(status="empty", query=text, datasets=datasets)
         try:
             # One request inside one deadline. A scope with nothing stored yet
-            # answers 404 (dataset not found, or no searchable memory), which is
+            # answers a 404 whose body names the dataset or NoDataError, which is
             # "empty" below; looking the dataset up first would cost a full
             # dataset listing outside the deadline on every uncached scope.
             items = await asyncio.wait_for(
@@ -487,9 +498,11 @@ class MemoryRun:
             )
             context = self._bound(text, datasets, items)
         except CogneeError as exc:
-            if exc.is_no_searchable_memory or exc.is_not_found:
+            if exc.means_nothing_stored:
                 context = RecallContext(status="empty", query=text, datasets=datasets)
             else:
+                # Any other 404 is a misrouted URL or a missing route, not an
+                # empty memory: it must surface on run.status, not read as "no match".
                 kind = (
                     "unavailable"
                     if (

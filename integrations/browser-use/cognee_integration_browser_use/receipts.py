@@ -140,8 +140,8 @@ class ReceiptStore:
         ``ready``). ``failed`` and ``deleted`` are gone, and ``unknown`` means the
         write timed out, was cancelled, or its document never appeared: none of
         those may block the same content from being stored again. Re-uploading is
-        safe because the upload name is content-derived and the server keeps one
-        document per content.
+        safe because identical content serializes to identical bytes under the
+        same content-derived upload name, so the server stores one document.
         """
         with self._lock:
             row = self._db.execute(

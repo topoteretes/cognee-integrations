@@ -1,9 +1,13 @@
 """Record and receipt contracts.
 
 A :class:`MemoryRecord` is what one run leaves behind: what was attempted, what
-was observed, where (sanitized source URLs), when, and how much to trust it.
-Provenance is written into the document text itself so it survives any backend
-version's metadata handling.
+was observed, where (sanitized source URLs), and how much to trust it. That
+provenance is written into the document text itself so it survives any backend
+version's metadata handling. The record's identity (``record_id``, ``run_id``)
+and its observation time are deliberately *not* in the text: identical content
+must serialize to identical bytes so the content-derived ``upload_name`` names
+exactly one document and the server can deduplicate it. They live in the
+receipt ledger instead.
 """
 
 from __future__ import annotations
@@ -69,9 +73,6 @@ class MemoryRecord:
         kind_label = self.kind.value.replace("_", " ")
         lines = [
             f"Browser research record ({kind_label})",
-            f"Record: {self.record_id}",
-            f"Run: {self.run_id}",
-            f"Observed: {self.observed_at.isoformat()}",
             f"Verification: {self.verification.value}",
             f"Outcome: {self.outcome}" + (f" after {self.steps} steps" if self.steps else ""),
             "",
@@ -92,13 +93,12 @@ class MemoryRecord:
 
     @property
     def content_hash(self) -> str:
-        """Hash of what the record *says*, not of the document text.
+        """Hash of what the record *says*, which is also all that ``to_text`` writes.
 
-        ``record_id``, ``run_id`` and ``observed_at`` are deliberately left out:
-        two runs that observe the same thing produce one hash, so the ledger's
-        dedupe (``find_live_by_hash``) and the hash-derived ``upload_name`` can
-        stop a second upload and a second cognify pass. The capture time stays
-        in the stored text.
+        ``record_id``, ``run_id`` and ``observed_at`` are left out of both: two
+        runs that observe the same thing produce one hash, one upload name and
+        byte-identical documents, so the ledger's dedupe (``find_live_by_hash``)
+        and the server's own content dedupe both stop a second cognify pass.
         """
         parts = [
             self.scope_key,

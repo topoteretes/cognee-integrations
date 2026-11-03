@@ -83,3 +83,18 @@ follows [Semantic Versioning](https://semver.org/).
   receipt during `reconcile()`. They now run on a worker thread owned by
   `CogneeBrowserMemory`, `reconcile()` applies its updates in one transaction, and the
   durable store uses `synchronous=NORMAL` under WAL.
+- The uploaded document carried `Record:`, `Run:` and `Observed:` lines, so identical
+  content produced different bytes under one content-derived upload name: the server
+  stored a second document and never deduplicated across processes, and receipts could
+  resolve to the wrong one. Identity and time now stay in the receipt ledger; the bytes are
+  a pure function of the content.
+- `forget_record()` counted a same-named row with a different id as "gone". A verified
+  deletion now means no document of that name is listed; otherwise it answers
+  `verified: False` and names the remaining document.
+- Every HTTP 404 from recall read as an empty memory with `run.status.ok` still true, so a
+  base URL missing its path prefix looked like "no stored research". Only a 404 naming the
+  dataset (`DatasetNotFoundError`) or `NoDataError` is "empty"; any other is a recall error.
+- Redaction ran over uncapped page text and the prefixed-credential rule backtracked
+  quadratically on long hyphenated or base64url runs (about 3.5 s for 20k characters, on
+  the event loop inside `finalize()`). Text is capped before redaction and the prefix is
+  bounded to 64 characters; 100k characters now redact in well under a second.

@@ -60,3 +60,24 @@ def test_prefixed_keys_bearer_connection_strings_and_clipped_keys_are_redacted()
     assert redact_text("the token economy and a password manager review") == (
         "the token economy and a password manager review"
     )
+
+
+def test_redaction_is_linear_on_long_hyphenated_page_text():
+    import time
+
+    blob = "ab-" * 34_000  # ~100k characters: the shape that made the prefix rule backtrack
+    started = time.perf_counter()
+    redacted = redact_text(blob)
+    assert time.perf_counter() - started < 1.0
+    assert redacted == blob
+    # clean_for_memory caps before it redacts, so an unbounded page dump never
+    # reaches the regexes at full length; a secret near the cap is still caught.
+    long_text = "x " * 50_000 + "password=hunter2"
+    started = time.perf_counter()
+    cleaned = clean_for_memory(long_text + " tail", 400)
+    assert time.perf_counter() - started < 0.5
+    assert len(cleaned) <= 400
+    assert "hunter2" not in clean_for_memory("y " * 190 + "password=hunter2 z", 400)
+    assert "<redacted>" in clean_for_memory("y " * 190 + "password=hunter2 z", 400)
+    # The bounded prefix still catches realistic prefixed keys.
+    assert "hunter2" not in redact_text("x_" * 20 + "password=hunter2")

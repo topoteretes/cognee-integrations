@@ -31,8 +31,10 @@ _SECRET_TEXT_PATTERNS = [
     re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?)://[^\s\"'<>]+"),
     re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+"),
     # ``access_token=``, ``client_secret: "x"``, ``X-Api-Key=``: any prefixed secret word.
+    # The prefix is bounded: an unbounded ``[\w-]*`` backtracks quadratically on a
+    # long hyphenated or base64url run (seconds for 20k characters of page text).
     re.compile(
-        rf"(?i)[\"']?\b(?:(?:[\w-]*[_-])?(?:{_SECRET_WORD}|x-api-key)|_auth)"
+        rf"(?i)[\"']?\b(?:(?:[\w-]{{0,64}}[_-])?(?:{_SECRET_WORD}|x-api-key)|_auth)"
         r"[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
     ),
     re.compile(
@@ -107,5 +109,12 @@ def cap_text(text: str, max_chars: int, marker: str = " …[truncated]") -> str:
 
 
 def clean_for_memory(text: str, max_chars: int) -> str:
-    """Redact, normalize and cap text destined for a memory record."""
-    return cap_text(redact_text(text or ""), max_chars)
+    """Redact, normalize and cap text destined for a memory record.
+
+    The text is capped *before* redaction so the regexes never run over an
+    unbounded page dump (this runs on the agent's event loop). The pre-cap is
+    twice the final cap, so redaction can still shrink spans without leaving the
+    result short, and a secret clipped at that boundary is still caught by the
+    prefix rules.
+    """
+    return cap_text(redact_text(cap_text(text or "", max_chars * 2, marker="")), max_chars)

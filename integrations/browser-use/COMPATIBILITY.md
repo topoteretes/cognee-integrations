@@ -25,15 +25,18 @@ Observed 1.6.5 behaviours the adapter is built around:
 
 - A background `remember` answers `{"status":"running","dataset_id":…,"pipeline_run_id":null}` with
   **no document id**; the adapter finds its document later by the content-derived upload
-  name (`browser-<kind>-<sha256[:32]>`) in the dataset listing. A reused upload name with
-  different content is dropped silently on the background path, which content-derived
+  name (`browser-<kind>-<sha256[:32]>`) in the dataset listing. The document bytes carry
+  no record id, run id or timestamp, so identical content is byte-identical under one name
+  and the server's content-derived data id yields one document; a reused upload name with
+  *different* content is dropped silently on the background path, which content-derived
   names avoid.
 - `POST /forget` answers `status: "success"` even for an unknown `dataId`; deletion is
   verified by re-listing. A deleted document stops appearing in `CHUNKS` recall at once.
-- `POST /recall` naming a dataset that does not exist answers HTTP 404; the adapter sends
-  the scoped request straight away (no dataset lookup first), treats that 404 as "nothing
-  stored yet" and never retries unscoped. A completion search on an emptied dataset answers
-  404 `NoDataError`, also reported as empty.
+- `POST /recall` naming a dataset that does not exist answers HTTP 404 with
+  `DatasetNotFoundError` in the body; the adapter sends the scoped request straight away (no
+  dataset lookup first), treats that 404 as "nothing stored yet" and never retries unscoped.
+  A completion search on an emptied dataset answers 404 `NoDataError`, also reported as
+  empty. Any other 404 (wrong base URL prefix, proxy) is reported as a recall error.
 
 ## Browser Use surfaces
 
