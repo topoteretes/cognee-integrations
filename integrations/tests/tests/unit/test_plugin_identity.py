@@ -64,6 +64,16 @@ def test_register_self_declares_connection_type(suite, pc, mock_server):
     mock_server.assert_called("POST", "/api/v1/agents/register", type=CONNECTION_TYPE[suite.name])
 
 
+def test_register_names_the_plugin_in_metadata(suite, pc, mock_server):
+    """SDK-646: the server attributes the connection to the plugin from
+    ``metadata.plugin_key``, not from a connection-type table it has to keep."""
+    ok, _body = pc.register_agent_via_http(agent_session_name="sess-a", session_id="s1")
+    assert ok
+    mock_server.assert_called(
+        "POST", "/api/v1/agents/register", metadata={"plugin_key": suite.name}
+    )
+
+
 def test_register_surfaces_auth_rejection(suite, pc, mock_server):
     mock_server.force_response("POST", "/api/v1/agents/register", 401, {"detail": "revoked"})
     ok, body = pc.register_agent_via_http(agent_session_name="sess-a")
@@ -92,6 +102,19 @@ def test_provision_normalizes_camel_case_response(suite, pc, mock_server):
     entry = mock_server.assert_called("POST", PROVISION_PATH[suite.name])
     # Provisioning must authenticate as the PRINCIPAL, never the agent key.
     assert entry["headers"].get("X-Api-Key") == PRINCIPAL_KEY
+
+
+def test_provision_describes_the_plugin_to_the_server(suite, pc, mock_server):
+    """SDK-646: the plugin self-registers — label and connection type travel
+    with the provision call so the server needs no hardcoded plugin list."""
+    status, _body = pc.provision_plugin_agent_via_http(principal_key=PRINCIPAL_KEY)
+    assert status == "provisioned"
+    entry = mock_server.assert_called("POST", PROVISION_PATH[suite.name])
+    assert entry["json"] == {
+        "label": pc.PLUGIN_LABEL,
+        "connection_type": CONNECTION_TYPE[suite.name],
+    }
+    assert pc.PLUGIN_LABEL.strip()
 
 
 def test_provision_unsupported_on_older_server(suite, pc, mock_server):

@@ -4914,7 +4914,10 @@ def provision_plugin_agent_via_http(
     try:
         result = _json_http_request(
             f"/api/v1/integrations/plugins/{PLUGIN_KEY}/provision",
-            {},
+            # Self-description (SDK-646): the server learns the plugin from the
+            # integration instead of a hardcoded registry. Older servers take no
+            # body on this route and ignore these fields.
+            {"label": PLUGIN_LABEL, "connection_type": CONNECTION_TYPE},
             method="POST",
             timeout=timeout,
             api_key=principal_key,
@@ -4983,6 +4986,9 @@ def register_agent_via_http(
         "type": CONNECTION_TYPE,
         "memory_mode": "hybrid",
         "source": "api",
+        # Lets the server's status aggregation attribute this connection to the
+        # plugin without a connection-type -> plugin-key table (SDK-646).
+        "metadata": {"plugin_key": PLUGIN_KEY},
     }
     if session_id:
         payload["session_id"] = session_id
