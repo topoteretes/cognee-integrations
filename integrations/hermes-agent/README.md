@@ -40,8 +40,13 @@ Python package with the `hermes_agent.plugins` entry point.
 - Exposes `cognee_forget` for user-directed, per-document deletion ("forget
   what we said about tennis"): find candidates with previews, then delete only
   what the user confirms.
+- Recall is auto by default: on a cognee >= 1.6.6 server the graph recall names
+  no dataset and the server routes each query to the best-matching dataset(s);
+  saves still go to the conversation's dataset. Against an older server recall
+  stays on that dataset.
 - Exposes `cognee_switch_dataset` to move a conversation to another dataset
-  mid-session, bridging the session it leaves behind.
+  mid-session, bridging the session it leaves behind; a switch (or picking the
+  dataset in use) restricts recall to that dataset, and `action='auto'` lifts it.
 - Indexes repositories into a deterministic code graph (`hermes cognee
   index-repo`) and answers structural code questions exactly via
   `cognee_code_search`, plus an identifier-gated code recall lane.
@@ -158,7 +163,7 @@ the tenant, authenticated with your API key via `X-Api-Key`.
 Type **local** at the mode prompt and paste your LLM API key when asked, or leave
 it blank to run without one (below). If the
 cognee runtime is not installed yet, the wizard offers to install it:
-`cognee==1.6.5` and its dependencies, about 1 GB from PyPI, into
+`cognee==1.6.6` and its dependencies, about 1 GB from PyPI, into
 `~/.cognee-plugin/hermes/runtime/venv`. With uv on your PATH that takes under a
 minute; without it, pip takes a few. Choosing local also clears a Cognee Cloud
 URL and key saved by an earlier remote setup.
@@ -415,11 +420,11 @@ LLM_API_KEY=sk-...
 ```
 
 Embedded mode, and the `sdk` transport (`COGNEE_TRANSPORT=sdk`), run cognee inside
-the Hermes process, so they need `cognee==1.6.5` in Hermes's own Python environment.
+the Hermes process, so they need `cognee==1.6.6` in Hermes's own Python environment.
 The plugin cannot declare it (its dependencies conflict with Hermes's, which is
 why local mode uses a private runtime), and the private runtime does not help here.
 You can install it into Hermes's venv yourself
-(`uv pip install --python <hermes venv python> cognee==1.6.5`), but this is
+(`uv pip install --python <hermes venv python> cognee==1.6.6`), but this is
 fragile: Hermes rebuilds its environment from its own lock whenever it updates or
 the enabled plugins change, which removes it, and cognee's pins may not resolve
 against your Hermes build at all. Prefer local mode unless you specifically need

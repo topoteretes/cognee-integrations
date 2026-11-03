@@ -359,6 +359,10 @@ class CogneeMemoryProvider(MemoryProvider):
         self._default_dataset = DEFAULT_DATASET
         self._switch_counter = 0
         self._retired_sessions: list[tuple[str, str]] = []
+        # Graph recall restricted to self._dataset (a switch, or the dataset in
+        # use picked). Unpinned, recall is auto (SDK-1393): it names no dataset
+        # and a cognee >= 1.6.6 server routes it to the best-matching dataset(s).
+        self._recall_pinned = False
         # Where Hermes was launched; gates the identifier-based code recall lane.
         self._cwd = ""
         # Per-session memory-hit totals for the visibility header (guarded by
@@ -1382,6 +1386,7 @@ class CogneeMemoryProvider(MemoryProvider):
         # its own switch counter — never the previous conversation's.
         self._dataset = self._default_dataset
         self._switch_counter = 0
+        self._recall_pinned = False
         self._session_cognee_id = self._build_cognee_session_id(new_session_id, **kwargs)
         self._reset_stored()
         self._apply_dataset_override()
@@ -1551,7 +1556,7 @@ class CogneeMemoryProvider(MemoryProvider):
         return self._backend.recall(
             query=query,
             session_id=None,
-            datasets=[self._dataset],
+            datasets=self._graph_datasets(),
             top_k=top_k,
             auto_route=self._auto_route,
             query_type=search_type or None,
@@ -1694,7 +1699,12 @@ class CogneeMemoryProvider(MemoryProvider):
         lanes.append(
             (
                 _MEMORY_LANE,
-                {"scope": ["graph"], "query_type": "HYBRID_COMPLETION", "session_id": None},
+                {
+                    "scope": ["graph"],
+                    "query_type": "HYBRID_COMPLETION",
+                    "session_id": None,
+                    "routed": self._graph_datasets() is None,
+                },
             )
         )
         if session_id:
@@ -1719,7 +1729,10 @@ class CogneeMemoryProvider(MemoryProvider):
                 results = self._backend.recall(
                     query=query,
                     session_id=spec.get("session_id"),
-                    datasets=spec.get("datasets") or [self._dataset],
+                    # A routed lane names no dataset: the server picks (auto recall).
+                    datasets=(
+                        None if spec.get("routed") else spec.get("datasets") or [self._dataset]
+                    ),
                     top_k=top_k,
                     auto_route=True,
                     query_type=spec.get("query_type"),
@@ -2125,7 +2138,10 @@ class CogneeMemoryProvider(MemoryProvider):
             counter = int(override.get("counter") or 0)
         except (TypeError, ValueError):
             return
+        # Entries written before SDK-1393 carry no mode: a switch pinned recall.
+        self._recall_pinned = str(override.get("recall") or "pinned") == "pinned"
         if not dataset or counter <= 0:
+            # A pin-only entry (counter 0) restricts recall without a switch.
             return
         self._dataset = dataset
         self._switch_counter = counter
@@ -2141,9 +2157,12 @@ class CogneeMemoryProvider(MemoryProvider):
                     "dataset": self._dataset,
                     "default": self._default_dataset,
                     "switched": self._dataset != self._default_dataset,
+                    "recall": "pinned" if self._recall_pinned else "auto",
                     "cognee_session_id": self._session_cognee_id,
                 }
             )
+        if action == "auto":
+            return self._set_recall_auto()
         if action == "list":
             try:
                 rows = self._backend.list_datasets(timeout=30.0)
@@ -2179,12 +2198,66 @@ class CogneeMemoryProvider(MemoryProvider):
                 return json.dumps({"error": error + hint})
             return self._switch_dataset(target, force=force)
         if action == "reset":
-            return self._switch_dataset(self._default_dataset, force=force)
-        return json.dumps({"error": "Specify action: list, current, switch, or reset."})
+            if self._dataset == self._default_dataset:
+                return self._set_recall_auto()
+            result = self._switch_dataset(self._default_dataset, force=force)
+            if json.loads(result).get("switched"):
+                # Back to the configured dataset means back to auto recall.
+                self._recall_pinned = False
+                dataset_overrides.save_override(
+                    self._session_id, self._dataset, self._switch_counter, recall="auto"
+                )
+            return result
+        return json.dumps({"error": "Specify action: list, current, switch, auto, or reset."})
+
+    # -- recall mode (SDK-1393) -------------------------------------------------
+
+    def _graph_datasets(self) -> Optional[list[str]]:
+        """The datasets graph recall names: none (auto, routed server-side)
+        unless recall is pinned or the server does not route datasets."""
+        if self._recall_pinned:
+            return [self._dataset]
+        try:
+            timeout = min(2.0, self._timeout("recall_timeout", 120))
+            routes = self._backend.routes_datasets(timeout=timeout)
+        except Exception:
+            routes = False
+        return None if routes else [self._dataset]
+
+    def _set_recall_auto(self) -> str:
+        changed = self._recall_pinned
+        if changed:
+            self._recall_pinned = False
+            dataset_overrides.save_override(
+                self._session_id, self._dataset, self._switch_counter, recall="auto"
+            )
+            with self._prefetch_lock:
+                self._prefetch_result = ""
+                self._prefetch_generation += 1
+        return json.dumps(
+            {
+                "switched": False,
+                "reason": "recall_auto" if changed else "already_auto",
+                "dataset": self._dataset,
+                "recall": "auto",
+            }
+        )
 
     def _switch_dataset(self, target: str, *, force: bool) -> str:
         if target == self._dataset:
-            return json.dumps({"switched": False, "reason": "already_active", "dataset": target})
+            # The dataset in use: restrict recall to it, no new session.
+            reason = "already_active" if self._recall_pinned else "recall_restricted"
+            if not self._recall_pinned:
+                self._recall_pinned = True
+                dataset_overrides.save_override(
+                    self._session_id, target, self._switch_counter, recall="pinned"
+                )
+                with self._prefetch_lock:
+                    self._prefetch_result = ""
+                    self._prefetch_generation += 1
+            return json.dumps(
+                {"switched": False, "reason": reason, "dataset": target, "recall": "pinned"}
+            )
         old_dataset, old_session = self._dataset, self._session_cognee_id
 
         # 1. Flush the turn currently being written, then bridge the session we
@@ -2237,6 +2310,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._session_cognee_id = f"{base}__{self._switch_counter}"
         self._reset_stored()
         self._dataset = target
+        self._recall_pinned = True
         dataset_overrides.save_override(self._session_id, target, self._switch_counter)
         with self._prefetch_lock:
             self._prefetch_result = ""
@@ -2252,6 +2326,7 @@ class CogneeMemoryProvider(MemoryProvider):
         envelope: dict[str, Any] = {
             "switched": True,
             "dataset": target,
+            "recall": "pinned",
             "cognee_session_id": self._session_cognee_id,
             "previous": {"dataset": old_dataset, "session_id": old_session, "bridged": bridged},
         }

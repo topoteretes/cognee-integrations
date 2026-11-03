@@ -117,19 +117,22 @@ FORGET_SCHEMA = {
 SWITCH_DATASET_SCHEMA = {
     "name": "cognee_switch_dataset",
     "description": (
-        "Move this conversation to another Cognee dataset. action='list' shows the "
-        "datasets visible to this principal, 'current' reports the active one, "
-        "'switch' bridges the current session into its dataset and re-points "
-        "capture, recall and the session-end improve at the target (creating it "
-        "if needed), 'reset' returns to the configured default dataset."
+        "Move this conversation to another Cognee dataset. Recall is auto by default "
+        "(each query goes to the best-matching dataset). action='list' shows the "
+        "datasets visible to this principal, 'current' reports the active one and the "
+        "recall mode, 'switch' bridges the current session into its dataset and "
+        "re-points capture and the session-end improve at the target (creating it if "
+        "needed) and restricts recall to it (the dataset in use: only restricts recall), "
+        "'auto' lifts that restriction (saves stay where they are), 'reset' returns to "
+        "the configured default dataset with auto recall."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "description": "list, current, switch, or reset.",
-                "enum": ["list", "current", "switch", "reset"],
+                "description": "list, current, switch, auto, or reset.",
+                "enum": ["list", "current", "switch", "auto", "reset"],
             },
             "dataset": {
                 "type": "string",

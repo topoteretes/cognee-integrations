@@ -73,7 +73,7 @@ import urllib.request
 import uuid
 from typing import Any, Optional
 
-from .backend import MemoryBackend
+from .backend import MemoryBackend, version_routes_datasets
 from .config import (  # noqa: F401 — DEFAULT_USER_* re-exported for callers/tests
     DEFAULT_USER_EMAIL,
     DEFAULT_USER_PASSWORD,
@@ -426,6 +426,31 @@ class HttpBackend(MemoryBackend):
             return True
         except Exception:
             return False
+
+    def routes_datasets(self, *, timeout: float) -> bool:
+        """``version`` from /health, cached for an hour (five minutes after a
+        failed probe). A failed probe keeps the last answer; with none, False."""
+        import time
+
+        now = time.monotonic()
+        cached = getattr(self, "_routing", None)
+        if cached and now - cached["checked_at"] < (3600.0 if cached["version"] else 300.0):
+            return cached["routes"]
+        version = ""
+        if self.url:
+            try:
+                health = self._request("GET", "/health", timeout=timeout)
+                if isinstance(health, dict):
+                    version = str(health.get("version") or "").strip()
+            except Exception as exc:
+                logger.debug("cognee /health version probe failed: %s", exc)
+        routes = version_routes_datasets(version) if version else bool(cached and cached["routes"])
+        self._routing = {
+            "version": version or (cached["version"] if cached else ""),
+            "routes": routes,
+            "checked_at": now,
+        }
+        return routes
 
     def ensure_dataset(self, *, dataset: str, timeout: float) -> None:
         """Create-or-return the dataset, as the other plugins do at bootstrap.

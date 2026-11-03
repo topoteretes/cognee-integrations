@@ -64,15 +64,27 @@ class TestSwitchDataset(unittest.TestCase):
         self.assertEqual(override["dataset"], "work")
         self.assertEqual(override["counter"], 1)
 
-    def test_switch_to_the_active_dataset_is_a_noop(self):
+    def test_switch_to_the_active_dataset_only_restricts_recall(self):
+        """SDK-1393: picking the dataset in use pins recall to it, with no bridge,
+        no new session and no backend call; picking it again is a no-op."""
         with fake_backend() as fake:
             provider = make_provider()
             out = _call(
                 provider, "cognee_switch_dataset", {"action": "switch", "dataset": "hermes"}
             )
+            again = _call(
+                provider, "cognee_switch_dataset", {"action": "switch", "dataset": "hermes"}
+            )
         self.assertFalse(out["switched"])
-        self.assertEqual(out["reason"], "already_active")
+        self.assertEqual(out["reason"], "recall_restricted")
+        self.assertEqual(again["reason"], "already_active")
+        self.assertTrue(provider._recall_pinned)
+        self.assertEqual(provider._session_cognee_id, "hermes_s-1")
         self.assertEqual(fake.calls, [])
+        override = dataset_overrides.load_override("s-1")
+        self.assertEqual(
+            (override["dataset"], override["counter"], override["recall"]), ("hermes", 0, "pinned")
+        )
 
     def test_a_failed_bridge_aborts_without_force(self):
         with fake_backend() as fake:
@@ -224,6 +236,61 @@ class TestCodeSearch(unittest.TestCase):
             out = _call(provider, "cognee_code_search", {"operation": "delta"})
         self.assertEqual(out["count"], 1)
         self.assertEqual(out["results"][0]["added"], 3)
+
+
+class TestAutoRecall(unittest.TestCase):
+    """SDK-1393: graph recall names no dataset unless the conversation pinned
+    one, and only where the backend says the server routes datasets."""
+
+    def _graph_recall(self, provider, fake):
+        _call(provider, "cognee_recall", {"query": "what did we decide?"})
+        (kwargs,) = [k for k in fake.kwargs_for("recall") if k["scope"] == ["graph"]]
+        return kwargs
+
+    def test_recall_is_auto_on_a_server_that_routes(self):
+        with fake_backend() as fake:
+            fake.routes_datasets = lambda **kw: True
+            provider = make_provider()
+            self.assertIsNone(self._graph_recall(provider, fake)["datasets"])
+            out = _call(provider, "cognee_switch_dataset", {"action": "current"})
+        self.assertEqual(out["recall"], "auto")
+
+    def test_an_older_server_keeps_the_dataset(self):
+        with fake_backend() as fake:
+            provider = make_provider()
+            self.assertEqual(self._graph_recall(provider, fake)["datasets"], ["hermes"])
+
+    def test_a_switch_pins_recall_and_auto_lifts_it(self):
+        with fake_backend() as fake:
+            fake.routes_datasets = lambda **kw: True
+            provider = make_provider()
+            _call(provider, "cognee_switch_dataset", {"action": "switch", "dataset": "work"})
+            self.assertEqual(self._graph_recall(provider, fake)["datasets"], ["work"])
+            out = _call(provider, "cognee_switch_dataset", {"action": "auto"})
+            self.assertEqual(out["reason"], "recall_auto")
+            fake.calls.clear()
+            self.assertIsNone(self._graph_recall(provider, fake)["datasets"])
+        # Saves stay in the switched dataset; the mode survives a resume.
+        self.assertEqual(provider._dataset, "work")
+        override = dataset_overrides.load_override("s-1")
+        self.assertEqual((override["dataset"], override["recall"]), ("work", "auto"))
+
+    def test_a_resumed_conversation_keeps_its_recall_mode(self):
+        dataset_overrides.save_override("s-1", "hermes", 0, recall="pinned")
+        with fake_backend():
+            provider = make_provider()
+            provider._apply_dataset_override()
+        self.assertTrue(provider._recall_pinned)
+        self.assertEqual(provider._dataset, "hermes")
+        self.assertEqual(provider._session_cognee_id, "hermes_s-1")
+
+    def test_a_pre_sdk_1393_switch_entry_stays_pinned(self):
+        dataset_overrides._save({"s-1": {"dataset": "work", "counter": 2}})
+        with fake_backend():
+            provider = make_provider()
+            provider._apply_dataset_override()
+        self.assertTrue(provider._recall_pinned)
+        self.assertEqual(provider._dataset, "work")
 
 
 if __name__ == "__main__":

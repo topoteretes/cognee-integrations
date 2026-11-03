@@ -49,7 +49,7 @@ DEFAULT_USER_PASSWORD = "default_password"
 # 1.5.4 is the floor (code-graph indexing moved its repo-spec form field to
 # raw_data there); 1.6.0 is what the plugin is written against: the password-less
 # default user and the only_context prompt contract.
-LOCAL_COGNEE_REQUIREMENT = "cognee==1.6.5"
+LOCAL_COGNEE_REQUIREMENT = "cognee==1.6.6"
 # Recall trimming defaults, the shared reference values (recall_text.py).
 DEFAULT_RECALL_PASSAGE_CHARS = 2000
 DEFAULT_RECALL_CONTEXT_CHARS = 12000

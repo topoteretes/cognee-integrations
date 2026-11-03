@@ -29,6 +29,31 @@ from .config import LOCAL_COGNEE_REQUIREMENT, ollama_embedding_pins, str_to_bool
 
 logger = logging.getLogger(__name__)
 
+# Dataset routing (an unscoped recall goes to the best-matching dataset) shipped in cognee 1.6.6.
+DATASET_ROUTING_MIN_VERSION = (1, 6, 6)
+
+
+def version_tuple(value: str) -> tuple[int, ...]:
+    """Leading numeric release of a version string: '1.6.6rc1' -> (1, 6, 6)."""
+    parts: list[int] = []
+    for piece in str(value or "").strip().lstrip("vV").split("."):
+        digits = ""
+        for ch in piece:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if not digits:
+            break
+        parts.append(int(digits))
+        if len(digits) != len(piece):
+            break
+    return tuple(parts)
+
+
+def version_routes_datasets(value: str) -> bool:
+    parts = version_tuple(value)
+    return bool(parts) and parts >= DATASET_ROUTING_MIN_VERSION
+
 
 def has_cognee() -> bool:
     """True when the cognee package is importable. Never imports it."""
@@ -114,6 +139,12 @@ class MemoryBackend:
         In-process transports have no server to probe and always answer.
         """
         return True
+
+    def routes_datasets(self, *, timeout: float) -> bool:
+        """Whether a recall that names no dataset is routed to the best-matching
+        dataset(s) (dataset routing, cognee >= 1.6.6). False keeps recall on the
+        conversation's dataset: an older cognee searches every readable dataset."""
+        return False
 
     # -- operations --------------------------------------------------------
 
@@ -310,6 +341,18 @@ class SdkBackend(MemoryBackend):
         self._bridge = _AsyncBridge()
         self._user: Any = None
         self.served = False
+
+    def routes_datasets(self, *, timeout: float) -> bool:
+        """In-process, the installed cognee does the routing; a served instance's
+        version is not known here, so its recall stays on the dataset."""
+        if self.served:
+            return False
+        try:
+            from importlib.metadata import version
+
+            return version_routes_datasets(version("cognee"))
+        except Exception:
+            return False
 
     @property
     def user(self) -> Any:

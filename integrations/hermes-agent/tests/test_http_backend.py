@@ -994,3 +994,35 @@ class TestProviderOverHttp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestDatasetRoutingGate(unittest.TestCase):
+    """SDK-1393: auto recall applies only where /health reports cognee >= 1.6.6."""
+
+    def _backend(self, answer):
+        backend = HttpBackend()
+        backend.url = "http://cognee.test"
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append(path)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        backend._request = request
+        return backend, calls
+
+    def test_routing_starts_at_1_6_6_and_is_cached(self):
+        cases = [("1.6.6", True), ("1.6.6rc1", True), ("1.7.0", True), ("1.6.5", False)]
+        for version, routes in cases:
+            backend, calls = self._backend({"status": "ready", "version": version})
+            self.assertIs(backend.routes_datasets(timeout=1.0), routes, version)
+            backend.routes_datasets(timeout=1.0)
+            self.assertEqual(calls, ["/health"], version)
+
+    def test_no_version_or_a_failed_probe_keeps_recall_scoped(self):
+        backend, _ = self._backend({"status": "ready"})
+        self.assertFalse(backend.routes_datasets(timeout=1.0))
+        backend, _ = self._backend(OSError("refused"))
+        self.assertFalse(backend.routes_datasets(timeout=1.0))

@@ -7,10 +7,13 @@ keep this in their launch records and openclaw in ``dataset-overrides.json``;
 this is the hermes counterpart of the latter — one JSON map keyed by the
 *hermes* session id::
 
-    { "<hermes session id>": {"dataset": "...", "counter": 2}, ... }
+    { "<hermes session id>": {"dataset": "...", "counter": 2, "recall": "pinned"}, ... }
 
 ``counter`` feeds the switched cognee session id (``hermes_<id>__N``): a
 cognee session never spans two datasets, so every switch mints a fresh one.
+``recall`` (SDK-1393) is "pinned" when graph recall is restricted to
+``dataset`` and "auto" when it names no dataset and the server routes it. A
+pin-only entry (the dataset in use picked, no switch) has ``counter`` 0.
 Everything here is best-effort — an unreadable file means "no overrides",
 never a failed session.
 """
@@ -63,14 +66,24 @@ def load_override(session_id: str, *, path: Optional[Path] = None) -> dict[str, 
 
 
 def save_override(
-    session_id: str, dataset: str, counter: int, *, path: Optional[Path] = None
+    session_id: str,
+    dataset: str,
+    counter: int,
+    *,
+    recall: str = "pinned",
+    path: Optional[Path] = None,
 ) -> None:
     if not session_id:
         return
     import time
 
     data = _load(path)
-    data[session_id] = {"dataset": dataset, "counter": counter, "updated_at": time.time()}
+    data[session_id] = {
+        "dataset": dataset,
+        "counter": counter,
+        "recall": recall,
+        "updated_at": time.time(),
+    }
     _save(data, path)
 
 
