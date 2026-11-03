@@ -28,26 +28,38 @@ export const DATASET_ROUTING_MIN_VERSION = [1, 6, 6] as const;
 const ROUTING_TTL_MS = 60 * 60_000;
 const ROUTING_RETRY_MS = 5 * 60_000;
 
-/** Leading numeric release of a version string: "1.6.6rc1" -> [1, 6, 6]. */
+// After the release: a pre-release ("rc1", ".rc1", "-beta2", "a1") or a dev
+// build (".dev0") sorts below its release; "-local" (source checkout, the
+// Docker image), a "+label" and ".post1" count as the release itself. Any
+// other suffix ("-custom") is unparseable.
+const PRE_RELEASE_RE = /^[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview|dev)(?:[-_.]?\d+)?(?:$|[-_.+])/;
+const RELEASE_SUFFIX_RE = /^(?:-local|\+.*|[-.]?post\d*)$/;
+
+/** Numeric release of a version string: "1.6.6rc1" -> [1, 6, 6]; [] when unparseable. */
 export function versionTuple(value: string): number[] {
-  const parts: number[] = [];
-  for (const piece of value.trim().replace(/^[vV]/, "").split(".")) {
-    const digits = /^\d+/.exec(piece)?.[0];
-    if (!digits) break;
-    parts.push(Number(digits));
-    if (digits.length !== piece.length) break;
-  }
-  return parts;
+  const release = /^v?(\d+(?:\.\d+)*)/i.exec(value.trim())?.[1];
+  return release ? release.split(".").map(Number) : [];
 }
 
+/**
+ * `value` >= `minimum`, PEP 440-style: "1.6.6", "1.6.6-local", "1.6.6+local"
+ * and "1.6.6.post1" count as 1.6.6; "1.6.6rc1", "1.6.6.rc1" and "1.6.6.dev0"
+ * as below it (cognee 1.6.6rc1 reports "1.6.6.rc1" without dataset routing).
+ * Unparseable ("unknown", "", "1.6.6-custom") is false.
+ */
 export function versionAtLeast(value: string, minimum: readonly number[]): boolean {
-  const parts = versionTuple(value);
-  if (parts.length === 0) return false;
-  for (let i = 0; i < minimum.length; i++) {
-    const part = parts[i] ?? 0;
-    if (part !== minimum[i]) return part > minimum[i];
+  const match = /^v?(\d+(?:\.\d+)*)(.*)$/i.exec(value.trim());
+  if (!match) return false;
+  const parts = match[1].split(".").map(Number);
+  let cmp = 0;
+  for (let i = 0; i < Math.max(parts.length, minimum.length) && cmp === 0; i++) {
+    cmp = Math.sign((parts[i] ?? 0) - (minimum[i] ?? 0));
   }
-  return true;
+  const suffix = match[2].toLowerCase();
+  if (!suffix || RELEASE_SUFFIX_RE.test(suffix)) return cmp >= 0;
+  // A pre-release or dev build is below its release.
+  if (PRE_RELEASE_RE.test(suffix)) return cmp > 0;
+  return false;
 }
 
 // Node's bundled global fetch has an undici headersTimeout of 300s. Long-running
@@ -319,9 +331,9 @@ export class CogneeHttpClient {
 
   // -- Health ---------------------------------------------------------------
 
-  async health(): Promise<{ status: string }> {
+  async health(timeoutMs: number = this.timeoutMs): Promise<{ status: string }> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const headers = this.isCloud ? { "X-Api-Key": this.apiKey! } : {};
       const response = await fetch(`${this.baseUrl}/health`, {
@@ -343,25 +355,30 @@ export class CogneeHttpClient {
    * dataset routing). Read from `/health`'s `version`, cached for an hour (five
    * minutes after a failed probe). A failed probe keeps the last answer; with
    * none, false: recall then stays on its dataset, as on an older server, which
-   * would search every readable dataset instead of routing.
+   * would search every readable dataset instead of routing. `timeoutMs` bounds
+   * the probe (callers on the prompt path pass a short one); concurrent callers
+   * share one in-flight probe.
    */
-  async routesDatasets(): Promise<boolean> {
-    const now = Date.now();
+  async routesDatasets(timeoutMs: number = this.timeoutMs): Promise<boolean> {
     const cached = this.routing;
-    if (cached && now - cached.checkedAt < (cached.version ? ROUTING_TTL_MS : ROUTING_RETRY_MS)) return cached.routes;
-    let version = "";
-    try {
-      const body = (await this.health()) as { version?: unknown };
-      version = typeof body?.version === "string" ? body.version.trim() : "";
-    } catch {
-      version = "";
-    }
-    const routes = version ? versionAtLeast(version, DATASET_ROUTING_MIN_VERSION) : cached?.routes ?? false;
-    this.routing = { version: version || cached?.version || "", routes, checkedAt: now };
-    return routes;
+    if (cached && Date.now() - cached.checkedAt < (cached.version ? ROUTING_TTL_MS : ROUTING_RETRY_MS)) return cached.routes;
+    this.routingProbe ??= (async () => {
+      let version = "";
+      try {
+        const body = (await this.health(timeoutMs)) as { version?: unknown };
+        version = typeof body?.version === "string" ? body.version.trim() : "";
+      } catch {
+        version = "";
+      }
+      const routes = version ? versionAtLeast(version, DATASET_ROUTING_MIN_VERSION) : cached?.routes ?? false;
+      this.routing = { version: version || cached?.version || "", routes, checkedAt: Date.now() };
+      return routes;
+    })().finally(() => { this.routingProbe = undefined; });
+    return this.routingProbe;
   }
 
   private routing?: { version: string; routes: boolean; checkedAt: number };
+  private routingProbe?: Promise<boolean>;
 
   // -- Data operations ------------------------------------------------------
 

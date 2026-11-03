@@ -435,7 +435,7 @@ const memoryCogneePlugin = {
                 {
                   cfg,
                   resolveDatasets: resolveToolDatasets,
-                  recall: (p) => recallWithBreaker({ ...p, searchType: p.searchType ?? cfg.searchType, searchPrompt: p.searchPrompt ?? cfg.searchPrompt }),
+                  recall: ({ timeoutMs, ...p }) => recallWithBreaker({ ...p, searchType: p.searchType ?? cfg.searchType, searchPrompt: p.searchPrompt ?? cfg.searchPrompt }, timeoutMs),
                   breakerOpenForSeconds: () => recallBreaker.openForSeconds(),
                   autoRoute: (_agentId, ctx) => autoRecall(ctx),
                   cache: toolReferenceCache,
@@ -500,6 +500,7 @@ const memoryCogneePlugin = {
                     currentDataset: (c) => captureDatasetName(c.agentId, c),
                     currentSessionId: (c) => (cfg.enableSessions && c.sessionId ? conversationSessionId(c.sessionId, c) : undefined),
                     listDatasets: () => client.listDatasets(),
+                    autoRecall: (c) => autoRecall(c),
                     ensureDataset: (name) => client.ensureDataset(name),
                     syncSession: async (datasetName, sid) => {
                       await awaitPendingStores(sid);
@@ -619,15 +620,17 @@ const memoryCogneePlugin = {
 
     // Auto recall (SDK-1393): unless this conversation restricted recall to its
     // dataset (a switch, or the dataset in use picked), graph recall names no
-    // dataset and a cognee >= 1.6.6 server routes it to the best-matching
-    // dataset(s). Multi-scope mode keeps its configured scopes (an explicit read
+    // dataset and a cognee >= 1.6.6 server routes it (best effort: the
+    // best-matching dataset when it can, otherwise every readable one). Multi-scope mode keeps its configured scopes (an explicit read
     // set), and an older server keeps the dataset (it would search everything).
+    // The version probe is short (READY_PROBE_TIMEOUT_MS) and shared between
+    // concurrent callers; callers spend it out of their own recall budget.
     async function autoRecall(ctx?: ConvoCtx): Promise<boolean> {
       if (multiScope) return false;
       await switchStore.ready();
       if (switchStore.recallPinned(ctx)) return false;
       try {
-        return await client.routesDatasets();
+        return await client.routesDatasets(READY_PROBE_TIMEOUT_MS);
       } catch {
         return false;
       }
@@ -1869,9 +1872,9 @@ const memoryCogneePlugin = {
           api.logger.info?.(`cognee-openclaw: scope(s) not yet indexed (no data): ${missingScopes.join(", ")}`);
         }
 
-        const autoRoute = await autoRecall(ctx);
-
-        if (recallDatasetIds.length === 0 && !autoRoute) {
+        // None of this agent's datasets has data yet: nothing to recall, even
+        // routed (the server would only search other agents' datasets).
+        if (recallDatasetIds.length === 0) {
           api.logger.debug?.("cognee-openclaw: skipping recall (no datasetIds)");
           recordTurn(ctx, { count: 0, sources: [] });
           return;
@@ -1891,6 +1894,11 @@ const memoryCogneePlugin = {
           recordTurn(ctx, { count: 0, sources: [] });
           return;
         }
+
+        // After the breaker and slow-streak checks, so a server known to be
+        // down never pays the version probe; its time comes out of this
+        // prompt's budget (the deadline is fixed above).
+        const autoRoute = await autoRecall(ctx);
 
         const recallKey = ctx.sessionId ? `${normalizeAgentId(ctx.agentId, cfg)}::${ctx.sessionId}` : undefined;
         const first = firstRecall.claim(recallKey);

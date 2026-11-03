@@ -14,17 +14,21 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 ## [2026.11.3]
 
 ### Added
-- **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server, prompt-time graph recall
-  and `memory_search` name no dataset and the server routes the query to the readable
-  dataset(s) most likely to hold the answer (dataset routing). Saves still go to the
+- **Unpinned recall is routed by the server (SDK-1393).** On a cognee >= 1.6.6 server,
+  prompt-time graph recall and `memory_search` name no dataset and the server routes the
+  query, best effort: it picks the best-matching dataset when it can, and otherwise searches
+  every readable dataset. Pin a dataset to keep recall on one. Saves still go to the
   conversation's dataset. `CogneeHttpClient.routesDatasets()` reads `version` from `/health`
-  (cached for an hour) and recall keeps the dataset against an older server. Multi-scope mode,
-  the guidance lane and the code lane keep their explicit datasets. `recall()` omits
-  `dataset_ids` when given none.
-- **`memory_switch_dataset` restricts recall.** A switch restricts recall to the new dataset;
-  switching to the dataset in use only restricts recall (a pin-only override, same session);
-  `action: "auto"` lifts it; `reset` returns to the configured dataset with auto recall;
-  `current` reports the mode.
+  (short timeout, one shared in-flight probe, cached for an hour, skipped while the recall
+  breaker is open, spent out of the recall budget); a pre-release or dev build (`1.6.6rc1`,
+  `1.6.6.dev0`), an older server or a failed probe keeps the dataset. Multi-scope mode, the
+  guidance lane and the code lane keep their explicit datasets, and an install with no indexed
+  data still skips prompt recall. `recall()` omits `dataset_ids` when given none.
+- **`memory_switch_dataset` pins recall.** Any explicit switch pins recall to its dataset;
+  switching to the dataset in use only pins (a pin-only override, same session);
+  `action: "auto"` unpins it; `reset` returns to the configured dataset, unpinned; `current`
+  reports the mode in effect (`pinned` whenever recall does not route). `"auto"` is reserved
+  and cannot be switched to. An override saved before this release counts as pinned.
 
 ### Changed
 - **The bundled server runs cognee 1.6.6** (was 1.6.5), and `cognee-docker-compose.yaml` uses

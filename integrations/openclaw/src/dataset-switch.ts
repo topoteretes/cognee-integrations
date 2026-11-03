@@ -24,16 +24,20 @@
 // `action: "reset"`.
 //
 // Recall mode (SDK-1393): without an override, graph recall is "auto" — it
-// names no dataset and a cognee >= 1.6.6 server routes the query to the
-// best-matching dataset(s). A switch restricts recall to the new dataset;
-// switching to the dataset already in use restricts recall to it without a
-// new session (a pin-only override, `sessionSuffix` 1, leaves the session id
-// alone); `action: "auto"` lifts the restriction and keeps the dataset.
+// names no dataset and a cognee >= 1.6.6 server routes the query (best effort:
+// the best-matching dataset when it can, otherwise every readable dataset).
+// A switch restricts recall to the new dataset; switching to the dataset
+// already in use restricts recall to it without a new session (a pin-only
+// override, `sessionSuffix` 1, leaves the session id alone); `action: "auto"`
+// lifts the restriction and keeps the dataset. An older server, a failed
+// version probe and multi-scope mode do not route, so recall then stays
+// pinned whatever the stored mode; `current` reports the mode in effect.
 // ---------------------------------------------------------------------------
 
 import type { CogneePluginConfig, DatasetOverride, DatasetOverridesFile, RetiredSession } from "./types.js";
 import { DATASET_OVERRIDES_PATH, loadDatasetOverrides, saveDatasetOverrides } from "./persistence.js";
 import { MAX_PREVIOUS_DATASETS, MAX_SYNCED_RETIRED, pruneRetired } from "./retired.js";
+import { isMultiScopeEnabled } from "./scope.js";
 import { jsonResult, type MemoryTool, type MemoryToolContext } from "./tools.js";
 
 export { loadDatasetOverrides, saveDatasetOverrides, pruneRetired, MAX_SYNCED_RETIRED, MAX_PREVIOUS_DATASETS };
@@ -231,9 +235,9 @@ export const MemorySwitchDatasetSchema = {
     action: {
       type: "string",
       enum: ["list", "current", "switch", "auto", "reset"],
-      description: "list = datasets available on the server; current = the dataset this conversation writes to and how it recalls; switch = move this conversation to `dataset` (created if missing) and restrict recall to it (switching to the dataset in use only restricts recall); auto = let recall go to the best-matching dataset again (saves stay where they are); reset = return to the configured dataset with auto recall.",
+      description: "list = datasets available on the server; current = the dataset this conversation writes to and the recall mode in effect; switch = move this conversation to `dataset` (created if missing) and pin recall to it (switching to the dataset in use only pins recall); auto = unpin recall so the server can route each query (saves stay where they are); reset = return to the configured dataset, unpinned.",
     },
-    dataset: { type: "string", description: "switch only: target dataset name (letters, digits, - _)." },
+    dataset: { type: "string", description: "switch only: target dataset name (letters, digits, - _; \"auto\" is reserved, use action=auto)." },
     force: {
       type: "boolean",
       description: "switch/reset only: proceed even if syncing the current session into its dataset fails. The unsynced session is recorded and re-synced at session end (and on reset); until then its turns exist only in the server's session cache and are lost if that cache expires first. Ask the user before setting this.",
@@ -251,8 +255,8 @@ export type MemorySwitchDatasetParams = {
 
 export type MemorySwitchDatasetResult =
   | { action: "list"; current: string; datasets: Array<{ name: string; id: string; current: boolean }>; note?: string; error?: string }
-  | { action: "current"; dataset: string; sessionId?: string; switched: boolean; recall: "auto" | "pinned"; previous: string[]; note?: string }
-  | { action: "auto"; dataset: string; changed: boolean; recall: "auto"; note?: string }
+  | { action: "current"; dataset: string; sessionId?: string; switched: boolean; recall: "auto" | "pinned"; scopes?: string[]; previous: string[]; note?: string }
+  | { action: "auto"; dataset: string; changed: boolean; recall: "auto" | "pinned"; note?: string }
   | {
       action: "switch";
       switched: boolean;
@@ -275,6 +279,12 @@ export type DatasetSwitchDeps = {
   currentSessionId: (ctx: MemoryToolContext) => string | undefined;
   listDatasets: () => Promise<Array<{ id: string; name: string }>>;
   ensureDataset: (name: string) => Promise<string | undefined>;
+  /**
+   * True when graph recall for this conversation actually routes (unpinned,
+   * single-scope, server >= 1.6.6): the plugin's autoRecall. Unset, the stored
+   * mode is taken as in effect.
+   */
+  autoRecall?: (ctx: MemoryToolContext) => Promise<boolean>;
   /** Bridge the current session into its dataset (server-side improve). */
   syncSession: (datasetName: string, cogneeSessionId: string) => Promise<void>;
   /** Cache a dataset name → id so recall can find it without a server round trip. */
@@ -304,33 +314,76 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     }
   }
 
-  function current(): MemorySwitchDatasetResult {
+  const multiScope = isMultiScopeEnabled(deps.cfg);
+
+  /** The recall mode in effect: auto only when unpinned AND recall routes. */
+  async function effectiveRecall(): Promise<"auto" | "pinned"> {
+    if (multiScope || deps.store.recallPinned(convo)) return "pinned";
+    if (!deps.autoRecall) return "auto";
+    try {
+      return (await deps.autoRecall(ctx)) ? "auto" : "pinned";
+    } catch {
+      return "pinned";
+    }
+  }
+
+  /** Why an unpinned conversation still recalls from its dataset (scopes). */
+  function notRoutingNote(dataset: string): string {
+    return multiScope
+      ? `Multi-scope mode recalls from the configured scopes (${deps.cfg.recallScopes.join(", ")}) and does not route.`
+      : `This server can't route yet, so recall stays on "${dataset}".`;
+  }
+
+  async function current(note?: string): Promise<MemorySwitchDatasetResult> {
     const o = deps.store.get(convo);
+    const dataset = deps.currentDataset(ctx);
+    const recall = await effectiveRecall();
+    const notes = [
+      ...(note ? [note] : []),
+      ...(o && o.sessionSuffix > 1 ? ["This conversation was switched away from its configured dataset; action=reset returns to it."] : []),
+      ...(recall === "pinned" && !deps.store.recallPinned(convo) ? [notRoutingNote(dataset)] : []),
+    ];
     return {
       action: "current",
-      dataset: deps.currentDataset(ctx),
+      dataset,
       ...(deps.currentSessionId(ctx) ? { sessionId: deps.currentSessionId(ctx) } : {}),
       switched: !!o && o.sessionSuffix > 1,
-      recall: deps.store.recallPinned(convo) ? "pinned" : "auto",
+      recall,
+      ...(multiScope ? { scopes: [...deps.cfg.recallScopes] } : {}),
       previous: o?.previous ?? [],
-      ...(o && o.sessionSuffix > 1 ? { note: "This conversation was switched away from its configured dataset; action=reset returns to it." } : {}),
+      ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
     };
   }
 
-  function auto(): MemorySwitchDatasetResult {
+  async function auto(): Promise<MemorySwitchDatasetResult> {
     const dataset = deps.currentDataset(ctx);
-    if (!deps.store.recallPinned(convo)) return { action: "auto", dataset, changed: false, recall: "auto", note: "Recall was already auto." };
+    if (!deps.store.recallPinned(convo)) {
+      const recall = await effectiveRecall();
+      return { action: "auto", dataset, changed: false, recall, note: recall === "auto" ? "Recall was already auto." : `Recall is already unpinned. ${notRoutingNote(dataset)}` };
+    }
     if (!ctx.sessionId && !ctx.sessionKey) {
-      return { action: "auto", dataset, changed: false, recall: "auto", note: "no conversation/session in context — recall mode is per conversation" };
+      return { action: "auto", dataset, changed: false, recall: "pinned", note: "no conversation/session in context — recall mode is per conversation" };
     }
     deps.store.setRecall(convo, "auto", dataset);
-    return { action: "auto", dataset, changed: true, recall: "auto", note: `Recall now goes to the best-matching dataset; saves still go to "${dataset}".` };
+    const recall = await effectiveRecall();
+    return {
+      action: "auto",
+      dataset,
+      changed: true,
+      recall,
+      note: recall === "auto"
+        ? `Recall now goes to the best-matching dataset when the server can tell, otherwise every readable dataset; saves still go to "${dataset}".`
+        : `Saved. ${notRoutingNote(dataset)}`,
+    };
   }
 
   async function doSwitch(params: MemorySwitchDatasetParams): Promise<MemorySwitchDatasetResult> {
     const target = typeof params.dataset === "string" ? params.dataset.trim() : "";
     const before = deps.currentDataset(ctx);
     if (!target) return { action: "switch", switched: false, dataset: before, error: "dataset is required" };
+    if (target.toLowerCase() === "auto") {
+      return { action: "switch", switched: false, dataset: before, error: `"auto" is reserved, not a dataset name — call action="auto" to unpin recall, or pick another dataset name` };
+    }
     if (!isValidDatasetName(target)) {
       return { action: "switch", switched: false, dataset: before, error: `invalid dataset name "${target}" — use letters, digits, '-' or '_' (max 128 chars; cognee rejects spaces and dots)` };
     }
@@ -385,7 +438,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
       ...(newSid ? { sessionId: newSid } : {}),
       previous: { dataset: before, ...(prevSid ? { sessionId: prevSid } : {}), synced },
       note:
-        "From now on this conversation saves to and recalls only from the new dataset; earlier context from the previous dataset is no longer injected — action=auto lets recall reach every dataset again. Memory files and shared company/user scopes are unaffected." +
+        "From now on this conversation saves to and recalls only from the new dataset; earlier context from the previous dataset is no longer injected — action=auto unpins recall again. Memory files and shared company/user scopes are unaffected." +
         (synced ? "" : " The previous session was NOT synced (force); it is re-synced automatically at session end. Tell the user."),
     };
   }
@@ -443,17 +496,17 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     name: "memory_switch_dataset",
     label: "Memory Switch Dataset",
     description:
-      "Move this conversation to another Cognee dataset, or inspect which one it uses. Recall is auto by default (each query goes to the best-matching dataset). action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and restricts recall to it; action=auto lifts that restriction; action=current reports the active dataset and recall mode; action=reset returns to the configured dataset with auto recall. " +
+      "Move this conversation to another Cognee dataset, or inspect which one it uses. Unpinned recall is best-effort routing on a cognee >= 1.6.6 server: the server picks the best-matching dataset when it can, and otherwise searches every readable dataset; an older server or multi-scope mode keeps recall on the conversation's dataset (scopes). Pin a dataset to keep recall on one. action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and pins recall to it; action=auto unpins recall; action=current reports the active dataset and the recall mode in effect; action=reset returns to the configured dataset, unpinned. " +
       "Switching is per conversation and does not move memory files or shared company/user memory.",
     parameters: MemorySwitchDatasetSchema as unknown as Record<string, unknown>,
     async execute(_id, params) {
       switch (params?.action) {
         case "list": return jsonResult(await list());
-        case "current": return jsonResult(current());
+        case "current": return jsonResult(await current());
         case "switch": return jsonResult(await doSwitch(params));
-        case "auto": return jsonResult(auto());
+        case "auto": return jsonResult(await auto());
         case "reset": return jsonResult(await reset(params));
-        default: return jsonResult<MemorySwitchDatasetResult>({ action: "current", dataset: deps.currentDataset(ctx), switched: false, recall: deps.store.recallPinned(convo) ? "pinned" : "auto", previous: [], note: "action must be list, current, switch, auto or reset" });
+        default: return jsonResult(await current("action must be list, current, switch, auto or reset"));
       }
     },
   };

@@ -99,6 +99,16 @@ describe("DatasetSwitchStore", () => {
     expect(await loadDatasetOverrides(path)).toEqual({ "key:a": { dataset: "x", sessionSuffix: 2, switchedAt: "", previous: [], retired: [] } });
   });
 
+  it("treats a legacy override with no recall field as pinned", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path, JSON.stringify({ "key:a": { dataset: "proj-a", sessionSuffix: 2, switchedAt: "", previous: ["testds"], retired: [] } }));
+    const loaded = await loadDatasetOverrides(path);
+    expect(loaded["key:a"]).not.toHaveProperty("recall");
+    const store = new DatasetSwitchStore({ path });
+    await store.ready();
+    expect(store.recallPinned({ sessionKey: "a" })).toBe(true);
+  });
+
   it("tracks retired sessions across switches and flips synced only on request", async () => {
     const store = new DatasetSwitchStore({ path, now: () => new Date("2026-08-27T10:00:00Z") });
     await store.ready();
@@ -277,6 +287,48 @@ describe("memory_switch_dataset tool", () => {
     expect(((await run(d, { action: "switch", dataset: "proj-a" }, { agentId: "will" })) as { error: string }).error).toMatch(/no conversation\/session/);
     expect(d.synced).toEqual([]);
     expect(d.ensured).toEqual([]);
+  });
+
+  it("reserves \"auto\": a switch to it is an error and changes nothing", async () => {
+    const d = deps();
+    for (const name of ["auto", " Auto ", "AUTO"]) {
+      const out = await run(d, { action: "switch", dataset: name });
+      expect(out).toMatchObject({ action: "switch", switched: false, dataset: "testds" });
+      expect((out as { error: string }).error).toMatch(/"auto" is reserved.*action="auto"/);
+    }
+    expect(store.get(ctx)).toBeUndefined();
+    expect(d.synced).toEqual([]);
+    expect(d.ensured).toEqual([]);
+  });
+
+  it("reports recall as pinned when unpinned recall does not route, and action=auto still saves the choice", async () => {
+    const d = deps({ autoRecall: async () => false });
+    const cur = await run(d, { action: "current" });
+    expect(cur).toMatchObject({ dataset: "testds", recall: "pinned", switched: false });
+    expect((cur as { note: string }).note).toBe(`This server can't route yet, so recall stays on "testds".`);
+
+    await run(d, { action: "switch", dataset: "proj-a" });
+    expect(await run(d, { action: "auto" })).toEqual({
+      action: "auto",
+      dataset: "proj-a",
+      changed: true,
+      recall: "pinned",
+      note: `Saved. This server can't route yet, so recall stays on "proj-a".`,
+    });
+    // The choice is stored: recall routes once the server can.
+    expect(store.recallPinned(ctx)).toBe(false);
+    expect(await run(deps({ autoRecall: async () => true }), { action: "current" })).toMatchObject({ recall: "auto" });
+    // A failed probe counts as not routing.
+    expect(await run(deps({ autoRecall: async () => { throw new Error("down"); } }), { action: "current" })).toMatchObject({ recall: "pinned" });
+  });
+
+  it("in multi-scope mode reports recall as restricted to the configured scopes", async () => {
+    const multi = resolveConfig({ datasetName: "testds", companyDataset: "acme", recallScopes: ["company", "agent"] });
+    const d = deps({ cfg: multi, autoRecall: async () => true });
+    const cur = await run(d, { action: "current" });
+    expect(cur).toMatchObject({ recall: "pinned", scopes: ["company", "agent"] });
+    expect((cur as { note: string }).note).toMatch(/configured scopes \(company, agent\)/);
+    expect(await run(d, { action: "auto" })).toMatchObject({ changed: false, recall: "pinned" });
   });
 
   it("recall is auto until a switch, and action=auto lifts the restriction without moving saves (SDK-1393)", async () => {

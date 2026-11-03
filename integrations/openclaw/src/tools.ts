@@ -306,6 +306,8 @@ export type RecallFn = (params: {
   topK?: number;
   /** Always `["graph"]` from memory_search: the session-cache layers are never searched. */
   scope?: string | string[];
+  /** Per-request timeout; unset = the configured recallTimeoutMs. */
+  timeoutMs?: number;
 }) => Promise<CogneeSearchResult[]>;
 
 /** The only recall scope memory_search requests. */
@@ -321,7 +323,8 @@ export type MemoryToolsDeps = {
   breakerOpenForSeconds?: () => Promise<number>;
   /**
    * True when recall is auto for this conversation (SDK-1393): memory_search
-   * then sends one request naming no dataset and the server routes it.
+   * then sends one request naming no dataset and the server routes it. May
+   * probe the server version; that time comes out of the recall timeout.
    */
   autoRoute?: (agentId?: string, ctx?: MemoryToolContext) => Promise<boolean>;
   cache?: ReferenceCache;
@@ -342,6 +345,14 @@ export type MemoryTool<P, R> = {
   parameters: Record<string, unknown>;
   execute: (toolCallId: string, params: P) => Promise<ToolResult<R>>;
 };
+
+/** `work`, or `fallback` once `ms` pass first. */
+async function withinMs<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), Math.max(0, ms)); })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
 
 function unavailable(query: string, corpus: MemorySearchCorpus, error: string, action: string): MemorySearchResult {
   return {
@@ -384,11 +395,14 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
       const minScore = typeof params.minScore === "number" ? params.minScore : deps.cfg.minScore;
 
       let datasets: Array<{ id: string; label: string }>;
+      // The routing probe spends the recall budget, it does not add to it.
+      let timeoutMs: number | undefined;
       try {
+        const started = performance.now();
         // Auto recall: one request with no dataset id ("" below), routed by the server.
-        datasets = deps.autoRoute && (await deps.autoRoute(ctx.agentId, ctx))
-          ? [{ id: "", label: "memory" }]
-          : await deps.resolveDatasets(ctx.agentId, ctx);
+        const routed = deps.autoRoute ? await withinMs(deps.autoRoute(ctx.agentId, ctx), deps.cfg.recallTimeoutMs, false) : false;
+        if (deps.autoRoute) timeoutMs = Math.max(1, deps.cfg.recallTimeoutMs - (performance.now() - started));
+        datasets = routed ? [{ id: "", label: "memory" }] : await deps.resolveDatasets(ctx.agentId, ctx);
       } catch (e) {
         return jsonResult(unavailable(query, corpus, `dataset resolution failed: ${String(e)}`, "Check the Cognee server connection and retry memory_search."));
       }
@@ -401,7 +415,7 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
       // requested here: they are written and bridged into the graph, but
       // searching them only adds noise (same rule as the prompt-time recall).
       const tasks: Array<Promise<MemorySearchHit[]>> = datasets.map((ds) =>
-        deps.recall({ queryText: query, searchType: deps.cfg.searchType, datasetIds: ds.id ? [ds.id] : [], searchPrompt: deps.cfg.searchPrompt, topK, scope: [...GRAPH_SCOPE] })
+        deps.recall({ queryText: query, searchType: deps.cfg.searchType, datasetIds: ds.id ? [ds.id] : [], searchPrompt: deps.cfg.searchPrompt, topK, scope: [...GRAPH_SCOPE], ...(timeoutMs !== undefined ? { timeoutMs } : {}) })
           .then((rs) => rs.map((r) => toHit(r, "graph", ds.label))),
       );
 
