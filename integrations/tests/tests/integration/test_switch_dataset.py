@@ -121,15 +121,42 @@ def test_switch_order_register_new_then_unregister_old(env):
     assert set(env.server.identity.registered_agents) == {result["conn_uuid"]}
 
 
-def test_switch_to_current_dataset_is_a_noop(env):
+def test_switch_to_current_dataset_restricts_recall_without_a_new_session(env):
+    """SDK-1393: picking the active dataset pins recall to it; picking it again
+    is a no-op. Neither syncs nor registers a session."""
     result = env.switch._switch(env.host, env.rec(), "a", force=False)
     assert result == {
         "switched": False,
-        "reason": "already_active",
+        "reason": "recall_restricted",
         "dataset": "a",
         "session_id": env.session_id,
+        "recall": "pinned",
     }
+    assert env.rec()["recall_pinned"] is True
+    again = env.switch._switch(env.host, env.rec(), "a", force=False)
+    assert again["reason"] == "already_active"
     assert env.synced == [] and not _calls(env.server, REGISTER)
+
+
+def test_auto_lifts_the_restriction_and_keeps_the_session(env):
+    env.switch._switch(env.host, env.rec(), "a", force=False)
+    result = env.switch._auto(env.host, env.rec())
+    assert result == {
+        "switched": False,
+        "reason": "recall_auto",
+        "dataset": "a",
+        "session_id": env.session_id,
+        "recall": "auto",
+    }
+    assert env.rec()["recall_pinned"] is False
+    assert env.switch._auto(env.host, env.rec())["reason"] == "already_auto"
+    assert env.synced == [] and not _calls(env.server, REGISTER)
+
+
+def test_a_switch_pins_recall_to_the_new_dataset(env):
+    result = env.switch._switch(env.host, env.rec(), "b", force=False)
+    assert result["switched"] is True and result["recall"] == "pinned"
+    assert env.rec()["recall_pinned"] is True
 
 
 def test_switch_refuses_readonly_dataset_before_touching_anything(env):

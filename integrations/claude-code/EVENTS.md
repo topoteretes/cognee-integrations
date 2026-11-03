@@ -116,6 +116,10 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:dataset_ensure_redirect_failed` | `dataset.ensure_redirect_failed` |
 | `hook:dataset_ensured` | `dataset.ensured` |
 | `hook:dataset_switched` | `dataset.switched` |
+| `hook:recall_mode_set` | `recall.mode_set` |
+| `hook:recall_auto_route_error` | `recall.auto_route_error` |
+| `hook:dataset_routing_probe_failed` | `dataset.routing_probe_failed` |
+| `hook:dataset_routing_cache_write_failed` | `dataset.routing_cache_write_failed` |
 | `hook:drain_backoff_write_failed` | `drain.backoff_write_failed` |
 | `hook:drain_lock_error` | `drain.lock_error` |
 | `hook:drain_lock_release_failed` | `drain.lock_release_failed` |
@@ -211,14 +215,11 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:prompt_watcher_alive_check_failed` | `prompt.watcher_alive_check_failed` |
 | `hook:prompt_watcher_log_open_failed` | `prompt.watcher_log_open_failed` |
 | `hook:prompt_watcher_stop_unlink_failed` | `prompt.watcher_stop_unlink_failed` |
-| `hook:readable_datasets_refresh_failed` | `datasets.readable_refresh_failed` |
-| `hook:readable_datasets_refresh_deferred` | `datasets.readable_refresh_deferred` |
 | `hook:recall_audit_write_failed` | `recall.audit_write_failed` |
 | `hook:recall_auth_rejected` | `recall.auth_rejected` |
 | `hook:recall_breaker_open` | `recall.breaker_open` |
 | `hook:recall_budget_exceeded` | `recall.budget_exceeded` |
 | `hook:recall_budget_reduced` | `recall.budget_reduced` |
-| `hook:recall_dataset_hint` | `recall.dataset_hint` |
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
 | `hook:recall_error` | `recall.error` |

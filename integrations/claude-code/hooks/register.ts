@@ -206,6 +206,13 @@ let switching = false
 // a dataset that does not exist yet (the switch script creates it). Spaces
 // make the value one no dataset can be named, so it never collides.
 const NEW_DATASET = '+ new dataset…'
+// The picker's first entry: recall from the best-matching dataset (dataset
+// routing, cognee >= 1.6.6) instead of only the one saves go to. Spaces keep it
+// apart from any dataset name, like NEW_DATASET.
+const AUTO_RECALL = 'auto (best-matching dataset)'
+// Recall mode from the last listing: 'auto' (routed) or 'pinned' to the
+// active dataset; '' until listed.
+let recallMode: '' | 'auto' | 'pinned' = ''
 let namingDataset = false
 // In a terminal the picker stays closed until asked for: a click anywhere on
 // the band gives the band the keys, and a focused picker shows its list.
@@ -545,6 +552,11 @@ function formatRemember(stdout: string, exitCode: number, dataset: string): { te
   return { text: `Stored in ${where}; the graph is still being built from it, so recall finds it in a moment.`, isError: false }
 }
 
+function recallModeOf(value: unknown): '' | 'auto' | 'pinned' {
+  const mode = value && typeof value === 'object' ? (value as { recall?: unknown }).recall : undefined
+  return mode === 'auto' || mode === 'pinned' ? mode : ''
+}
+
 function datasetRows(value: unknown): DatasetRow[] {
   if (!value || typeof value !== 'object') return []
   const rows = (value as { datasets?: unknown }).datasets
@@ -874,6 +886,7 @@ async function loadDatasets($: any): Promise<void> {
       const parsed = switchable && switchable !== 'timeout' && switchable.stdout.trim() ? JSON.parse(switchable.stdout) : null
       if (parsed && typeof parsed === 'object' && !parsed.error) {
         switchTargets = datasetRows(parsed)
+        recallMode = recallModeOf(parsed)
         listed = true
       }
     } catch {
@@ -920,13 +933,20 @@ async function switchDataset($: any, target: string): Promise<string> {
     if (ran === 'timeout') line = `the switch ran past ${SWITCH_TIMEOUT_MS / 60_000} min and was stopped; /cognee-dataset shows where the session is`
     else if (!ran) line = 'could not start the switch: no python interpreter found'
     else if (parsed.error) line = asText(parsed.error)
-    else if (parsed.switched === false) line = `already on ${asText(parsed.dataset) || name}`
+    else if (parsed.switched === false) {
+      const where = asText(parsed.dataset) || name
+      if (parsed.reason === 'recall_restricted') line = `recall restricted to ${where}`
+      else if (parsed.reason === 'recall_auto') line = `recall is auto again (saves stay in ${where})`
+      else if (parsed.reason === 'already_auto') line = `recall is already auto (saves go to ${where})`
+      else line = `already on ${where}`
+    }
     else if (parsed.switched === true) {
       const previous = (parsed.previous ?? {}) as { dataset?: unknown; synced?: unknown }
       const synced = previous.synced === false ? ' (previous session NOT synced)' : ''
       line = `switched to ${asText(parsed.dataset) || name}${synced}`
     } else line = `switch failed${ran.stderr.trim() ? `: ${ran.stderr.trim().split('\n').pop()}` : ''}`
     const failed = !parsed.switched && parsed.switched !== false
+    recallMode = recallModeOf(parsed) || recallMode
     $.ui.toast(failed ? `✕ ${line}` : `${line}`)
   } finally {
     switching = false
@@ -975,8 +995,8 @@ export const register: Register = (on, options) => {
     await refreshSnapshot($)
     await $.command.register({
       name: 'cognee-dataset',
-      description: 'Switch this session to another Cognee dataset; without a name, list them.',
-      argumentHint: '[name]',
+      description: 'Switch this session to another Cognee dataset (recall is then restricted to it); "auto" lets each recall go to the best-matching dataset; without a name, list them.',
+      argumentHint: '[name|auto]',
     })
     await $.command.register({
       name: 'cognee-tour',
@@ -986,7 +1006,7 @@ export const register: Register = (on, options) => {
       await $.tool.register({
         name: 'search',
         description:
-          'Search Cognee memory: the permanent knowledge graph of this session\'s dataset (scope "graph", the default), ' +
+          'Search Cognee memory: the permanent knowledge graph (scope "graph", the default; the best-matching dataset unless the user restricted recall to one), ' +
           'or the indexed repository\'s code graph (scope "code"). Memory is already recalled automatically on every prompt; ' +
           'call this for a deeper or differently worded search, for more results, or to read another dataset by its id. ' +
           'Returns the matching memories as text; an empty result from a reachable server is authoritative.',
@@ -998,7 +1018,7 @@ export const register: Register = (on, options) => {
             scope: { type: 'string', enum: ['graph', 'code'], default: 'graph', description: 'graph: memory; code: the indexed repository.' },
             dataset_id: {
               type: 'string',
-              description: 'Read another dataset by its UUID (from the "Other Cognee datasets" hint). Leaves the session on the active dataset.',
+              description: 'Read one specific dataset by its UUID. Without it, recall is auto (the best-matching dataset) unless the user restricted it to one. Leaves the session on the active dataset.',
             },
           },
           required: ['query'],
@@ -1053,10 +1073,15 @@ export const register: Register = (on, options) => {
       await relistDatasets($)
       if (switchTargets.length === 0) return { text: 'Cognee: no datasets listed (is memory connected?).' }
       const rows = switchTargets.map(r => (r.current ? `  * ${r.name} (current)` : `  - ${r.name}`)).join('\n')
+      const current = switchTargets.find(r => r.current)?.name ?? 'the active dataset'
+      const recall =
+        recallMode === 'pinned'
+          ? `Recall: restricted to ${current}. /cognee-dataset auto lets each query go to the best-matching dataset.`
+          : 'Recall: auto (each query goes to the best-matching dataset). /cognee-dataset <name> restricts it to one.'
       pickerOpen = true
       redraw($)
       return {
-        text: `Cognee datasets you can write to:\n${rows}\n\n/cognee-dataset <name> switches this session; the picker on the status row is open too (ctrl+x tab reaches it, arrows move, Enter picks).`,
+        text: `Cognee datasets you can write to:\n${rows}\n\n${recall}\n/cognee-dataset <name> switches this session; the picker on the status row is open too (ctrl+x tab reaches it, arrows move, Enter picks).`,
       }
     }
     const line = await switchDataset($, name)
@@ -1081,7 +1106,8 @@ export const register: Register = (on, options) => {
     } finally {
       clearActive($)
     }
-    const where = datasetId ? `dataset ${datasetId}` : scope === '--code' ? 'the code graph' : 'the active dataset'
+    // Auto recall (the default) reads the best-matching dataset, not only the active one.
+    const where = datasetId ? `dataset ${datasetId}` : scope === '--code' ? 'the code graph' : recallMode === 'pinned' ? 'the active dataset' : 'memory'
     if (shown.isError) return { deny: shown.text }
     return { result: `${plural(shown.count, 'result')} from ${where}.\n\n${shown.text}` }
   }).catch($ => {
@@ -1297,11 +1323,18 @@ export const register: Register = (on, options) => {
     // other datasets stay reachable.
     const canPick = switchTargets.length > 0
     const options = current && !switchTargets.some(r => r.name === current) ? [{ name: current, id: '', current: true }, ...switchTargets] : switchTargets
+    // Auto recall reads "auto (<dataset saves go to>)"; a pinned one, the name.
+    const auto = recallMode === 'auto'
+    const pickerLabel = auto ? `auto (${current})` : current
     const picker = () =>
       Select({
         key: 'dataset',
-        options: [...options.map(r => ({ value: r.name, label: r.name })), { value: NEW_DATASET, label: NEW_DATASET }],
-        value: current,
+        options: [
+          { value: AUTO_RECALL, label: AUTO_RECALL },
+          ...options.map(r => ({ value: r.name, label: r.name })),
+          { value: NEW_DATASET, label: NEW_DATASET },
+        ],
+        value: auto ? AUTO_RECALL : current,
         ...(e.surface === 'terminal' ? { autoFocus: true as const } : {}),
         onSelect: (value: string) => {
           pickerOpen = false
@@ -1310,7 +1343,11 @@ export const register: Register = (on, options) => {
             redraw($)
             return
           }
-          if (value !== current) void switchDataset($, value)
+          // Picking the active dataset while auto restricts recall to it.
+          if (value === AUTO_RECALL) {
+            if (!auto) void switchDataset($, 'auto')
+            else redraw($)
+          } else if (value !== current || auto) void switchDataset($, value)
           else redraw($)
         },
       })
@@ -1318,7 +1355,7 @@ export const register: Register = (on, options) => {
     const closedPicker = () =>
       Button({
         key: 'dataset',
-        label: `${current} ▾`,
+        label: `${pickerLabel} ▾`,
         plain: true,
         onPress: () => {
           pickerOpen = true
@@ -1394,7 +1431,7 @@ export const register: Register = (on, options) => {
     // The dataset: a control when there is a list, the name otherwise.
     if (canPick) {
       const open = e.surface !== 'terminal' || pickerOpen
-      segment(namingDataset ? 26 : current.length + 2, 0, namingDataset ? namer() : open ? picker() : closedPicker())
+      segment(namingDataset ? 26 : pickerLabel.length + 2, 0, namingDataset ? namer() : open ? picker() : closedPicker())
     } else {
       const name = snap?.dataset ?? 'memory'
       segment(name.length, 0, Text({ children: [name] }))

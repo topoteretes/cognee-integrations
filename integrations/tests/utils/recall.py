@@ -156,6 +156,7 @@ def drive_recall(
     mode: str = "http",
     sdk_recall: Callable[..., Any] | dict[str, list] | None = None,
     saves_last_turn: dict | None = None,
+    auto_route: bool = False,
 ) -> RecallRun:
     """Run ``module._run(prompt)`` with every seam captured.
 
@@ -164,6 +165,9 @@ def drive_recall(
     ``prior_state``/``ready_hint`` set what the hook believes about the server
     before the attempt; ``slow_streak``/``slow_threshold`` drive timeout
     escalation without touching real streak files.
+
+    ``auto_route`` is what ``auto_recall_active`` answers (recall not pinned
+    and the server routes datasets); off by default.
 
     ``saves_last_turn`` is what the hook reads back from the save counter (all
     kinds zero by default), so a header test can hand it buffered writes.
@@ -230,17 +234,9 @@ def drive_recall(
     }
     for name, impl in seams.items():
         monkeypatch.setattr(module, name, impl)
-    # The cross-dataset hint's listing (claude-code / codex): stubbed to "no
-    # other datasets" so no hook test reaches the readable-datasets cache or
-    # the network. Left alone when the test already replaced it (the hook
-    # binds the common module's function by name, so an untouched seam is
-    # still that very object) — test_cross_dataset_search.py stubs its own.
-    common = sys.modules.get("_plugin_common")
-    original = getattr(common, "cached_readable_datasets", None)
-    if hasattr(module, "cached_readable_datasets") and (
-        original is None or module.cached_readable_datasets is original
-    ):
-        monkeypatch.setattr(module, "cached_readable_datasets", lambda **kw: [])
+    # Auto recall (SDK-1393) reads the launch record and probes /health for the
+    # server version: answered here, so no hook test reaches either.
+    monkeypatch.setattr(module, "auto_recall_active", lambda *a, **k: auto_route, raising=False)
 
     if local_sdk:
         _install_local_sdk(module, monkeypatch, run, sdk_recall)

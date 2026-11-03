@@ -70,6 +70,7 @@ if not api_key:
 session_id = ""
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
 dataset_ids = ""
+recall_auto = ""
 # The launch record wins (dataset + session chosen with switch-dataset.py, the
 # dataset UUIDs under shared memory, the plugin-agent key the hooks use).
 # NOTE: no apostrophes in this block - bash 3.2 scans $( ... ) for quotes
@@ -80,6 +81,7 @@ try:
     dataset = _rt["dataset"] or dataset
     session_id = _rt["session_id"] or session_id
     dataset_ids = _rt["dataset_ids"]
+    recall_auto = _rt.get("recall_auto", "")
     api_key = _rt["api_key"] or api_key
 except Exception:
     pass
@@ -116,7 +118,7 @@ if not session_id and service_url and api_key:
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
         pass
 
-print(json.dumps({"session_id": session_id, "dataset": dataset, "dataset_ids": dataset_ids, "service_url": service_url, "api_key": api_key}))
+print(json.dumps({"session_id": session_id, "dataset": dataset, "dataset_ids": dataset_ids, "recall_auto": recall_auto, "service_url": service_url, "api_key": api_key}))
 PY
 )"
 
@@ -132,6 +134,14 @@ DATASET_IDS="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
 import json, sys
 try:
     print((json.loads(sys.argv[1] or "{}").get("dataset_ids") or "").strip())
+except Exception:
+    pass
+PY
+)"
+RECALL_AUTO="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
+import json, sys
+try:
+    print((json.loads(sys.argv[1] or "{}").get("recall_auto") or "").strip())
 except Exception:
     pass
 PY
@@ -213,6 +223,17 @@ if [ "$MODE" = "code" ] && [ -z "${DATASET_EXPLICIT:-}" ]; then
     [ -n "$CODE_DATASET" ] && DATASET="$CODE_DATASET"
 fi
 
+# Auto recall (SDK-1393): unless the user pinned a dataset, a graph search that
+# names none sends none, and a cognee >= 1.6.6 server routes it to the best
+# dataset(s). The session id is bound to the active dataset, so it is dropped
+# too. Shared memory (resolved UUIDs) keeps its explicit scope.
+ROUTED=""
+if [ "$MODE" = "graph" ] && [ -z "${DATASET_EXPLICIT:-}" ] && [ -n "$RECALL_AUTO" ] && [ -z "$DATASET_IDS" ]; then
+    DATASET=""
+    SESSION_ID=""
+    ROUTED="1"
+fi
+
 if [ -z "$QUERY" ]; then
     echo "Error: no query provided" >&2
     exit 1
@@ -272,7 +293,9 @@ elif [ "$MODE" = "code" ] || [ -n "$FOREIGN" ]; then
     exit 1
 else
     echo "[cognee-search] falling back to cognee-cli (degraded — empty CLI output is NOT proof of absence; ground-truth via: curl -X POST \"\$COGNEE_BASE_URL/api/v1/recall\")" >&2
-    if [ "$MODE" = "graph" ]; then
+    if [ "$MODE" = "graph" ] && [ -n "$ROUTED" ]; then
+        cognee-cli recall "$QUERY" -k "$TOP_K" -f json 2>/dev/null || true
+    elif [ "$MODE" = "graph" ]; then
         cognee-cli recall "$QUERY" -d "$DATASET" -k "$TOP_K" -f json 2>/dev/null || true
     elif [ "$MODE" = "session" ]; then
         cognee-cli recall "$QUERY" -s "$SESSION_ID" -k "$TOP_K" -f json 2>/dev/null || true

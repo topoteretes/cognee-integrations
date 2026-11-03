@@ -8,6 +8,12 @@ retire the old one, and repoint every hook at the new triple.
 Usage:
     switch-dataset.py --list [--json]          # datasets you can switch to
     switch-dataset.py <dataset-name> [--force] [--json]
+    switch-dataset.py auto [--json]            # let routing pick the dataset for recall
+
+Recall is "auto" by default: graph recall names no dataset and a cognee >= 1.6.6
+server routes each query to the best dataset(s). Picking a dataset (even the
+active one) restricts recall to it; ``auto`` lifts that restriction. Saves always
+go to the active dataset, which ``auto`` leaves where it is.
 
 Runs under the host's shell tool (no hook payload), so it finds its own launch
 record via ``resolve_host_key_outside_hook``; pass ``--session-key <host id>``
@@ -43,10 +49,12 @@ from _plugin_common import (  # noqa: E402
     load_resolved,
     mint_switch_session_id,
     positive_float_env,
+    recall_is_pinned,
     register_agent_via_http,
     resolve_host_key_outside_hook,
     resolve_shared_dataset,
     resolved_http_endpoint_auth,
+    set_recall_pinned,
     set_session_key,
     switch_launch_record,
     touch_activity,
@@ -122,6 +130,7 @@ def _list(host_key: str, rec: dict) -> dict:
     rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
     return {
         "current": current,
+        "recall": "pinned" if recall_is_pinned(host_key) else "auto",
         "session_id": str(rec.get("session_id") or ""),
         "datasets": rows,
         "hidden_readonly": listing["hidden_readonly"],
@@ -298,11 +307,17 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     )
     old_conn = str(rec.get("conn_uuid") or "")
     if target == old_dataset:
+        # Picking the active dataset restricts recall to it; no new session.
+        reason = "already_active"
+        if not recall_is_pinned(host_key):
+            set_recall_pinned(host_key, True)
+            reason = "recall_restricted"
         return {
             "switched": False,
-            "reason": "already_active",
+            "reason": reason,
             "dataset": target,
             "session_id": old_session,
+            "recall": "pinned",
         }
 
     resolved = load_resolved(session_key=host_key)
@@ -387,6 +402,7 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     return {
         "switched": True,
         "dataset": target,
+        "recall": "pinned",
         "session_id": new_session,
         "conn_uuid": new_conn,
         "previous": {
@@ -399,6 +415,21 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     }
 
 
+def _auto(host_key: str, rec: dict) -> dict:
+    """Lift the recall restriction; the active dataset (where saves go) stays."""
+    dataset = str(rec.get("dataset") or load_resolved(session_key=host_key).get("dataset") or "")
+    changed = recall_is_pinned(host_key)
+    if changed:
+        set_recall_pinned(host_key, False)
+    return {
+        "switched": False,
+        "reason": "recall_auto" if changed else "already_auto",
+        "dataset": dataset,
+        "session_id": str(rec.get("session_id") or ""),
+        "recall": "auto",
+    }
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
@@ -407,6 +438,10 @@ def _print_listing(result: dict, as_json: bool) -> None:
         print(json.dumps(result))
         return
     print(f"Current dataset: {result['current']}  (session {result['session_id']})")
+    if result.get("recall") == "pinned":
+        print(f"Recall: restricted to {result['current']} (switch-dataset.py auto lifts it)")
+    else:
+        print("Recall: auto (each query goes to the best-matching dataset)")
     if not result["datasets"]:
         print("No other writable datasets found.")
     for row in result["datasets"]:
@@ -423,7 +458,15 @@ def _print_switch(result: dict, as_json: bool) -> None:
         print(json.dumps(result))
         return
     if not result.get("switched"):
-        print(f"Already on dataset {result['dataset']!r} (session {result['session_id']}).")
+        reason = result.get("reason")
+        if reason == "recall_restricted":
+            print(f"Recall restricted to dataset {result['dataset']!r}.")
+        elif reason == "recall_auto":
+            print(f"Recall is auto again; saves stay in {result['dataset']!r}.")
+        elif reason == "already_auto":
+            print(f"Recall is already auto; saves go to {result['dataset']!r}.")
+        else:
+            print(f"Already on dataset {result['dataset']!r} (session {result['session_id']}).")
         return
     prev = result["previous"]
     synced = "synced" if prev["synced"] else f"NOT synced ({prev.get('sync_error', '')})"
@@ -438,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     as_json = "--json" in args
     force = "--force" in args
     do_list = "--list" in args
+    do_auto = "--auto" in args
     explicit_key = ""
     if "--session-key" in args:
         i = args.index("--session-key")
@@ -447,6 +491,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         host_key, rec = _resolve_launch(explicit_key)
+        if do_auto or (positional and positional[0].strip().lower() == "auto"):
+            _print_switch(_auto(host_key, rec), as_json)
+            return EXIT_OK
         if do_list or not positional:
             _print_listing(_list(host_key, rec), as_json)
             return EXIT_OK

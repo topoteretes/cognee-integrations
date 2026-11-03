@@ -1,15 +1,15 @@
 ---
 name: cognee-switch-datasets
 description: >-
-  Switch this session to another Cognee dataset, or back to the previous one, so later
-  saves and recalls use it. Takes a dataset name (created if new) or lists writable
-  datasets to pick from; syncs this session first.
+  Switch this session to another Cognee dataset (saves go there, recall is restricted to
+  it), or set recall back to auto. Takes a dataset name (created if new) or "auto", or
+  lists writable datasets.
 when_to_use: >-
   Even without saying Cognee or dataset, e.g. "switch to <dataset>", "use <dataset> for
-  this session", "use <dataset> from now on", "change my dataset", "which datasets can I
-  switch to?". A user's request wins over the recall hint "Do not switch datasets". Not
-  for a one-off search of another dataset (cognee-search), deleting one (cognee-forget),
-  git branches or datasets in code.
+  this session", "use <dataset> from now on", "only recall from <dataset>", "change my
+  dataset", "which datasets can I switch to?", "recall from all datasets again", "set
+  recall to auto". Not for a one-off search of another dataset (cognee-search), deleting
+  one (cognee-forget), git branches or datasets in code.
 ---
 
 # Switch Datasets
@@ -17,6 +17,11 @@ when_to_use: >-
 Move this Claude Code session to a different Cognee dataset. A Cognee session
 never spans two datasets, so the switch retires the current session (after
 syncing it into the graph) and starts a new one on the chosen dataset.
+
+Recall is **auto** by default: each prompt's memory comes from the dataset(s)
+that best match it (dataset routing, cognee >= 1.6.6), while saves go to the
+active dataset. Picking a dataset — another one, or the active one — restricts
+recall to it. `auto` lifts the restriction and leaves saves where they are.
 
 ## Faster, with the hooks module loaded
 
@@ -29,7 +34,15 @@ how to switch themselves, point them there.
 
 ## Instructions
 
-### 1. If the user named a dataset, switch directly
+### 1. If the user wants recall back on auto
+
+For "recall from all datasets again", "set recall to auto" and the like:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" auto --json
+```
+
+### 2. If the user named a dataset, switch directly
 
 When `$ARGUMENTS` contains a dataset name, skip the picker:
 
@@ -37,38 +50,45 @@ When `$ARGUMENTS` contains a dataset name, skip the picker:
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" "$ARGUMENTS" --json
 ```
 
-### 2. Otherwise, list and let the user choose
+### 3. Otherwise, list and let the user choose
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
 ```
 
-The JSON has `current`, `datasets` (`[{name, id, writable, current}]`),
-`hidden_readonly` (datasets you can read but not write — never offered) and
+The JSON has `current`, `recall` (`"auto"` or `"pinned"`), `datasets`
+(`[{name, id, writable, current}]`), `hidden_readonly` (datasets you can read but not write — never offered) and
 `filtered` (`true` when write access was verified for every row).
 
 Present the choice with **AskUserQuestion** (single select), listing the
-dataset names from `datasets` with the current one marked "(current)". The
+dataset names from `datasets` with the current one marked "(current)", plus an
+"auto (best-matching dataset)" option unless `recall` is already `"auto"`. The
 tool allows four options per question, so if there are more than four, put
 the first three plus a "More…" option and page on the next question. The
 user can always type a name via the built-in "Other" — a name that is not
 listed is created for them on switch. If `filtered` is `false`, say so in the
 question text ("write access could not be verified for these").
 
-Then run the switch with the chosen name:
+Then run the switch with the chosen name (`auto` for the auto option):
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" "<chosen name>" --json
 ```
 
-### 3. Report the result
+### 4. Report the result
 
 On success the JSON is
 `{"switched": true, "dataset", "session_id", "previous": {"dataset", "session_id", "synced": true|false}}`.
 Tell the user in one line which dataset and Cognee session are now active and
 that the previous session was synced. The status line updates within a couple
-of seconds. If `"switched": false` with `"reason": "already_active"`, say the
-session is already on that dataset.
+of seconds. `"switched": false` carries a `reason`:
+
+| reason | say |
+|--------|-----|
+| `already_active` | the session is already on that dataset, recall restricted to it |
+| `recall_restricted` | recall is now restricted to that (already active) dataset |
+| `recall_auto` | recall is auto again; saves still go to `dataset` |
+| `already_auto` | recall was already auto; saves go to `dataset` |
 
 On failure the JSON is `{"error", "code"}`:
 
@@ -93,4 +113,4 @@ On failure the JSON is `{"error", "code"}`:
   leaves the session where it is — `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id>` (see the **cognee-search** skill).
 
 - `COGNEE_PLUGIN_DATASET` only seeds the dataset at launch; a switch overrides it for the rest of the session and survives `--resume`.
-- Recall is scoped to the active dataset, so after a switch earlier context from the previous dataset is no longer injected — switch back to see it again.
+- After a switch recall is restricted to the new dataset, so context from the previous one is no longer injected; `switch-dataset.py auto` lets recall reach every dataset again.

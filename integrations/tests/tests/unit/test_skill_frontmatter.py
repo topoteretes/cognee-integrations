@@ -22,7 +22,6 @@ import re
 from pathlib import Path
 
 import pytest
-from utils.recall import load_lookup
 
 PLUGIN = Path(__file__).resolve().parents[3] / "claude-code"
 SKILLS = sorted(path.name for path in (PLUGIN / "skills").iterdir() if path.is_dir())
@@ -195,24 +194,13 @@ def test_no_bare_generic_trigger(skill):
     assert not bare, f"tie {bare} to Cognee, the session or a topic"
 
 
-def test_dataset_hint_leaves_a_requested_switch_to_the_switch_skill(
-    suite, hook_module, monkeypatch
-):
-    """The hint offers a one-off search in another dataset. It must stop the
-    model from switching on its own without stopping a user who asked."""
+def test_switch_skill_offers_auto_recall(suite):
+    """SDK-1393: picking a dataset restricts recall to it; the switch skill must
+    also say how to go back to auto recall."""
     if suite.name != "claude-code":
-        pytest.skip("Claude Code dataset hint")
-    lookup = load_lookup(suite, hook_module, monkeypatch)
-    hint = lookup._format_dataset_hint("agent_sessions", [{"name": "research", "id": "r-1"}])
-    assert "Do not switch datasets on your own" in hint
-    assert "if the user asks to switch" in hint
-    assert "/cognee-memory:cognee-switch-datasets" in hint
-    assert "Do not switch datasets." not in hint
-    # The switch skill quotes this line to say that a user's request wins over it.
-    quoted = re.search(
-        r'recall hint "([^"]+)"', frontmatter("cognee-switch-datasets")["when_to_use"]
-    )
-    assert quoted and quoted.group(1) in hint
+        pytest.skip("Claude Code switch skill")
+    fm = frontmatter("cognee-switch-datasets")
+    assert "auto" in fm["description"] and "auto" in fm["when_to_use"]
 
 
 # ── routing evals (claude plugin eval, evals/) ──────────────────────────────

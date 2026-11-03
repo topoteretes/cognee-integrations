@@ -561,6 +561,8 @@ def shell_runtime_overrides(service_url: str = "") -> dict:
         "dataset_id": write_id,
         "dataset_ids": ",".join(read_ids),
         "api_key": active_agent_key(service_url),
+        # "1" when graph recall names no dataset (auto, routed server-side).
+        "recall_auto": "1" if host_key and auto_recall_active(service_url, host_key) else "",
     }
 
 
@@ -697,6 +699,8 @@ def _switch_launch_record_locked(
             "conn_uuid": str(conn_uuid),
             "switched_at": now,
             "touched": touched,
+            # Picking a dataset restricts recall to it (see recall_is_pinned).
+            "recall_pinned": True,
         }
     )
     merged.setdefault("created_at", now)
@@ -718,6 +722,128 @@ def _switch_launch_record_locked(
         },
     )
     return _read_map_record(host_key) or merged
+
+
+# ── Recall mode: auto (dataset routing) or pinned ─────────────────────────
+#
+# Saves always go to the launch's ONE dataset (a Cognee session never spans
+# two), but graph recall defaults to "auto": it names no dataset, so a cognee
+# >= 1.6.6 server routes the query to the readable dataset(s) most likely to
+# hold the answer (SDK-1317). Picking a dataset (switch-dataset.py) pins recall
+# to it; ``switch-dataset.py auto`` unpins. Older servers fan an unscoped search
+# out over every readable dataset instead of routing it, so auto applies only
+# once /health reports a version that routes; otherwise recall stays on the
+# launch's dataset as before.
+
+_DATASET_ROUTING_MIN_VERSION = (1, 6, 6)
+_ROUTING_SUPPORT_FILE = _SHARED_PLUGIN_ROOT / "dataset-routing.json"
+# A server is not upgraded mid-session often; one /health read per hour per URL.
+_ROUTING_SUPPORT_TTL_SECONDS = 3600.0
+# A failed probe is retried sooner, but not on every prompt.
+_ROUTING_SUPPORT_RETRY_SECONDS = 300.0
+
+
+def recall_is_pinned(host_key: str = "") -> bool:
+    """True when the user picked a dataset for this launch, restricting recall to it."""
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    return bool(host_key) and _read_map_record(host_key).get("recall_pinned") is True
+
+
+def set_recall_pinned(host_key: str, pinned: bool) -> dict:
+    """Pin or unpin recall to the launch's dataset; returns the record on disk."""
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    if not host_key:
+        raise ValueError("set_recall_pinned: no host session key")
+    from _file_lock import file_lock
+
+    # The switch lock: a concurrent switch rewrites the same record.
+    lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
+    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+        if not held:
+            raise RuntimeError("Another dataset switch is in progress for this launch")
+        rec = _read_map_record(host_key)
+        if not rec:
+            raise RuntimeError("set_recall_pinned: launch record not found")
+        merged = {**rec, "recall_pinned": bool(pinned)}
+        _write_map_record(host_key, merged)
+    hook_log("recall_mode_set", {"host_key": host_key, "pinned": bool(pinned)})
+    return _read_map_record(host_key) or merged
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    """Leading numeric release of a version string: '1.6.6rc1' -> (1, 6, 6)."""
+    parts = []
+    for piece in str(value or "").strip().lstrip("vV").split("."):
+        digits = ""
+        for ch in piece:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if not digits:
+            break
+        parts.append(int(digits))
+        if len(digits) != len(piece):
+            break
+    return tuple(parts)
+
+
+def _fetch_server_version(base: str, timeout: float) -> str:
+    """``version`` from GET {base}/health, or "" when the server did not say."""
+    with urllib.request.urlopen(
+        f"{base}/health", timeout=timeout, context=_https_context()
+    ) as resp:
+        payload = json.loads(resp.read().decode("utf-8") or "{}")
+    return str(payload.get("version") or "").strip() if isinstance(payload, dict) else ""
+
+
+def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
+    """Whether the server at ``service_url`` routes unscoped searches (cognee >= 1.6.6).
+
+    Read from a machine-wide cache keyed by URL and refreshed from /health at
+    most once per TTL. A probe that fails keeps the last known answer, and with
+    none the answer is False: recall then stays scoped, as on an old server.
+    """
+    base = _normalize_service_url(service_url or _local_api_url())
+    if not base:
+        return False
+    now = time.time()
+    try:
+        cache = json.loads(_ROUTING_SUPPORT_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        cache = {}
+    if not isinstance(cache, dict):
+        cache = {}
+    entry = cache.get(base) if isinstance(cache.get(base), dict) else {}
+    checked_at = float(entry.get("checked_at") or 0) if entry else 0.0
+    wait = _ROUTING_SUPPORT_TTL_SECONDS if entry.get("version") else _ROUTING_SUPPORT_RETRY_SECONDS
+    if entry and now - checked_at < wait:
+        return bool(entry.get("routes"))
+    try:
+        version = _fetch_server_version(base, timeout)
+    except Exception as exc:
+        hook_log("dataset_routing_probe_failed", {"base_url": base, "error": str(exc)[:200]})
+        version = ""
+    if version:
+        routes = _version_tuple(version) >= _DATASET_ROUTING_MIN_VERSION
+    else:
+        routes = bool(entry.get("routes"))
+    cache[base] = {
+        "version": version or str(entry.get("version") or ""),
+        "routes": routes,
+        "checked_at": now,
+    }
+    try:
+        _write_json_file(_ROUTING_SUPPORT_FILE, cache)
+    except Exception as exc:
+        hook_log("dataset_routing_cache_write_failed", {"error": str(exc)[:200]})
+    return routes
+
+
+def auto_recall_active(service_url: str = "", host_key: str = "", timeout: float = 1.0) -> bool:
+    """True when graph recall should name no dataset and let the server route it."""
+    if recall_is_pinned(host_key):
+        return False
+    return server_routes_datasets(service_url, timeout=timeout)
 
 
 def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:
@@ -5147,6 +5273,7 @@ def recall_via_http(
     dataset_ids: list[str] | None = None,
     code_query: dict | None = None,
     timeout: float = 10.0,
+    auto_route: bool = False,
 ) -> list:
     payload = {
         "query": query,
@@ -5184,8 +5311,24 @@ def recall_via_http(
     #      by name.
     fields, federated = recall_fields(write_dataset, scope)
     ids = [str(x).strip() for x in (dataset_ids or []) if str(x).strip()]
+    # Auto recall (``auto_route``, see auto_recall_active): a graph-only read
+    # with no session names no dataset, and the server routes it. Shared
+    # memory's ids, a federated read set, the code lane and a project-routed
+    # session keep their explicit scope.
+    routed = (
+        auto_route
+        and scope == ["graph"]
+        and not session_id
+        and not code_query
+        and not federated
+        and not ids
+        and write_dataset == dataset
+        and not target.get("node_set")
+    )
     if federated:
         payload.update(fields)
+        payload.pop("session_id", None)
+    elif routed:
         payload.pop("session_id", None)
     elif ids and write_dataset == dataset:
         # Shared-memory ids describe the primary dataset; a companion-routed

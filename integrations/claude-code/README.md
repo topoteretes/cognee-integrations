@@ -43,7 +43,7 @@ capture off; recall and explicit remember keep working.
 Memory is kept until you delete it (the `cognee-forget` skill, or deleting the
 dataset). The plugin never expires server-side memory on its own.
 
-**Other network calls.** Local mode installs `cognee==1.6.5` from PyPI into
+**Other network calls.** Local mode installs `cognee==1.6.6` from PyPI into
 `~/.cognee-plugin/venv` once. The background idle watcher fetches this repository's
 `marketplace.json` from `raw.githubusercontent.com` at most hourly to offer updates
 (`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
@@ -346,8 +346,8 @@ Set a custom dataset at launch:
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
 
-`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset (but see
-[Searching another dataset without switching](#searching-another-dataset-without-switching)).
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Saves go to the active dataset; recall is auto (the best-matching dataset) until you pick one (see
+[Auto recall and restricting it to one dataset](#auto-recall-and-restricting-it-to-one-dataset)).
 Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
 
 ### Switching datasets mid-session
@@ -379,23 +379,35 @@ list and the session-end sync covers them again as a safety net. The script behi
 `scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`,
 `--session-key <host id>` when several launches share a directory).
 
-### Searching another dataset without switching
+### Auto recall and restricting it to one dataset
 
-Recall only ever reads the active dataset. On every prompt the server answers, the hook also
-appends a block to the injected context naming **every other dataset you can read** (with their
-UUIDs — nothing ranks them, so you choose; read-only ones included, since a search needs no write
-access) and the command to search one of them. Whether the recalled context actually answers you
-is a call only the model can make — graph retrieval returns its nearest matches from any populated
-dataset, relevant or not — so the block is worded for it to act on only when memory did not answer.
-If you are asking Claude to recall something and the active dataset did not have it, it offers those datasets as a picker; pick one and Claude runs a **one-off, graph-only search** on
-it and tells you which dataset the answer came from. Nothing else moves: the active dataset,
-the Cognee session and where writes go stay as they were — this is for looking something up
-elsewhere, not for working there (that is what the switch above is for). The block tells
-Claude not to switch datasets on its own. If you ask for a switch, it runs
-`/cognee-memory:cognee-switch-datasets`.
+Saves always go to the active dataset, but **recall is auto by default**: the graph recall on each
+prompt (and a `cognee-search` that names no dataset) sends no dataset, and a cognee >= 1.6.6
+server routes the query to the readable dataset(s) most likely to hold the answer (dataset
+routing). A dataset that has not been through `improve` on 1.6.6 yet has no routing index and is
+always searched, so right after an upgrade auto recall reads every dataset until each one syncs.
 
-The same flow is available on demand through the `cognee-search` skill when an explicit search comes
-back empty, and through the `search` tool's `dataset_id` argument. Under the hood:
+Picking a dataset — another one, or the active one — **restricts recall to it**; `auto` lifts the
+restriction and leaves saves where they are:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" <dataset>   # saves go there, recall restricted to it
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # recall from the best-matching dataset again
+```
+
+The choice is stored in the launch record (`recall_pinned`). Auto recall needs a server that routes:
+the plugin reads the version from `GET /health` (cached per server in
+`~/.cognee-plugin/dataset-routing.json`, re-read hourly) and, against an older server, keeps recall
+on the active dataset as before. These always keep their explicit dataset: session history and
+guidance (bound to the active dataset), the code lane (this repository's code dataset), shared
+agent memory's dataset ids and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set. Backend access control
+must be on for the server to route (cognee's default where the databases support it); with it off
+an unscoped recall reads every dataset.
+
+### Searching one dataset without switching
+
+A one-off, graph-only search of one named dataset leaves the active dataset, the Cognee session and
+the recall mode as they are:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candidates
@@ -405,19 +417,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candid
 Every search reads the knowledge graph (or, with `--code`, a repository's code graph); the
 session cache is written, never searched. The session id is bound to the active dataset, so the
 wrapper drops it for any other dataset; the active dataset named by hand keeps it. Datasets are
-addressed by UUID because a name only resolves among the
-datasets your identity owns. The listing behind the hint is cached per plugin
-(`~/.cognee-plugin/claude-code/readable-datasets.json`) and refreshed at most every
-`COGNEE_DATASETS_CACHE_TTL` seconds (default `300`), inside what is left of the recall budget,
-so the prompt path never waits on it. A refresh that fails (timeout, unreachable) is not
-retried for `COGNEE_DATASETS_CACHE_RETRY` seconds (default `120`): the stale rows serve the
-hint meanwhile, so a loaded server costs one listing timeout per window, not one per prompt.
-
-| Env var | Default | Effect |
-|---|---|---|
-| `COGNEE_RECALL_DATASET_HINT` | `on` | Set `off` to stop the prompt hook from naming the other datasets. On, the block is injected once per session (the first prompt the server answered) and again on any prompt memory answered with nothing. The explicit skill flow is unaffected. |
-| `COGNEE_DATASETS_CACHE_TTL` | `300` | Seconds the cached readable-datasets listing is served before one bounded refresh. |
-| `COGNEE_DATASETS_CACHE_RETRY` | `120` | Seconds after a failed refresh before the listing is fetched again; the stale rows are served meanwhile. |
+addressed by UUID because a name only resolves among the datasets your identity owns.
 
 ## Hooks
 
@@ -1194,15 +1194,18 @@ Claude. All of it runs the scripts in this folder, with the same server traffic 
 the skills.
 
 **The dataset picker.** The dataset name in the status row above the prompt is a
-picker of the datasets you can write to, the current one selected, with `+ new
-dataset…` last for a name that does not exist yet. Picking another
-runs `switch-dataset.py <name>` at once, with no model turn: the session it leaves
-is synced first, a new Cognee session starts on the chosen dataset, and the row
-follows. `switching dataset…` shows while it runs; a toast reports `switched to
+picker of the datasets you can write to, with `auto (best-matching dataset)` first
+and `+ new dataset…` last for a name that does not exist yet. While recall is auto
+the row reads `auto (<active dataset>)` and the auto entry is selected. Picking
+another dataset runs `switch-dataset.py <name>` at once, with no model turn: the
+session it leaves is synced first, a new Cognee session starts on the chosen
+dataset, recall is restricted to it, and the row follows. Picking the active
+dataset while auto only restricts recall to it; picking `auto` lifts that
+(`switch-dataset.py auto`), with no new session either way. `switching dataset…` shows while it runs; a toast reports `switched to
 demo`, `already on demo`, or the script's error (`✕ Selected dataset is not
 writable`). The list is read once when the row is first drawn and again after each
-switch; nothing polls. `/cognee-dataset <name>` does the same from the prompt on
-every surface, and `/cognee-dataset` alone prints the list.
+switch; nothing polls. `/cognee-dataset <name>` (or `/cognee-dataset auto`) does the same from the prompt
+on every surface, and `/cognee-dataset` alone prints the list and the recall mode.
 
 **Two tools Claude calls directly.** At session start the module registers
 `mcp__cognee-memory__search` and `mcp__cognee-memory__remember`. Both sit behind
@@ -1214,7 +1217,7 @@ does not load mods and for the judgement the skill text carries.
 
 | Tool | Arguments | Runs | Returns |
 |---|---|---|---|
-| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from the active dataset.` then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
+| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from memory.` (`from the active dataset.` once recall is restricted to it) then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
 | `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
 
 The credit line the model writes under an answer that used memory
@@ -1367,7 +1370,7 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (the one in the status line — `COGNEE_PLUGIN_DATASET` / `agent_sessions` at launch, or whatever you switched to).
+- Recall is auto (the best-matching dataset) unless you restricted it to one by picking a dataset; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction. Against a cognee server older than 1.6.6 recall reads the active dataset only.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 

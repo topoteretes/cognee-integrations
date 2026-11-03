@@ -105,6 +105,10 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:dataset_ensure_redirect_failed` | `dataset.ensure_redirect_failed` |
 | `hook:dataset_ensured` | `dataset.ensured` |
 | `hook:dataset_switched` | `dataset.switched` |
+| `hook:recall_mode_set` | `recall.mode_set` |
+| `hook:recall_auto_route_error` | `recall.auto_route_error` |
+| `hook:dataset_routing_probe_failed` | `dataset.routing_probe_failed` |
+| `hook:dataset_routing_cache_write_failed` | `dataset.routing_cache_write_failed` |
 | `hook:launch_dataset_ids_skipped` | `launch.dataset_ids_skipped` |
 | `hook:dim_check_error` | `dim.check_error` |
 | `hook:drain_backoff_write_failed` | `drain.backoff_write_failed` |

@@ -32,6 +32,7 @@ from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
     authed_liveness,
+    auto_recall_active,
     bounded_dim_mismatch_hint,
     buffered_saves_segments,
     clear_payment_required,
@@ -461,6 +462,17 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # name-addressed — it is this repo's own dataset.
     session_dataset = get_dataset(config)
     write_id, read_ids = resolve_active_dataset_ids() if scope_specs else ("", [])
+    # Auto recall (SDK-1393): unless the user pinned a dataset, the graph scope
+    # names none and a cognee >= 1.6.6 server routes it to the best dataset(s).
+    # The server version is cached, so this costs a /health read once an hour.
+    auto_route = False
+    if scope_specs and cloud_mode:
+        try:
+            auto_route = auto_recall_active(
+                service_url, timeout=max(MIN_SCOPE_TIMEOUT, min(1.0, scope_timeout / 4))
+            )
+        except Exception as exc:
+            hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's call. Returns ``(dataset, part, exc, elapsed_ms)``.
@@ -501,6 +513,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     dataset_ids=scope_dataset_ids,
                     code_query=scope_code_query,
                     timeout=scope_timeout,
+                    auto_route=auto_route and scope_list == ["graph"],
                 )
             else:
                 query_type = getattr(SearchType, qtype, None) if qtype else None

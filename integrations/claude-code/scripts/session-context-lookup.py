@@ -38,11 +38,10 @@ from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
     authed_liveness,
+    auto_recall_active,
     buffered_saves_segments,
-    cached_readable_datasets,
     clear_payment_required,
     clear_slow_streak,
-    cross_dataset_search_command,
     elapsed_ms,
     get_session_key,
     hook_log,
@@ -51,7 +50,6 @@ from _plugin_common import (
     mark_recall_slow,
     mark_server_ready,
     notify,
-    other_readable_datasets,
     outage_header,
     phase_begin,
     phase_end,
@@ -112,60 +110,6 @@ TRUNCATE_RETURN = 400
 # Smallest deadline worth dispatching; with less budget than this, nothing is
 # fired rather than sending every scope a doomed request.
 MIN_SCOPE_TIMEOUT = 0.2
-
-# Cross-dataset search hint. Recall reads the active dataset only, and whether
-# what came back actually answers the user is a judgement only the model can
-# make — graph retrieval is nearest-neighbour, so it returns *something* from
-# any populated dataset, and "zero hits" never happens in practice. So every
-# prompt the server answered carries the list of the other readable datasets
-# and how to run a one-off graph search on one (not a switch), worded for the
-# model to act on only when memory did not answer. The listing comes from the
-# per-plugin cache (``cached_readable_datasets``) and is refreshed only when
-# stale, inside what is left of the recall budget. Every other readable dataset
-# is named: nothing ranks them, so the user picks. The model must not switch on
-# its own, but a bare "Do not switch datasets." also beat users who asked for a
-# switch in plain words, so the line names the switch skill for that case.
-# COGNEE_RECALL_DATASET_HINT=off disables the hint.
-
-
-def _dataset_hint_enabled() -> bool:
-    raw = os.environ.get("COGNEE_RECALL_DATASET_HINT", "").strip().lower()
-    return raw not in ("0", "false", "off", "no")
-
-
-def _format_dataset_hint(active: str, others: list) -> str:
-    rows = "\n".join(f"  - {row.get('name', '')} [{row.get('id', '')}]" for row in others)
-    return (
-        f"Other Cognee datasets you can search (active: {active or 'unknown'}):\n{rows}\n"
-        "Memory above was recalled from the active dataset only. If the user is asking to recall "
-        "something and that context does not answer it, do not conclude that memory has nothing: "
-        "ask which of these datasets to search, with AskUserQuestion (single select, the dataset "
-        'names as options; more than four → the first three plus a "More…" option and page on '
-        "the next question; say in the question that they can also decline). Do not switch "
-        "datasets on your own; if the user asks to switch, use "
-        "/cognee-memory:cognee-switch-datasets. Then run the graph-only search on their choice "
-        "and say which dataset the answer came from:\n"
-        f"  {cross_dataset_search_command()}"
-    )
-
-
-def _other_datasets_hint(active: str, active_ids: list, service_url: str, deadline: float) -> str:
-    """The hint block, or "" when there is no other dataset to offer.
-
-    Cache first; one bounded network refresh only when the cache is stale and
-    the recall budget still has room for an honest attempt.
-    """
-    remaining = deadline - time.monotonic()
-    rows = cached_readable_datasets(
-        service_url=service_url,
-        refresh=remaining >= MIN_SCOPE_TIMEOUT,
-        timeout=max(MIN_SCOPE_TIMEOUT, min(2.0, remaining)),
-    )
-    others = other_readable_datasets(rows, active, active_ids)
-    if not others:
-        return ""
-    hook_log("recall_dataset_hint", {"active": active, "offered": len(others)})
-    return _format_dataset_hint(active, others)
 
 
 def _load_session_id() -> str:
@@ -738,6 +682,17 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # name-addressed — it is this repo's own dataset.
     session_dataset = get_dataset(config)
     write_id, read_ids = resolve_active_dataset_ids() if scope_specs else ("", [])
+    # Auto recall (SDK-1393): unless the user pinned a dataset, the graph scope
+    # names none and a cognee >= 1.6.6 server routes it to the best dataset(s).
+    # The server version is cached, so this costs a /health read once an hour.
+    auto_route = False
+    if scope_specs:
+        try:
+            auto_route = auto_recall_active(
+                service_url, timeout=max(MIN_SCOPE_TIMEOUT, min(1.0, scope_timeout / 4))
+            )
+        except Exception as exc:
+            hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's request, run off the event loop.
@@ -780,6 +735,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 timeout=scope_timeout,
                 # Only this hook renders evidence items; other graph callers skip the cost.
                 evidence_mode="context" if "graph" in scope_list else None,
+                auto_route=auto_route and scope_list == ["graph"],
             )
         except Exception as caught:
             exc = caught
@@ -992,7 +948,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # fired on 12 of 40 turns" activation number the status line shows next to
     # the per-turn count — no extra calls, just the turn that was already
     # counted. Keyed by host session, so /clear starts over and --resume
-    # continues. Read here, before the dataset hint, which it gates.
+    # continues.
     from pathlib import Path as _Path
 
     _state = _Path.home() / ".cognee-plugin" / "claude-code" / "last_recall.json"
@@ -1009,28 +965,6 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         except Exception:
             pass
     _totals["turns"] += 1
-
-    # Name the other datasets the user could search instead (see
-    # _other_datasets_hint). The block is static text, so it rides along on
-    # the session's FIRST answered prompt — the model keeps it from there —
-    # and again on any prompt memory answered with nothing, the moment it is
-    # actually needed (SDK-904). Not when nothing answered: the search it
-    # recommends would fail the same way. Decoration on the recall path — it
-    # must never break the hook output.
-    dataset_hint = ""
-    if scopes_ok and _dataset_hint_enabled() and (_totals["turns"] <= 1 or total == 0):
-        try:
-            dataset_hint = _other_datasets_hint(
-                session_dataset,
-                read_ids or ([write_id] if write_id else []),
-                service_url,
-                budget_deadline,
-            )
-        except Exception as exc:
-            hook_log(
-                "recall_error",
-                {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
-            )
 
     # Build a one-line visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
@@ -1090,8 +1024,6 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         sections.append(
             {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
         )
-    if dataset_hint:
-        sections.append({"entries": [dataset_hint], "priority": 0, "counted": False})
     notice = _bounded_notice(header, notice)
 
     def measure(text):

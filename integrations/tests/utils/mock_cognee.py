@@ -55,6 +55,7 @@ class MockCogneeServer:
         self.identity = identity or IdentityFake()
         self._recall_results: list[Any] = []
         self._health_status = 200
+        self._server_version = ""
         # Cognify/memify status reported for every dataset id: a status string,
         # or a list walked one entry per poll (see set_dataset_status).
         self._dataset_status: Any = STATUS_COMPLETED
@@ -97,6 +98,10 @@ class MockCogneeServer:
     def set_health_status(self, status: int) -> None:
         """Configure GET /health (e.g. 503 for the not-ready / skip path)."""
         self._health_status = status
+
+    def set_server_version(self, version: str) -> None:
+        """Report ``version`` from GET /health, as cognee does (dataset routing gate)."""
+        self._server_version = version
 
     def set_dataset_status(self, status: str | list) -> None:
         """Configure the pipeline status GET /api/v1/datasets/status reports.
@@ -341,7 +346,10 @@ class MockCogneeServer:
     def _health(self, req: Request) -> Response:
         self._record(req)
         status = self._health_status
-        return _json(status, {"status": "ok" if status < 400 else "unavailable"})
+        body = {"status": "ok" if status < 400 else "unavailable"}
+        if self._server_version:
+            body["version"] = self._server_version
+        return _json(status, body)
 
     def _docs(self, req: Request) -> Response:
         self._record(req)

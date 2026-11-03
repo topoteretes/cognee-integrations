@@ -273,8 +273,8 @@ export COGNEE_PLUGIN_DATASET="my-project-memory"
 codex
 ```
 
-`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset (but see
-[Searching another dataset without switching](#searching-another-dataset-without-switching)).
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Saves go to the active dataset; recall is auto (the best-matching dataset) until you pick one (see
+[Auto recall and restricting it to one dataset](#auto-recall-and-restricting-it-to-one-dataset)).
 Data added outside of Codex to the dataset (via SDK or the server for example) is visible in Codex via the Cognee plugin.
 
 ### Switching datasets mid-session
@@ -300,42 +300,45 @@ list and the session-end sync covers them again as a safety net. The script behi
 `scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`,
 `--session-key <host id>` when several launches share a directory).
 
-### Searching another dataset without switching
+### Auto recall and restricting it to one dataset
 
-Recall only ever reads the active dataset. On every prompt the server answers, the hook also
-appends a block to the injected context naming **every other dataset you can read** (with their
-UUIDs — nothing ranks them, so you choose; read-only ones included, since a search needs no write
-access) and the command to search one of them. Whether the recalled context actually answers you
-is a call only the model can make — graph retrieval returns its nearest matches from any populated
-dataset, relevant or not — so the block is worded for it to act on only when memory did not answer.
-If you are asking Codex to recall something and the active dataset did not have it, it offers those datasets as a numbered list; pick one and Codex runs a **one-off, graph-only search** on
-it and tells you which dataset the answer came from. Nothing else moves: the active dataset,
-the Cognee session and where writes go stay as they were — this is for looking something up
-elsewhere, not for working there (that is what the switch above is for).
+Saves always go to the active dataset, but **recall is auto by default**: the graph recall on each
+prompt (and a `cognee-search` that names no dataset) sends no dataset, and a cognee >= 1.6.6
+server routes the query to the readable dataset(s) most likely to hold the answer (dataset
+routing). A dataset that has not been through `improve` on 1.6.6 yet has no routing index and is
+always searched, so right after an upgrade auto recall reads every dataset until each one syncs.
 
-The same flow is available on demand through the `memory` skill when an explicit search comes
-back empty. Under the hood:
+Picking a dataset — another one, or the active one — **restricts recall to it**; `auto` lifts the
+restriction and leaves saves where they are:
 
 ```bash
-python3 ${CODEX_PLUGIN_ROOT}/scripts/list-datasets.py --others   # the candidates
-${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh "<query>" 10 --graph --dataset-id <uuid>
+python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" <dataset>   # saves go there, recall restricted to it
+python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # recall from the best-matching dataset again
 ```
 
-A dataset other than the active one has none of this session's history, so the wrapper forces
-graph scope and drops the session id for it (noted on stderr); the active dataset named by hand
-keeps the full scope. Datasets are addressed by UUID because a name only resolves among the
-datasets your identity owns. The listing behind the hint is cached per plugin
-(`~/.cognee-plugin/codex/readable-datasets.json`) and refreshed at most every
-`COGNEE_DATASETS_CACHE_TTL` seconds (default `300`), inside what is left of the recall budget,
-so the prompt path never waits on it. A refresh that fails (timeout, unreachable) is not
-retried for `COGNEE_DATASETS_CACHE_RETRY` seconds (default `120`): the stale rows serve the
-hint meanwhile, so a loaded server costs one listing timeout per window, not one per prompt.
+The choice is stored in the launch record (`recall_pinned`). Auto recall needs a server that routes:
+the plugin reads the version from `GET /health` (cached per server in
+`~/.cognee-plugin/dataset-routing.json`, re-read hourly) and, against an older server, keeps recall
+on the active dataset as before. These always keep their explicit dataset: session history and
+guidance (bound to the active dataset), the code lane (this repository's code dataset), shared
+agent memory's dataset ids and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set. Backend access control
+must be on for the server to route (cognee's default where the databases support it); with it off
+an unscoped recall reads every dataset.
 
-| Env var | Default | Effect |
-|---|---|---|
-| `COGNEE_RECALL_DATASET_HINT` | `on` | Set `off` to stop the prompt hook from naming the other datasets. On, the block is injected once per session (the first prompt the server answered) and again on any prompt memory answered with nothing. The explicit skill flow is unaffected. |
-| `COGNEE_DATASETS_CACHE_TTL` | `300` | Seconds the cached readable-datasets listing is served before one bounded refresh. |
-| `COGNEE_DATASETS_CACHE_RETRY` | `120` | Seconds after a failed refresh before the listing is fetched again; the stale rows are served meanwhile. |
+### Searching one dataset without switching
+
+A one-off, graph-only search of one named dataset leaves the active dataset, the Cognee session and
+the recall mode as they are:
+
+```bash
+python3 "${CODEX_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candidates
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid>
+```
+
+Every search reads the knowledge graph (or, with `--code`, a repository's code graph); the
+session cache is written, never searched. The session id is bound to the active dataset, so the
+wrapper drops it for any other dataset; the active dataset named by hand keeps it. Datasets are
+addressed by UUID because a name only resolves among the datasets your identity owns.
 
 ## Recaps: standup, digest, timeline
 
@@ -767,7 +770,7 @@ Each operation has its own client timeout, tunable independently (all in seconds
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (the one in the status line — `COGNEE_PLUGIN_DATASET` / `agent_sessions` at launch, or whatever you switched to).
+- Recall is auto (the best-matching dataset) unless you restricted it to one by picking a dataset; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction. Against a cognee server older than 1.6.6 recall reads the active dataset only.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 
