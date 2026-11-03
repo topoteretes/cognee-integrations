@@ -10,6 +10,33 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Plugin identity with shared agent memory (SDK-646).** The plugin now provisions a
+  dedicated `hermes-agent` cognee agent — as you, through
+  `POST /api/v1/integrations/plugins/hermes-agent/provision` — and runs the session as it,
+  so the integrations page attributes Hermes's memory to Hermes and its key can be revoked
+  on its own. The call describes the plugin (label, connection type), so the server needs
+  no built-in plugin list. Under `plugin_identity: auto` (the default) this happens in
+  service of **shared agent memory**, as in the Claude Code and Codex plugins: the agent
+  joins a tenant you own and the `cognee-agent` role, the role is granted your datasets,
+  and every dataset is addressed by the UUID of a canonical copy you own (recall, remember,
+  improve, forget, repository indexing and the exit watcher's bridge all carry it). A
+  freshly minted identity that cannot be wired is revoked again and the session runs as
+  your own key. `plugin_identity: true` keeps the identity regardless and makes every
+  obstacle a session-start error; `false` runs as your own key.
+  `shared_agent_memory` / `COGNEE_SHARED_AGENT_MEMORY=false` opts out of shared memory
+  (the agent leaves the role; nothing is deleted). This machine's key is cached in
+  `~/.cognee-plugin/hermes-agent/agent_key.json`, replaced once in-session when the server
+  rejects it, and only ever minted against a server that adds one key per machine (the
+  `x-cognee-additive-plugin-keys` marker).
+- Every `POST /api/v1/agents/register` now carries `metadata.plugin_key: hermes-agent`,
+  so the server can attribute the connection to the plugin without a connection-type
+  table of its own.
+- `hermes cognee keys` lists Hermes's own agent among the fallbacks, and always runs as
+  the principal (an agent cannot manage its own keys).
+
 ## [1.4.1]
 
 ### Added

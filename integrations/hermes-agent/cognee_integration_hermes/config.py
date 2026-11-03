@@ -257,6 +257,12 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         # server outlives this process; synchronous in embedded). Set to force.
         "improve_background": os.environ.get("COGNEE_IMPROVE_BACKGROUND", ""),
         "session_prefix": os.environ.get("COGNEE_SESSION_PREFIX", "hermes"),
+        # Plugin identity policy: auto (default) | true | false. See
+        # plugin_identity.py; validated at connect time, not here.
+        "plugin_identity": os.environ.get("COGNEE_PLUGIN_IDENTITY", ""),
+        # Shared agent memory for a provisioned identity (default on; see
+        # shared_memory.py). The env var wins over cognee.json at connect time.
+        "shared_agent_memory": os.environ.get("COGNEE_SHARED_AGENT_MEMORY", ""),
         "data_root": os.environ.get("COGNEE_DATA_ROOT", ""),
         "system_root": os.environ.get("COGNEE_SYSTEM_ROOT", ""),
         "identity_email": os.environ.get("COGNEE_HERMES_USER_EMAIL", DEFAULT_IDENTITY_EMAIL),

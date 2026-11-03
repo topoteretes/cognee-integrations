@@ -75,9 +75,28 @@ class MemoryBackend:
     def configure_local_roots(self, *, data_root: str, system_root: str) -> None:
         """Point the transport at local storage (in-process transports only)."""
 
-    def connect(self, *, url: str, api_key: str, timeout: float) -> None:
-        """Attach to a cognee instance at *url*."""
+    def connect(
+        self,
+        *,
+        url: str,
+        api_key: str,
+        timeout: float,
+        plugin_identity: str = "",
+        shared_agent_memory: Any = None,
+    ) -> None:
+        """Attach to a cognee instance at *url*.
+
+        ``plugin_identity`` is the ``COGNEE_PLUGIN_IDENTITY`` policy (``""`` reads
+        the environment) and ``shared_agent_memory`` the config value behind
+        ``COGNEE_SHARED_AGENT_MEMORY``; only the HTTP transport can act on them.
+        """
         raise NotImplementedError
+
+    def dataset_ids_for(self, dataset: str) -> tuple[str, list[str]]:
+        """``(write_id, read_ids)`` when *dataset* is addressed by UUID under
+        shared agent memory (HTTP transport only); ``("", [])`` means by name."""
+        del dataset
+        return "", []
 
     def resolve_identity(self, *, email: str, password: str, timeout: float) -> Any:
         """Resolve the principal this transport writes as, if it owns one."""
@@ -354,7 +373,26 @@ class SdkBackend(MemoryBackend):
         except Exception as exc:
             logger.debug("Cognee root configuration failed: %s", exc)
 
-    def connect(self, *, url: str, api_key: str, timeout: float) -> None:
+    def connect(
+        self,
+        *,
+        url: str,
+        api_key: str,
+        timeout: float,
+        plugin_identity: str = "",
+        shared_agent_memory: Any = None,
+    ) -> None:
+        from .plugin_identity import identity_mode
+
+        del shared_agent_memory  # meaningful only with a provisioned agent (HTTP transport)
+
+        if identity_mode(plugin_identity) == "enabled":
+            # Provisioning is an HTTP control-plane call as the user; the SDK
+            # transport serves cognee in-process under the configured principal.
+            logger.warning(
+                "COGNEE_PLUGIN_IDENTITY=true needs the HTTP transport "
+                "(COGNEE_TRANSPORT unset, COGNEE_EMBEDDED unset); continuing as the principal"
+            )
         self._bridge.run(self._do_serve(url, api_key), timeout=timeout)
         self.served = True
 

@@ -209,6 +209,7 @@ def arm(
     improve,
     improve_timeout,
     poll_interval=_DEFAULT_POLL_SECONDS,
+    dataset_id="",
 ):
     """Write the watcher's state file and spawn the detached watcher process.
 
@@ -231,6 +232,8 @@ def arm(
             "url": str(url),
             "agent_session_name": str(agent_session_name),
             "dataset": str(dataset),
+            # Canonical UUID under shared agent memory ("" = address by name).
+            "dataset_id": str(dataset_id or ""),
             "session_id": str(session_id),
             "improve": bool(improve),
             "improve_timeout": float(improve_timeout),
@@ -267,6 +270,7 @@ def finalize(
     improve,
     improve_timeout,
     unregister_grace=_DEFAULT_UNREGISTER_GRACE,
+    dataset_id="",
 ):
     """Hand improve-then-unregister to a detached worker. True when it took them.
 
@@ -285,6 +289,7 @@ def finalize(
         {
             "session_id": str(session_id),
             "dataset": str(dataset),
+            "dataset_id": str(dataset_id or ""),
             "improve": bool(improve),
             "improve_timeout": float(improve_timeout),
             "unregister_grace": float(unregister_grace),
@@ -361,14 +366,18 @@ def fire(state, *, state_path=None, wait_for_parent=0.0):
     session_id = str(state.get("session_id") or "")
     if state.get("improve") and session_id:
         try:
+            payload = {
+                "dataset_name": str(state.get("dataset") or ""),
+                "session_ids": [session_id],
+                "run_in_background": False,
+            }
+            if state.get("dataset_id"):
+                # Canonical UUID under shared agent memory (see shared_memory.py).
+                payload["dataset_id"] = str(state["dataset_id"])
             _post(
                 url,
                 "/api/v1/improve",
-                {
-                    "dataset_name": str(state.get("dataset") or ""),
-                    "session_ids": [session_id],
-                    "run_in_background": False,
-                },
+                payload,
                 api_key=api_key,
                 timeout=float(state.get("improve_timeout") or 300.0),
             )

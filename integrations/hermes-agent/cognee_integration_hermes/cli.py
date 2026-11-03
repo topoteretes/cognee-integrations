@@ -143,8 +143,16 @@ def _connect_backend():
     cfg = load_config()
     backend = HttpBackend(agent_session_name="hermes-cli")
     service_url = str(cfg.get("service_url") or "")
+    # One-shot commands run as the principal: the keys routes below are the
+    # user's to call (an agent cannot list or revoke keys), and a CLI session
+    # must not provision an identity as a side effect.
     if service_url:
-        backend.connect(url=service_url, api_key=str(cfg.get("api_key") or ""), timeout=30)
+        backend.connect(
+            url=service_url,
+            api_key=str(cfg.get("api_key") or ""),
+            timeout=30,
+            plugin_identity="false",
+        )
         return backend
     data_root, system_root = resolve_local_roots(cfg)
     local_url = ensure_local_server(
@@ -153,21 +161,30 @@ def _connect_backend():
         system_root=system_root,
         boot_timeout=float(cfg.get("server_boot_timeout") or 600),
     )
-    backend.connect(url=local_url, api_key="", timeout=30)
+    backend.connect(url=local_url, api_key="", timeout=30, plugin_identity="false")
     return backend
 
 
 # -- plugin agent keys -------------------------------------------------------
 #
-# Every machine a cognee plugin (Claude Code, Codex, ...) runs on holds its own
-# API key for that plugin's agent (cognee#6113). The server caps them; when an
-# agent is full of keys still in use, a new machine is refused one and runs on
-# the user's personal key until an old machine's key is revoked. These commands
-# are how a Hermes user frees a slot — for any plugin agent of their user, since
-# Hermes itself registers as the principal and provisions no agent.
+# Every machine a cognee plugin (Claude Code, Codex, Hermes under
+# COGNEE_PLUGIN_IDENTITY=true, ...) runs on holds its own API key for that
+# plugin's agent (cognee#6113). The server caps them; when an agent is full of
+# keys still in use, a new machine is refused one. These commands are how a
+# Hermes user frees a slot — for any plugin agent of their user, Hermes's own
+# ``hermes-agent`` included.
 
 #: Plugins whose agents are listed when the server's own listing cannot be read.
-FALLBACK_PLUGIN_KEYS = ("claude-code", "codex", "opencode", "openclaw", "mcp", "api", "desktop")
+FALLBACK_PLUGIN_KEYS = (
+    "hermes-agent",
+    "claude-code",
+    "codex",
+    "opencode",
+    "openclaw",
+    "mcp",
+    "api",
+    "desktop",
+)
 
 
 def _known_plugin_keys(backend) -> list[str]:
