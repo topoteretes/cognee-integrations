@@ -44,6 +44,13 @@ jobs:
           TS_LIST=""
           RUN_SHARED=""
 
+          # The inventory contract (every integration states its agent_registration,
+          # SDK-646) is enforced by the shared suite: run it when the inventory
+          # changes, and when a new integration directory lands.
+          if git diff --name-only "$BASE" HEAD -- integrations/inventory.yml | grep -q .; then
+            RUN_SHARED=1
+          fi
+
           for dir in $CHANGED_DIRS; do
             [ ! -d "integrations/$dir" ] && continue
             # claude-code, codex, antigravity, grok-bot and cursor have no pyproject of their own; their
@@ -51,6 +58,9 @@ jobs:
             case "$dir" in
               claude-code|codex|antigravity|grok-bot|cursor|tests) RUN_SHARED=1 ;;
             esac
+            if ! git cat-file -e "$BASE:integrations/$dir" 2>/dev/null; then
+              RUN_SHARED=1  # new integration: must be inventoried
+            fi
             if [ -f "integrations/$dir/pyproject.toml" ]; then
               PY_LIST="${PY_LIST}\"${dir}\","
             elif [ -f "integrations/$dir/package.json" ]; then
