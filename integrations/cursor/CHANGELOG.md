@@ -8,7 +8,7 @@ The version here matches the `version` field in `.cursor-plugin/plugin.json` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.1]
 
 ### Changed
 - **Self-describing identity provisioning (SDK-646).** `POST /api/v1/integrations/plugins/{key}/provision`

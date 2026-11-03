@@ -7,7 +7,7 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.6.7]
 
 ### Changed
 - **Self-describing identity provisioning (SDK-646).** `POST /api/v1/integrations/plugins/{key}/provision`

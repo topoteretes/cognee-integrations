@@ -11,7 +11,7 @@ reports an update only when the published npm version changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Versions are
 date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
-## [Unreleased]
+## [2026.11.3]
 
 ### Added
 - **Plugin identity with shared agent memory (SDK-646).** The plugin now provisions a

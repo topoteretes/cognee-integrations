@@ -34,7 +34,7 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.10.26"
+    current_version: "2026.11.3"
     migration_status: done
     agent_registration: identity
     connection_type: openclaw
@@ -47,7 +47,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "1.7.5"
+    current_version: "1.7.6"
     migration_status: done
     agent_registration: identity
     connection_type: claude_code
@@ -60,7 +60,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: http-api
-    current_version: "1.6.6"
+    current_version: "1.6.7"
     migration_status: done
     agent_registration: identity
     connection_type: antigravity
@@ -73,7 +73,7 @@ integrations:
     registry: cursor-marketplace
     package_name: null
     cognee_dependency: http-api
-    current_version: "0.1.0"
+    current_version: "0.1.1"
     migration_status: done
     agent_registration: identity
     connection_type: cursor
@@ -104,7 +104,7 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.7.7"
+    current_version: "1.7.8"
     migration_status: done
     agent_registration: identity
     connection_type: codex
@@ -129,7 +129,7 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
     cognee_dependency: http-api
-    current_version: "1.4.1"
+    current_version: "1.4.2"
     migration_status: done
     agent_registration: identity
     connection_type: hermes_agent
