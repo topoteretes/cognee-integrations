@@ -73,11 +73,30 @@ import urllib.request
 import uuid
 from typing import Any, Optional
 
+from . import shared_memory as _shared_memory
 from .backend import MemoryBackend
 from .config import (  # noqa: F401 — DEFAULT_USER_* re-exported for callers/tests
     DEFAULT_USER_EMAIL,
     DEFAULT_USER_PASSWORD,
     secret,
+)
+from .plugin_identity import (
+    CONNECTION_TYPE,
+    PLUGIN_KEY,
+    PluginIdentityError,
+    block_cached,
+    clear_cached,
+    ensure_identity,
+    fingerprint,
+    identity_mode,
+    load_cached,
+)
+from .shared_memory import (
+    STRUCTURAL_FAILURES,
+    ensure_shared_memory,
+    load_marker,
+    separated,
+    shared_memory_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -271,6 +290,20 @@ class HttpBackend(MemoryBackend):
     ):
         self.url = ""
         self.api_key = ""
+        # The user's own key (configured or minted), kept apart from api_key
+        # once a plugin identity is active: control-plane work — provisioning,
+        # the keys command — must keep running as the principal.
+        self.principal_api_key = ""
+        #: The provisioned agent's id when this connection runs as one.
+        self.agent_id = ""
+        self.key_id = ""
+        self._identity_mode = "auto"
+        self._shared_memory_setting: Any = None
+        self._provisioned_now = False
+        #: Shared agent memory outcome for this connection (see shared_memory.py):
+        #: ``mode`` shared/separated and, once ``ensure_dataset`` ran, the
+        #: canonical ``dataset_id`` / recall ``dataset_ids`` of ``dataset``.
+        self.shared: dict[str, Any] = separated("no_agent_identity")
         self.registered = False
         self._opener = opener
         self._agent_session_name = agent_session_name
@@ -309,8 +342,14 @@ class HttpBackend(MemoryBackend):
         cookies: Optional[dict[str, str]] = None,
         base_url: str = "",
         parse_json: bool = True,
+        api_key: Optional[str] = None,
     ) -> Any:
         """Make one request and return its parsed JSON body (``None`` if empty).
+
+        ``api_key`` authenticates this one request instead of ``self.api_key``
+        (the control plane runs as the principal while the data plane runs as
+        the agent; the backend is shared across threads, so the key is never
+        swapped on ``self``).
 
         With ``parse_json=False`` the raw text body is returned instead — for
         endpoints like ``/raw`` whose response is the stored document itself,
@@ -331,8 +370,9 @@ class HttpBackend(MemoryBackend):
 
         # Always send the key when we have one: cognee enforces auth on its API
         # routes even on localhost, and a server with auth disabled ignores it.
-        if self.api_key:
-            headers["X-Api-Key"] = self.api_key
+        key = self.api_key if api_key is None else api_key
+        if key:
+            headers["X-Api-Key"] = key
         if cookies:
             headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
 
@@ -373,41 +413,282 @@ class HttpBackend(MemoryBackend):
 
     # -- connection / lifecycle -------------------------------------------
 
-    def connect(self, *, url: str, api_key: str, timeout: float) -> None:
+    def connect(
+        self,
+        *,
+        url: str,
+        api_key: str,
+        timeout: float,
+        plugin_identity: str = "",
+        shared_agent_memory: Any = None,
+        dataset: str = "",
+    ) -> None:
         """Health-check *url*, resolve an API key, and register this connection.
 
         The health check is what makes an unreachable target a hard failure.
         ``cognee.serve()`` only logged a warning and handed back a client, so a bad
         ``COGNEE_BASE_URL`` looked like success until the first real call.
+
+        ``plugin_identity`` is the ``COGNEE_PLUGIN_IDENTITY`` policy (``""`` reads
+        the environment) and ``shared_agent_memory`` the ``shared_agent_memory``
+        config value (the env var wins): under an identity the connection runs as
+        this plugin's own provisioned agent, wired into the user's shared agent
+        memory — see :mod:`plugin_identity` and :mod:`shared_memory`. ``dataset``
+        is the session's dataset: resolved to its canonical UUID in the same
+        wiring pass, so ``ensure_dataset`` has nothing left to do.
         """
         self.url = url.rstrip("/")
         self.api_key = ""
+        self.principal_api_key = ""
+        self.agent_id = ""
+        self.key_id = ""
+        self._provisioned_now = False
+        self.shared = separated("no_agent_identity")
+        self._identity_mode = identity_mode(plugin_identity)
+        self._shared_memory_setting = shared_agent_memory
         self._init_overflow_scan()
 
         health = self._request("GET", "/health", timeout=min(timeout, 10.0))
         del health  # any 2xx is healthy; body shape is not part of the contract
 
-        self.api_key = self._resolve_api_key(api_key, timeout=timeout)
+        self.api_key = self.principal_api_key = self._resolve_api_key(api_key, timeout=timeout)
+        self._apply_plugin_identity(timeout=timeout)
+        self._wire_shared_memory(timeout=timeout, dataset=dataset)
+        self._register(timeout=timeout)
 
-        # Registration drives the server's idle-shutdown watchdog. Useful, but not
-        # required for correctness — never fail a session over it.
-        try:
-            self._request(
-                "POST",
-                "/api/v1/agents/register",
+    @property
+    def identity_active(self) -> bool:
+        """True when every data-plane call runs as the plugin's own agent."""
+        return bool(self.agent_id) and self.api_key != self.principal_api_key
+
+    def _principal_request(self, method: str, path: str, *, timeout: float, json_body=None):
+        """``_request`` authenticated as the principal, whatever ``api_key`` is."""
+        return self._request(
+            method, path, timeout=timeout, json_body=json_body, api_key=self.principal_api_key
+        )
+
+    def _control_plane(self, api_key: str):
+        """A :data:`shared_memory.ControlPlane` authenticated as ``api_key``:
+        reports ``(status, body)`` instead of raising, and never touches
+        ``self.api_key`` (the backend is shared across threads)."""
+
+        def call(method: str, path: str, *, json_body=None, timeout: float = 20.0):
+            try:
+                body = self._request(
+                    method, path, timeout=timeout, json_body=json_body, api_key=api_key
+                )
+                return 200, body
+            except CogneeHttpError as exc:
+                return (exc.status if exc.status != 200 else 500), {"detail": str(exc)[:300]}
+            except Exception as exc:
+                return 0, {"error": str(exc)[:200]}
+
+        return call
+
+    def _apply_plugin_identity(self, *, timeout: float) -> None:
+        """Pick the identity for this connection under the configured policy.
+
+        ``enabled``: :func:`ensure_identity` provisions or raises. ``auto``:
+        identity in service of shared agent memory — a cached identity bound
+        to this principal is reused; otherwise one is provisioned only when
+        shared memory is on and no structural failure was recorded for this
+        plugin version, and never with an error (the principal is the fallback).
+        """
+        mode = self._identity_mode
+        if mode == "disabled":
+            return
+        identity: dict[str, Any] = {}
+        timeout = min(timeout, 20.0)
+        if mode == "enabled":
+            identity = ensure_identity(
+                self._principal_request,
+                base_url=self.url,
+                principal_key=self.principal_api_key,
+                mode="enabled",
                 timeout=timeout,
-                json_body={
-                    "agent_session_name": self._agent_session_name,
-                    # Self-declared connection type (the server's registry is
-                    # free-form: clients outside KNOWN_AGENT_CONNECTION_TYPES
-                    # use their own lowercase name).
-                    "type": "hermes_agent",
-                    "source": "api",
-                },
             )
-            self.registered = True
-        except Exception as exc:
-            logger.debug("cognee agent registration failed (continuing): %s", exc)
+        else:
+            identity = self._auto_identity(timeout=timeout)
+        if identity:
+            self.api_key = identity["api_key"]
+            self.agent_id = identity["agent_id"]
+            self.key_id = str(identity.get("key_id") or "")
+            self._provisioned_now = identity.get("source") == "provisioned"
+
+    def _auto_identity(self, *, timeout: float) -> dict[str, Any]:
+        cached = load_cached(self.url)
+        if str(cached.get("api_key") or "").strip() and not cached.get("blocked"):
+            if cached.get("principal_fingerprint") != fingerprint(self.principal_api_key):
+                # Another principal's identity: not ours to use, not ours to replace.
+                logger.info(
+                    "plugin identity: the cached %s identity belongs to another principal; "
+                    "running as the principal",
+                    PLUGIN_KEY,
+                )
+                return {}
+        elif not shared_memory_enabled(self._shared_memory_setting):
+            # Nothing to provision for: without shared memory the principal sees
+            # everything anyway, and an agent would only silo this plugin's writes.
+            return {}
+        elif not self.principal_api_key:
+            return {}
+        else:
+            marker = load_marker(self.url)
+            prior = str(marker.get("reason") or "")
+            if (
+                prior in STRUCTURAL_FAILURES
+                and marker.get("plugin_version") == _shared_memory.plugin_version()
+            ):
+                logger.debug(
+                    "plugin identity: not provisioning (shared memory %s on this server)", prior
+                )
+                return {}
+        try:
+            return ensure_identity(
+                self._principal_request,
+                base_url=self.url,
+                principal_key=self.principal_api_key,
+                mode="enabled",
+                timeout=timeout,
+            )
+        except PluginIdentityError as exc:
+            logger.info("plugin identity: not provisioned (%s); running as the principal", exc)
+            return {}
+
+    def _wire_shared_memory(self, *, timeout: float, dataset: str = "") -> None:
+        """Wire the agent into shared memory, or — under ``auto`` — undo a fresh
+        identity that cannot be wired, so nothing the principal owns is stranded.
+        The whole wiring shares the connect budget; a step cut off by it reads as
+        transient and is retried on the next connect."""
+        if not self.agent_id:
+            self.shared = separated("no_agent_identity")
+            return
+        self.shared = ensure_shared_memory(
+            self._control_plane(self.principal_api_key),
+            self._control_plane(self.api_key),
+            base_url=self.url,
+            agent_id=self.agent_id,
+            dataset=dataset,
+            enabled=shared_memory_enabled(self._shared_memory_setting),
+            budget=max(5.0, float(timeout)),
+        )
+        if (
+            self.shared["mode"] == "shared"
+            or self._identity_mode == "enabled"
+            or not self._provisioned_now
+        ):
+            return
+        # ``auto`` provisioned on the promise of shared memory; honour it by
+        # reverting: nobody will hold the key just minted, so revoke it — only
+        # it, by id; other machines hold keys for the same agent.
+        logger.info(
+            "plugin identity: reverting to the principal (shared memory %s)", self.shared["reason"]
+        )
+        if self.key_id:
+            status, _ = self._control_plane(self.principal_api_key)(
+                "DELETE", f"/api/v1/integrations/plugins/{PLUGIN_KEY}/keys/{self.key_id}"
+            )
+            if status != 200:
+                logger.debug("plugin identity: could not revoke the unused key (HTTP %s)", status)
+        clear_cached()
+        self.api_key, self.agent_id, self.key_id = self.principal_api_key, "", ""
+        self._provisioned_now = False
+        self.shared = separated("no_agent_identity")
+
+    def dataset_ids_for(self, dataset: str) -> tuple[str, list[str]]:
+        """``(write_id, read_ids)`` for ``dataset`` under shared memory; both
+        empty when the connection addresses datasets by name."""
+        if self.shared.get("mode") != "shared" or not dataset:
+            return "", []
+        if self.shared.get("dataset") == dataset and self.shared.get("dataset_id"):
+            write_id = str(self.shared["dataset_id"])
+            read_ids = [str(x) for x in self.shared.get("dataset_ids") or [] if str(x)]
+            return write_id, read_ids or [write_id]
+        canonical = load_marker(self.url).get("canonical")
+        write_id = str(canonical.get(dataset) or "") if isinstance(canonical, dict) else ""
+        return (write_id, [write_id]) if write_id else ("", [])
+
+    def _register(self, *, timeout: float) -> None:
+        """Register this connection under the effective identity.
+
+        Registration drives the server's idle-shutdown watchdog. Useful, but not
+        required for correctness — never fail a session over it. Under a plugin
+        identity a 401 means the agent key is dead (revoked from the dashboard,
+        or pruned): it is blocked and replaced once through the same
+        provisioning; a 403 means the server refused this identity. When the
+        identity cannot be made to register, ``enabled`` raises — owner fallback
+        is what ``COGNEE_PLUGIN_IDENTITY=true`` rules out — and ``auto`` reverts
+        this session to the principal and registers as that.
+        """
+        payload = {
+            "agent_session_name": self._agent_session_name,
+            # Self-declared connection type (the server's registry is free-form:
+            # clients outside KNOWN_AGENT_CONNECTION_TYPES use their own name).
+            "type": CONNECTION_TYPE,
+            "source": "api",
+            # Lets the server attribute the connection to this plugin without a
+            # connection-type table of its own (SDK-646).
+            "metadata": {"plugin_key": PLUGIN_KEY},
+        }
+
+        def _attempt() -> Optional[int]:
+            """None when registered; the HTTP status (0 = no answer) otherwise."""
+            try:
+                self._request("POST", "/api/v1/agents/register", timeout=timeout, json_body=payload)
+                self.registered = True
+                return None
+            except CogneeHttpError as exc:
+                return exc.status
+            except Exception as exc:
+                logger.debug("cognee agent registration failed (continuing): %s", exc)
+                return 0
+
+        status = _attempt()
+        if status is None or not self.identity_active or status not in (401, 403):
+            if status:
+                logger.debug("cognee agent registration failed (continuing): HTTP %s", status)
+            return
+
+        if status == 401:
+            # The key is dead. Replace it once, in this launch.
+            block_cached(self.api_key)
+            self.api_key, self.agent_id, self.key_id = self.principal_api_key, "", ""
+            self._apply_plugin_identity_or_fallback(timeout=timeout)
+            if self.identity_active:
+                status = _attempt()
+                if status is None:
+                    return
+                if status == 401:
+                    block_cached(self.api_key)
+
+        if self._identity_mode == "enabled":
+            if status == 403:
+                raise PluginIdentityError(
+                    f"The {PLUGIN_KEY} identity was refused registration (403) by {self.url}; "
+                    "owner fallback is disabled under COGNEE_PLUGIN_IDENTITY=true."
+                )
+            raise PluginIdentityError(
+                f"The {PLUGIN_KEY} identity was rejected by {self.url} and could not be "
+                "replaced; owner fallback is disabled under COGNEE_PLUGIN_IDENTITY=true."
+            )
+        # ``auto``: this session runs as the principal; shared memory is off
+        # until the identity is replaced (401) or the server accepts it (403).
+        logger.info(
+            "plugin identity: registration refused (HTTP %s); this session runs as the principal",
+            status,
+        )
+        self.api_key, self.agent_id, self.key_id = self.principal_api_key, "", ""
+        self.shared = separated("identity_rejected")
+        _attempt()
+
+    def _apply_plugin_identity_or_fallback(self, *, timeout: float) -> None:
+        """Re-provision after a rejected key; under ``auto`` a failure means the
+        principal, never an exception."""
+        try:
+            self._apply_plugin_identity(timeout=timeout)
+        except PluginIdentityError:
+            if self._identity_mode == "enabled":
+                raise
 
     def connection_info(self) -> Optional[dict[str, Any]]:
         if not self.url:
@@ -438,6 +719,31 @@ class HttpBackend(MemoryBackend):
         """
         if not dataset:
             return
+        if self.shared.get("mode") == "shared" and self.agent_id:
+            if self.shared.get("dataset") == dataset and self.shared.get("dataset_id"):
+                return  # resolved in connect's wiring pass
+            # Under shared memory the dataset is a canonical, parent-owned copy
+            # addressed by UUID: created as the PRINCIPAL and granted to the
+            # role, never created as the agent (that would fork a private copy
+            # a name lookup can never reach from any other plugin).
+            outcome = ensure_shared_memory(
+                self._control_plane(self.principal_api_key),
+                self._control_plane(self.api_key),
+                base_url=self.url,
+                agent_id=self.agent_id,
+                dataset=dataset,
+                enabled=shared_memory_enabled(self._shared_memory_setting),
+                budget=max(5.0, float(timeout)),
+            )
+            if outcome["mode"] == "shared":
+                self.shared = outcome
+                return
+            logger.warning(
+                "shared memory: %s; addressing %r by name for this session",
+                outcome["reason"],
+                dataset,
+            )
+            self.shared = outcome
         try:
             self._request("POST", "/api/v1/datasets", timeout=timeout, json_body={"name": dataset})
         except CogneeHttpError as exc:
@@ -601,15 +907,14 @@ class HttpBackend(MemoryBackend):
         check exists to catch a key from another server, not to second-guess a
         server that is merely slow.
         """
-        previous, self.api_key = self.api_key, key
         try:
-            self._request("GET", "/api/v1/datasets", timeout=min(timeout, _AUTH_STEP_TIMEOUT))
+            self._request(
+                "GET", "/api/v1/datasets", timeout=min(timeout, _AUTH_STEP_TIMEOUT), api_key=key
+            )
         except CogneeHttpError as exc:
             return exc.status not in (401, 403)
         except Exception:
             return True
-        finally:
-            self.api_key = previous
         return True
 
     def _mint_api_key(self, *, email: str, password: str, timeout: float) -> str:
@@ -679,7 +984,20 @@ class HttpBackend(MemoryBackend):
         if session_id:
             body["session_id"] = session_id
         if datasets:
-            body["datasets"] = datasets
+            # Under shared memory a name only resolves among the CALLER's own
+            # datasets, so the agent would fork an empty copy: address the
+            # canonical dataset (and its readable same-named copies) by UUID.
+            ids: list[str] = []
+            for name in datasets:
+                _write, read_ids = self.dataset_ids_for(str(name))
+                if not read_ids:
+                    ids = []
+                    break
+                ids.extend(x for x in read_ids if x not in ids)
+            if ids:
+                body["dataset_ids"] = ids
+            else:
+                body["datasets"] = datasets
         # State the scope outright, always. Left out, the server resolves it to
         # ``auto`` and — while search_type is null and a session id travels —
         # folds the session cache into the sources. Memory is read from the
@@ -715,7 +1033,8 @@ class HttpBackend(MemoryBackend):
     def _remember(
         self, *, text: str, dataset: str, session_id: str, timeout: float, chunk_size: int = 0
     ) -> RememberResponse:
-        fields = {"datasetName": dataset}
+        write_id, _ = self.dataset_ids_for(dataset)
+        fields = {"datasetId": write_id} if write_id else {"datasetName": dataset}
         if session_id:
             fields["session_id"] = session_id
         # A synchronous remember runs the whole cognify pipeline (several LLM
@@ -801,7 +1120,11 @@ class HttpBackend(MemoryBackend):
     def forget(self, *, dataset, everything, memory_only, timeout) -> dict[str, Any]:
         body: dict[str, Any] = {"everything": everything, "memory_only": memory_only}
         if dataset and not everything:
-            body["dataset"] = dataset
+            write_id, _ = self.dataset_ids_for(dataset)
+            if write_id:
+                body["dataset_id"] = write_id
+            else:
+                body["dataset"] = dataset
         result = self._request("POST", "/api/v1/forget", timeout=timeout, json_body=body)
         return result if isinstance(result, dict) else {}
 
@@ -813,6 +1136,11 @@ class HttpBackend(MemoryBackend):
             "dataset_name": dataset,
             "run_in_background": background,
         }
+        # Canonical UUID under shared memory: improve accepts dataset_id and
+        # prefers it over the name (which only resolves among owned datasets).
+        write_id, _ = self.dataset_ids_for(dataset)
+        if write_id:
+            body["dataset_id"] = write_id
         if session_ids:
             body["session_ids"] = session_ids
         return self._request("POST", "/api/v1/improve", timeout=timeout, json_body=body)
@@ -913,9 +1241,10 @@ class HttpBackend(MemoryBackend):
         timeout: float,
     ) -> dict[str, Any]:
         """Submit one repository for deterministic code-graph indexing."""
+        write_id, _ = self.dataset_ids_for(dataset)
         multipart = _multipart_body(
             {
-                "datasetName": dataset,
+                **({"datasetId": write_id} if write_id else {"datasetName": dataset}),
                 "content_type": "code",
                 # cognee >= 1.5.4 reads the repo spec from raw_data; 1.5.3
                 # called the field repositories. A 1.5.4 server ignores the old

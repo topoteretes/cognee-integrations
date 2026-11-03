@@ -450,6 +450,32 @@ def test_tenantless_user_with_agent_owned_data_stays_separated(
     assert ident.active_tenant.get(body["agentId"]) is None
 
 
+def test_unreadable_dataset_listing_never_creates_a_tenant(
+    suite, pc, bootstrap, mock_server, monkeypatch
+):
+    """A failed GET /datasets must not read as "no datasets": for a tenant-less
+    user who owns data that would create — and activate — a tenant and hide
+    every dataset created under none. The failure is transient: no marker is
+    written, so the next launch simply tries again."""
+    ident = mock_server.identity
+    _, body = ident.plugins_provision(suite.name, PRINCIPAL_KEY)
+    pc.save_cached_agent_key(
+        mock_server.url, body["apiKey"], body["agentId"], principal_key=PRINCIPAL_KEY
+    )
+    ident.seed_dataset("agent_sessions", ident.principal_id)
+    mock_server.force_response("GET", "/api/v1/datasets", 500, {"detail": "boom"})
+
+    module, run = bootstrap
+    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    _uid, api_key, _n, ok = run({"api_key": PRINCIPAL_KEY})
+    assert ok
+    assert not ident.tenants
+    mock_server.assert_not_called("POST", "/api/v1/permissions/tenants")
+    marker = pc.load_shared_memory_marker(mock_server.url)
+    assert marker.get("reason") != "tenantless_with_data"
+    assert marker.get("mode") != "shared"
+
+
 def test_revert_revokes_only_the_key_it_minted(suite, bootstrap, mock_server, monkeypatch):
     """Shared memory could not be wired, so the fresh key is reverted. Other
     machines hold keys for the same agent: the revert revokes the fresh key by

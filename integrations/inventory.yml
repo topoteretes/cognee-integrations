@@ -8,6 +8,17 @@
 #   pending    – still in its own repo, migration planned
 #   skipped    – migration deferred (e.g. repo inaccessible)
 #
+# agent_registration values (SDK-646; required on every entry, CI-checked by
+# integrations/tests/tests/unit/test_inventory_agent_registration.py):
+#   identity   – provisions its own cognee agent (POST /integrations/plugins/<key>/provision,
+#                self-describing: label + connection_type) and registers a typed
+#                session connection (POST /agents/register, metadata.plugin_key)
+#   connection – registers a typed session connection at start and unregisters at
+#                exit, but runs as the user's principal (no provisioned agent)
+#   none       – neither: traffic shows as anonymous API/SDK use
+# connection_type is the self-declared `type` sent on /agents/register (identity and
+# connection entries), and the plugin key is the entry's slug.
+#
 # TODO: CI currently only runs import smoke tests. To run the example scripts
 #       as integration tests we need CI secrets (LLM_API_KEY, GOOGLE_API_KEY,
 #       etc.) provisioned per integration. Track and resolve before v1 release.
@@ -23,8 +34,10 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.10.26"
+    current_version: "2026.11.3"
     migration_status: done
+    agent_registration: identity
+    connection_type: openclaw
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
   - slug: claude-code
@@ -34,8 +47,10 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "1.7.5"
+    current_version: "1.7.6"
     migration_status: done
+    agent_registration: identity
+    connection_type: claude_code
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
   - slug: antigravity
@@ -45,8 +60,10 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: http-api
-    current_version: "1.6.6"
+    current_version: "1.6.7"
     migration_status: done
+    agent_registration: identity
+    connection_type: antigravity
     notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
 
   - slug: cursor
@@ -56,8 +73,10 @@ integrations:
     registry: cursor-marketplace
     package_name: null
     cognee_dependency: http-api
-    current_version: "0.1.0"
+    current_version: "0.1.1"
     migration_status: done
+    agent_registration: identity
+    connection_type: cursor
     notes: >-
       Cursor plugin (.cursor-plugin/plugin.json + hooks/hooks.json) built on the Codex
       hook runtime. cursor_hook.py adapts Cursor's camelCase hook payloads (conversation_id,
@@ -74,6 +93,8 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: connection
+    connection_type: vellum_assistant
     notes: "Vellum Assistant plugin integrating Cognee as the primary memory system. Pure TypeScript hooks talk to the Cognee HTTP API, session storage via hooks, recall via model-visible tool, session-to-graph sync; can optionally provision and manage a local Cognee server"
 
   - slug: codex
@@ -83,8 +104,10 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.7.7"
+    current_version: "1.7.8"
     migration_status: done
+    agent_registration: identity
+    connection_type: codex
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
 
   - slug: grok-bot
@@ -96,6 +119,7 @@ integrations:
     cognee_dependency: mcp
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     notes: "Cursor-format plugin (Grok Bot's plugin catalog) that attaches the hosted Cognee MCP server (OAuth, no API key) plus a memory skill that makes Cognee the bot's memory; listed in the root .cursor-plugin/marketplace.json and .grok-plugin/marketplace.json"
 
   - slug: hermes-agent
@@ -105,8 +129,10 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
     cognee_dependency: http-api
-    current_version: "1.4.1"
+    current_version: "1.4.2"
     migration_status: done
+    agent_registration: identity
+    connection_type: hermes_agent
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: >-
       Standalone Hermes memory provider plugin; replaces closed in-tree PR path.
@@ -134,6 +160,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     notes: "Dify tool plugin for Cognee Cloud and self-hosted Cognee – remember, recall, forget, improve plus add/cognify/search/update/delete over the cognee /api/v1 HTTP API (tested with cognee 1.6.1)"
 
   - slug: google-adk
@@ -145,6 +172,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.1.1"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-integration-google-adk
     notes: "Google ADK agent tools – add, search, session management"
 
@@ -157,6 +185,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.1.7"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-integration-langgraph
     notes: "LangGraph agent tools – add, search, session management"
 
@@ -169,6 +198,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.2.0"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-integration-strands
     notes: "Strands agent tools – remember, recall, session management (cognee v1.0)"
   - slug: claude-agent-sdk
@@ -180,6 +210,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.2.0"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-integration-claude
     notes: "Claude Agent SDK tools – remember, recall, session management (cognee v1.0)"
 
@@ -192,6 +223,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.8.1"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-n8n
     notes: "n8n community nodes – the Cognee action node (memory, datasets, search, sessions, skills) and the Cognee Memory sub-node for the AI Agent's memory port. Published via .github/workflows/n8n-publish.yml on `n8n-v*.*.*` tags."
 
@@ -204,6 +236,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.1.1"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-integration-crewai
     notes: "CrewAI agent tools – add, search, session management"
 
@@ -216,6 +249,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     notes: >-
       Cognee memory layer for Mastra agents: input/output processors for
       automatic recall and capture, plus cognee_search / cognee_ask /
@@ -231,6 +265,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-integrations
     notes: "Tapes cassette (cassette/v1alpha1) – syncs recorded agent sessions into cognee and exposes sync/search as MCP tools proxied under /v1/cassettes/cognee/."
 
@@ -245,6 +280,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee/pull/4018
     notes: "Framework-agnostic ChatMemoryAdapter every cognee chat bot plugs into (ingest/answer/forget, scopes, consent, citations). Default HTTP backend; optional [sdk] extra for in-process cognee."
 
@@ -257,6 +293,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee/pull/4012
     notes: "Telegram bot – each chat is a cognee memory; passive capture, /ask with cited message links, /forget, per-chat opt-out."
 
@@ -269,6 +306,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee/pull/4019
     notes: "Slack bot – per-channel memory, @cognee / /recall cited answers, batched ingestion, dataset-level forget."
 
@@ -281,6 +319,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee/pull/4014
     notes: "Embeddable web chat widget + 'ask our docs' assistant; a CORS FastAPI proxy to a cognee server, with inline citations."
 
@@ -293,6 +332,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee/pull/4009
     notes: "Personal cross-transport memory (Telegram + web) over one per-user brain; /link merges identities, cited recall, /forget me."
 
@@ -305,6 +345,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "0.1.1"
     migration_status: done
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee/pull/4067
     notes: "VS Code extension – remember/recall + 'ask my project memory' with citations linked back to source files; per-repo dataset isolation."
 
@@ -317,6 +358,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.1.0"
     migration_status: done
+    agent_registration: none
     notes: "Aider CLI memory tools – sessionized add/cognify/search with per-project isolation (CHUNKS-scoped recall)"
 
   # ── Community integrations (maintained outside this monorepo) ──────
@@ -330,6 +372,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.1.0"
     migration_status: skipped
+    agent_registration: none
     source_repo: https://github.com/kerryhatcher/pi-cognee
     notes: >-
       Community-maintained Pi extension (MIT, Kerry Hatcher) — remember, recall,
@@ -349,6 +392,7 @@ integrations:
     cognee_dependency: http-api
     current_version: "TBD"
     migration_status: pending
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-vercel-ai-sdk
     notes: "Vercel AI SDK middleware – auto-store conversations, retrieve context"
 
@@ -361,8 +405,33 @@ integrations:
     cognee_dependency: sdk
     current_version: "0.1.0"
     migration_status: pending
+    agent_registration: none
     source_repo: https://github.com/topoteretes/cognee-integration-openai-agents
     notes: "Repo currently private."
+
+  - slug: obsidian
+    name: "Obsidian Vault Exporter for Cognee"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-obsidian"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    agent_registration: none
+    notes: "POC script that walks an Obsidian vault and ingests it in-process (cognee.add), preserving frontmatter, tags and wikilinks; one-shot, holds no session"
+
+  - slug: openclaw-skills
+    name: "Cognee Skills Plugin for OpenClaw"
+    owner: cognee
+    language: typescript
+    registry: npm
+    package_name: "cognee-openclaw-skills"
+    cognee_dependency: http-api
+    current_version: "2026.3.0"
+    migration_status: done
+    agent_registration: none
+    notes: "OpenClaw plugin for self-improving agent skills over the cognee /api/v1/skills HTTP API; no session connection"
 
   - slug: opencode
     name: "Cognee Plugin for OpenCode"
@@ -373,4 +442,6 @@ integrations:
     cognee_dependency: http-api
     current_version: "2026.9.29"
     migration_status: done
+    agent_registration: connection
+    connection_type: opencode
     notes: "Native OpenCode plugin: per-turn recall, typed QA/tool capture, durable outbox and lifecycle hooks. Registry release pending."

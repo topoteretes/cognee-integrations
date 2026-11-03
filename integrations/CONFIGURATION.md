@@ -74,3 +74,39 @@ Claude Code Pro/Max subscription OAuth tokens authenticate Claude Code itself.
 This integration does not extract or reuse those tokens for independent Cognee
 LLM calls. Use the provider's supported API or managed-provider authentication,
 as described in [Anthropic's authentication terms](https://code.claude.com/docs/en/legal-and-compliance).
+
+## Plugin identity (`COGNEE_PLUGIN_IDENTITY`)
+
+A cognee user can give each plugin its own **agent**: a sub-user with one API key per
+machine, provisioned by the plugin itself as the user through
+`POST /api/v1/integrations/plugins/<plugin_key>/provision`. The plugin describes itself in
+that call (`label`, `connection_type`), and names itself on every session registration
+(`metadata.plugin_key` on `POST /api/v1/agents/register`), so the server attributes
+traffic per plugin without a built-in list of plugins (SDK-646). The plugin key is the
+integration's slug in [`inventory.yml`](inventory.yml), whose `agent_registration` field
+records which integrations provision an identity, which only register a connection, and
+which do neither.
+
+`COGNEE_PLUGIN_IDENTITY` is tri-state everywhere: `auto` (default), `true`, `false`.
+`COGNEE_SHARED_AGENT_MEMORY=false` opts an agent out of shared memory everywhere (it leaves
+the shared role and keeps only its own datasets). The shared-memory wiring is the same in
+every plugin: a tenant the user owns, a `cognee-agent` role in it that every plugin agent
+joins, read+write grants for the role on the user's datasets, and canonical, user-owned
+datasets addressed by UUID; the marker lives next to the key cache as `shared_memory.json`.
+
+| Integration | `auto` | `true` | `false` | Key cache |
+|---|---|---|---|---|
+| Claude Code / Codex / Antigravity / Cursor | Provisions in service of **shared agent memory** (default on): the agent joins the user's tenant role and datasets are addressed by UUID, so the agent still reaches the user's datasets; reverts to the principal if that wiring is unavailable. | Provisions and never falls back; any obstacle fails session start. | Principal only. | `~/.cognee-plugin/<plugin>/agent_key.json` |
+| Hermes Agent (`plugin_identity`, `shared_agent_memory`) | Same policy as the Python plugins: provisions `hermes-agent` for shared agent memory and reverts to the principal if the wiring is unavailable. HTTP transport only. | Provisions and never falls back; any obstacle fails session start. | Principal only. | `~/.cognee-plugin/hermes-agent/agent_key.json` |
+| OpenClaw (`pluginIdentity`, `sharedAgentMemory`) | Same policy: provisions `openclaw` for shared agent memory and reverts to the principal if the wiring is unavailable. | Provisions the agent and runs the gateway, sessions and exit watchers as it; an obstacle is logged as an error and the gateway continues as the principal (it has no session to abort). | Principal only. | `~/.cognee-plugin/openclaw/agent_key.json` |
+| OpenCode, Vellum Assistant | Register a typed connection only (no identity yet). | — | — | — |
+
+Provisioning is only attempted against a server whose provision route **adds** one key per
+machine (the `x-cognee-additive-plugin-keys` OpenAPI marker, cognee >= 1.6.3 with
+cognee#6113); older servers rotated the agent's keys on every call, which would log out
+every other machine. An agent already holding its maximum number of keys refuses a new
+machine one: free a slot with the plugin's `keys` command (`/cognee-memory:cognee-keys`,
+`hermes cognee keys`, `openclaw cognee keys`), which always runs as the principal. A key
+the server rejects with 401 (revoked from the dashboard) is blocked locally and replaced
+once in the same launch; the server-side agent is never deleted by a plugin.
+

@@ -8,6 +8,15 @@ The version here matches the `version` field in `.cursor-plugin/plugin.json` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1]
+
+### Changed
+- **Self-describing identity provisioning (SDK-646).** `POST /api/v1/integrations/plugins/{key}/provision`
+  now carries the plugin's `label` and `connection_type`, and every
+  `POST /api/v1/agents/register` carries `metadata.plugin_key`, so a cognee server can learn
+  and attribute this plugin from the calls themselves instead of a hardcoded plugin registry.
+  Servers that predate the body ignore it; behaviour on today's servers is unchanged.
+
 ## [0.1.0]
 
 ### Added

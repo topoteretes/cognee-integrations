@@ -1,4 +1,6 @@
 import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, ScopeRoute } from "./types.js";
+import { parsePluginIdentityMode } from "./plugin-identity.js";
+import { sharedMemoryEnabled } from "./shared-memory.js";
 import { sanitizeDatasetName } from "./scope.js";
 import { contextCharsLimit, passageCharsLimit } from "./recall-text.js";
 import { capturePolicyFromEnv } from "./capture-policy.js";
@@ -148,6 +150,16 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     : process.env.COGNEE_API_KEY?.trim() || "";
   const username = raw.username?.trim() || process.env.COGNEE_USERNAME || "";
   const password = raw.password?.trim() || process.env.COGNEE_PASSWORD || "";
+  // Plugin identity (SDK-646): the config value wins over the env var; both
+  // default to auto. Validated here so a typo fails config resolution loudly.
+  const pluginIdentityMode = parsePluginIdentityMode(
+    raw.pluginIdentity !== undefined && raw.pluginIdentity !== null && String(raw.pluginIdentity).trim() !== ""
+      ? raw.pluginIdentity
+      : process.env.COGNEE_PLUGIN_IDENTITY,
+  );
+  const pluginIdentity: "auto" | "true" | "false" =
+    pluginIdentityMode === "enabled" ? "true" : pluginIdentityMode === "disabled" ? "false" : "auto";
+  const sharedAgentMemory = sharedMemoryEnabled(typeof raw.sharedAgentMemory === "boolean" ? raw.sharedAgentMemory : undefined);
 
   // Multi-scope
   const companyDataset = raw.companyDataset?.trim() || "";
@@ -219,7 +231,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const captureRedact = typeof raw.captureRedact === "boolean" ? raw.captureRedact : capturePolicyFromEnv().redact !== false;
 
   return {
-    mode, baseUrl, apiKey, username, password, datasetName,
+    mode, baseUrl, apiKey, username, password, pluginIdentity, sharedAgentMemory, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
     recallInjectionPosition, memoryHitFooter, memoryHitFooterFormat, weeklyDigest, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, recapTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,

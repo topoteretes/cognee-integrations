@@ -607,7 +607,14 @@ class CogneeMemoryProvider(MemoryProvider):
         if service_url:
             try:
                 api_key = str(self._config.get("api_key") or "")
-                self._backend.connect(url=service_url, api_key=api_key, timeout=30)
+                self._backend.connect(
+                    url=service_url,
+                    api_key=api_key,
+                    timeout=30,
+                    plugin_identity=str(self._config.get("plugin_identity") or ""),
+                    shared_agent_memory=self._config.get("shared_agent_memory"),
+                    dataset=self._dataset,
+                )
                 self._remote_mode = True
             except Exception as exc:
                 raise RuntimeError(
@@ -633,7 +640,14 @@ class CogneeMemoryProvider(MemoryProvider):
                     boot_timeout=boot_timeout,
                     wait=min(boot_timeout, _SESSION_START_WAIT_SECS),
                 )
-                self._backend.connect(url=local_url, api_key="", timeout=30)
+                self._backend.connect(
+                    url=local_url,
+                    api_key="",
+                    timeout=30,
+                    plugin_identity=str(self._config.get("plugin_identity") or ""),
+                    shared_agent_memory=self._config.get("shared_agent_memory"),
+                    dataset=self._dataset,
+                )
                 self._remote_mode = True
             except CogneeNotInstalledError:
                 # Already says what to do.
@@ -694,7 +708,14 @@ class CogneeMemoryProvider(MemoryProvider):
                 )
                 logger.warning("%s", self._start_error)
                 return
-            self._backend.connect(url=starting.url, api_key="", timeout=30)
+            self._backend.connect(
+                url=starting.url,
+                api_key="",
+                timeout=30,
+                plugin_identity=str(self._config.get("plugin_identity") or ""),
+                shared_agent_memory=self._config.get("shared_agent_memory"),
+                dataset=self._dataset,
+            )
             self._complete_initialization()
             logger.info("cognee local server is ready; Cognee memory is on.")
         except Exception as exc:
@@ -741,6 +762,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 api_key=str(info.get("api_key") or ""),
                 agent_session_name=str(info.get("agent_session_name") or "hermes"),
                 dataset=self._dataset,
+                dataset_id=self._backend.dataset_ids_for(self._dataset)[0],
                 session_id=self._session_cognee_id,
                 improve=bool(self._writes_enabled and self._improve_on_end),
                 improve_timeout=self._timeout("improve_timeout", 300),
@@ -1327,6 +1349,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 api_key=str(info.get("api_key") or ""),
                 session_id=self._session_cognee_id,
                 dataset=self._dataset,
+                dataset_id=self._backend.dataset_ids_for(self._dataset)[0],
                 improve=improve,
                 improve_timeout=self._timeout("improve_timeout", 300),
             )
@@ -1394,6 +1417,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._watcher_state_path,
                 session_id=self._session_cognee_id,
                 dataset=self._dataset,
+                dataset_id=self._backend.dataset_ids_for(self._dataset)[0],
                 improve=bool(self._writes_enabled and self._improve_on_end),
             )
         if reset:
@@ -2246,6 +2270,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._watcher_state_path,
                 session_id=self._session_cognee_id,
                 dataset=target,
+                dataset_id=self._backend.dataset_ids_for(target)[0],
                 improve=bool(self._writes_enabled and self._improve_on_end),
             )
         self._record_success()

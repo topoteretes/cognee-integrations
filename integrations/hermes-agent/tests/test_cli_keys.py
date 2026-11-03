@@ -1,9 +1,9 @@
 """``hermes cognee keys`` — list and revoke the per-machine keys of plugin agents.
 
-Hermes registers as the principal and provisions no agent of its own, so the
-command manages the keys of every cognee plugin agent (Claude Code, Codex, …)
-of the user: a plugin agent full of keys in use refuses a new machine a key
-(cognee#6113), and this is how a slot is freed from Hermes.
+The command runs as the principal and manages the keys of every cognee plugin
+agent of the user (Claude Code, Codex, …, and Hermes's own ``hermes-agent``
+under ``COGNEE_PLUGIN_IDENTITY=true``): a plugin agent full of keys in use
+refuses a new machine a key (cognee#6113), and this is how a slot is freed.
 """
 
 from __future__ import annotations

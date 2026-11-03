@@ -41,6 +41,21 @@ export type CogneePluginConfig = {
   apiKey?: string;
   username?: string;
   password?: string;
+  /**
+   * Plugin identity policy (SDK-646): "auto" (default) provisions the plugin's
+   * own cognee agent in service of shared agent memory and reverts to the
+   * principal if that cannot be wired; "true" provisions and runs as the agent
+   * regardless; "false" runs as the principal and ignores a cached identity.
+   * Also settable via COGNEE_PLUGIN_IDENTITY.
+   */
+  pluginIdentity?: "auto" | "true" | "false" | boolean;
+  /**
+   * Shared agent memory for a provisioned identity (default true): the agent
+   * joins the user's shared role and datasets are addressed by canonical UUID,
+   * so memory stays shared with the user and the other cognee plugins. Also
+   * settable via COGNEE_SHARED_AGENT_MEMORY.
+   */
+  sharedAgentMemory?: boolean;
 
   // --- Legacy flat dataset (still supported as fallback) ---
   datasetName?: string;

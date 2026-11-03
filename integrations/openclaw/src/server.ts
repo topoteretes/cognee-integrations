@@ -497,15 +497,17 @@ const EXIT_WATCHER_CONTENT = [
   "    with urllib.request.urlopen(req, timeout=timeout) as r:",
   "        return r.read()",
   "",
-  "def bridge_session(base_url, dataset_name, session_id, api_key):",
+  "def bridge_session(base_url, dataset_name, session_id, api_key, dataset_id=''):",
   "    # Bridge the server-side session cache into the permanent graph BEFORE",
   "    # unregistering: unregister may drop activeAgents to 0, and in",
   "    # COGNEE_AGENT_MODE the server then shuts down mid-pipeline.",
   "    # run_in_background=false so the call returns only when the bridge is done.",
   "    try:",
-  "        body = post_json(base_url, '/api/v1/improve',",
-  "            {'dataset_name': dataset_name, 'session_ids': [session_id],",
-  "             'run_in_background': False}, api_key, 120)",
+  "        payload = {'dataset_name': dataset_name, 'session_ids': [session_id],",
+  "                   'run_in_background': False}",
+  "        if dataset_id:",
+  "            payload['dataset_id'] = dataset_id  # canonical UUID under shared agent memory",
+  "        body = post_json(base_url, '/api/v1/improve', payload, api_key, 120)",
   "        log(f'improve ok session={session_id} body={body.decode()[:200]}')",
   "    except Exception as e:",
   "        log(f'improve error session={session_id} type={type(e).__name__} err={e}')",
@@ -534,6 +536,7 @@ const EXIT_WATCHER_CONTENT = [
   "api_key = str(a.get('api_key', '') or os.environ.get('COGNEE_API_KEY', '') or '')",
   "pidfile = str(a.get('pidfile', ''))",
   "dataset_name = str(a.get('dataset_name', '') or '')",
+  "dataset_id = str(a.get('dataset_id', '') or '')",
   "cognee_session_id = str(a.get('cognee_session_id', '') or '')",
   "",
   "if not gw_pid or not name or not pidfile:",
@@ -559,9 +562,10 @@ const EXIT_WATCHER_CONTENT = [
   "        try:",
   "            b = json.loads(open(bridge_file).read())",
   "            dataset_name = str(b.get('dataset_name') or dataset_name)",
+  "            dataset_id = str(b.get('dataset_id') or '')",
   "            cognee_session_id = str(b.get('cognee_session_id') or cognee_session_id)",
   "        except Exception: pass",
-  "        bridge_session(base_url, dataset_name, cognee_session_id, api_key)",
+  "        bridge_session(base_url, dataset_name, cognee_session_id, api_key, dataset_id)",
   "    deregister(base_url, name, api_key)",
   "    for path in (pidfile, bridge_file):",
   "        try: os.unlink(path)",
@@ -584,13 +588,13 @@ export function exitWatcherPidfilePath(agentSessionName: string): string {
  */
 export async function writeExitWatcherBridge(
   agentSessionName: string,
-  target: { datasetName: string; cogneeSessionId: string },
+  target: { datasetName: string; cogneeSessionId: string; datasetId?: string },
 ): Promise<void> {
   try {
     await mkdir(EXIT_WATCHERS_DIR, { recursive: true });
     await writeFile(
       `${exitWatcherPidfilePath(agentSessionName)}.bridge.json`,
-      JSON.stringify({ dataset_name: target.datasetName, cognee_session_id: target.cogneeSessionId }),
+      JSON.stringify({ dataset_name: target.datasetName, dataset_id: target.datasetId ?? "", cognee_session_id: target.cogneeSessionId }),
       "utf-8",
     );
   } catch { /* best-effort */ }
@@ -612,6 +616,8 @@ export async function spawnExitWatcher(params: {
   apiKey?: string;
   pidfilePath: string;
   datasetName?: string;
+  /** Canonical UUID under shared agent memory ("" = bridge by name). */
+  datasetId?: string;
   cogneeSessionId?: string;
   logger: { warn?: (msg: string) => void };
 }): Promise<void> {
@@ -626,6 +632,7 @@ export async function spawnExitWatcher(params: {
       base_url: params.baseUrl,
       pidfile: params.pidfilePath,
       dataset_name: params.datasetName ?? "",
+      dataset_id: params.datasetId ?? "",
       cognee_session_id: params.cogneeSessionId ?? "",
     });
     const python = findSystemPython();

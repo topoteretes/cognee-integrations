@@ -431,6 +431,44 @@ no server.
 > exactly the contention embedded mode is warned about. For embedded use, point
 > `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` at a private location.
 
+### Plugin identity and shared agent memory
+
+A cognee user can give each plugin its own **agent**: a sub-user with its own
+API key per machine, so the integrations page attributes memory to *Hermes*
+rather than to you, and the Hermes key can be revoked without touching Claude
+Code's or Codex's. The plugin provisions it itself, as you, through
+`POST /api/v1/integrations/plugins/hermes-agent/provision`, describing itself
+(key `hermes-agent`, label "Hermes Agent", connection type `hermes_agent`) so
+the server needs no built-in list of plugins.
+
+An agent is its own user, and cognee's grants only flow child → parent: you see
+what the agent writes, the agent sees nothing you (or another plugin's agent)
+own. **Shared agent memory** (on by default) closes that the way the Claude
+Code and Codex plugins do: the agent joins a tenant you own and a role named
+`cognee-agent` in it, the role is granted read+write on your datasets (and on
+every dataset a sibling agent creates, since those are auto-shared to you), and
+each dataset is addressed by the UUID of a canonical copy you own — never by
+name, which only resolves among the caller's own datasets. Every control-plane
+call runs as you; only the agent's tenant selection runs as the agent.
+
+`plugin_identity` / `COGNEE_PLUGIN_IDENTITY` picks the policy:
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | Identity in service of shared memory. With shared memory on, the `hermes-agent` agent is provisioned on first use and wired into your shared role; if the wiring cannot be completed (a server without the permissions API, a tenant you do not own, a tenant-less user who already owns datasets — activating a tenant would hide them) the freshly minted key is revoked again and the session runs as your own key, and the plugin does not retry until it is updated. A cached identity is reused as long as it was provisioned for your key; one the server refuses at registration is set aside for that session, which then runs as your own key. With shared memory off, nothing is provisioned. |
+| `true` | Explicit identity. Provisions the agent and runs every call as it, wiring shared memory when available. Anything that prevents the identity is an error at session start, never a quiet fall back to your key: a server whose provision route rotates keys instead of adding one per machine (needs cognee >= 1.6.3 with cognee#6113), an agent already holding its maximum number of keys (free one with `hermes cognee keys`), a cached key provisioned by another principal. A key the server rejects (revoked from the dashboard) is replaced once, in the same session. |
+| `false` | Runs as your own key and ignores a cached identity. |
+
+`shared_agent_memory` / `COGNEE_SHARED_AGENT_MEMORY=false` opts out of shared
+memory: an existing agent leaves the shared role and keeps only its own
+datasets (nothing is deleted; re-enabling rejoins the same role), and `auto`
+provisions nothing new. The identity is cached per server in
+`~/.cognee-plugin/hermes-agent/agent_key.json` and the wiring in
+`~/.cognee-plugin/hermes-agent/shared_memory.json` (owner-readable only).
+Identity applies to the HTTP transport (remote and local mode); the embedded /
+SDK transport continues as the principal with a warning, and `hermes cognee`
+one-shot commands always run as you.
+
 ### Optional settings
 
 | Setting | Env var | Default |
@@ -441,6 +479,8 @@ no server.
 | `improve_on_end` | `COGNEE_IMPROVE_ON_END` | `true` |
 | `improve_background` | `COGNEE_IMPROVE_BACKGROUND` | auto |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `hermes` |
+| `plugin_identity` | `COGNEE_PLUGIN_IDENTITY` | `auto` (see "Plugin identity and shared agent memory") |
+| `shared_agent_memory` | `COGNEE_SHARED_AGENT_MEMORY` | `true` |
 | `service_url` | `COGNEE_BASE_URL` (canonical) | empty |
 | `embedded` | `COGNEE_EMBEDDED` | `false` |
 | `local_port` | `COGNEE_LOCAL_PORT` | `8011` |
@@ -780,11 +820,12 @@ by dataset, so a recap reads up to 2,500 of the newest sessions and says so when
 it had more. The same recaps are available to the agent as the `cognee_recap`
 tool.
 
-`keys` manages the API keys of your cognee plugin agents (Claude Code, Codex, …):
-every machine a plugin runs on holds its own key for that plugin's agent, and the
-server caps them. A full agent refuses a new machine a key — that machine then runs on
-your personal key and says so at session start — until an old machine's key is revoked,
-which you can do from here.
+`keys` manages the API keys of your cognee plugin agents (Claude Code, Codex, …, and
+Hermes's own `hermes-agent` under `plugin_identity: true`): every machine a plugin runs
+on holds its own key for that plugin's agent, and the server caps them. A full agent
+refuses a new machine a key — that machine then runs on your personal key and says so
+at session start (Hermes under `plugin_identity: true` refuses to start instead) —
+until an old machine's key is revoked, which you can do from here.
 
 For pip installations, `status` and `version` include an update hint when PyPI has a newer release
 (checked at most once per `COGNEE_UPDATE_CHECK_INTERVAL`, never from a live

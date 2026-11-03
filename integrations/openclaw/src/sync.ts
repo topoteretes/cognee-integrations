@@ -28,10 +28,24 @@ export async function syncFiles(
    * don't clobber sync-index.json. Defaults to true for legacy single-scope use.
    */
   persistIndex = true,
+  /**
+   * Resolve the dataset's id before the first write (SDK-646 shared memory):
+   * under a provisioned identity a write by NAME would create the agent's own
+   * copy, so the canonical UUID has to be known up front.
+   */
+  resolveDatasetId?: (name: string) => Promise<string | undefined>,
 ): Promise<SyncResult & { datasetId?: string }> {
   const result: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   const dsName = overrideDatasetName || cfg.datasetName;
   let datasetId = syncIndex.datasetId;
+  if (resolveDatasetId) {
+    const canonical = await resolveDatasetId(dsName).catch(() => undefined);
+    if (canonical && canonical !== datasetId) {
+      datasetId = canonical;
+      syncIndex.datasetId = canonical;
+      syncIndex.datasetName = dsName;
+    }
+  }
   if (datasetId && syncIndex.datasetName && syncIndex.datasetName !== dsName) {
     logger.info?.(
       `cognee-openclaw: cached datasetId belongs to "${syncIndex.datasetName}" but current dataset is "${dsName}" — ignoring stale datasetId`,
@@ -224,6 +238,7 @@ export async function syncFilesScoped(
    * the `agent` scope. When omitted, all scopes are processed (legacy behavior).
    */
   onlyScopes?: MemoryScope[],
+  resolveDatasetId?: (name: string) => Promise<string | undefined>,
 ): Promise<SyncResult & { datasetIds: Record<MemoryScope, string | undefined> }> {
   const totalResult: SyncResult = { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
   const datasetIds: Record<MemoryScope, string | undefined> = { company: undefined, user: undefined, agent: undefined };
@@ -271,7 +286,7 @@ export async function syncFilesScoped(
 
     logger.info?.(`cognee-openclaw: [${scope}] syncing ${scopeChanged.length} changed file(s) to dataset "${dsName}"${hasDeletedFiles ? " + deletions" : ""}`);
 
-    const result = await syncFiles(client, scopeChanged, scopeFull, scopeIndex, cfg, logger, dsName, false);
+    const result = await syncFiles(client, scopeChanged, scopeFull, scopeIndex, cfg, logger, dsName, false, resolveDatasetId);
     totalResult.added += result.added;
     totalResult.updated += result.updated;
     totalResult.skipped += result.skipped;

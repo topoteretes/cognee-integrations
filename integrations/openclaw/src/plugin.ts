@@ -9,6 +9,7 @@ import type { AgentSyncIndexes, CogneeSearchResult, MemoryScope, ScopedSyncIndex
 import { MEMORY_SCOPES } from "./types.js";
 import { CogneeHttpClient, requestErrorStatus } from "./client.js";
 import { sortPluginKeysByLastUse } from "./plugin-keys.js";
+import { canonicalDatasetId, parsePluginIdentityMode, registerAgentUnderIdentity, resolveSessionIdentity, resolveSharedDataset, wireSharedMemory, type IdentitySession } from "./plugin-identity.js";
 import { resolveConfig } from "./config.js";
 import { collectMemoryFiles } from "./files.js";
 import { buildMemoryFlushPlan } from "./flush-plan.js";
@@ -167,7 +168,8 @@ const memoryCogneePlugin = {
         datasetIdLookups.delete(name);
       }
       if (!datasetIdLookups.has(name)) {
-        datasetIdLookups.set(name, client.listDatasets()
+        datasetIdLookups.set(name, resolveSharedDataset(client, identitySession, name)
+          .then(async (canonical) => (canonical ? [{ id: canonical, name }] : client.listDatasets()))
           .then(async (datasets) => {
             const match = datasets.find((d) => d.name === name);
             if (match?.id) {
@@ -457,7 +459,7 @@ const memoryCogneePlugin = {
                     syncSession: cfg.enableSessions
                       ? async (hostSessionId, agentId) => {
                           const dsName = captureDatasetName(agentId, memoryCtx);
-                          await client.improve({ datasetName: dsName, sessionIds: [conversationSessionId(hostSessionId, memoryCtx)], runInBackground: false });
+                          await client.improve({ ...datasetRef(dsName), sessionIds: [conversationSessionId(hostSessionId, memoryCtx)], runInBackground: false });
                         }
                       : undefined,
                     logger: toolLogger,
@@ -499,10 +501,10 @@ const memoryCogneePlugin = {
                     currentDataset: (c) => captureDatasetName(c.agentId, c),
                     currentSessionId: (c) => (cfg.enableSessions && c.sessionId ? conversationSessionId(c.sessionId, c) : undefined),
                     listDatasets: () => client.listDatasets(),
-                    ensureDataset: (name) => client.ensureDataset(name),
+                    ensureDataset: (name) => ensureDatasetId(name),
                     syncSession: async (datasetName, sid) => {
                       await awaitPendingStores(sid);
-                      await client.improve({ datasetName, sessionIds: [sid], runInBackground: false });
+                      await client.improve({ ...datasetRef(datasetName), sessionIds: [sid], runInBackground: false });
                     },
                     rememberDatasetId: async (name, id) => {
                       const state = await loadDatasetState();
@@ -531,6 +533,63 @@ const memoryCogneePlugin = {
     let resolvedWorkspaceDir: string | undefined;
     let gatewayAnchorName: string | undefined;
     let resolvedApiKey: string | undefined;
+    // Plugin identity (SDK-646): under pluginIdentity "true" the client runs
+    // as OpenClaw's own provisioned agent; the principal stays available for
+    // control-plane work (provisioning, the keys command). Resolved once per
+    // plugin instance, after the principal key.
+    const identitySession: IdentitySession = {
+      baseUrl: cfg.baseUrl,
+      principalKey: "",
+      mode: parsePluginIdentityMode(cfg.pluginIdentity),
+      sharedMemoryEnabled: cfg.sharedAgentMemory,
+      logger: api.logger,
+    };
+    let identityResolved = false;
+    /** The key the data plane runs as: the agent's under an identity, else the principal. */
+    const effectiveApiKey = (): string => identitySession.identity?.apiKey || resolvedApiKey || cfg.apiKey;
+    /**
+     * Create-or-return a dataset by name and return its id. Under shared memory
+     * this is the canonical, parent-owned dataset (created as the principal and
+     * granted to the shared role) — never a copy owned by the agent.
+     */
+    const ensureDatasetId = async (name: string): Promise<string | undefined> =>
+      (await resolveSharedDataset(client, identitySession, name)) ?? (await client.ensureDataset(name));
+    /** For the file sync: the canonical UUID under shared memory, else nothing (the sync keeps its own id handling). */
+    const sharedDatasetResolver = (name: string): Promise<string | undefined> => resolveSharedDataset(client, identitySession, name);
+    /** `{datasetName, datasetId?}` for improve: the canonical UUID when known. */
+    const datasetRef = (name: string): { datasetName: string; datasetId?: string } => {
+      const id = canonicalDatasetId(identitySession, name);
+      return id ? { datasetName: name, datasetId: id } : { datasetName: name };
+    };
+    /**
+     * Resolve (or mint) the principal key, apply the plugin identity once, and
+     * inject the effective key into THIS instance's client — each plugin
+     * instance owns its own client, and only key-authenticated calls work on
+     * servers without the login route (cloud pods). An identity that cannot be
+     * provisioned under "true" is reported as an error; the gateway has no
+     * session to abort, so it continues as the principal until it is fixed.
+     */
+    const activateApiKey = async (logger: { info?: (m: string) => void; warn?: (m: string) => void; debug?: (m: string) => void }): Promise<void> => {
+      if (!resolvedApiKey) {
+        resolvedApiKey = await resolveOrMintApiKey(client, logger, cfg.apiKey).catch(() => "");
+      }
+      if (!resolvedApiKey) return;
+      client.setApiKey(resolvedApiKey);
+      if (!identityResolved) {
+        identityResolved = true;
+        identitySession.principalKey = resolvedApiKey;
+        identitySession.logger = logger;
+        try {
+          await resolveSessionIdentity(client, identitySession);
+          // Shared memory is wired while the client still runs as the principal.
+          await wireSharedMemory(client, identitySession);
+        } catch (e) {
+          logger.warn?.(`cognee-openclaw: plugin identity unavailable, continuing as the principal: ${String(e)}`);
+          identitySession.identity = undefined;
+        }
+      }
+      if (identitySession.identity) client.setApiKey(identitySession.identity.apiKey);
+    };
     let resolveServiceReady: (() => void) | undefined;
     const serviceReady = new Promise<void>((r) => { resolveServiceReady = r; });
 
@@ -675,7 +734,7 @@ const memoryCogneePlugin = {
         const dsName = datasetNameForScope("agent", cfg, agentId);
         // syncFiles mutates `idx` in place (entries/dataIds) but does not persist
         // it (persistIndex=false); we own persistence below.
-        const result = await syncFiles(client, agentFiles, agentFiles, idx, cfg, logger, dsName, false);
+        const result = await syncFiles(client, agentFiles, agentFiles, idx, cfg, logger, dsName, false, sharedDatasetResolver);
         // Atomic merge-save: reload the latest on-disk map (may include other
         // agents' buckets written meanwhile), set just our bucket, save.
         await withIndexSaveLock(async () => {
@@ -697,7 +756,7 @@ const memoryCogneePlugin = {
     ): Promise<SyncResult> {
       await stateReady;
       const files = await collectMemoryFiles(workspaceDir);
-      return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, undefined, ["company", "user"]);
+      return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, undefined, ["company", "user"], sharedDatasetResolver);
     }
 
     // Seed every configured agent's files from its own workspace (startup/CLI).
@@ -760,11 +819,11 @@ const memoryCogneePlugin = {
         // Per-agent mode: this path syncs only the shared scopes (company/user)
         // from the given workspace; the `agent` scope is handled per agent via
         // syncAgentScope/seedAllAgents (each from its own workspace).
-        return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, runtimeAgentId, ["company", "user"]);
+        return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, runtimeAgentId, ["company", "user"], sharedDatasetResolver);
       } else if (multiScope) {
-        return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, runtimeAgentId);
+        return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, runtimeAgentId, undefined, sharedDatasetResolver);
       } else {
-        const result = await syncFiles(client, files, files, syncIndex, cfg, logger);
+        const result = await syncFiles(client, files, files, syncIndex, cfg, logger, undefined, true, sharedDatasetResolver);
         if (result.datasetId) datasetId = result.datasetId;
         return result;
       }
@@ -884,8 +943,9 @@ const memoryCogneePlugin = {
           const dataset = opts.dataset?.trim() || defaultCodeDataset(spec);
           const indexVectors = !!opts.indexVectors;
           try {
-            const result = await client.indexRepository({ datasetName: dataset, repository: spec, indexVectors, runInBackground: true });
-            const datasetId = result.dataset_id ?? await client.ensureDataset(dataset);
+            const canonical = await resolveSharedDataset(client, identitySession, dataset);
+            const result = await client.indexRepository({ datasetName: dataset, ...(canonical ? { datasetId: canonical } : {}), repository: spec, indexVectors, runInBackground: true });
+            const datasetId = result.dataset_id ?? canonical ?? await client.ensureDataset(dataset);
             if (datasetId) {
               const state = await loadDatasetState();
               if (state[dataset] !== datasetId) await saveDatasetState({ ...state, [dataset]: datasetId });
@@ -1236,7 +1296,7 @@ const memoryCogneePlugin = {
           const dsName = opts.dataset ?? (multiScope ? datasetNameForScope("agent", cfg, opts.agent) : cfg.datasetName);
           try {
             const result = await client.improve({
-              datasetName: dsName,
+              ...datasetRef(dsName),
               ...(opts.sessionId ? { sessionIds: [opts.sessionId] } : {}),
             });
             console.log(`Improve dispatched for dataset "${dsName}"${opts.sessionId ? ` (sessionId=${opts.sessionId})` : ""} — ${describeImprove(result)}`);
@@ -1256,8 +1316,10 @@ const memoryCogneePlugin = {
         .action(async (opts: { plugin?: string; revoke?: string; json?: boolean }) => {
           // A plugin agent full of keys in use refuses a new machine a key, which
           // then runs on the user's personal key until an old machine's key is
-          // revoked. OpenClaw registers as the principal and provisions no agent
-          // of its own, so this manages the keys of every plugin agent of that user.
+          // revoked. This manages the keys of every plugin agent of the user —
+          // OpenClaw's own "openclaw" agent (pluginIdentity "true") included —
+          // and always runs as the principal: an agent cannot manage its own keys.
+          if (identitySession.identity && identitySession.principalKey) client.setApiKey(identitySession.principalKey);
           if (opts.revoke && !opts.plugin) {
             console.log("--revoke needs --plugin <key> (the plugin whose agent holds the key).");
             process.exit(1);
@@ -1402,12 +1464,10 @@ const memoryCogneePlugin = {
         }
       }
 
-      if (!resolvedApiKey) {
-        resolvedApiKey = await resolveOrMintApiKey(client, logger, cfg.apiKey).catch(() => "");
-      }
-      // Inject the resolved/minted key so every subsequent client call
-      // authenticates via X-Api-Key instead of the JWT login fallback.
-      if (resolvedApiKey) client.setApiKey(resolvedApiKey);
+      // Inject the resolved/minted key (and the plugin identity, if any) so
+      // every subsequent client call authenticates via X-Api-Key instead of
+      // the JWT login fallback.
+      await activateApiKey(logger);
 
       // Capture writes an earlier outage (or a previous gateway run) left
       // behind; the server answers now.
@@ -1416,17 +1476,17 @@ const memoryCogneePlugin = {
       if (cfg.enableSessions) {
         const anchorName = `cognee-openclaw-gateway-${randomUUID()}`;
         try {
-          await client.registerAgent({
+          await registerAgentUnderIdentity(client, {
             agentSessionName: anchorName,
             datasetNames: resolveGatewayDatasetNames(),
-          });
+          }, identitySession);
           gatewayAnchorName = anchorName;
           logger.info?.("cognee-openclaw: gateway anchor registered");
           spawnExitWatcher({
             gatewayPid: process.pid,
             agentSessionName: anchorName,
             baseUrl: cfg.baseUrl,
-            apiKey: resolvedApiKey || cfg.apiKey,
+            apiKey: effectiveApiKey(),
             pidfilePath: exitWatcherPidfilePath(anchorName),
             logger,
           }).catch(() => {});
@@ -1564,7 +1624,7 @@ const memoryCogneePlugin = {
     async function ensureCaptureDataset(rawAgentId: string | undefined, ctx: ConvoCtx): Promise<void> {
       const name = captureDatasetName(rawAgentId, ctx);
       try {
-        const id = await client.ensureDataset(name);
+        const id = await ensureDatasetId(name);
         if (!id) return;
         const state = await loadDatasetState();
         if (state[name] !== id) await saveDatasetState({ ...state, [name]: id });
@@ -1583,7 +1643,8 @@ const memoryCogneePlugin = {
     function refreshExitWatcherBridge(regKey: string, rawAgentId: string | undefined, ctx: ConvoCtx & { sessionId?: string }): void {
       const agentSessionName = agentSessionNames.get(regKey);
       if (!agentSessionName || !cfg.persistSessionsAfterEnd || !ctx.sessionId) return;
-      const target = { datasetName: captureDatasetName(rawAgentId, ctx), cogneeSessionId: conversationSessionId(ctx.sessionId, ctx) };
+      const dsName = captureDatasetName(rawAgentId, ctx);
+      const target = { datasetName: dsName, datasetId: canonicalDatasetId(identitySession, dsName), cogneeSessionId: conversationSessionId(ctx.sessionId, ctx) };
       const key = `${target.datasetName}\u0000${target.cogneeSessionId}`;
       const previous = exitBridgeTargets.get(regKey);
       if (previous === undefined || previous === key) return; // not spawned yet, or unchanged
@@ -1759,24 +1820,18 @@ const memoryCogneePlugin = {
             // never populated. Resolve lazily here — after the first mint
             // it's an env/file read — so the exit-watcher below always gets
             // a usable key instead of silently spawning keyless (401s).
-            if (!resolvedApiKey) {
-              resolvedApiKey = await resolveOrMintApiKey(client, api.logger, cfg.apiKey).catch(() => "");
-            }
-            // Inject into THIS instance's client — each plugin instance owns
-            // its own client, and only key-authenticated calls work on servers
-            // without the login route (cloud pods).
-            if (resolvedApiKey) client.setApiKey(resolvedApiKey);
+            await activateApiKey(api.logger);
             // The capture dataset must exist before this session's first write:
             // /remember/entry does not create it, and the server records a
             // session's dataset from the write that opens it, so a session that
             // starts on a fresh install would stay dataset-less (invisible to
             // the dataset-scoped recap) and recall could not resolve it either.
             await ensureCaptureDataset(ctx.agentId, ctx);
-            const { connectionId } = await client.registerAgent({
+            const { connectionId } = await registerAgentUnderIdentity(client, {
               agentSessionName,
               sessionId: ctx.sessionId,
               datasetNames: resolveAgentDatasetNames(ctx.agentId),
-            });
+            }, identitySession);
             api.logger.info?.(`cognee-openclaw: agent registered${connectionId ? ` connectionId=${connectionId}` : ""}`);
             // Baseline for refreshExitWatcherBridge: the target spawned below.
             exitBridgeTargets.set(regKey, `${captureDatasetName(ctx.agentId, ctx)}\u0000${conversationSessionId(ctx.sessionId, ctx)}`);
@@ -1784,12 +1839,13 @@ const memoryCogneePlugin = {
               gatewayPid: process.pid,
               agentSessionName,
               baseUrl: cfg.baseUrl,
-              apiKey: resolvedApiKey || cfg.apiKey,
+              apiKey: effectiveApiKey(),
               pidfilePath: exitWatcherPidfilePath(agentSessionName),
               // On unclean gateway death, bridge this session's cache only when
               // session persistence is enabled. The gateway anchor watcher has
               // no session and stays unregister-only.
               datasetName: cfg.persistSessionsAfterEnd ? captureDatasetName(ctx.agentId, ctx) : undefined,
+              datasetId: cfg.persistSessionsAfterEnd ? canonicalDatasetId(identitySession, captureDatasetName(ctx.agentId, ctx)) : undefined,
               cogneeSessionId: cfg.persistSessionsAfterEnd ? conversationSessionId(ctx.sessionId, ctx) : undefined,
               logger: api.logger,
             }).catch(() => {});
@@ -2182,7 +2238,7 @@ const memoryCogneePlugin = {
             if (!hasChanges) return;
 
             api.logger.info?.("cognee-openclaw: detected changes, syncing across scopes...");
-            const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, api.logger, ctx.agentId);
+            const result = await syncFilesScoped(client, files, files, scopedIndexes, cfg, api.logger, ctx.agentId, undefined, sharedDatasetResolver);
             api.logger.info?.(`cognee-openclaw: post-agent sync: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
           } else {
             try {
@@ -2204,7 +2260,7 @@ const memoryCogneePlugin = {
             if (changedFiles.length === 0 && !hasDeletedFiles) return;
 
             api.logger.info?.(`cognee-openclaw: detected ${changedFiles.length} changed file(s)${hasDeletedFiles ? " + deletions" : ""}, syncing...`);
-            const result = await syncFiles(client, changedFiles, files, syncIndex, cfg, api.logger);
+            const result = await syncFiles(client, changedFiles, files, syncIndex, cfg, api.logger, undefined, true, sharedDatasetResolver);
             if (result.datasetId) datasetId = result.datasetId;
             api.logger.info?.(`cognee-openclaw: post-agent sync: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
           }
@@ -2304,10 +2360,7 @@ const memoryCogneePlugin = {
         // still be keyless — resolve + inject here too, or the sweep/improve
         // below fall back to JWT login, which servers without a login route
         // (cloud tenants) answer with 404.
-        if (!resolvedApiKey) {
-          resolvedApiKey = await resolveOrMintApiKey(client, api.logger, cfg.apiKey).catch(() => "");
-        }
-        if (resolvedApiKey) client.setApiKey(resolvedApiKey);
+        await activateApiKey(api.logger);
 
         // Step 1: final file sweep — catches memory file edits that happened
         // outside an agent_end.
@@ -2342,7 +2395,7 @@ const memoryCogneePlugin = {
           // is create-or-return, so on every server this is at worst a no-op.
           // Failure here is not fatal — improve gets its own retries below.
           try {
-            const dsId = await client.ensureDataset(dsName);
+            const dsId = await ensureDatasetId(dsName);
             if (dsId) {
               const state = await loadDatasetState();
               if (state[dsName] !== dsId) await saveDatasetState({ ...state, [dsName]: dsId });
@@ -2367,7 +2420,7 @@ const memoryCogneePlugin = {
               // withFinalSyncRetries swallows the final failure, so success is
               // tracked explicitly: only a completed improve flips `synced`.
               await withFinalSyncRetries(`retired-session improve (${retired.sessionId})`, async () => {
-                const r = await client.improve({ datasetName: retired.dataset, sessionIds: [retired.sessionId] });
+                const r = await client.improve({ ...datasetRef(retired.dataset), sessionIds: [retired.sessionId] });
                 api.logger.info?.(`cognee-openclaw: retired session ${retired.sessionId} bridged into "${retired.dataset}" (${describeImprove(r)})`);
                 bridged = true;
               });
@@ -2376,7 +2429,7 @@ const memoryCogneePlugin = {
             }));
           }
           await withFinalSyncRetries("session-end improve", async () => {
-            const result = await client.improve({ datasetName: dsName, sessionIds: [endSessionId] });
+            const result = await client.improve({ ...datasetRef(dsName), sessionIds: [endSessionId] });
             api.logger.info?.(`cognee-openclaw: session-end improve dispatched for session ${endSessionId} -> dataset "${dsName}" (${describeImprove(result)})`);
           });
         }
