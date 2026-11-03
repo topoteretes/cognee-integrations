@@ -23,6 +23,32 @@ const RETRY_BASE_DELAY_MS = 3_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 const NODE_GLOBAL_FETCH_HEADERS_TIMEOUT_MS = 300_000;
+// Dataset routing (unscoped searches go to the best-matching dataset) shipped in cognee 1.6.6.
+export const DATASET_ROUTING_MIN_VERSION = [1, 6, 6] as const;
+const ROUTING_TTL_MS = 60 * 60_000;
+const ROUTING_RETRY_MS = 5 * 60_000;
+
+/** Leading numeric release of a version string: "1.6.6rc1" -> [1, 6, 6]. */
+export function versionTuple(value: string): number[] {
+  const parts: number[] = [];
+  for (const piece of value.trim().replace(/^[vV]/, "").split(".")) {
+    const digits = /^\d+/.exec(piece)?.[0];
+    if (!digits) break;
+    parts.push(Number(digits));
+    if (digits.length !== piece.length) break;
+  }
+  return parts;
+}
+
+export function versionAtLeast(value: string, minimum: readonly number[]): boolean {
+  const parts = versionTuple(value);
+  if (parts.length === 0) return false;
+  for (let i = 0; i < minimum.length; i++) {
+    const part = parts[i] ?? 0;
+    if (part !== minimum[i]) return part > minimum[i];
+  }
+  return true;
+}
 
 // Node's bundled global fetch has an undici headersTimeout of 300s. Long-running
 // Cognee ingestion endpoints can legitimately wait longer than that before they
@@ -311,6 +337,31 @@ export class CogneeHttpClient {
       clearTimeout(timer);
     }
   }
+
+  /**
+   * Whether the server routes a search that names no dataset (cognee >= 1.6.6,
+   * dataset routing). Read from `/health`'s `version`, cached for an hour (five
+   * minutes after a failed probe). A failed probe keeps the last answer; with
+   * none, false: recall then stays on its dataset, as on an older server, which
+   * would search every readable dataset instead of routing.
+   */
+  async routesDatasets(): Promise<boolean> {
+    const now = Date.now();
+    const cached = this.routing;
+    if (cached && now - cached.checkedAt < (cached.version ? ROUTING_TTL_MS : ROUTING_RETRY_MS)) return cached.routes;
+    let version = "";
+    try {
+      const body = (await this.health()) as { version?: unknown };
+      version = typeof body?.version === "string" ? body.version.trim() : "";
+    } catch {
+      version = "";
+    }
+    const routes = version ? versionAtLeast(version, DATASET_ROUTING_MIN_VERSION) : cached?.routes ?? false;
+    this.routing = { version: version || cached?.version || "", routes, checkedAt: now };
+    return routes;
+  }
+
+  private routing?: { version: string; routes: boolean; checkedAt: number };
 
   // -- Data operations ------------------------------------------------------
 
@@ -744,6 +795,8 @@ export class CogneeHttpClient {
     /** Always set for graph and code recall: unset, cognee >= 1.6.3 auto-routes
      *  date-scoped questions to TEMPORAL. The session_context scope takes none. */
     searchType?: CogneeSearchType;
+    /** Empty = name no dataset: a cognee >= 1.6.6 server routes the query to the
+     *  best-matching readable dataset(s) (auto recall, see routesDatasets). */
     datasetIds: string[];
     topK?: number;
     sessionId?: string;
@@ -768,7 +821,7 @@ export class CogneeHttpClient {
         body: JSON.stringify({
           query: params.queryText,
           ...(params.searchType ? { search_type: params.searchType } : {}),
-          dataset_ids: params.datasetIds,
+          ...(params.datasetIds.length > 0 ? { dataset_ids: params.datasetIds } : {}),
           only_context: params.onlyContext ?? true,
           ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
           ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),

@@ -22,6 +22,13 @@
 //
 // Overrides persist across gateway restarts and are dropped with
 // `action: "reset"`.
+//
+// Recall mode (SDK-1393): without an override, graph recall is "auto" — it
+// names no dataset and a cognee >= 1.6.6 server routes the query to the
+// best-matching dataset(s). A switch restricts recall to the new dataset;
+// switching to the dataset already in use restricts recall to it without a
+// new session (a pin-only override, `sessionSuffix` 1, leaves the session id
+// alone); `action: "auto"` lifts the restriction and keeps the dataset.
 // ---------------------------------------------------------------------------
 
 import type { CogneePluginConfig, DatasetOverride, DatasetOverridesFile, RetiredSession } from "./types.js";
@@ -53,7 +60,8 @@ export function isValidDatasetName(name: string): boolean {
 }
 
 export function withSessionSuffix(baseSessionId: string, override: DatasetOverride | undefined): string {
-  if (!baseSessionId || !override) return baseSessionId;
+  // Suffix 1 is a pin-only override (recall restricted, no switch): same session.
+  if (!baseSessionId || !override || override.sessionSuffix <= 1) return baseSessionId;
   return `${baseSessionId}__${override.sessionSuffix}`;
 }
 
@@ -140,10 +148,40 @@ export class DatasetSwitchStore {
       switchedAt: now,
       previous,
       retired,
+      recall: "pinned",
     };
     for (const k of conversationKeys(ctx)) this.data[k] = override;
     this.persist();
     return override;
+  }
+
+  /** True when this conversation's graph recall is restricted to its dataset. */
+  recallPinned(ctx: { sessionKey?: string; sessionId?: string } | undefined): boolean {
+    const o = this.get(ctx);
+    return !!o && o.recall !== "auto";
+  }
+
+  /**
+   * Restrict recall to `dataset` (the one in use) or lift the restriction.
+   * Pinning without an override records a pin-only one (`sessionSuffix` 1:
+   * same session id); unpinning a pin-only override drops it.
+   */
+  setRecall(ctx: { sessionKey?: string; sessionId?: string }, mode: "auto" | "pinned", dataset: string): void {
+    const existing = this.get(ctx);
+    if (!existing) {
+      if (mode === "auto") return;
+      const now = (this.opts.now ?? (() => new Date()))().toISOString();
+      const pin: DatasetOverride = { dataset, sessionSuffix: 1, switchedAt: now, previous: [], retired: [], recall: "pinned" };
+      for (const k of conversationKeys(ctx)) this.data[k] = pin;
+      this.persist();
+      return;
+    }
+    if (mode === "auto" && existing.sessionSuffix <= 1 && existing.retired.length === 0) {
+      this.clear(ctx);
+      return;
+    }
+    existing.recall = mode;
+    this.persist();
   }
 
   /** Retired sessions whose switch-time sync failed. */
@@ -192,8 +230,8 @@ export const MemorySwitchDatasetSchema = {
   properties: {
     action: {
       type: "string",
-      enum: ["list", "current", "switch", "reset"],
-      description: "list = datasets available on the server; current = the dataset this conversation writes to and recalls from; switch = move this conversation to `dataset` (created if missing); reset = return to the configured dataset.",
+      enum: ["list", "current", "switch", "auto", "reset"],
+      description: "list = datasets available on the server; current = the dataset this conversation writes to and how it recalls; switch = move this conversation to `dataset` (created if missing) and restrict recall to it (switching to the dataset in use only restricts recall); auto = let recall go to the best-matching dataset again (saves stay where they are); reset = return to the configured dataset with auto recall.",
     },
     dataset: { type: "string", description: "switch only: target dataset name (letters, digits, - _)." },
     force: {
@@ -206,14 +244,15 @@ export const MemorySwitchDatasetSchema = {
 } as const;
 
 export type MemorySwitchDatasetParams = {
-  action: "list" | "current" | "switch" | "reset";
+  action: "list" | "current" | "switch" | "auto" | "reset";
   dataset?: string;
   force?: boolean;
 };
 
 export type MemorySwitchDatasetResult =
   | { action: "list"; current: string; datasets: Array<{ name: string; id: string; current: boolean }>; note?: string; error?: string }
-  | { action: "current"; dataset: string; sessionId?: string; switched: boolean; previous: string[]; note?: string }
+  | { action: "current"; dataset: string; sessionId?: string; switched: boolean; recall: "auto" | "pinned"; previous: string[]; note?: string }
+  | { action: "auto"; dataset: string; changed: boolean; recall: "auto"; note?: string }
   | {
       action: "switch";
       switched: boolean;
@@ -221,6 +260,7 @@ export type MemorySwitchDatasetResult =
       sessionId?: string;
       previous?: { dataset: string; sessionId?: string; synced: boolean };
       reason?: string;
+      recall?: "pinned";
       error?: string;
       note?: string;
     }
@@ -270,10 +310,21 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
       action: "current",
       dataset: deps.currentDataset(ctx),
       ...(deps.currentSessionId(ctx) ? { sessionId: deps.currentSessionId(ctx) } : {}),
-      switched: !!o,
+      switched: !!o && o.sessionSuffix > 1,
+      recall: deps.store.recallPinned(convo) ? "pinned" : "auto",
       previous: o?.previous ?? [],
-      ...(o ? { note: "This conversation was switched away from its configured dataset; action=reset returns to it." } : {}),
+      ...(o && o.sessionSuffix > 1 ? { note: "This conversation was switched away from its configured dataset; action=reset returns to it." } : {}),
     };
+  }
+
+  function auto(): MemorySwitchDatasetResult {
+    const dataset = deps.currentDataset(ctx);
+    if (!deps.store.recallPinned(convo)) return { action: "auto", dataset, changed: false, recall: "auto", note: "Recall was already auto." };
+    if (!ctx.sessionId && !ctx.sessionKey) {
+      return { action: "auto", dataset, changed: false, recall: "auto", note: "no conversation/session in context — recall mode is per conversation" };
+    }
+    deps.store.setRecall(convo, "auto", dataset);
+    return { action: "auto", dataset, changed: true, recall: "auto", note: `Recall now goes to the best-matching dataset; saves still go to "${dataset}".` };
   }
 
   async function doSwitch(params: MemorySwitchDatasetParams): Promise<MemorySwitchDatasetResult> {
@@ -283,9 +334,14 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     if (!isValidDatasetName(target)) {
       return { action: "switch", switched: false, dataset: before, error: `invalid dataset name "${target}" — use letters, digits, '-' or '_' (max 128 chars; cognee rejects spaces and dots)` };
     }
-    if (target === before) return { action: "switch", switched: false, dataset: before, reason: "already_active" };
     if (!ctx.sessionId && !ctx.sessionKey) {
       return { action: "switch", switched: false, dataset: before, error: "no conversation/session in context — dataset switching is per conversation" };
+    }
+    if (target === before) {
+      // The dataset in use: restrict recall to it, no new session.
+      if (deps.store.recallPinned(convo)) return { action: "switch", switched: false, dataset: before, reason: "already_active", recall: "pinned" };
+      deps.store.setRecall(convo, "pinned", before);
+      return { action: "switch", switched: false, dataset: before, reason: "recall_restricted", recall: "pinned" };
     }
 
     // 1. Strict sync of the current session into its current dataset.
@@ -325,10 +381,11 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
       action: "switch",
       switched: true,
       dataset: target,
+      recall: "pinned",
       ...(newSid ? { sessionId: newSid } : {}),
       previous: { dataset: before, ...(prevSid ? { sessionId: prevSid } : {}), synced },
       note:
-        "From now on this conversation saves to and recalls from the new dataset; earlier context from the previous dataset is no longer injected — switch back to see it again. Memory files and shared company/user scopes are unaffected." +
+        "From now on this conversation saves to and recalls only from the new dataset; earlier context from the previous dataset is no longer injected — action=auto lets recall reach every dataset again. Memory files and shared company/user scopes are unaffected." +
         (synced ? "" : " The previous session was NOT synced (force); it is re-synced automatically at session end. Tell the user."),
     };
   }
@@ -386,7 +443,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     name: "memory_switch_dataset",
     label: "Memory Switch Dataset",
     description:
-      "Move this conversation to another Cognee dataset, or inspect which one it uses. action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and recalls; action=current reports the active dataset; action=reset returns to the configured one. " +
+      "Move this conversation to another Cognee dataset, or inspect which one it uses. Recall is auto by default (each query goes to the best-matching dataset). action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and restricts recall to it; action=auto lifts that restriction; action=current reports the active dataset and recall mode; action=reset returns to the configured dataset with auto recall. " +
       "Switching is per conversation and does not move memory files or shared company/user memory.",
     parameters: MemorySwitchDatasetSchema as unknown as Record<string, unknown>,
     async execute(_id, params) {
@@ -394,8 +451,9 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
         case "list": return jsonResult(await list());
         case "current": return jsonResult(current());
         case "switch": return jsonResult(await doSwitch(params));
+        case "auto": return jsonResult(auto());
         case "reset": return jsonResult(await reset(params));
-        default: return jsonResult<MemorySwitchDatasetResult>({ action: "current", dataset: deps.currentDataset(ctx), switched: false, previous: [], note: "action must be list, current, switch or reset" });
+        default: return jsonResult<MemorySwitchDatasetResult>({ action: "current", dataset: deps.currentDataset(ctx), switched: false, recall: deps.store.recallPinned(convo) ? "pinned" : "auto", previous: [], note: "action must be list, current, switch, auto or reset" });
       }
     },
   };

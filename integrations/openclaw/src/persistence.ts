@@ -190,7 +190,8 @@ export async function loadDatasetOverrides(path: string = DATASET_OVERRIDES_PATH
       if (typeof o.dataset !== "string" || !o.dataset) continue;
       out[k] = {
         dataset: o.dataset,
-        sessionSuffix: typeof o.sessionSuffix === "number" && o.sessionSuffix >= 2 ? o.sessionSuffix : 2,
+        // 1 is a pin-only override (recall restricted, same session); switches start at 2.
+        sessionSuffix: typeof o.sessionSuffix === "number" && o.sessionSuffix >= 1 ? o.sessionSuffix : 2,
         switchedAt: typeof o.switchedAt === "string" ? o.switchedAt : "",
         previous: (Array.isArray(o.previous) ? o.previous.filter((p): p is string => typeof p === "string") : []).slice(-MAX_PREVIOUS_DATASETS),
         retired: pruneRetired(Array.isArray(o.retired)
@@ -198,6 +199,7 @@ export async function loadDatasetOverrides(path: string = DATASET_OVERRIDES_PATH
               .filter((r): r is RetiredSession => !!r && typeof r === "object" && typeof (r as RetiredSession).dataset === "string" && typeof (r as RetiredSession).sessionId === "string")
               .map((r) => ({ dataset: r.dataset, sessionId: r.sessionId, synced: r.synced === true, retiredAt: typeof r.retiredAt === "string" ? r.retiredAt : "" }))
           : []),
+        ...(o.recall === "auto" || o.recall === "pinned" ? { recall: o.recall } : {}),
       };
     }
     return out;

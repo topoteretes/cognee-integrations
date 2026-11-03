@@ -343,6 +343,12 @@ export type DatasetOverride = {
    * whose sync failed at switch time (`force`), so no captured turn is lost.
    */
   retired: RetiredSession[];
+  /**
+   * Recall mode (SDK-1393). "pinned" (the default for an override): graph
+   * recall reads only `dataset`. "auto": it names no dataset and the server
+   * routes it. A conversation without an override recalls in auto mode.
+   */
+  recall?: "auto" | "pinned";
 };
 
 /** Keyed by `key:<sessionKey>` and `sid:<sessionId>` (both written per switch). */

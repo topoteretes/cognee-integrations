@@ -62,7 +62,7 @@ describe("DatasetSwitchStore", () => {
     const store = new DatasetSwitchStore({ path, now: () => now });
     await store.ready();
     const first = store.set({ sessionKey: "k1", sessionId: "s1" }, "proj-a", "testds");
-    expect(first).toEqual({ dataset: "proj-a", sessionSuffix: 2, switchedAt: "2026-08-27T10:00:00.000Z", previous: ["testds"], retired: [] });
+    expect(first).toEqual({ dataset: "proj-a", sessionSuffix: 2, switchedAt: "2026-08-27T10:00:00.000Z", previous: ["testds"], retired: [], recall: "pinned" });
     expect(store.get({ sessionKey: "k1" })?.dataset).toBe("proj-a");
     expect(store.get({ sessionId: "s1" })?.dataset).toBe("proj-a");
     expect(store.get({ sessionId: "other" })).toBeUndefined();
@@ -265,14 +265,46 @@ describe("memory_switch_dataset tool", () => {
     expect(store.get(ctx)).toBeUndefined();
   });
 
-  it("rejects bad input and reports already_active without side effects", async () => {
+  it("rejects bad input, and switching to the dataset in use only restricts recall", async () => {
     const d = deps();
     expect((await run(d, { action: "switch" })) as { error: string }).toMatchObject({ switched: false, error: "dataset is required" });
     expect(((await run(d, { action: "switch", dataset: "bad name!" })) as { error: string }).error).toMatch(/invalid dataset name/);
+    expect(await run(d, { action: "switch", dataset: "testds" })).toMatchObject({ switched: false, reason: "recall_restricted", recall: "pinned" });
+    expect(store.recallPinned(ctx)).toBe(true);
+    // A pin-only override keeps the session id: no suffix.
+    expect(withSessionSuffix("open_claw_s1", store.get(ctx))).toBe("open_claw_s1");
     expect(await run(d, { action: "switch", dataset: "testds" })).toMatchObject({ switched: false, reason: "already_active" });
     expect(((await run(d, { action: "switch", dataset: "proj-a" }, { agentId: "will" })) as { error: string }).error).toMatch(/no conversation\/session/);
     expect(d.synced).toEqual([]);
     expect(d.ensured).toEqual([]);
+  });
+
+  it("recall is auto until a switch, and action=auto lifts the restriction without moving saves (SDK-1393)", async () => {
+    const d = deps();
+    expect(await run(d, { action: "current" })).toMatchObject({ recall: "auto", switched: false });
+    expect(await run(d, { action: "auto" })).toMatchObject({ action: "auto", changed: false, recall: "auto" });
+
+    await run(d, { action: "switch", dataset: "proj-a" });
+    expect(store.recallPinned(ctx)).toBe(true);
+    expect(await run(d, { action: "current" })).toMatchObject({ dataset: "proj-a", recall: "pinned", switched: true });
+
+    expect(await run(d, { action: "auto" })).toMatchObject({ action: "auto", dataset: "proj-a", changed: true, recall: "auto" });
+    expect(store.recallPinned(ctx)).toBe(false);
+    // Saves still go to the switched dataset.
+    expect(store.get(ctx)?.dataset).toBe("proj-a");
+  });
+
+  it("action=auto drops a pin-only override, and the recall mode survives a reload", async () => {
+    const d = deps();
+    await run(d, { action: "switch", dataset: "testds" });
+    await store.flush();
+    const reloaded = new DatasetSwitchStore({ path: join(dir, "o.json") });
+    await reloaded.ready();
+    expect(reloaded.recallPinned(ctx)).toBe(true);
+    expect(reloaded.get(ctx)?.sessionSuffix).toBe(1);
+
+    expect(await run(d, { action: "auto" })).toMatchObject({ changed: true, recall: "auto" });
+    expect(store.get(ctx)).toBeUndefined();
   });
 
   it("surfaces a failed ensureDataset without recording the override", async () => {

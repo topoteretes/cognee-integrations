@@ -67,7 +67,7 @@ turns turn capture off; `autoIndex: false` stops the file sync.
 Memory is kept until you delete it (`memory_forget`, `openclaw cognee forget`, or
 deleting the dataset). The plugin never expires server-side memory on its own.
 
-**Other network calls.** Local mode installs the pinned `cognee==1.6.5` from PyPI into
+**Other network calls.** Local mode installs the pinned `cognee==1.6.6` from PyPI into
 `~/.cognee-plugin/venv` once (no interpreter or installer is ever downloaded). On
 gateway start the plugin checks `registry.npmjs.org` for a newer release of this
 package, at most once a day (`COGNEE_UPDATE_CHECK=false` turns it off). No telemetry, no analytics: nothing is sent to Cognee or
@@ -565,9 +565,12 @@ Move **one conversation** to another Cognee dataset — the OpenClaw counterpart
 | Call | What happens |
 |------|--------------|
 | `{action: "list"}` | Datasets visible on the server, current one first. Present them and let the user pick; a name that is not listed is created on switch |
-| `{action: "switch", dataset: "proj-a"}` | Syncs the current session into its dataset (`/improve`, strict — aborts on failure unless `force: true`), ensures the target exists and caches its id, then binds the conversation: later capture writes and the graph recall target `proj-a`, under a fresh Cognee session id (`open_claw_<id>__2`, `__3`, …) because a session never spans two datasets. Session-end `improve` follows too |
-| `{action: "current"}` | The dataset and Cognee session id this conversation uses, and whether it was switched |
-| `{action: "reset"}` | Back to the configured dataset. Re-syncs any retired session whose switch-time sync failed first; refuses without `force: true` while one is still unsynced |
+| `{action: "switch", dataset: "proj-a"}` | Syncs the current session into its dataset (`/improve`, strict — aborts on failure unless `force: true`), ensures the target exists and caches its id, then binds the conversation: later capture writes and the graph recall target `proj-a` only, under a fresh Cognee session id (`open_claw_<id>__2`, `__3`, …) because a session never spans two datasets. Session-end `improve` follows too. Switching to the dataset already in use only restricts recall to it (no sync, same session) |
+| `{action: "auto"}` | Lets graph recall go to the best-matching dataset again; saves stay in the current dataset |
+| `{action: "current"}` | The dataset and Cognee session id this conversation uses, whether it was switched, and the recall mode (`auto` / `pinned`) |
+| `{action: "reset"}` | Back to the configured dataset, with auto recall. Re-syncs any retired session whose switch-time sync failed first; refuses without `force: true` while one is still unsynced |
+
+**Auto recall.** Saves always go to the conversation's dataset, but graph recall (prompt-time and `memory_search`) is auto by default: it names no dataset, and a cognee >= 1.6.6 server routes the query to the readable dataset(s) most likely to hold the answer (dataset routing). A switch restricts recall to the dataset switched to; `action: "auto"` lifts that. The plugin reads the server version from `GET /health` (cached for an hour) and, against an older server, keeps recall on the conversation's dataset. Multi-scope mode keeps its configured scopes, and the guidance lane and the code lane keep their own dataset. A dataset not yet through `improve` on 1.6.6 has no routing index and is always searched.
 
 `force: true` on a switch does not skip the sync — it defers it: the retired session is recorded on the override and bridged into its own dataset at session end (and by `reset`). Until then its turns exist only in the server's session cache, so the tool tells the model to inform the user.
 
@@ -585,7 +588,7 @@ Summarizes the sessions Cognee recorded, the OpenClaw counterpart of the Claude 
 
 `since` takes `24h`, `7d`, `2w`, `today`, `yesterday`, `week`, `month`, `all` or a date; `projects` keeps only some agents or repositories. A recap only covers sessions recorded into the calling agent's own datasets (its capture dataset and recall scopes), so on a shared gateway one agent never sees another agent's or user's conversations; `allSessions` additionally includes sessions other clients (e.g. Claude Code) recorded into those same datasets, and never widens the datasets. The output is a deterministic Markdown skeleton framed as recorded data, which the model summarizes; it is never treated as instructions. Sessions are grouped by agent. `openclaw cognee standup|digest|timeline` prints the same thing. Set `recapTool: false` to not register it.
 
-The plugin's bundled server pin is `cognee==1.6.5` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.6.5`. The claude-code/codex/antigravity plugins share the same `~/.cognee-plugin/venv`.
+The plugin's bundled server pin is `cognee==1.6.6` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.6.6`. The claude-code/codex/antigravity plugins share the same `~/.cognee-plugin/venv`.
 
 ### Memory-hit visibility
 

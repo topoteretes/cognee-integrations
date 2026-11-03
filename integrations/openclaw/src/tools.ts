@@ -319,6 +319,11 @@ export type MemoryToolsDeps = {
   recall: RecallFn;
   /** Seconds until the recall breaker closes; 0 when closed. */
   breakerOpenForSeconds?: () => Promise<number>;
+  /**
+   * True when recall is auto for this conversation (SDK-1393): memory_search
+   * then sends one request naming no dataset and the server routes it.
+   */
+  autoRoute?: (agentId?: string, ctx?: MemoryToolContext) => Promise<boolean>;
   cache?: ReferenceCache;
   logger?: { debug?: (m: string) => void; warn?: (m: string) => void };
 };
@@ -380,7 +385,10 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
 
       let datasets: Array<{ id: string; label: string }>;
       try {
-        datasets = await deps.resolveDatasets(ctx.agentId, ctx);
+        // Auto recall: one request with no dataset id ("" below), routed by the server.
+        datasets = deps.autoRoute && (await deps.autoRoute(ctx.agentId, ctx))
+          ? [{ id: "", label: "memory" }]
+          : await deps.resolveDatasets(ctx.agentId, ctx);
       } catch (e) {
         return jsonResult(unavailable(query, corpus, `dataset resolution failed: ${String(e)}`, "Check the Cognee server connection and retry memory_search."));
       }
@@ -393,7 +401,7 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
       // requested here: they are written and bridged into the graph, but
       // searching them only adds noise (same rule as the prompt-time recall).
       const tasks: Array<Promise<MemorySearchHit[]>> = datasets.map((ds) =>
-        deps.recall({ queryText: query, searchType: deps.cfg.searchType, datasetIds: [ds.id], searchPrompt: deps.cfg.searchPrompt, topK, scope: [...GRAPH_SCOPE] })
+        deps.recall({ queryText: query, searchType: deps.cfg.searchType, datasetIds: ds.id ? [ds.id] : [], searchPrompt: deps.cfg.searchPrompt, topK, scope: [...GRAPH_SCOPE] })
           .then((rs) => rs.map((r) => toHit(r, "graph", ds.label))),
       );
 
