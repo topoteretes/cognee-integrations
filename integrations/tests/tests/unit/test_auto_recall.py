@@ -478,7 +478,8 @@ def test_the_health_read_comes_out_of_the_recall_budget(lookup, monkeypatch):
         return True
 
     run = drive_recall(lookup, monkeypatch, auto_route=slow_probe)
-    assert run.timeouts["graph"] <= 2 - 0.3
+    # Windows' monotonic clock ticks ~15.6 ms, so a 0.3 s sleep can measure a hair short.
+    assert run.timeouts["graph"] <= 2 - 0.25
 
 
 def test_a_probe_that_eats_the_budget_dispatches_nothing(lookup, monkeypatch):
