@@ -28,12 +28,10 @@ export const DATASET_ROUTING_MIN_VERSION = [1, 6, 6] as const;
 const ROUTING_TTL_MS = 60 * 60_000;
 const ROUTING_RETRY_MS = 5 * 60_000;
 
-// After the release: a pre-release ("rc1", ".rc1", "-beta2", "a1") or a dev
-// build (".dev0") sorts below its release; "-local" (source checkout, the
-// Docker image), a "+label" and ".post1" count as the release itself. Any
-// other suffix ("-custom") is unparseable.
-const PRE_RELEASE_RE = /^[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview|dev)(?:[-_.]?\d+)?(?:$|[-_.+])/;
-const RELEASE_SUFFIX_RE = /^(?:-local|\+.*|[-.]?post\d*)$/;
+// A release, or a build of one: a post-release (".postN", PEP 440's "-N"), then
+// "-local" (source checkout, the Docker image), then a "+label". The same rule
+// as the hook-family plugins and hermes.
+const RELEASE_SUFFIX_RE = /^(?:[-.]?post\d*|-\d+)?(?:-local)?(?:\+.*)?$/;
 
 /** Numeric release of a version string: "1.6.6rc1" -> [1, 6, 6]; [] when unparseable. */
 export function versionTuple(value: string): number[] {
@@ -42,24 +40,21 @@ export function versionTuple(value: string): number[] {
 }
 
 /**
- * `value` >= `minimum`, PEP 440-style: "1.6.6", "1.6.6-local", "1.6.6+local"
- * and "1.6.6.post1" count as 1.6.6; "1.6.6rc1", "1.6.6.rc1" and "1.6.6.dev0"
- * as below it (cognee 1.6.6rc1 reports "1.6.6.rc1" without dataset routing).
- * Unparseable ("unknown", "", "1.6.6-custom") is false.
+ * `value` >= `minimum`, PEP 440-style. The release counts when it has no
+ * suffix or a build one ("1.6.6", "1.7", "1.6.6-local", "1.6.6.post1-local").
+ * Any other suffix (a pre-release such as "1.6.6.rc1", which cognee 1.6.6rc1
+ * reports without dataset routing, a dev build, an unknown label) counts only
+ * above `minimum`. Unparseable ("unknown", "", "2") is false.
  */
 export function versionAtLeast(value: string, minimum: readonly number[]): boolean {
-  const match = /^v?(\d+(?:\.\d+)*)(.*)$/i.exec(value.trim());
+  const match = /^v?(\d+(?:\.\d+)+)(.*)$/i.exec(value.trim());
   if (!match) return false;
   const parts = match[1].split(".").map(Number);
   let cmp = 0;
   for (let i = 0; i < Math.max(parts.length, minimum.length) && cmp === 0; i++) {
     cmp = Math.sign((parts[i] ?? 0) - (minimum[i] ?? 0));
   }
-  const suffix = match[2].toLowerCase();
-  if (!suffix || RELEASE_SUFFIX_RE.test(suffix)) return cmp >= 0;
-  // A pre-release or dev build is below its release.
-  if (PRE_RELEASE_RE.test(suffix)) return cmp > 0;
-  return false;
+  return RELEASE_SUFFIX_RE.test(match[2].trim().toLowerCase()) ? cmp >= 0 : cmp > 0;
 }
 
 // Node's bundled global fetch has an undici headersTimeout of 300s. Long-running
@@ -351,6 +346,23 @@ export class CogneeHttpClient {
   }
 
   /**
+   * `version` from `/health`, whatever the status: an unhealthy cognee answers
+   * 503 and still names its version. "" when the body carries none.
+   */
+  private async healthVersion(timeoutMs: number): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const headers = this.isCloud ? { "X-Api-Key": this.apiKey! } : {};
+      const response = await fetch(`${this.baseUrl}/health`, { method: "GET", headers, signal: controller.signal });
+      const body = (await response.json().catch(() => ({}))) as { version?: unknown } | null;
+      return typeof body?.version === "string" ? body.version.trim() : "";
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * Whether the server routes a search that names no dataset (cognee >= 1.6.6,
    * dataset routing). Read from `/health`'s `version`, cached for an hour (five
    * minutes after a failed probe). A failed probe keeps the last answer; with
@@ -367,8 +379,7 @@ export class CogneeHttpClient {
     this.routingProbe ??= (async () => {
       let version = "";
       try {
-        const body = (await this.health(timeoutMs)) as { version?: unknown };
-        version = typeof body?.version === "string" ? body.version.trim() : "";
+        version = await this.healthVersion(timeoutMs);
       } catch {
         version = "";
       }

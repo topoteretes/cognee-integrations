@@ -399,10 +399,14 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
       let timeoutMs: number | undefined;
       try {
         const started = performance.now();
+        // None of this agent's datasets resolves yet: nothing to search, even
+        // routed (the server would only search other agents' datasets), as in
+        // the prompt-time recall.
+        datasets = await deps.resolveDatasets(ctx.agentId, ctx);
         // Auto recall: one request with no dataset id ("" below), routed by the server.
-        const routed = deps.autoRoute ? await withinMs(deps.autoRoute(ctx.agentId, ctx), deps.cfg.recallTimeoutMs, false) : false;
+        const routed = deps.autoRoute && datasets.length > 0 ? await withinMs(deps.autoRoute(ctx.agentId, ctx), deps.cfg.recallTimeoutMs, false) : false;
         if (deps.autoRoute) timeoutMs = Math.max(1, deps.cfg.recallTimeoutMs - (performance.now() - started));
-        datasets = routed ? [{ id: "", label: "memory" }] : await deps.resolveDatasets(ctx.agentId, ctx);
+        if (routed) datasets = [{ id: "", label: "memory" }];
       } catch (e) {
         return jsonResult(unavailable(query, corpus, `dataset resolution failed: ${String(e)}`, "Check the Cognee server connection and retry memory_search."));
       }

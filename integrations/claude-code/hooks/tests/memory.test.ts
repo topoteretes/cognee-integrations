@@ -460,6 +460,10 @@ test('with recall auto the picker reads "auto (<dataset>)", picking a dataset re
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   let picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker!.props.value).toBe('auto (best-matching dataset)')
+  // The open picker shows where saves go, like the terminal's closed form.
+  const autoLabel = (pick: typeof picker) =>
+    (pick!.props.options as { value: string; label: string }[]).find(o => o.value === 'auto (best-matching dataset)')!.label
+  expect(autoLabel(picker)).toBe('auto (agent_sessions)')
 
   // The active dataset, picked while auto, pins recall to it: no new session.
   calls.length = 0
@@ -471,6 +475,7 @@ test('with recall auto the picker reads "auto (<dataset>)", picking a dataset re
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker!.props.value).toBe('agent_sessions')
+  expect(autoLabel(picker)).toBe('auto (best-matching dataset)')
   calls.length = 0
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'auto (best-matching dataset)' })
   expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['auto', '--json', '--session-key', SESSION])

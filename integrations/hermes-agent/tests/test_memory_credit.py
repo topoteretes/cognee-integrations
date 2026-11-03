@@ -225,6 +225,24 @@ def test_recall_tool_results_are_tagged(cite_on):
     assert '"> Cognee:"' in out["credit"]
 
 
+@pytest.mark.parametrize("routes", [True, False])
+def test_the_credit_names_the_dataset_only_when_recall_read_it(cite_on, routes):
+    # Routed (auto) recall may answer from any readable dataset, so naming the
+    # active one would credit the wrong source.
+    expected = "based on Cognee memory" if routes else "based on dataset hermes"
+    with fake_backend() as fake:
+        fake.results["recall"] = [{"text": "Mika likes tennis.", "source": "graph"}]
+        fake.routes_datasets = lambda **kw: routes
+        provider = make_provider()
+        provider.queue_prefetch("what does mika like")
+        prompt = provider.prefetch("what does mika like")
+        tool = json.loads(provider.handle_tool_call("cognee_recall", {"query": "mika"}))
+    assert expected in prompt
+    assert expected in tool["credit"]
+    if routes:
+        assert "based on dataset" not in prompt + tool["credit"]
+
+
 def test_the_stored_answer_has_no_credit_line(cite_on):
     with fake_backend() as fake:
         provider = make_provider()

@@ -573,8 +573,18 @@ def shell_runtime_overrides(service_url: str = "", host_key: str = "") -> dict:
         "dataset_ids": ",".join(read_ids),
         "api_key": active_agent_key(service_url),
         # "1" when graph recall names no dataset (auto, routed server-side).
-        "recall_auto": "1" if host_key and auto_recall_active(service_url, host_key) else "",
+        "recall_auto": "1" if host_key and _auto_recall_or_false(service_url, host_key) else "",
     }
+
+
+def _auto_recall_or_false(service_url: str, host_key: str) -> bool:
+    # The mode must never cost the shell skills the rest of their launch state
+    # (dataset, session, agent key): a failure reads as restricted recall.
+    try:
+        return auto_recall_active(service_url, host_key)
+    except Exception as exc:
+        hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
+        return False
 
 
 def touched_pairs(host_key: str = "") -> list[dict]:
@@ -790,40 +800,56 @@ def set_recall_pinned(host_key: str, pinned: bool) -> dict:
     return _read_map_record(host_key) or merged
 
 
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(.*)$", re.IGNORECASE)
-# A release, or a build of one: '-local' (source checkout, the Docker image), a
-# PEP 440 '+label', '.postN'.
-_RELEASE_SUFFIX_RE = re.compile(r"^(-local|\+.*|[.-]?post\d*)$", re.IGNORECASE)
-# Before its release: 1.6.6rc1 reports '1.6.6.rc1' and shipped without routing.
-_PRERELEASE_SUFFIX_RE = re.compile(
-    r"^[._-]?(a|b|c|rc|alpha|beta|pre|preview|dev)\d*(?:$|[._+-])", re.IGNORECASE
-)
+_VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+)+)(.*)$", re.IGNORECASE)
+# A release, or a build of one: a post-release ('.postN', PEP 440's '-N'), then
+# '-local' (source checkout, the Docker image), then a PEP 440 '+label'.
+_RELEASE_SUFFIX_RE = re.compile(r"^(?:[.-]?post\d*|-\d+)?(?:-local)?(?:\+.*)?$", re.IGNORECASE)
 
 
 def version_supports_routing(value: str) -> bool:
     """Whether a cognee version string is a release at or above 1.6.6.
 
-    '1.6.6' and '1.6.6-local' route; '1.6.6.rc1' and '1.6.6.dev0' come before
-    1.6.6 and do not; anything unparseable ('unknown', '') does not.
+    The release counts when it has no suffix or a build one ('1.6.6', '1.7',
+    '1.6.6-local', '1.6.6.post1-local'). Any other suffix — a pre-release such
+    as '1.6.6.rc1' (shipped without routing), a dev build, an unknown label —
+    counts only above 1.6.6. Unparseable ('unknown', '') does not route.
     """
     match = _VERSION_RE.match(str(value or "").strip())
     if not match:
         return False
-    release = tuple(int(part) for part in match.groups()[:3])
-    suffix = match.group(4).strip()
-    if not suffix or _RELEASE_SUFFIX_RE.match(suffix):
-        return release >= _DATASET_ROUTING_MIN_VERSION
-    if _PRERELEASE_SUFFIX_RE.match(suffix):
-        return release > _DATASET_ROUTING_MIN_VERSION
-    return False
+    release = [int(part) for part in match.group(1).split(".")]
+    floor = list(_DATASET_ROUTING_MIN_VERSION)
+    width = max(len(release), len(floor))
+    release += [0] * (width - len(release))
+    floor += [0] * (width - len(floor))
+    suffix = match.group(2).strip()
+    if _RELEASE_SUFFIX_RE.match(suffix):
+        return release >= floor
+    return release > floor
 
 
 def _fetch_server_version(base: str, timeout: float) -> str:
-    """``version`` from GET {base}/health, or "" when the server did not say."""
-    with urllib.request.urlopen(
-        f"{base}/health", timeout=timeout, context=_https_context()
-    ) as resp:
-        payload = json.loads(resp.read().decode("utf-8") or "{}")
+    """``version`` from GET {base}/health, or "" when the server did not say.
+
+    An unhealthy cognee answers 503 and still names its version, so the body is
+    read whatever the status. The whole read is bounded by ``timeout``: urllib's
+    own timeout is per socket operation and leaves DNS unbounded.
+    """
+    from _deadlines import bounded_call
+
+    def read() -> bytes:
+        try:
+            with urllib.request.urlopen(
+                f"{base}/health", timeout=timeout, context=_https_context()
+            ) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            return exc.read() or b""
+
+    try:
+        payload = json.loads(bounded_call(read, timeout).decode("utf-8") or "{}")
+    except ValueError:
+        return ""
     return str(payload.get("version") or "").strip() if isinstance(payload, dict) else ""
 
 
@@ -847,13 +873,17 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
     if not isinstance(cache, dict):
         cache = {}
     entry = cache.get(base) if isinstance(cache.get(base), dict) else {}
-    checked_at = float(entry.get("checked_at") or 0) if entry else 0.0
+    try:
+        checked_at = float(entry.get("checked_at") or 0)
+    except (TypeError, ValueError):
+        checked_at = 0.0
     wait = (
         _ROUTING_SUPPORT_TTL_SECONDS
         if entry.get("version") and not entry.get("probe_failed")
         else _ROUTING_SUPPORT_RETRY_SECONDS
     )
-    if entry and now - checked_at < wait:
+    # A checked_at in the future (the clock moved back) is stale, not fresh.
+    if entry and 0 <= now - checked_at < wait:
         return bool(entry.get("routes"))
     try:
         version = _fetch_server_version(base, timeout)

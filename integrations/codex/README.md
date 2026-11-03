@@ -325,7 +325,8 @@ release stays restricted. `auto` is reserved: no dataset can be named so. Auto r
 that routes: the plugin reads the version from `GET /health` (cached per server in
 `~/.cognee-plugin/dataset-routing.json`, re-read hourly, or after five minutes when a read failed; the read comes out of the prompt's recall
 budget) and, against an older server, keeps recall on the active dataset as before. Pre-releases
-and dev builds of 1.6.6 count as older. While recall cannot be routed, `--list`, the status row and
+and dev builds of 1.6.6, and 1.6.6 with an unknown label, count as older; an unhealthy server's
+503 answer still names its version and counts. While recall cannot be routed, `--list`, the status row and
 `/cognee-dataset` show it as restricted to the active dataset. These always keep their explicit dataset: session history and
 guidance (bound to the active dataset), the code lane (this repository's code dataset) and a
 `COGNEE_PLUGIN_READ_DATASET_IDS` read set. Shared agent memory's dataset ids are dropped with the

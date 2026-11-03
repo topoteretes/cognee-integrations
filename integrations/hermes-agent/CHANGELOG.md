@@ -21,7 +21,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   budget); in-process the installed cognee decides; against an older or served-SDK cognee
   recall keeps the dataset. Pre-releases and dev builds count as below their release
   (`1.6.6rc1`, reported as `1.6.6.rc1`, does not route); `-local`, `+local` and `.postN`
-  count as the release. The guidance lane, `cognee_code_search` and recaps keep their
+  count as the release, and an unknown label counts only above 1.6.6. An unhealthy server's
+  503 answer still names its version and counts. While recall is routed, the memory credit
+  says "based on Cognee memory" rather than naming the active dataset. The guidance lane, `cognee_code_search` and recaps keep their
   datasets.
 - **`cognee_switch_dataset` pins recall.** Any explicit pick pins recall to that dataset: a
   switch (the default dataset included), or the dataset in use (no new session). Only

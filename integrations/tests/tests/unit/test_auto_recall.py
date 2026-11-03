@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import time
 
 import pytest
@@ -161,7 +162,14 @@ def health(pc, monkeypatch):
         ("1.6.6-local", True),
         ("1.6.6.post1", True),
         ("1.6.6+cloud", True),
+        ("1.6.6.post1-local", True),
+        ("1.6.6-local+abc", True),
+        ("1.6.6-1", True),
+        ("1.6.6.0", True),
         ("1.7.0.dev0", True),
+        ("1.7.0-custom", True),
+        ("1.7", True),
+        ("2.0", True),
         ("2.0.0", True),
         ("1.6.6.rc1", False),
         ("1.6.6rc1", False),
@@ -173,7 +181,7 @@ def health(pc, monkeypatch):
         ("0.5.3", False),
         ("unknown", False),
         ("1.6.6-custom", False),
-        ("1.7.0-custom", False),
+        ("1.6", False),
         ("", False),
     ],
 )
@@ -248,6 +256,79 @@ def test_a_failed_probe_after_a_success_is_retried_within_minutes(pc, health, mo
     assert health["calls"] == 3
 
 
+def test_an_unhealthy_server_still_names_its_version(pc, monkeypatch):
+    # cognee answers /health with 503 while a critical store is down, and the
+    # body still carries the version: that is an answer, not a failed probe.
+    def urlopen(url, timeout=None, context=None):
+        body = json.dumps({"status": "not ready", "health": "unhealthy", "version": "1.6.6"})
+        raise pc.urllib.error.HTTPError(
+            url, 503, "Service Unavailable", {}, io.BytesIO(body.encode())
+        )
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", urlopen)
+    assert pc.server_routes_datasets(URL) is True
+    entry = json.loads(pc._ROUTING_SUPPORT_FILE.read_text())[pc._normalize_service_url(URL)]
+    assert entry["probe_failed"] is False
+
+
+def test_an_error_page_without_a_version_is_a_failed_probe(pc, monkeypatch):
+    def urlopen(url, timeout=None, context=None):
+        raise pc.urllib.error.HTTPError(url, 502, "Bad Gateway", {}, io.BytesIO(b"<html>"))
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", urlopen)
+    assert pc.server_routes_datasets(URL) is False
+
+
+def test_a_hung_probe_is_cut_off_at_its_timeout(pc, monkeypatch):
+    # urllib's timeout is per socket operation (and DNS has none): the read as a
+    # whole must still end on time.
+    release = threading.Event()
+
+    def urlopen(url, timeout=None, context=None):
+        release.wait(5)
+        raise OSError("released")
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", urlopen)
+    started = time.monotonic()
+    try:
+        assert pc.server_routes_datasets(URL, timeout=0.2) is False
+        assert time.monotonic() - started < 1.0
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("checked_at", ["soon", [1], 10**12])
+def test_a_corrupt_or_future_cache_entry_is_probed_again(pc, health, checked_at):
+    pc._ROUTING_SUPPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    pc._ROUTING_SUPPORT_FILE.write_text(
+        json.dumps(
+            {
+                pc._normalize_service_url(URL): {
+                    "version": "1.6.5",
+                    "routes": False,
+                    "checked_at": checked_at,
+                    "probe_failed": False,
+                }
+            }
+        )
+    )
+    assert pc.server_routes_datasets(URL) is True
+    assert health["calls"] == 1
+
+
+def test_the_shell_skills_keep_their_launch_state_when_the_mode_fails(pc, launch, monkeypatch):
+    monkeypatch.setenv("COGNEE_SESSION_KEY", launch)
+
+    def broken(*a, **k):
+        raise ValueError("bad cache")
+
+    monkeypatch.setattr(pc, "server_routes_datasets", broken)
+    overrides = pc.shell_runtime_overrides(URL)
+    assert overrides["recall_auto"] == ""
+    assert overrides["session_id"]
+    assert overrides["dataset"]
+
+
 def test_a_success_after_a_failed_probe_is_cached_for_the_ttl(pc, health, monkeypatch):
     start = pc.time.time()
     health["version"] = OSError("refused")
@@ -283,6 +364,23 @@ def test_a_configured_dataset_of_auto_seeds_the_default(suite, isolated_modules,
     config = isolated_modules(suite, "config")
     assert config.get_dataset({"dataset": value}) == "agent_sessions"
     assert config.get_dataset({"dataset": "research"}) == "research"
+
+
+@pytest.mark.parametrize("value", ["auto", " AUTO "])
+def test_an_env_dataset_of_auto_never_reaches_the_launch_record(
+    suite, isolated_modules, pc, monkeypatch, value
+):
+    # SessionStart seeds the launch record from load_config()["dataset"], and the
+    # record then wins over every later "auto" check: saves, shared memory and
+    # agent registration would all name a dataset called "auto".
+    config = isolated_modules(suite, "config")
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", value)
+    cfg = config.load_config()
+    assert cfg["dataset"] == "agent_sessions"
+    pc.ensure_launch_record("host-auto", "/w", dataset=cfg["dataset"])
+    monkeypatch.setenv("COGNEE_SESSION_KEY", "host-auto")
+    assert pc.resolve_active_dataset("host-auto") == "agent_sessions"
+    assert config.get_dataset(cfg) == "agent_sessions"
 
 
 # ── pinning ────────────────────────────────────────────────────────────────

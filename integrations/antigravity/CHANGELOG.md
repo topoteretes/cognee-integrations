@@ -17,7 +17,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   Saves still go to the active dataset. The plugin reads the server version from `GET /health`
   (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly, a failed read retried after five minutes with the last answer kept meanwhile) and keeps
   recall on the active dataset against an older server; pre-releases and dev builds of 1.6.6 count
-  as older. The `/health` read comes out of the prompt's recall budget. Session history and guidance, the code
+  as older, and so does 1.6.6 with an unknown label (a later release with one routes). An
+  unhealthy server still names its version in its 503 answer, which counts. The `/health` read comes out of the prompt's recall budget. Session history and guidance, the code
   lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
   memory's dataset ids are dropped with the dataset under auto recall and kept while restricted; recap, evidence and file-context reads stay on the active dataset.
 - **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset

@@ -1338,7 +1338,8 @@ export const register: Register = (on, options) => {
       Select({
         key: 'dataset',
         options: [
-          { value: AUTO_RECALL, label: AUTO_RECALL },
+          // Selected, it names the dataset saves go to, as the closed form does.
+          { value: AUTO_RECALL, label: auto ? pickerLabel : AUTO_RECALL },
           // "auto" is reserved for the entry above: a dataset so named is not offered.
           ...options.filter(r => r.current || !isReservedName(r.name)).map(r => ({ value: r.name, label: r.name })),
           { value: NEW_DATASET, label: NEW_DATASET },

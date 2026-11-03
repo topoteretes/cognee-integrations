@@ -151,9 +151,12 @@ class CogneeHttpError(RuntimeError):
     misconfiguration (4xx — waiting will not help) from server trouble (5xx).
     """
 
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, body: bytes = b""):
         super().__init__(message)
         self.status = status
+        #: The error response's body, for the callers that read it (the /health
+        #: version probe: an unhealthy cognee answers 503 and still names it).
+        self.body = body
 
 
 class CogneeLoginRejected(CogneeHttpError):
@@ -341,15 +344,16 @@ class HttpBackend(MemoryBackend):
             with self._open(request, timeout) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            detail = ""
+            body, detail = b"", ""
             try:
-                detail = exc.read().decode("utf-8")[:300]
+                body = exc.read() or b""
+                detail = body.decode("utf-8")[:300]
             except Exception:
                 pass
             message = f"{method} {path} failed (HTTP {exc.code}): {detail or exc.reason}"
             if exc.code == 401 and self._auth_hint:
                 message = f"{message}. No API key was sent because {self._auth_hint}"
-            raise CogneeHttpError(exc.code, message) from exc
+            raise CogneeHttpError(exc.code, message, body) from exc
         except Exception as exc:  # URLError / timeout / OSError
             raise CogneeUnreachable(
                 f"cognee unreachable at {url}: {str(exc)[:200]}",
@@ -427,6 +431,18 @@ class HttpBackend(MemoryBackend):
         except Exception:
             return False
 
+    def _health_version(self, timeout: float) -> str:
+        """``version`` from /health, whatever the status: an unhealthy cognee
+        answers 503 and still names its version. "" when the body has none."""
+        try:
+            health = self._request("GET", "/health", timeout=timeout)
+        except CogneeHttpError as exc:
+            try:
+                health = json.loads(exc.body.decode("utf-8") or "{}")
+            except ValueError:
+                return ""
+        return str(health.get("version") or "").strip() if isinstance(health, dict) else ""
+
     def routes_datasets(self, *, timeout: float) -> bool:
         """``version`` from /health, cached for an hour (five minutes after a
         failed probe). A failed probe keeps the last answer; with none, False."""
@@ -444,9 +460,7 @@ class HttpBackend(MemoryBackend):
         version = ""
         if self.url:
             try:
-                health = self._request("GET", "/health", timeout=timeout)
-                if isinstance(health, dict):
-                    version = str(health.get("version") or "").strip()
+                version = self._health_version(timeout)
             except Exception as exc:
                 logger.debug("cognee /health version probe failed: %s", exc)
         routes = version_routes_datasets(version) if version else bool(cached and cached["routes"])

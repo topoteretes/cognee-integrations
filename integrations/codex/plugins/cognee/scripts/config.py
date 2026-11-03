@@ -156,9 +156,17 @@ def load_config() -> dict:
             config[config_key] = val
 
     raw_dataset = str(config.get("dataset") or "")
-    config["dataset"] = sanitize_dataset_name(raw_dataset)
-    if config["dataset"] != raw_dataset.strip():
-        _config_log("dataset_name_sanitized", {"from": raw_dataset[:200], "to": config["dataset"]})
+    if raw_dataset.strip().lower() == "auto":
+        # "auto" is reserved for auto recall: a configured "auto" means the
+        # default dataset with recall left on auto, so it never reaches the
+        # launch record (and from there saves, shared memory and registration).
+        config["dataset"] = _DEFAULTS["dataset"]
+    else:
+        config["dataset"] = sanitize_dataset_name(raw_dataset)
+        if config["dataset"] != raw_dataset.strip():
+            _config_log(
+                "dataset_name_sanitized", {"from": raw_dataset[:200], "to": config["dataset"]}
+            )
 
     backend = str(config.get("backend") or "auto").lower()
     if backend in ("native", "local", "sdk"):

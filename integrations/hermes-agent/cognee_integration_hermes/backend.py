@@ -34,13 +34,11 @@ logger = logging.getLogger(__name__)
 DATASET_ROUTING_MIN_VERSION = (1, 6, 6)
 
 
-_VERSION = re.compile(r"v?(\d+(?:\.\d+)*)(.*)", re.IGNORECASE | re.DOTALL)
-# A pre-release or dev build, with or without a separator: '1.6.6rc1', '1.6.6.rc1',
-# '1.6.6-beta', '1.6.6.dev0'. Not '-local' or '.post1', which are the release.
-_PRE_RELEASE = re.compile(r"[._-]?(?:alpha|beta|preview|pre|rc|a|b|c|dev)\d*(?![a-z])")
-# The release itself: '-local' (source checkout, the Docker image), '+label',
-# '.post1'. Any other suffix ('1.6.6-custom') is unparseable.
-_RELEASE_SUFFIX = re.compile(r"(?:-local|\+.*|[.-]?post\d*)", re.DOTALL)
+_VERSION = re.compile(r"v?(\d+(?:\.\d+)+)(.*)", re.IGNORECASE | re.DOTALL)
+# A release, or a build of one: a post-release ('.postN', PEP 440's '-N'), then
+# '-local' (source checkout, the Docker image), then a '+label'. The same rule as
+# the hook-family plugins and openclaw.
+_RELEASE_SUFFIX = re.compile(r"(?:[.-]?post\d*|-\d+)?(?:-local)?(?:\+.*)?", re.DOTALL)
 
 
 def version_tuple(value: str) -> tuple[int, ...]:
@@ -52,10 +50,11 @@ def version_tuple(value: str) -> tuple[int, ...]:
 def version_routes_datasets(value: str) -> bool:
     """Whether cognee *value* routes datasets (>= 1.6.6).
 
-    '1.6.6', '1.6.6-local', '1.6.6+local' and '1.6.6.post1' count as 1.6.6; a
-    pre-release or dev build counts as below its release ('1.6.6.rc1', which
-    cognee 1.6.6rc1 reports, has no routing). Unparseable ('unknown', '',
-    '1.6.6-custom') is False.
+    The release counts when it has no suffix or a build one ('1.6.6', '1.7',
+    '1.6.6-local', '1.6.6.post1-local'). Any other suffix — a pre-release such
+    as '1.6.6.rc1' (which cognee 1.6.6rc1 reports, without routing), a dev
+    build, an unknown label — counts only above 1.6.6. Unparseable ('unknown',
+    '', '2') is False.
     """
     text = str(value or "").strip().lower()
     release = list(version_tuple(text))
@@ -63,13 +62,10 @@ def version_routes_datasets(value: str) -> bool:
         return False
     while release and release[-1] == 0:
         release.pop()
-    suffix = _VERSION.fullmatch(text).group(2)
-    if not suffix or _RELEASE_SUFFIX.fullmatch(suffix):
+    suffix = _VERSION.fullmatch(text).group(2).strip()
+    if _RELEASE_SUFFIX.fullmatch(suffix):
         return tuple(release) >= DATASET_ROUTING_MIN_VERSION
-    # A pre-release or dev build is below its release.
-    if _PRE_RELEASE.match(suffix):
-        return tuple(release) > DATASET_ROUTING_MIN_VERSION
-    return False
+    return tuple(release) > DATASET_ROUTING_MIN_VERSION
 
 
 def has_cognee() -> bool:

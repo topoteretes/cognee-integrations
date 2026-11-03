@@ -21,9 +21,10 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   conversation's dataset. `CogneeHttpClient.routesDatasets()` reads `version` from `/health`
   (short timeout, one shared in-flight probe, cached for an hour, a failed probe retried after five minutes, skipped while the recall
   breaker is open, spent out of the recall budget); a pre-release or dev build (`1.6.6rc1`,
-  `1.6.6.dev0`), an older server or a failed probe keeps the dataset. Multi-scope mode, the
+  `1.6.6.dev0`), 1.6.6 with an unknown label, an older server or a failed probe keeps the
+  dataset; an unhealthy server's 503 answer still names its version and counts. Multi-scope mode, the
   guidance lane and the code lane keep their explicit datasets, and an install with no indexed
-  data still skips prompt recall. `recall()` omits `dataset_ids` when given none.
+  data still skips prompt recall and `memory_search`. `recall()` omits `dataset_ids` when given none.
 - **`memory_switch_dataset` pins recall.** Any explicit switch pins recall to its dataset;
   switching to the dataset in use only pins (a pin-only override, same session);
   `action: "auto"` unpins it; `reset` returns to the configured dataset, unpinned; `current`

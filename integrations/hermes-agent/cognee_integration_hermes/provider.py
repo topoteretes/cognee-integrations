@@ -1540,6 +1540,7 @@ class CogneeMemoryProvider(MemoryProvider):
         search_type: Any,
         top_k: int,
         session_id: str,
+        datasets: Optional[list[str]] = None,
     ) -> list[Any]:
         """The explicit ``cognee_recall`` search: the knowledge graph, stated outright.
 
@@ -1556,7 +1557,7 @@ class CogneeMemoryProvider(MemoryProvider):
         return self._backend.recall(
             query=query,
             session_id=None,
-            datasets=self._graph_datasets(),
+            datasets=datasets if datasets is not None else self._graph_datasets(),
             top_k=top_k,
             auto_route=self._auto_route,
             query_type=search_type or None,
@@ -1863,7 +1864,8 @@ class CogneeMemoryProvider(MemoryProvider):
                             memory_credit.credit_instruction(
                                 not credit.credited,
                                 len(credit.found),
-                                self._dataset,
+                                # Routed recall may answer from any dataset.
+                                "" if routed else self._dataset,
                                 self._platform,
                             )
                             + "\n\n"
@@ -1894,11 +1896,14 @@ class CogneeMemoryProvider(MemoryProvider):
         search_type = args.get("search_type")
 
         try:
+            # None: auto recall, routed server-side, so the credit names no dataset.
+            datasets = self._graph_datasets()
             results = self._recall(
                 query,
                 search_type=search_type,
                 top_k=top_k,
                 session_id=self._session_cognee_id,
+                datasets=datasets,
             )
             self._record_success()
             # Items with no readable text are not memories: dropping them keeps
@@ -1930,7 +1935,7 @@ class CogneeMemoryProvider(MemoryProvider):
                     )
                     item["tag"] = self._credit.label("recall", origin, item["text"])
                 envelope["credit"] = memory_credit.tool_credit_instruction(
-                    self._dataset, self._platform
+                    self._dataset if datasets else "", self._platform
                 )
             if overflow:
                 # Non-empty results still warn: mean-pooled vectors match

@@ -19,15 +19,19 @@ describe("dataset routing version gate", () => {
     expect(versionTuple("unknown")).toEqual([]);
   });
 
-  // A release and its local/post labels count as the release; a pre-release
-  // or dev build sorts below it (cognee 1.6.6rc1 reports "1.6.6.rc1" and has
-  // no dataset routing); unparseable never routes.
+  // A release and its build labels count as the release; any other suffix
+  // (pre-release, dev build, unknown label) only above it (cognee 1.6.6rc1
+  // reports "1.6.6.rc1" and has no dataset routing); unparseable never routes.
   it.each([
     ["1.6.6", true],
     ["v1.6.6", true],
     ["1.6.6-local", true],
     ["1.6.6+local", true],
     ["1.6.6.post1", true],
+    ["1.6.6.post1-local", true],
+    ["1.6.6-local+abc", true],
+    ["1.6.6-1", true],
+    ["1.6.6.0", true],
     ["1.6.6.rc1", false],
     ["1.6.6rc1", false],
     ["1.6.6-rc1", false],
@@ -39,6 +43,7 @@ describe("dataset routing version gate", () => {
     ["1.6.7rc1", true],
     ["1.7.0", true],
     ["1.7.0.dev0", true],
+    ["1.7", true],
     ["2.0", true],
     ["1.6.5", false],
     ["1.6.5-local", false],
@@ -46,7 +51,9 @@ describe("dataset routing version gate", () => {
     ["0.5.3", false],
     ["unknown", false],
     ["1.6.6-custom", false],
-    ["1.7.0-custom", false],
+    ["1.7.0-custom", true],
+    ["1.6", false],
+    ["2", false],
     ["", false],
   ])("routes from cognee 1.6.6: %s -> %s", (version, routes) => {
     expect(versionAtLeast(version, DATASET_ROUTING_MIN_VERSION)).toBe(routes);
@@ -79,6 +86,16 @@ describe("CogneeHttpClient auto recall", () => {
     expect(await client.routesDatasets()).toBe(true);
     expect(await client.routesDatasets()).toBe(true);
     expect(calls.filter((c) => c.url.endsWith("/health"))).toHaveLength(1);
+  });
+
+  it("reads the version off an unhealthy server's 503", async () => {
+    // cognee answers 503 while a critical store is down and still names its version.
+    global.fetch = jest.fn(async () =>
+      new Response(JSON.stringify({ status: "not ready", health: "unhealthy", version: "1.6.6" }), { status: 503 }),
+    ) as unknown as typeof fetch;
+    expect(await new CogneeHttpClient("http://cognee.test", "k").routesDatasets()).toBe(true);
+    global.fetch = jest.fn(async () => new Response("<html>", { status: 502 })) as unknown as typeof fetch;
+    expect(await new CogneeHttpClient("http://cognee.test", "k").routesDatasets()).toBe(false);
   });
 
   it("keeps recall scoped on an older server, a pre-release, or when /health fails", async () => {
@@ -197,8 +214,19 @@ describe("memory_search auto recall", () => {
       },
     });
     expect(calls).toEqual([[]]);
-    expect(resolveDatasets).not.toHaveBeenCalled();
     expect(out.results).toHaveLength(1);
+  });
+
+  it("does not route while none of the agent's datasets resolves", async () => {
+    // As in the prompt-time recall: routed, the server would only search other
+    // agents' (or clients') datasets and label their hits as this agent's memory.
+    const recall = jest.fn(async () => [{ id: "x", text: "someone else's", score: 0.9 }]);
+    const autoRoute = jest.fn(async () => true);
+    const out = await search({ cfg, resolveDatasets: async () => [], autoRoute, recall });
+    expect(recall).not.toHaveBeenCalled();
+    expect(autoRoute).not.toHaveBeenCalled();
+    expect(out.results).toEqual([]);
+    expect(out.note).toMatch(/No Cognee dataset is indexed yet/);
   });
 
   it("searches the conversation's datasets when recall is restricted", async () => {

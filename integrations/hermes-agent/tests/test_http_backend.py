@@ -1072,6 +1072,27 @@ class TestDatasetRoutingGate(unittest.TestCase):
             self.assertFalse(backend.routes_datasets(timeout=1.0))
             self.assertEqual(calls, ["/health", "/health"])
 
+    def test_an_unhealthy_server_still_names_its_version(self):
+        # cognee answers /health with 503 while a critical store is down, and the
+        # body still carries the version: an answer, not a failed probe.
+        body = json.dumps({"status": "not ready", "health": "unhealthy", "version": "1.6.6"})
+        backend, _ = self._backend(CogneeHttpError(503, "down", body.encode()))
+        self.assertTrue(backend.routes_datasets(timeout=1.0))
+        self.assertFalse(backend._routing["probe_failed"])
+        backend, _ = self._backend(CogneeHttpError(502, "bad gateway", b"<html>"))
+        self.assertFalse(backend.routes_datasets(timeout=1.0))
+
+    def test_the_request_layer_keeps_the_error_body(self):
+        body = json.dumps({"version": "1.6.6"}).encode()
+        backend = HttpBackend()
+        backend.url = "http://cognee.test"
+        backend._open = mock.Mock(
+            side_effect=urllib.error.HTTPError(
+                "http://cognee.test/health", 503, "down", {}, io.BytesIO(body)
+            )
+        )
+        self.assertTrue(backend.routes_datasets(timeout=1.0))
+
     def test_a_release_candidate_of_1_6_6_does_not_route(self):
         # cognee 1.6.6rc1 reports "1.6.6.rc1" on /health and has no routing.
         backend, _ = self._backend({"status": "ready", "version": "1.6.6.rc1"})
@@ -1082,8 +1103,22 @@ class TestRoutingVersionRule(unittest.TestCase):
     """SDK-1393: which cognee versions route datasets (>= 1.6.6)."""
 
     def test_releases_and_local_or_post_labels_count_as_the_release(self):
-        for version in ("1.6.6", "v1.6.6", "1.6.6-local", "1.6.6+local", "1.6.6.post1", "1.7.0"):
+        for version in (
+            "1.6.6",
+            "v1.6.6",
+            "1.6.6-local",
+            "1.6.6+local",
+            "1.6.6.post1",
+            "1.6.6.post1-local",
+            "1.6.6-local+abc",
+            "1.6.6-1",
+            "1.6.6.0",
+            "1.7",
+            "1.7.0",
+            "2.0",
+        ):
             self.assertTrue(version_routes_datasets(version), version)
+        self.assertTrue(version_routes_datasets("1.7.0-custom"), "an unknown label above 1.6.6")
         self.assertTrue(version_routes_datasets("1.7.0rc1"), "a pre-release above 1.6.6")
 
     def test_pre_releases_and_dev_builds_count_below_their_release(self):
@@ -1108,7 +1143,8 @@ class TestRoutingVersionRule(unittest.TestCase):
             "",
             None,
             "1.6.6-custom",
-            "1.7.0-custom",
+            "1.6",
+            "2",
         ):
             self.assertFalse(version_routes_datasets(version), version)
 
