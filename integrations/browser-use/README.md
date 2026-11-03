@@ -77,7 +77,8 @@ async with CogneeBrowserMemory(receipts_path="./data/receipts.sqlite") as memory
 
 `run.execute()` composes your `on_step_start` / `on_step_end` callbacks with the adapter's
 observer, runs `agent.run`, and captures the outcome in `finally`. It returns the original
-history and re-raises the original exception or cancellation; memory problems are on
+history and re-raises the original exception or cancellation, including a cancel that
+arrives while the outcome is being written; memory problems are on
 `run.status`, never in place of the browser result.
 
 Applications that own the run loop can call `recall_context()`, `register_tools()`,
@@ -126,7 +127,7 @@ never treat in-memory mode as durable capture.
 | `indexing` | Document listed; the dataset's cognify pipeline has not completed since (or it reported an error, which the receipt records without treating it as this document's failure) |
 | `ready` | Listed, and the dataset's most recent cognify run completed. cognee 1.6.5 reports pipeline status per dataset, not per document, so this is the strongest statement available |
 | `failed` | The backend rejected the write |
-| `unknown` | The write timed out or lost the connection, or the document never appeared within 15 minutes |
+| `unknown` | The write timed out, lost the connection or was cancelled in flight, or the document never appeared within 15 minutes. Not treated as live: the same content is uploaded again by a later run (the upload name is content-derived, so the server keeps one document) |
 | `deleted` | Removed by `forget_record()` and verified absent from a complete dataset listing |
 
 ```python
@@ -135,12 +136,18 @@ await memory.reconcile()  # all pending receipts: one status call and one listin
 await memory.forget_record(record_id, scope=scope)  # targeted; verified by re-listing
 ```
 
+Store calls run on a worker thread owned by `CogneeBrowserMemory`, and `reconcile()` writes
+its updates in one transaction, so a durable receipt store never blocks the agent's event
+loop. Each `record_status()` refresh is one status call plus a listing walk; a host that
+polls should space calls out in seconds rather than spin.
+
 `forget_record()` checks the receipt belongs to the given scope, deletes exactly that
 document (`datasetId` + `dataId`), re-lists the dataset and only then marks the receipt
 deleted. The backend's forget endpoint reports success even for unknown ids, so the listing
-is the source of truth: a listing longer than 50,000 documents is reported as
-`verified: False` with a message rather than assumed empty. No agent-facing forgetting
-exists; build a confirmation flow around this method if users need one.
+is the source of truth: a walk that stops at the 50,000-document cap or its 30-second
+deadline is reported as `verified: False` with the reason rather than assumed empty. No
+agent-facing forgetting exists; build a confirmation flow around this method if users need
+one.
 
 ## Configuration
 
@@ -155,7 +162,7 @@ Precedence per field: constructor keyword → environment → default.
 | `COGNEE_BROWSER_USE_RECALL` / `recall_enabled` | `true` | Automatic recall before the run |
 | `COGNEE_BROWSER_USE_RECALL_TOP_K` / `recall_top_k` | 5 | Hits injected |
 | `COGNEE_BROWSER_USE_RECALL_MAX_CHARS` / `recall_max_chars` | 6000 | Evidence budget |
-| `COGNEE_BROWSER_USE_RECALL_TIMEOUT_S` / `recall_timeout_s` | 8 | Automatic recall deadline |
+| `COGNEE_BROWSER_USE_RECALL_TIMEOUT_S` / `recall_timeout_s` | 8 | Deadline over the whole recall (one request; a scope with nothing stored answers 404 and reads as empty) |
 | `COGNEE_BROWSER_USE_CAPTURE` / `capture_enabled` | `true` | Final-outcome capture |
 | `COGNEE_BROWSER_USE_REMEMBER_TOOL` / `remember_tool_enabled` | `false` | Expose `cognee_remember` to the model |
 | `COGNEE_BROWSER_USE_MAX_REMEMBER_CALLS` / `max_remember_calls_per_run` | 3 | New documents `cognee_remember` may create per run (each is a cognify pass); deduplicated repeats are free and the final-outcome record is not counted |
@@ -165,8 +172,9 @@ Precedence per field: constructor keyword → environment → default.
 
 Reads retry once within their deadline; writes are never retried automatically. One
 deadline covers headers and body, so a stalled response cannot hold a tool call or
-`execute()` open. A write that times out stays `unknown` until a status check finds (or
-does not find) its document.
+`execute()` open, and a listing walk is bounded to 30 seconds on top of its per-page
+timeout. A write that times out stays `unknown` until a status check finds (or does not
+find) its document.
 
 ## Development
 

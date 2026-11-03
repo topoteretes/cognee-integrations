@@ -85,7 +85,24 @@ async def test_recall_on_unknown_dataset_is_empty_not_unscoped(fake):
         run = memory.new_run(task="anything", scope=SCOPE)
         context = await run.recall_context()
         assert context.status == "empty"
-        assert not [c for c in fake.calls if c["path"] == "/api/v1/recall"]
+        # One scoped request that 404s; no dataset listing, and never an unscoped retry.
+        recalls = [c for c in fake.calls if c["path"] == "/api/v1/recall"]
+        assert [c["body"]["datasets"] for c in recalls] == [[SCOPE.dataset_name()]]
+        assert not [c for c in fake.calls if c["path"] == "/api/v1/datasets"]
+
+
+async def test_recall_deadline_covers_the_whole_lookup(fake):
+    async def slow(**_):
+        await asyncio.sleep(5)
+
+    fake.overrides["POST /api/v1/recall"] = slow
+    async with make_memory(fake, recall_timeout_s=0.2) as memory:
+        run = memory.new_run(task="anything", scope=SCOPE)
+        started = asyncio.get_running_loop().time()
+        context = await run.recall_context()
+        elapsed = asyncio.get_running_loop().time() - started
+    assert context.status == "unavailable"
+    assert elapsed < 2.0
 
 
 async def test_execute_composes_hooks_captures_and_returns_history(fake):
@@ -448,7 +465,7 @@ async def test_exhausted_listing_is_never_read_as_absence(fake):
         memory.store.update(receipt.record_id, data_id=fake.data[0]["id"])
         result = await memory.forget_record(receipt.record_id, scope=SCOPE)
         assert result["verified"] is False
-        assert "verification cap" in result["message"]
+        assert "incomplete" in result["message"] and "document cap" in result["message"]
         assert memory.store.get(receipt.record_id).status != ReceiptStatus.DELETED
 
 
@@ -466,3 +483,112 @@ async def test_dataset_pipeline_error_is_not_a_terminal_document_failure(fake):
         fake.pipeline = "DATASET_PROCESSING_COMPLETED"
         assert (await memory.record_status(receipt.record_id)).status == ReceiptStatus.READY
         assert memory.store.get(receipt.record_id).error is None
+
+
+async def test_cancel_during_capture_after_success_propagates(fake):
+    """A cancel that lands while the outcome is being written is not swallowed."""
+
+    async def slow_remember(**_):
+        await asyncio.sleep(30)
+
+    fake.overrides["POST /api/v1/remember"] = slow_remember
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        task = asyncio.create_task(run.execute(FakeAgent(steps=1)))
+        await asyncio.sleep(0.1)  # agent.run has returned; the remember call is in flight
+        assert [c for c in fake.calls if c["path"] == "/api/v1/remember"]
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert run.status.capture == "unknown"
+        assert "cancelled" in run.status.capture_error
+        receipt = memory.store.get(run.status.receipts[0].record_id)
+        assert receipt.status == ReceiptStatus.UNKNOWN
+
+        # The same through asyncio.timeout(): the caller gets its TimeoutError.
+        other = memory.new_run(task="t2", scope=SCOPE)
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.1):
+                await other.execute(FakeAgent(steps=1))
+        assert other.status.capture == "unknown"
+
+
+async def test_unknown_write_never_blocks_the_same_content_again(fake):
+    """A timed-out or lost write is not "live": the content is uploaded again later."""
+    import httpx
+
+    def slow(**_):
+        raise httpx.ReadTimeout("slow")
+
+    fake.overrides["POST /api/v1/remember"] = slow
+    async with make_memory(fake, remember_tool_enabled=True) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        first = await run.remember_observation(content="Supplier B minimum order is 50 units")
+        assert first.status == ReceiptStatus.UNKNOWN
+        del fake.overrides["POST /api/v1/remember"]
+        second = await run.remember_observation(content="Supplier B minimum order is 50 units")
+        assert second.record_id != first.record_id
+        assert second.status == ReceiptStatus.ACCEPTED
+        assert second.upload_name == first.upload_name  # content-derived: one document server-side
+        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 2
+        # A receipt that reconciliation moved to unknown (never appeared) is not live either.
+        memory.store.update(second.record_id, status=ReceiptStatus.UNKNOWN)
+        assert memory.store.find_live_by_hash(SCOPE.key, second.content_hash) is None
+        third = await run.remember_observation(content="Supplier B minimum order is 50 units")
+        assert third.record_id not in {first.record_id, second.record_id}
+        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 3
+
+
+async def test_receipt_store_batches_reconcile_updates_and_runs_off_loop(fake, tmp_path):
+    from cognee_integration_browser_use import ReceiptStore
+
+    store = ReceiptStore(str(tmp_path / "receipts.db"))
+    assert store._db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert store._db.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
+    a = store.create(
+        record_id="rec_a",
+        run_id="r",
+        scope_key="s",
+        dataset="d",
+        upload_name="ua",
+        content_hash="ha",
+        kind="observation",
+    )
+    b = store.create(
+        record_id="rec_b",
+        run_id="r",
+        scope_key="s",
+        dataset="d",
+        upload_name="ub",
+        content_hash="hb",
+        kind="observation",
+    )
+    refreshed = store.update_many(
+        [
+            (a.record_id, {"status": ReceiptStatus.READY, "data_id": None, "error": None}),
+            (b.record_id, {"error": "checked"}),
+            ("rec_missing", {"error": "x"}),
+        ]
+    )
+    assert [r.status if r else None for r in refreshed] == [
+        ReceiptStatus.READY,
+        ReceiptStatus.ACCEPTED,
+        None,
+    ]
+    assert refreshed[1].error == "checked"
+    store.close()
+
+    # Through the memory: store calls run on its worker thread, not the event loop.
+    import threading
+
+    seen: set[str] = set()
+    async with make_memory(fake) as memory:
+        original = memory.store.get
+
+        def spy(record_id):
+            seen.add(threading.current_thread().name)
+            return original(record_id)
+
+        memory.store.get = spy  # type: ignore[method-assign]
+        await memory.record_status("rec_nope")
+    assert seen and all(name.startswith("cognee-receipts") for name in seen)

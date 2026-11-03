@@ -63,3 +63,23 @@ follows [Semantic Versioning](https://semver.org/).
 - The request deadline is enforced over the whole exchange (`httpx.Timeout` bounds each
   read separately), so a response that trickles in can no longer hold a tool call or
   `execute()` open past the configured timeout.
+- A cancel that arrived while the outcome record was being written after a successful
+  `agent.run` was caught in `execute()`'s cleanup and the call returned normally, so
+  `task.cancel()`, `asyncio.timeout()` and a failing `TaskGroup` sibling had no effect.
+  The `CancelledError` now propagates; the receipt is marked `unknown` ("cancelled while
+  the write was in flight") and `run.status.capture` reports it.
+- `unknown` receipts (a timed-out, cancelled or never-listed write) counted as live for
+  deduplication, so one network blip could keep the same finding out of memory forever on a
+  durable receipt store. Dedupe now only honours `accepted`, `indexing` and `ready`
+  receipts; the content is uploaded again and the server keeps one document per content.
+- Automatic recall looked the dataset up with a full dataset listing before the recall
+  deadline started (about 20 s worst case against the documented 8 s) and repeated that on
+  every uncached scope. The lookup is gone: one scoped recall request inside one deadline,
+  with the backend's 404 read as "nothing stored yet".
+- A listing walk had only a per-page timeout. It now also has one overall deadline
+  (30 s), reports why it stopped (page cap or deadline) in the receipt error and the
+  `forget_record()` message, and keeps only the rows it was asked for.
+- Receipt-store calls ran synchronously on the event loop, one commit (and fsync) per
+  receipt during `reconcile()`. They now run on a worker thread owned by
+  `CogneeBrowserMemory`, `reconcile()` applies its updates in one transaction, and the
+  durable store uses `synchronous=NORMAL` under WAL.

@@ -20,15 +20,15 @@ already-constructed agent's system prompt.
 from __future__ import annotations
 
 import asyncio
+import functools
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, TypeVar
 
 from .config import CogneeBrowserMemoryConfig, ConfigError, MemoryScope, resolve_config
 from .hooks import StepHook, compose_hooks, observe_agent_step
 from .http_backend import (
-    LIST_PAGE_MAX,
-    LIST_PAGE_SIZE,
     CogneeError,
     CogneeHttpBackend,
     DataItemListing,
@@ -55,6 +55,7 @@ _INDEXING_GRACE_S = 15 * 60
 
 Validator = Callable[[Any], Any]
 Summarizer = Callable[[Any], Any]
+T = TypeVar("T")
 
 STATIC_INSTRUCTION = (
     "You have a memory of earlier browser research for this task's scope. "
@@ -88,7 +89,11 @@ class CogneeBrowserMemory:
         self._owns_backend = backend is None
         self.store = store or ReceiptStore(config.receipts_path)
         self._dataset_ids: dict[str, str] = {}
-        self._known_datasets: set[str] = set()
+        # One worker thread owns every receipt-store call made from async code:
+        # SQLite commits (and their fsyncs on a durable path) never run on the
+        # agent's event loop, and FIFO ordering keeps a cancelled write's
+        # follow-up update behind its insert.
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cognee-receipts")
 
     @property
     def backend(self) -> CogneeHttpBackend:
@@ -110,7 +115,13 @@ class CogneeBrowserMemory:
     async def close(self) -> None:
         if self._backend is not None and self._owns_backend:
             await self._backend.close()
-        self.store.close()
+        await self._db(self.store.close)
+        self._executor.shutdown(wait=False)
+
+    async def _db(self, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        """Run one receipt-store call on the store's worker thread."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, functools.partial(fn, *args, **kwargs))
 
     # -- scope / dataset -----------------------------------------------------
 
@@ -137,12 +148,10 @@ class CogneeBrowserMemory:
         if create:
             created = await self.backend.ensure_dataset(dataset, timeout_s=timeout)
             self._dataset_ids[dataset] = str(created["id"])
-            self._known_datasets.add(dataset)
             return self._dataset_ids[dataset]
         for row in await self.backend.list_datasets(timeout_s=timeout):
             if row.get("name") == dataset and isinstance(row.get("id"), str):
                 self._dataset_ids[dataset] = row["id"]
-                self._known_datasets.add(dataset)
                 return row["id"]
         return None
 
@@ -186,7 +195,7 @@ class CogneeBrowserMemory:
         return {
             "backend_reachable": reachable,
             "backend_status": status,
-            "receipts": self.store.count_by_status(),
+            "receipts": await self._db(self.store.count_by_status),
             "receipts_durable": self.store.durable,
             "problems": problems,
         }
@@ -194,7 +203,12 @@ class CogneeBrowserMemory:
     # -- receipts / status / deletion (host side) -----------------------------
 
     async def record_status(self, record_id: str) -> Optional[Receipt]:
-        receipt = self.store.get(record_id)
+        """The receipt, refreshed from the backend while it is still pending.
+
+        Each refresh is one status call plus a listing walk, so a host that polls
+        should space its calls out (seconds, not milliseconds) rather than spin.
+        """
+        receipt = await self._db(self.store.get, record_id)
         if receipt is None:
             return None
         if receipt.status in PENDING_STATUSES:
@@ -205,7 +219,7 @@ class CogneeBrowserMemory:
         """Refresh every pending receipt with one status call and one listing walk per dataset."""
         counts: dict[str, int] = {}
         by_dataset: dict[str, list[Receipt]] = {}
-        for receipt in self.store.list_pending(limit):
+        for receipt in await self._db(self.store.list_pending, limit):
             by_dataset.setdefault(receipt.dataset, []).append(receipt)
         for dataset, receipts in by_dataset.items():
             for updated in await self._refresh_many(dataset, receipts):
@@ -216,17 +230,21 @@ class CogneeBrowserMemory:
         return (await self._refresh_many(receipt.dataset, [receipt]))[0]
 
     async def _refresh_many(self, dataset: str, receipts: list[Receipt]) -> list[Receipt]:
-        """Resolve receipts of one dataset from a shared status and listing."""
+        """Resolve receipts of one dataset from a shared status and listing.
+
+        All receipt updates land in one store transaction.
+        """
         timeout = self.config.status_timeout_s
+        updates: list[tuple[str, dict[str, object]]]
         try:
             dataset_id = next((r.dataset_id for r in receipts if r.dataset_id), None)
             dataset_id = dataset_id or await self._dataset_id(dataset, create=False)
             if not dataset_id:
-                return [
-                    self.store.update(r.record_id, error="dataset does not exist on the backend")
-                    or r
+                updates = [
+                    (r.record_id, {"error": "dataset does not exist on the backend"})
                     for r in receipts
                 ]
+                return await self._apply(receipts, updates)
             pipeline = await self.backend.dataset_status(dataset_id, timeout_s=timeout)
             wanted = {r.upload_name for r in receipts if not r.data_id}
             listing = (
@@ -235,11 +253,11 @@ class CogneeBrowserMemory:
                 else DataItemListing(complete=True)
             )
         except CogneeError as exc:
-            return [
-                self.store.update(r.record_id, error=f"last check failed: {exc.describe()}") or r
-                for r in receipts
+            updates = [
+                (r.record_id, {"error": f"last check failed: {exc.describe()}"}) for r in receipts
             ]
-        out: list[Receipt] = []
+            return await self._apply(receipts, updates)
+        updates = []
         for receipt in receipts:
             lookup = (
                 DataItemLookup(status="found", item={"id": receipt.data_id})
@@ -247,17 +265,24 @@ class CogneeBrowserMemory:
                 else listing.lookup(receipt.upload_name)
             )
             status, error = _resolve_status(receipt, pipeline, lookup)
-            out.append(
-                self.store.update(
+            updates.append(
+                (
                     receipt.record_id,
-                    status=status,
-                    dataset_id=dataset_id,
-                    data_id=receipt.data_id or lookup.data_id,
-                    error=error,
+                    {
+                        "status": status,
+                        "dataset_id": dataset_id,
+                        "data_id": receipt.data_id or lookup.data_id,
+                        "error": error,
+                    },
                 )
-                or receipt
             )
-        return out
+        return await self._apply(receipts, updates)
+
+    async def _apply(
+        self, receipts: list[Receipt], updates: list[tuple[str, dict[str, object]]]
+    ) -> list[Receipt]:
+        refreshed = await self._db(self.store.update_many, updates)
+        return [new or old for new, old in zip(refreshed, receipts)]
 
     async def forget_record(
         self, record_id: str, *, scope: Optional[MemoryScope] = None
@@ -267,7 +292,7 @@ class CogneeBrowserMemory:
         ``scope`` (when given) must match the receipt's scope key; a library caller
         builds its own confirmation flow around this. Broad forgetting is not exposed.
         """
-        receipt = self.store.get(record_id)
+        receipt = await self._db(self.store.get, record_id)
         if receipt is None:
             return {"record_id": record_id, "verified": False, "status": "not_found"}
         if scope is not None and scope.key != receipt.scope_key:
@@ -284,7 +309,9 @@ class CogneeBrowserMemory:
             }
         if not current.data_id:
             if current.status == ReceiptStatus.FAILED:
-                self.store.update(record_id, status=ReceiptStatus.DELETED, error=None)
+                await self._db(
+                    self.store.update, record_id, status=ReceiptStatus.DELETED, error=None
+                )
                 return {
                     "record_id": record_id,
                     "verified": True,
@@ -307,28 +334,27 @@ class CogneeBrowserMemory:
                 current.dataset_id, current.upload_name, timeout_s=self.config.status_timeout_s
             )
             if still.status == "found" and still.data_id == current.data_id:
-                self.store.update(
-                    record_id, error="forget reported success but the document is still listed"
+                await self._db(
+                    self.store.update,
+                    record_id,
+                    error="forget reported success but the document is still listed",
                 )
                 return {"record_id": record_id, "verified": False, "status": current.status.value}
             if still.status == "exhausted":
                 # The forget endpoint says success for unknown ids, so only a complete
                 # listing proves anything. Keep the receipt live and say so.
-                message = (
-                    "forget reported success but the dataset listing is larger than the "
-                    f"{LIST_PAGE_MAX * LIST_PAGE_SIZE}-document verification cap"
-                )
-                self.store.update(record_id, error=message)
+                message = f"forget reported success but verification is incomplete: {still.reason}"
+                await self._db(self.store.update, record_id, error=message)
                 return {
                     "record_id": record_id,
                     "verified": False,
                     "status": current.status.value,
                     "message": message,
                 }
-            self.store.update(record_id, status=ReceiptStatus.DELETED, error=None)
+            await self._db(self.store.update, record_id, status=ReceiptStatus.DELETED, error=None)
             return {"record_id": record_id, "verified": True, "status": "deleted"}
         except CogneeError as exc:
-            self.store.update(record_id, error=f"delete failed: {exc.describe()}")
+            await self._db(self.store.update, record_id, error=f"delete failed: {exc.describe()}")
             return {
                 "record_id": record_id,
                 "verified": False,
@@ -339,41 +365,59 @@ class CogneeBrowserMemory:
     # -- write path shared by finalize and the remember tool ------------------
 
     async def _write(self, record: MemoryRecord, dataset: str) -> Receipt:
-        duplicate = self.store.find_live_by_hash(record.scope_key, record.content_hash)
+        duplicate = await self._db(
+            self.store.find_live_by_hash, record.scope_key, record.content_hash
+        )
         if duplicate:
             return duplicate
-        receipt = self.store.create(
-            record_id=record.record_id,
-            run_id=record.run_id,
-            scope_key=record.scope_key,
-            dataset=dataset,
-            upload_name=record.upload_name,
-            content_hash=record.content_hash,
-            kind=record.kind.value,
-        )
         try:
+            receipt = await self._db(
+                self.store.create,
+                record_id=record.record_id,
+                run_id=record.run_id,
+                scope_key=record.scope_key,
+                dataset=dataset,
+                upload_name=record.upload_name,
+                content_hash=record.content_hash,
+                kind=record.kind.value,
+            )
             response = await self.backend.remember(
                 dataset=dataset,
                 filename=f"{record.upload_name}.txt",
                 text=record.to_text(),
                 timeout_s=self.config.write_timeout_s,
             )
-            dataset_id = (
-                response.get("dataset_id") if isinstance(response.get("dataset_id"), str) else None
-            )
-            if dataset_id:
-                self._dataset_ids[dataset] = dataset_id
-            return (
-                self.store.update(
-                    record.record_id, status=ReceiptStatus.ACCEPTED, dataset_id=dataset_id
+        except asyncio.CancelledError:
+            # The upload may or may not have landed. The store's single worker
+            # thread runs this update after the insert whatever state the insert
+            # was in when the cancel arrived, and the shield lets it finish.
+            await asyncio.shield(
+                self._db(
+                    self.store.update,
+                    record.record_id,
+                    status=ReceiptStatus.UNKNOWN,
+                    error="cancelled while the write was in flight",
                 )
-                or receipt
             )
+            raise
         except CogneeError as exc:
             status = ReceiptStatus.UNKNOWN if exc.outcome_uncertain else ReceiptStatus.FAILED
-            return (
-                self.store.update(record.record_id, status=status, error=exc.describe()) or receipt
+            updated = await self._db(
+                self.store.update, record.record_id, status=status, error=exc.describe()
             )
+            return updated or receipt
+        dataset_id = (
+            response.get("dataset_id") if isinstance(response.get("dataset_id"), str) else None
+        )
+        if dataset_id:
+            self._dataset_ids[dataset] = dataset_id
+        updated = await self._db(
+            self.store.update,
+            record.record_id,
+            status=ReceiptStatus.ACCEPTED,
+            dataset_id=dataset_id,
+        )
+        return updated or receipt
 
 
 class MemoryRun:
@@ -428,20 +472,20 @@ class MemoryRun:
         if not text:
             return RecallContext(status="empty", query=text, datasets=datasets)
         try:
-            dataset_id = await self.memory._dataset_id(self.dataset, create=False)
-            if dataset_id is None:
-                context = RecallContext(status="empty", query=text, datasets=datasets)
-            else:
-                items = await asyncio.wait_for(
-                    self.memory.backend.recall(
-                        query=text,
-                        datasets=datasets,
-                        top_k=self.config.recall_top_k,
-                        timeout_s=self.config.recall_timeout_s,
-                    ),
-                    timeout=self.config.recall_timeout_s + 1.0,
-                )
-                context = self._bound(text, datasets, items)
+            # One request inside one deadline. A scope with nothing stored yet
+            # answers 404 (dataset not found, or no searchable memory), which is
+            # "empty" below; looking the dataset up first would cost a full
+            # dataset listing outside the deadline on every uncached scope.
+            items = await asyncio.wait_for(
+                self.memory.backend.recall(
+                    query=text,
+                    datasets=datasets,
+                    top_k=self.config.recall_top_k,
+                    timeout_s=self.config.recall_timeout_s,
+                ),
+                timeout=self.config.recall_timeout_s + 1.0,
+            )
+            context = self._bound(text, datasets, items)
         except CogneeError as exc:
             if exc.is_no_searchable_memory or exc.is_not_found:
                 context = RecallContext(status="empty", query=text, datasets=datasets)
@@ -626,6 +670,17 @@ class MemoryRun:
             if receipt.status in (ReceiptStatus.FAILED, ReceiptStatus.UNKNOWN):
                 self.status.capture_error = receipt.error
             return receipt
+        except asyncio.CancelledError:
+            # Report truthfully what the cancel interrupted, then let it propagate.
+            receipt = await asyncio.shield(self.memory._db(self.memory.store.get, record.record_id))
+            if receipt is not None:
+                self.status.receipts.append(receipt)
+                self.status.capture = receipt.status.value
+                self.status.capture_error = receipt.error
+            else:
+                self.status.capture = "skipped"
+                self.status.capture_error = "cancelled before capture could finish"
+            raise
         except Exception as exc:  # noqa: BLE001 - never replace the browser result
             self.status.capture = "error"
             self.status.capture_error = f"{type(exc).__name__}: {exc}"[:400]
@@ -721,7 +776,11 @@ class MemoryRun:
         """Run the agent with composed hooks; capture in ``finally``; never mask the primary result.
 
         Returns the agent's own history. The original exception or cancellation
-        propagates unchanged; memory errors live on ``self.status``.
+        propagates unchanged; memory errors live on ``self.status``. A cancel that
+        arrives while the outcome is being written (after ``agent.run`` returned)
+        is honoured too: capture is marked ``unknown`` or ``skipped`` and the
+        ``CancelledError`` propagates, so ``task.cancel()``, ``asyncio.timeout()``
+        and a failing ``TaskGroup`` sibling behave as the caller expects.
         """
         start = compose_hooks(on_step_start, None)
         end = compose_hooks(on_step_end, self.observe_step)
@@ -755,10 +814,23 @@ class MemoryRun:
                     )
                 else:
                     await self.finalize(history, summary=summary, validator=validator, error=error)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except asyncio.TimeoutError:
+                # Only the bounded cleanup of an interrupted run can time out here.
                 if self.status.capture == "not_run":
                     self.status.capture = "skipped"
                     self.status.capture_error = "cancelled before capture could finish"
+            except asyncio.CancelledError:
+                if self.status.capture == "not_run":
+                    self.status.capture = "skipped"
+                    self.status.capture_error = "cancelled before capture could finish"
+                if not interrupted:
+                    # The run itself succeeded or failed on its own; this cancel is
+                    # new and belongs to the caller. Swallowing it would make
+                    # ``execute()`` return normally after ``task.cancel()``.
+                    raise
+                # ``interrupted``: the original CancelledError is already propagating
+                # from the ``except`` above; a second one during the shielded cleanup
+                # adds nothing.
             except Exception as exc:  # noqa: BLE001
                 self.status.capture = "error"
                 self.status.capture_error = f"{type(exc).__name__}: {exc}"[:400]
@@ -787,10 +859,7 @@ def _resolve_status(
             return (ReceiptStatus.UNKNOWN if past_grace else ReceiptStatus.INDEXING), reason
         return ReceiptStatus.INDEXING, None
     if lookup.status == "exhausted":
-        reason = (
-            f"dataset listing exceeds the {LIST_PAGE_MAX * LIST_PAGE_SIZE}-document cap; "
-            "the document could not be looked up"
-        )
+        reason = f"{lookup.reason or 'listing incomplete'}; the document could not be looked up"
         keep = (
             receipt.status if receipt.status != ReceiptStatus.ACCEPTED else ReceiptStatus.INDEXING
         )

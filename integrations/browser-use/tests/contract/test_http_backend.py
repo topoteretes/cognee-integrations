@@ -194,9 +194,27 @@ async def test_lookup_distinguishes_exhausted_from_absent():
         assert listing.complete is False and listing.pages == 3 and len(listing.items) == 300
         assert listing.lookup("other-5").status == "found"
         assert listing.lookup("nope").status == "exhausted"
-        # A wanted set stops the walk early; completeness is still reported truthfully.
+        assert "document cap" in lookup.reason and "document cap" in listing.lookup("nope").reason
+        # A wanted set stops the walk early and keeps only the wanted rows;
+        # completeness is still reported truthfully.
         early = await client.list_data_items(DATASET_ID, wanted={"other-150"}, max_pages=10)
         assert early.pages == 2 and early.complete is False
+        assert set(early.items) == {"other-150"}
+
+
+async def test_listing_walk_has_one_overall_deadline():
+    async def slow_pages(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.15)
+        return _endless_pages(request)
+
+    async with backend(httpx.MockTransport(slow_pages)) as client:
+        started = asyncio.get_running_loop().time()
+        listing = await client.list_data_items(DATASET_ID, deadline_s=0.4)
+        elapsed = asyncio.get_running_loop().time() - started
+    assert listing.complete is False and 1 <= listing.pages <= 3
+    assert "deadline" in listing.reason
+    assert listing.lookup("nope").status == "exhausted"
+    assert elapsed < 2.0
 
 
 async def test_listing_walks_to_the_short_page_once():

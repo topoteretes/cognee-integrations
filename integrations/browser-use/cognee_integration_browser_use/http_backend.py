@@ -36,6 +36,9 @@ LIST_PAGE_SIZE = 100
 #: Safety cap on one listing walk (50,000 documents). Past it a lookup reports
 #: ``exhausted`` rather than pretending the rest of the dataset is empty.
 LIST_PAGE_MAX = 500
+#: One deadline over a whole listing walk, on top of the per-page timeout. A walk
+#: that runs out of time also reports ``exhausted``.
+LIST_WALK_TIMEOUT_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,8 @@ class DataItemLookup:
 
     status: Literal["found", "absent", "exhausted"]
     item: Optional[dict[str, Any]] = None
+    #: Why an ``exhausted`` walk stopped (page cap or deadline); empty otherwise.
+    reason: str = ""
 
     @property
     def data_id(self) -> Optional[str]:
@@ -58,12 +63,17 @@ class DataItemListing:
     items: dict[str, dict[str, Any]] = field(default_factory=dict)
     complete: bool = False
     pages: int = 0
+    #: Why an incomplete walk stopped (page cap or deadline); empty when complete
+    #: or when it stopped early because every wanted name had been seen.
+    reason: str = ""
 
     def lookup(self, name: str) -> DataItemLookup:
         item = self.items.get(name)
         if item is not None:
             return DataItemLookup(status="found", item=item)
-        return DataItemLookup(status="absent" if self.complete else "exhausted")
+        if self.complete:
+            return DataItemLookup(status="absent")
+        return DataItemLookup(status="exhausted", reason=self.reason)
 
 
 class CogneeError(Exception):
@@ -295,20 +305,22 @@ class CogneeHttpBackend:
         *,
         max_pages: int = LIST_PAGE_MAX,
         timeout_s: Optional[float] = None,
+        deadline_s: float = LIST_WALK_TIMEOUT_S,
     ) -> DataItemLookup:
         """Find one document by upload name. ``exhausted`` is not ``absent``.
 
         The listing is walked until a short page proves the end. Hitting
-        ``max_pages`` first means nothing is known about the remainder, and
-        callers must not read that as "not there".
+        ``max_pages`` or ``deadline_s`` first means nothing is known about the
+        remainder, and callers must not read that as "not there".
         """
         listing = await self.list_data_items(
-            dataset_id, wanted={name}, max_pages=max_pages, timeout_s=timeout_s
+            dataset_id,
+            wanted={name},
+            max_pages=max_pages,
+            timeout_s=timeout_s,
+            deadline_s=deadline_s,
         )
-        item = listing.items.get(name)
-        if item is not None:
-            return DataItemLookup(status="found", item=item)
-        return DataItemLookup(status="absent" if listing.complete else "exhausted")
+        return listing.lookup(name)
 
     async def list_data_items(
         self,
@@ -317,29 +329,65 @@ class CogneeHttpBackend:
         wanted: Optional[set[str]] = None,
         max_pages: int = LIST_PAGE_MAX,
         timeout_s: Optional[float] = None,
+        deadline_s: float = LIST_WALK_TIMEOUT_S,
     ) -> DataItemListing:
         """Page a dataset's documents once into ``{name: row}``.
 
-        With ``wanted`` the walk stops as soon as every wanted name has been
-        seen; ``complete`` then only says whether the walk reached a short page.
+        ``timeout_s`` bounds each page, ``deadline_s`` the whole walk. With
+        ``wanted`` only those rows are kept and the walk stops as soon as every
+        wanted name has been seen; ``complete`` then only says whether the walk
+        reached a short page.
         """
         limit = LIST_PAGE_SIZE
+        per_page = timeout_s if timeout_s is not None else self._request_timeout_s
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + deadline_s
         items: dict[str, dict[str, Any]] = {}
         pages = 0
+        out_of_time = f"listing walk exceeded its {deadline_s:.0f}s deadline"
         for page in range(max_pages):
-            rows = await self.list_dataset_data(
-                dataset_id, limit=limit, offset=page * limit, timeout_s=timeout_s
-            )
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return DataItemListing(
+                    items=items,
+                    complete=False,
+                    pages=pages,
+                    reason=f"{out_of_time} after {pages} pages",
+                )
+            try:
+                rows = await self.list_dataset_data(
+                    dataset_id,
+                    limit=limit,
+                    offset=page * limit,
+                    timeout_s=min(per_page, remaining),
+                )
+            except CogneeError as exc:
+                if exc.kind == "timeout" and pages > 0 and loop.time() >= deadline:
+                    return DataItemListing(
+                        items=items,
+                        complete=False,
+                        pages=pages,
+                        reason=f"{out_of_time} after {pages} pages",
+                    )
+                raise
             pages += 1
             for row in rows:
                 name = row.get("name")
-                if isinstance(name, str) and name not in items:
-                    items[name] = row
+                if not isinstance(name, str) or name in items:
+                    continue
+                if wanted is not None and name not in wanted:
+                    continue
+                items[name] = row
             if len(rows) < limit:
                 return DataItemListing(items=items, complete=True, pages=pages)
             if wanted is not None and wanted <= items.keys():
                 return DataItemListing(items=items, complete=False, pages=pages)
-        return DataItemListing(items=items, complete=False, pages=pages)
+        return DataItemListing(
+            items=items,
+            complete=False,
+            pages=pages,
+            reason=f"dataset listing exceeds the {max_pages * LIST_PAGE_SIZE}-document cap",
+        )
 
     # -- transport ------------------------------------------------------------
 

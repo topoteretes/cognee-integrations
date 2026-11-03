@@ -5,6 +5,10 @@ between remote acceptance and local acknowledgement leaves a reconcilable row.
 ``":memory:"`` (the default when no path is configured) keeps nothing across
 processes and says so through ``durable = False``: never claim durable capture
 from in-memory mode.
+
+The store is synchronous and thread-safe (one connection behind a lock).
+``CogneeBrowserMemory`` runs it on a dedicated worker thread so commits never
+block the agent's event loop; host code may call it directly.
 """
 
 from __future__ import annotations
@@ -58,6 +62,9 @@ class ReceiptStore:
         self._db.row_factory = sqlite3.Row
         if self.durable:
             self._db.execute("PRAGMA journal_mode = WAL")
+            # Under WAL, NORMAL still survives a process crash (the WAL is synced
+            # at checkpoints); it stops every commit from paying an fsync.
+            self._db.execute("PRAGMA synchronous = NORMAL")
         self._db.executescript(_SCHEMA)
 
     def close(self) -> None:
@@ -127,15 +134,26 @@ class ReceiptStore:
         return self._row(row, self.durable) if row else None
 
     def find_live_by_hash(self, scope_key: str, content_hash: str) -> Optional[Receipt]:
+        """The receipt that makes a write with this content redundant, if any.
+
+        Only a write known to have landed counts (``accepted``, ``indexing``,
+        ``ready``). ``failed`` and ``deleted`` are gone, and ``unknown`` means the
+        write timed out, was cancelled, or its document never appeared: none of
+        those may block the same content from being stored again. Re-uploading is
+        safe because the upload name is content-derived and the server keeps one
+        document per content.
+        """
         with self._lock:
             row = self._db.execute(
                 "SELECT * FROM receipts WHERE scope_key = ? AND content_hash = ? "
-                "AND status NOT IN ('failed', 'deleted') ORDER BY created_at DESC LIMIT 1",
+                "AND status IN ('accepted', 'indexing', 'ready') "
+                "ORDER BY created_at DESC LIMIT 1",
                 (scope_key, content_hash),
             ).fetchone()
         return self._row(row, self.durable) if row else None
 
-    def update(self, record_id: str, **fields: object) -> Optional[Receipt]:
+    @staticmethod
+    def _assignment(fields: dict[str, object]) -> tuple[str, list[object]]:
         allowed = {"status", "dataset_id", "data_id", "error"}
         unknown = set(fields) - allowed
         if unknown:
@@ -145,11 +163,39 @@ class ReceiptStore:
         for key, value in fields.items():
             sets.append(f"{key} = ?")
             params.append(value.value if isinstance(value, ReceiptStatus) else value)
-        params.append(record_id)
+        return ", ".join(sets), params
+
+    def update(self, record_id: str, **fields: object) -> Optional[Receipt]:
+        assignment, params = self._assignment(fields)
         with self._lock:
-            self._db.execute(f"UPDATE receipts SET {', '.join(sets)} WHERE record_id = ?", params)
+            self._db.execute(
+                f"UPDATE receipts SET {assignment} WHERE record_id = ?", [*params, record_id]
+            )
             self._db.commit()
-        return self.get(record_id)
+            row = self._db.execute(
+                "SELECT * FROM receipts WHERE record_id = ?", (record_id,)
+            ).fetchone()
+        return self._row(row, self.durable) if row else None
+
+    def update_many(self, updates: list[tuple[str, dict[str, object]]]) -> list[Optional[Receipt]]:
+        """Apply several updates in one transaction (one commit, one fsync at most).
+
+        Returns the refreshed receipts in input order (``None`` for unknown ids).
+        """
+        statements = [(record_id, *self._assignment(fields)) for record_id, fields in updates]
+        out: list[Optional[Receipt]] = []
+        with self._lock:
+            for record_id, assignment, params in statements:
+                self._db.execute(
+                    f"UPDATE receipts SET {assignment} WHERE record_id = ?", [*params, record_id]
+                )
+            self._db.commit()
+            for record_id, _, _ in statements:
+                row = self._db.execute(
+                    "SELECT * FROM receipts WHERE record_id = ?", (record_id,)
+                ).fetchone()
+                out.append(self._row(row, self.durable) if row else None)
+        return out
 
     def list(self, *, status: Optional[ReceiptStatus] = None, limit: int = 100) -> list[Receipt]:
         with self._lock:

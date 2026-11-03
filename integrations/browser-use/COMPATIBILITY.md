@@ -30,9 +30,10 @@ Observed 1.6.5 behaviours the adapter is built around:
   names avoid.
 - `POST /forget` answers `status: "success"` even for an unknown `dataId`; deletion is
   verified by re-listing. A deleted document stops appearing in `CHUNKS` recall at once.
-- `POST /recall` naming a dataset that does not exist answers HTTP 404; the adapter treats
-  an unknown scope dataset as "nothing stored yet" and never retries unscoped. A
-  completion search on an emptied dataset answers 404 `NoDataError`, also reported as empty.
+- `POST /recall` naming a dataset that does not exist answers HTTP 404; the adapter sends
+  the scoped request straight away (no dataset lookup first), treats that 404 as "nothing
+  stored yet" and never retries unscoped. A completion search on an emptied dataset answers
+  404 `NoDataError`, also reported as empty.
 
 ## Browser Use surfaces
 
@@ -60,4 +61,6 @@ Observed 1.6.5 behaviours the adapter is built around:
   one cognee 1.6.5 exposes) plus the document listing. `ready` therefore means "listed and
   the dataset's latest run completed"; a dataset-level error never marks a document
   `failed`, it keeps the receipt `indexing` with the reason until the grace period moves it
-  to `unknown`.
+  to `unknown`. An `unknown` receipt (timed out, cancelled or never listed) does not count
+  as stored: identical content is uploaded again, and the server's one-document-per-content
+  behaviour keeps that idempotent.
