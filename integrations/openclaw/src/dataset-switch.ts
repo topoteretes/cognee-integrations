@@ -25,8 +25,12 @@
 //
 // Recall mode (SDK-1393): without an override, graph recall is "auto" — it
 // names no dataset and a cognee >= 1.6.6 server routes the query (best effort:
-// the best-matching dataset when it can, otherwise every readable dataset).
-// A switch restricts recall to the new dataset; switching to the dataset
+// the best-matching dataset when it can, otherwise every readable dataset) —
+// unless the config names a non-default `datasetName`: an explicitly
+// configured dataset scopes the agent's memory, so it pins recall (the
+// hook-family rule; "auto" or the default name leaves recall on auto). An
+// override's explicit recall mode wins over that rule in both directions; an
+// override saved before the mode existed stays pinned. A switch restricts recall to the new dataset; switching to the dataset
 // already in use restricts recall to it without a new session (a pin-only
 // override, `sessionSuffix` 1, leaves the session id alone); `action: "auto"`
 // lifts the restriction and keeps the dataset. An older server, a failed
@@ -38,6 +42,7 @@ import type { CogneePluginConfig, DatasetOverride, DatasetOverridesFile, Retired
 import { DATASET_OVERRIDES_PATH, loadDatasetOverrides, saveDatasetOverrides } from "./persistence.js";
 import { MAX_PREVIOUS_DATASETS, MAX_SYNCED_RETIRED, pruneRetired } from "./retired.js";
 import { isMultiScopeEnabled } from "./scope.js";
+import { DEFAULT_DATASET_NAME } from "./config.js";
 import { jsonResult, type MemoryTool, type MemoryToolContext } from "./tools.js";
 
 export { loadDatasetOverrides, saveDatasetOverrides, pruneRetired, MAX_SYNCED_RETIRED, MAX_PREVIOUS_DATASETS };
@@ -61,6 +66,18 @@ export function conversationKeys(ctx: { sessionKey?: string; sessionId?: string 
  */
 export function isValidDatasetName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(name);
+}
+
+/**
+ * True when the config pins recall (SDK-1393): `datasetName` names a dataset
+ * other than the default. Such a user scoped this agent's memory on purpose,
+ * so recall stays on that dataset unless a conversation picks auto. The
+ * default name — and "auto", which config resolution maps to it — leave
+ * recall on auto (the hook-family rule).
+ */
+export function configPinsRecall(cfg: Pick<CogneePluginConfig, "datasetName">): boolean {
+  const name = (cfg.datasetName ?? "").trim();
+  return !!name && name !== DEFAULT_DATASET_NAME && name.toLowerCase() !== "auto";
 }
 
 export function withSessionSuffix(baseSessionId: string, override: DatasetOverride | undefined): string {
@@ -159,28 +176,45 @@ export class DatasetSwitchStore {
     return override;
   }
 
-  /** True when this conversation's graph recall is restricted to its dataset. */
-  recallPinned(ctx: { sessionKey?: string; sessionId?: string } | undefined): boolean {
+  /**
+   * The recall mode this conversation's override chose, if any. An override
+   * saved before the mode existed counts as pinned; no override → undefined
+   * (the config rule applies).
+   */
+  recallMode(ctx: { sessionKey?: string; sessionId?: string } | undefined): "auto" | "pinned" | undefined {
     const o = this.get(ctx);
-    return !!o && o.recall !== "auto";
+    if (!o) return undefined;
+    return o.recall === "auto" ? "auto" : "pinned";
+  }
+
+  /**
+   * True when this conversation's graph recall is restricted to its dataset:
+   * the override's mode, else `pinnedByConfig` (see configPinsRecall).
+   */
+  recallPinned(ctx: { sessionKey?: string; sessionId?: string } | undefined, pinnedByConfig = false): boolean {
+    const mode = this.recallMode(ctx);
+    return mode ? mode === "pinned" : pinnedByConfig;
   }
 
   /**
    * Restrict recall to `dataset` (the one in use) or lift the restriction.
-   * Pinning without an override records a pin-only one (`sessionSuffix` 1:
-   * same session id); unpinning a pin-only override drops it.
+   * Without an override, pinning records a pin-only one (`sessionSuffix` 1:
+   * same session id); unpinning records one (recall "auto") only when the
+   * config pins (`pinnedByConfig`) — it is what lifts the config pin for this
+   * conversation — and is a no-op otherwise. Unpinning a pin-only override
+   * drops it, unless the config pins: it then keeps "auto" instead.
    */
-  setRecall(ctx: { sessionKey?: string; sessionId?: string }, mode: "auto" | "pinned", dataset: string): void {
+  setRecall(ctx: { sessionKey?: string; sessionId?: string }, mode: "auto" | "pinned", dataset: string, pinnedByConfig = false): void {
     const existing = this.get(ctx);
     if (!existing) {
-      if (mode === "auto") return;
+      if (mode === "auto" && !pinnedByConfig) return;
       const now = (this.opts.now ?? (() => new Date()))().toISOString();
-      const pin: DatasetOverride = { dataset, sessionSuffix: 1, switchedAt: now, previous: [], retired: [], recall: "pinned" };
+      const pin: DatasetOverride = { dataset, sessionSuffix: 1, switchedAt: now, previous: [], retired: [], recall: mode };
       for (const k of conversationKeys(ctx)) this.data[k] = pin;
       this.persist();
       return;
     }
-    if (mode === "auto" && existing.sessionSuffix <= 1 && existing.retired.length === 0) {
+    if (mode === "auto" && !pinnedByConfig && existing.sessionSuffix <= 1 && existing.retired.length === 0) {
       this.clear(ctx);
       return;
     }
@@ -235,7 +269,7 @@ export const MemorySwitchDatasetSchema = {
     action: {
       type: "string",
       enum: ["list", "current", "switch", "auto", "reset"],
-      description: "list = datasets available on the server; current = the dataset this conversation writes to and the recall mode in effect; switch = move this conversation to `dataset` (created if missing) and pin recall to it (switching to the dataset in use only pins recall); auto = unpin recall so the server can route each query (saves stay where they are); reset = return to the configured dataset, unpinned.",
+      description: "list = datasets available on the server; current = the dataset this conversation writes to and the recall mode in effect; switch = move this conversation to `dataset` (created if missing) and pin recall to it (switching to the dataset in use only pins recall); auto = unpin recall so the server can route each query (saves stay where they are; also lifts a pin set by a non-default config datasetName, for this conversation); reset = return to the configured dataset and its recall rule (auto, or pinned when the config names a non-default dataset).",
     },
     dataset: { type: "string", description: "switch only: target dataset name (letters, digits, - _; \"auto\" is reserved, use action=auto)." },
     force: {
@@ -315,10 +349,27 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
   }
 
   const multiScope = isMultiScopeEnabled(deps.cfg);
+  // Multi-scope mode never routes, so the config rule does not apply there.
+  const pinnedByConfig = !multiScope && configPinsRecall(deps.cfg);
+
+  /** True when this conversation's recall is pinned (its override, else the config rule). */
+  function pinned(): boolean {
+    return deps.store.recallPinned(convo, pinnedByConfig);
+  }
+
+  /** True when the pin comes from the config rule (no override chose a mode). */
+  function pinnedOnlyByConfig(): boolean {
+    return pinnedByConfig && deps.store.recallMode(convo) === undefined;
+  }
+
+  /** Why recall is pinned by the config `datasetName`. */
+  function configPinNote(): string {
+    return `Recall is pinned by config datasetName "${deps.cfg.datasetName}" (a non-default dataset scopes this agent's memory); action=auto unpins it for this conversation.`;
+  }
 
   /** The recall mode in effect: auto only when unpinned AND recall routes. */
   async function effectiveRecall(): Promise<"auto" | "pinned"> {
-    if (multiScope || deps.store.recallPinned(convo)) return "pinned";
+    if (multiScope || pinned()) return "pinned";
     if (!deps.autoRecall) return "auto";
     try {
       return (await deps.autoRecall(ctx)) ? "auto" : "pinned";
@@ -341,7 +392,8 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     const notes = [
       ...(note ? [note] : []),
       ...(o && o.sessionSuffix > 1 ? ["This conversation was switched away from its configured dataset; action=reset returns to it."] : []),
-      ...(recall === "pinned" && !deps.store.recallPinned(convo) ? [notRoutingNote(dataset)] : []),
+      ...(pinnedOnlyByConfig() ? [configPinNote()] : []),
+      ...(recall === "pinned" && !pinned() ? [notRoutingNote(dataset)] : []),
     ];
     return {
       action: "current",
@@ -357,23 +409,25 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
 
   async function auto(): Promise<MemorySwitchDatasetResult> {
     const dataset = deps.currentDataset(ctx);
-    if (!deps.store.recallPinned(convo)) {
+    if (!pinned()) {
       const recall = await effectiveRecall();
       return { action: "auto", dataset, changed: false, recall, note: recall === "auto" ? "Recall was already auto." : `Recall is already unpinned. ${notRoutingNote(dataset)}` };
     }
     if (!ctx.sessionId && !ctx.sessionKey) {
-      return { action: "auto", dataset, changed: false, recall: "pinned", note: "no conversation/session in context — recall mode is per conversation" };
+      return { action: "auto", dataset, changed: false, recall: "pinned", note: "no conversation/session in context — recall mode is per conversation" + (pinnedOnlyByConfig() ? `. ${configPinNote()}` : "") };
     }
-    deps.store.setRecall(convo, "auto", dataset);
+    const liftsConfigPin = pinnedOnlyByConfig();
+    deps.store.setRecall(convo, "auto", dataset, pinnedByConfig);
     const recall = await effectiveRecall();
+    const lifted = liftsConfigPin ? ` This lifts the config datasetName "${deps.cfg.datasetName}" pin for this conversation only.` : "";
     return {
       action: "auto",
       dataset,
       changed: true,
       recall,
-      note: recall === "auto"
+      note: (recall === "auto"
         ? `Recall now goes to the best-matching dataset when the server can tell, otherwise every readable dataset; saves still go to "${dataset}".`
-        : `Saved. ${notRoutingNote(dataset)}`,
+        : `Saved. ${notRoutingNote(dataset)}`) + lifted,
     };
   }
 
@@ -392,8 +446,10 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     }
     if (target === before) {
       // The dataset in use: restrict recall to it, no new session.
-      if (deps.store.recallPinned(convo)) return { action: "switch", switched: false, dataset: before, reason: "already_active", recall: "pinned" };
-      deps.store.setRecall(convo, "pinned", before);
+      // An explicit pick is recorded even over a config pin, so it outlives a
+      // later change of the configured dataset.
+      if (deps.store.recallMode(convo) === "pinned") return { action: "switch", switched: false, dataset: before, reason: "already_active", recall: "pinned" };
+      deps.store.setRecall(convo, "pinned", before, pinnedByConfig);
       return { action: "switch", switched: false, dataset: before, reason: "recall_restricted", recall: "pinned" };
     }
 
@@ -483,12 +539,17 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     }
     if (unsynced.length > 0) deps.logger?.warn?.(`cognee-openclaw: reset with force — ${unsynced.length} retired session(s) left unsynced: ${unsynced.join(", ")}`);
     deps.store.clear(convo);
+    const notes = [
+      ...(unsynced.length > 0 ? ["Reset forced; the listed sessions were not bridged into the graph. Tell the user."] : []),
+      ...(pinnedByConfig ? [configPinNote()] : []),
+    ];
     return {
       action: "reset",
       reset: true,
       dataset: deps.currentDataset(ctx),
       ...(resynced.length > 0 ? { resynced } : {}),
-      ...(unsynced.length > 0 ? { unsynced, note: "Reset forced; the listed sessions were not bridged into the graph. Tell the user." } : {}),
+      ...(unsynced.length > 0 ? { unsynced } : {}),
+      ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
     };
   }
 
@@ -496,7 +557,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     name: "memory_switch_dataset",
     label: "Memory Switch Dataset",
     description:
-      "Move this conversation to another Cognee dataset, or inspect which one it uses. Unpinned recall is best-effort routing on a cognee >= 1.6.6 server: the server picks the best-matching dataset when it can, and otherwise searches every readable dataset; an older server or multi-scope mode keeps recall on the conversation's dataset (scopes). Pin a dataset to keep recall on one. action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and pins recall to it; action=auto unpins recall; action=current reports the active dataset and the recall mode in effect; action=reset returns to the configured dataset, unpinned. " +
+      "Move this conversation to another Cognee dataset, or inspect which one it uses. Unpinned recall is best-effort routing on a cognee >= 1.6.6 server: the server picks the best-matching dataset when it can, and otherwise searches every readable dataset; an older server or multi-scope mode keeps recall on the conversation's dataset (scopes). Pin a dataset to keep recall on one; a non-default datasetName in the plugin config pins recall to it unless the conversation picks auto. action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and pins recall to it; action=auto unpins recall; action=current reports the active dataset and the recall mode in effect; action=reset returns to the configured dataset and its recall rule. " +
       "Switching is per conversation and does not move memory files or shared company/user memory.",
     parameters: MemorySwitchDatasetSchema as unknown as Record<string, unknown>,
     async execute(_id, params) {

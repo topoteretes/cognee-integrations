@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 
+from . import runtime_env
 from .backend import CogneeNotInstalledError, cognee_not_installed_message
 from .config import (
     DEFAULT_SERVER_BOOT_TIMEOUT,
@@ -270,6 +271,37 @@ def _spawn(port, data_root, system_root, log_path, python=None):
             log.close()
 
 
+def _upgrade_outdated_runtime(python):
+    """Move an outdated runtime venv to the pinned cognee before starting from it.
+
+    An earlier plugin version built the venv for its own pin. The upgrade runs
+    here, right before a spawn, so it blocks that one start (bounded by the
+    install timeout) and never a session that reuses a running server. Installer
+    output goes to the log, not over Hermes's terminal. On failure the server
+    starts from the old cognee, which still works (recall stays on the dataset
+    against a server too old to route), and the next start retries.
+    """
+    requirement = runtime_env.outdated_requirement()
+    if not requirement:
+        return python
+    logger.info(
+        "Upgrading the cognee runtime from %s to %s before starting the local server.",
+        requirement,
+        runtime_env.LOCAL_COGNEE_REQUIREMENT,
+    )
+    try:
+        return runtime_env.install_runtime(output=logger.info, quiet=True)
+    except Exception as exc:  # the upgrade must never cost the session
+        logger.warning(
+            "Could not upgrade the cognee runtime to %s (%s); starting the local server "
+            "from %s. Retry with: hermes cognee install-runtime",
+            runtime_env.LOCAL_COGNEE_REQUIREMENT,
+            exc,
+            requirement,
+        )
+        return python
+
+
 def default_server_log_path() -> str:
     """Where the spawned server's output lands when no log path is given.
 
@@ -338,6 +370,7 @@ def ensure_local_server(
     python = server_python()
     if python is None:
         raise CogneeNotInstalledError(cognee_not_installed_message("local"))
+    python = _upgrade_outdated_runtime(python)
     if log_path is None:
         log_path = default_server_log_path()
     proc = None

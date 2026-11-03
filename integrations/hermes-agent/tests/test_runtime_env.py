@@ -74,6 +74,28 @@ def test_a_marker_for_another_version_is_not_ready(runtime):
     assert runtime_env.runtime_python() is None
 
 
+def test_an_outdated_runtime_still_counts_as_installed(runtime):
+    # An upgrade from a plugin with an older pin must not turn the provider off.
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    with mock.patch.object(runtime_env, "has_cognee", return_value=False):
+        assert runtime_env.outdated_requirement() == "cognee==0.0.1"
+        assert runtime_env.server_python() == str(_python(runtime))
+        assert runtime_env.local_ready() is True
+
+
+def test_an_outdated_marker_without_its_venv_is_not_installed(runtime):
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    _python(runtime).unlink()
+    with mock.patch.object(runtime_env, "has_cognee", return_value=False):
+        assert runtime_env.outdated_requirement() is None
+        assert runtime_env.local_ready() is False
+
+
+def test_a_current_runtime_is_not_outdated(runtime):
+    _mark_ready(runtime)
+    assert runtime_env.outdated_requirement() is None
+
+
 def test_ready_with_a_matching_marker(runtime):
     _mark_ready(runtime)
     assert runtime_env.runtime_python() == str(_python(runtime))
@@ -144,6 +166,37 @@ def test_an_older_runtime_is_upgraded_in_place(runtime):
     assert runtime_env.runtime_python() == str(_python(runtime))
 
 
+def test_a_failed_upgrade_keeps_the_outdated_runtime(runtime):
+    # The old venv stays usable, and the next server start retries the upgrade.
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    run = _FakeRun(runtime, fail_on="install")
+    with (
+        mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
+        mock.patch.object(runtime_env.subprocess, "run", side_effect=run),
+    ):
+        with pytest.raises(runtime_env.RuntimeInstallError):
+            runtime_env.install_runtime(output=lambda _: None)
+    assert runtime_env.outdated_requirement() == "cognee==0.0.1"
+    assert _python(runtime).exists()
+
+
+def test_a_quiet_install_captures_the_installer_output(runtime):
+    def fail(command, **kwargs):
+        if "-c" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=f"{PINNED}\n", stderr="")
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.PIPE
+        raise subprocess.CalledProcessError(2, command, stderr="Collecting\nNo network\n")
+
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    with (
+        mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
+        mock.patch.object(runtime_env.subprocess, "run", side_effect=fail),
+    ):
+        with pytest.raises(runtime_env.RuntimeInstallError, match="No network"):
+            runtime_env.install_runtime(output=lambda _: None, quiet=True)
+
+
 def test_a_failed_step_leaves_no_marker(runtime):
     run = _FakeRun(runtime, fail_on="install")
     with (
@@ -184,3 +237,84 @@ def test_the_server_is_spawned_with_the_runtime_interpreter():
         sb.ensure_local_server(8011, log_path="/dev/null")
     argv = popen.call_args.args[0]
     assert argv[:4] == ["/runtime/bin/python", "-m", "uvicorn", "cognee.api.client:app"]
+
+
+def _spawn_once(**patches):
+    """ensure_local_server against a down server that comes up after one spawn."""
+    with (
+        mock.patch.object(sb, "health_ok", side_effect=[False, True]),
+        mock.patch.object(sb.subprocess, "Popen") as popen,
+        mock.patch.object(sb.time, "sleep"),
+        mock.patch.object(runtime_env, "has_cognee", return_value=False),
+    ):
+        sb.ensure_local_server(8011, log_path="/dev/null")
+    return popen.call_args.args[0][0]
+
+
+def test_an_outdated_runtime_is_upgraded_before_the_server_starts(runtime):
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    run = _FakeRun(runtime)
+    with (
+        mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
+        mock.patch.object(runtime_env.subprocess, "run", side_effect=run),
+    ):
+        python = _spawn_once()
+    assert [c[:3] for c in run.commands] == [["/bin/uv", "pip", "install"]]
+    assert python == str(_python(runtime))
+    assert runtime_env.runtime_python() == str(_python(runtime))
+
+
+def test_the_upgrade_output_goes_to_the_log_not_the_terminal(runtime, capsys):
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    with (
+        mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
+        mock.patch.object(runtime_env.subprocess, "run", side_effect=_FakeRun(runtime)) as run,
+    ):
+        _spawn_once()
+    install = run.call_args_list[0]
+    assert install.kwargs["stdout"] is subprocess.DEVNULL
+    assert capsys.readouterr().out == ""
+
+
+def test_a_failed_upgrade_starts_the_server_from_the_old_runtime(runtime, caplog):
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    run = _FakeRun(runtime, fail_on="install")
+    with (
+        mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
+        mock.patch.object(runtime_env.subprocess, "run", side_effect=run),
+        caplog.at_level("WARNING", logger=sb.logger.name),
+    ):
+        python = _spawn_once()
+    assert python == str(_python(runtime))
+    assert "hermes cognee install-runtime" in caplog.text
+    assert runtime_env.outdated_requirement() == "cognee==0.0.1"
+
+
+def test_a_current_runtime_starts_without_an_install(runtime):
+    _mark_ready(runtime)
+    with mock.patch.object(runtime_env, "install_runtime") as install:
+        python = _spawn_once()
+    install.assert_not_called()
+    assert python == str(_python(runtime))
+
+
+def test_a_running_server_is_reused_without_an_upgrade(runtime):
+    # The upgrade waits for the next spawn; a healthy server is not restarted.
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    with (
+        mock.patch.object(sb, "health_ok", return_value=True),
+        mock.patch.object(runtime_env, "install_runtime") as install,
+        mock.patch.object(sb.subprocess, "Popen") as popen,
+    ):
+        assert sb.ensure_local_server(8011) == "http://127.0.0.1:8011"
+    install.assert_not_called()
+    popen.assert_not_called()
+
+
+def test_status_names_an_outdated_runtime(runtime):
+    from cognee_integration_hermes import cli
+
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    status = cli._runtime_status()
+    assert status.startswith("outdated (cognee==0.0.1")
+    assert "hermes cognee install-runtime" in status

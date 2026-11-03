@@ -126,3 +126,64 @@ def test_the_cli_fallback_routes_only_on_a_cli_that_can(
         assert "-d" not in argv.split()
     else:
         assert "-d agent_sessions" in argv
+
+
+# ── "auto" set only in ~/.cognee/.env ──────────────────────────────────────
+#
+# The wrappers' bash ``case`` only sees an exported COGNEE_PLUGIN_DATASET; the
+# env file is loaded later, inside their Python, and must be normalised there
+# too or a save/search names a dataset called "auto".
+
+
+def _env_file(home, value: str) -> None:
+    (home / ".cognee").mkdir(parents=True, exist_ok=True)
+    (home / ".cognee" / ".env").write_text(f"COGNEE_PLUGIN_DATASET={value}\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("value", ["auto", '" AUTO "'])
+def test_search_with_auto_only_in_the_env_file_names_the_default_dataset(
+    suite, temp_home, mock_server, value
+):
+    _env_file(temp_home, value)
+    # An old server: the search names its dataset, so the name is visible.
+    mock_server.set_server_version("1.6.5")
+    result = _run(suite, temp_home, mock_server.url, {})
+    assert result.returncode == 0, result.stderr
+    body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
+    assert body["datasets"] == ["agent_sessions"]
+
+
+@pytest.mark.parametrize("value", ["auto", '" AUTO "'])
+def test_remember_with_auto_only_in_the_env_file_saves_to_the_default_dataset(
+    suite, temp_home, mock_server, value
+):
+    _env_file(temp_home, value)
+    env = build_env(
+        suite,
+        temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+        extra={"COGNEE_REMEMBER_WAIT_SECONDS": "0"},
+    )
+    result = subprocess.run(
+        [BASH, str(suite.scripts_dir / "cognee-remember.sh"), "Yuna likes Yukki"],
+        env=env,
+        cwd=str(temp_home),
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    form = mock_server.assert_called("POST", "/api/v1/remember")["form"]
+    assert form.get("datasetName") == "agent_sessions"
+
+
+def test_a_spaced_dataset_name_is_not_auto_in_the_shell_either(suite, temp_home, mock_server):
+    # The shell check trims the ends only, as Python's str.strip() does: "a uto"
+    # is not the reserved word anywhere (it is sanitised as a name instead).
+    mock_server.set_server_version("1.6.5")
+    result = _run(suite, temp_home, mock_server.url, {"COGNEE_PLUGIN_DATASET": "a uto"})
+    assert result.returncode == 0, result.stderr
+    body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
+    assert body["datasets"] not in (["agent_sessions"], ["auto"])

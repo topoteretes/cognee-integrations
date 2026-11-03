@@ -8,6 +8,8 @@
 
 Default session dataset: `agent_sessions`. Default local server port: `8011`.
 
+`COGNEE_PLUGIN_DATASET` (Claude Code, Codex, Cursor, Antigravity) names the dataset for writes. Set to a name other than `agent_sessions`, it also restricts recall to that dataset. Unset or `agent_sessions` leaves recall on auto: on cognee >= 1.6.6 the server picks the best-matching readable dataset(s), or searches all readable ones when it cannot narrow. `auto` is reserved and means the default dataset with auto recall. A choice made in the session (`switch-dataset.py auto`, or picking a dataset) wins over the configured rule for that session.
+
 Tests live in the shared Claude/Codex suite, Hermes `test_config_contract.py`, and OpenClaw unit tests. This replaces the obsolete config-file contract proposed in #169.
 
 ## Default user password (cognee >= 1.6.0)

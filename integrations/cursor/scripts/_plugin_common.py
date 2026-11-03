@@ -753,9 +753,11 @@ def _switch_launch_record_locked(
 # two), but graph recall defaults to "auto": it names no dataset, so a cognee
 # >= 1.6.6 server routes the query to the readable dataset(s) most likely to
 # hold the answer (SDK-1317). Picking a dataset (switch-dataset.py) pins recall
-# to it; ``switch-dataset.py auto`` unpins. Older servers fan an unscoped search
-# out over every readable dataset instead of routing it, so auto applies only
-# once /health reports a version that routes; otherwise recall stays on the
+# to it; ``switch-dataset.py auto`` unpins. An explicitly configured dataset
+# other than the default (COGNEE_PLUGIN_DATASET, exported or in ~/.cognee/.env)
+# pins recall too, as before auto recall existed. Older servers fan an unscoped
+# search out over every readable dataset instead of routing it, so auto applies
+# only once /health reports a version that routes; otherwise recall stays on the
 # launch's dataset as before.
 
 _DATASET_ROUTING_MIN_VERSION = (1, 6, 6)
@@ -765,20 +767,48 @@ _ROUTING_SUPPORT_TTL_SECONDS = 3600.0
 # A failed probe is retried sooner, but not on every prompt.
 _ROUTING_SUPPORT_RETRY_SECONDS = 300.0
 
+# Why recall is restricted rather than auto (``recall_mode``'s reason).
+RECALL_PIN_PICKED = "dataset_picked"  # the user picked a dataset for this launch
+RECALL_PIN_CONFIGURED = "configured_dataset"  # COGNEE_PLUGIN_DATASET names a non-default one
+RECALL_PIN_READ_SET = "read_dataset_ids"  # COGNEE_PLUGIN_READ_DATASET_IDS is an explicit scope
+RECALL_PIN_NO_ROUTING = "server_cannot_route"  # unpinned, but the server does not route
 
-def recall_is_pinned(host_key: str = "") -> bool:
-    """True when the user picked a dataset for this launch, restricting recall to it.
 
-    A record written before recall modes existed has no ``recall_pinned``; a
-    switch on it (``switched_at``) was an explicit pick, so it stays pinned.
+def configured_dataset_pins_recall() -> bool:
+    """Whether COGNEE_PLUGIN_DATASET explicitly names a dataset other than the default.
+
+    Read from the environment, which holds ~/.cognee/.env too (loaded at import).
+    Unset, the default ``agent_sessions`` and the reserved "auto" (any case,
+    surrounding whitespace ignored) leave recall on auto.
+    """
+    configured = configured_dataset_name(os.environ.get("COGNEE_PLUGIN_DATASET", ""))
+    return configured != _DEFAULT_DATASET_NAME
+
+
+def recall_pin_reason(host_key: str = "") -> str:
+    """Why recall is pinned to the launch's dataset, or "" when it is not.
+
+    Precedence: the launch record's own ``recall_pinned`` wins either way —
+    picking a dataset writes True, ``switch-dataset.py auto`` writes False (and
+    so lifts a configured pin for that launch). A record written before recall
+    modes existed has no ``recall_pinned``; a switch on it (``switched_at``) was
+    an explicit pick, so it stays pinned. Otherwise an explicitly configured
+    non-default dataset pins recall (``configured_dataset_pins_recall``).
     """
     host_key = _sanitize_session_key(host_key) or get_session_key()
-    if not host_key:
-        return False
-    rec = _read_map_record(host_key)
+    rec = _read_map_record(host_key) if host_key else {}
     if "recall_pinned" in rec:
-        return rec.get("recall_pinned") is True
-    return bool(rec.get("switched_at"))
+        return RECALL_PIN_PICKED if rec.get("recall_pinned") is True else ""
+    if rec.get("switched_at"):
+        return RECALL_PIN_PICKED
+    if configured_dataset_pins_recall():
+        return RECALL_PIN_CONFIGURED
+    return ""
+
+
+def recall_is_pinned(host_key: str = "") -> bool:
+    """True when recall is restricted to the launch's dataset (see ``recall_pin_reason``)."""
+    return bool(recall_pin_reason(host_key))
 
 
 def set_recall_pinned(host_key: str, pinned: bool) -> dict:
@@ -830,14 +860,20 @@ def version_supports_routing(value: str) -> bool:
     return release > floor
 
 
-def _fetch_server_version(base: str, timeout: float) -> str:
-    """``version`` from GET {base}/health, or "" when the server did not say.
+def _probe_server_version(base: str, timeout: float) -> tuple[str, str]:
+    """``(version, reason)`` from GET {base}/health; ``reason`` is "" with a version.
 
     An unhealthy cognee answers 503 and still names its version, so the body is
-    read whatever the status. The whole read is bounded by ``timeout``: urllib's
-    own timeout is per socket operation and leaves DNS unbounded.
+    read whatever the status: an error status that names a version is an answer.
+    Without one, ``reason`` says why: ``timeout`` (nothing within ``timeout``),
+    ``http_<status>`` (an error answer naming no version, e.g. a proxy's 502
+    page), ``no_version`` (a 2xx answer naming none), ``error`` (refused, DNS,
+    TLS, ...). The whole read is bounded by ``timeout``: urllib's own timeout is
+    per socket operation and leaves DNS unbounded.
     """
     from _deadlines import bounded_call
+
+    status = {"code": 0}
 
     def read() -> bytes:
         try:
@@ -846,13 +882,32 @@ def _fetch_server_version(base: str, timeout: float) -> str:
             ) as resp:
                 return resp.read()
         except urllib.error.HTTPError as exc:
+            status["code"] = int(exc.code or 0)
             return exc.read() or b""
 
     try:
-        payload = json.loads(bounded_call(read, timeout).decode("utf-8") or "{}")
+        raw = bounded_call(read, timeout)
+    except (TimeoutError, socket.timeout):
+        return "", "timeout"
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            return "", "timeout"
+        return "", "error"
+    except Exception:
+        return "", "error"
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
     except ValueError:
-        return ""
-    return str(payload.get("version") or "").strip() if isinstance(payload, dict) else ""
+        payload = None
+    version = str(payload.get("version") or "").strip() if isinstance(payload, dict) else ""
+    if version:
+        return version, ""
+    return "", f"http_{status['code']}" if status["code"] else "no_version"
+
+
+def _fetch_server_version(base: str, timeout: float) -> str:
+    """``version`` from GET {base}/health, or "" when the server did not say."""
+    return _probe_server_version(base, timeout)[0]
 
 
 def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
@@ -863,6 +918,9 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
     none the answer is False: recall then stays scoped, as on an old server.
     Either way the next probe comes after the retry interval, not the TTL, so a
     server that was downgraded while unreachable is noticed within minutes.
+    Each entry records the last probe's ``reason`` ("" when it read a version
+    that routes; ``old_version``, or why no version was read — see
+    ``_probe_server_version``).
     """
     base = _normalize_service_url(service_url or _local_api_url())
     if not base:
@@ -888,19 +946,27 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
     if entry and 0 <= now - checked_at < wait:
         return bool(entry.get("routes"))
     try:
-        version = _fetch_server_version(base, timeout)
+        version, reason = _probe_server_version(base, timeout)
     except Exception as exc:
+        version, reason = "", "error"
         hook_log("dataset_routing_probe_failed", {"base_url": base, "error": str(exc)[:200]})
-        version = ""
     if version:
         routes = version_supports_routing(version)
+        reason = "" if routes else "old_version"
     else:
         routes = bool(entry.get("routes"))
+    if reason and reason != "old_version":
+        # Not an answer: the last one (if any) stands until the retry interval.
+        hook_log(
+            "dataset_routing_probe_failed",
+            {"base_url": base, "reason": reason, "timeout_s": timeout, "routes": routes},
+        )
     cache[base] = {
         "version": version or str(entry.get("version") or ""),
         "routes": routes,
         "checked_at": now,
         "probe_failed": not version,
+        "reason": reason,
     }
     try:
         _write_json_file(_ROUTING_SUPPORT_FILE, cache)
@@ -909,18 +975,72 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
     return routes
 
 
+def warm_dataset_routing(service_url: str = ""):
+    """Refresh the routing cache for the recall URL on a background thread.
+
+    Called at SessionStart, beside its own connection work: the prompt hook can
+    spend only a slice of its recall budget on /health, which a slow cloud
+    tenant never answers in time, so auto recall would never turn on there. This
+    read gets the reachability budget (``COGNEE_REACHABLE_TIMEOUT``) instead. A
+    fresh cache entry answers without a request (the TTL check in
+    ``server_routes_datasets``). Returns the thread for
+    ``finish_dataset_routing_warmup``, or None; never raises.
+    """
+    import threading
+
+    timeout = positive_float_env("COGNEE_REACHABLE_TIMEOUT", REACHABLE_TIMEOUT_DEFAULT_SECONDS)
+
+    def run() -> None:
+        try:
+            server_routes_datasets(service_url, timeout=timeout)
+        except Exception as exc:
+            hook_log("dataset_routing_probe_failed", {"phase": "warmup", "error": str(exc)[:200]})
+
+    try:
+        thread = threading.Thread(target=run, name="cognee-routing-warmup", daemon=True)
+        thread.start()
+        return thread
+    except Exception as exc:
+        hook_log("dataset_routing_probe_failed", {"phase": "warmup", "error": str(exc)[:200]})
+        return None
+
+
+def finish_dataset_routing_warmup(thread) -> None:
+    """Wait for ``warm_dataset_routing`` to land its answer, bounded by its own budget."""
+    if thread is None:
+        return
+    try:
+        budget = positive_float_env("COGNEE_REACHABLE_TIMEOUT", REACHABLE_TIMEOUT_DEFAULT_SECONDS)
+        thread.join(budget + 0.5)
+    except Exception:
+        pass
+
+
+def recall_mode(service_url: str = "", host_key: str = "", timeout: float = 1.0) -> tuple[str, str]:
+    """The recall mode in effect: ``("auto", "")`` or ``("pinned", <reason>)``.
+
+    ``reason`` is one of the ``RECALL_PIN_*`` values. Unpinned recall against a
+    server that cannot route (cognee < 1.6.6, version unknown) still reads the
+    active dataset, so it is reported as pinned (``server_cannot_route``).
+    """
+    reason = recall_pin_reason(host_key)
+    if reason:
+        return "pinned", reason
+    # The user's own federated read set is an explicit scope.
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
+        return "pinned", RECALL_PIN_READ_SET
+    if server_routes_datasets(service_url, timeout=timeout):
+        return "auto", ""
+    return "pinned", RECALL_PIN_NO_ROUTING
+
+
 def auto_recall_active(service_url: str = "", host_key: str = "", timeout: float = 1.0) -> bool:
     """True when graph recall should name no dataset and let the server route it.
 
     Also the recall mode every surface reports: when this is False, recall
     reads one dataset (or the user's read set), so it is shown as restricted.
     """
-    if recall_is_pinned(host_key):
-        return False
-    # The user's own federated read set is an explicit scope.
-    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
-        return False
-    return server_routes_datasets(service_url, timeout=timeout)
+    return recall_mode(service_url, host_key, timeout=timeout)[0] == "auto"
 
 
 def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:

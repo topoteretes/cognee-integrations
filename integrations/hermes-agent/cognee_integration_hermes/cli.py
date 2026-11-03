@@ -419,6 +419,13 @@ def _runtime_status() -> str:
     python = runtime_env.runtime_python()
     if python:
         return f"ready ({runtime_env.LOCAL_COGNEE_REQUIREMENT}, {runtime_env.VENV_DIR})"
+    outdated = runtime_env.outdated_requirement()
+    if outdated:
+        return (
+            f"outdated ({outdated}, {runtime_env.VENV_DIR}): upgraded to "
+            f"{runtime_env.LOCAL_COGNEE_REQUIREMENT} when the plugin next starts the local "
+            "server, or now with: hermes cognee install-runtime"
+        )
     if importlib.util.find_spec("cognee"):
         return "cognee installed in Hermes's environment"
     return "not installed (local mode: hermes cognee install-runtime)"

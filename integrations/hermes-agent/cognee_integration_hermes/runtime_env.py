@@ -6,9 +6,13 @@ whole install is refused. So local mode keeps cognee in a venv of its own and
 starts the server from it (``server_bootstrap._spawn``). The plugin itself
 never imports cognee in that mode — it talks to the server over HTTP.
 
-The venv is built only on request (``hermes cognee install-runtime``, or the
-local branch of ``hermes memory setup``), never as a side effect of a session
-starting: it downloads cognee and its dependencies from PyPI. It is built from
+A first build happens only on request (``hermes cognee install-runtime``, or
+the local branch of ``hermes memory setup``), never as a side effect of a
+session starting: it downloads cognee and its dependencies from PyPI. A runtime
+an older plugin version built for another cognee pin still counts as installed,
+and is upgraded in place, blocking once, right before the plugin starts the
+local server from it (``server_bootstrap``); when that fails the server
+starts from the old cognee. It is built from
 the interpreter running Hermes (cognee supports it: Hermes runs 3.14, cognee
 3.10-3.14) with uv when one is on PATH, else stdlib ``venv`` + pip, and uv is
 never allowed to download an interpreter. One venv serves every Hermes profile,
@@ -59,28 +63,53 @@ def venv_python(venv_dir: Optional[Path] = None) -> Path:
     return venv_dir / "bin" / "python"
 
 
-def runtime_python() -> Optional[str]:
-    """The runtime venv's interpreter, when it holds the pinned cognee."""
+def _marker_requirement() -> Optional[str]:
     try:
         marker = json.loads(READY_MARKER.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(marker, dict) or marker.get("requirement") != LOCAL_COGNEE_REQUIREMENT:
+    requirement = marker.get("requirement") if isinstance(marker, dict) else None
+    return requirement if isinstance(requirement, str) else None
+
+
+def runtime_python() -> Optional[str]:
+    """The runtime venv's interpreter, when it holds the pinned cognee."""
+    if _marker_requirement() != LOCAL_COGNEE_REQUIREMENT:
         return None
     python = venv_python()
     return str(python) if python.exists() else None
+
+
+def outdated_requirement() -> Optional[str]:
+    """The ``cognee==X`` a complete runtime holds when X is not the current pin.
+
+    An earlier plugin version built that venv and the marker was written once
+    its cognee was verified, so it still runs a server; it is upgraded in place
+    the next time the plugin starts one (``server_bootstrap``).
+    """
+    requirement = _marker_requirement()
+    if (
+        not requirement
+        or requirement == LOCAL_COGNEE_REQUIREMENT
+        or not requirement.startswith("cognee==")
+    ):
+        return None
+    return requirement if venv_python().exists() else None
 
 
 def server_python() -> Optional[str]:
     """The interpreter to start the local server with, or None when there is none.
 
     The runtime venv first: it is the supported path and holds the pinned
-    version. A cognee installed into Hermes's own environment by hand still
-    works, as it did before the venv existed.
+    version, or an older one until the next server start upgrades it. A cognee
+    installed into Hermes's own environment by hand still works, as it did
+    before the venv existed.
     """
     python = runtime_python()
     if python:
         return python
+    if outdated_requirement():
+        return str(venv_python())
     return sys.executable if has_cognee() else None
 
 
@@ -107,11 +136,24 @@ def _install_lock():
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def _run(command: list[str], *, step: str, env: Optional[dict] = None, timeout: float) -> None:
+def _run(
+    command: list[str],
+    *,
+    step: str,
+    env: Optional[dict] = None,
+    timeout: float,
+    quiet: bool = False,
+) -> None:
+    # quiet: inside a session the installer must not write over Hermes's
+    # terminal, so its output is captured and only the last line of stderr is
+    # kept, for the error.
+    capture = {"stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE, "text": True}
     try:
-        subprocess.run(command, env=env, check=True, timeout=timeout)
+        subprocess.run(command, env=env, check=True, timeout=timeout, **(capture if quiet else {}))
     except subprocess.CalledProcessError as exc:
-        raise RuntimeInstallError(f"{step} failed (exit code {exc.returncode})") from exc
+        lines = (exc.stderr or "").strip().splitlines() if quiet else []
+        detail = f": {lines[-1]}" if lines else ""
+        raise RuntimeInstallError(f"{step} failed (exit code {exc.returncode}){detail}") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeInstallError(f"{step} did not finish within {int(timeout)}s") from exc
     except OSError as exc:
@@ -134,20 +176,26 @@ def _installed_version(python: Path, timeout: float = 60) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def install_runtime(output: Output = print, timeout: float = INSTALL_TIMEOUT_SECS) -> str:
+def install_runtime(
+    output: Output = print, timeout: float = INSTALL_TIMEOUT_SECS, *, quiet: bool = False
+) -> str:
     """Build (or update) the runtime venv; return its interpreter.
 
     Installer output streams straight to the terminal, so the user sees the
-    download progress of a step that takes minutes. Concurrent calls wait for
-    the first to finish and then find it ready.
+    download progress of a step that takes minutes; ``quiet`` captures it
+    instead. Concurrent calls wait for the first to finish and then find it
+    ready. An outdated runtime is upgraded in place, and its marker is kept
+    until the new one replaces it, so a failed upgrade leaves it usable and the
+    next server start retries.
     """
     with _install_lock():
         ready = runtime_python()
         if ready:
             output(f"cognee runtime is ready ({LOCAL_COGNEE_REQUIREMENT}): {VENV_DIR}")
             return ready
-        with contextlib.suppress(OSError):
-            READY_MARKER.unlink()
+        if not outdated_requirement():
+            with contextlib.suppress(OSError):
+                READY_MARKER.unlink()
         python = venv_python()
         uv = _find_uv()
         output(f"Installing {LOCAL_COGNEE_REQUIREMENT} into {VENV_DIR}")
@@ -160,12 +208,14 @@ def install_runtime(output: Output = print, timeout: float = INSTALL_TIMEOUT_SEC
                     step="Creating the venv with uv",
                     env=env,
                     timeout=timeout,
+                    quiet=quiet,
                 )
             _run(
                 [uv, "pip", "install", "--python", str(python), LOCAL_COGNEE_REQUIREMENT],
                 step="Installing cognee with uv",
                 env=env,
                 timeout=timeout,
+                quiet=quiet,
             )
         else:
             if not python.exists():
@@ -173,11 +223,13 @@ def install_runtime(output: Output = print, timeout: float = INSTALL_TIMEOUT_SEC
                     [sys.executable, "-m", "venv", str(VENV_DIR)],
                     step="Creating the venv",
                     timeout=timeout,
+                    quiet=quiet,
                 )
             _run(
                 [str(python), "-m", "pip", "install", LOCAL_COGNEE_REQUIREMENT],
                 step="Installing cognee with pip",
                 timeout=timeout,
+                quiet=quiet,
             )
         version = _installed_version(python)
         if version != pinned_version():

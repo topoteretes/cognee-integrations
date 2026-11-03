@@ -178,6 +178,14 @@ hermes cognee install-runtime   # install, or move it to the plugin's pinned cog
 hermes cognee remove-runtime    # delete it (your data in ~/.cognee is kept)
 ```
 
+After a plugin update that moves the pinned cognee, you don't have to run
+`install-runtime` yourself: the next time the plugin starts the local server, it
+first upgrades the runtime in place, which holds up that one session start while
+the new cognee installs. A server that is already running is reused as is, and
+the upgrade waits for the next start. If the upgrade fails, the server starts from
+the old cognee and the plugin logs a warning naming `hermes cognee
+install-runtime`. `hermes cognee status` shows an outdated runtime.
+
 **Without an LLM key**, cognee builds memory with local models: the GLiNER
 extractor for the graph and the fastembed `BAAI/bge-small-en-v1.5` embedder. The
 first graph build installs CPU PyTorch and `gliner2` into the runtime (about

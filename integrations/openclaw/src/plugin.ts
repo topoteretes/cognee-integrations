@@ -31,7 +31,7 @@ import { buildCapturePolicy, capturePolicyFromEnv, isCogneeSelfReference, redact
 import { compileNoisePatterns, isHarnessNoise } from "./noise.js";
 import { ReferenceCache, createMemoryTools } from "./tools.js";
 import { createMemoryForgetTool } from "./forget-tool.js";
-import { DatasetSwitchStore, createDatasetSwitchTool, withSessionSuffix } from "./dataset-switch.js";
+import { DatasetSwitchStore, configPinsRecall, createDatasetSwitchTool, withSessionSuffix } from "./dataset-switch.js";
 import { PLUGIN_VERSION, formatUpdateHint, isNewer, readUpdateCache, runUpdateCheck } from "./version.js";
 import {
   CodeGraphRegistry,
@@ -619,16 +619,20 @@ const memoryCogneePlugin = {
     }
 
     // Auto recall (SDK-1393): unless this conversation restricted recall to its
-    // dataset (a switch, or the dataset in use picked), graph recall names no
+    // dataset (a switch, or the dataset in use picked) — or, with no override
+    // choosing a mode, the config names a non-default datasetName (an explicit
+    // dataset scopes this agent's memory; `action: "auto"` lifts that pin per
+    // conversation) — graph recall names no
     // dataset and a cognee >= 1.6.6 server routes it (best effort: the
     // best-matching dataset when it can, otherwise every readable one). Multi-scope mode keeps its configured scopes (an explicit read
     // set), and an older server keeps the dataset (it would search everything).
     // The version probe is short (READY_PROBE_TIMEOUT_MS) and shared between
     // concurrent callers; callers spend it out of their own recall budget.
+    const recallPinnedByConfig = configPinsRecall(cfg);
     async function autoRecall(ctx?: ConvoCtx): Promise<boolean> {
       if (multiScope) return false;
       await switchStore.ready();
-      if (switchStore.recallPinned(ctx)) return false;
+      if (switchStore.recallPinned(ctx, recallPinnedByConfig)) return false;
       try {
         return await client.routesDatasets(READY_PROBE_TIMEOUT_MS);
       } catch {

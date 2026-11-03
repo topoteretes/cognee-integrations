@@ -1,6 +1,6 @@
 ---
 name: cognee-switch-datasets
-description: Use when the user wants to switch this Codex session to another Cognee dataset (saves go there, recall is restricted to it), see which datasets are available, move memory capture to a different dataset, or set recall back to auto ("recall from all datasets again"). Syncs the current session first, then starts a fresh Cognee session bound to the chosen dataset.
+description: Use when the user wants to switch this Codex session to another Cognee dataset (saves go there, recall is restricted to it), see which datasets are available, move memory capture to a different dataset, or set recall back to auto ("let Cognee pick the dataset again", "stop restricting recall"). Switching to another dataset syncs the current session first, then starts a fresh Cognee session bound to it; "auto" and re-picking the active dataset only change the recall mode.
 ---
 
 # Switch Datasets
@@ -9,13 +9,16 @@ Move this Codex session to a different Cognee dataset. A Cognee session never
 spans two datasets, so the switch retires the current session (after syncing
 it into the graph) and starts a new one on the chosen dataset. All later saves
 and recalls target the new dataset; the in-context status line shows it.
+`auto`, and picking the dataset the session is already on, only change the
+recall mode: no sync, no new session.
 
 Recall is **auto** by default. On a cognee >= 1.6.6 server, graph recall names
 no dataset, and the server picks the dataset(s) that best match each prompt
 when it can. Otherwise it searches every readable dataset. Saves always go to
-the active dataset. Picking a dataset (another one, or the active one)
-restricts recall to it. `auto` lifts the restriction and leaves saves where
-they are. On an older server, recall stays on the active dataset either way.
+the active dataset. A `COGNEE_PLUGIN_DATASET` set to a name other than
+`agent_sessions` restricts recall to that dataset from the start. Picking a
+dataset (another one, or the active one) restricts recall to it. `auto` lifts
+the restriction, a configured one included, and leaves saves where they are. On an older server, recall stays on the active dataset either way.
 `auto` is reserved: no dataset can be named so.
 
 ## Rules
@@ -28,7 +31,8 @@ they are. On an older server, recall stays on the active dataset either way.
 
 ### 1. If the user wants recall back on auto
 
-For "recall from all datasets again", "set recall to auto" and the like:
+For "let Cognee pick the dataset again", "stop restricting recall", "set recall
+to auto" and the like:
 
 ```bash
 python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" auto --json
@@ -102,5 +106,5 @@ On failure the JSON is `{"error", "code"}`:
 - A switch is not needed just to *look* in another dataset: a one-off graph search
   leaves the session where it is — `${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh "<question>" 10 --graph --dataset-id <id>` (see the **memory** skill).
 
-- `COGNEE_PLUGIN_DATASET` only seeds the dataset at launch; a switch overrides it for the rest of the session and survives a resume. `COGNEE_PLUGIN_DATASET=auto` is not a dataset name: it means the default dataset (`agent_sessions`) with recall on auto.
-- After a switch, recall is restricted to the new dataset, so context from the previous one is no longer injected. `switch-dataset.py auto` puts recall back on auto, which on a cognee >= 1.6.6 server lets recall reach the other readable datasets again. An older server keeps recall on the active dataset.
+- `COGNEE_PLUGIN_DATASET` seeds the dataset at launch; a switch overrides it for the rest of the session and survives a resume. Set to a name other than `agent_sessions`, it also restricts recall to that dataset until `auto` or a switch changes it for the session. `COGNEE_PLUGIN_DATASET=auto` is not a dataset name: it means the default dataset (`agent_sessions`) with recall on auto.
+- After a switch, recall is restricted to the new dataset, so context from the previous one is no longer injected. `switch-dataset.py auto` puts recall back on auto, which on a cognee >= 1.6.6 server lets the server pick the best-matching readable dataset(s) again. An older server keeps recall on the active dataset.

@@ -69,7 +69,7 @@
       },
       "datasetName": {
         "type": "string",
-        "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. Ignored when multi-scope is enabled."
+        "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. A non-default name pins recall to this dataset (memory_switch_dataset action=auto lifts it per conversation); \"auto\" means the default dataset with auto recall. Ignored when multi-scope is enabled."
       },
       "companyDataset": {
         "type": "string",

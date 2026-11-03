@@ -30,6 +30,8 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_ID", raising=False)
+    monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
+    monkeypatch.delenv("COGNEE_PLUGIN_READ_DATASET_IDS", raising=False)
     monkeypatch.setattr(pc, "hook_log", lambda *a, **k: None)
     monkeypatch.setattr(switch, "hook_log", lambda *a, **k: None)
     monkeypatch.setattr(switch, "_restart_idle_watcher", lambda *a, **k: None)
@@ -170,6 +172,73 @@ def test_auto_on_a_server_that_cannot_route_reads_as_restricted(env, capsys):
 def test_list_reports_auto_where_the_server_routes(env):
     env.server.set_server_version("1.6.6-local")
     assert env.switch._list(env.host, env.rec())["recall"] == "auto"
+
+
+# ── a configured dataset pins recall ───────────────────────────────────────
+
+
+def test_a_configured_dataset_pins_recall_until_auto_lifts_it(env, capsys, monkeypatch):
+    """An explicitly configured non-default dataset pins recall; ``auto`` writes
+    an explicit unpin that beats it for this launch, and the listing reports the
+    mode in effect and why."""
+    import json
+
+    env.server.set_server_version("1.6.6")
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
+    assert env.switch.main(["--list", "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+    listing = json.loads(capsys.readouterr().out)
+    assert listing["recall"] == "pinned" and listing["reason"] == "configured_dataset"
+    env.switch._print_listing(listing, as_json=False)
+    assert "pinned by COGNEE_PLUGIN_DATASET" in capsys.readouterr().out
+
+    assert env.switch.main(["auto", "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+    lifted = json.loads(capsys.readouterr().out)
+    assert lifted["reason"] == "recall_auto" and lifted["recall"] == "auto"
+    assert lifted["lifted"] == "configured_dataset"
+    assert env.rec()["recall_pinned"] is False
+    env.switch._print_switch(lifted, as_json=False)
+    assert "no longer pinned by COGNEE_PLUGIN_DATASET" in capsys.readouterr().out
+
+    listing = env.switch._list(env.host, env.rec())
+    assert listing["recall"] == "auto" and "reason" not in listing
+    assert env.switch._auto(env.host, env.rec())["reason"] == "already_auto"
+    assert env.synced == [] and not _calls(env.server, REGISTER)
+
+
+@pytest.mark.parametrize("value", ["", "agent_sessions", "auto", " AUTO "])
+def test_a_default_or_auto_configuration_leaves_recall_auto(env, monkeypatch, value):
+    env.server.set_server_version("1.6.6")
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", value)
+    listing = env.switch._list(env.host, env.rec())
+    assert listing["recall"] == "auto" and "reason" not in listing
+    result = env.switch._auto(env.host, env.rec())
+    assert result["reason"] == "already_auto" and "lifted" not in result
+    # Saved explicitly anyway, so a later configuration cannot pin this launch.
+    assert env.rec()["recall_pinned"] is False
+
+
+def test_an_explicit_unpin_outlives_a_configuration_change(env, monkeypatch):
+    env.server.set_server_version("1.6.6")
+    env.switch._auto(env.host, env.rec())
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
+    assert env.switch._list(env.host, env.rec())["recall"] == "auto"
+
+
+def test_picking_the_active_dataset_under_a_configured_pin_records_the_pick(env, monkeypatch):
+    env.server.set_server_version("1.6.6")
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
+    result = env.switch._switch(env.host, env.rec(), "a", force=False)
+    assert result["reason"] == "already_active" and result["recall"] == "pinned"
+    assert env.rec()["recall_pinned"] is True
+    assert env.switch._list(env.host, env.rec())["reason"] == "dataset_picked"
+
+
+def test_the_listing_says_why_an_unpinned_recall_is_not_auto(env, capsys):
+    env.server.set_server_version("1.6.5")
+    listing = env.switch._list(env.host, env.rec())
+    assert listing["recall"] == "pinned" and listing["reason"] == "server_cannot_route"
+    env.switch._print_listing(listing, as_json=False)
+    assert "can't route yet" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("word", ["auto", "AUTO", " Auto "])

@@ -3,6 +3,8 @@
  * (SDK-1393): the /health version probe runs only after the breaker check and
  * with the short ready-probe timeout, an install with no indexed dataset skips
  * recall even when the server routes, and `current` reports the mode in effect.
+ * The harness runs on the default dataset (auto recall); a non-default
+ * configured datasetName pins recall unless the conversation picks auto.
  */
 
 import plugin from "../../src/plugin";
@@ -28,12 +30,14 @@ jest.mock("../../src/breaker", () => ({
 }));
 
 let datasetState: Record<string, string> = {};
+/** The overrides "on disk": survives a fresh harness (a gateway restart). */
+let savedOverrides: Record<string, unknown> = {};
 jest.mock("../../src/persistence", () => ({
   loadDatasetState: jest.fn(async () => ({ ...datasetState })),
   saveDatasetState: jest.fn(async (s: Record<string, string>) => { datasetState = { ...s }; }),
   DATASET_OVERRIDES_PATH: "/tmp/dataset-overrides.json",
-  loadDatasetOverrides: jest.fn(async () => ({})),
-  saveDatasetOverrides: jest.fn(async () => {}),
+  loadDatasetOverrides: jest.fn(async () => JSON.parse(JSON.stringify(savedOverrides))),
+  saveDatasetOverrides: jest.fn(async (o: Record<string, unknown>) => { savedOverrides = JSON.parse(JSON.stringify(o)); }),
   loadSyncIndex: jest.fn(async () => ({ entries: {} })),
   saveSyncIndex: jest.fn(async () => {}),
   loadScopedSyncIndexes: jest.fn(async () => ({})),
@@ -53,13 +57,14 @@ const CONVO = { agentId: "will", sessionId: "s1", sessionKey: "agent:will:tg-1" 
 const PROMPT = { prompt: "what is the plan for the launch?" };
 
 function harness(extra: Record<string, unknown> = {}) {
-  return createPluginApi(plugin, { autoRecall: true, enableSessions: false, captureSession: false, memorySteer: false, minScore: 0, ...extra });
+  return createPluginApi(plugin, { autoRecall: true, enableSessions: false, captureSession: false, memorySteer: false, minScore: 0, datasetName: "agent_sessions", ...extra });
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
   DatasetSwitchStore.resetShared();
-  datasetState = { testds: "ds-1" };
+  datasetState = { agent_sessions: "ds-1" };
+  savedOverrides = {};
   mockBreaker.openForSeconds.mockImplementation(async () => 0);
   mockRecall.mockImplementation(async () => []);
   mockRoutes.mockImplementation(async () => true);
@@ -121,14 +126,78 @@ describe("memory_switch_dataset reports the recall mode in effect", () => {
     mockRoutes.mockImplementation(async () => false);
     const h = harness();
     const cur = await run(h, { action: "current" });
-    expect(cur).toMatchObject({ dataset: "testds", recall: "pinned" });
-    expect(cur.note).toMatch(/can't route yet, so recall stays on "testds"/);
+    expect(cur).toMatchObject({ dataset: "agent_sessions", recall: "pinned" });
+    expect(cur.note).toMatch(/can't route yet, so recall stays on "agent_sessions"/);
 
-    await run(h, { action: "switch", dataset: "testds" });
+    await run(h, { action: "switch", dataset: "agent_sessions" });
     expect(await run(h, { action: "auto" })).toMatchObject({
       changed: true,
       recall: "pinned",
-      note: `Saved. This server can't route yet, so recall stays on "testds".`,
+      note: `Saved. This server can't route yet, so recall stays on "agent_sessions".`,
     });
+  });
+});
+
+describe("a non-default config datasetName pins recall", () => {
+  const PINNED = { datasetName: "testds" };
+
+  beforeEach(() => {
+    datasetState = { agent_sessions: "ds-1", testds: "ds-2" };
+  });
+
+  async function run(h: ReturnType<typeof harness>, params: Record<string, unknown>) {
+    const tool = h.tools(CONVO).find((t) => t.name === "memory_switch_dataset")!;
+    return ((await tool.execute("c", params)) as { details: Record<string, unknown> }).details;
+  }
+
+  async function search(h: ReturnType<typeof harness>) {
+    mockRecall.mockClear();
+    const tool = h.tools(CONVO).find((t) => t.name === "memory_search")!;
+    await tool.execute("c", { query: "launch plan" });
+    return mockRecall.mock.calls.map((c) => c[0]);
+  }
+
+  async function promptGraph(h: ReturnType<typeof harness>) {
+    mockRecall.mockClear();
+    await h.emit("before_prompt_build", PROMPT, CONVO);
+    return mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!;
+  }
+
+  it("prompt recall and memory_search send the configured dataset's id", async () => {
+    const h = harness(PINNED);
+    expect((await promptGraph(h)).datasetIds).toEqual(["ds-2"]);
+    const calls = await search(h);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) expect(c.datasetIds).toEqual(["ds-2"]);
+    // Pinned recall never needs the routing probe.
+    expect(mockRoutes).not.toHaveBeenCalled();
+  });
+
+  it("the default dataset routes: no dataset ids", async () => {
+    const h = harness();
+    expect((await promptGraph(h)).datasetIds).toEqual([]);
+    const calls = await search(h);
+    expect(calls.map((c) => c.datasetIds)).toEqual([[]]);
+  });
+
+  it("current reports the config pin", async () => {
+    const cur = await run(harness(PINNED), { action: "current" });
+    expect(cur).toMatchObject({ dataset: "testds", recall: "pinned", switched: false });
+    expect(cur.note).toMatch(/pinned by config datasetName "testds"/);
+  });
+
+  it("action=auto routes this conversation and survives a restart", async () => {
+    const h = harness(PINNED);
+    expect(await run(h, { action: "auto" })).toMatchObject({ changed: true, recall: "auto", dataset: "testds" });
+    expect((await promptGraph(h)).datasetIds).toEqual([]);
+    expect((await search(h)).map((c) => c.datasetIds)).toEqual([[]]);
+
+    // Gateway restart: a fresh store loads the saved override.
+    await DatasetSwitchStore.shared().flush();
+    expect(Object.values(savedOverrides)).toContainEqual(expect.objectContaining({ dataset: "testds", recall: "auto" }));
+    DatasetSwitchStore.resetShared();
+    const restarted = harness(PINNED);
+    expect((await promptGraph(restarted)).datasetIds).toEqual([]);
+    expect(await run(restarted, { action: "current" })).toMatchObject({ recall: "auto" });
   });
 });

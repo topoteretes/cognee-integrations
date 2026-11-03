@@ -34,7 +34,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   one on the configured default dataset (indistinguishable from a reset), which is auto.
 
 ### Changed
-- **Local mode installs cognee 1.6.6** (was 1.6.5).
+- **Local mode installs cognee 1.6.6** (was 1.6.5). An existing runtime is upgraded in place
+  the first time the plugin starts the local server, which blocks that one start for the
+  install; a session that reuses a running server is not held up, and the upgrade waits for
+  the next start. Until then the provider stays available on the old runtime, and
+  `hermes cognee status` reports it as outdated. If the upgrade fails, the server starts from
+  the old runtime (recall stays on the dataset, as before) and a warning names
+  `hermes cognee install-runtime`; the next start retries.
 
 ## [1.4.1]
 

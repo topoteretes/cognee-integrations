@@ -1114,8 +1114,9 @@ export const register: Register = (on, options) => {
     } finally {
       clearActive($)
     }
-    // Auto recall (the default) reads the dataset(s) the server picks, not only the active one.
-    const where = datasetId ? `dataset ${datasetId}` : scope === '--code' ? 'the code graph' : recallMode !== 'auto' ? 'the active dataset' : 'memory'
+    // Only a recall known to be restricted names the active dataset; auto recall
+    // (the default) and an unknown mode may read the dataset(s) the server picks.
+    const where = datasetId ? `dataset ${datasetId}` : scope === '--code' ? 'the code graph' : recallMode === 'pinned' ? 'the active dataset' : 'memory'
     if (shown.isError) return { deny: shown.text }
     return { result: `${plural(shown.count, 'result')} from ${where}.\n\n${shown.text}` }
   }).catch($ => {

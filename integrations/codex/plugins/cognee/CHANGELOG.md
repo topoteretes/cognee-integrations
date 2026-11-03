@@ -13,7 +13,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [1.8.0]
 
 ### Added
-- **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server the graph recall on each
+- **Recall is auto by default, unless you configured a dataset (SDK-1393).** On a cognee >= 1.6.6 server the graph recall on each
   prompt, and a `cognee-search` that names no dataset, send no dataset: the server picks the readable
   dataset(s) most likely to hold the answer when it can, and otherwise searches every readable
   dataset (dataset routing, SDK-1317; best effort). Pin a dataset to keep recall on one.
@@ -21,7 +21,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly, a failed read retried after five minutes with the last answer kept meanwhile) and keeps
   recall on the active dataset against an older server; pre-releases and dev builds of 1.6.6 count
   as older, and so does 1.6.6 with an unknown label (a later release with one routes). An
-  unhealthy server still names its version in its 503 answer, which counts. The `/health` read comes out of the prompt's recall budget. Session history and guidance, the code
+  unhealthy server still names its version in its 503 answer, which counts. Session start refreshes that cache with the reachability timeout
+  (`COGNEE_REACHABLE_TIMEOUT`, default 2 s), so a slow cloud `/health` no longer leaves auto recall
+  off; the prompt hook only falls back to a short read out of its recall budget. Session history and guidance, the code
   lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
   memory's dataset ids are dropped with the dataset under auto recall and kept while restricted; recap, evidence and file-context reads stay on the active dataset.
 - **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
@@ -32,6 +34,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   switched before this release stays restricted. `auto` is a reserved name: no dataset can be
   switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset with
   recall on auto.
+- **A configured dataset still restricts recall.** `COGNEE_PLUGIN_DATASET` (exported or in
+  `~/.cognee/.env`) set to a name other than the default `agent_sessions` keeps recall on that
+  dataset, as before this release; unset, `agent_sessions` or `auto` gives auto recall. A choice
+  made in the session (`switch-dataset.py auto`, or picking a dataset) wins over it for that
+  session.
 - **`cognee-search` falls back to the CLI by its own version.** With the server unreachable, the
   `cognee-cli` fallback sends no dataset only when the CLI's cognee is 1.6.6 or later.
 

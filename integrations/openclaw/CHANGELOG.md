@@ -25,9 +25,17 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   dataset; an unhealthy server's 503 answer still names its version and counts. Multi-scope mode, the
   guidance lane and the code lane keep their explicit datasets, and an install with no indexed
   data still skips prompt recall and `memory_search`. `recall()` omits `dataset_ids` when given none.
+- **A configured non-default `datasetName` pins recall (SDK-1393).** An agent scoped to its
+  own dataset (`datasetName` / `COGNEE_PLUGIN_DATASET` other than `agent_sessions`) keeps
+  recall on it after the upgrade, as before — the hook-family rule. The default, an unset name
+  or `auto` (reserved: it now means the default dataset with auto recall) leave recall on auto.
+  A conversation's explicit choice wins: `memory_switch_dataset {action: "auto"}` lifts the
+  config pin for that conversation (persisted across restarts), and a pick pins. `current`,
+  `auto` and `reset` report the mode in effect and say when the config pins it. Multi-scope
+  mode is unchanged.
 - **`memory_switch_dataset` pins recall.** Any explicit switch pins recall to its dataset;
   switching to the dataset in use only pins (a pin-only override, same session);
-  `action: "auto"` unpins it; `reset` returns to the configured dataset, unpinned; `current`
+  `action: "auto"` unpins it; `reset` returns to the configured dataset and its recall rule; `current`
   reports the mode in effect (`pinned` whenever recall does not route). `"auto"` is reserved
   and cannot be switched to. An override saved before this release counts as pinned.
 

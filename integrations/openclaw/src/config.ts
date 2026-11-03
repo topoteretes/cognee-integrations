@@ -109,10 +109,13 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
 
   const mode: CogneeMode = raw.mode === "cloud" || process.env.COGNEE_MODE === "cloud" ? "cloud" : "local";
   const baseUrl = raw.baseUrl?.trim() || process.env.COGNEE_BASE_URL?.trim() || DEFAULT_BASE_URL;
-  const datasetName = sanitizeDatasetName(
-    process.env.COGNEE_PLUGIN_DATASET?.trim() || raw.datasetName?.trim() || DEFAULT_DATASET_NAME,
-    DEFAULT_DATASET_NAME,
-  );
+  // "auto" is reserved for auto recall (memory_switch_dataset action=auto), so
+  // a configured "auto" means the default dataset with recall left on auto —
+  // the hook-family rule (COGNEE_PLUGIN_DATASET=auto).
+  const rawDatasetName = process.env.COGNEE_PLUGIN_DATASET?.trim() || raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
+  const datasetName = rawDatasetName.toLowerCase() === "auto"
+    ? DEFAULT_DATASET_NAME
+    : sanitizeDatasetName(rawDatasetName, DEFAULT_DATASET_NAME);
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
   const searchPrompt = raw.searchPrompt || "";
   const deleteMode = raw.deleteMode === "hard" ? "hard" : DEFAULT_DELETE_MODE;

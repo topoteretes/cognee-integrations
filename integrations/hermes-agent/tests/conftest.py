@@ -70,8 +70,9 @@ def hermetic_env(request, monkeypatch, tmp_path):
     The shared state files under ``~/.cognee-plugin/hermes/`` are re-pointed at
     the test's tmp dir for the same reason the env is scrubbed: the dataset
     overrides a developer switched, the repos they indexed for code recall,
-    their cached update check and their buffered capture writes would otherwise
-    leak into (and be written by) the hermetic suite.
+    their cached update check, their buffered capture writes and their cognee
+    runtime venv would otherwise leak into (and be written by) the hermetic
+    suite.
     """
     if request.module.__name__.rsplit(".", 1)[-1] in _LIVE_MODULES:
         return
@@ -86,6 +87,7 @@ def hermetic_env(request, monkeypatch, tmp_path):
     from cognee_integration_hermes import (
         code_graph,
         dataset_overrides,
+        runtime_env,
         update_check,
         write_buffer,
     )
@@ -94,6 +96,11 @@ def hermetic_env(request, monkeypatch, tmp_path):
     monkeypatch.setattr(dataset_overrides, "_OVERRIDES_PATH", tmp_path / "dataset-overrides.json")
     monkeypatch.setattr(update_check, "_CACHE_PATH", tmp_path / "update-check.json")
     monkeypatch.setattr(write_buffer, "WRITE_BUFFER_PATH", tmp_path / "pending-entries.json")
+    # A developer's own runtime venv, ready or outdated, must not decide whether
+    # a test's server spawn upgrades it (a real install from PyPI).
+    monkeypatch.setattr(runtime_env, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(runtime_env, "VENV_DIR", tmp_path / "runtime" / "venv")
+    monkeypatch.setattr(runtime_env, "READY_MARKER", tmp_path / "runtime" / "ready.json")
 
 
 @pytest.fixture(autouse=True)

@@ -38,7 +38,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 
 # "auto" is not a dataset name: COGNEE_PLUGIN_DATASET=auto means the default
 # dataset with auto recall (SDK-1393), which is what an unset variable gives.
-case "$(printf '%s' "${COGNEE_PLUGIN_DATASET:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+case "$(printf '%s' "${COGNEE_PLUGIN_DATASET:-}" | tr '[:space:]' ' ' | sed -e 's/^ *//' -e 's/ *$//' | tr '[:upper:]' '[:lower:]')" in
     auto) COGNEE_PLUGIN_DATASET="" ;;
 esac
 runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
@@ -75,6 +75,13 @@ if not api_key:
 
 session_id = ""
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+# ~/.cognee/.env (loaded above) can hold the reserved "auto" too: normalise as
+# config.py does, so it never reaches a save or search as a dataset name.
+try:
+    from _plugin_common import configured_dataset_name
+    dataset = configured_dataset_name(dataset)
+except Exception:
+    dataset = "" if dataset.lower() == "auto" else dataset
 dataset_ids = ""
 recall_auto = ""
 # The launch record wins (dataset + session chosen with switch-dataset.py, the

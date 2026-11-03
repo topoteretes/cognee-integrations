@@ -17,15 +17,24 @@ Contract:
     ``auto_recall_active`` is False while pinned or under a federated read set;
   * the prompt hook passes ``auto_route`` to the graph scope only, and the
     /health read comes out of its recall budget;
-  * ``shell_runtime_overrides`` tells the shell skills whether recall is auto.
+  * ``shell_runtime_overrides`` tells the shell skills whether recall is auto;
+  * an explicitly configured non-default COGNEE_PLUGIN_DATASET pins recall, but
+    the launch record's own ``recall_pinned`` (True or False) wins over it;
+  * each cache entry records why the last probe gave no routing answer
+    (``timeout``, ``http_<status>``, ``no_version``, ``error``, ``old_version``);
+  * SessionStart warms the cache with the reachability budget, beside its own
+    connection work, and sends nothing while the cached answer is fresh.
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import sys
 import threading
 import time
+import types
 
 import pytest
 from utils.recall import drive_recall, load_lookup
@@ -40,6 +49,9 @@ def pc(suite, isolated_modules, monkeypatch):
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
     monkeypatch.delenv("COGNEE_PLUGIN_READ_DATASET_IDS", raising=False)
+    monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
+    monkeypatch.delenv("COGNEE_REACHABLE_TIMEOUT", raising=False)
+    monkeypatch.delenv("COGNEE_LOCAL_API_URL", raising=False)
     return common
 
 
@@ -491,3 +503,294 @@ def test_a_probe_that_eats_the_budget_dispatches_nothing(lookup, monkeypatch):
 
     run = drive_recall(lookup, monkeypatch, auto_route=slow_probe)
     assert run.timeouts == {}
+
+
+# ── a configured dataset pins recall ───────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("value", "pinned"),
+    [
+        ("research", True),
+        (" research ", True),
+        ("autos", True),
+        ("", False),
+        ("agent_sessions", False),
+        (" agent_sessions ", False),
+        ("auto", False),
+        (" AUTO ", False),
+    ],
+)
+def test_an_explicitly_configured_non_default_dataset_pins_recall(
+    pc, launch, monkeypatch, value, pinned
+):
+    monkeypatch.setattr(pc, "server_routes_datasets", lambda *a, **k: True)
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", value)
+    assert pc.recall_is_pinned(launch) is pinned
+    assert pc.auto_recall_active(URL, launch) is (not pinned)
+    expected = ("pinned", "configured_dataset") if pinned else ("auto", "")
+    assert pc.recall_mode(URL, launch) == expected
+
+
+def test_an_explicit_unpin_beats_a_configured_dataset(pc, launch, monkeypatch):
+    monkeypatch.setattr(pc, "server_routes_datasets", lambda *a, **k: True)
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
+    assert pc.recall_pin_reason(launch) == "configured_dataset"
+    pc.set_recall_pinned(launch, False)
+    assert pc.recall_is_pinned(launch) is False
+    assert pc.auto_recall_active(URL, launch) is True
+
+
+def test_a_pick_beats_a_default_configuration(pc, launch, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "agent_sessions")
+    pc.set_recall_pinned(launch, True)
+    assert pc.recall_pin_reason(launch) == "dataset_picked"
+
+
+def test_a_legacy_switch_is_a_pick_whatever_is_configured(pc, launch, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
+    rec = pc._read_map_record(launch)
+    pc._write_map_record(launch, {**rec, "switched_at": "2026-10-01T00:00:00Z"})
+    assert pc.recall_pin_reason(launch) == "dataset_picked"
+
+
+def test_a_configured_dataset_pins_recall_outside_a_launch(pc, monkeypatch):
+    monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
+    assert pc.recall_pin_reason("") == "configured_dataset"
+
+
+def test_recall_mode_names_why_recall_is_not_auto(pc, launch, monkeypatch):
+    monkeypatch.setattr(pc, "server_routes_datasets", lambda *a, **k: False)
+    assert pc.recall_mode(URL, launch) == ("pinned", "server_cannot_route")
+    monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID]))
+    assert pc.recall_mode(URL, launch) == ("pinned", "read_dataset_ids")
+
+
+# ── why routing is off ─────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def logged(pc, monkeypatch):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        pc, "hook_log", lambda event, detail=None, *a, **k: events.append((event, detail or {}))
+    )
+    return events
+
+
+def _entry(pc) -> dict:
+    return json.loads(pc._ROUTING_SUPPORT_FILE.read_text())[pc._normalize_service_url(URL)]
+
+
+def _probe_failures(events) -> list[dict]:
+    return [d for e, d in events if e == "dataset_routing_probe_failed"]
+
+
+def test_a_routing_server_records_no_reason(pc, health, logged):
+    assert pc.server_routes_datasets(URL) is True
+    assert _entry(pc)["reason"] == ""
+    assert _probe_failures(logged) == []
+
+
+def test_an_old_server_is_recorded_without_a_log_line(pc, health, logged):
+    health["version"] = "1.6.5"
+    assert pc.server_routes_datasets(URL) is False
+    assert _entry(pc)["reason"] == "old_version"
+    assert _probe_failures(logged) == []
+
+
+def test_a_health_answer_without_a_version_is_recorded(pc, health, logged):
+    health["version"] = ""
+    assert pc.server_routes_datasets(URL) is False
+    assert _entry(pc)["reason"] == "no_version"
+    assert [d["reason"] for d in _probe_failures(logged)] == ["no_version"]
+
+
+def test_a_refused_probe_is_recorded_as_an_error(pc, health, logged):
+    health["version"] = OSError("refused")
+    assert pc.server_routes_datasets(URL) is False
+    assert _entry(pc)["reason"] == "error"
+    assert [d["reason"] for d in _probe_failures(logged)] == ["error"]
+
+
+def test_an_error_page_records_its_status(pc, monkeypatch, logged):
+    def urlopen(url, timeout=None, context=None):
+        raise pc.urllib.error.HTTPError(url, 502, "Bad Gateway", {}, io.BytesIO(b"<html>"))
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", urlopen)
+    assert pc.server_routes_datasets(URL) is False
+    assert _entry(pc)["reason"] == "http_502"
+    assert [d["reason"] for d in _probe_failures(logged)] == ["http_502"]
+
+
+def test_a_slow_health_is_recorded_as_a_timeout(pc, monkeypatch, logged):
+    release = threading.Event()
+
+    def urlopen(url, timeout=None, context=None):
+        release.wait(5)
+        raise OSError("released")
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", urlopen)
+    try:
+        assert pc.server_routes_datasets(URL, timeout=0.2) is False
+    finally:
+        release.set()
+    entry = _entry(pc)
+    assert entry["reason"] == "timeout" and entry["probe_failed"] is True
+    assert [d["reason"] for d in _probe_failures(logged)] == ["timeout"]
+
+
+def test_a_socket_timeout_is_a_timeout(pc, monkeypatch, logged):
+    def urlopen(url, timeout=None, context=None):
+        raise pc.urllib.error.URLError(pc.socket.timeout("timed out"))
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", urlopen)
+    assert pc.server_routes_datasets(URL) is False
+    assert _entry(pc)["reason"] == "timeout"
+
+
+def test_a_failed_probe_keeps_the_answer_and_says_why(pc, health, monkeypatch, logged):
+    assert pc.server_routes_datasets(URL) is True
+    health["version"] = OSError("refused")
+    _at(pc, monkeypatch, pc.time.time() + pc._ROUTING_SUPPORT_TTL_SECONDS + 1)
+    assert pc.server_routes_datasets(URL) is True
+    entry = _entry(pc)
+    assert entry["routes"] is True and entry["probe_failed"] is True
+    assert entry["reason"] == "error" and entry["version"] == "1.6.6"
+
+
+# ── the SessionStart warm-up ───────────────────────────────────────────────
+
+
+def test_the_warmup_reads_with_the_reachability_budget(pc, monkeypatch):
+    seen: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        pc, "server_routes_datasets", lambda url="", timeout=1.0: seen.append((url, timeout))
+    )
+    pc.finish_dataset_routing_warmup(pc.warm_dataset_routing())
+    monkeypatch.setenv("COGNEE_REACHABLE_TIMEOUT", "7.5")
+    pc.finish_dataset_routing_warmup(pc.warm_dataset_routing())
+    # "" is the URL recall uses (COGNEE_LOCAL_API_URL / COGNEE_BASE_URL / default).
+    assert seen == [("", pc.REACHABLE_TIMEOUT_DEFAULT_SECONDS), ("", 7.5)]
+
+
+def test_the_warmup_never_raises(pc, monkeypatch):
+    def broken(*a, **k):
+        raise ValueError("bad cache")
+
+    monkeypatch.setattr(pc, "server_routes_datasets", broken)
+    pc.finish_dataset_routing_warmup(pc.warm_dataset_routing())
+    pc.finish_dataset_routing_warmup(None)
+
+
+def test_a_fresh_cache_costs_the_warmup_no_request(pc, health, monkeypatch):
+    monkeypatch.setenv("COGNEE_BASE_URL", URL)
+    assert pc.server_routes_datasets(URL) is True
+    pc.finish_dataset_routing_warmup(pc.warm_dataset_routing())
+    assert health["calls"] == 1
+    _at(pc, monkeypatch, pc.time.time() + pc._ROUTING_SUPPORT_TTL_SECONDS + 1)
+    pc.finish_dataset_routing_warmup(pc.warm_dataset_routing())
+    assert health["calls"] == 2
+
+
+@pytest.fixture
+def heavy(suite, hook_module, monkeypatch, tmp_path):
+    """session-start's ``_run_heavy`` with every step but the routing warm-up stubbed."""
+    for name in (
+        "COGNEE_PLUGIN_DATASET",
+        "COGNEE_REACHABLE_TIMEOUT",
+        "COGNEE_LOCAL_API_URL",
+        "COGNEE_PLUGIN_READ_DATASET_IDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    module = hook_module(suite, "session-start.py")
+    common = sys.modules["_plugin_common"]
+    monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
+    monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_reexec_into_venv", lambda: None)
+
+    async def ready(config):
+        return None
+
+    monkeypatch.setattr(module, "ensure_cognee_ready", ready)
+    monkeypatch.setattr(module, "is_cloud_mode", lambda config: False)
+    monkeypatch.setattr(module, "_resolve_agent_name", lambda *a, **k: "agent")
+    monkeypatch.setattr(module, "probe_health", lambda *a, **k: "ready")
+    monkeypatch.setattr(module, "write_connection_state", lambda *a, **k: None)
+    monkeypatch.setitem(
+        sys.modules, "_project_memory", types.SimpleNamespace(prepare=lambda *a, **k: {})
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "_code_graph",
+        types.SimpleNamespace(autoindex_on_session_start=lambda *a, **k: None),
+    )
+
+    def run(url: str):
+        monkeypatch.setenv("COGNEE_BASE_URL", url)
+        return asyncio.run(
+            module._run_heavy(
+                {"base_url": url},
+                str(tmp_path),
+                "s1",
+                "c1",
+                "host-heavy",
+                "agent_sessions",
+                managed_endpoint=True,
+                boot_timeout=1.0,
+            )
+        )
+
+    run.common = common
+    return run
+
+
+def test_session_start_warms_the_routing_cache_with_the_reachability_budget(heavy, monkeypatch):
+    seen: list[float] = []
+    monkeypatch.setattr(
+        heavy.common, "server_routes_datasets", lambda url="", timeout=1.0: seen.append(timeout)
+    )
+    monkeypatch.setenv("COGNEE_REACHABLE_TIMEOUT", "6")
+    assert heavy(URL)[2] is True
+    assert seen == [6.0]
+
+
+def test_session_start_leaves_the_routing_answer_for_the_prompt_hook(heavy, mock_server):
+    mock_server.set_server_version("1.6.6")
+    assert heavy(mock_server.url)[2] is True
+    common = heavy.common
+    entry = json.loads(common._ROUTING_SUPPORT_FILE.read_text())[mock_server.url]
+    assert entry["routes"] is True and entry["reason"] == ""
+    probes = len([c for c in mock_server.calls if c["path"] == "/health"])
+    # The prompt hook's short probe is not needed: the answer is cached.
+    assert common.server_routes_datasets(mock_server.url, timeout=0.01) is True
+    assert len([c for c in mock_server.calls if c["path"] == "/health"]) == probes == 1
+
+
+def test_session_start_with_a_fresh_cache_sends_no_probe(heavy, mock_server):
+    mock_server.set_server_version("1.6.6")
+    common = heavy.common
+    common._ROUTING_SUPPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    common._ROUTING_SUPPORT_FILE.write_text(
+        json.dumps(
+            {
+                mock_server.url: {
+                    "version": "1.6.6",
+                    "routes": True,
+                    "checked_at": time.time(),
+                    "probe_failed": False,
+                }
+            }
+        )
+    )
+    assert heavy(mock_server.url)[2] is True
+    assert not [c for c in mock_server.calls if c["path"] == "/health"]
+
+
+def test_a_failing_warmup_never_fails_session_start(heavy, monkeypatch):
+    def broken(*a, **k):
+        raise RuntimeError("no threads")
+
+    monkeypatch.setattr(heavy.common, "warm_dataset_routing", broken)
+    assert heavy(URL)[2] is True

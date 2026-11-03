@@ -144,7 +144,7 @@ Which datasets a graph search reads depends on the recall mode:
   answer. When those return nothing, it widens to the rest. An authoritative
   empty list then means no readable dataset matched. Report that, and don't
   offer other datasets.
-- **restricted**: the user picked a dataset, or the server can't route (older
+- **restricted**: the user picked a dataset or configured one (`COGNEE_PLUGIN_DATASET` other than `agent_sessions`), or the server can't route (older
   than 1.6.6, or the version is unknown). The search reads the **active**
   dataset only, so an empty list may only mean the information lives in
   another dataset the user can read.
