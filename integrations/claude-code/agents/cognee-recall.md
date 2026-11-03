@@ -25,7 +25,9 @@ Cognee organizes knowledge into three categories:
 
 ## Search command
 
-Run **one** broad search via the wrapper and answer from it. It queries the **running server** (`/api/v1/recall`, the source of truth), scoped to this session's **active dataset**, and falls back to `cognee-cli` only if the server is unreachable:
+Run **one** broad search via the wrapper and answer from it. It queries the **running server** (`/api/v1/recall`, the source of truth) and falls back to `cognee-cli` only if the server is unreachable. Which datasets it reads depends on the recall mode:
+- **auto** (the default on cognee >= 1.6.6): the server picks the best-matching readable dataset(s).
+- **restricted**: the user picked a dataset, or the server can't route. The search reads the session's **active dataset** only.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10
@@ -48,11 +50,20 @@ curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
 - **Do not re-run the same search to "retry."** One server answer is authoritative — report it and stop. (Re-running the CLI and chasing async warnings is how a confident-but-wrong "nothing found" verdict gets produced.)
 - **If the output is an `{"error": ...}` object instead of a list**, the server was reachable but rejected/failed the request (e.g. auth) — report that error and check `COGNEE_API_KEY`. It is **not** "no results", and the wrapper deliberately does **not** fall back to the local CLI in that case.
 
-## Empty in the active dataset: report the other datasets
+## Empty result: check the recall mode, then report
 
-An authoritative empty list means the **active** dataset holds nothing for the
-query — other datasets the user can read may. You cannot ask the user yourself,
-so list them and hand the choice back to the caller:
+Read the mode from the `recall` field (`"auto"` or `"pinned"`):
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
+```
+
+- **`auto`**: the server already searched the datasets it picked, and widened
+  to the rest of the readable ones when those had nothing. An authoritative
+  empty list means no readable dataset matched. Report that, and stop.
+- **`pinned`** (restricted): only the **active** dataset holds nothing for the
+  query, and other datasets the user can read may still match. You cannot ask
+  the user yourself, so list them and hand the choice back to the caller:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others

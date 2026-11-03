@@ -183,6 +183,19 @@ def test_auto_is_reserved_and_never_switches(env, capsys, word):
     assert env.rec()["dataset"] == "a" and not _calls(env.server, REGISTER)
 
 
+def test_a_dataset_named_next_to_a_flag_switches(env, capsys):
+    """There is no ``--auto`` flag: only the positional word unpins, so a flag
+    can never turn a named switch into an unpin."""
+    import json
+
+    assert (
+        env.switch.main(["b", "--auto", "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert out["switched"] is True and out["dataset"] == "b"
+    assert env.rec()["dataset"] == "b" and env.rec()["recall_pinned"] is True
+
+
 def test_a_switch_pins_recall_to_the_new_dataset(env):
     result = env.switch._switch(env.host, env.rec(), "b", force=False)
     assert result["switched"] is True and result["recall"] == "pinned"

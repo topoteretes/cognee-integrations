@@ -1024,6 +1024,54 @@ class TestDatasetRoutingGate(unittest.TestCase):
         backend, _ = self._backend(OSError("refused"))
         self.assertFalse(backend.routes_datasets(timeout=1.0))
 
+    def test_a_failed_probe_is_retried_within_five_minutes(self):
+        # A server downgraded during a restart: the probe that fails while it is
+        # down keeps the last answer, but only until the next retry, not an hour.
+        answers = [{"status": "ready", "version": "1.6.6"}]
+        backend = HttpBackend()
+        backend.url = "http://cognee.test"
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append(path)
+            answer = answers[-1]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        backend._request = request
+        clock = [1000.0]
+        with mock.patch("time.monotonic", lambda: clock[0]):
+            self.assertTrue(backend.routes_datasets(timeout=1.0))
+            answers.append(OSError("refused"))
+            clock[0] += 3601
+            self.assertTrue(backend.routes_datasets(timeout=1.0))  # last answer kept
+            answers.append({"status": "ready", "version": "1.6.5"})
+            clock[0] += 299
+            self.assertTrue(backend.routes_datasets(timeout=1.0))
+            self.assertEqual(len(calls), 2)
+            clock[0] += 2
+            self.assertFalse(backend.routes_datasets(timeout=1.0))
+            self.assertEqual(len(calls), 3)
+            answers.append({"status": "ready", "version": "1.6.6"})
+            clock[0] += 3601  # the 1.6.5 answer was a success: cached for the hour
+            self.assertTrue(backend.routes_datasets(timeout=1.0))
+            clock[0] += 3599
+            self.assertTrue(backend.routes_datasets(timeout=1.0))  # cached for the hour
+            self.assertEqual(len(calls), 4)
+
+    def test_a_failed_probe_with_no_history_is_not_retried_on_every_prompt(self):
+        backend, calls = self._backend(OSError("refused"))
+        clock = [1000.0]
+        with mock.patch("time.monotonic", lambda: clock[0]):
+            self.assertFalse(backend.routes_datasets(timeout=1.0))
+            clock[0] += 299
+            self.assertFalse(backend.routes_datasets(timeout=1.0))
+            self.assertEqual(calls, ["/health"])
+            clock[0] += 2
+            self.assertFalse(backend.routes_datasets(timeout=1.0))
+            self.assertEqual(calls, ["/health", "/health"])
+
     def test_a_release_candidate_of_1_6_6_does_not_route(self):
         # cognee 1.6.6rc1 reports "1.6.6.rc1" on /health and has no routing.
         backend, _ = self._backend({"status": "ready", "version": "1.6.6.rc1"})

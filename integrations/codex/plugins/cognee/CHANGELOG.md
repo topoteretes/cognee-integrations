@@ -18,7 +18,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   dataset(s) most likely to hold the answer when it can, and otherwise searches every readable
   dataset (dataset routing, SDK-1317; best effort). Pin a dataset to keep recall on one.
   Saves still go to the active dataset. The plugin reads the server version from `GET /health`
-  (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly) and keeps
+  (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly, a failed read retried after five minutes with the last answer kept meanwhile) and keeps
   recall on the active dataset against an older server; pre-releases and dev builds of 1.6.6 count
   as older. The `/health` read comes out of the prompt's recall budget. Session history and guidance, the code
   lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
@@ -29,7 +29,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   where they are. `--list` reports the mode in effect (`recall: auto|pinned`): unpinned recall a
   server cannot route reads as `pinned`, and `auto` there says the choice is saved. A session
   switched before this release stays restricted. `auto` is a reserved name: no dataset can be
-  switched to or created as `auto`.
+  switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset with
+  recall on auto.
 - **`cognee-search` falls back to the CLI by its own version.** With the server unreachable, the
   `cognee-cli` fallback sends no dataset only when the CLI's cognee is 1.6.6 or later.
 

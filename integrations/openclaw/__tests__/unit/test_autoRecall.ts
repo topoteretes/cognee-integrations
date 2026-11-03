@@ -92,6 +92,57 @@ describe("CogneeHttpClient auto recall", () => {
     expect(await new CogneeHttpClient("http://cognee.test", "k").routesDatasets()).toBe(false);
   });
 
+  describe("probe retry", () => {
+    const HOUR = 60 * 60_000;
+    const FIVE_MIN = 5 * 60_000;
+    let now = 1_000_000_000;
+    beforeEach(() => {
+      now = 1_000_000_000;
+      jest.spyOn(Date, "now").mockImplementation(() => now);
+    });
+    afterEach(() => jest.restoreAllMocks());
+    const healthCalls = (calls: Array<{ url: string }>) => calls.filter((c) => c.url.endsWith("/health")).length;
+
+    it("retries a failed probe with no history after five minutes, not on every prompt", async () => {
+      let calls = server(new Error("refused"));
+      const client = new CogneeHttpClient("http://cognee.test", "k");
+      expect(await client.routesDatasets()).toBe(false);
+      now += FIVE_MIN - 1;
+      expect(await client.routesDatasets()).toBe(false);
+      expect(healthCalls(calls)).toBe(1);
+      calls = server("1.6.6");
+      now += 2;
+      expect(await client.routesDatasets()).toBe(true);
+      expect(healthCalls(calls)).toBe(1);
+    });
+
+    it("keeps the last answer after a failed probe but re-probes within five minutes", async () => {
+      // A downgrade during a restart: the failed probe must not keep routing on for an hour.
+      server("1.6.6");
+      const client = new CogneeHttpClient("http://cognee.test", "k");
+      expect(await client.routesDatasets()).toBe(true);
+      server(new Error("refused"));
+      now += HOUR + 1;
+      expect(await client.routesDatasets()).toBe(true);
+      const calls = server("1.6.5");
+      now += FIVE_MIN - 1;
+      expect(await client.routesDatasets()).toBe(true);
+      expect(healthCalls(calls)).toBe(0);
+      now += 2;
+      expect(await client.routesDatasets()).toBe(false);
+      expect(healthCalls(calls)).toBe(1);
+    });
+
+    it("caches a successful probe for the hour", async () => {
+      const calls = server("1.6.6");
+      const client = new CogneeHttpClient("http://cognee.test", "k");
+      expect(await client.routesDatasets()).toBe(true);
+      now += HOUR - 1;
+      expect(await client.routesDatasets()).toBe(true);
+      expect(healthCalls(calls)).toBe(1);
+    });
+  });
+
   it("shares one in-flight probe between concurrent callers", async () => {
     let answer!: (r: Response) => void;
     const fetchMock = jest.fn(() => new Promise<Response>((resolve) => { answer = resolve; }));

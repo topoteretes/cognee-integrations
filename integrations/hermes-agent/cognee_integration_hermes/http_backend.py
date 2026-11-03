@@ -434,7 +434,12 @@ class HttpBackend(MemoryBackend):
 
         now = time.monotonic()
         cached = getattr(self, "_routing", None)
-        if cached and now - cached["checked_at"] < (3600.0 if cached["version"] else 300.0):
+        # A failed probe is retried after five minutes even when the last answer
+        # is kept, so a server downgraded during a restart is noticed soon.
+        fresh_for = (
+            3600.0 if cached and cached["version"] and not cached.get("probe_failed") else 300.0
+        )
+        if cached and now - cached["checked_at"] < fresh_for:
             return cached["routes"]
         version = ""
         if self.url:
@@ -449,6 +454,7 @@ class HttpBackend(MemoryBackend):
             "version": version or (cached["version"] if cached else ""),
             "routes": routes,
             "checked_at": now,
+            "probe_failed": not version,
         }
         return routes
 

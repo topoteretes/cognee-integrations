@@ -135,7 +135,7 @@ def _active_dataset(host_id: str = "") -> str:
         return recorded
     # 2. env var (inherited from the shell that launched Codex)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
-    if v:
+    if v and v.lower() != "auto":  # reserved: the default dataset with auto recall
         return v
     # 3. default
     return _DEFAULT_DATASET

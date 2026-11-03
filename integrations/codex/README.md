@@ -264,7 +264,7 @@ Two terminals can deliberately share a session by setting the same `COGNEE_SESSI
 
 ## Dataset
 
-All writes and recall are scoped to a single dataset. By default both the Claude Code and Codex plugins use `agent_sessions`, so memory is shared across both integrations automatically.
+All writes go to a single dataset, the active one. By default both the Claude Code and Codex plugins use `agent_sessions`, so memory is shared across both integrations automatically.
 
 Set a custom dataset at launch:
 
@@ -273,7 +273,7 @@ export COGNEE_PLUGIN_DATASET="my-project-memory"
 codex
 ```
 
-`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Saves go to the active dataset; recall is auto (the server picks the dataset when it can) until you pick one (see
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. `auto` is reserved: `COGNEE_PLUGIN_DATASET=auto` means the default dataset with recall on auto. Saves go to the active dataset. Recall is auto (the server picks the dataset when it can) until you pick one (see
 [Auto recall and restricting it to one dataset](#auto-recall-and-restricting-it-to-one-dataset)).
 Data added outside of Codex to the dataset (via SDK or the server for example) is visible in Codex via the Cognee plugin.
 
@@ -323,7 +323,7 @@ python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # let the s
 The choice is stored in the launch record (`recall_pinned`); a session switched before this
 release stays restricted. `auto` is reserved: no dataset can be named so. Auto recall needs a server
 that routes: the plugin reads the version from `GET /health` (cached per server in
-`~/.cognee-plugin/dataset-routing.json`, re-read hourly; the read comes out of the prompt's recall
+`~/.cognee-plugin/dataset-routing.json`, re-read hourly, or after five minutes when a read failed; the read comes out of the prompt's recall
 budget) and, against an older server, keeps recall on the active dataset as before. Pre-releases
 and dev builds of 1.6.6 count as older. While recall cannot be routed, `--list`, the status row and
 `/cognee-dataset` show it as restricted to the active dataset. These always keep their explicit dataset: session history and

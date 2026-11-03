@@ -361,7 +361,9 @@ export class CogneeHttpClient {
    */
   async routesDatasets(timeoutMs: number = this.timeoutMs): Promise<boolean> {
     const cached = this.routing;
-    if (cached && Date.now() - cached.checkedAt < (cached.version ? ROUTING_TTL_MS : ROUTING_RETRY_MS)) return cached.routes;
+    // A failed probe (no version this time) is retried after ROUTING_RETRY_MS even
+    // when an earlier answer is kept, so a downgrade during a restart is noticed.
+    if (cached && Date.now() - cached.checkedAt < (cached.version && !cached.probeFailed ? ROUTING_TTL_MS : ROUTING_RETRY_MS)) return cached.routes;
     this.routingProbe ??= (async () => {
       let version = "";
       try {
@@ -371,13 +373,13 @@ export class CogneeHttpClient {
         version = "";
       }
       const routes = version ? versionAtLeast(version, DATASET_ROUTING_MIN_VERSION) : cached?.routes ?? false;
-      this.routing = { version: version || cached?.version || "", routes, checkedAt: Date.now() };
+      this.routing = { version: version || cached?.version || "", routes, checkedAt: Date.now(), probeFailed: !version };
       return routes;
     })().finally(() => { this.routingProbe = undefined; });
     return this.routingProbe;
   }
 
-  private routing?: { version: string; routes: boolean; checkedAt: number };
+  private routing?: { version: string; routes: boolean; checkedAt: number; probeFailed: boolean };
   private routingProbe?: Promise<boolean>;
 
   // -- Data operations ------------------------------------------------------

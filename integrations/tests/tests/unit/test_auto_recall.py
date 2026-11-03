@@ -211,6 +211,80 @@ def test_a_failed_probe_keeps_the_last_answer(pc, health, monkeypatch):
     assert pc.server_routes_datasets(URL) is True
 
 
+def _at(pc, monkeypatch, when):
+    monkeypatch.setattr(pc.time, "time", lambda: when)
+
+
+def test_a_failed_probe_with_no_history_is_retried_after_the_retry_interval(
+    pc, health, monkeypatch
+):
+    start = pc.time.time()
+    health["version"] = OSError("refused")
+    assert pc.server_routes_datasets(URL) is False
+    _at(pc, monkeypatch, start + pc._ROUTING_SUPPORT_RETRY_SECONDS - 1)
+    assert pc.server_routes_datasets(URL) is False
+    assert health["calls"] == 1  # not re-probed on every prompt
+    health["version"] = "1.6.6"
+    _at(pc, monkeypatch, start + pc._ROUTING_SUPPORT_RETRY_SECONDS + 1)
+    assert pc.server_routes_datasets(URL) is True
+    assert health["calls"] == 2
+
+
+def test_a_failed_probe_after_a_success_is_retried_within_minutes(pc, health, monkeypatch):
+    # The server is downgraded while it restarts: the probe that fails during the
+    # restart must not keep the old answer for another hour.
+    start = pc.time.time()
+    assert pc.server_routes_datasets(URL) is True
+    health["version"] = OSError("refused")
+    failed_at = start + pc._ROUTING_SUPPORT_TTL_SECONDS + 1
+    _at(pc, monkeypatch, failed_at)
+    assert pc.server_routes_datasets(URL) is True
+    health["version"] = "1.6.5"
+    _at(pc, monkeypatch, failed_at + pc._ROUTING_SUPPORT_RETRY_SECONDS - 1)
+    assert pc.server_routes_datasets(URL) is True
+    assert health["calls"] == 2
+    _at(pc, monkeypatch, failed_at + pc._ROUTING_SUPPORT_RETRY_SECONDS + 1)
+    assert pc.server_routes_datasets(URL) is False
+    assert health["calls"] == 3
+
+
+def test_a_success_after_a_failed_probe_is_cached_for_the_ttl(pc, health, monkeypatch):
+    start = pc.time.time()
+    health["version"] = OSError("refused")
+    assert pc.server_routes_datasets(URL) is False
+    health["version"] = "1.6.6"
+    recovered_at = start + pc._ROUTING_SUPPORT_RETRY_SECONDS + 1
+    _at(pc, monkeypatch, recovered_at)
+    assert pc.server_routes_datasets(URL) is True
+    _at(pc, monkeypatch, recovered_at + pc._ROUTING_SUPPORT_RETRY_SECONDS + 1)
+    assert pc.server_routes_datasets(URL) is True
+    assert health["calls"] == 2
+
+
+# ── "auto" is not a dataset name ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize("value", ["auto", "AUTO", " Auto "])
+def test_an_env_dataset_of_auto_means_the_default_dataset(pc, monkeypatch, value):
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", value)
+    monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    assert pc.resolve_active_dataset("") == "agent_sessions"
+    assert pc.configured_dataset_name(value) == "agent_sessions"
+
+
+def test_other_env_datasets_are_kept(pc, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "autos")
+    monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    assert pc.resolve_active_dataset("") == "autos"
+
+
+@pytest.mark.parametrize("value", ["auto", " AUTO "])
+def test_a_configured_dataset_of_auto_seeds_the_default(suite, isolated_modules, value):
+    config = isolated_modules(suite, "config")
+    assert config.get_dataset({"dataset": value}) == "agent_sessions"
+    assert config.get_dataset({"dataset": "research"}) == "research"
+
+
 # ── pinning ────────────────────────────────────────────────────────────────
 
 

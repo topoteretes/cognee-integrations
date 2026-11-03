@@ -451,7 +451,19 @@ def resolve_active_dataset(host_key: str = "") -> str:
         ds = str(rec.get("dataset") or "").strip()
         if ds:
             return ds
-    return str(os.environ.get("COGNEE_PLUGIN_DATASET", "") or "").strip() or _DEFAULT_DATASET_NAME
+    return configured_dataset_name(os.environ.get("COGNEE_PLUGIN_DATASET", ""))
+
+
+def configured_dataset_name(value: object) -> str:
+    """A dataset name from the env or config, or the default when it is unset.
+
+    "auto" is reserved for auto recall (``switch-dataset.py auto``), so a
+    configured "auto" means the default dataset with recall left on auto.
+    """
+    name = str(value or "").strip()
+    if not name or name.lower() == "auto":
+        return _DEFAULT_DATASET_NAME
+    return name
 
 
 def resolve_active_dataset_ids(host_key: str = "") -> tuple[str, list[str]]:
@@ -844,6 +856,8 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
     Read from a machine-wide cache keyed by URL and refreshed from /health at
     most once per TTL. A probe that fails keeps the last known answer, and with
     none the answer is False: recall then stays scoped, as on an old server.
+    Either way the next probe comes after the retry interval, not the TTL, so a
+    server that was downgraded while unreachable is noticed within minutes.
     """
     base = _normalize_service_url(service_url or _local_api_url())
     if not base:
@@ -857,7 +871,11 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
         cache = {}
     entry = cache.get(base) if isinstance(cache.get(base), dict) else {}
     checked_at = float(entry.get("checked_at") or 0) if entry else 0.0
-    wait = _ROUTING_SUPPORT_TTL_SECONDS if entry.get("version") else _ROUTING_SUPPORT_RETRY_SECONDS
+    wait = (
+        _ROUTING_SUPPORT_TTL_SECONDS
+        if entry.get("version") and not entry.get("probe_failed")
+        else _ROUTING_SUPPORT_RETRY_SECONDS
+    )
     if entry and now - checked_at < wait:
         return bool(entry.get("routes"))
     try:
@@ -873,6 +891,7 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
         "version": version or str(entry.get("version") or ""),
         "routes": routes,
         "checked_at": now,
+        "probe_failed": not version,
     }
     try:
         _write_json_file(_ROUTING_SUPPORT_FILE, cache)

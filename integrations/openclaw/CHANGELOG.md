@@ -19,7 +19,7 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   query, best effort: it picks the best-matching dataset when it can, and otherwise searches
   every readable dataset. Pin a dataset to keep recall on one. Saves still go to the
   conversation's dataset. `CogneeHttpClient.routesDatasets()` reads `version` from `/health`
-  (short timeout, one shared in-flight probe, cached for an hour, skipped while the recall
+  (short timeout, one shared in-flight probe, cached for an hour, a failed probe retried after five minutes, skipped while the recall
   breaker is open, spent out of the recall budget); a pre-release or dev build (`1.6.6rc1`,
   `1.6.6.dev0`), an older server or a failed probe keeps the dataset. Multi-scope mode, the
   guidance lane and the code lane keep their explicit datasets, and an install with no indexed

@@ -430,8 +430,11 @@ class TestSdkBackendLanes(unittest.TestCase):
     serving the other.
     """
 
-    def _sdk_provider(self, config=None):
+    def _sdk_provider(self, config=None, *, routes=False):
         backend = SdkBackend()
+        # The gate reads the installed cognee's version (absent locally, 1.6.6 in
+        # CI); pin it so these tests don't depend on what is installed.
+        backend.routes_datasets = lambda *, timeout: routes
         provider = make_provider(backend=backend, config={**_LAYERED, **(config or {})})
         return backend, provider
 
@@ -448,6 +451,20 @@ class TestSdkBackendLanes(unittest.TestCase):
         self.assertIs(graph["only_context"], True)
         self.assertNotIn("session_id", graph)
         self.assertEqual(graph["datasets"], ["hermes"])
+        (guidance,) = _by_scope(calls, "session_context")
+        self.assertEqual(guidance["session_id"], "hermes_s-1")
+
+    def test_memory_request_names_no_dataset_when_the_installed_cognee_routes(self):
+        with fake_cognee() as fake:
+            backend, provider = self._sdk_provider(routes=True)
+            try:
+                _prefetch(provider)
+                calls = fake.kwargs_for("recall")
+            finally:
+                backend.close(unregister=False)
+        (graph,) = _by_scope(calls, "graph")
+        self.assertNotIn("datasets", graph)
+        self.assertNotIn("session_id", graph)
         (guidance,) = _by_scope(calls, "session_context")
         self.assertEqual(guidance["session_id"], "hermes_s-1")
 

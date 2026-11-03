@@ -25,6 +25,12 @@ set -euo pipefail
 
 PLUGIN_DIR="${HOME}/.cognee-plugin/claude-code"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+
+# "auto" is not a dataset name: COGNEE_PLUGIN_DATASET=auto means the default
+# dataset with auto recall (SDK-1393), which is what an unset variable gives.
+case "$(printf '%s' "${COGNEE_PLUGIN_DATASET:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+    auto) COGNEE_PLUGIN_DATASET="" ;;
+esac
 runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
 import json
 import pathlib
@@ -127,6 +133,14 @@ while [ $# -gt 0 ]; do
         --dataset|-d)
             shift
             DATASET="${1:-$DATASET}"
+            # "auto" is reserved for auto recall (SDK-1393): no save lands in a
+            # dataset that could never be pinned afterwards.
+            case "$(printf '%s' "$DATASET" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+                auto)
+                    echo "Error: 'auto' is reserved for auto recall, not a dataset name" >&2
+                    exit 2
+                    ;;
+            esac
             # The canonical UUID belongs to the launch's active dataset only.
             DATASET_ID=""
             ;;

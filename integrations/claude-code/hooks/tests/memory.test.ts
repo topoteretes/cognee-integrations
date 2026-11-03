@@ -478,6 +478,33 @@ test('with recall auto the picker reads "auto (<dataset>)", picking a dataset re
   await ui.unmount()
 })
 
+test('picking the active dataset on a server that cannot route still pins recall to it', async ($, on) => {
+  // Unpinned recall on cognee < 1.6.6 reads "pinned" (the mode in effect); the
+  // pick must still reach the switch script, or recall goes auto after an upgrade.
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned' }))
+        : ok(JSON.stringify({ switched: false, reason: 'recall_restricted', dataset: 'agent_sessions', session_id: 'cognee-1', recall: 'pinned' })),
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker!.props.value).toBe('agent_sessions')
+  calls.length = 0
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'agent_sessions' })
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['agent_sessions', '--json', '--session-key', SESSION])
+  expect(toasts.some(t => t.includes('recall restricted to agent_sessions'))).toBe(true)
+  await ui.unmount()
+})
+
 test('/cognee-dataset auto lifts the restriction and the listing says which recall is on', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, {

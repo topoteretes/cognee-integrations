@@ -17,7 +17,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   lane and `cognee_recall` name no dataset. Routing is best-effort: the server picks the
   best-matching dataset when it can, otherwise searches every readable dataset; pin a dataset
   to keep recall on one. Saves still go to the conversation's dataset. The HTTP backend reads
-  `version` from `/health` (cached for an hour; the probe comes out of the per-prompt recall
+  `version` from `/health` (cached for an hour, a failed probe retried after five minutes; the probe comes out of the per-prompt recall
   budget); in-process the installed cognee decides; against an older or served-SDK cognee
   recall keeps the dataset. Pre-releases and dev builds count as below their release
   (`1.6.6rc1`, reported as `1.6.6.rc1`, does not route); `-local`, `+local` and `.postN`

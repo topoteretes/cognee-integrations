@@ -1352,12 +1352,14 @@ export const register: Register = (on, options) => {
             redraw($)
             return
           }
-          // Picking the active dataset while auto restricts recall to it.
+          // Picking a dataset, the active one included, pins recall to it. The
+          // active one is sent too even when recall already reads "pinned": on a
+          // server that can't route yet that is only the mode in effect, not a
+          // pin, and recall would go auto once the server is upgraded.
           if (value === AUTO_RECALL) {
             if (!auto) void switchDataset($, 'auto')
             else redraw($)
-          } else if (value !== current || auto) void switchDataset($, value)
-          else redraw($)
+          } else void switchDataset($, value)
         },
       })
     // The terminal's closed form: the name as a button that opens the picker.

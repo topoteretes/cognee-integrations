@@ -121,17 +121,32 @@ checkout exists, say the mode is unavailable and use the server search above.
 "${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" search "<code question>" -d <dataset-name> -t CODE -k 10 -f pretty
 ```
 
-### Not found in the active dataset? Offer another one
+### Nothing found? Check the recall mode first
 
-Search is scoped to this session's **active** dataset. When the server answers
-with an authoritative empty list (or the per-prompt memory header injected an
-"Other Cognee datasets you can search" block), the information may live in
-another dataset the user can read. Do **not** switch datasets for that — a
-switch retires the session. Offer a one-off search instead:
+Which datasets a graph search reads depends on the recall mode:
+
+- **auto** (the default on a cognee >= 1.6.6 server): the search names no
+  dataset, and the server picks the readable dataset(s) most likely to hold the
+  answer. When those return nothing, it widens to the rest. An authoritative
+  empty list then means no readable dataset matched. Report that, and don't
+  offer other datasets.
+- **restricted**: the user picked a dataset, or the server can't route (older
+  than 1.6.6, or the version is unknown). The search reads the **active**
+  dataset only, so an empty list may only mean the information lives in
+  another dataset the user can read.
+
+When the mode matters (an empty answer while the user is recalling something),
+read it from the `recall` field (`"auto"` or `"pinned"`):
+
+```bash
+python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
+```
+
+When recall is restricted and the result is empty, do **not** switch datasets,
+because a switch retires the session. Offer a one-off search instead:
 
 1. List the candidates (every readable dataset, the active one excluded;
-   read-only datasets are searchable and included). Skip this when the hook's
-   hint block already names them:
+   read-only datasets are searchable and included):
 
    ```bash
    python3 "${CODEX_PLUGIN_ROOT}/scripts/list-datasets.py" --others

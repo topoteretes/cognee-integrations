@@ -114,5 +114,5 @@ On failure the JSON is `{"error", "code"}`:
 - A switch is not needed just to *look* in another dataset: a one-off graph search
   leaves the session where it is — `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id>` (see the **cognee-search** skill).
 
-- `COGNEE_PLUGIN_DATASET` only seeds the dataset at launch; a switch overrides it for the rest of the session and survives `--resume`.
-- After a switch recall is restricted to the new dataset, so context from the previous one is no longer injected; `switch-dataset.py auto` lets recall reach every dataset again.
+- `COGNEE_PLUGIN_DATASET` only seeds the dataset at launch; a switch overrides it for the rest of the session and survives `--resume`. `COGNEE_PLUGIN_DATASET=auto` is not a dataset name: it means the default dataset (`agent_sessions`) with recall on auto.
+- After a switch, recall is restricted to the new dataset, so context from the previous one is no longer injected. `switch-dataset.py auto` puts recall back on auto, which on a cognee >= 1.6.6 server lets recall reach the other readable datasets again. An older server keeps recall on the active dataset.

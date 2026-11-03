@@ -502,7 +502,6 @@ def main(argv: list[str] | None = None) -> int:
     as_json = "--json" in args
     force = "--force" in args
     do_list = "--list" in args
-    do_auto = "--auto" in args
     explicit_key = ""
     if "--session-key" in args:
         i = args.index("--session-key")
@@ -512,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         host_key, rec = _resolve_launch(explicit_key)
-        if do_auto or (positional and positional[0].strip().lower() == "auto"):
+        if positional and positional[0].strip().lower() == "auto":
             _print_switch(_auto(host_key, rec), as_json)
             return EXIT_OK
         if do_list or not positional:

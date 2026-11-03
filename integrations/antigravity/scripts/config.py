@@ -219,7 +219,10 @@ def get_dataset(config: dict) -> str:
                 return recorded
     except Exception:
         pass
-    return config.get("dataset", "agent_sessions")
+    # "auto" is reserved for auto recall: COGNEE_PLUGIN_DATASET=auto means the
+    # default dataset with recall left on auto.
+    name = str(config.get("dataset") or "").strip()
+    return name if name and name.lower() != "auto" else "agent_sessions"
 
 
 def is_cloud_mode(config: dict) -> bool:
