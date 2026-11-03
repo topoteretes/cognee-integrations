@@ -1693,6 +1693,13 @@ class CogneeMemoryProvider(MemoryProvider):
                     },
                 )
             )
+        # The /health version probe behind auto recall (cached; a request only
+        # every hour) spends this prompt's budget, not time on top of it: it is
+        # bounded by what is left, and the lanes below get what remains after it.
+        remaining = deadline - time.monotonic()
+        routed = remaining >= 0.2 and (
+            self._graph_datasets(probe_timeout=min(2.0, recall_timeout, remaining)) is None
+        )
         # HYBRID_COMPLETION combines BM25 + vector + graph retrieval; with
         # only_context the LLM completion is skipped server-side and the item's
         # text is the prompt that completion would have read.
@@ -1703,7 +1710,7 @@ class CogneeMemoryProvider(MemoryProvider):
                     "scope": ["graph"],
                     "query_type": "HYBRID_COMPLETION",
                     "session_id": None,
-                    "routed": self._graph_datasets() is None,
+                    "routed": routed,
                 },
             )
         )
@@ -2138,8 +2145,14 @@ class CogneeMemoryProvider(MemoryProvider):
             counter = int(override.get("counter") or 0)
         except (TypeError, ValueError):
             return
-        # Entries written before SDK-1393 carry no mode: a switch pinned recall.
-        self._recall_pinned = str(override.get("recall") or "pinned") == "pinned"
+        recall = override.get("recall")
+        if recall is None:
+            # Entries written before SDK-1393 carry no mode: a switch pinned recall.
+            # One to the configured default reads the same as a reset, which is
+            # now auto: an old file cannot tell the two apart.
+            self._recall_pinned = dataset != self._default_dataset
+        else:
+            self._recall_pinned = str(recall) == "pinned"
         if not dataset or counter <= 0:
             # A pin-only entry (counter 0) restricts recall without a switch.
             return
@@ -2157,7 +2170,7 @@ class CogneeMemoryProvider(MemoryProvider):
                     "dataset": self._dataset,
                     "default": self._default_dataset,
                     "switched": self._dataset != self._default_dataset,
-                    "recall": "pinned" if self._recall_pinned else "auto",
+                    "recall": self._recall_mode(),
                     "cognee_session_id": self._session_cognee_id,
                 }
             )
@@ -2189,6 +2202,15 @@ class CogneeMemoryProvider(MemoryProvider):
             target = str(args.get("dataset") or "").strip()
             if not target:
                 return json.dumps({"error": "action='switch' requires a dataset name."})
+            if target.lower() == "auto":
+                return json.dumps(
+                    {
+                        "error": (
+                            "'auto' is reserved for the recall mode, not a dataset name: use "
+                            "action='auto' to let the server pick the dataset for recall."
+                        )
+                    }
+                )
             # Refused rather than rewritten, so a switch never lands in a dataset
             # the user did not name.
             suggestion = _safe_dataset_name(target, fallback="")
@@ -2200,31 +2222,46 @@ class CogneeMemoryProvider(MemoryProvider):
         if action == "reset":
             if self._dataset == self._default_dataset:
                 return self._set_recall_auto()
-            result = self._switch_dataset(self._default_dataset, force=force)
-            if json.loads(result).get("switched"):
+            result = json.loads(self._switch_dataset(self._default_dataset, force=force))
+            if result.get("switched"):
                 # Back to the configured dataset means back to auto recall.
                 self._recall_pinned = False
                 dataset_overrides.save_override(
                     self._session_id, self._dataset, self._switch_counter, recall="auto"
                 )
-            return result
+                result["recall"] = self._recall_mode()
+                if result["recall"] != "auto":
+                    result["note"] = self._auto_unavailable_note()
+            return json.dumps(result)
         return json.dumps({"error": "Specify action: list, current, switch, auto, or reset."})
 
     # -- recall mode (SDK-1393) -------------------------------------------------
 
-    def _graph_datasets(self) -> Optional[list[str]]:
+    def _graph_datasets(self, *, probe_timeout: Optional[float] = None) -> Optional[list[str]]:
         """The datasets graph recall names: none (auto, routed server-side)
         unless recall is pinned or the server does not route datasets."""
         if self._recall_pinned:
             return [self._dataset]
         try:
-            timeout = min(2.0, self._timeout("recall_timeout", 120))
+            timeout = probe_timeout
+            if timeout is None:
+                timeout = min(2.0, self._timeout("recall_timeout", 120))
             routes = self._backend.routes_datasets(timeout=timeout)
         except Exception:
             routes = False
         return None if routes else [self._dataset]
 
+    def _recall_mode(self) -> str:
+        """The mode in effect: "auto" only when unpinned and the server routes;
+        unpinned on a server that cannot route reads "pinned", as it behaves."""
+        return "auto" if self._graph_datasets() is None else "pinned"
+
+    def _auto_unavailable_note(self) -> str:
+        return f"Saved. This server can't route yet, so recall stays on {self._dataset!r}."
+
     def _set_recall_auto(self) -> str:
+        """Save auto as this conversation's choice; the reply reports the mode in
+        effect, which stays pinned where the server cannot route."""
         changed = self._recall_pinned
         if changed:
             self._recall_pinned = False
@@ -2234,14 +2271,15 @@ class CogneeMemoryProvider(MemoryProvider):
             with self._prefetch_lock:
                 self._prefetch_result = ""
                 self._prefetch_generation += 1
-        return json.dumps(
-            {
-                "switched": False,
-                "reason": "recall_auto" if changed else "already_auto",
-                "dataset": self._dataset,
-                "recall": "auto",
-            }
-        )
+        envelope = {
+            "switched": False,
+            "reason": "recall_auto" if changed else "already_auto",
+            "dataset": self._dataset,
+            "recall": self._recall_mode(),
+        }
+        if envelope["recall"] != "auto":
+            envelope["note"] = self._auto_unavailable_note()
+        return json.dumps(envelope)
 
     def _switch_dataset(self, target: str, *, force: bool) -> str:
         if target == self._dataset:

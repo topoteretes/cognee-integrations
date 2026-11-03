@@ -134,6 +134,35 @@ class TestPerPromptRequests(unittest.TestCase):
             _prefetch(provider)
             self.assertEqual(fake.kwargs_for("recall"), [])
 
+    def test_the_routing_probe_comes_out_of_the_budget(self):
+        """SDK-1393: the /health version probe is bounded by the prompt's budget
+        and the lanes get only what is left after it."""
+        probes = []
+        with fake_backend() as fake:
+
+            def slow_probe(*, timeout):
+                probes.append(timeout)
+                time.sleep(0.4)
+                return True
+
+            fake.routes_datasets = slow_probe
+            provider = make_provider(config={**_LAYERED, "recall_budget": 1})
+            _prefetch(provider)
+            calls = fake.kwargs_for("recall")
+        self.assertEqual(len(probes), 1)
+        self.assertLessEqual(probes[0], 1.0)
+        self.assertIsNone(_by_scope(calls, "graph")[0]["datasets"])
+        self.assertLessEqual(max(kwargs["timeout"] for kwargs in calls), 0.65)
+
+    def test_no_routing_probe_without_budget_for_the_lanes(self):
+        probes = []
+        with fake_backend() as fake:
+            fake.routes_datasets = lambda *, timeout: probes.append(timeout) or True
+            provider = make_provider(config={**_LAYERED, "recall_budget": 0.1})
+            _prefetch(provider)
+            self.assertEqual(fake.kwargs_for("recall"), [])
+        self.assertEqual(probes, [])
+
 
 class TestTrimming(unittest.TestCase):
     def test_the_v160_item_is_cut_to_the_retrieved_context(self):

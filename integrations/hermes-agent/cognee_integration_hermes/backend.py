@@ -22,6 +22,7 @@ import asyncio
 import importlib.util
 import logging
 import os
+import re
 import threading
 from typing import Any, Optional
 
@@ -33,26 +34,42 @@ logger = logging.getLogger(__name__)
 DATASET_ROUTING_MIN_VERSION = (1, 6, 6)
 
 
+_VERSION = re.compile(r"v?(\d+(?:\.\d+)*)(.*)", re.IGNORECASE | re.DOTALL)
+# A pre-release or dev build, with or without a separator: '1.6.6rc1', '1.6.6.rc1',
+# '1.6.6-beta', '1.6.6.dev0'. Not '-local' or '.post1', which are the release.
+_PRE_RELEASE = re.compile(r"[._-]?(?:alpha|beta|preview|pre|rc|a|b|c|dev)\d*(?![a-z])")
+# The release itself: '-local' (source checkout, the Docker image), '+label',
+# '.post1'. Any other suffix ('1.6.6-custom') is unparseable.
+_RELEASE_SUFFIX = re.compile(r"(?:-local|\+.*|[.-]?post\d*)", re.DOTALL)
+
+
 def version_tuple(value: str) -> tuple[int, ...]:
-    """Leading numeric release of a version string: '1.6.6rc1' -> (1, 6, 6)."""
-    parts: list[int] = []
-    for piece in str(value or "").strip().lstrip("vV").split("."):
-        digits = ""
-        for ch in piece:
-            if not ch.isdigit():
-                break
-            digits += ch
-        if not digits:
-            break
-        parts.append(int(digits))
-        if len(digits) != len(piece):
-            break
-    return tuple(parts)
+    """Leading numeric release of a version string: '1.6.6rc1' -> (1, 6, 6); () if none."""
+    match = _VERSION.fullmatch(str(value or "").strip())
+    return tuple(int(part) for part in match.group(1).split(".")) if match else ()
 
 
 def version_routes_datasets(value: str) -> bool:
-    parts = version_tuple(value)
-    return bool(parts) and parts >= DATASET_ROUTING_MIN_VERSION
+    """Whether cognee *value* routes datasets (>= 1.6.6).
+
+    '1.6.6', '1.6.6-local', '1.6.6+local' and '1.6.6.post1' count as 1.6.6; a
+    pre-release or dev build counts as below its release ('1.6.6.rc1', which
+    cognee 1.6.6rc1 reports, has no routing). Unparseable ('unknown', '',
+    '1.6.6-custom') is False.
+    """
+    text = str(value or "").strip().lower()
+    release = list(version_tuple(text))
+    if not release:
+        return False
+    while release and release[-1] == 0:
+        release.pop()
+    suffix = _VERSION.fullmatch(text).group(2)
+    if not suffix or _RELEASE_SUFFIX.fullmatch(suffix):
+        return tuple(release) >= DATASET_ROUTING_MIN_VERSION
+    # A pre-release or dev build is below its release.
+    if _PRE_RELEASE.match(suffix):
+        return tuple(release) > DATASET_ROUTING_MIN_VERSION
+    return False
 
 
 def has_cognee() -> bool:

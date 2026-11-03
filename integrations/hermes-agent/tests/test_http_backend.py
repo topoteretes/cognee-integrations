@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from _char_helpers import make_provider  # noqa: E402
+from cognee_integration_hermes.backend import version_routes_datasets  # noqa: E402
 from cognee_integration_hermes.http_backend import (  # noqa: E402
     CogneeHttpError,
     CogneeUnreachable,
@@ -992,10 +993,6 @@ class TestProviderOverHttp(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestDatasetRoutingGate(unittest.TestCase):
     """SDK-1393: auto recall applies only where /health reports cognee >= 1.6.6."""
 
@@ -1014,7 +1011,7 @@ class TestDatasetRoutingGate(unittest.TestCase):
         return backend, calls
 
     def test_routing_starts_at_1_6_6_and_is_cached(self):
-        cases = [("1.6.6", True), ("1.6.6rc1", True), ("1.7.0", True), ("1.6.5", False)]
+        cases = [("1.6.6", True), ("1.6.6rc1", False), ("1.7.0", True), ("1.6.5", False)]
         for version, routes in cases:
             backend, calls = self._backend({"status": "ready", "version": version})
             self.assertIs(backend.routes_datasets(timeout=1.0), routes, version)
@@ -1026,3 +1023,58 @@ class TestDatasetRoutingGate(unittest.TestCase):
         self.assertFalse(backend.routes_datasets(timeout=1.0))
         backend, _ = self._backend(OSError("refused"))
         self.assertFalse(backend.routes_datasets(timeout=1.0))
+
+    def test_a_release_candidate_of_1_6_6_does_not_route(self):
+        # cognee 1.6.6rc1 reports "1.6.6.rc1" on /health and has no routing.
+        backend, _ = self._backend({"status": "ready", "version": "1.6.6.rc1"})
+        self.assertFalse(backend.routes_datasets(timeout=1.0))
+
+
+class TestRoutingVersionRule(unittest.TestCase):
+    """SDK-1393: which cognee versions route datasets (>= 1.6.6)."""
+
+    def test_releases_and_local_or_post_labels_count_as_the_release(self):
+        for version in ("1.6.6", "v1.6.6", "1.6.6-local", "1.6.6+local", "1.6.6.post1", "1.7.0"):
+            self.assertTrue(version_routes_datasets(version), version)
+        self.assertTrue(version_routes_datasets("1.7.0rc1"), "a pre-release above 1.6.6")
+
+    def test_pre_releases_and_dev_builds_count_below_their_release(self):
+        for version in (
+            "1.6.6.rc1",
+            "1.6.6rc1",
+            "1.6.6-rc1",
+            "1.6.6a1",
+            "1.6.6.alpha1",
+            "1.6.6b2",
+            "1.6.6.beta",
+            "1.6.6.dev0",
+            "1.6.6dev0",
+        ):
+            self.assertFalse(version_routes_datasets(version), version)
+
+    def test_older_or_unparseable_versions_do_not_route(self):
+        for version in (
+            "1.6.5",
+            "1.6.5.post9",
+            "unknown",
+            "",
+            None,
+            "1.6.6-custom",
+            "1.7.0-custom",
+        ):
+            self.assertFalse(version_routes_datasets(version), version)
+
+    def test_the_installed_sdk_follows_the_same_rule(self):
+        from cognee_integration_hermes.backend import SdkBackend
+
+        for version, routes in (("1.6.6", True), ("1.6.6.rc1", False), ("1.6.6+local", True)):
+            backend = SdkBackend()
+            with mock.patch("importlib.metadata.version", return_value=version):
+                self.assertIs(backend.routes_datasets(timeout=1.0), routes, version)
+        backend.served = True
+        with mock.patch("importlib.metadata.version", return_value="1.7.0"):
+            self.assertFalse(backend.routes_datasets(timeout=1.0))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

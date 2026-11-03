@@ -117,14 +117,17 @@ FORGET_SCHEMA = {
 SWITCH_DATASET_SCHEMA = {
     "name": "cognee_switch_dataset",
     "description": (
-        "Move this conversation to another Cognee dataset. Recall is auto by default "
-        "(each query goes to the best-matching dataset). action='list' shows the "
-        "datasets visible to this principal, 'current' reports the active one and the "
-        "recall mode, 'switch' bridges the current session into its dataset and "
-        "re-points capture and the session-end improve at the target (creating it if "
-        "needed) and restricts recall to it (the dataset in use: only restricts recall), "
-        "'auto' lifts that restriction (saves stay where they are), 'reset' returns to "
-        "the configured default dataset with auto recall."
+        "Move this conversation to another Cognee dataset. Unless a dataset is picked, "
+        "recall is auto where the server supports it (cognee >= 1.6.6): best-effort, the "
+        "server picks the best-matching dataset when it can, otherwise searches every "
+        "readable dataset; elsewhere recall stays on the active dataset. action='list' "
+        "shows the datasets visible to this principal, 'current' reports the active one "
+        "and the recall mode in effect, 'switch' bridges the current session into its "
+        "dataset and re-points capture and the session-end improve at the target "
+        "(creating it if needed) and pins recall to it (the dataset in use: only pins "
+        "recall), 'auto' lifts the pin (saves stay where they are), 'reset' returns to "
+        "the configured default dataset and lifts the pin. Pin a dataset to keep recall "
+        "on one."
     ),
     "parameters": {
         "type": "object",

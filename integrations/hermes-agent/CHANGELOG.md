@@ -14,16 +14,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server the per-prompt memory
-  lane and `cognee_recall` name no dataset and the server routes the query to the readable
-  dataset(s) most likely to hold the answer (dataset routing). Saves still go to the
-  conversation's dataset. The HTTP backend reads `version` from `/health` (cached for an hour);
-  in-process the installed cognee decides; against an older or served-SDK cognee recall keeps
-  the dataset. The guidance lane, `cognee_code_search` and recaps keep their datasets.
-- **`cognee_switch_dataset` restricts recall.** A switch restricts recall to the new dataset;
-  switching to the dataset in use only restricts recall (no new session); `action='auto'`
-  lifts it; `reset` returns to the default dataset with auto recall; `current` reports the
-  mode. The mode is kept in `dataset-overrides.json`; entries written before this release stay
-  restricted.
+  lane and `cognee_recall` name no dataset. Routing is best-effort: the server picks the
+  best-matching dataset when it can, otherwise searches every readable dataset; pin a dataset
+  to keep recall on one. Saves still go to the conversation's dataset. The HTTP backend reads
+  `version` from `/health` (cached for an hour; the probe comes out of the per-prompt recall
+  budget); in-process the installed cognee decides; against an older or served-SDK cognee
+  recall keeps the dataset. Pre-releases and dev builds count as below their release
+  (`1.6.6rc1`, reported as `1.6.6.rc1`, does not route); `-local`, `+local` and `.postN`
+  count as the release. The guidance lane, `cognee_code_search` and recaps keep their
+  datasets.
+- **`cognee_switch_dataset` pins recall.** Any explicit pick pins recall to that dataset: a
+  switch (the default dataset included), or the dataset in use (no new session). Only
+  `action='auto'` and `reset` (back to the default dataset) lift the pin. `current` reports
+  the mode in effect: where the server cannot route it reads `pinned`, and `auto` saves the
+  choice but says recall stays on the dataset. `switch` refuses the name `auto`. The mode is
+  kept in `dataset-overrides.json`; entries written before this release stay pinned, except
+  one on the configured default dataset (indistinguishable from a reset), which is auto.
 
 ### Changed
 - **Local mode installs cognee 1.6.6** (was 1.6.5).

@@ -40,13 +40,16 @@ Python package with the `hermes_agent.plugins` entry point.
 - Exposes `cognee_forget` for user-directed, per-document deletion ("forget
   what we said about tennis"): find candidates with previews, then delete only
   what the user confirms.
-- Recall is auto by default: on a cognee >= 1.6.6 server the graph recall names
-  no dataset and the server routes each query to the best-matching dataset(s);
-  saves still go to the conversation's dataset. Against an older server recall
-  stays on that dataset.
+- Recall is auto by default on a cognee >= 1.6.6 server: the graph recall names
+  no dataset, and routing is best-effort: the server picks the best-matching
+  dataset when it can, otherwise searches every readable dataset. Saves still go
+  to the conversation's dataset. Against an older server recall stays on that
+  dataset. Pin a dataset to keep recall on one.
 - Exposes `cognee_switch_dataset` to move a conversation to another dataset
-  mid-session, bridging the session it leaves behind; a switch (or picking the
-  dataset in use) restricts recall to that dataset, and `action='auto'` lifts it.
+  mid-session, bridging the session it leaves behind; any explicit pick (a switch,
+  including to the default dataset, or picking the dataset in use) pins recall to
+  that dataset, and `action='auto'` or `reset` lifts the pin. `current` reports the
+  mode in effect: on a server that cannot route it reads pinned.
 - Indexes repositories into a deterministic code graph (`hermes cognee
   index-repo`) and answers structural code questions exactly via
   `cognee_code_search`, plus an identifier-gated code recall lane.
