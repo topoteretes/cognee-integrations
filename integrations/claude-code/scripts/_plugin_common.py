@@ -2588,12 +2588,25 @@ def user_me_via_http(api_key: str) -> dict:
 
 
 def list_datasets_via_http(api_key: str, *, timeout: float = 15.0) -> list[dict]:
-    """Every dataset the key can READ: ``[{"id", "name", "owner_id", "created_at"}]``."""
+    """Every dataset the key can READ: ``[{"id", "name", "owner_id", "created_at"}]``.
+
+    ``[]`` for a failed listing too — callers that must tell "unreadable" from
+    "none" use ``list_datasets_or_none_via_http``.
+    """
+    return list_datasets_or_none_via_http(api_key, timeout=timeout) or []
+
+
+def list_datasets_or_none_via_http(api_key: str, *, timeout: float = 15.0) -> list[dict] | None:
+    """``list_datasets_via_http``, but ``None`` when the listing could not be read
+    (no answer, a non-2xx, a body that is not a list). The shared-memory setup
+    must not mistake that for "no datasets": the tenant step reads an empty
+    list as permission to create — and activate — a tenant, which would hide
+    every dataset created under none."""
     status, body = _control_plane_request(
         "/api/v1/datasets", api_key=api_key, method="GET", timeout=timeout
     )
     if status != 200 or not isinstance(body, list):
-        return []
+        return None
     rows = []
     for item in body:
         if not isinstance(item, dict):
@@ -2911,7 +2924,12 @@ def ensure_shared_memory(
         parent = user_me_via_http(principal_key)
         if not parent.get("id"):
             return _separated("principal_unresolved")
-        datasets = list_datasets_via_http(principal_key)
+        datasets = list_datasets_or_none_via_http(principal_key)
+        if datasets is None:
+            # Transient (no marker written): with the listing unknown the tenant
+            # step must not run — it would read "no datasets" as safe to create one.
+            hook_log("shared_memory_skipped", {"reason": "datasets_unreadable"})
+            return _separated("datasets_unreadable")
         tenant_id, reason = _ensure_tenant(principal_key, parent, datasets)
         role_id = ""
         if not reason:

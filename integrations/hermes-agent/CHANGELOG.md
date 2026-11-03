@@ -30,7 +30,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (the agent leaves the role; nothing is deleted). This machine's key is cached in
   `~/.cognee-plugin/hermes-agent/agent_key.json`, replaced once in-session when the server
   rejects it, and only ever minted against a server that adds one key per machine (the
-  `x-cognee-additive-plugin-keys` marker).
+  `x-cognee-additive-plugin-keys` marker). The wiring shares the connect budget, grants
+  the role in one call per permission, never creates a tenant when the dataset listing
+  could not be read, and under `auto` a registration the server refuses means the
+  session runs as your own key, never a failed session.
 - Every `POST /api/v1/agents/register` now carries `metadata.plugin_key: hermes-agent`,
   so the server can attribute the connection to the plugin without a connection-type
   table of its own.

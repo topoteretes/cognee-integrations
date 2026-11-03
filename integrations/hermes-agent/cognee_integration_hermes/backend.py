@@ -83,6 +83,7 @@ class MemoryBackend:
         timeout: float,
         plugin_identity: str = "",
         shared_agent_memory: Any = None,
+        dataset: str = "",
     ) -> None:
         """Attach to a cognee instance at *url*.
 
@@ -381,10 +382,11 @@ class SdkBackend(MemoryBackend):
         timeout: float,
         plugin_identity: str = "",
         shared_agent_memory: Any = None,
+        dataset: str = "",
     ) -> None:
         from .plugin_identity import identity_mode
 
-        del shared_agent_memory  # meaningful only with a provisioned agent (HTTP transport)
+        del shared_agent_memory, dataset  # meaningful only with a provisioned agent (HTTP)
 
         if identity_mode(plugin_identity) == "enabled":
             # Provisioning is an HTTP control-plane call as the user; the SDK

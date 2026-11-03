@@ -134,9 +134,16 @@ export async function userMe(principal: ControlPlane): Promise<{ id: string; ten
   return id ? { id, tenant_id: rowStr(body, "tenant_id", "tenantId") } : undefined;
 }
 
-export async function listDatasets(principal: ControlPlane): Promise<DatasetRow[]> {
+/**
+ * Every dataset the principal can READ, or undefined when the listing could
+ * not be read (no answer, a non-2xx, a body that is not a list). Callers must
+ * not mistake that for "no datasets": the tenant step reads an empty list as
+ * permission to create — and activate — a tenant, which would hide every
+ * dataset created under none.
+ */
+export async function listDatasets(principal: ControlPlane): Promise<DatasetRow[] | undefined> {
   const { status, body } = await principal("GET", "/api/v1/datasets");
-  if (status !== 200 || !Array.isArray(body)) return [];
+  if (status !== 200 || !Array.isArray(body)) return undefined;
   const rows: DatasetRow[] = [];
   for (const item of body) {
     const id = rowStr(item, "id");
@@ -209,33 +216,58 @@ export async function removeAgentFromRole(principal: ControlPlane, agentId: stri
   return status === 200 || status === 404;
 }
 
+/**
+ * Give the role read+write on the datasets it does not hold yet: one POST per
+ * permission for the whole batch (the route takes a list); only when the batch
+ * is refused (401/403 — typically one dataset shared to the user read-only by
+ * someone else) does it fall back to one call per dataset, so a single
+ * unshareable dataset cannot fail the rest. Outcomes are memoised in
+ * `marker.granted`: "ok" never retried, a denial retried hourly, anything
+ * transient left unrecorded and retried next time.
+ */
 async function grantRoleOnDatasets(principal: ControlPlane, roleId: string, datasetIds: string[], marker: Partial<SharedMarker>): Promise<Set<string>> {
   const granted = (marker.granted ??= {});
   const now = Date.now();
-  for (const datasetId of datasetIds) {
-    const prior = granted[datasetId];
-    if (prior === "ok") continue;
-    if (prior && typeof prior === "object" && now - (prior.denied_at ?? 0) < GRANT_DENIED_RETRY_MS) continue;
-    let outcome: "ok" | { denied_at: number } | undefined = "ok";
+  const pending = datasetIds.filter((id) => {
+    const prior = granted[id];
+    if (prior === "ok") return false;
+    return !(prior && typeof prior === "object" && now - (prior.denied_at ?? 0) < GRANT_DENIED_RETRY_MS);
+  });
+  const grant = async (ids: string[], permission: string) =>
+    (await principal("POST", `/api/v1/permissions/datasets/${roleId}?permission_name=${permission}`, ids)).status;
+  if (pending.length > 0) {
+    let outcomes: Record<string, "ok" | { denied_at: number } | undefined> = Object.fromEntries(pending.map((id) => [id, "ok" as const]));
     for (const permission of ["read", "write"]) {
-      const { status } = await principal("POST", `/api/v1/permissions/datasets/${roleId}?permission_name=${permission}`, [datasetId]);
-      if (status === 401 || status === 403) {
-        // Typically a dataset shared to the user read-only by someone else.
-        outcome = { denied_at: now };
+      const status = await grant(pending, permission);
+      if (status === 200) continue;
+      if (status !== 401 && status !== 403) {
+        outcomes = Object.fromEntries(pending.map((id) => [id, undefined])); // transient
         break;
       }
-      if (status !== 200) {
-        outcome = undefined; // transient: retry next time
-        break;
+      // The batch was refused: find out which dataset(s), one at a time.
+      for (const id of pending) {
+        if (outcomes[id] !== "ok") continue;
+        const single = await grant([id], permission);
+        if (single === 401 || single === 403) outcomes[id] = { denied_at: now };
+        else if (single !== 200) outcomes[id] = undefined;
       }
     }
-    if (outcome === undefined) {
-      delete granted[datasetId];
-      continue;
+    for (const [id, outcome] of Object.entries(outcomes)) {
+      if (outcome === undefined) delete granted[id];
+      else granted[id] = outcome;
     }
-    granted[datasetId] = outcome;
   }
   return new Set(Object.entries(granted).filter(([, v]) => v === "ok").map(([k]) => k));
+}
+
+/** Bound every call by what is left of an absolute deadline (ms since epoch);
+ *  past it, calls answer `{status: 0}` without touching the network. */
+function withDeadline(call: ControlPlane, deadline: number | undefined): ControlPlane {
+  if (deadline === undefined) return call;
+  return async (method, path, body) => {
+    if (Date.now() >= deadline) return { status: 0, body: { error: "shared memory deadline exceeded" } };
+    return call(method, path, body);
+  };
 }
 
 /** The parent's own copy, else the oldest (deterministic across plugins). */
@@ -253,6 +285,8 @@ export interface SharedMemoryOptions {
   enabled?: boolean;
   allowSetup?: boolean;
   markerPath?: string;
+  /** Total budget for the wiring, in ms; a step cut off by it reads as transient. */
+  budgetMs?: number;
   logger?: { info?: (m: string) => void; warn?: (m: string) => void; debug?: (m: string) => void };
 }
 
@@ -261,7 +295,10 @@ export interface SharedMemoryOptions {
  * `dataset`, resolve its canonical UUID. Every step degrades to separated
  * memory with a reason; nothing here throws.
  */
-export async function ensureSharedMemory(principal: ControlPlane, agent: ControlPlane, opts: SharedMemoryOptions): Promise<SharedOutcome> {
+export async function ensureSharedMemory(principalRaw: ControlPlane, agentRaw: ControlPlane, opts: SharedMemoryOptions): Promise<SharedOutcome> {
+  const deadline = opts.budgetMs !== undefined ? Date.now() + opts.budgetMs : undefined;
+  const principal = withDeadline(principalRaw, deadline);
+  const agent = withDeadline(agentRaw, deadline);
   const baseUrl = normalizeUrl(opts.baseUrl);
   const dataset = opts.dataset ?? "";
   const markerPath = opts.markerPath ?? SHARED_MEMORY_MARKER_PATH;
@@ -295,6 +332,12 @@ export async function ensureSharedMemory(principal: ControlPlane, agent: Control
     const parent = await userMe(principal);
     if (!parent) return sep("principal_unresolved");
     datasets = await listDatasets(principal);
+    if (datasets === undefined) {
+      // Transient (no marker): with the listing unknown the tenant step must
+      // not run — it would read "no datasets" as safe to create one.
+      log?.info?.("cognee-openclaw: shared memory: dataset listing unreadable; retried on the next start");
+      return sep("datasets_unreadable");
+    }
     let [tenantId, reason] = await ensureTenant(principal, parent, datasets);
     let roleId = "";
     if (!reason) [roleId, reason] = await ensureRole(principal, tenantId);
@@ -311,10 +354,14 @@ export async function ensureSharedMemory(principal: ControlPlane, agent: Control
   const parentId = String(marker.parent_user_id ?? "");
   const roleId = String(marker.role_id ?? "");
   datasets ??= await listDatasets(principal);
+  if (datasets === undefined) {
+    if (!wired) await saveMarker(marker, markerPath).catch(() => {});
+    return sep("datasets_unreadable");
+  }
 
   // Backfill: the role gets read+write on everything the parent can share —
   // also how datasets a sibling agent creates reach every other agent.
-  let roleHolds = await grantRoleOnDatasets(principal, roleId, datasets.map((r) => r.id), marker);
+  const roleHolds = await grantRoleOnDatasets(principal, roleId, datasets.map((r) => r.id), marker);
 
   let writeId = "";
   let readIds: string[] = [];

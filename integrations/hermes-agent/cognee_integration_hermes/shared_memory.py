@@ -157,11 +157,17 @@ def user_me(principal: ControlPlane) -> dict[str, str]:
     return {"id": _row_str(body, "id"), "tenant_id": _row_str(body, "tenant_id", "tenantId")}
 
 
-def list_datasets(principal: ControlPlane) -> list[dict[str, str]]:
-    """Every dataset the principal can READ: ``[{"id", "name", "owner_id", "created_at"}]``."""
+def list_datasets(principal: ControlPlane) -> Optional[list[dict[str, str]]]:
+    """Every dataset the principal can READ: ``[{"id", "name", "owner_id", "created_at"}]``.
+
+    ``None`` when the listing could not be read (no answer, a non-2xx, a body
+    that is not a list). Callers must not mistake that for "no datasets": the
+    tenant step reads an empty list as permission to create — and activate —
+    a tenant, which would hide every dataset created under none.
+    """
     status, body = principal("GET", "/api/v1/datasets", timeout=15.0)
     if status != 200 or not isinstance(body, list):
-        return []
+        return None
     rows = []
     for item in body:
         dataset_id, name = _row_str(item, "id"), _row_str(item, "name")
@@ -290,43 +296,78 @@ def remove_agent_from_role(principal: ControlPlane, agent_id: str, role_id: str)
 def _grant_role_on_datasets(
     principal: ControlPlane, role_id: str, dataset_ids: list[str], marker: dict
 ) -> set[str]:
-    """Give the role read+write on each dataset (one call per dataset, so one
-    unshareable dataset cannot fail the batch). Outcomes are memoised in
-    ``marker["granted"]``: ``"ok"`` never retried, a denial retried hourly.
+    """Give the role read+write on the datasets it does not hold yet.
+
+    One POST per permission for the whole batch (the route takes a list);
+    only when the batch is refused (401/403 — typically one dataset shared to
+    the user read-only by someone else, which the user cannot share on) does
+    it fall back to one call per dataset, so a single unshareable dataset
+    cannot fail the rest. Outcomes are memoised in ``marker["granted"]``:
+    ``"ok"`` never retried, a denial retried hourly, anything transient (a
+    5xx, no answer, the deadline) left unrecorded and retried next time.
     Returns the ids the role holds read+write on."""
     granted = marker.setdefault("granted", {})
     if not isinstance(granted, dict):
         granted = marker["granted"] = {}
     now = time.time()
+    pending = []
     for dataset_id in dataset_ids:
         prior = granted.get(dataset_id)
         if prior == "ok":
             continue
-        if (
-            isinstance(prior, dict)
-            and now - float(prior.get("denied_at") or 0) < _GRANT_DENIED_RETRY_SECONDS
+        if isinstance(prior, dict) and now - float(prior.get("denied_at") or 0) < (
+            _GRANT_DENIED_RETRY_SECONDS
         ):
             continue
-        outcome: Any = "ok"
+        pending.append(dataset_id)
+
+    def _grant(ids: list[str], permission: str) -> int:
+        status, _ = principal(
+            "POST",
+            f"/api/v1/permissions/datasets/{role_id}?permission_name={permission}",
+            json_body=ids,
+        )
+        return status
+
+    if pending:
+        outcomes: dict[str, Any] = {dataset_id: "ok" for dataset_id in pending}
         for permission in ("read", "write"):
-            status, _ = principal(
-                "POST",
-                f"/api/v1/permissions/datasets/{role_id}?permission_name={permission}",
-                json_body=[dataset_id],
-            )
-            if status in (401, 403):
-                # Typically a dataset shared to the user read-only by someone
-                # else: the user cannot share it on, so the agents cannot reach it.
-                outcome = {"denied_at": now}
+            status = _grant(pending, permission)
+            if status == 200:
+                continue
+            if status not in (401, 403):
+                outcomes = {dataset_id: None for dataset_id in pending}  # transient
                 break
-            if status != 200:
-                outcome = None  # transient: retry next time
-                break
-        if outcome is None:
-            granted.pop(dataset_id, None)
-            continue
-        granted[dataset_id] = outcome
+            # The batch was refused: find out which dataset(s), one at a time.
+            for dataset_id in pending:
+                if outcomes.get(dataset_id) != "ok":
+                    continue
+                single = _grant([dataset_id], permission)
+                if single in (401, 403):
+                    outcomes[dataset_id] = {"denied_at": now}
+                elif single != 200:
+                    outcomes[dataset_id] = None
+        for dataset_id, outcome in outcomes.items():
+            if outcome is None:
+                granted.pop(dataset_id, None)
+            else:
+                granted[dataset_id] = outcome
     return {dataset_id for dataset_id, outcome in granted.items() if outcome == "ok"}
+
+
+def _with_deadline(call: ControlPlane, deadline: Optional[float]) -> ControlPlane:
+    """Bound every call by what is left of an absolute ``time.monotonic()`` deadline;
+    past it, calls answer ``(0, …)`` without touching the network."""
+    if deadline is None:
+        return call
+
+    def bounded(method: str, path: str, *, json_body=None, timeout: float = 20.0):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return 0, {"error": "shared memory deadline exceeded"}
+        return call(method, path, json_body=json_body, timeout=min(timeout, remaining))
+
+    return bounded
 
 
 def _pick_canonical(rows: list[dict], parent_id: str) -> dict:
@@ -351,8 +392,12 @@ def ensure_shared_memory(
     enabled: bool = True,
     allow_setup: bool = True,
     marker_path: Optional[Path] = None,
+    budget: Optional[float] = None,
 ) -> dict[str, Any]:
     """Wire (or refresh) shared agent memory for the plugin's agent.
+
+    ``budget`` bounds the whole wiring (seconds); a step cut off by it reads as
+    transient and is retried on the next connect.
 
     Returns ``{"mode": "shared"|"separated", "reason", "dataset_id",
     "dataset_ids", "role_id", "dataset"}``. ``dataset_id`` is the canonical
@@ -363,6 +408,9 @@ def ensure_shared_memory(
     logged reason; nothing here raises.
     """
     base_url = normalize_url(base_url)
+    deadline = time.monotonic() + budget if budget is not None else None
+    principal = _with_deadline(principal, deadline)
+    agent = _with_deadline(agent, deadline)
 
     def _sep(reason: str) -> dict[str, Any]:
         return {**separated(reason), "dataset": dataset}
@@ -406,6 +454,11 @@ def ensure_shared_memory(
         if not parent.get("id"):
             return _sep("principal_unresolved")
         datasets = list_datasets(principal)
+        if datasets is None:
+            # Transient (no marker): with the listing unknown, the tenant step
+            # must not run — it would read "no datasets" as safe to create one.
+            logger.info("shared memory: dataset listing unreadable; retried on the next connect")
+            return _sep("datasets_unreadable")
         tenant_id, reason = _ensure_tenant(principal, parent, datasets)
         role_id = ""
         if not reason:
@@ -433,6 +486,10 @@ def ensure_shared_memory(
     role_id = str(marker.get("role_id") or "")
     if datasets is None:
         datasets = list_datasets(principal)
+    if datasets is None:
+        if not wired:
+            save_marker(marker, marker_path)
+        return _sep("datasets_unreadable")
 
     # Backfill: the role gets read+write on everything the parent can share.
     # Datasets a sibling agent creates are auto-shared to the parent, so this

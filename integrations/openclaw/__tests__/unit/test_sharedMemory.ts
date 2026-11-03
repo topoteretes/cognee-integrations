@@ -20,6 +20,7 @@ import {
   PLUGIN_KEY,
   canonicalDatasetId,
   fingerprint,
+  registerAgentUnderIdentity,
   resolveSessionIdentity,
   resolveSharedDataset,
   wireSharedMemory,
@@ -91,7 +92,15 @@ class FakeClient {
   provisionOutcome: ProvisionResult | Error = PROVISIONED;
   provisionCalls: { asKey: string }[] = [];
   revoked: { plugin: string; keyId: string }[] = [];
+  registerOutcomes: ({ ok: boolean; connectionId?: string } | Error)[] = [];
+  registerCalls: { params: unknown; asKey: string }[] = [];
   constructor(readonly server: FakeServer, private current = PRINCIPAL) {}
+  async registerAgent(params: unknown): Promise<{ ok: boolean; connectionId?: string }> {
+    this.registerCalls.push({ params, asKey: this.current });
+    const outcome = this.registerOutcomes.length > 1 ? this.registerOutcomes.shift()! : (this.registerOutcomes[0] ?? { ok: true, connectionId: "c1" });
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  }
   setApiKey(key: string) {
     this.current = key;
     this.keys.push(key);
@@ -130,6 +139,7 @@ afterEach(() => {
 });
 
 const readMarker = () => JSON.parse(readFileSync(markerPath, "utf-8")) as Record<string, unknown>;
+const readCache = () => JSON.parse(readFileSync(cachePath, "utf-8")) as Record<string, unknown>;
 const session = (mode: IdentitySession["mode"] = "auto", extra: Partial<IdentitySession> = {}): IdentitySession => ({
   baseUrl: BASE_URL,
   principalKey: PRINCIPAL,
@@ -376,5 +386,101 @@ describe("CogneeHttpClient.controlPlane", () => {
     } finally {
       await mock.close();
     }
+  });
+});
+
+describe("review fixes (PR 565)", () => {
+  it("an unreadable dataset listing never creates a tenant, and is retried next start", async () => {
+    const server = new FakeServer(freshScript({ "GET /api/v1/datasets": { status: 500 } }));
+    const client = new FakeClient(server);
+    const s = await start(client, session());
+    expect(server.callsTo("POST", "/api/v1/permissions/tenants")).toEqual([]);
+    expect(s.identity).toBeUndefined(); // the fresh identity was reverted
+    expect(client.revoked).toHaveLength(1);
+    expect(existsSync(markerPath)).toBe(false); // nothing structural recorded
+    const again = new FakeClient(new FakeServer(freshScript()));
+    const s2 = await start(again, session());
+    expect(again.provisionCalls).toHaveLength(1);
+    expect(s2.shared?.mode).toBe("shared");
+  });
+
+  it("an unreadable listing after wiring keeps the identity and is transient", async () => {
+    await start(new FakeClient(new FakeServer(freshScript())), session());
+    const client = new FakeClient(new FakeServer(freshScript({ "GET /api/v1/datasets": { status: 503 } })));
+    const s = await start(client, session());
+    expect(s.identity?.apiKey).toBe(AGENT_KEY);
+    expect(s.shared).toMatchObject({ mode: "separated", reason: "datasets_unreadable" });
+    expect(readMarker().mode).toBe("shared");
+  });
+
+  it("auto: a refused registration runs as the principal instead of throwing", async () => {
+    await start(new FakeClient(new FakeServer(freshScript())), session());
+    const client = new FakeClient(new FakeServer(freshScript()), AGENT_KEY);
+    const s = session();
+    s.identity = { apiKey: AGENT_KEY, agentId: AGENT_ID, keyId: "k1", source: "cached" };
+    s.shared = { mode: "shared", reason: "", datasetId: "", datasetIds: [], roleId: "r-1", dataset: "" };
+    client.registerOutcomes = [new CogneeRequestError(403, "forbidden"), { ok: true, connectionId: "c-principal" }];
+    await expect(registerAgentUnderIdentity(client, { agentSessionName: "s1" }, s)).resolves.toEqual({ ok: true, connectionId: "c-principal" });
+    expect(client.registerCalls.map((c) => c.asKey)).toEqual([AGENT_KEY, PRINCIPAL]);
+    expect(s.identity).toBeUndefined();
+    expect(s.shared).toMatchObject({ mode: "separated", reason: "identity_rejected" });
+    expect(readCache().blocked).toBeUndefined(); // a 403 keeps the key for the next start
+  });
+
+  it("auto: a key rejected twice runs as the principal and is blocked", async () => {
+    await start(new FakeClient(new FakeServer(freshScript())), session());
+    const client = new FakeClient(new FakeServer(freshScript()), AGENT_KEY);
+    const s = session();
+    s.identity = { apiKey: AGENT_KEY, agentId: AGENT_ID, keyId: "k1", source: "cached" };
+    client.provisionOutcome = { ...PROVISIONED, apiKey: "agentkey-2", keyId: "k2" };
+    client.registerOutcomes = [new CogneeRequestError(401, "x"), new CogneeRequestError(401, "x"), { ok: true }];
+    await expect(registerAgentUnderIdentity(client, { agentSessionName: "s1" }, s)).resolves.toEqual({ ok: true });
+    expect(client.registerCalls.map((c) => c.asKey)).toEqual([AGENT_KEY, "agentkey-2", PRINCIPAL]);
+    expect(s.identity).toBeUndefined();
+    expect(readCache().blocked).toBe(true);
+  });
+
+  it("true: a refused registration still throws", async () => {
+    const client = new FakeClient(new FakeServer(freshScript()), AGENT_KEY);
+    const s = session("enabled");
+    s.identity = { apiKey: AGENT_KEY, agentId: AGENT_ID, keyId: "k1", source: "cached" };
+    client.registerOutcomes = [new CogneeRequestError(403, "forbidden")];
+    await expect(registerAgentUnderIdentity(client, { agentSessionName: "s1" }, s)).rejects.toThrow(/403/);
+  });
+
+  it("grants are batched per permission, with a per-dataset fallback when the batch is refused", async () => {
+    const rows = ["a", "b"].map((n) => ({ ...PARENT_DS, id: `ds-${n}`, name: n }));
+    const server = new FakeServer(
+      freshScript({
+        "GET /api/v1/users/me": { status: 200, body: { id: PARENT_ID, tenant_id: "t-1" } },
+        "GET /api/v1/datasets": { status: 200, body: rows },
+        "GET /api/v1/permissions/tenants/t-1/roles": { status: 200, body: [{ id: "r-1", name: "cognee-agent" }] },
+        // read batch refused -> per id: a ok, b denied; write batch ok
+        "POST /api/v1/permissions/datasets/r-1": [{ status: 403 }, { status: 200 }, { status: 403 }, { status: 200 }],
+      }),
+    );
+    await start(new FakeClient(server), session());
+    const grants = server.callsTo("POST", "/api/v1/permissions/datasets/r-1");
+    expect(grants.map((g) => g.body)).toEqual([["ds-a", "ds-b"], ["ds-a"], ["ds-b"], ["ds-a", "ds-b"]]);
+    const granted = readMarker().granted as Record<string, unknown>;
+    expect(granted["ds-a"]).toBe("ok");
+    expect(granted["ds-b"]).toMatchObject({ denied_at: expect.any(Number) });
+  });
+
+  it("a transient grant failure is not memoised", async () => {
+    const server = new FakeServer(freshScript({ "POST /api/v1/permissions/datasets/r-1": { status: 503 } }));
+    const client = new FakeClient(server);
+    const s = await start(client, session());
+    await resolveSharedDataset(client, s, DATASET);
+    expect(readMarker().granted).toEqual({});
+  });
+
+  it("the wiring is bounded by its budget: past it, no tenant is created on a guess", async () => {
+    const server = new FakeServer(freshScript());
+    const client = new FakeClient(server);
+    const s = await start(client, session("auto", { budgetMs: 0 }));
+    expect(server.callsTo("POST", "/api/v1/permissions/tenants")).toEqual([]);
+    expect(s.identity).toBeUndefined(); // reverted, transiently
+    expect(existsSync(markerPath)).toBe(false);
   });
 });

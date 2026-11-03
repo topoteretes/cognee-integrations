@@ -19,7 +19,11 @@ import urllib.error
 import pytest
 from cognee_integration_hermes import exit_watcher, plugin_identity, shared_memory
 from cognee_integration_hermes.http_backend import HttpBackend
-from cognee_integration_hermes.plugin_identity import PLUGIN_KEY, PROVISION_PATH
+from cognee_integration_hermes.plugin_identity import (
+    PLUGIN_KEY,
+    PROVISION_PATH,
+    PluginIdentityError,
+)
 from test_http_backend import FakeOpener, _Response
 
 _URL = "http://127.0.0.1:8011"
@@ -32,6 +36,7 @@ DATASET = "agent_sessions"
 PROVISIONED = {"agentId": AGENT_ID, "apiKey": AGENT_KEY, "keyId": "k1", "created": True}
 OPENAPI_ADDITIVE = {"paths": {PROVISION_PATH: {"post": {"x-cognee-additive-plugin-keys": True}}}}
 KEYS_PATH = f"/api/v1/integrations/plugins/{PLUGIN_KEY}/keys/k1"
+REGISTER = "/api/v1/agents/register"
 PARENT_DS = {
     "id": "ds-1",
     "name": DATASET,
@@ -470,3 +475,167 @@ def test_exit_watcher_state_carries_the_dataset_id(monkeypatch, tmp_path):
         improve_timeout=5,
     )
     assert json.loads(state_path.read_text())["dataset_id"] == "ds-9"
+
+
+# -- review fixes (PR 565) -----------------------------------------------------------
+
+
+class TestReviewFixes:
+    def test_unreadable_listing_never_creates_a_tenant(self, state):
+        """A failed GET /datasets must not read as "no datasets": for a tenant-less
+        user with data that would create and activate a tenant and hide every
+        dataset they own. Transient: no structural marker, retried next connect."""
+        opener = _routes(**{"GET /api/v1/datasets": _http_error("/api/v1/datasets", 500)})
+        backend = _connect(opener)
+        assert opener.calls("POST", "/api/v1/permissions/tenants") == []
+        assert backend.api_key == PRINCIPAL  # the fresh identity was reverted
+        assert opener.calls("DELETE", KEYS_PATH)
+        assert not state["marker"].exists()
+        # Next connect tries again (nothing structural was recorded).
+        opener = _routes()
+        backend = _connect(opener)
+        assert opener.calls("POST", PROVISION_PATH)
+        assert backend.shared["mode"] == "shared"
+
+    def test_unreadable_listing_after_wiring_is_transient(self, state):
+        _connect(_routes()).ensure_dataset(dataset=DATASET, timeout=5)
+        opener = _routes(**{"GET /api/v1/datasets": _http_error("/api/v1/datasets", 503)})
+        backend = _connect(opener)
+        assert backend.api_key == AGENT_KEY  # a wired identity is kept
+        assert backend.shared["reason"] == "datasets_unreadable"
+        assert _marker(state)["mode"] == "shared"  # the wiring record is untouched
+
+    def test_auto_registration_refused_runs_as_the_principal(self, state):
+        """Under ``auto`` a 403 at registration is never a failed session: the
+        launch reverts to the principal, registers as it, and keeps the key for
+        the next launch (the server may accept it then)."""
+        _connect(_routes()).ensure_dataset(dataset=DATASET, timeout=5)
+        opener = _routes(**{f"POST {REGISTER}": Seq([_http_error(REGISTER, 403), {}])})
+        backend = _connect(opener)
+        assert backend.api_key == PRINCIPAL and not backend.identity_active
+        assert backend.registered is True
+        registers = opener.calls("POST", REGISTER)
+        assert [r["headers"]["x-api-key"] for r in registers] == [AGENT_KEY, PRINCIPAL]
+        assert backend.shared["reason"] == "identity_rejected"
+        assert not json.loads(state["cache"].read_text()).get("blocked")
+        assert backend.dataset_ids_for(DATASET) == ("", [])  # name addressing this session
+
+    def test_auto_key_rejected_twice_runs_as_the_principal(self, state):
+        _connect(_routes()).ensure_dataset(dataset=DATASET, timeout=5)
+        opener = _routes(
+            **{
+                f"POST {REGISTER}": Seq(
+                    [_http_error(REGISTER, 401), _http_error(REGISTER, 401), {}]
+                )
+            }
+        )
+        backend = _connect(opener)
+        assert backend.api_key == PRINCIPAL
+        assert backend.registered is True
+        assert json.loads(state["cache"].read_text()).get("blocked") is True
+
+    def test_true_registration_refused_still_raises(self, state):
+        _connect(_routes(), "true").ensure_dataset(dataset=DATASET, timeout=5)
+        with pytest.raises(PluginIdentityError, match="403"):
+            _connect(_routes(**{f"POST {REGISTER}": _http_error(REGISTER, 403)}), "true")
+
+    def test_control_plane_never_swaps_the_backend_key(self, state):
+        """Threads share the backend: a control-plane call as the principal must
+        not change the key a concurrent data-plane call picks up."""
+        opener = _routes()
+        backend = _connect(opener)
+        assert backend.api_key == AGENT_KEY
+        status, _ = backend._control_plane(PRINCIPAL)("GET", "/api/v1/users/me")
+        assert status == 200
+        assert backend.api_key == AGENT_KEY
+        assert opener.calls("GET", "/api/v1/users/me")[-1]["headers"]["x-api-key"] == PRINCIPAL
+        backend._request("GET", "/health", timeout=5, api_key="other-key")
+        assert opener.calls("GET", "/health")[-1]["headers"]["x-api-key"] == "other-key"
+        assert backend.api_key == AGENT_KEY
+
+    def test_grants_are_batched_per_permission(self, state):
+        rows = [{**PARENT_DS, "id": f"ds-{i}", "name": f"d{i}"} for i in range(3)]
+        opener = _routes(
+            **{
+                "GET /api/v1/users/me": {"id": PARENT_ID, "tenant_id": "t-1"},
+                "GET /api/v1/datasets": rows,
+                "GET /api/v1/permissions/tenants/t-1/roles": [
+                    {"id": "r-1", "name": "cognee-agent"}
+                ],
+            }
+        )
+        _connect(opener)
+        grants = opener.calls("POST", "/api/v1/permissions/datasets/r-1")
+        assert len(grants) == 2  # read, write — all three ids at once
+        assert all(json.loads(g["body"]) == ["ds-0", "ds-1", "ds-2"] for g in grants)
+        assert _marker(state)["granted"] == {"ds-0": "ok", "ds-1": "ok", "ds-2": "ok"}
+
+    def test_refused_batch_falls_back_to_one_call_per_dataset(self, state):
+        rows = [
+            {**PARENT_DS, "id": "ds-a", "name": "a"},
+            {**PARENT_DS, "id": "ds-b", "name": "b", "owner_id": "someone-else"},
+        ]
+        opener = _routes(
+            **{
+                "GET /api/v1/users/me": {"id": PARENT_ID, "tenant_id": "t-1"},
+                "GET /api/v1/datasets": rows,
+                "GET /api/v1/permissions/tenants/t-1/roles": [
+                    {"id": "r-1", "name": "cognee-agent"}
+                ],
+                # read batch refused -> per id: a ok, b denied; write batch ok
+                "POST /api/v1/permissions/datasets/r-1": Seq(
+                    [_http_error("/x", 403), {}, _http_error("/x", 403), {}]
+                ),
+            }
+        )
+        _connect(opener)
+        grants = opener.calls("POST", "/api/v1/permissions/datasets/r-1")
+        assert [json.loads(g["body"]) for g in grants] == [
+            ["ds-a", "ds-b"],  # read, batch -> 403
+            ["ds-a"],  # read, single -> ok
+            ["ds-b"],  # read, single -> 403 (denied)
+            ["ds-a", "ds-b"],  # write, batch -> ok
+        ]
+        granted = _marker(state)["granted"]
+        assert granted["ds-a"] == "ok" and "denied_at" in granted["ds-b"]
+
+    def test_transient_grant_failure_is_not_memoised(self, state):
+        opener = _routes(**{"POST /api/v1/permissions/datasets/r-1": _http_error("/x", 503)})
+        _connect(opener).ensure_dataset(dataset=DATASET, timeout=5)
+        assert _marker(state)["granted"] == {}
+
+    def test_wiring_is_bounded_by_the_connect_budget(self, state, monkeypatch):
+        """Past the budget, control-plane calls answer without the network and the
+        step reads as transient: no tenant is created on a guess."""
+        opener = _routes()
+        backend = HttpBackend(opener=opener)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(shared_memory.time, "monotonic", lambda: clock["now"])
+        original = backend._control_plane
+
+        def slow_control_plane(api_key):
+            call = original(api_key)
+
+            def slow(method, path, *, json_body=None, timeout=20.0):
+                clock["now"] += 4.0  # every call burns four "seconds"
+                return call(method, path, json_body=json_body, timeout=timeout)
+
+            return slow
+
+        monkeypatch.setattr(backend, "_control_plane", slow_control_plane)
+        backend.connect(url=_URL, api_key=PRINCIPAL, timeout=5, plugin_identity="auto")
+        # probe (4s) + users/me (8s) exhaust the 5s budget: the listing is cut
+        # off, so the tenant step never runs and nothing structural is recorded.
+        assert opener.calls("POST", "/api/v1/permissions/tenants") == []
+        assert backend.api_key == PRINCIPAL
+        assert not state["marker"].exists()
+
+    def test_connect_resolves_the_session_dataset_in_the_same_pass(self, state):
+        opener = _routes()
+        backend = HttpBackend(opener=opener)
+        backend.connect(url=_URL, api_key=PRINCIPAL, timeout=5, dataset=DATASET)
+        assert backend.dataset_ids_for(DATASET) == ("ds-1", ["ds-1"])
+        listings = len(opener.calls("GET", "/api/v1/datasets"))
+        backend.ensure_dataset(dataset=DATASET, timeout=5)
+        assert len(opener.calls("GET", "/api/v1/datasets")) == listings  # nothing left to do
+        assert len(opener.calls("POST", "/api/v1/datasets")) == 1

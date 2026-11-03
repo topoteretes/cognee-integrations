@@ -34,7 +34,9 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   key per machine (the `x-cognee-additive-plugin-keys` marker). `CogneeHttpClient` gains
   `provisionPlugin`, `additivePluginKeysSupported` and `controlPlane`; `indexRepository`
   takes a `datasetId`; the manifest's `configSchema` declares `pluginIdentity` and
-  `sharedAgentMemory`.
+  `sharedAgentMemory`. The wiring is bounded by a budget, grants the role in one call per
+  permission, never creates a tenant when the dataset listing could not be read, and under
+  `"auto"` a registration the server refuses means the gateway runs as your own key.
 - Every `POST /api/v1/agents/register` now carries `metadata.plugin_key: openclaw`, so
   the server can attribute the connection to the plugin without a connection-type table
   of its own.

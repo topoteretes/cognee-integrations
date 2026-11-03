@@ -268,6 +268,8 @@ export interface IdentitySession extends IdentityOptions {
   /** Dataset name -> canonical UUID, for every dataset resolved under shared memory. */
   canonical?: Record<string, string>;
   markerPath?: string;
+  /** Total budget for one shared-memory wiring pass, in ms (default 30 s). */
+  budgetMs?: number;
 }
 
 /** The control-plane slice of `CogneeHttpClient` the wiring needs. */
@@ -339,6 +341,7 @@ export async function wireSharedMemory(client: SharedMemoryClient, session: Iden
     agentId: session.identity.agentId,
     enabled: session.sharedMemoryEnabled !== false,
     markerPath: session.markerPath,
+    budgetMs: session.budgetMs ?? 30_000,
     logger: session.logger,
   });
   if (session.shared.mode === "shared") {
@@ -377,6 +380,7 @@ export async function resolveSharedDataset(client: SharedMemoryClient, session: 
     dataset: name,
     enabled: session.sharedMemoryEnabled !== false,
     markerPath: session.markerPath,
+    budgetMs: session.budgetMs ?? 30_000,
     logger: session.logger,
   });
   if (outcome.mode !== "shared" || !outcome.datasetId) {
@@ -410,44 +414,62 @@ export interface RegisterClient extends IdentityClient {
  *
  * Without an identity this is a plain registration. With one, a 401 means the
  * agent key is dead (revoked from the dashboard, or pruned): it is blocked,
- * replaced through the same provisioning, and the registration retried; a
- * second 401 — and a 403 — is an error, since owner fallback is what
- * `pluginIdentity: true` rules out. `session.identity` is updated in place.
+ * replaced through the same provisioning, and the registration retried; a 403
+ * means the server refused this identity. When the identity cannot be made to
+ * register, `enabled` throws — owner fallback is what `pluginIdentity: "true"`
+ * rules out — and `auto` reverts the session to the principal (the client
+ * switched back, `session.identity` cleared, shared memory off) and registers
+ * as that. `session.identity` is updated in place either way.
  */
 export async function registerAgentUnderIdentity(
   client: RegisterClient,
   params: { agentSessionName: string; sessionId?: string; datasetNames?: string[] },
   session: IdentitySession,
 ): Promise<{ ok: boolean; connectionId?: string }> {
-  try {
-    return await client.registerAgent(params);
-  } catch (error) {
-    const status = requestErrorStatus(error);
-    if (!session.identity || (status !== 401 && status !== 403)) throw error;
-    if (status === 403) {
-      throw new PluginIdentityError(
-        `The ${PLUGIN_KEY} identity was refused registration (403) by ${session.baseUrl}; owner fallback is disabled under pluginIdentity: true.`,
-      );
+  const attempt = async (): Promise<{ ok: boolean; connectionId?: string } | number> => {
+    try {
+      return await client.registerAgent(params);
+    } catch (error) {
+      const status = requestErrorStatus(error);
+      if (session.identity && (status === 401 || status === 403)) return status;
+      throw error;
+    }
+  };
+  let outcome = await attempt();
+  if (typeof outcome !== "number") return outcome;
+  const refused = outcome;
+
+  if (refused === 401 && session.identity) {
+    // The key is dead. Replace it once.
+    await blockCachedIdentity(session.identity.apiKey, session.cachePath);
+    session.identity = undefined;
+    client.setApiKey(session.principalKey);
+    try {
+      session.identity = await ensurePluginIdentity(client, { ...session, mode: "enabled" });
+    } catch (error) {
+      if (session.mode === "enabled") throw error;
+    }
+    if (session.identity) {
+      client.setApiKey(session.identity.apiKey);
+      outcome = await attempt();
+      if (typeof outcome !== "number") return outcome;
+      if (outcome === 401) await blockCachedIdentity(session.identity.apiKey, session.cachePath);
     }
   }
 
-  // 401 as the agent: the key is dead. Replace it once.
-  await blockCachedIdentity(session.identity.apiKey, session.cachePath);
-  session.identity = undefined;
-  client.setApiKey(session.principalKey);
-  const replacement = await ensurePluginIdentity(client, { ...session, mode: "enabled" });
-  if (!replacement) throw new PluginIdentityError(`The ${PLUGIN_KEY} identity could not be replaced.`);
-  session.identity = replacement;
-  client.setApiKey(replacement.apiKey);
-  try {
-    return await client.registerAgent(params);
-  } catch (error) {
-    if (requestErrorStatus(error) === 401) {
-      await blockCachedIdentity(replacement.apiKey, session.cachePath);
-      throw new PluginIdentityError(
-        `The ${PLUGIN_KEY} identity was rejected by ${session.baseUrl} and could not be replaced; owner fallback is disabled under pluginIdentity: true.`,
-      );
-    }
-    throw error;
+  if (session.mode === "enabled") {
+    throw new PluginIdentityError(
+      refused === 403
+        ? `The ${PLUGIN_KEY} identity was refused registration (403) by ${session.baseUrl}; owner fallback is disabled under pluginIdentity: true.`
+        : `The ${PLUGIN_KEY} identity was rejected by ${session.baseUrl} and could not be replaced; owner fallback is disabled under pluginIdentity: true.`,
+    );
   }
+  // `auto`: this session runs as the principal; shared memory is off until the
+  // identity is replaced (401) or the server accepts it (403).
+  session.logger?.info?.(`cognee-openclaw: plugin identity: registration refused (HTTP ${refused}); running as the principal`);
+  session.identity = undefined;
+  session.shared = separated("identity_rejected");
+  session.canonical = {};
+  client.setApiKey(session.principalKey);
+  return client.registerAgent(params);
 }

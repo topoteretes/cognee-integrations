@@ -613,6 +613,7 @@ class CogneeMemoryProvider(MemoryProvider):
                     timeout=30,
                     plugin_identity=str(self._config.get("plugin_identity") or ""),
                     shared_agent_memory=self._config.get("shared_agent_memory"),
+                    dataset=self._dataset,
                 )
                 self._remote_mode = True
             except Exception as exc:
@@ -645,6 +646,7 @@ class CogneeMemoryProvider(MemoryProvider):
                     timeout=30,
                     plugin_identity=str(self._config.get("plugin_identity") or ""),
                     shared_agent_memory=self._config.get("shared_agent_memory"),
+                    dataset=self._dataset,
                 )
                 self._remote_mode = True
             except CogneeNotInstalledError:
@@ -712,6 +714,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 timeout=30,
                 plugin_identity=str(self._config.get("plugin_identity") or ""),
                 shared_agent_memory=self._config.get("shared_agent_memory"),
+                dataset=self._dataset,
             )
             self._complete_initialization()
             logger.info("cognee local server is ready; Cognee memory is on.")
