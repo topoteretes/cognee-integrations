@@ -127,8 +127,9 @@ never treat in-memory mode as durable capture.
 | `indexing` | Document listed; the dataset's cognify pipeline has not completed since (or it reported an error, which the receipt records without treating it as this document's failure) |
 | `ready` | Listed, and the dataset's most recent cognify run completed. cognee 1.6.5 reports pipeline status per dataset, not per document, so this is the strongest statement available |
 | `failed` | The backend rejected the write |
-| `unknown` | The write timed out, lost the connection or was cancelled in flight, or the document never appeared within 15 minutes. Not treated as live: the same content is uploaded again by a later run (the upload name is content-derived, so the server keeps one document) |
-| `deleted` | Removed by `forget_record()` and verified: no document of that name is left in a complete dataset listing |
+| `unknown` | The write timed out, lost the connection or was cancelled in flight, or the document never appeared within 15 minutes. Still reconciled (it becomes `ready` if the document turns up), but not treated as live: the same content is uploaded again by a later run (the upload name is content-derived, so the server keeps one document) |
+| `lost` | An `unknown` receipt whose document had still not appeared 24 hours after the write. Terminal: no longer reconciled, never treated as live |
+| `deleted` | Removed by `forget_record()` and verified: no document of that name is left in a complete dataset listing. Every other receipt of the same content in that dataset is marked `deleted` too |
 
 ```python
 receipt = await memory.record_status(record_id)  # refreshes pending receipts
@@ -138,12 +139,16 @@ await memory.forget_record(record_id, scope=scope)  # targeted; verified by re-l
 
 Store calls run on a worker thread owned by `CogneeBrowserMemory`, and `reconcile()` writes
 its updates in one transaction, so a durable receipt store never blocks the agent's event
-loop. Each `record_status()` refresh is one status call plus a listing walk; a host that
-polls should space calls out in seconds rather than spin.
+loop. `reconcile(limit=200)` refreshes `accepted` and `indexing` receipts before `unknown`
+ones and rotates each group by last check, so repeated calls reach every pending receipt
+however large the backlog. Each `record_status()` refresh is one status call plus a listing
+walk; a host that polls should space calls out in seconds rather than spin.
 
 `forget_record()` checks the receipt belongs to the given scope, deletes exactly that
 document (`datasetId` + `dataId`), re-lists the dataset and only then marks the receipt
-deleted. The backend's forget endpoint reports success even for unknown ids, so the listing
+deleted, together with any other receipt of the same content in that dataset (identical
+content shares one document; the ids are returned as `also_deleted`), so the content can be
+stored again afterwards. The backend's forget endpoint reports success even for unknown ids, so the listing
 is the source of truth: a walk that stops at the 50,000-document cap or its 30-second
 deadline is reported as `verified: False` with the reason rather than assumed empty. No
 agent-facing forgetting exists; build a confirmation flow around this method if users need

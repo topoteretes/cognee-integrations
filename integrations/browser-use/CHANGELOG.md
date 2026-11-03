@@ -98,3 +98,13 @@ follows [Semantic Versioning](https://semver.org/).
   quadratically on long hyphenated or base64url runs (about 3.5 s for 20k characters, on
   the event loop inside `finalize()`). Text is capped before redaction and the prefix is
   bounded to 64 characters; 100k characters now redact in well under a second.
+- `reconcile()` refreshed the oldest pending receipts first and `unknown` never left the
+  pending set, so a durable store that accumulated `limit` stale `unknown` rows refreshed
+  only those on every call and newer receipts never became `ready`. Pending receipts are now
+  refreshed live-looking first and rotated by last check, and an `unknown` receipt whose
+  document is still missing 24 hours after the write becomes terminal `lost`.
+- `forget_record()` retired only the receipt it was given although identical content
+  (for instance re-written after an `unknown` write) shares one document across several
+  receipts; the siblings stayed `ready`, pointed at a deleted document and kept the content
+  out of memory for good through deduplication. A verified deletion now marks every other
+  receipt of that content in the dataset `deleted` and returns their ids as `also_deleted`.

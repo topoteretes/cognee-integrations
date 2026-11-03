@@ -52,6 +52,11 @@ from .tools import MEMORY_TOOL_NAMES, register_memory_tools
 _COMPLETED = "DATASET_PROCESSING_COMPLETED"
 _ERRORED = "DATASET_PROCESSING_ERRORED"
 _INDEXING_GRACE_S = 15 * 60
+# An ``unknown`` receipt whose document has still not appeared this long after the
+# write is ``lost``: terminal, so it stops consuming reconcile capacity. The content
+# itself is not lost to memory: ``unknown``/``lost`` never count as live, so the next
+# identical observation uploads it again.
+_LOST_AFTER_S = 24 * 60 * 60
 
 Validator = Callable[[Any], Any]
 Summarizer = Callable[[Any], Any]
@@ -216,7 +221,12 @@ class CogneeBrowserMemory:
         return receipt
 
     async def reconcile(self, limit: int = 200) -> dict[str, int]:
-        """Refresh every pending receipt with one status call and one listing walk per dataset."""
+        """Refresh pending receipts with one status call and one listing walk per dataset.
+
+        ``limit`` bounds one call; live-looking receipts are refreshed before stale
+        ``unknown`` ones and each call rotates the queue, so repeated calls reach
+        every pending receipt. ``unknown`` becomes terminal ``lost`` after 24 hours.
+        """
         counts: dict[str, int] = {}
         by_dataset: dict[str, list[Receipt]] = {}
         for receipt in await self._db(self.store.list_pending, limit):
@@ -240,8 +250,14 @@ class CogneeBrowserMemory:
             dataset_id = next((r.dataset_id for r in receipts if r.dataset_id), None)
             dataset_id = dataset_id or await self._dataset_id(dataset, create=False)
             if not dataset_id:
+                missing = "dataset does not exist on the backend"
                 updates = [
-                    (r.record_id, {"error": "dataset does not exist on the backend"})
+                    (
+                        r.record_id,
+                        {"status": ReceiptStatus.LOST, "error": f"{missing}; the write is lost"}
+                        if _age_s(r) > _LOST_AFTER_S
+                        else {"error": missing},
+                    )
                     for r in receipts
                 ]
                 return await self._apply(receipts, updates)
@@ -362,7 +378,23 @@ class CogneeBrowserMemory:
                     "message": message,
                 }
             await self._db(self.store.update, record_id, status=ReceiptStatus.DELETED, error=None)
-            return {"record_id": record_id, "verified": True, "status": "deleted"}
+            # Identical content written more than once (for instance after an
+            # ``unknown`` write) left several receipts pointing at the one document
+            # that was just verified gone; none of them may keep that content
+            # "live" for deduplication or report ``ready``.
+            siblings = await self._db(
+                self.store.mark_deleted_by_content,
+                current.scope_key,
+                current.content_hash,
+                current.dataset,
+                except_record_id=record_id,
+            )
+            return {
+                "record_id": record_id,
+                "verified": True,
+                "status": "deleted",
+                "also_deleted": siblings,
+            }
         except CogneeError as exc:
             await self._db(self.store.update, record_id, error=f"delete failed: {exc.describe()}")
             return {
@@ -858,11 +890,11 @@ def _resolve_status(
     shares, so it is never attributed to one document as a terminal failure:
     ``ready`` means "listed, and the dataset's last cognify run completed";
     an errored pipeline keeps the receipt ``indexing`` with the reason recorded,
-    and only the grace period moves it to ``unknown``. ``failed`` is reserved
-    for a write the backend rejected.
+    and only the grace period moves it to ``unknown``. A document still missing
+    24 hours after the write is ``lost`` (terminal, no longer reconciled). ``failed``
+    is reserved for a write the backend rejected.
     """
-    created = datetime.fromisoformat(receipt.created_at)
-    age = (datetime.now(timezone.utc) - created).total_seconds()
+    age = _age_s(receipt)
     past_grace = age > _INDEXING_GRACE_S
     if lookup.status == "found":
         if pipeline == _COMPLETED:
@@ -877,6 +909,10 @@ def _resolve_status(
             receipt.status if receipt.status != ReceiptStatus.ACCEPTED else ReceiptStatus.INDEXING
         )
         return keep, reason
+    if age > _LOST_AFTER_S:
+        hours = _LOST_AFTER_S // 3600
+        reason = f"document never appeared within {hours} h of the write; treated as lost"
+        return ReceiptStatus.LOST, reason
     if past_grace or receipt.status == ReceiptStatus.UNKNOWN:
         reason = receipt.error or "document not found on the backend after the grace period"
         if pipeline == _ERRORED:
@@ -887,6 +923,11 @@ def _resolve_status(
         if pipeline == _ERRORED
         else None
     )
+
+
+def _age_s(receipt: Receipt) -> float:
+    created = datetime.fromisoformat(receipt.created_at)
+    return (datetime.now(timezone.utc) - created).total_seconds()
 
 
 def _call(obj: Any, name: str) -> Any:

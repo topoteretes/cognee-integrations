@@ -653,3 +653,134 @@ async def test_only_known_404_bodies_read_as_empty_memory(fake):
         run = memory.new_run(task="anything", scope=SCOPE)
         assert (await run.recall_context()).status == "empty"
         assert run.status.ok is True
+
+
+def _backdate(store, record_id: str, *, created_hours: float, updated_hours: float) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    store._db.execute(
+        "UPDATE receipts SET created_at = ?, updated_at = ? WHERE record_id = ?",
+        (
+            (now - timedelta(hours=created_hours)).isoformat(),
+            (now - timedelta(hours=updated_hours)).isoformat(),
+            record_id,
+        ),
+    )
+    store._db.commit()
+
+
+async def test_stale_unknown_receipts_never_starve_reconcile(fake):
+    """A backlog of ``unknown`` rows must not keep newer receipts from being refreshed."""
+    async with make_memory(fake) as memory:
+        store = memory.store
+        run = memory.new_run(task="fresh", scope=SCOPE)
+        await run.execute(FakeAgent(steps=1))
+        fresh = run.status.receipts[0]
+        for i in range(5):
+            store.create(
+                record_id=f"rec_stale_{i}",
+                run_id="run_old",
+                scope_key=SCOPE.key,
+                dataset=fresh.dataset,
+                upload_name=f"browser-outcome-{i:032x}",
+                content_hash=f"{i:064x}",
+                kind="outcome",
+            )
+            store.update(f"rec_stale_{i}", status=ReceiptStatus.UNKNOWN, error="timed out")
+            _backdate(store, f"rec_stale_{i}", created_hours=2, updated_hours=1)
+        # Live-looking receipts come first, however old the unknown backlog is.
+        assert [r.record_id for r in store.list_pending(limit=1)] == [fresh.record_id]
+        counts = await memory.reconcile(limit=1)
+        assert counts == {"ready": 1}
+        assert store.get(fresh.record_id).status == ReceiptStatus.READY
+        # The unknown rows rotate: a checked row goes to the back of the queue.
+        first, second = (r.record_id for r in store.list_pending(limit=2))
+        assert await memory.reconcile(limit=1) == {"unknown": 1}
+        assert [r.record_id for r in store.list_pending(limit=1)] == [second]
+        assert store.get(first).status == ReceiptStatus.UNKNOWN
+        # A document still missing 24 h after the write is lost: terminal, not pending.
+        _backdate(store, first, created_hours=25, updated_hours=0)
+        assert store.list_pending(limit=10)[-1].record_id == first
+        counts = await memory.reconcile()
+        assert counts == {"lost": 1, "unknown": 4}
+        lost = store.get(first)
+        assert lost.status == ReceiptStatus.LOST and "24 h" in lost.error
+        assert first not in {r.record_id for r in store.list_pending()}
+        assert (await memory.record_status(first)).status == ReceiptStatus.LOST
+        assert store.find_live_by_hash(SCOPE.key, lost.content_hash) is None
+        assert (await memory.health())["receipts"]["lost"] == 1
+        # An incomplete listing never declares a receipt lost.
+        import httpx
+
+        def endless(request: httpx.Request, **_):
+            offset = int(request.url.params.get("offset", 0))
+            limit = int(request.url.params.get("limit", 100))
+            rows = [
+                {"id": f"00000000-0000-4000-8000-{offset + i:012d}", "name": f"other-{offset + i}"}
+                for i in range(limit)
+            ]
+            return httpx.Response(200, json=rows)
+
+        dataset_id = store.get(fresh.record_id).dataset_id
+        fake.overrides[f"GET /api/v1/datasets/{dataset_id}/data"] = endless
+        exhausted = store.list_pending(limit=1)[0]
+        _backdate(store, exhausted.record_id, created_hours=25, updated_hours=1)
+        assert store.list_pending(limit=1)[0].record_id == exhausted.record_id
+        assert await memory.reconcile(limit=1) == {"unknown": 1}
+        checked = store.get(exhausted.record_id)
+        assert checked.status == ReceiptStatus.UNKNOWN and "document cap" in checked.error
+
+
+async def test_forget_retires_every_receipt_of_the_same_content(fake):
+    """unknown -> re-write -> forget -> re-write: the content must be storable again."""
+    async with make_memory(fake, remember_tool_enabled=True) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        content = "Supplier C ships in 3 days"
+        first = await run.remember_observation(content=content)
+        # The write landed, but this process never learned so (timeout, cancel).
+        memory.store.update(first.record_id, status=ReceiptStatus.UNKNOWN, error="timed out")
+        second = await run.remember_observation(content=content)
+        assert second.record_id != first.record_id
+        assert second.upload_name == first.upload_name
+        assert len([d for d in fake.data if d["name"] == first.upload_name]) == 1
+        assert await memory.reconcile() == {"ready": 2}
+        a, b = memory.store.get(first.record_id), memory.store.get(second.record_id)
+        assert a.status == b.status == ReceiptStatus.READY and a.data_id == b.data_id
+
+        result = await memory.forget_record(second.record_id, scope=SCOPE)
+        assert result["verified"] is True
+        assert result["also_deleted"] == [first.record_id]
+        assert memory.store.get(first.record_id).status == ReceiptStatus.DELETED
+        assert (await memory.record_status(first.record_id)).status == ReceiptStatus.DELETED
+        assert memory.store.find_live_by_hash(SCOPE.key, first.content_hash) is None
+        assert not fake.data
+
+        third = await run.remember_observation(content=content)
+        assert third.record_id not in {first.record_id, second.record_id}
+        assert third.status == ReceiptStatus.ACCEPTED
+        assert len([d for d in fake.data if d["name"] == first.upload_name]) == 1
+        # A failed sibling is left as it is; a sibling in another dataset is untouched.
+        memory.store.create(
+            record_id="rec_failed",
+            run_id="r",
+            scope_key=SCOPE.key,
+            dataset=third.dataset,
+            upload_name=third.upload_name,
+            content_hash=third.content_hash,
+            kind="observation",
+        )
+        memory.store.update("rec_failed", status=ReceiptStatus.FAILED, error="rejected")
+        memory.store.create(
+            record_id="rec_elsewhere",
+            run_id="r",
+            scope_key=SCOPE.key,
+            dataset="other_dataset",
+            upload_name=third.upload_name,
+            content_hash=third.content_hash,
+            kind="observation",
+        )
+        result = await memory.forget_record(third.record_id, scope=SCOPE)
+        assert result["verified"] is True and result["also_deleted"] == []
+        assert memory.store.get("rec_failed").status == ReceiptStatus.FAILED
+        assert memory.store.get("rec_elsewhere").status == ReceiptStatus.ACCEPTED

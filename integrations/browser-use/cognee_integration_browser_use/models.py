@@ -41,6 +41,7 @@ class ReceiptStatus(str, Enum):
     READY = "ready"
     FAILED = "failed"
     UNKNOWN = "unknown"
+    LOST = "lost"
     DELETED = "deleted"
 
 

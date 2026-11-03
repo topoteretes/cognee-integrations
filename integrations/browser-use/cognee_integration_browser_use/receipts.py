@@ -211,14 +211,56 @@ class ReceiptStore:
         return [self._row(row, self.durable) for row in rows]
 
     def list_pending(self, limit: int = 500) -> list[Receipt]:
+        """Pending receipts, the ones most worth checking first.
+
+        Receipts that look live (``accepted``, ``indexing``) come before ``unknown``
+        ones, and within each group the least recently checked comes first, so a
+        backlog of stale ``unknown`` rows can never starve newer receipts of their
+        refresh (each call moves the rows it checked to the back of the queue).
+        """
         placeholders = ",".join("?" for _ in PENDING_STATUSES)
         with self._lock:
             rows = self._db.execute(
                 f"SELECT * FROM receipts WHERE status IN ({placeholders}) "
-                "ORDER BY created_at ASC LIMIT ?",
-                tuple(s.value for s in PENDING_STATUSES) + (limit,),
+                "ORDER BY CASE WHEN status = ? THEN 1 ELSE 0 END, updated_at ASC, created_at ASC "
+                "LIMIT ?",
+                tuple(s.value for s in PENDING_STATUSES) + (ReceiptStatus.UNKNOWN.value, limit),
             ).fetchall()
         return [self._row(row, self.durable) for row in rows]
+
+    def mark_deleted_by_content(
+        self, scope_key: str, content_hash: str, dataset: str, *, except_record_id: str
+    ) -> list[str]:
+        """Mark every other receipt for this content in this dataset ``deleted``.
+
+        Receipts of identical content share one content-derived upload name and
+        therefore one remote document; once a complete listing shows nothing of
+        that name, all of them are gone. ``failed`` and ``deleted`` rows are left
+        alone. Returns the record ids that changed, in one transaction.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT record_id FROM receipts WHERE scope_key = ? AND content_hash = ? "
+                "AND dataset = ? AND record_id != ? AND status NOT IN (?, ?)",
+                (
+                    scope_key,
+                    content_hash,
+                    dataset,
+                    except_record_id,
+                    ReceiptStatus.DELETED.value,
+                    ReceiptStatus.FAILED.value,
+                ),
+            ).fetchall()
+            ids = [row["record_id"] for row in rows]
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                self._db.execute(
+                    f"UPDATE receipts SET status = ?, error = NULL, updated_at = ? "
+                    f"WHERE record_id IN ({marks})",
+                    (ReceiptStatus.DELETED.value, _now(), *ids),
+                )
+                self._db.commit()
+        return ids
 
     def count_by_status(self) -> dict[str, int]:
         with self._lock:

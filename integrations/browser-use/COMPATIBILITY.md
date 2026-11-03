@@ -66,4 +66,7 @@ Observed 1.6.5 behaviours the adapter is built around:
   `failed`, it keeps the receipt `indexing` with the reason until the grace period moves it
   to `unknown`. An `unknown` receipt (timed out, cancelled or never listed) does not count
   as stored: identical content is uploaded again, and the server's one-document-per-content
-  behaviour keeps that idempotent.
+  behaviour keeps that idempotent. It is still reconciled; if the document has not appeared
+  24 hours after the write it becomes `lost`, which is terminal. Because several receipts
+  can share one document, a verified `forget_record()` retires every receipt of that
+  content in the dataset.
