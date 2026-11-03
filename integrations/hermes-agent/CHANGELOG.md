@@ -10,6 +10,24 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0]
+
+### Added
+- **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server the per-prompt memory
+  lane and `cognee_recall` name no dataset and the server routes the query to the readable
+  dataset(s) most likely to hold the answer (dataset routing). Saves still go to the
+  conversation's dataset. The HTTP backend reads `version` from `/health` (cached for an hour);
+  in-process the installed cognee decides; against an older or served-SDK cognee recall keeps
+  the dataset. The guidance lane, `cognee_code_search` and recaps keep their datasets.
+- **`cognee_switch_dataset` restricts recall.** A switch restricts recall to the new dataset;
+  switching to the dataset in use only restricts recall (no new session); `action='auto'`
+  lifts it; `reset` returns to the default dataset with auto recall; `current` reports the
+  mode. The mode is kept in `dataset-overrides.json`; entries written before this release stay
+  restricted.
+
+### Changed
+- **Local mode installs cognee 1.6.6** (was 1.6.5).
+
 ## [1.4.1]
 
 ### Added

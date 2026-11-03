@@ -7,6 +7,26 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0]
+
+### Added
+- **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server the graph recall on each
+  prompt, and a `cognee-search` that names no dataset, send no dataset: the server routes the
+  query to the readable dataset(s) most likely to hold the answer (dataset routing, SDK-1317).
+  Saves still go to the active dataset. The plugin reads the server version from `GET /health`
+  (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly) and keeps
+  recall on the active dataset against an older server. Session history and guidance, the code
+  lane, shared agent memory's dataset ids and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep
+  their explicit scope; recap, evidence and file-context reads stay on the active dataset.
+- **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
+  (stored as `recall_pinned` in the launch record); switching to the active dataset restricts
+  recall without a new session; `switch-dataset.py auto` lifts the restriction and leaves saves
+  where they are. `--list` reports the mode (`recall: auto|pinned`).
+  In local-SDK mode recall stays on the active dataset.
+
+### Changed
+- **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+
 ## [1.6.6]
 
 ### Changed

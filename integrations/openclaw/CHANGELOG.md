@@ -11,6 +11,29 @@ reports an update only when the published npm version changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Versions are
 date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
+## [2026.11.3]
+
+### Added
+- **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server, prompt-time graph recall
+  and `memory_search` name no dataset and the server routes the query to the readable
+  dataset(s) most likely to hold the answer (dataset routing). Saves still go to the
+  conversation's dataset. `CogneeHttpClient.routesDatasets()` reads `version` from `/health`
+  (cached for an hour) and recall keeps the dataset against an older server. Multi-scope mode,
+  the guidance lane and the code lane keep their explicit datasets. `recall()` omits
+  `dataset_ids` when given none.
+- **`memory_switch_dataset` restricts recall.** A switch restricts recall to the new dataset;
+  switching to the dataset in use only restricts recall (a pin-only override, same session);
+  `action: "auto"` lifts it; `reset` returns to the configured dataset with auto recall;
+  `current` reports the mode.
+
+### Changed
+- **The bundled server runs cognee 1.6.6** (was 1.6.5), and `cognee-docker-compose.yaml` uses
+  `cognee/cognee:1.6.6`.
+
+### Fixed
+- **Dataset overrides keep their recall mode across gateway restarts**, and a pin-only override
+  (`sessionSuffix` 1) is no longer rewritten into a session switch on load.
+
 ## [2026.10.26]
 
 ### Added

@@ -10,6 +10,36 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0]
+
+### Added
+- **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server the graph recall on each
+  prompt, and a `cognee-search` that names no dataset, send no dataset: the server routes the
+  query to the readable dataset(s) most likely to hold the answer (dataset routing, SDK-1317).
+  Saves still go to the active dataset. The plugin reads the server version from `GET /health`
+  (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly) and keeps
+  recall on the active dataset against an older server. Session history and guidance, the code
+  lane, shared agent memory's dataset ids and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep
+  their explicit scope; recap, evidence and file-context reads stay on the active dataset.
+- **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
+  (stored as `recall_pinned` in the launch record); switching to the active dataset restricts
+  recall without a new session; `switch-dataset.py auto` lifts the restriction and leaves saves
+  where they are. `--list` reports the mode (`recall: auto|pinned`).
+- **The status-row picker and `/cognee-dataset` know about auto recall.** The picker starts with
+  `auto (best-matching dataset)` and the row reads `auto (<dataset>)` while recall is auto;
+  `/cognee-dataset auto` lifts a restriction, and `/cognee-dataset` alone says which mode is on.
+  The `search` tool reports results "from memory" unless recall is restricted.
+
+### Changed
+- **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+
+### Removed
+- **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
+  search" block or asks the user to pick a dataset. `COGNEE_RECALL_DATASET_HINT`,
+  `COGNEE_DATASETS_CACHE_TTL`, `COGNEE_DATASETS_CACHE_RETRY` and the `readable-datasets.json`
+  cache are gone. A one-off search of one dataset (`cognee-search.sh --dataset-id`,
+  `list-datasets.py`) is unchanged.
+
 ## [1.7.5]
 
 ### Changed
