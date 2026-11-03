@@ -27,6 +27,9 @@ DEFAULT_MAX_SOURCE_URLS = 20
 DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_TOOL_CONTENT_CHARS = 2_000
 DEFAULT_MAX_REMEMBER_CALLS_PER_RUN = 3
+# Each new document is a cognify pass billed to the tenant's key, so the per-run
+# budget has a ceiling as well as a default.
+MAX_REMEMBER_CALLS_PER_RUN_CAP = 20
 
 _DATASET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -170,8 +173,11 @@ class CogneeBrowserMemoryConfig:
             problems.append("recall_top_k must be at least 1")
         if self.recall_max_chars < 100:
             problems.append("recall_max_chars must be at least 100")
-        if self.max_remember_calls_per_run < 0:
-            problems.append("max_remember_calls_per_run must be zero or more")
+        if not 0 <= self.max_remember_calls_per_run <= MAX_REMEMBER_CALLS_PER_RUN_CAP:
+            problems.append(
+                "max_remember_calls_per_run must be between 0 and "
+                f"{MAX_REMEMBER_CALLS_PER_RUN_CAP} (each new document is a cognify pass)"
+            )
         if problems:
             raise ConfigError("\n".join(problems))
 

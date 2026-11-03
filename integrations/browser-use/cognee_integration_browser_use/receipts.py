@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS receipts (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS receipts_scope ON receipts (scope_key, content_hash);
+DROP INDEX IF EXISTS receipts_scope;
+CREATE INDEX IF NOT EXISTS receipts_scope_dataset ON receipts (scope_key, dataset, content_hash);
 CREATE INDEX IF NOT EXISTS receipts_status ON receipts (status);
 """
 
@@ -133,10 +134,14 @@ class ReceiptStore:
             ).fetchone()
         return self._row(row, self.durable) if row else None
 
-    def find_live_by_hash(self, scope_key: str, content_hash: str) -> Optional[Receipt]:
-        """The receipt that makes a write with this content redundant, if any.
+    def find_live_by_hash(
+        self, scope_key: str, dataset: str, content_hash: str
+    ) -> Optional[Receipt]:
+        """The receipt that makes a write of this content to this dataset redundant.
 
-        Only a write known to have landed counts (``accepted``, ``indexing``,
+        A scope may write to more than one dataset (``new_run(scope=..., dataset=...)``),
+        and a document in one dataset says nothing about another, so the dataset is
+        part of the key. Only a write known to have landed counts (``accepted``, ``indexing``,
         ``ready``). ``failed`` and ``deleted`` are gone, and ``unknown`` means the
         write timed out, was cancelled, or its document never appeared: none of
         those may block the same content from being stored again. Re-uploading is
@@ -145,10 +150,10 @@ class ReceiptStore:
         """
         with self._lock:
             row = self._db.execute(
-                "SELECT * FROM receipts WHERE scope_key = ? AND content_hash = ? "
+                "SELECT * FROM receipts WHERE scope_key = ? AND dataset = ? AND content_hash = ? "
                 "AND status IN ('accepted', 'indexing', 'ready') "
                 "ORDER BY created_at DESC LIMIT 1",
-                (scope_key, content_hash),
+                (scope_key, dataset, content_hash),
             ).fetchone()
         return self._row(row, self.durable) if row else None
 
@@ -210,21 +215,33 @@ class ReceiptStore:
                 ).fetchall()
         return [self._row(row, self.durable) for row in rows]
 
-    def list_pending(self, limit: int = 500) -> list[Receipt]:
+    def list_pending(
+        self, limit: int = 500, *, recheck_unknown_after_s: Optional[float] = None
+    ) -> list[Receipt]:
         """Pending receipts, the ones most worth checking first.
 
         Receipts that look live (``accepted``, ``indexing``) come before ``unknown``
         ones, and within each group the least recently checked comes first, so a
         backlog of stale ``unknown`` rows can never starve newer receipts of their
         refresh (each call moves the rows it checked to the back of the queue).
+        With ``recheck_unknown_after_s``, ``unknown`` rows checked more recently than
+        that are left out: a document that has not appeared is only found by walking
+        its dataset's whole listing, which is not worth repeating every few seconds.
         """
+        unknown = ReceiptStatus.UNKNOWN.value
         placeholders = ",".join("?" for _ in PENDING_STATUSES)
+        where = f"status IN ({placeholders})"
+        params: list[object] = [s.value for s in PENDING_STATUSES]
+        if recheck_unknown_after_s is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=recheck_unknown_after_s)
+            where += " AND NOT (status = ? AND updated_at > ?)"
+            params += [unknown, cutoff.isoformat()]
         with self._lock:
             rows = self._db.execute(
-                f"SELECT * FROM receipts WHERE status IN ({placeholders}) "
+                f"SELECT * FROM receipts WHERE {where} "
                 "ORDER BY CASE WHEN status = ? THEN 1 ELSE 0 END, updated_at ASC, created_at ASC "
                 "LIMIT ?",
-                tuple(s.value for s in PENDING_STATUSES) + (ReceiptStatus.UNKNOWN.value, limit),
+                (*params, unknown, limit),
             ).fetchall()
         return [self._row(row, self.durable) for row in rows]
 

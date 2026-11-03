@@ -547,7 +547,9 @@ async def test_unknown_write_never_blocks_the_same_content_again(fake):
         assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 2
         # A receipt that reconciliation moved to unknown (never appeared) is not live either.
         memory.store.update(second.record_id, status=ReceiptStatus.UNKNOWN)
-        assert memory.store.find_live_by_hash(SCOPE.key, second.content_hash) is None
+        assert (
+            memory.store.find_live_by_hash(SCOPE.key, second.dataset, second.content_hash) is None
+        )
         third = await run.remember_observation(content="Supplier B minimum order is 50 units")
         assert third.record_id not in {first.record_id, second.record_id}
         assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 3
@@ -699,16 +701,18 @@ async def test_stale_unknown_receipts_never_starve_reconcile(fake):
         assert await memory.reconcile(limit=1) == {"unknown": 1}
         assert [r.record_id for r in store.list_pending(limit=1)] == [second]
         assert store.get(first).status == ReceiptStatus.UNKNOWN
+        # A just-checked unknown row is not walked again for a while; the others are.
+        checked_at = store.get(first).updated_at
+        assert await memory.reconcile() == {"unknown": 4}
+        assert store.get(first).updated_at == checked_at
         # A document still missing 24 h after the write is lost: terminal, not pending.
-        _backdate(store, first, created_hours=25, updated_hours=0)
-        assert store.list_pending(limit=10)[-1].record_id == first
-        counts = await memory.reconcile()
-        assert counts == {"lost": 1, "unknown": 4}
+        _backdate(store, first, created_hours=25, updated_hours=1)
+        assert await memory.reconcile() == {"lost": 1}
         lost = store.get(first)
         assert lost.status == ReceiptStatus.LOST and "24 h" in lost.error
         assert first not in {r.record_id for r in store.list_pending()}
         assert (await memory.record_status(first)).status == ReceiptStatus.LOST
-        assert store.find_live_by_hash(SCOPE.key, lost.content_hash) is None
+        assert store.find_live_by_hash(SCOPE.key, lost.dataset, lost.content_hash) is None
         assert (await memory.health())["receipts"]["lost"] == 1
         # An incomplete listing never declares a receipt lost.
         import httpx
@@ -740,6 +744,7 @@ async def test_forget_retires_every_receipt_of_the_same_content(fake):
         first = await run.remember_observation(content=content)
         # The write landed, but this process never learned so (timeout, cancel).
         memory.store.update(first.record_id, status=ReceiptStatus.UNKNOWN, error="timed out")
+        _backdate(memory.store, first.record_id, created_hours=1, updated_hours=1)
         second = await run.remember_observation(content=content)
         assert second.record_id != first.record_id
         assert second.upload_name == first.upload_name
@@ -753,7 +758,7 @@ async def test_forget_retires_every_receipt_of_the_same_content(fake):
         assert result["also_deleted"] == [first.record_id]
         assert memory.store.get(first.record_id).status == ReceiptStatus.DELETED
         assert (await memory.record_status(first.record_id)).status == ReceiptStatus.DELETED
-        assert memory.store.find_live_by_hash(SCOPE.key, first.content_hash) is None
+        assert memory.store.find_live_by_hash(SCOPE.key, first.dataset, first.content_hash) is None
         assert not fake.data
 
         third = await run.remember_observation(content=content)
@@ -784,3 +789,54 @@ async def test_forget_retires_every_receipt_of_the_same_content(fake):
         assert result["verified"] is True and result["also_deleted"] == []
         assert memory.store.get("rec_failed").status == ReceiptStatus.FAILED
         assert memory.store.get("rec_elsewhere").status == ReceiptStatus.ACCEPTED
+
+
+async def test_same_content_is_written_to_each_dataset_a_scope_targets(fake):
+    """Dedupe is per dataset: a document in one dataset says nothing about another."""
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        await run.execute(FakeAgent(steps=1))
+        shared = memory.new_run(task="t", scope=SCOPE, dataset="shared_research")
+        await shared.execute(FakeAgent(steps=1))
+        first, second = run.status.receipts[0], shared.status.receipts[0]
+        assert first.content_hash == second.content_hash
+        assert first.scope_key == second.scope_key
+        assert second.record_id != first.record_id
+        assert second.dataset == "shared_research" and second.status == ReceiptStatus.ACCEPTED
+        uploads = [c for c in fake.calls if c["path"] == "/api/v1/remember"]
+        assert len(uploads) == 2
+        assert {d["datasetId"] for d in fake.data} == {first.dataset_id, second.dataset_id}
+        # Within one dataset the same content is still one write.
+        again = memory.new_run(task="t", scope=SCOPE, dataset="shared_research")
+        await again.execute(FakeAgent(steps=1))
+        assert again.status.receipts[0].record_id == second.record_id
+        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 2
+
+
+async def test_reconcile_refreshes_datasets_concurrently_within_one_deadline(fake):
+    import time
+
+    import httpx
+
+    async def slow_status(request: httpx.Request, state, **_):
+        await asyncio.sleep(0.2)
+        return httpx.Response(200, json={request.url.params.get("dataset"): state.pipeline})
+
+    async with make_memory(fake) as memory:
+        receipts = []
+        for i in range(8):
+            run = memory.new_run(task="t", scope=MemoryScope(tenant_id="acme", user_id=f"u{i}"))
+            await run.execute(FakeAgent(steps=1))
+            receipts.append(run.status.receipts[0])
+        fake.overrides["GET /api/v1/datasets/status"] = slow_status
+        started = time.monotonic()
+        assert await memory.reconcile() == {"ready": 8}
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.2  # 8 x 0.2 s serially; four at a time is about 0.4 s
+        for receipt in receipts:
+            memory.store.update(receipt.record_id, status=ReceiptStatus.ACCEPTED)
+        counts = await memory.reconcile(deadline_s=0.05)
+        assert counts == {"unchecked": 8}
+        assert all(memory.store.get(r.record_id).status == ReceiptStatus.ACCEPTED for r in receipts)
+        # The next call, with time, finishes the job.
+        assert await memory.reconcile() == {"ready": 8}

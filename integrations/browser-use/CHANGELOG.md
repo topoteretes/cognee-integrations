@@ -108,3 +108,13 @@ follows [Semantic Versioning](https://semver.org/).
   receipts; the siblings stayed `ready`, pointed at a deleted document and kept the content
   out of memory for good through deduplication. A verified deletion now marks every other
   receipt of that content in the dataset `deleted` and returns their ids as `also_deleted`.
+- Deduplication keyed on scope and content only, although one scope may write to several
+  datasets (`new_run(scope=..., dataset=...)`): identical content aimed at a second dataset
+  was silently skipped and reported `accepted`. The ledger lookup and its index now include
+  the dataset.
+- `reconcile()` walked datasets one after another and re-walked a dataset's whole listing
+  for every stale `unknown` receipt on every pass. Datasets are now refreshed four at a time
+  under one deadline (default 120 s, unreached receipts reported as `unchecked`), and an
+  `unknown` receipt checked in the last 10 minutes is left alone.
+- `max_remember_calls_per_run` has an upper bound (20): each new document is a cognify pass
+  on the tenant's key.

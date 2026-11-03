@@ -23,6 +23,14 @@ def test_required_and_invalid_values():
         resolve_config({**BASE, "COGNEE_BROWSER_USE_RECALL_TOP_K": "many"})
     with pytest.raises(ConfigError, match="not a valid dataset name"):
         resolve_config(BASE, dataset="../etc")
+    with pytest.raises(ConfigError, match="between 0 and 20"):
+        resolve_config({}, api_key="k", max_remember_calls_per_run=21)
+    with pytest.raises(ConfigError, match="between 0 and 20"):
+        resolve_config({}, api_key="k", max_remember_calls_per_run=-1)
+    assert (
+        resolve_config({}, api_key="k", max_remember_calls_per_run=20).max_remember_calls_per_run
+        == 20
+    )
     with pytest.raises(ConfigError, match="unknown configuration keys"):
         resolve_config(BASE, nope=1)
 

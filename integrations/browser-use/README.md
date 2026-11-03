@@ -139,10 +139,13 @@ await memory.forget_record(record_id, scope=scope)  # targeted; verified by re-l
 
 Store calls run on a worker thread owned by `CogneeBrowserMemory`, and `reconcile()` writes
 its updates in one transaction, so a durable receipt store never blocks the agent's event
-loop. `reconcile(limit=200)` refreshes `accepted` and `indexing` receipts before `unknown`
-ones and rotates each group by last check, so repeated calls reach every pending receipt
-however large the backlog. Each `record_status()` refresh is one status call plus a listing
-walk; a host that polls should space calls out in seconds rather than spin.
+loop. `reconcile(limit=200, deadline_s=120)` refreshes `accepted` and `indexing` receipts
+before `unknown` ones, rotates each group by last check and skips `unknown` receipts checked
+in the last 10 minutes (a missing document costs a full listing walk), so repeated calls
+reach every pending receipt however large the backlog. Datasets are refreshed four at a time
+under the one deadline; receipts not reached in time are counted as `unchecked` and keep
+their status for the next call. Each `record_status()` refresh is one status call plus a
+listing walk; a host that polls should space calls out in seconds rather than spin.
 
 `forget_record()` checks the receipt belongs to the given scope, deletes exactly that
 document (`datasetId` + `dataId`), re-lists the dataset and only then marks the receipt
@@ -170,7 +173,7 @@ Precedence per field: constructor keyword → environment → default.
 | `COGNEE_BROWSER_USE_RECALL_TIMEOUT_S` / `recall_timeout_s` | 8 | Deadline over the whole recall (one request; a 404 naming the dataset or `NoDataError` reads as empty, any other 404 is reported as an error) |
 | `COGNEE_BROWSER_USE_CAPTURE` / `capture_enabled` | `true` | Final-outcome capture |
 | `COGNEE_BROWSER_USE_REMEMBER_TOOL` / `remember_tool_enabled` | `false` | Expose `cognee_remember` to the model |
-| `COGNEE_BROWSER_USE_MAX_REMEMBER_CALLS` / `max_remember_calls_per_run` | 3 | New documents `cognee_remember` may create per run (each is a cognify pass); deduplicated repeats are free and the final-outcome record is not counted |
+| `COGNEE_BROWSER_USE_MAX_REMEMBER_CALLS` / `max_remember_calls_per_run` | 3 | New documents `cognee_remember` may create per run (each is a cognify pass), at most 20; deduplicated repeats are free and the final-outcome record is not counted |
 | `COGNEE_BROWSER_USE_MAX_SUMMARY_CHARS` / `max_summary_chars` | 4000 | Cap on the stored summary |
 | `COGNEE_BROWSER_USE_RECEIPTS_PATH` / `receipts_path` | in memory | SQLite receipt store; set it for restart recovery |
 | `COGNEE_BROWSER_USE_REQUEST_TIMEOUT_S` / `COGNEE_BROWSER_USE_WRITE_TIMEOUT_S` | 15 / 30 | Backend deadlines |

@@ -87,7 +87,7 @@ class FakeCognee:
                     "name": dataset_name,
                 }
                 self.datasets.append(ds)
-            if not any(d["name"] == name for d in self.data):
+            if not any(d["name"] == name and d["datasetId"] == ds["id"] for d in self.data):
                 self.data.append(
                     {
                         "id": f"d03f564c-ff7b-4810-ac63-{len(self.data):012d}",

@@ -57,6 +57,11 @@ _INDEXING_GRACE_S = 15 * 60
 # itself is not lost to memory: ``unknown``/``lost`` never count as live, so the next
 # identical observation uploads it again.
 _LOST_AFTER_S = 24 * 60 * 60
+# ``reconcile()`` leaves an ``unknown`` receipt alone this long after its last check
+# (finding a missing document means walking the dataset's whole listing) and
+# refreshes this many datasets at once.
+_RECHECK_UNKNOWN_S = 10 * 60
+_RECONCILE_CONCURRENCY = 4
 
 Validator = Callable[[Any], Any]
 Summarizer = Callable[[Any], Any]
@@ -220,20 +225,47 @@ class CogneeBrowserMemory:
             receipt = await self._refresh(receipt)
         return receipt
 
-    async def reconcile(self, limit: int = 200) -> dict[str, int]:
+    async def reconcile(self, limit: int = 200, *, deadline_s: float = 120.0) -> dict[str, int]:
         """Refresh pending receipts with one status call and one listing walk per dataset.
 
         ``limit`` bounds one call; live-looking receipts are refreshed before stale
         ``unknown`` ones and each call rotates the queue, so repeated calls reach
-        every pending receipt. ``unknown`` becomes terminal ``lost`` after 24 hours.
+        every pending receipt. An ``unknown`` receipt checked in the last 10 minutes
+        is skipped, and becomes terminal ``lost`` after 24 hours. Datasets are
+        refreshed a few at a time under one ``deadline_s``; receipts whose dataset
+        was not reached in time are reported under ``"unchecked"`` and keep their
+        status for the next call.
         """
         counts: dict[str, int] = {}
         by_dataset: dict[str, list[Receipt]] = {}
-        for receipt in await self._db(self.store.list_pending, limit):
+        pending = await self._db(
+            self.store.list_pending, limit, recheck_unknown_after_s=_RECHECK_UNKNOWN_S
+        )
+        for receipt in pending:
             by_dataset.setdefault(receipt.dataset, []).append(receipt)
-        for dataset, receipts in by_dataset.items():
-            for updated in await self._refresh_many(dataset, receipts):
+        if not by_dataset:
+            return counts
+        gate = asyncio.Semaphore(_RECONCILE_CONCURRENCY)
+
+        async def refresh(dataset: str, receipts: list[Receipt]) -> list[Receipt]:
+            async with gate:
+                return await self._refresh_many(dataset, receipts)
+
+        tasks = {
+            asyncio.ensure_future(refresh(dataset, receipts)): receipts
+            for dataset, receipts in by_dataset.items()
+        }
+        done, late = await asyncio.wait(tasks, timeout=deadline_s)
+        for task in late:
+            task.cancel()
+        if late:
+            await asyncio.gather(*late, return_exceptions=True)
+        for task in done:
+            for updated in task.result():
                 counts[updated.status.value] = counts.get(updated.status.value, 0) + 1
+        unchecked = sum(len(tasks[task]) for task in late)
+        if unchecked:
+            counts["unchecked"] = unchecked
         return counts
 
     async def _refresh(self, receipt: Receipt) -> Receipt:
@@ -408,7 +440,7 @@ class CogneeBrowserMemory:
 
     async def _write(self, record: MemoryRecord, dataset: str) -> Receipt:
         duplicate = await self._db(
-            self.store.find_live_by_hash, record.scope_key, record.content_hash
+            self.store.find_live_by_hash, record.scope_key, dataset, record.content_hash
         )
         if duplicate:
             return duplicate
