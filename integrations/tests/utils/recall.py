@@ -156,7 +156,7 @@ def drive_recall(
     mode: str = "http",
     sdk_recall: Callable[..., Any] | dict[str, list] | None = None,
     saves_last_turn: dict | None = None,
-    auto_route: bool = False,
+    auto_route: bool | Callable[..., bool] = False,
 ) -> RecallRun:
     """Run ``module._run(prompt)`` with every seam captured.
 
@@ -167,7 +167,8 @@ def drive_recall(
     escalation without touching real streak files.
 
     ``auto_route`` is what ``auto_recall_active`` answers (recall not pinned
-    and the server routes datasets); off by default.
+    and the server routes datasets), or a callable standing in for it; off by
+    default.
 
     ``saves_last_turn`` is what the hook reads back from the save counter (all
     kinds zero by default), so a header test can hand it buffered writes.
@@ -236,7 +237,12 @@ def drive_recall(
         monkeypatch.setattr(module, name, impl)
     # Auto recall (SDK-1393) reads the launch record and probes /health for the
     # server version: answered here, so no hook test reaches either.
-    monkeypatch.setattr(module, "auto_recall_active", lambda *a, **k: auto_route, raising=False)
+    monkeypatch.setattr(
+        module,
+        "auto_recall_active",
+        auto_route if callable(auto_route) else (lambda *a, **k: auto_route),
+        raising=False,
+    )
 
     if local_sdk:
         _install_local_sdk(module, monkeypatch, run, sdk_recall)

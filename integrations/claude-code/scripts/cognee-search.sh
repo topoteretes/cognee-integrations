@@ -223,12 +223,14 @@ if [ "$MODE" = "code" ] && [ -z "${DATASET_EXPLICIT:-}" ]; then
 fi
 
 # Auto recall (SDK-1393): unless the user pinned a dataset, a graph search that
-# names none sends none, and a cognee >= 1.6.6 server routes it to the best
-# dataset(s). The session id is bound to the active dataset, so it is dropped
-# too. Shared memory (resolved UUIDs) keeps its explicit scope.
+# names none sends none, and a cognee >= 1.6.6 server picks the best-matching
+# dataset(s) when it can. The session id is bound to the active dataset, and
+# shared memory's UUIDs name datasets too, so both are dropped.
 ROUTED=""
-if [ "$MODE" = "graph" ] && [ -z "${DATASET_EXPLICIT:-}" ] && [ -n "$RECALL_AUTO" ] && [ -z "$DATASET_IDS" ]; then
+ROUTED_FROM="$DATASET"
+if [ "$MODE" = "graph" ] && [ -z "${DATASET_EXPLICIT:-}" ] && [ -n "$RECALL_AUTO" ]; then
     DATASET=""
+    DATASET_IDS=""
     SESSION_ID=""
     ROUTED="1"
 fi
@@ -287,10 +289,25 @@ elif [ "$MODE" = "code" ] || [ -n "$FOREIGN" ]; then
     exit 1
 else
     echo "[cognee-search] falling back to cognee-cli (degraded — empty CLI output is NOT proof of absence; ground-truth via: curl -X POST \"\$COGNEE_BASE_URL/api/v1/recall\")" >&2
-    if [ "$MODE" = "graph" ] && [ -n "$ROUTED" ]; then
+    # The CLI runs its own cognee: it routes a search that names no dataset
+    # only from 1.6.6 on, and an older one would search every dataset instead.
+    CLI_ROUTES=""
+    if [ -n "$ROUTED" ]; then
+        CLI_ROUTES="$(python3 - <<'PY' "$(cognee-cli --version 2>/dev/null || true)" "${SELF_DIR}" 2>/dev/null || true
+import sys
+sys.path.insert(0, sys.argv[2])
+try:
+    from _plugin_common import version_supports_routing
+    print("1" if version_supports_routing(sys.argv[1].strip().split()[-1]) else "")
+except Exception:
+    pass
+PY
+)"
+    fi
+    if [ "$MODE" = "graph" ] && [ -n "$CLI_ROUTES" ]; then
         cognee-cli recall "$QUERY" -k "$TOP_K" -f json 2>/dev/null || true
     elif [ "$MODE" = "graph" ]; then
-        cognee-cli recall "$QUERY" -d "$DATASET" -k "$TOP_K" -f json 2>/dev/null || true
+        cognee-cli recall "$QUERY" -d "${ROUTED_FROM}" -k "$TOP_K" -f json 2>/dev/null || true
     elif [ "$MODE" = "session" ]; then
         cognee-cli recall "$QUERY" -s "$SESSION_ID" -k "$TOP_K" -f json 2>/dev/null || true
     else

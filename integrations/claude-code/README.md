@@ -346,7 +346,7 @@ Set a custom dataset at launch:
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
 
-`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Saves go to the active dataset; recall is auto (the best-matching dataset) until you pick one (see
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Saves go to the active dataset; recall is auto (the server picks the dataset when it can) until you pick one (see
 [Auto recall and restricting it to one dataset](#auto-recall-and-restricting-it-to-one-dataset)).
 Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
 
@@ -383,26 +383,34 @@ list and the session-end sync covers them again as a safety net. The script behi
 
 Saves always go to the active dataset, but **recall is auto by default**: the graph recall on each
 prompt (and a `cognee-search` that names no dataset) sends no dataset, and a cognee >= 1.6.6
-server routes the query to the readable dataset(s) most likely to hold the answer (dataset
-routing). A dataset that has not been through `improve` on 1.6.6 yet has no routing index and is
-always searched, so right after an upgrade auto recall reads every dataset until each one syncs.
+server picks the readable dataset(s) most likely to hold the answer when it can (dataset
+routing). Routing is best effort: when the server cannot narrow the query it searches every
+readable dataset instead. That happens with backend access control off, fewer than two readable
+datasets, nothing close enough to the query, or a vector database without routing support; a
+dataset that has not been through `improve` on 1.6.6 yet has no routing index and is always
+searched, and when the picked dataset returns nothing the server widens to the rest. Pin a dataset
+to keep recall on one.
 
 Picking a dataset — another one, or the active one — **restricts recall to it**; `auto` lifts the
 restriction and leaves saves where they are:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" <dataset>   # saves go there, recall restricted to it
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # recall from the best-matching dataset again
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # let the server pick the dataset for recall again
 ```
 
-The choice is stored in the launch record (`recall_pinned`). Auto recall needs a server that routes:
-the plugin reads the version from `GET /health` (cached per server in
-`~/.cognee-plugin/dataset-routing.json`, re-read hourly) and, against an older server, keeps recall
-on the active dataset as before. These always keep their explicit dataset: session history and
-guidance (bound to the active dataset), the code lane (this repository's code dataset), shared
-agent memory's dataset ids and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set. Backend access control
-must be on for the server to route (cognee's default where the databases support it); with it off
-an unscoped recall reads every dataset.
+The choice is stored in the launch record (`recall_pinned`); a session switched before this
+release stays restricted. `auto` is reserved: no dataset can be named so. Auto recall needs a server
+that routes: the plugin reads the version from `GET /health` (cached per server in
+`~/.cognee-plugin/dataset-routing.json`, re-read hourly; the read comes out of the prompt's recall
+budget) and, against an older server, keeps recall on the active dataset as before. Pre-releases
+and dev builds of 1.6.6 count as older. While recall cannot be routed, `--list`, the status row and
+`/cognee-dataset` show it as restricted to the active dataset. These always keep their explicit dataset: session history and
+guidance (bound to the active dataset), the code lane (this repository's code dataset) and a
+`COGNEE_PLUGIN_READ_DATASET_IDS` read set. Shared agent memory's dataset ids are dropped with the
+dataset under auto recall and kept when it is restricted. When the server is unreachable,
+`cognee-search` falls back to the local `cognee-cli`, which sends no dataset only when its own
+cognee is 1.6.6 or later.
 
 ### Searching one dataset without switching
 
@@ -1370,7 +1378,7 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is auto (the best-matching dataset) unless you restricted it to one by picking a dataset; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction. Against a cognee server older than 1.6.6 recall reads the active dataset only.
+- Recall is auto (the server picks the best-matching dataset when it can, otherwise it searches every readable one) unless you restricted it to one by picking a dataset; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction. Against a cognee server older than 1.6.6 recall reads the active dataset only.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 

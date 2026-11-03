@@ -473,6 +473,12 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             )
         except Exception as exc:
             hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
+        # A /health read on a cache miss comes out of the recall budget, not on
+        # top of it.
+        scope_timeout = min(scope_timeout, max(budget_deadline - time.monotonic(), 0.0))
+        if scope_timeout < MIN_SCOPE_TIMEOUT:
+            hook_log("recall_budget_exceeded", {"collected": 0})
+            scope_specs = []
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's call. Returns ``(dataset, part, exc, elapsed_ms)``.

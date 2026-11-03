@@ -139,6 +139,7 @@ def test_switch_to_current_dataset_restricts_recall_without_a_new_session(env):
 
 
 def test_auto_lifts_the_restriction_and_keeps_the_session(env):
+    env.server.set_server_version("1.6.6")
     env.switch._switch(env.host, env.rec(), "a", force=False)
     result = env.switch._auto(env.host, env.rec())
     assert result == {
@@ -151,6 +152,35 @@ def test_auto_lifts_the_restriction_and_keeps_the_session(env):
     assert env.rec()["recall_pinned"] is False
     assert env.switch._auto(env.host, env.rec())["reason"] == "already_auto"
     assert env.synced == [] and not _calls(env.server, REGISTER)
+
+
+def test_auto_on_a_server_that_cannot_route_reads_as_restricted(env, capsys):
+    """Unpinned recall on cognee < 1.6.6 still reads the active dataset: the
+    choice is saved, and every surface reports what is in effect."""
+    env.server.set_server_version("1.6.5")
+    env.switch._switch(env.host, env.rec(), "a", force=False)
+    result = env.switch._auto(env.host, env.rec())
+    assert result["reason"] == "recall_auto" and result["recall"] == "pinned"
+    assert env.rec()["recall_pinned"] is False
+    env.switch._print_switch(result, as_json=False)
+    assert "can't route yet, so recall stays on 'a'" in capsys.readouterr().out
+    assert env.switch._list(env.host, env.rec())["recall"] == "pinned"
+
+
+def test_list_reports_auto_where_the_server_routes(env):
+    env.server.set_server_version("1.6.6-local")
+    assert env.switch._list(env.host, env.rec())["recall"] == "auto"
+
+
+@pytest.mark.parametrize("word", ["auto", "AUTO", " Auto "])
+def test_auto_is_reserved_and_never_switches(env, capsys, word):
+    import json
+
+    env.switch._switch(env.host, env.rec(), "a", force=False)
+    assert env.switch.main([word, "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["switched"] is False and out["reason"] == "recall_auto"
+    assert env.rec()["dataset"] == "a" and not _calls(env.server, REGISTER)
 
 
 def test_a_switch_pins_recall_to_the_new_dataset(env):

@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -744,9 +745,18 @@ _ROUTING_SUPPORT_RETRY_SECONDS = 300.0
 
 
 def recall_is_pinned(host_key: str = "") -> bool:
-    """True when the user picked a dataset for this launch, restricting recall to it."""
+    """True when the user picked a dataset for this launch, restricting recall to it.
+
+    A record written before recall modes existed has no ``recall_pinned``; a
+    switch on it (``switched_at``) was an explicit pick, so it stays pinned.
+    """
     host_key = _sanitize_session_key(host_key) or get_session_key()
-    return bool(host_key) and _read_map_record(host_key).get("recall_pinned") is True
+    if not host_key:
+        return False
+    rec = _read_map_record(host_key)
+    if "recall_pinned" in rec:
+        return rec.get("recall_pinned") is True
+    return bool(rec.get("switched_at"))
 
 
 def set_recall_pinned(host_key: str, pinned: bool) -> dict:
@@ -770,21 +780,32 @@ def set_recall_pinned(host_key: str, pinned: bool) -> dict:
     return _read_map_record(host_key) or merged
 
 
-def _version_tuple(value: str) -> tuple[int, ...]:
-    """Leading numeric release of a version string: '1.6.6rc1' -> (1, 6, 6)."""
-    parts = []
-    for piece in str(value or "").strip().lstrip("vV").split("."):
-        digits = ""
-        for ch in piece:
-            if not ch.isdigit():
-                break
-            digits += ch
-        if not digits:
-            break
-        parts.append(int(digits))
-        if len(digits) != len(piece):
-            break
-    return tuple(parts)
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(.*)$", re.IGNORECASE)
+# A release, or a build of one: '-local' (source checkout, the Docker image), a
+# PEP 440 '+label', '.postN'.
+_RELEASE_SUFFIX_RE = re.compile(r"^(-local|\+.*|[.-]?post\d*)$", re.IGNORECASE)
+# Before its release: 1.6.6rc1 reports '1.6.6.rc1' and shipped without routing.
+_PRERELEASE_SUFFIX_RE = re.compile(
+    r"^[._-]?(a|b|c|rc|alpha|beta|pre|preview|dev)\d*(?:$|[._+-])", re.IGNORECASE
+)
+
+
+def version_supports_routing(value: str) -> bool:
+    """Whether a cognee version string is a release at or above 1.6.6.
+
+    '1.6.6' and '1.6.6-local' route; '1.6.6.rc1' and '1.6.6.dev0' come before
+    1.6.6 and do not; anything unparseable ('unknown', '') does not.
+    """
+    match = _VERSION_RE.match(str(value or "").strip())
+    if not match:
+        return False
+    release = tuple(int(part) for part in match.groups()[:3])
+    suffix = match.group(4).strip()
+    if not suffix or _RELEASE_SUFFIX_RE.match(suffix):
+        return release >= _DATASET_ROUTING_MIN_VERSION
+    if _PRERELEASE_SUFFIX_RE.match(suffix):
+        return release > _DATASET_ROUTING_MIN_VERSION
+    return False
 
 
 def _fetch_server_version(base: str, timeout: float) -> str:
@@ -824,7 +845,7 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
         hook_log("dataset_routing_probe_failed", {"base_url": base, "error": str(exc)[:200]})
         version = ""
     if version:
-        routes = _version_tuple(version) >= _DATASET_ROUTING_MIN_VERSION
+        routes = version_supports_routing(version)
     else:
         routes = bool(entry.get("routes"))
     cache[base] = {
@@ -840,8 +861,15 @@ def server_routes_datasets(service_url: str = "", timeout: float = 1.0) -> bool:
 
 
 def auto_recall_active(service_url: str = "", host_key: str = "", timeout: float = 1.0) -> bool:
-    """True when graph recall should name no dataset and let the server route it."""
+    """True when graph recall should name no dataset and let the server route it.
+
+    Also the recall mode every surface reports: when this is False, recall
+    reads one dataset (or the user's read set), so it is shown as restricted.
+    """
     if recall_is_pinned(host_key):
+        return False
+    # The user's own federated read set is an explicit scope.
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
         return False
     return server_routes_datasets(service_url, timeout=timeout)
 
@@ -5131,8 +5159,9 @@ def recall_via_http(
     fields, federated = recall_fields(write_dataset, scope)
     ids = [str(x).strip() for x in (dataset_ids or []) if str(x).strip()]
     # Auto recall (``auto_route``, see auto_recall_active): a graph-only read
-    # with no session names no dataset, and the server routes it. Shared
-    # memory's ids, a federated read set, the code lane and a project-routed
+    # with no session names no dataset, and the server routes it — shared
+    # memory's ids included, since the server can only route a request that
+    # names none. A federated read set, the code lane and a project-routed
     # session keep their explicit scope.
     routed = (
         auto_route
@@ -5140,7 +5169,6 @@ def recall_via_http(
         and not session_id
         and not code_query
         and not federated
-        and not ids
         and write_dataset == dataset
         and not target.get("node_set")
     )

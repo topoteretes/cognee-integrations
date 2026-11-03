@@ -14,17 +14,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server the graph recall on each
-  prompt, and a `cognee-search` that names no dataset, send no dataset: the server routes the
-  query to the readable dataset(s) most likely to hold the answer (dataset routing, SDK-1317).
+  prompt, and a `cognee-search` that names no dataset, send no dataset: the server picks the readable
+  dataset(s) most likely to hold the answer when it can, and otherwise searches every readable
+  dataset (dataset routing, SDK-1317; best effort). Pin a dataset to keep recall on one.
   Saves still go to the active dataset. The plugin reads the server version from `GET /health`
   (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly) and keeps
-  recall on the active dataset against an older server. Session history and guidance, the code
-  lane, shared agent memory's dataset ids and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep
-  their explicit scope; recap, evidence and file-context reads stay on the active dataset.
+  recall on the active dataset against an older server; pre-releases and dev builds of 1.6.6 count
+  as older. The `/health` read comes out of the prompt's recall budget. Session history and guidance, the code
+  lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
+  memory's dataset ids are dropped with the dataset under auto recall and kept while restricted; recap, evidence and file-context reads stay on the active dataset.
 - **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
   (stored as `recall_pinned` in the launch record); switching to the active dataset restricts
   recall without a new session; `switch-dataset.py auto` lifts the restriction and leaves saves
-  where they are. `--list` reports the mode (`recall: auto|pinned`).
+  where they are. `--list` reports the mode in effect (`recall: auto|pinned`): unpinned recall a
+  server cannot route reads as `pinned`, and `auto` there says the choice is saved. A session
+  switched before this release stays restricted. `auto` is a reserved name: no dataset can be
+  switched to or created as `auto`.
+- **`cognee-search` falls back to the CLI by its own version.** With the server unreachable, the
+  `cognee-cli` fallback sends no dataset only when the CLI's cognee is 1.6.6 or later.
 - **The status-row picker and `/cognee-dataset` know about auto recall.** The picker starts with
   `auto (best-matching dataset)` and the row reads `auto (<dataset>)` while recall is auto;
   `/cognee-dataset auto` lifts a restriction, and `/cognee-dataset` alone says which mode is on.

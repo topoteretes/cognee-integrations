@@ -18,10 +18,11 @@ Move this Claude Code session to a different Cognee dataset. A Cognee session
 never spans two datasets, so the switch retires the current session (after
 syncing it into the graph) and starts a new one on the chosen dataset.
 
-Recall is **auto** by default: each prompt's memory comes from the dataset(s)
-that best match it (dataset routing, cognee >= 1.6.6), while saves go to the
-active dataset. Picking a dataset — another one, or the active one — restricts
-recall to it. `auto` lifts the restriction and leaves saves where they are.
+Recall is **auto** by default: a cognee >= 1.6.6 server picks the dataset(s)
+that best match each prompt when it can, and otherwise searches every readable
+dataset; saves go to the active dataset. Picking a dataset — another one, or
+the active one — restricts recall to it. `auto` lifts the restriction and leaves
+saves where they are. `auto` is reserved: no dataset can be named so.
 
 ## Faster, with the hooks module loaded
 
@@ -56,12 +57,13 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" "$ARGUMENTS" --json
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
 ```
 
-The JSON has `current`, `recall` (`"auto"` or `"pinned"`), `datasets`
+The JSON has `current`, `recall` (`"auto"` or `"pinned"`, the mode in effect:
+an older server that cannot route reads as `"pinned"`), `datasets`
 (`[{name, id, writable, current}]`), `hidden_readonly` (datasets you can read but not write — never offered) and
 `filtered` (`true` when write access was verified for every row).
 
 Present the choice with **AskUserQuestion** (single select), listing the
-dataset names from `datasets` with the current one marked "(current)", plus an
+dataset names from `datasets` (never one named `auto`) with the current one marked "(current)", plus an
 "auto (best-matching dataset)" option unless `recall` is already `"auto"`. The
 tool allows four options per question, so if there are more than four, put
 the first three plus a "More…" option and page on the next question. The
@@ -87,8 +89,8 @@ of seconds. `"switched": false` carries a `reason`:
 |--------|-----|
 | `already_active` | the session is already on that dataset, recall restricted to it |
 | `recall_restricted` | recall is now restricted to that (already active) dataset |
-| `recall_auto` | recall is auto again; saves still go to `dataset` |
-| `already_auto` | recall was already auto; saves go to `dataset` |
+| `recall_auto` | recall is auto again; saves still go to `dataset` (if `recall` is `"pinned"`: saved, but this server can't route yet, so recall stays on `dataset`) |
+| `already_auto` | recall was already auto; saves go to `dataset` (same `"pinned"` caveat) |
 
 On failure the JSON is `{"error", "code"}`:
 

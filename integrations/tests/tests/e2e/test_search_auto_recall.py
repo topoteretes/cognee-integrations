@@ -1,0 +1,128 @@
+"""E2e: ``cognee-search.sh`` under auto recall (SDK-1393), for every hook suite.
+
+Unless the user pinned a dataset, a graph search that names none sends none, so
+a cognee >= 1.6.6 server picks the dataset. Shared memory's UUIDs name datasets
+too, so they are dropped with it. When the server is unreachable the wrapper
+falls back to the local cognee-cli, which runs its own cognee: it sends no
+dataset only when that cognee routes (>= 1.6.6), else it keeps the active one.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+
+import pytest
+from utils.isolation import build_env, usable_bash
+
+BASH = usable_bash()
+
+pytestmark = pytest.mark.skipif(
+    BASH is None, reason="requires a working POSIX bash (wrapper is not run on Windows)"
+)
+
+WRITE_ID = "11111111-1111-4111-8111-111111111111"
+OTHER_ID = "22222222-2222-4222-8222-222222222222"
+# Nothing listens here: the server-first request fails and the CLI answers.
+UNREACHABLE = "http://127.0.0.1:9"
+
+
+def _launch(suite, home, *, pinned: bool, shared: bool = False) -> dict:
+    key = "host-auto-e2e"
+    record = {
+        "session_id": "active_session",
+        "conn_uuid": "c1",
+        "dataset": "agent_sessions",
+        "host_key": key,
+        "recall_pinned": pinned,
+    }
+    if shared:
+        record.update({"dataset_id": WRITE_ID, "dataset_ids": [WRITE_ID, OTHER_ID]})
+    sessions = home / ".cognee-plugin" / suite.state_subdir / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    (sessions / f"{key}.json").write_text(json.dumps(record), encoding="utf-8")
+    return {"COGNEE_SESSION_KEY": key}
+
+
+def _run(suite, home, service_url, extra):
+    script = suite.scripts_dir / "cognee-search.sh"
+    env = build_env(suite, home, service_url=service_url, api_key="k", extra=extra)
+    return subprocess.run(
+        [BASH, str(script), "what did we decide", "5"],
+        env=env,
+        cwd=str(home),
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_auto_drops_shared_memory_ids(suite, temp_home, mock_server, pinned):
+    mock_server.set_server_version("1.6.6")
+    result = _run(
+        suite,
+        temp_home,
+        mock_server.url,
+        _launch(suite, temp_home, pinned=pinned, shared=True),
+    )
+    assert result.returncode == 0, result.stderr
+    body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
+    if pinned:
+        assert body["dataset_ids"] == [WRITE_ID, OTHER_ID]
+    else:
+        assert "datasets" not in body and "dataset_ids" not in body
+
+
+@pytest.fixture
+def fake_cli(tmp_path):
+    """A ``cognee-cli`` on PATH reporting ``state["version"]`` and logging its argv."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "cli-args.log"
+    state = {"version": "1.6.6", "log": log}
+    cli = bin_dir / "cognee-cli"
+
+    def write():
+        cli.write_text(
+            "#!/bin/sh\n"
+            f'if [ "$1" = "--version" ]; then echo "cognee {state["version"]}"; exit 0; fi\n'
+            f'echo "$@" >> "{log}"\n'
+            "echo '[]'\n",
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+
+    state["write"] = write
+    state["path"] = str(bin_dir)
+    return state
+
+
+@pytest.mark.parametrize(
+    ("cli_version", "routes"),
+    [("1.6.6", True), ("1.6.6-local", True), ("1.6.6.rc1", False), ("1.6.5", False)],
+)
+def test_the_cli_fallback_routes_only_on_a_cli_that_can(
+    suite, temp_home, fake_cli, cli_version, routes
+):
+    # The server answered as 1.6.6 an hour-fresh moment ago, so recall is auto.
+    (temp_home / ".cognee-plugin").mkdir(parents=True, exist_ok=True)
+    (temp_home / ".cognee-plugin" / "dataset-routing.json").write_text(
+        json.dumps({UNREACHABLE: {"version": "1.6.6", "routes": True, "checked_at": time.time()}}),
+        encoding="utf-8",
+    )
+    fake_cli["version"] = cli_version
+    fake_cli["write"]()
+    extra = _launch(suite, temp_home, pinned=False)
+    extra["PATH"] = fake_cli["path"] + os.pathsep + os.environ.get("PATH", "")
+    result = _run(suite, temp_home, UNREACHABLE, extra)
+    assert "falling back to cognee-cli" in result.stderr, result.stderr
+    (argv,) = fake_cli["log"].read_text(encoding="utf-8").splitlines()
+    assert argv.startswith("recall what did we decide")
+    if routes:
+        assert "-d" not in argv.split()
+    else:
+        assert "-d agent_sessions" in argv

@@ -198,7 +198,8 @@ test('the search tool runs the search wrapper and hands the model the hits as te
 
   const shown = resultText(ran)
   expect(shown.isError).toBe(false)
-  expect(shown.text).toContain('2 results from memory.')
+  // No recall mode listed: nothing claims the search went beyond the active dataset.
+  expect(shown.text).toContain('2 results from the active dataset.')
   // Trimmed the way the prompt hook trims, by the plugin's own script, with the query.
   expect(shown.text).toContain('Project tempo replicates with raft. [trimmed]')
   const trim = argvOf(calls, 'recall-trim.py')
@@ -492,6 +493,64 @@ test('/cognee-dataset auto lifts the restriction and the listing says which reca
   const answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
   expect(answer.text).toBe('Cognee: recall is auto again (saves stay in agent_sessions).')
   expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['auto', '--json', '--session-key', SESSION])
+})
+
+test('auto on a server that cannot route says the choice is saved and recall stays put', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned' }))
+        : ok(JSON.stringify({ switched: false, reason: 'recall_auto', dataset: 'agent_sessions', session_id: 'cognee-1', recall: 'pinned' })),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
+  expect(answer.text).toBe("Cognee: saved; this server can't route yet, so recall stays on agent_sessions.")
+  const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(listing.text).toContain('Recall: restricted to agent_sessions')
+})
+
+test('a listing without a recall mode reads as restricted on every surface', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(listing.text).toContain('Recall: restricted to agent_sessions')
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker!.props.value).toBe('agent_sessions')
+  await ui.unmount()
+})
+
+test('"auto" is reserved: a dataset so named is not offered, and the namer refuses it', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify({ ...SWITCH_LIST, datasets: [...SWITCH_LIST.datasets, { name: 'Auto', id: 'x3', writable: true, current: false }] }))
+        : ok(JSON.stringify({ switched: true, dataset: argv[argv.indexOf('--json') - 1], session_id: 'cognee-2', previous: { synced: true } })),
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', 'demo', '+ new dataset…'])
+
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
+  calls.length = 0
+  await $.ui.input({ plugin: PLUGIN, key: 'newDataset', text: ' AUTO ' })
+  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
+  expect(toasts.some(t => t.includes('"auto" is reserved'))).toBe(true)
+  // The field stays open for another name.
+  expect(await ui.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
+  await ui.unmount()
 })
 
 test('the picker ends with a "new dataset" entry that turns it into a text field', async ($, on) => {

@@ -11,9 +11,10 @@ Usage:
     switch-dataset.py auto [--json]            # let routing pick the dataset for recall
 
 Recall is "auto" by default: graph recall names no dataset and a cognee >= 1.6.6
-server routes each query to the best dataset(s). Picking a dataset (even the
-active one) restricts recall to it; ``auto`` lifts that restriction. Saves always
-go to the active dataset, which ``auto`` leaves where it is.
+server picks the best-matching dataset(s) when it can, otherwise it searches
+every readable dataset. Picking a dataset (even the active one) restricts recall
+to it; ``auto`` lifts that restriction. Saves always go to the active dataset,
+which ``auto`` leaves where it is. "auto" is reserved: no dataset can be named so.
 
 Runs under the host's shell tool (no hook payload), so it finds its own launch
 record via ``resolve_host_key_outside_hook``; pass ``--session-key <host id>``
@@ -44,6 +45,7 @@ from _logfiles import rotate_if_oversized as _rotate_log_if_oversized  # noqa: E
 from _plugin_common import (  # noqa: E402
     _new_conn_uuid,
     _read_map_record,
+    auto_recall_active,
     hook_log,
     list_writable_datasets,
     load_resolved,
@@ -115,6 +117,19 @@ def _resolve_launch(explicit_key: str) -> tuple[str, dict]:
 # ── listing ────────────────────────────────────────────────────────────────
 
 
+def _recall_mode(host_key: str) -> str:
+    """The recall mode in effect: "auto" only when recall is actually routed.
+
+    Unpinned recall against a server that cannot route (cognee < 1.6.6, version
+    unknown) still reads the active dataset, so it is reported as pinned.
+    """
+    try:
+        service_url = resolved_http_endpoint_auth()[0]
+        return "auto" if auto_recall_active(service_url, host_key) else "pinned"
+    except Exception:
+        return "pinned"
+
+
 def _list(host_key: str, rec: dict) -> dict:
     resolved = load_resolved(session_key=host_key)
     user_id = str(resolved.get("user_id") or "")
@@ -130,7 +145,7 @@ def _list(host_key: str, rec: dict) -> dict:
     rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
     return {
         "current": current,
-        "recall": "pinned" if recall_is_pinned(host_key) else "auto",
+        "recall": _recall_mode(host_key),
         "session_id": str(rec.get("session_id") or ""),
         "datasets": rows,
         "hidden_readonly": listing["hidden_readonly"],
@@ -421,12 +436,13 @@ def _auto(host_key: str, rec: dict) -> dict:
     changed = recall_is_pinned(host_key)
     if changed:
         set_recall_pinned(host_key, False)
+    # The choice is saved either way; "recall" says what is in effect.
     return {
         "switched": False,
         "reason": "recall_auto" if changed else "already_auto",
         "dataset": dataset,
         "session_id": str(rec.get("session_id") or ""),
-        "recall": "auto",
+        "recall": _recall_mode(host_key),
     }
 
 
@@ -441,7 +457,10 @@ def _print_listing(result: dict, as_json: bool) -> None:
     if result.get("recall") == "pinned":
         print(f"Recall: restricted to {result['current']} (switch-dataset.py auto lifts it)")
     else:
-        print("Recall: auto (each query goes to the best-matching dataset)")
+        print(
+            "Recall: auto (the server picks the best-matching dataset when it can, "
+            "otherwise searches every readable dataset)"
+        )
     if not result["datasets"]:
         print("No other writable datasets found.")
     for row in result["datasets"]:
@@ -461,6 +480,8 @@ def _print_switch(result: dict, as_json: bool) -> None:
         reason = result.get("reason")
         if reason == "recall_restricted":
             print(f"Recall restricted to dataset {result['dataset']!r}.")
+        elif reason in ("recall_auto", "already_auto") and result.get("recall") != "auto":
+            print(f"Saved. This server can't route yet, so recall stays on {result['dataset']!r}.")
         elif reason == "recall_auto":
             print(f"Recall is auto again; saves stay in {result['dataset']!r}.")
         elif reason == "already_auto":

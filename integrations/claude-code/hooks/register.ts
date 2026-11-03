@@ -210,8 +210,9 @@ const NEW_DATASET = '+ new dataset…'
 // routing, cognee >= 1.6.6) instead of only the one saves go to. Spaces keep it
 // apart from any dataset name, like NEW_DATASET.
 const AUTO_RECALL = 'auto (best-matching dataset)'
-// Recall mode from the last listing: 'auto' (routed) or 'pinned' to the
-// active dataset; '' until listed.
+// Recall mode in effect from the last listing: 'auto' (routed) or 'pinned' to
+// the active dataset; '' until listed. Anything but 'auto' reads as restricted:
+// unpinned recall on a server that cannot route still reads one dataset.
 let recallMode: '' | 'auto' | 'pinned' = ''
 let namingDataset = false
 // In a terminal the picker stays closed until asked for: a click anywhere on
@@ -550,6 +551,11 @@ function formatRemember(stdout: string, exitCode: number, dataset: string): { te
   const outcome = asText(parsed.wait_outcome)
   if (outcome === 'errored') return { text: `Stored in ${where}, but building the graph from it failed; check the server log.`, isError: true }
   return { text: `Stored in ${where}; the graph is still being built from it, so recall finds it in a moment.`, isError: false }
+}
+
+// "auto" names the recall mode in switch-dataset.py, so no dataset can be named so.
+function isReservedName(name: string): boolean {
+  return name.trim().toLowerCase() === 'auto'
 }
 
 function recallModeOf(value: unknown): '' | 'auto' | 'pinned' {
@@ -936,6 +942,8 @@ async function switchDataset($: any, target: string): Promise<string> {
     else if (parsed.switched === false) {
       const where = asText(parsed.dataset) || name
       if (parsed.reason === 'recall_restricted') line = `recall restricted to ${where}`
+      else if ((parsed.reason === 'recall_auto' || parsed.reason === 'already_auto') && parsed.recall !== 'auto')
+        line = `saved; this server can't route yet, so recall stays on ${where}`
       else if (parsed.reason === 'recall_auto') line = `recall is auto again (saves stay in ${where})`
       else if (parsed.reason === 'already_auto') line = `recall is already auto (saves go to ${where})`
       else line = `already on ${where}`
@@ -995,7 +1003,7 @@ export const register: Register = (on, options) => {
     await refreshSnapshot($)
     await $.command.register({
       name: 'cognee-dataset',
-      description: 'Switch this session to another Cognee dataset (recall is then restricted to it); "auto" lets each recall go to the best-matching dataset; without a name, list them.',
+      description: 'Switch this session to another Cognee dataset (recall is then restricted to it); "auto" lets the server pick the best-matching dataset for each recall when it can; without a name, list them.',
       argumentHint: '[name|auto]',
     })
     await $.command.register({
@@ -1006,7 +1014,7 @@ export const register: Register = (on, options) => {
       await $.tool.register({
         name: 'search',
         description:
-          'Search Cognee memory: the permanent knowledge graph (scope "graph", the default; the best-matching dataset unless the user restricted recall to one), ' +
+          'Search Cognee memory: the permanent knowledge graph (scope "graph", the default; the dataset the server picks for the query, unless the user restricted recall to one), ' +
           'or the indexed repository\'s code graph (scope "code"). Memory is already recalled automatically on every prompt; ' +
           'call this for a deeper or differently worded search, for more results, or to read another dataset by its id. ' +
           'Returns the matching memories as text; an empty result from a reachable server is authoritative.',
@@ -1018,7 +1026,7 @@ export const register: Register = (on, options) => {
             scope: { type: 'string', enum: ['graph', 'code'], default: 'graph', description: 'graph: memory; code: the indexed repository.' },
             dataset_id: {
               type: 'string',
-              description: 'Read one specific dataset by its UUID. Without it, recall is auto (the best-matching dataset) unless the user restricted it to one. Leaves the session on the active dataset.',
+              description: 'Read one specific dataset by its UUID. Without it, recall is auto (the server picks the best-matching dataset when it can, otherwise searches every readable one) unless the user restricted it to one. Leaves the session on the active dataset.',
             },
           },
           required: ['query'],
@@ -1075,9 +1083,9 @@ export const register: Register = (on, options) => {
       const rows = switchTargets.map(r => (r.current ? `  * ${r.name} (current)` : `  - ${r.name}`)).join('\n')
       const current = switchTargets.find(r => r.current)?.name ?? 'the active dataset'
       const recall =
-        recallMode === 'pinned'
-          ? `Recall: restricted to ${current}. /cognee-dataset auto lets each query go to the best-matching dataset.`
-          : 'Recall: auto (each query goes to the best-matching dataset). /cognee-dataset <name> restricts it to one.'
+        recallMode !== 'auto'
+          ? `Recall: restricted to ${current}. /cognee-dataset auto lets the server pick the best-matching dataset when it can.`
+          : 'Recall: auto (the server picks the best-matching dataset when it can, otherwise searches every readable one). /cognee-dataset <name> restricts it to one.'
       pickerOpen = true
       redraw($)
       return {
@@ -1106,8 +1114,8 @@ export const register: Register = (on, options) => {
     } finally {
       clearActive($)
     }
-    // Auto recall (the default) reads the best-matching dataset, not only the active one.
-    const where = datasetId ? `dataset ${datasetId}` : scope === '--code' ? 'the code graph' : recallMode === 'pinned' ? 'the active dataset' : 'memory'
+    // Auto recall (the default) reads the dataset(s) the server picks, not only the active one.
+    const where = datasetId ? `dataset ${datasetId}` : scope === '--code' ? 'the code graph' : recallMode !== 'auto' ? 'the active dataset' : 'memory'
     if (shown.isError) return { deny: shown.text }
     return { result: `${plural(shown.count, 'result')} from ${where}.\n\n${shown.text}` }
   }).catch($ => {
@@ -1331,7 +1339,8 @@ export const register: Register = (on, options) => {
         key: 'dataset',
         options: [
           { value: AUTO_RECALL, label: AUTO_RECALL },
-          ...options.map(r => ({ value: r.name, label: r.name })),
+          // "auto" is reserved for the entry above: a dataset so named is not offered.
+          ...options.filter(r => r.current || !isReservedName(r.name)).map(r => ({ value: r.name, label: r.name })),
           { value: NEW_DATASET, label: NEW_DATASET },
         ],
         value: auto ? AUTO_RECALL : current,
@@ -1375,6 +1384,10 @@ export const register: Register = (on, options) => {
             submitLabel: 'create',
             autoFocus: true,
             onSubmit: (value: string) => {
+              if (isReservedName(value)) {
+                $.ui.toast('✕ "auto" is reserved for auto recall; pick another name')
+                return
+              }
               namingDataset = false
               if (value.trim()) void switchDataset($, value)
               else redraw($)

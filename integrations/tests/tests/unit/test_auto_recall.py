@@ -1,19 +1,22 @@
 """Auto recall: dataset routing on the server (SDK-1393).
 
 Saves always go to the launch's ONE dataset, but graph recall defaults to
-"auto": it names no dataset, so a cognee >= 1.6.6 server routes each query to
-the readable dataset(s) most likely to hold the answer (SDK-1317).
+"auto": it names no dataset, so a cognee >= 1.6.6 server picks the readable
+dataset(s) most likely to hold the answer when it can (SDK-1317).
 
 Contract:
   * ``recall_via_http(auto_route=True)`` on a graph-only read with no session
-    sends no ``datasets``/``dataset_ids`` and no session id; shared-memory ids,
-    a federated read set (COGNEE_PLUGIN_READ_DATASET_IDS), the code lane, a
-    session-bound scope and ``auto_route=False`` keep their explicit scope;
+    sends no ``datasets``/``dataset_ids`` and no session id, shared-memory ids
+    included; a federated read set (COGNEE_PLUGIN_READ_DATASET_IDS), the code
+    lane, a session-bound scope and ``auto_route=False`` keep their scope;
   * ``server_routes_datasets`` reads the version from /health, caches it per
     URL, keeps the last answer when a probe fails, and says False with none;
+    only releases from 1.6.6 on route (1.6.6rc1 shipped without routing);
   * picking a dataset pins recall (``switch_launch_record``), ``set_recall_pinned``
-    toggles it, and ``auto_recall_active`` is False while pinned;
-  * the prompt hook passes ``auto_route`` to the graph scope only;
+    toggles it, a record switched before recall modes existed stays pinned, and
+    ``auto_recall_active`` is False while pinned or under a federated read set;
+  * the prompt hook passes ``auto_route`` to the graph scope only, and the
+    /health read comes out of its recall budget;
   * ``shell_runtime_overrides`` tells the shell skills whether recall is auto.
 """
 
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 
 import pytest
 from utils.recall import drive_recall, load_lookup
@@ -73,8 +77,15 @@ def test_without_auto_route_the_dataset_is_named(pc, sent):
     assert sent[0]["datasets"] == ["agent_sessions"]
 
 
-def test_shared_memory_ids_keep_their_scope(pc, sent):
+def test_auto_drops_shared_memory_ids(pc, sent):
+    # Shared memory is on by default: keeping its ids would leave auto a no-op.
     _graph(pc, auto_route=True, dataset_ids=[WRITE_ID, OTHER_ID])
+    (payload,) = sent
+    assert "datasets" not in payload and "dataset_ids" not in payload
+
+
+def test_pinned_recall_keeps_shared_memory_ids(pc, sent):
+    _graph(pc, dataset_ids=[WRITE_ID, OTHER_ID])
     assert sent[0]["dataset_ids"] == [WRITE_ID, OTHER_ID]
 
 
@@ -147,12 +158,22 @@ def health(pc, monkeypatch):
     ("version", "routes"),
     [
         ("1.6.6", True),
-        ("1.6.6rc1", True),
+        ("1.6.6-local", True),
+        ("1.6.6.post1", True),
+        ("1.6.6+cloud", True),
         ("1.7.0.dev0", True),
         ("2.0.0", True),
+        ("1.6.6.rc1", False),
+        ("1.6.6rc1", False),
+        ("1.6.6.dev0", False),
+        ("1.6.6b2", False),
         ("1.6.5", False),
+        ("1.6.5-local", False),
         ("1.6.5.dev0", False),
         ("0.5.3", False),
+        ("unknown", False),
+        ("1.6.6-custom", False),
+        ("1.7.0-custom", False),
         ("", False),
     ],
 )
@@ -219,6 +240,20 @@ def test_set_recall_pinned_toggles_without_touching_the_dataset(pc, launch):
     assert rec["dataset"] == "agent_sessions" and rec["session_id"] == "s1"
 
 
+def test_a_record_switched_before_recall_modes_stays_pinned(pc, launch):
+    rec = pc._read_map_record(launch)
+    pc._write_map_record(launch, {**rec, "switched_at": "2026-10-01T00:00:00Z"})
+    assert pc.recall_is_pinned(launch) is True
+    pc.set_recall_pinned(launch, False)
+    assert pc.recall_is_pinned(launch) is False
+
+
+def test_a_federated_read_set_is_not_auto(pc, launch, monkeypatch):
+    monkeypatch.setattr(pc, "server_routes_datasets", lambda *a, **k: True)
+    monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID]))
+    assert pc.auto_recall_active(URL, launch) is False
+
+
 def test_an_old_server_keeps_recall_scoped(pc, launch, monkeypatch):
     monkeypatch.setattr(pc, "server_routes_datasets", lambda *a, **k: False)
     assert pc.auto_recall_active(URL, launch) is False
@@ -251,3 +286,35 @@ def test_the_hook_routes_the_graph_scope_only(lookup, monkeypatch, auto_route):
     for scope, kwargs in run.kwargs.items():
         if scope != "graph":
             assert not kwargs.get("auto_route"), scope
+
+
+def test_the_hook_routes_under_shared_memory(suite, hook_module, monkeypatch):
+    module = load_lookup(suite, hook_module, monkeypatch)
+    monkeypatch.setattr(
+        module, "resolve_active_dataset_ids", lambda *a, **k: (WRITE_ID, [WRITE_ID, OTHER_ID])
+    )
+    monkeypatch.setattr(module, "get_dataset", lambda config: "agent_sessions")
+    run = drive_recall(module, monkeypatch, auto_route=True)
+    assert run.kwargs["graph"]["auto_route"] is True
+
+
+def test_the_health_read_comes_out_of_the_recall_budget(lookup, monkeypatch):
+    monkeypatch.setenv("COGNEE_RECALL_BUDGET", "2")
+
+    def slow_probe(*a, **k):
+        time.sleep(0.3)
+        return True
+
+    run = drive_recall(lookup, monkeypatch, auto_route=slow_probe)
+    assert run.timeouts["graph"] <= 2 - 0.3
+
+
+def test_a_probe_that_eats_the_budget_dispatches_nothing(lookup, monkeypatch):
+    monkeypatch.setenv("COGNEE_RECALL_BUDGET", "0.3")
+
+    def slow_probe(*a, **k):
+        time.sleep(0.3)
+        return True
+
+    run = drive_recall(lookup, monkeypatch, auto_route=slow_probe)
+    assert run.timeouts == {}

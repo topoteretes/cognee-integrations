@@ -17,6 +17,7 @@ connection and then says nothing, and pins:
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -86,6 +87,16 @@ def black_hole():
 def test_a_silent_server_costs_one_deadline_and_the_hook_still_exits_clean(
     suite, run_hook, black_hole, payloads, temp_home, assert_clean_real_home
 ):
+    # The server version is already known, as on every prompt but the first
+    # each hour: the /health read for dataset routing (SDK-1393) would come out
+    # of the same budget and blur the per-request timings measured here.
+    (temp_home / ".cognee-plugin").mkdir(parents=True, exist_ok=True)
+    (temp_home / ".cognee-plugin" / "dataset-routing.json").write_text(
+        json.dumps(
+            {black_hole.url: {"version": "1.6.5", "routes": False, "checked_at": time.time()}}
+        ),
+        encoding="utf-8",
+    )
     started = time.monotonic()
     result = run_hook(
         suite,
