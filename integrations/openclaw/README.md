@@ -40,7 +40,8 @@ OpenClaw plugin that adds Cognee-backed memory with **multi-scope support** (com
 - **Memory steer**: a cached system-prompt line on every run asserting Cognee as the authoritative memory and pointing the model at the memory tools
 - **Version & update hint**: `openclaw cognee status` / `openclaw cognee version` show the installed version and, when npm has a newer release, how to upgrade
 - **CLI commands**: `openclaw cognee setup`, `openclaw cognee index`, `openclaw cognee status`, `openclaw cognee version`, `openclaw cognee health`, `openclaw cognee scopes`, `openclaw cognee forget`, `openclaw cognee improve`, `openclaw cognee standup`, `openclaw cognee digest`, `openclaw cognee timeline`, `openclaw cognee keys`
-- **Plugin agent keys**: `openclaw cognee keys` lists the per-machine API keys of every cognee plugin agent of your user (Claude Code, Codex, …), most recently used first; `openclaw cognee keys --revoke <id> --plugin <key>` revokes one. A plugin agent full of keys in use refuses a new machine a key (that machine then runs on your personal key and says so) — this is how you free a slot from OpenClaw
+- **Plugin identity**: `pluginIdentity: "true"` provisions OpenClaw's own cognee agent (its own API key per machine, traffic attributed to OpenClaw on the integrations page) and runs as it; the plugin describes itself to the server, which needs no built-in plugin list (see "Plugin identity")
+- **Plugin agent keys**: `openclaw cognee keys` lists the per-machine API keys of every cognee plugin agent of your user (Claude Code, Codex, OpenClaw's own, …), most recently used first; `openclaw cognee keys --revoke <id> --plugin <key>` revokes one. A plugin agent full of keys in use refuses a new machine a key (that machine then runs on your personal key and says so) — this is how you free a slot from OpenClaw
 
 ## What this plugin runs, stores and sends
 
@@ -327,6 +328,8 @@ Do **not** set `mode: "cloud"` — leave it at the default. All operations (file
 | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset name for single-scope mode. Overridden by `datasetName` in config if set. Same variable name used by the claude-code and codex Cognee integrations. |
 | `COGNEE_MODE` | `local` | **Deprecated** — leave at `"local"` for self-hosted *and* cloud tenants. `"cloud"` targets a legacy path scheme no current deployment serves (see "Cognee Cloud") |
 | `COGNEE_API_KEY` | — | API key (cloud mode or authenticated self-hosted) |
+| `COGNEE_PLUGIN_IDENTITY` | `auto` | `true` runs as OpenClaw's own provisioned cognee agent (see "Plugin identity and shared agent memory"); `false` runs as your key |
+| `COGNEE_SHARED_AGENT_MEMORY` | `true` | `false` opts the agent out of shared memory (its datasets stay its own) |
 | `COGNEE_USERNAME` | — | Login username (self-hosted with auth) |
 | `COGNEE_PASSWORD` | — | Login password (self-hosted with auth) |
 | `OPENCLAW_USER_ID` | — | User identifier for user-scoped memory |
@@ -415,8 +418,47 @@ Scope names still drive routing, dataset naming and the memory-hit footer's sour
 | `apiKey` | string | `$COGNEE_API_KEY` | API key for authentication |
 | `username` | string | `$COGNEE_USERNAME` | Login username |
 | `password` | string | `$COGNEE_PASSWORD` | Login password |
+| `pluginIdentity` | `"auto"` \| `"true"` \| `"false"` | `"auto"` (also: `COGNEE_PLUGIN_IDENTITY`) | Run as OpenClaw's own provisioned cognee agent (see "Plugin identity and shared agent memory") |
+| `sharedAgentMemory` | boolean | `true` (also: `COGNEE_SHARED_AGENT_MEMORY`) | Wire the agent into your shared `cognee-agent` role and address datasets by canonical UUID |
 
 **Default-user password (cognee >= 1.6.0).** Cognee no longer ships a built-in default-user password: the server creates the default user at startup only when `DEFAULT_USER_PASSWORD` is set (with `DEFAULT_USER_EMAIL`, default `default_user@example.com`), and a password-less user cannot log in. For the **local server the plugin starts itself**, nothing changes: the boot script always hands the server the literal default user (`default_user@example.com` / `default_password`) via `DEFAULT_USER_EMAIL` / `DEFAULT_USER_PASSWORD`, unless you export those variables yourself, in which case your values win. It never forwards the plugin's `username`/`password` — every Cognee plugin on the machine shares that one server and database, and cognee sets the default user's password once. `username`/`password` only select which user the plugin logs in as; a non-default user must already exist on the server. When pointing the plugin at an **externally managed server** (docker, another host), either start that server with `DEFAULT_USER_PASSWORD` set to the password the plugin logs in with, or skip the password login altogether by supplying an API key via `apiKey` / `COGNEE_API_KEY`. A login failing with `400 "This user does not have a password"` means the server was started without it.
+
+### Plugin identity and shared agent memory
+
+A cognee user can give each plugin its own **agent**: a sub-user with its own API key
+per machine, so the integrations page attributes memory to *OpenClaw* rather than to
+you, and the OpenClaw key can be revoked without touching Claude Code's or Codex's. The
+plugin provisions it itself, as you, through
+`POST /api/v1/integrations/plugins/openclaw/provision`, describing itself (key
+`openclaw`, label "OpenClaw", connection type `openclaw`) so the server needs no
+built-in list of plugins.
+
+An agent is its own user, and cognee's grants only flow child → parent: you see what the
+agent writes, the agent sees nothing you (or another plugin's agent) own. **Shared agent
+memory** (on by default) closes that the way the Claude Code and Codex plugins do: the
+agent joins a tenant you own and a role named `cognee-agent` in it, the role is granted
+read+write on your datasets (and on every dataset a sibling agent creates, since those
+are auto-shared to you), and each dataset is addressed by the UUID of a canonical copy you
+own — never by name, which only resolves among the caller's own datasets. Capture
+datasets, the file sync, improve, repository indexing and the exit watchers' bridge all
+carry that UUID. Every control-plane call runs as you; only the agent's tenant selection
+runs as the agent.
+
+`pluginIdentity` / `COGNEE_PLUGIN_IDENTITY` picks the policy:
+
+| Value | Behaviour |
+|-------|-----------|
+| `"auto"` (default) | Identity in service of shared memory. With shared memory on, the `openclaw` agent is provisioned when the gateway first resolves your key and wired into your shared role; if the wiring cannot be completed (a server without the permissions API, a tenant you do not own, a tenant-less user who already owns datasets — activating a tenant would hide them) the freshly minted key is revoked again and the gateway runs as your own key, and the plugin does not retry until it is updated. A cached identity is reused as long as it was provisioned for your key. With shared memory off, nothing is provisioned. |
+| `"true"` | Explicit identity. Provisions the agent and runs the gateway, its sessions and their exit watchers as it, wiring shared memory when available. Anything that prevents the identity is logged as an error — a server whose provision route rotates keys instead of adding one per machine (needs cognee >= 1.6.3 with cognee#6113), an agent already holding its maximum number of keys (free one with `openclaw cognee keys`), a cached key provisioned by another principal — and the gateway, which has no session to abort, continues as your own key until it is fixed. A key the server rejects (revoked from the dashboard) is replaced once, at the next registration. |
+| `"false"` | Runs as your own key and ignores a cached identity. |
+
+`sharedAgentMemory: false` / `COGNEE_SHARED_AGENT_MEMORY=false` opts out of shared
+memory: an existing agent leaves the shared role and keeps only its own datasets (nothing
+is deleted; re-enabling rejoins the same role), and `auto` provisions nothing new. The
+identity is cached per server in `~/.cognee-plugin/openclaw/agent_key.json` and the wiring
+in `~/.cognee-plugin/openclaw/shared_memory.json` (owner-readable only).
+`openclaw cognee keys` always runs as you (an agent cannot manage its own keys) and lists
+OpenClaw's own agent alongside the others.
 
 ### Dataset
 

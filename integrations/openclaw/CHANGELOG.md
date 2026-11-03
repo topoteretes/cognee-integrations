@@ -11,6 +11,34 @@ reports an update only when the published npm version changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Versions are
 date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
+## [Unreleased]
+
+### Added
+- **Plugin identity with shared agent memory (SDK-646).** The plugin now provisions a
+  dedicated `openclaw` cognee agent — as you, through
+  `POST /api/v1/integrations/plugins/openclaw/provision` — and runs the gateway, its
+  sessions and their exit watchers as it, so the integrations page attributes OpenClaw's
+  memory to OpenClaw and its key can be revoked on its own. The call describes the plugin
+  (label, connection type), so the server needs no built-in plugin list. Under
+  `pluginIdentity: "auto"` (the default) this happens in service of **shared agent
+  memory**, as in the Claude Code and Codex plugins: the agent joins a tenant you own and
+  the `cognee-agent` role, the role is granted your datasets, and every dataset is
+  addressed by the UUID of a canonical copy you own (capture datasets, the file sync,
+  improve, repository indexing and the exit-watcher bridge all carry it). A freshly minted
+  identity that cannot be wired is revoked again and the gateway runs as your own key.
+  `"true"` keeps the identity regardless and logs every obstacle as an error; `"false"`
+  runs as your own key. `sharedAgentMemory: false` / `COGNEE_SHARED_AGENT_MEMORY=false`
+  opts out of shared memory (the agent leaves the role; nothing is deleted). This machine's
+  key is cached in `~/.cognee-plugin/openclaw/agent_key.json`, replaced once when the
+  server rejects it at registration, and only ever minted against a server that adds one
+  key per machine (the `x-cognee-additive-plugin-keys` marker). `CogneeHttpClient` gains
+  `provisionPlugin`, `additivePluginKeysSupported` and `controlPlane`; `indexRepository`
+  takes a `datasetId`; the manifest's `configSchema` declares `pluginIdentity` and
+  `sharedAgentMemory`.
+- Every `POST /api/v1/agents/register` now carries `metadata.plugin_key: openclaw`, so
+  the server can attribute the connection to the plugin without a connection-type table
+  of its own.
+
 ## [2026.10.26]
 
 ### Added

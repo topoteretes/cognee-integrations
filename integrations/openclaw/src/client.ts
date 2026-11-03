@@ -822,6 +822,9 @@ export class CogneeHttpClient {
       type: "openclaw",
       memory_mode: "hybrid",
       source: "api",
+      // Lets the server's status aggregation attribute this connection to the
+      // plugin without a connection-type -> plugin-key table (SDK-646).
+      metadata: { plugin_key: "openclaw" },
     };
     if (params.sessionId) body.session_id = params.sessionId;
     if (params.datasetNames && params.datasetNames.length > 0) {
@@ -928,6 +931,99 @@ export class CogneeHttpClient {
     }));
   }
 
+  /**
+   * Does the server's provision route only ADD keys (never revoke others)?
+   * Read from the OpenAPI document (cognee#6113's `x-cognee-additive-plugin-keys`
+   * marker). Anything short of an explicit `true` — an older server, an
+   * unreadable spec, a failed request — is false, and the plugin does not provision.
+   */
+  async additivePluginKeysSupported(pluginKey = "openclaw"): Promise<boolean> {
+    let spec: { paths?: Record<string, { post?: Record<string, unknown> }> };
+    try {
+      spec = await this.fetchAPI("/openapi.json", { method: "GET" });
+    } catch {
+      return false;
+    }
+    const paths = spec?.paths ?? {};
+    // The spec keys the operation by its path template, under either prefix.
+    const candidates = [
+      "/api/v1/integrations/plugins/{plugin_key}/provision",
+      "/integrations/plugins/{plugin_key}/provision",
+      `/api/v1/integrations/plugins/${pluginKey}/provision`,
+    ];
+    return candidates.some((p) => paths[p]?.post?.["x-cognee-additive-plugin-keys"] === true);
+  }
+
+  /**
+   * Add a key for `pluginKey`'s agent, as the PRINCIPAL (SDK-646). The plugin
+   * describes itself — label and connection type — so the server needs no
+   * hardcoded plugin list; servers that predate the body ignore it. Idempotent
+   * get-or-create of the agent; every call adds one key (the caller's machine).
+   * HTTP errors propagate as CogneeRequestError (404/405 no route, 409 key cap).
+   */
+  async provisionPlugin(
+    pluginKey: string,
+    description: { label: string; connectionType: string },
+  ): Promise<{ apiKey: string; agentId: string; keyId: string; created: boolean }> {
+    const base = this.isCloud ? "/integrations/plugins" : "/api/v1/integrations/plugins";
+    const body = await this.fetchAPI<Record<string, unknown>>(`${base}/${encodeURIComponent(pluginKey)}/provision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: description.label, connection_type: description.connectionType }),
+    });
+    const str = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = body?.[k];
+        if (typeof v === "string" && v.trim()) return v.trim();
+      }
+      return "";
+    };
+    return {
+      apiKey: str("apiKey", "api_key"),
+      agentId: str("agentId", "agent_id"),
+      keyId: str("keyId", "key_id"),
+      created: body?.created === true,
+    };
+  }
+
+  /**
+   * A control-plane caller authenticated as `apiKey` (SDK-646 shared memory):
+   * reports `{status, body}` instead of throwing, never retries, and ignores
+   * the client's own key — tenant/role/grant calls run as the PRINCIPAL while
+   * the client itself may already run as the agent. Redirects (the slashed
+   * `/datasets/` collection) are followed by fetch.
+   */
+  controlPlane(apiKey: string): (method: string, path: string, body?: unknown) => Promise<{ status: number; body: unknown }> {
+    return async (method, path, body) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 30_000));
+      try {
+        const headers: Record<string, string> = { "X-Api-Key": apiKey };
+        if (body !== undefined) headers["Content-Type"] = "application/json";
+        const response = await fetch(`${this.baseUrl}${path}`, {
+          method,
+          headers,
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: controller.signal,
+        });
+        const text = await response.text();
+        let parsed: unknown = undefined;
+        if (text) {
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            parsed = text;
+          }
+        }
+        return { status: response.ok ? 200 : response.status, body: parsed };
+      } catch (error) {
+        return { status: 0, body: { error: error instanceof Error ? error.message : String(error) } };
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+  }
+
   /** Revoke one key of `plugin`'s agent. `found: false` when there is no such key. */
   async revokePluginKey(plugin: string, keyId: string): Promise<{ found: boolean }> {
     const base = this.isCloud ? "/integrations/plugins" : "/api/v1/integrations/plugins";
@@ -971,6 +1067,8 @@ export class CogneeHttpClient {
    */
   async indexRepository(params: {
     datasetName: string;
+    /** Canonical UUID under shared agent memory; wins over the name server-side. */
+    datasetId?: string;
     repository: string;
     indexVectors?: boolean;
     runInBackground?: boolean;
@@ -978,6 +1076,7 @@ export class CogneeHttpClient {
     const path = this.isCloud ? "/remember" : "/api/v1/remember";
     const formData = new FormData();
     formData.append("datasetName", params.datasetName);
+    if (params.datasetId) formData.append("datasetId", params.datasetId);
     formData.append("content_type", "code");
     // A 1.5.4 server drops the old `repositories` part silently (unknown Form
     // fields are ignored), so the spec never arrives and the index 400s.

@@ -217,6 +217,7 @@ describe("exit-watcher.py", () => {
     const server = require("../../src/server");
     await server.writeExitWatcherBridge("s1-will", { datasetName: "proj-a", cogneeSessionId: "open_claw_s1__2" });
     const written = JSON.parse(readFileSync(`${server.exitWatcherPidfilePath("s1-will")}.bridge.json`, "utf-8"));
-    expect(written).toEqual({ dataset_name: "proj-a", cognee_session_id: "open_claw_s1__2" });
+    // dataset_id is the canonical UUID under shared agent memory; "" bridges by name.
+    expect(written).toEqual({ dataset_name: "proj-a", dataset_id: "", cognee_session_id: "open_claw_s1__2" });
   });
 });

@@ -67,6 +67,19 @@
         "type": "string",
         "description": "Cognee login password (default: default_password). Together with username this selects which user the plugin logs in as; a non-default user must already exist on the server. The local server the plugin starts always creates the default user with default_password (via DEFAULT_USER_PASSWORD) unless you export DEFAULT_USER_EMAIL / DEFAULT_USER_PASSWORD yourself. An external server (cognee >= 1.6.0) must itself be started with DEFAULT_USER_PASSWORD set, or use an API key (apiKey / COGNEE_API_KEY) instead."
       },
+      "pluginIdentity": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "true",
+          "false"
+        ],
+        "description": "Plugin identity: \"true\" provisions a dedicated OpenClaw agent on the cognee server (its own API key per machine; traffic attributed to OpenClaw on the integrations page) and runs as it; \"false\" runs as your own key; \"auto\" (default) provisions it for shared agent memory and falls back to your own key when that cannot be wired. Also settable via COGNEE_PLUGIN_IDENTITY env var."
+      },
+      "sharedAgentMemory": {
+        "type": "boolean",
+        "description": "Shared agent memory for a provisioned OpenClaw agent (default: true): the agent joins your shared cognee-agent role and datasets are addressed by their canonical UUID, so memory stays shared with you and the other cognee plugins. false keeps the agent's memory separate. Also settable via COGNEE_SHARED_AGENT_MEMORY env var."
+      },
       "datasetName": {
         "type": "string",
         "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. Ignored when multi-scope is enabled."
