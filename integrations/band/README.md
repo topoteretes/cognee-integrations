@@ -258,7 +258,7 @@ Env file parsing never raises, so a malformed file is skipped silently. Check th
 Usually a macOS Python install missing root CAs. Run `pip install certifi` in the agent environment. The client picks it up automatically.
 
 **Questions stored with empty answers.**
-Replies are captured by proxying `tools.send_message`. An adapter that emits output only through `send_event` is not captured. Check how your inner adapter sends output.
+Replies are captured from both ways an adapter can post one: a direct `tools.send_message` call, and a `band_send_message` tool call (the path LLM adapters such as Anthropic, Agno and Gemini use). An adapter that emits output only through `send_event` is not captured. Check how your inner adapter sends output.
 
 **Memory from a closed room never shows up later.**
 Consolidation runs through Cognee's `improve` pipeline when the room closes or the agent stops, in the background server-side. Give it time. Also confirm the agent shut down cleanly, since that is what bridges rooms that were still open.

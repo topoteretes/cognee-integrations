@@ -31,6 +31,8 @@ from typing import Any
 
 from band.core.simple_adapter import SimpleAdapter
 from band.runtime.startup import accept_adapter, arm_adapter, dispose_adapter, dispose_framework
+from band.runtime.tools.registry import LEGACY_SEND_MESSAGE_TOOL, canonicalize_mcp_tool_name
+from band.runtime.tools.types import BandTool
 
 from .client import UNREACHABLE, CogneeClient
 from .config import CogneeSettings
@@ -40,6 +42,10 @@ logger = logging.getLogger("cognee_band")
 # Only real conversation turns get recall + QA capture; tool_call/thought/task
 # events pass through untouched.
 _MEMORY_MESSAGE_TYPES = {"text"}
+
+# Tool names that post a room message: band_send_message, its legacy band-mcp
+# spelling, and (via canonicalize_mcp_tool_name) the MCP ``band-`` prefixed forms.
+_SEND_MESSAGE_TOOLS = frozenset({BandTool.SEND_MESSAGE.value, LEGACY_SEND_MESSAGE_TOOL})
 
 _CONTEXT_HEADER = (
     "Cognee memory — context recalled from shared memory, possibly relevant to the message below:"
@@ -67,7 +73,14 @@ def render_memory_block(results: list) -> str:
 
 
 class _CaptureTools:
-    """Transparent proxy over Band's AgentTools that records sent replies."""
+    """Transparent proxy over Band's AgentTools that records sent replies.
+
+    Adapters reply in two ways: a direct ``tools.send_message(...)`` call, or a
+    ``band_send_message`` tool call dispatched through ``execute_tool_call`` /
+    ``execute_tool_call_structured`` (Anthropic, Agno, Codex, Gemini, ...).
+    The real dispatcher resolves the tool method on itself, so it never reaches
+    this proxy's ``send_message``; the tool-call entry points are wrapped too.
+    """
 
     def __init__(self, inner):
         self._inner = inner
@@ -76,10 +89,28 @@ class _CaptureTools:
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    async def send_message(self, content, mentions=None):
+    def _record(self, content) -> None:
         if isinstance(content, str) and content.strip():
             self.sent.append(content)
-        return await self._inner.send_message(content, mentions=mentions)
+
+    async def send_message(self, content, mentions=None, **kwargs):
+        result = await self._inner.send_message(content, mentions=mentions, **kwargs)
+        self._record(content)
+        return result
+
+    async def execute_tool_call_structured(self, tool_name, arguments):
+        outcome = await self._inner.execute_tool_call_structured(tool_name, arguments)
+        if outcome.ok and _is_send_message(tool_name):
+            self._record((arguments or {}).get("content"))
+        return outcome
+
+    async def execute_tool_call(self, tool_name, arguments):
+        # Mirrors AgentTools.execute_tool_call, so the send is recorded once.
+        return (await self.execute_tool_call_structured(tool_name, arguments)).value
+
+
+def _is_send_message(tool_name: str) -> bool:
+    return canonicalize_mcp_tool_name(tool_name, _SEND_MESSAGE_TOOLS) in _SEND_MESSAGE_TOOLS
 
 
 class CogneeMemoryAdapter(SimpleAdapter[Any]):

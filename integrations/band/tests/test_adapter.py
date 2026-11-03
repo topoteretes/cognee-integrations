@@ -11,6 +11,7 @@ import pytest
 from band.core.simple_adapter import SimpleAdapter
 from band.core.types import AgentInput, HistoryProvider, PlatformMessage
 from band.runtime.startup import accept_adapter, dispose_adapter, start_adapter
+from band.runtime.tools.schema import ToolCallOutcome
 from cognee_band.adapter import CogneeMemoryAdapter, render_memory_block
 from cognee_band.config import CogneeSettings
 
@@ -30,14 +31,38 @@ def make_msg(content="hello", message_type="text", room_id="room1"):
 
 
 class FakeTools:
+    """Dispatches tool calls the way band-sdk's AgentTools does: the tool
+    method is resolved on ``self``, so a wrapping proxy is bypassed."""
+
+    _METHODS = {"band_send_message": "send_message"}
+
     def __init__(self):
         self.sent = []
+        self.attachment_ids = []
 
-    async def send_message(self, content, mentions=None):
+    async def send_message(self, content, mentions=None, *, attachment_ids=None):
+        if content == "FAIL":
+            raise RuntimeError("platform rejected the message")
         self.sent.append(content)
+        self.attachment_ids.append(attachment_ids)
 
     async def send_event(self, content, message_type, metadata=None):
         pass
+
+    async def lookup_peers(self):
+        return []
+
+    async def execute_tool_call_structured(self, tool_name, arguments):
+        name = tool_name.removeprefix("band-")
+        method = self._METHODS.get(name, name)
+        try:
+            value = await getattr(self, method)(**arguments)
+        except Exception as error:
+            return ToolCallOutcome(value=str(error), ok=False, error_message=str(error))
+        return ToolCallOutcome(value=value, ok=True)
+
+    async def execute_tool_call(self, tool_name, arguments):
+        return (await self.execute_tool_call_structured(tool_name, arguments)).value
 
 
 class FakeInnerAdapter(SimpleAdapter[list]):
@@ -71,6 +96,26 @@ class FakeInnerAdapter(SimpleAdapter[list]):
 
     async def cleanup_all(self):
         self.calls.append("cleanup_all")
+
+
+class ToolCallingInnerAdapter(FakeInnerAdapter):
+    """Replies the way LLM adapters (Anthropic, Agno, Gemini, ...) do: through
+    a ``band_send_message`` tool call rather than ``tools.send_message``."""
+
+    def __init__(self, reply="the answer", tool_name="band_send_message", structured=True):
+        super().__init__(reply=reply)
+        self.tool_name = tool_name
+        self.structured = structured
+
+    async def on_event(self, inp):
+        self.seen.append(inp)
+        await inp.tools.execute_tool_call("lookup_peers", {})
+        call = (
+            inp.tools.execute_tool_call_structured
+            if self.structured
+            else inp.tools.execute_tool_call
+        )
+        await call(self.tool_name, {"content": self.reply, "mentions": ["alice"]})
 
 
 class FakeClient:
@@ -283,3 +328,38 @@ def test_render_memory_block_shapes():
     assert render_memory_block([{"irrelevant": None}]) != ""  # falls back to json dump
     block = render_memory_block(["fact one", {"text": "fact two"}])
     assert "- fact one" in block and "- fact two" in block
+
+
+# -- reply capture ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("structured", [True, False])
+async def test_tool_call_reply_is_captured(structured):
+    adapter, _, client = make_adapter(inner=ToolCallingInnerAdapter(structured=structured))
+    tools = await run_turn(adapter, content="what milk?")
+    assert tools.sent == ["the answer"]  # sent exactly once
+    assert client.stored_qa == [("what milk?", "the answer", "band-room1")]
+
+
+async def test_mcp_prefixed_send_tool_is_captured():
+    inner = ToolCallingInnerAdapter(tool_name="band-band_send_message")
+    adapter, _, client = make_adapter(inner=inner)
+    await run_turn(adapter, content="q")
+    assert client.stored_qa == [("q", "the answer", "band-room1")]
+
+
+async def test_failed_tool_call_send_is_not_captured():
+    adapter, _, client = make_adapter(inner=ToolCallingInnerAdapter(reply="FAIL"))
+    await run_turn(adapter, content="q")
+    assert client.stored_qa == [("q", "", "band-room1")]
+
+
+async def test_send_message_passes_extra_kwargs_through():
+    class AttachingInner(FakeInnerAdapter):
+        async def on_event(self, inp):
+            await inp.tools.send_message("see file", attachment_ids=["f1"])
+
+    adapter, _, client = make_adapter(inner=AttachingInner())
+    tools = await run_turn(adapter, content="q")
+    assert tools.attachment_ids == [["f1"]]
+    assert client.stored_qa == [("q", "see file", "band-room1")]
