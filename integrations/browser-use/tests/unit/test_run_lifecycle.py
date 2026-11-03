@@ -314,14 +314,28 @@ async def test_task_outcome_and_error_text_are_redacted_before_capture(fake):
     agent = FakeAgent(
         steps=1, history=FakeHistory(final="Price is 12 EUR api_key=sk-livekey1234567890")
     )
+    fake.datasets.append(
+        {"id": "9b8c7d6e-0000-4000-8000-000000000002", "name": SCOPE.dataset_name()}
+    )
     async with make_memory(fake) as memory:
-        run = memory.new_run(task=task, scope=SCOPE)
+        run = memory.new_run(task=task, scope=SCOPE, query_hints=["access_token=hint9"])
+        await run.recall_context()
+        tools = Tools()
+        run.register_tools(tools)
+        recall = tools.registry.registry.actions["cognee_recall"]
+        await recall.function(params=recall.param_model(query="retry with password=hunter2"))
         await run.execute(agent, max_steps=5, summarizer=lambda h: "Done; secret=topsecret123")
         text = fake.data[0]["text"]
         for leaked in ("hunter2", "abcdef", "topsecret123", "sk-livekey1234567890"):
             assert leaked not in text
         assert "<redacted>" in text
         assert "read the catalog price" in text
+        # The read path is a write too: the backend keeps a query history.
+        queries = [c["body"]["query"] for c in fake.calls if c["path"] == "/api/v1/recall"]
+        assert len(queries) == 2
+        for query in queries:
+            assert "hunter2" not in query and "abcdef" not in query and "hint9" not in query
+        assert "read the catalog price" in queries[0]
 
     failing = FakeAgent(
         steps=3,
@@ -336,3 +350,119 @@ async def test_task_outcome_and_error_text_are_redacted_before_capture(fake):
         text = fake.data[0]["text"]
         assert "hunter2" not in text
         assert "The run failed" in text
+
+
+async def test_identical_content_is_one_document_and_one_cognify_pass(fake):
+    """The hash covers what a record says, not its id or timestamp (reviewer finding)."""
+    async with make_memory(fake, remember_tool_enabled=True) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        first = await run.remember_observation(content="Supplier B minimum order is 50 units")
+        second = await run.remember_observation(content="Supplier B minimum order is 50 units")
+        assert first.record_id == second.record_id
+        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 1
+        assert run.remember_budget_left == memory.config.max_remember_calls_per_run - 1
+
+        # Two separate runs that end the same way share one stored record too.
+        history = FakeHistory(final="Supplier A ships in 3 days.", urls=["https://a.example/"])
+        run_a = memory.new_run(task="lead time", scope=SCOPE)
+        run_b = memory.new_run(task="lead time", scope=SCOPE)
+        await run_a.execute(FakeAgent(steps=1, history=history))
+        await run_b.execute(FakeAgent(steps=1, history=history))
+        uploads = [c for c in fake.calls if c["path"] == "/api/v1/remember"]
+        assert len(uploads) == 2
+        assert run_a.status.receipts[0].record_id == run_b.status.receipts[0].record_id
+        # A different observation is a different record.
+        run_c = memory.new_run(task="lead time", scope=SCOPE)
+        await run_c.execute(
+            FakeAgent(steps=1, history=FakeHistory(final="Supplier A ships in 5 days."))
+        )
+        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 3
+
+
+async def test_remember_tool_budget_caps_new_documents_per_run(fake):
+    async with make_memory(fake, remember_tool_enabled=True, max_remember_calls_per_run=2) as mem:
+        run = mem.new_run(task="t", scope=SCOPE)
+        tools = Tools()
+        run.register_tools(tools)
+        remember = tools.registry.registry.actions["cognee_remember"]
+
+        async def save(content: str) -> ActionResult:
+            return await remember.function(params=remember.param_model(content=content))
+
+        assert (await save("fact one")).error is None
+        assert (await save("fact one")).error is None  # dedupe: free
+        assert (await save("fact two")).error is None
+        assert run.remember_budget_left == 0
+        refused = await save("fact three")
+        assert refused.error and "budget" in refused.error and "final answer" in refused.error
+        assert refused.is_done is not True
+        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 2
+        # The final-outcome record is not part of the tool budget.
+        await run.execute(FakeAgent(steps=1))
+        assert run.status.capture == "accepted"
+        assert len([c for c in fake.calls if c["path"] == "/api/v1/remember"]) == 3
+
+
+async def test_reconcile_uses_one_status_call_and_one_listing_per_dataset(fake):
+    async with make_memory(fake) as memory:
+        for i in range(30):
+            run = memory.new_run(task=f"task {i}", scope=SCOPE)
+            await run.execute(FakeAgent(steps=1, history=FakeHistory(final=f"result {i}")))
+        other = memory.new_run(task="x", scope=MemoryScope(tenant_id="acme", user_id="buyer-2"))
+        await other.execute(FakeAgent(steps=1))
+        fake.calls.clear()
+        counts = await memory.reconcile()
+        assert counts == {"ready": 31}
+        status_calls = [c for c in fake.calls if c["path"] == "/api/v1/datasets/status"]
+        list_calls = [c for c in fake.calls if c["path"].endswith("/data")]
+        assert len(status_calls) == 2  # one per dataset, not one per receipt
+        assert len(list_calls) == 2  # each dataset fits in one page
+        assert all(r.data_id for r in memory.store.list(limit=100))
+        fake.calls.clear()
+        assert await memory.reconcile() == {}
+        assert fake.calls == []
+
+
+async def test_exhausted_listing_is_never_read_as_absence(fake):
+    import httpx
+
+    def endless(request: httpx.Request, **_):
+        offset = int(request.url.params.get("offset", 0))
+        limit = int(request.url.params.get("limit", 100))
+        rows = [
+            {"id": f"00000000-0000-4000-8000-{offset + i:012d}", "name": f"other-{offset + i}"}
+            for i in range(limit)
+        ]
+        return httpx.Response(200, json=rows)
+
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        await run.execute(FakeAgent(steps=1))
+        receipt = run.status.receipts[0]
+        dataset_id = receipt.dataset_id
+        fake.overrides[f"GET /api/v1/datasets/{dataset_id}/data"] = endless
+        checked = await memory.record_status(receipt.record_id)
+        assert checked.status == ReceiptStatus.INDEXING
+        assert "document cap" in checked.error
+        # Pretend the document had been located, then try to delete it.
+        memory.store.update(receipt.record_id, data_id=fake.data[0]["id"])
+        result = await memory.forget_record(receipt.record_id, scope=SCOPE)
+        assert result["verified"] is False
+        assert "verification cap" in result["message"]
+        assert memory.store.get(receipt.record_id).status != ReceiptStatus.DELETED
+
+
+async def test_dataset_pipeline_error_is_not_a_terminal_document_failure(fake):
+    async with make_memory(fake) as memory:
+        run = memory.new_run(task="t", scope=SCOPE)
+        await run.execute(FakeAgent(steps=1))
+        receipt = run.status.receipts[0]
+        fake.pipeline = "DATASET_PROCESSING_ERRORED"
+        checked = await memory.record_status(receipt.record_id)
+        assert checked.status == ReceiptStatus.INDEXING
+        assert "not attributable" in checked.error
+        assert checked.data_id
+        # It stays pending, so a later successful pipeline run can still make it ready.
+        fake.pipeline = "DATASET_PROCESSING_COMPLETED"
+        assert (await memory.record_status(receipt.record_id)).status == ReceiptStatus.READY
+        assert memory.store.get(receipt.record_id).error is None

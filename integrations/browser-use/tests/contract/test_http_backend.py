@@ -1,5 +1,7 @@
 """HTTP contract tests against bodies captured from cognee 1.6.5 (see fixtures/README.md)."""
 
+import asyncio
+
 import httpx
 import pytest
 from cognee_integration_browser_use import CogneeError, CogneeHttpBackend
@@ -147,14 +149,15 @@ async def test_status_listing_and_targeted_forget_contract():
     )
     async with backend(fake.transport) as client:
         assert await client.dataset_status(DATASET_ID) == "DATASET_PROCESSING_COMPLETED"
-        item = await client.find_data_item(DATASET_ID, "memory-abc123")
-        assert item["id"] == "d03f564c-ff7b-4810-ac63-c27b1c37138a"
-        assert await client.find_data_item(DATASET_ID, "missing") is None
-        result = await client.forget_document(dataset_id=DATASET_ID, data_id=item["id"])
+        found = await client.find_data_item(DATASET_ID, "memory-abc123")
+        assert found.status == "found"
+        assert found.data_id == "d03f564c-ff7b-4810-ac63-c27b1c37138a"
+        assert (await client.find_data_item(DATASET_ID, "missing")).status == "absent"
+        result = await client.forget_document(dataset_id=DATASET_ID, data_id=found.data_id)
         assert result["status"] == "success"
-        assert await client.find_data_item(DATASET_ID, "memory-abc123") is None
+        assert (await client.find_data_item(DATASET_ID, "memory-abc123")).status == "absent"
         with pytest.raises(CogneeError, match="not a UUID"):
-            await client.forget_document(dataset_id="nope", data_id=item["id"])
+            await client.forget_document(dataset_id="nope", data_id=found.data_id)
         with pytest.raises(CogneeError, match="not a UUID"):
             await client.dataset_status("../../etc")
 
@@ -171,3 +174,60 @@ async def test_health_tolerates_any_status():
     async with backend(static(503, {"status": "degraded"})) as client:
         report = await client.health()
     assert report["reachable"] and report["status"] == 503
+
+
+def _endless_pages(request: httpx.Request) -> httpx.Response:
+    """A listing that never produces a short page, whatever the offset."""
+    offset = int(request.url.params.get("offset", 0))
+    rows = [
+        {"id": f"00000000-0000-4000-8000-{offset + i:012d}", "name": f"other-{offset + i}"}
+        for i in range(int(request.url.params.get("limit", 100)))
+    ]
+    return httpx.Response(200, json=rows)
+
+
+async def test_lookup_distinguishes_exhausted_from_absent():
+    async with backend(httpx.MockTransport(_endless_pages)) as client:
+        lookup = await client.find_data_item(DATASET_ID, "memory-abc123", max_pages=3)
+        assert lookup.status == "exhausted" and lookup.item is None
+        listing = await client.list_data_items(DATASET_ID, max_pages=3)
+        assert listing.complete is False and listing.pages == 3 and len(listing.items) == 300
+        assert listing.lookup("other-5").status == "found"
+        assert listing.lookup("nope").status == "exhausted"
+        # A wanted set stops the walk early; completeness is still reported truthfully.
+        early = await client.list_data_items(DATASET_ID, wanted={"other-150"}, max_pages=10)
+        assert early.pages == 2 and early.complete is False
+
+
+async def test_listing_walks_to_the_short_page_once():
+    fake = FakeCognee()
+    for i in range(250):
+        fake.data.append(
+            {"id": f"00000000-0000-4000-8000-{i:012d}", "name": f"n-{i}", "datasetId": DATASET_ID}
+        )
+    async with backend(fake.transport) as client:
+        listing = await client.list_data_items(DATASET_ID)
+    assert listing.complete is True and listing.pages == 3 and len(listing.items) == 250
+    assert listing.lookup("n-249").status == "found" and listing.lookup("n-250").status == "absent"
+    assert len([c for c in fake.calls if c["path"].endswith("/data")]) == 3
+
+
+async def test_deadline_covers_a_trickling_body():
+    class Trickle(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(50):
+                yield b"["
+                await asyncio.sleep(0.1)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=Trickle(), headers={"Content-Type": "application/json"})
+
+    async with backend(httpx.MockTransport(slow)) as client:
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(CogneeError) as exc:
+            await client.list_datasets(timeout_s=0.3)
+        elapsed = asyncio.get_running_loop().time() - started
+    assert exc.value.kind == "timeout" and exc.value.outcome_uncertain
+    # One retry is allowed for reads, but both attempts share the 0.3 s budget;
+    # without the whole-request deadline this would take the full 5 s drip.
+    assert elapsed < 2.0

@@ -37,3 +37,26 @@ def test_text_redaction_and_capping():
     assert len(capped) <= 20
     assert capped.endswith("[truncated]")
     assert clean_for_memory("  hello\r\nworld  ", 100) == "hello\nworld"
+
+
+def test_prefixed_keys_bearer_connection_strings_and_clipped_keys_are_redacted():
+    cases = {
+        "access_token=abc123 next": "abc123",
+        'client_secret: "xyz-1"': "xyz-1",
+        "db_password=hunter2": "hunter2",
+        "passwd=hunter2": "hunter2",
+        "pwd=hunter2": "hunter2",
+        "Authorization: Bearer abcdefghijklmnop": "abcdefghijklmnop",
+        "X-Api-Key: ck_live_0123456789": "ck_live_0123456789",
+        "postgres://user:pw@db.example/app": "pw@db.example",
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789": "ghp_abcdefghijklmnopqrstuvwxyz",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA…clipped": "MIIEowIBAAKCAQEA",
+    }
+    for text, secret in cases.items():
+        redacted = redact_text(text)
+        assert secret not in redacted, text
+        assert "<redacted>" in redacted, text
+    # Ordinary prose that merely mentions the words survives.
+    assert redact_text("the token economy and a password manager review") == (
+        "the token economy and a password manager review"
+    )

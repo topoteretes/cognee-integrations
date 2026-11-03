@@ -66,6 +66,17 @@ def register_memory_tools(tools: Any, run: "MemoryRun", *, enable_remember: bool
             "observation. Do not save secrets, credentials or page boilerplate."
         )
         async def cognee_remember(content: str, source_url: str = "") -> ActionResult:
+            if run.remember_budget_left <= 0:
+                # Each new document is a background graph-extraction job; the budget
+                # keeps one chatty run from starting dozens. Repeats of content already
+                # saved are free, so the check sits before the write, not the dedupe.
+                return ActionResult(
+                    error=(
+                        "memory write budget for this run is used up "
+                        f"({run.config.max_remember_calls_per_run} new records); put remaining "
+                        "findings in your final answer, they are captured when the run ends"
+                    )
+                )
             receipt = await run.remember_observation(content=content, source_url=source_url)
             if receipt is None:
                 return ActionResult(

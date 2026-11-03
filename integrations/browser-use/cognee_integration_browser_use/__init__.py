@@ -1,7 +1,13 @@
 """Cognee memory adapter for Browser Use agents."""
 
 from .config import CogneeBrowserMemoryConfig, ConfigError, MemoryScope, resolve_config
-from .http_backend import CogneeError, CogneeHttpBackend
+from .http_backend import (
+    LIST_PAGE_MAX,
+    CogneeError,
+    CogneeHttpBackend,
+    DataItemListing,
+    DataItemLookup,
+)
 from .memory import STATIC_INSTRUCTION, CogneeBrowserMemory, MemoryRun
 from .models import (
     MemoryRecord,
@@ -26,6 +32,9 @@ __all__ = [
     "CogneeError",
     "CogneeHttpBackend",
     "ConfigError",
+    "DataItemListing",
+    "DataItemLookup",
+    "LIST_PAGE_MAX",
     "MEMORY_TOOL_NAMES",
     "MemoryRecord",
     "MemoryRun",

@@ -21,11 +21,19 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Optional
 
 from .config import CogneeBrowserMemoryConfig, ConfigError, MemoryScope, resolve_config
 from .hooks import StepHook, compose_hooks, observe_agent_step
-from .http_backend import CogneeError, CogneeHttpBackend
+from .http_backend import (
+    LIST_PAGE_MAX,
+    LIST_PAGE_SIZE,
+    CogneeError,
+    CogneeHttpBackend,
+    DataItemListing,
+    DataItemLookup,
+)
 from .models import (
     PENDING_STATUSES,
     MemoryRecord,
@@ -38,7 +46,7 @@ from .models import (
     Verification,
 )
 from .receipts import ReceiptStore
-from .sanitize import cap_text, clean_for_memory, sanitize_url, sanitize_urls
+from .sanitize import cap_text, clean_for_memory, redact_text, sanitize_url, sanitize_urls
 from .tools import MEMORY_TOOL_NAMES, register_memory_tools
 
 _COMPLETED = "DATASET_PROCESSING_COMPLETED"
@@ -194,69 +202,62 @@ class CogneeBrowserMemory:
         return receipt
 
     async def reconcile(self, limit: int = 200) -> dict[str, int]:
+        """Refresh every pending receipt with one status call and one listing walk per dataset."""
         counts: dict[str, int] = {}
+        by_dataset: dict[str, list[Receipt]] = {}
         for receipt in self.store.list_pending(limit):
-            updated = await self._refresh(receipt)
-            counts[updated.status.value] = counts.get(updated.status.value, 0) + 1
+            by_dataset.setdefault(receipt.dataset, []).append(receipt)
+        for dataset, receipts in by_dataset.items():
+            for updated in await self._refresh_many(dataset, receipts):
+                counts[updated.status.value] = counts.get(updated.status.value, 0) + 1
         return counts
 
     async def _refresh(self, receipt: Receipt) -> Receipt:
+        return (await self._refresh_many(receipt.dataset, [receipt]))[0]
+
+    async def _refresh_many(self, dataset: str, receipts: list[Receipt]) -> list[Receipt]:
+        """Resolve receipts of one dataset from a shared status and listing."""
         timeout = self.config.status_timeout_s
         try:
-            dataset_id = receipt.dataset_id or await self._dataset_id(receipt.dataset, create=False)
+            dataset_id = next((r.dataset_id for r in receipts if r.dataset_id), None)
+            dataset_id = dataset_id or await self._dataset_id(dataset, create=False)
             if not dataset_id:
-                return (
-                    self.store.update(
-                        receipt.record_id, error="dataset does not exist on the backend"
-                    )
-                    or receipt
-                )
+                return [
+                    self.store.update(r.record_id, error="dataset does not exist on the backend")
+                    or r
+                    for r in receipts
+                ]
             pipeline = await self.backend.dataset_status(dataset_id, timeout_s=timeout)
-            data_id = receipt.data_id
-            if not data_id:
-                item = await self.backend.find_data_item(
-                    dataset_id, receipt.upload_name, timeout_s=timeout
-                )
-                data_id = item.get("id") if item else None
-            error: Optional[str] = None
-            if data_id and pipeline == _COMPLETED:
-                status = ReceiptStatus.READY
-            elif data_id and pipeline == _ERRORED:
-                status, error = ReceiptStatus.FAILED, "graph pipeline reported an error"
-            elif data_id:
-                status = ReceiptStatus.INDEXING
-            elif pipeline == _ERRORED:
-                status, error = (
-                    ReceiptStatus.FAILED,
-                    "pipeline errored before the document was stored",
-                )
-            else:
-                from datetime import datetime, timezone
-
-                created = datetime.fromisoformat(receipt.created_at)
-                age = (datetime.now(timezone.utc) - created).total_seconds()
-                if age > _INDEXING_GRACE_S or receipt.status == ReceiptStatus.UNKNOWN:
-                    status = ReceiptStatus.UNKNOWN
-                    error = (
-                        receipt.error or "document not found on the backend after the grace period"
-                    )
-                else:
-                    status = ReceiptStatus.INDEXING
-            return (
+            wanted = {r.upload_name for r in receipts if not r.data_id}
+            listing = (
+                await self.backend.list_data_items(dataset_id, wanted=wanted, timeout_s=timeout)
+                if wanted
+                else DataItemListing(complete=True)
+            )
+        except CogneeError as exc:
+            return [
+                self.store.update(r.record_id, error=f"last check failed: {exc.describe()}") or r
+                for r in receipts
+            ]
+        out: list[Receipt] = []
+        for receipt in receipts:
+            lookup = (
+                DataItemLookup(status="found", item={"id": receipt.data_id})
+                if receipt.data_id
+                else listing.lookup(receipt.upload_name)
+            )
+            status, error = _resolve_status(receipt, pipeline, lookup)
+            out.append(
                 self.store.update(
                     receipt.record_id,
                     status=status,
                     dataset_id=dataset_id,
-                    data_id=data_id,
+                    data_id=receipt.data_id or lookup.data_id,
                     error=error,
                 )
                 or receipt
             )
-        except CogneeError as exc:
-            return (
-                self.store.update(receipt.record_id, error=f"last check failed: {exc.describe()}")
-                or receipt
-            )
+        return out
 
     async def forget_record(
         self, record_id: str, *, scope: Optional[MemoryScope] = None
@@ -305,11 +306,25 @@ class CogneeBrowserMemory:
             still = await self.backend.find_data_item(
                 current.dataset_id, current.upload_name, timeout_s=self.config.status_timeout_s
             )
-            if still and still.get("id") == current.data_id:
+            if still.status == "found" and still.data_id == current.data_id:
                 self.store.update(
                     record_id, error="forget reported success but the document is still listed"
                 )
                 return {"record_id": record_id, "verified": False, "status": current.status.value}
+            if still.status == "exhausted":
+                # The forget endpoint says success for unknown ids, so only a complete
+                # listing proves anything. Keep the receipt live and say so.
+                message = (
+                    "forget reported success but the dataset listing is larger than the "
+                    f"{LIST_PAGE_MAX * LIST_PAGE_SIZE}-document verification cap"
+                )
+                self.store.update(record_id, error=message)
+                return {
+                    "record_id": record_id,
+                    "verified": False,
+                    "status": current.status.value,
+                    "message": message,
+                }
             self.store.update(record_id, status=ReceiptStatus.DELETED, error=None)
             return {"record_id": record_id, "verified": True, "status": "deleted"}
         except CogneeError as exc:
@@ -384,6 +399,7 @@ class MemoryRun:
         self._last_context: Optional[RecallContext] = None
         self._observations: list[Any] = []
         self._finalized = False
+        self._remember_writes = 0
 
     @property
     def config(self) -> CogneeBrowserMemoryConfig:
@@ -392,8 +408,10 @@ class MemoryRun:
     # -- recall ---------------------------------------------------------------
 
     def _query(self, query: Optional[str]) -> str:
-        base = (query or self.task or "").strip()
-        hints = " ".join(h for h in self.query_hints if h)
+        # The backend keeps a history of search queries, so a query is as much
+        # "content that leaves the process" as a record is: same redaction.
+        base = redact_text((query or self.task or "").strip())
+        hints = " ".join(redact_text(h) for h in self.query_hints if h)
         return cap_text(f"{base} {hints}".strip(), 500, marker="")
 
     async def recall_context(
@@ -524,15 +542,28 @@ class MemoryRun:
     def register_tools(self, tools: Any) -> list[str]:
         return register_memory_tools(tools, self, enable_remember=self.config.remember_tool_enabled)
 
+    @property
+    def remember_budget_left(self) -> int:
+        """New documents ``cognee_remember`` may still create in this run."""
+        return max(0, self.config.max_remember_calls_per_run - self._remember_writes)
+
     async def remember_observation(
         self, *, content: str, source_url: str = ""
     ) -> Optional[Receipt]:
-        """Model-proposed fact via ``cognee_remember``: stored as unverified, opt-in only."""
+        """Model-proposed fact via ``cognee_remember``: stored as unverified, opt-in only.
+
+        Returns ``None`` when the tool is disabled, the content is empty, or the
+        run's budget of new documents (``max_remember_calls_per_run``) is spent.
+        A repeat of content already stored in this scope returns the existing
+        receipt and costs nothing.
+        """
         self.status.tool_calls.append("cognee_remember")
         if not self.config.remember_tool_enabled or not self.config.capture_enabled:
             return None
         summary = clean_for_memory(content, self.config.max_tool_content_chars)
         if not summary:
+            return None
+        if self.remember_budget_left <= 0:
             return None
         record = MemoryRecord(
             scope_key=self.scope_key,
@@ -545,6 +576,9 @@ class MemoryRun:
             verification=Verification.UNVERIFIED,
         )
         receipt = await self.memory._write(record, self.dataset)
+        if receipt.record_id == record.record_id:
+            # A new document (a deduplicated repeat hands back the earlier receipt).
+            self._remember_writes += 1
         self.status.receipts.append(receipt)
         return receipt
 
@@ -728,6 +762,49 @@ class MemoryRun:
             except Exception as exc:  # noqa: BLE001
                 self.status.capture = "error"
                 self.status.capture_error = f"{type(exc).__name__}: {exc}"[:400]
+
+
+def _resolve_status(
+    receipt: Receipt, pipeline: str, lookup: DataItemLookup
+) -> tuple[ReceiptStatus, Optional[str]]:
+    """Map a dataset-level pipeline status and a document lookup to a receipt status.
+
+    The status endpoint speaks for the whole dataset, which every run in the scope
+    shares, so it is never attributed to one document as a terminal failure:
+    ``ready`` means "listed, and the dataset's last cognify run completed";
+    an errored pipeline keeps the receipt ``indexing`` with the reason recorded,
+    and only the grace period moves it to ``unknown``. ``failed`` is reserved
+    for a write the backend rejected.
+    """
+    created = datetime.fromisoformat(receipt.created_at)
+    age = (datetime.now(timezone.utc) - created).total_seconds()
+    past_grace = age > _INDEXING_GRACE_S
+    if lookup.status == "found":
+        if pipeline == _COMPLETED:
+            return ReceiptStatus.READY, None
+        if pipeline == _ERRORED:
+            reason = "dataset pipeline reported an error (not attributable to this document)"
+            return (ReceiptStatus.UNKNOWN if past_grace else ReceiptStatus.INDEXING), reason
+        return ReceiptStatus.INDEXING, None
+    if lookup.status == "exhausted":
+        reason = (
+            f"dataset listing exceeds the {LIST_PAGE_MAX * LIST_PAGE_SIZE}-document cap; "
+            "the document could not be looked up"
+        )
+        keep = (
+            receipt.status if receipt.status != ReceiptStatus.ACCEPTED else ReceiptStatus.INDEXING
+        )
+        return keep, reason
+    if past_grace or receipt.status == ReceiptStatus.UNKNOWN:
+        reason = receipt.error or "document not found on the backend after the grace period"
+        if pipeline == _ERRORED:
+            reason = "document not found and the dataset pipeline reported an error"
+        return ReceiptStatus.UNKNOWN, reason
+    return ReceiptStatus.INDEXING, (
+        "dataset pipeline reported an error; waiting for the document to appear"
+        if pipeline == _ERRORED
+        else None
+    )
 
 
 def _call(obj: Any, name: str) -> Any:

@@ -35,7 +35,9 @@ stale:
 
 What it deliberately does not do: archive screenshots or DOM, touch `sensitive_data`,
 cookies or browser profiles, store model thoughts, extract a graph on every step, or replay
-old element indexes. Memory stores observed outcomes and semantic procedures.
+old element indexes. Memory stores observed outcomes and semantic procedures. Everything
+that leaves the process, records *and* recall queries (the backend keeps a query history),
+goes through the same credential redaction.
 
 ## Install
 
@@ -100,9 +102,10 @@ Each run leaves one record:
 
 | Field | Purpose |
 |---|---|
-| `record_id`, `run_id`, `content_hash` | Deduplication and receipt tracking |
+| `record_id`, `run_id` | Receipt tracking |
+| `content_hash` | Deduplication: a hash of scope, kind, verification, task, summary, outcome and source URLs (not of the id or time), so an identical observation from a later run or a repeated `cognee_remember` call reuses the existing record instead of paying for a second cognify pass |
 | `kind` | `research_finding`, `procedure`, `failed_attempt`, `interrupted_run`, `observation` (from `cognee_remember`), `preference` |
-| `task`, `summary`, `outcome` | What was attempted and observed (size-capped, secrets redacted) |
+| `task`, `summary`, `outcome` | What was attempted and observed (size-capped; credentials, bearer tokens, connection strings, vendor keys and private keys redacted) |
 | `source_urls`, `observed_at` | Provenance and freshness (userinfo and secret-looking query parameters stripped) |
 | `verification` | `unverified` (default), `agent_reported` (agent said done+success), `application_validated` (your `validator` returned true) |
 | `scope_key` | The authorized memory scope |
@@ -120,23 +123,24 @@ never treat in-memory mode as durable capture.
 | Status | Meaning |
 |---|---|
 | `accepted` | The backend stored the upload; graph indexing not confirmed yet |
-| `indexing` | Document listed; the cognify pipeline is still running |
-| `ready` | Listed and the pipeline completed; recall can return it |
-| `failed` | The backend rejected the write or the pipeline errored |
+| `indexing` | Document listed; the dataset's cognify pipeline has not completed since (or it reported an error, which the receipt records without treating it as this document's failure) |
+| `ready` | Listed, and the dataset's most recent cognify run completed. cognee 1.6.5 reports pipeline status per dataset, not per document, so this is the strongest statement available |
+| `failed` | The backend rejected the write |
 | `unknown` | The write timed out or lost the connection, or the document never appeared within 15 minutes |
-| `deleted` | Removed by `forget_record()` and verified absent from the dataset listing |
+| `deleted` | Removed by `forget_record()` and verified absent from a complete dataset listing |
 
 ```python
 receipt = await memory.record_status(record_id)  # refreshes pending receipts
-await memory.reconcile()  # all pending receipts
+await memory.reconcile()  # all pending receipts: one status call and one listing per dataset
 await memory.forget_record(record_id, scope=scope)  # targeted; verified by re-listing
 ```
 
 `forget_record()` checks the receipt belongs to the given scope, deletes exactly that
 document (`datasetId` + `dataId`), re-lists the dataset and only then marks the receipt
 deleted. The backend's forget endpoint reports success even for unknown ids, so the listing
-is the source of truth. No agent-facing forgetting exists; build a confirmation flow around
-this method if users need one.
+is the source of truth: a listing longer than 50,000 documents is reported as
+`verified: False` with a message rather than assumed empty. No agent-facing forgetting
+exists; build a confirmation flow around this method if users need one.
 
 ## Configuration
 
@@ -154,12 +158,15 @@ Precedence per field: constructor keyword → environment → default.
 | `COGNEE_BROWSER_USE_RECALL_TIMEOUT_S` / `recall_timeout_s` | 8 | Automatic recall deadline |
 | `COGNEE_BROWSER_USE_CAPTURE` / `capture_enabled` | `true` | Final-outcome capture |
 | `COGNEE_BROWSER_USE_REMEMBER_TOOL` / `remember_tool_enabled` | `false` | Expose `cognee_remember` to the model |
+| `COGNEE_BROWSER_USE_MAX_REMEMBER_CALLS` / `max_remember_calls_per_run` | 3 | New documents `cognee_remember` may create per run (each is a cognify pass); deduplicated repeats are free and the final-outcome record is not counted |
 | `COGNEE_BROWSER_USE_MAX_SUMMARY_CHARS` / `max_summary_chars` | 4000 | Cap on the stored summary |
 | `COGNEE_BROWSER_USE_RECEIPTS_PATH` / `receipts_path` | in memory | SQLite receipt store; set it for restart recovery |
 | `COGNEE_BROWSER_USE_REQUEST_TIMEOUT_S` / `COGNEE_BROWSER_USE_WRITE_TIMEOUT_S` | 15 / 30 | Backend deadlines |
 
-Reads retry once within their deadline; writes are never retried automatically. A write
-that times out stays `unknown` until a status check finds (or does not find) its document.
+Reads retry once within their deadline; writes are never retried automatically. One
+deadline covers headers and body, so a stalled response cannot hold a tool call or
+`execute()` open. A write that times out stays `unknown` until a status check finds (or
+does not find) its document.
 
 ## Development
 

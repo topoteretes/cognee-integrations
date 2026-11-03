@@ -92,7 +92,24 @@ class MemoryRecord:
 
     @property
     def content_hash(self) -> str:
-        return hashlib.sha256(self.to_text().encode("utf-8")).hexdigest()
+        """Hash of what the record *says*, not of the document text.
+
+        ``record_id``, ``run_id`` and ``observed_at`` are deliberately left out:
+        two runs that observe the same thing produce one hash, so the ledger's
+        dedupe (``find_live_by_hash``) and the hash-derived ``upload_name`` can
+        stop a second upload and a second cognify pass. The capture time stays
+        in the stored text.
+        """
+        parts = [
+            self.scope_key,
+            self.kind.value,
+            self.verification.value,
+            self.task,
+            self.summary,
+            self.outcome,
+            *sorted(self.source_urls),
+        ]
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
     @property
     def upload_name(self) -> str:

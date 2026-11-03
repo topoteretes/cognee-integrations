@@ -15,8 +15,9 @@ Wire contract verified live against cognee 1.6.5 (fixtures in
     GET  /health
 
 Auth is ``X-Api-Key`` only. Redirects are never followed with credentials,
-responses are size-capped, idempotent reads retry once within their deadline,
-writes are never retried here (a timed-out write has an uncertain outcome).
+responses are size-capped, one deadline covers headers and body, idempotent
+reads retry once within their deadline, writes are never retried here (a
+timed-out write has an uncertain outcome).
 """
 
 from __future__ import annotations
@@ -24,12 +25,45 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, Literal, Optional
 
 import httpx
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 _RETRY_DELAY_S = 0.5
+LIST_PAGE_SIZE = 100
+#: Safety cap on one listing walk (50,000 documents). Past it a lookup reports
+#: ``exhausted`` rather than pretending the rest of the dataset is empty.
+LIST_PAGE_MAX = 500
+
+
+@dataclass(frozen=True)
+class DataItemLookup:
+    """Outcome of looking one document up by name."""
+
+    status: Literal["found", "absent", "exhausted"]
+    item: Optional[dict[str, Any]] = None
+
+    @property
+    def data_id(self) -> Optional[str]:
+        value = self.item.get("id") if self.item else None
+        return value if isinstance(value, str) else None
+
+
+@dataclass(frozen=True)
+class DataItemListing:
+    """One walk over a dataset listing: ``{name: row}`` and whether it reached the end."""
+
+    items: dict[str, dict[str, Any]] = field(default_factory=dict)
+    complete: bool = False
+    pages: int = 0
+
+    def lookup(self, name: str) -> DataItemLookup:
+        item = self.items.get(name)
+        if item is not None:
+            return DataItemLookup(status="found", item=item)
+        return DataItemLookup(status="absent" if self.complete else "exhausted")
 
 
 class CogneeError(Exception):
@@ -255,19 +289,57 @@ class CogneeHttpBackend:
         return [row for row in body if isinstance(row, dict)] if isinstance(body, list) else []
 
     async def find_data_item(
-        self, dataset_id: str, name: str, *, max_pages: int = 20, timeout_s: Optional[float] = None
-    ) -> Optional[dict[str, Any]]:
-        limit = 100
+        self,
+        dataset_id: str,
+        name: str,
+        *,
+        max_pages: int = LIST_PAGE_MAX,
+        timeout_s: Optional[float] = None,
+    ) -> DataItemLookup:
+        """Find one document by upload name. ``exhausted`` is not ``absent``.
+
+        The listing is walked until a short page proves the end. Hitting
+        ``max_pages`` first means nothing is known about the remainder, and
+        callers must not read that as "not there".
+        """
+        listing = await self.list_data_items(
+            dataset_id, wanted={name}, max_pages=max_pages, timeout_s=timeout_s
+        )
+        item = listing.items.get(name)
+        if item is not None:
+            return DataItemLookup(status="found", item=item)
+        return DataItemLookup(status="absent" if listing.complete else "exhausted")
+
+    async def list_data_items(
+        self,
+        dataset_id: str,
+        *,
+        wanted: Optional[set[str]] = None,
+        max_pages: int = LIST_PAGE_MAX,
+        timeout_s: Optional[float] = None,
+    ) -> DataItemListing:
+        """Page a dataset's documents once into ``{name: row}``.
+
+        With ``wanted`` the walk stops as soon as every wanted name has been
+        seen; ``complete`` then only says whether the walk reached a short page.
+        """
+        limit = LIST_PAGE_SIZE
+        items: dict[str, dict[str, Any]] = {}
+        pages = 0
         for page in range(max_pages):
             rows = await self.list_dataset_data(
                 dataset_id, limit=limit, offset=page * limit, timeout_s=timeout_s
             )
+            pages += 1
             for row in rows:
-                if row.get("name") == name:
-                    return row
+                name = row.get("name")
+                if isinstance(name, str) and name not in items:
+                    items[name] = row
             if len(rows) < limit:
-                return None
-        return None
+                return DataItemListing(items=items, complete=True, pages=pages)
+            if wanted is not None and wanted <= items.keys():
+                return DataItemListing(items=items, complete=False, pages=pages)
+        return DataItemListing(items=items, complete=False, pages=pages)
 
     # -- transport ------------------------------------------------------------
 
@@ -297,16 +369,31 @@ class CogneeHttpBackend:
                     path=path,
                 )
             try:
-                status, body = await self._raw(
-                    method,
-                    path,
-                    auth=True,
-                    json=json,
-                    files=files,
-                    data=data,
-                    params=params,
-                    timeout_s=total if attempt == 0 else remaining,
-                )
+                # ``httpx.Timeout`` bounds each connect/read/write separately, so a
+                # body that trickles in one byte at a time would never trip it. The
+                # deadline is enforced over the whole exchange here, headers and body.
+                budget = total if attempt == 0 else remaining
+                try:
+                    status, body = await asyncio.wait_for(
+                        self._raw(
+                            method,
+                            path,
+                            auth=True,
+                            json=json,
+                            files=files,
+                            data=data,
+                            params=params,
+                            timeout_s=budget,
+                        ),
+                        timeout=budget,
+                    )
+                except asyncio.TimeoutError:
+                    raise CogneeError(
+                        f"{method} {path} exceeded its {budget:.1f}s deadline",
+                        kind="timeout",
+                        method=method,
+                        path=path,
+                    ) from None
                 if isinstance(body, dict) and isinstance(body.get("error"), str) and status < 400:
                     raise CogneeError(
                         f"{method} {path} answered an error",

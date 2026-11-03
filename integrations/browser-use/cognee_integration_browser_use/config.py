@@ -26,6 +26,7 @@ DEFAULT_MAX_SUMMARY_CHARS = 4_000
 DEFAULT_MAX_SOURCE_URLS = 20
 DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_TOOL_CONTENT_CHARS = 2_000
+DEFAULT_MAX_REMEMBER_CALLS_PER_RUN = 3
 
 _DATASET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -132,6 +133,10 @@ class CogneeBrowserMemoryConfig:
     #: The model-facing ``cognee_remember`` action. Opt-in: model-proposed facts
     #: are stored as unverified observations.
     remember_tool_enabled: bool = False
+    #: Upper bound on new documents ``cognee_remember`` may create in one run.
+    #: Each one is a background cognify pass on the tenant's LLM key; the
+    #: final-outcome record is not counted. Deduplicated repeats are free.
+    max_remember_calls_per_run: int = DEFAULT_MAX_REMEMBER_CALLS_PER_RUN
     max_summary_chars: int = DEFAULT_MAX_SUMMARY_CHARS
     max_source_urls: int = DEFAULT_MAX_SOURCE_URLS
     max_tool_content_chars: int = DEFAULT_MAX_TOOL_CONTENT_CHARS
@@ -165,6 +170,8 @@ class CogneeBrowserMemoryConfig:
             problems.append("recall_top_k must be at least 1")
         if self.recall_max_chars < 100:
             problems.append("recall_max_chars must be at least 100")
+        if self.max_remember_calls_per_run < 0:
+            problems.append("max_remember_calls_per_run must be zero or more")
         if problems:
             raise ConfigError("\n".join(problems))
 
@@ -190,6 +197,7 @@ def resolve_config(
         "recall_timeout_s": _env_float(env, "COGNEE_BROWSER_USE_RECALL_TIMEOUT_S"),
         "capture_enabled": _env_bool(env, "COGNEE_BROWSER_USE_CAPTURE"),
         "remember_tool_enabled": _env_bool(env, "COGNEE_BROWSER_USE_REMEMBER_TOOL"),
+        "max_remember_calls_per_run": _env_int(env, "COGNEE_BROWSER_USE_MAX_REMEMBER_CALLS"),
         "max_summary_chars": _env_int(env, "COGNEE_BROWSER_USE_MAX_SUMMARY_CHARS"),
         "receipts_path": _env_str(env, "COGNEE_BROWSER_USE_RECEIPTS_PATH"),
         "request_timeout_s": _env_float(env, "COGNEE_BROWSER_USE_REQUEST_TIMEOUT_S"),

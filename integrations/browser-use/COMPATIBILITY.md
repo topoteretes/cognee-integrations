@@ -47,7 +47,8 @@ Observed 1.6.5 behaviours the adapter is built around:
 - Graph-only recall (`CHUNKS`, explicit datasets): each process retrieves independently of
   prior agent state; no session cache is used. `GRAPH_COMPLETION` is not used for injected
   context because its text is a synthesized answer rather than evidence with provenance.
-- `cognee_remember` is opt-in (`remember_tool_enabled=False` by default) and stores
+- `cognee_remember` is opt-in (`remember_tool_enabled=False` by default), may create at
+  most `max_remember_calls_per_run` (3) new documents per run, and stores
   model-proposed facts as `unverified`; final-outcome capture defaults to on and records
   `agent_reported` only when the agent reports success, `application_validated` only when
   the caller's validator says so.
@@ -55,3 +56,8 @@ Observed 1.6.5 behaviours the adapter is built around:
   scopes for strict isolation.
 - No automatic expiration: records carry an observation time and the instructions tell the
   agent to re-check changing facts.
+- Receipt status is derived from the dataset-level `cognify_pipeline` status (the only
+  one cognee 1.6.5 exposes) plus the document listing. `ready` therefore means "listed and
+  the dataset's latest run completed"; a dataset-level error never marks a document
+  `failed`, it keeps the receipt `indexing` with the reason until the grace period moves it
+  to `unknown`.
