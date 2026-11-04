@@ -368,7 +368,7 @@ def _main(argv) -> int:
 # Only command positions count: grep patterns, Python source and ordinary repo
 # paths mentioning Cognee are evidence, not recursive plugin invocations.
 _PLUGIN_SCRIPTS = set(
-    "cognee-search.sh cognee-remember.sh cognee-doctor.sh "
+    "cognee-search.sh cognee-remember.sh cognee-doctor.sh cognee_search.py cognee_remember.py "
     "cognee-index-repo.sh cognee-forget.sh cognee-statusline.sh switch-dataset.py "
     "list-datasets.py plugin_eval.py cognee-recap.py hook_runner.py cognee-evidence.py "
     "cognee-cli.sh sync-session-to-graph.py credits-refresh.py".split()

@@ -110,9 +110,18 @@ jobs:
         working-directory: integrations/${{ matrix.integration }}
         run: uv sync --locked --dev
 
+      # A plugin whose runtime package must stay out of its dependencies (hermes-agent:
+      # cognee's pins conflict with Hermes's own) lists it here so its tests still run
+      # against it.
+      - name: Install local-mode requirements
+        if: hashFiles(format('integrations/{0}/local-mode-requirements.txt', matrix.integration)) != ''
+        working-directory: integrations/${{ matrix.integration }}
+        run: uv pip install -r local-mode-requirements.txt
+
       - name: Run tests
         working-directory: integrations/${{ matrix.integration }}
-        run: uv run pytest tests/ -v
+        # --no-sync: a re-sync to uv.lock would undo the step above.
+        run: uv run --no-sync pytest tests/ -v
 
   # The hook-based plugins (claude-code, codex, antigravity) must run under the
   # oldest python3 users commonly have on PATH — macOS's Xcode Command Line Tools

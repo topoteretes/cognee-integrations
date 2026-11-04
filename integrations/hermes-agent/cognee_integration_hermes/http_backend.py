@@ -541,9 +541,20 @@ class HttpBackend(MemoryBackend):
         proceeding unauthenticated would only smear one clear startup error into
         a 401 on every later call.
         """
-        key = (provided or secret("COGNEE_API_KEY")).strip()
+        if provided.strip():
+            return provided.strip()
+        key = secret("COGNEE_API_KEY").strip()
         if key:
-            return key
+            if not _is_local_url(self.url) or self._key_accepted(key, timeout=timeout):
+                return key
+            # Typically the Cognee Cloud key a remote setup left behind: switching
+            # to local mode clears COGNEE_BASE_URL, not the key, and sending it to
+            # the local server turns every call into a 401.
+            logger.info(
+                "COGNEE_API_KEY is not accepted by the local cognee server at %s "
+                "(a Cognee Cloud key?); using the local server's own key instead",
+                self.url,
+            )
         if not _is_local_url(self.url):
             raise RuntimeError(
                 f"COGNEE_API_KEY is required for a remote cognee server ({self.url}): "
@@ -582,6 +593,24 @@ class HttpBackend(MemoryBackend):
         if key:
             _RESOLVED_KEYS[cache_key] = key
         return key
+
+    def _key_accepted(self, key: str, *, timeout: float) -> bool:
+        """False only when the server answers *key* with 401/403.
+
+        Anything else — success, another error, no answer — keeps the key: this
+        check exists to catch a key from another server, not to second-guess a
+        server that is merely slow.
+        """
+        previous, self.api_key = self.api_key, key
+        try:
+            self._request("GET", "/api/v1/datasets", timeout=min(timeout, _AUTH_STEP_TIMEOUT))
+        except CogneeHttpError as exc:
+            return exc.status not in (401, 403)
+        except Exception:
+            return True
+        finally:
+            self.api_key = previous
+        return True
 
     def _mint_api_key(self, *, email: str, password: str, timeout: float) -> str:
         """Log in as *email* and reuse or create that user's owner API key."""

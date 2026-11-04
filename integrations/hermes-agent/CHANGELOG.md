@@ -10,6 +10,121 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.1]
+
+### Added
+- **The memory credit carries the Cognee logo.** A `transform_llm_output` hook draws it, so
+  the logo is always exact: the agent only writes a plain line. (Asking the agent to copy a
+  braille logo itself failed live: it dropped cells, lost the colour markup and copied the
+  placeholder.)
+  - **Hermes Desktop:** `Cognee:` in the agent's `> Cognee: …` line becomes the Cognee pixel
+    logo in the brand purple (`#BC9BFF`), drawn in KaTeX as coloured rules on the logo's
+    five-row grid, followed by half an em of space and the sentence. The quote marker is
+    dropped (Desktop draws a blockquote with a quotation mark).
+  - **Terminal chats (`hermes --tui` and `hermes`):** the answer streams before the hook runs
+    and a rewritten answer would be shown twice, so the agent is asked for the line without
+    the `Cognee:` label (`> <what it remembered>, based on dataset <name>.`) and the Cognee
+    logo in braille is appended below it as a signature. In the classic chat with
+    `display.streaming` off, the logo replaces the quote marker instead, with the sentence
+    beside its first row.
+  - Messaging apps keep the plain `> Cognee:` line for now.
+  - In the terminal the unlabelled line is recognised by where it is and what it names: the
+    answer's last line, quoted, naming `dataset <name>` or `Cognee memory`, however the rest is
+    worded (seen live: "stored in dataset agent_sessions", not "based on").
+  - Every form of the credit, drawn or plain, is stripped before the turn is stored.
+
+### Fixed
+- **Local mode without its runtime now says how to fix it.** Hermes never calls
+  `initialize()` for a provider that reports unavailable, so the "run
+  `hermes cognee install-runtime`" error never reached the user: they saw only Hermes's
+  generic "check credentials/config" warning. The provider now implements
+  `unavailable_reason()`, which Hermes appends to that warning (the embedded-mode wording
+  when `COGNEE_EMBEDDED=true` and cognee is not in Hermes's environment).
+- **Upgrading from 1.3.x in local mode needs `hermes cognee install-runtime`.** 1.3.x
+  installed cognee into Hermes's environment as a dependency; Hermes drops it from the first
+  environment it builds after the upgrade. The README now says so, and corrects 1.4.0's
+  claims: a server another cognee plugin runs on the port is used only once the runtime is
+  installed (availability is decided before anything connects), and a cognee installed into
+  Hermes's environment by hand does not survive Hermes rebuilding that environment.
+- **`hermes plugins validate` passes.** `plugin.yaml` declares the `transform_llm_output`
+  hook under `provides_hooks`; it was registered but undeclared, which the catalog check
+  rejects.
+
+## [1.4.0]
+
+### Changed
+- **cognee is no longer a dependency, so the plugin installs on any Hermes.** Hermes resolves
+  every plugin into one shared environment, and cognee 1.6.5's pins conflict with Hermes
+  extras there (`huggingface-hub<1` against `hermes-agent[trace-upload]`, and litellm's
+  `boto3` floor against `hermes-agent[bedrock]` on older Hermes builds), so
+  `hermes plugins enable cognee` was refused for everyone, Cognee Cloud users included.
+  `pyproject.toml` now declares no dependencies and `plugin.yaml` no `pip_dependencies`.
+  Remote mode is plain HTTP and never needed cognee.
+- **Local mode runs from a private cognee runtime.** The plugin installs `cognee==1.6.5` into
+  a venv of its own, `~/.cognee-plugin/hermes/runtime/venv` (about 1 GB from PyPI), and starts
+  the local server from it, so cognee never enters Hermes's environment. The venv is built from
+  the interpreter running Hermes, with uv when it is on PATH (never downloading an interpreter)
+  or stdlib `venv` + pip otherwise. It is installed only on request: `hermes memory setup
+  cognee` offers it when you choose local mode, `hermes cognee install-runtime` installs it or
+  moves it to the plugin's pinned cognee after an update, and `hermes cognee remove-runtime`
+  deletes it; nothing is downloaded when a session starts. One runtime serves every Hermes
+  profile, as the server does. `hermes cognee status` shows a "Local runtime" line. A server
+  another cognee plugin already runs on the port is still used, and a cognee installed into
+  Hermes's environment by hand still works. Embedded mode (`COGNEE_EMBEDDED=true`) needs cognee
+  in Hermes's own environment.
+- **Setup defaults to remote mode.** `hermes memory setup cognee` lists remote (Cognee Cloud or
+  another cognee server) first and offers it as the default; an install that chose local sees
+  "Current mode: local" above the prompt. Choosing local clears `COGNEE_API_KEY` along with
+  `COGNEE_BASE_URL`, so a Cognee Cloud key is no longer sent to the local server. A
+  `COGNEE_API_KEY` from the environment that a *local* server rejects (401/403, e.g. one left
+  by an earlier setup) is replaced by the local server's own key; a key it accepts, or that
+  cannot be checked, is used as before.
+- **Availability.** The provider is available with a service URL (remote), or once the local
+  runtime is ready (local). It no longer also requires `LLM_API_KEY`: that refused keyless
+  providers (Ollama), and the server bootstrap already warns by name when it starts without a
+  key.
+- **A local server that is still starting no longer holds the session for up to 10 minutes.**
+  Session start waits 90 seconds; if the server it started is alive but not answering yet (a
+  first start migrating an existing `~/.cognee`), the session starts anyway, Cognee's tools
+  answer that the server is still starting and where its log is, and the provider connects in
+  the background once `/health` answers (within the same 10-minute boot deadline, never by
+  starting a second server). Other failures report their own cause (exit code, log path)
+  instead of a generic list of port, dependency and `COGNEE_EMBEDDED` suggestions.
+- **Setup instructions are one path everywhere.** Installing or enabling the plugin
+  (`hermes plugins enable cognee`, the Desktop toggle) does not make it Hermes's memory
+  provider, so memory stayed off when the old "install, enable, setup" steps stopped early.
+  The plugin description, `after-install.md`, the README and the `hermes cognee install` /
+  `cognee-hermes-install` hints now give the same steps: install, run
+  `hermes memory setup cognee` in a terminal, start a new chat.
+- **Cognee first, Hermes' built-in memory as the fallback.** An agent shown both a recalled
+  Cognee memory and one of Hermes' own memory notes answered from the (stale) note. The
+  system prompt now says Cognee is the primary memory, that `MEMORY.md` / `USER.md` are the
+  fallback for when Cognee has nothing, and that when they disagree it goes with Cognee and
+  points out the difference; each prompt's Cognee memory block repeats that in one line,
+  next to the memory. While Cognee is unavailable the plugin adds nothing, so Hermes' memory
+  is used as before. `COGNEE_MEMORY_STEER=false` turns both off.
+- **Memory credit in the answer**, as in the Cursor and Claude Code plugins: recalled items
+  (the per-prompt memory block and `cognee_recall` results) are tagged `[mN · where it came
+  from]` with one numbering per conversation, and an instruction asks the agent to end an
+  answer that used them with one plain line, `> Cognee: <what it remembered>, based on
+  dataset <name>`. The credit is noted and stripped before the turn is stored. On by default;
+  `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
+- **Local mode works without an LLM key.** cognee 1.6.5 then builds memory with local
+  models (GLiNER extraction, fastembed embeddings) installed into the runtime and downloaded
+  on the first build (about 1.5 GB); recall returns the matching stored text. The setup's LLM
+  key prompt says a blank answer means local models, the server's no-key message says the
+  same instead of "memory will not be built", and the README explains that the embedder
+  sticks to the store (with how to add a key later).
+- **The local server no longer reads `~/.cognee-plugin/.env`.** cognee >= 1.6.2 loads the
+  first `.env` found walking up from its working directory, with that file overriding the
+  environment; from the plugin's state directory the walk reached `~/.cognee-plugin/.env`,
+  the file the other cognee plugins keep their keys in, so the server ran on their LLM key and
+  settings instead of the ones Hermes passed in. The server now starts with `COGNEE_ENV_FILE`
+  pointing at an empty file of the plugin's own (`~/.cognee-plugin/hermes/cognee-server.env`);
+  a `COGNEE_ENV_FILE` you set yourself still wins.
+- CI installs `local-mode-requirements.txt` (the same pin) for the tests that run against
+  cognee, and runs them with `uv run --no-sync` so the install is kept.
+
 ## [1.3.3]
 
 ### Added

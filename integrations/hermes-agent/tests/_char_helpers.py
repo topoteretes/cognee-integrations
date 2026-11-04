@@ -424,6 +424,8 @@ def make_provider(
         "improve_background": "",
         # The hit header has its own tests; everything else runs without it.
         "memory_hits": False,
+        # So does the memory steer (test_memory_steer.py).
+        "memory_steer": False,
         **(config or {}),
     }
     return provider

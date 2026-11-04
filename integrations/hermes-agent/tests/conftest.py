@@ -78,6 +78,10 @@ def hermetic_env(request, monkeypatch, tmp_path):
     for name in list(os.environ):
         if name.startswith(_SCRUBBED_PREFIXES):
             monkeypatch.delenv(name, raising=False)
+    # Memory credit (on in real use) adds tags and an instruction to recall
+    # output; the suite's format tests assert that output exactly, so it is off
+    # here and test_memory_credit.py turns it on.
+    monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "off")
 
     from cognee_integration_hermes import (
         code_graph,

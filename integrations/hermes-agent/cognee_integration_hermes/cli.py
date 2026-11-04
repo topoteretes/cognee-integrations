@@ -8,8 +8,14 @@ import sys
 import time
 from pathlib import Path
 
-from . import catalog, code_graph, recap, update_check
-from .config import DEFAULT_LOCAL_PORT, config_path, load_config, resolve_local_roots
+from . import catalog, code_graph, recap, runtime_env, update_check
+from .config import (
+    DEFAULT_LOCAL_PORT,
+    LOCAL_COGNEE_REQUIREMENT,
+    config_path,
+    load_config,
+    resolve_local_roots,
+)
 
 
 def _provider_active() -> bool:
@@ -74,7 +80,7 @@ def _print_status(args) -> None:
     print("\nCognee memory")
     print("-" * 40)
     print(f"  Active provider: {'yes' if _provider_active() else 'no'}")
-    print(f"  Cognee package:  {'installed' if importlib.util.find_spec('cognee') else 'missing'}")
+    print(f"  Local runtime:   {_runtime_status()}")
     print(f"  Plugin version:  {plugin_version or '(unknown)'}")
     print(f"  Mode:            {'remote' if cfg.get('service_url') else 'local'}")
     print(f"  Dataset:         {cfg.get('dataset')}")
@@ -383,7 +389,7 @@ def _run_setup(args) -> None:
         cmd_setup_provider("cognee")
     except Exception as exc:
         print(f"Could not launch Hermes memory setup: {exc}")
-        print("Run: hermes memory setup")
+        print("Run: hermes memory setup cognee")
 
 
 def _print_install(args) -> None:
@@ -391,28 +397,60 @@ def _print_install(args) -> None:
     name = catalog.catalog_name()
     if name:
         print(f"\nManaged by the Hermes catalog. Update with: hermes plugins update {name}")
-        print("Run `hermes memory setup` to configure Cognee.\n")
+        print("Run `hermes memory setup cognee` to make Cognee your memory provider.\n")
         return
-    print("\nInstall via the Hermes catalog (available after catalog acceptance):")
+    print("\nInstall via the Hermes catalog:")
     print("  hermes plugins install cognee")
-    print("  hermes plugins enable cognee")
-    print("  hermes memory setup")
+    print("  hermes memory setup cognee   # selects Cognee as the memory provider")
     print("  # Updates: hermes plugins update cognee")
     print("\nInstall via pip:")
     print("  pip install cognee-integration-hermes-agent")
     print("  cognee-hermes-install     # copies the plugin into $HERMES_HOME/plugins")
-    print("  hermes memory setup")
+    print("  hermes memory setup cognee")
     print("  # Updates: pip install -U cognee-integration-hermes-agent, then cognee-hermes-install")
     print("\nInstall from a checkout into a Hermes home without an existing Cognee plugin:")
     print("  mkdir -p ~/.hermes/plugins/cognee")
     print(f"  cp -R {here}/. ~/.hermes/plugins/cognee/")
-    print("  hermes memory setup\n")
+    print("  hermes memory setup cognee")
+    print(f"\nLocal mode runtime: hermes cognee install-runtime ({LOCAL_COGNEE_REQUIREMENT}).\n")
+
+
+def _runtime_status() -> str:
+    python = runtime_env.runtime_python()
+    if python:
+        return f"ready ({runtime_env.LOCAL_COGNEE_REQUIREMENT}, {runtime_env.VENV_DIR})"
+    if importlib.util.find_spec("cognee"):
+        return "cognee installed in Hermes's environment"
+    return "not installed (local mode: hermes cognee install-runtime)"
+
+
+def _install_runtime(args) -> int:
+    try:
+        runtime_env.install_runtime()
+    except runtime_env.RuntimeInstallError as exc:
+        print(f"Could not install the cognee runtime: {exc}")
+        return 1
+    print("Start a new hermes session to use local mode.")
+    return 0
+
+
+def _remove_runtime(args) -> int:
+    if runtime_env.remove_runtime():
+        print(f"Removed the cognee runtime at {runtime_env.VENV_DIR}.")
+        print("A local server it started keeps running until it exits; data in ~/.cognee is kept.")
+    else:
+        print("No cognee runtime installed.")
+    return 0
 
 
 def cognee_command(args) -> None:
     sub = getattr(args, "cognee_command", None)
     if sub == "setup":
         _run_setup(args)
+    elif sub == "install-runtime":
+        raise SystemExit(_install_runtime(args))
+    elif sub == "remove-runtime":
+        raise SystemExit(_remove_runtime(args))
     elif sub == "config":
         _print_config(args)
     elif sub == "install":
@@ -442,6 +480,11 @@ def register_cli(subparser) -> None:
     subs.add_parser("setup", help="Run Hermes memory setup for Cognee")
     subs.add_parser("config", help="Print Cognee plugin config with secrets redacted")
     subs.add_parser("install", help="Print installation commands")
+    subs.add_parser(
+        "install-runtime",
+        help="Install the private cognee environment local mode runs its server from",
+    )
+    subs.add_parser("remove-runtime", help="Delete the private cognee environment")
     version = subs.add_parser("version", help="Show plugin version and update availability")
     version.add_argument(
         "--check-updates",

@@ -38,6 +38,18 @@ DEFAULT_IDENTITY_PASSWORD = "hermes-agent-plugin"
 # transport.
 DEFAULT_USER_EMAIL = "default_user@example.com"
 DEFAULT_USER_PASSWORD = "default_password"
+# The cognee release local and embedded mode are written against. It is not a
+# dependency of this package: Hermes resolves every plugin into its own shared
+# environment, where cognee's pins (huggingface-hub<1, litellm's boto3 floor)
+# conflict with Hermes extras and refuse the whole install — including for
+# Cloud users, who never import cognee. Remote mode is plain HTTP; local mode
+# runs its server from a private venv holding this (runtime_env.py), and
+# embedded mode needs it installed into Hermes's environment by hand.
+# local-mode-requirements.txt carries the same pin (a test keeps them equal).
+# 1.5.4 is the floor (code-graph indexing moved its repo-spec form field to
+# raw_data there); 1.6.0 is what the plugin is written against: the password-less
+# default user and the only_context prompt contract.
+LOCAL_COGNEE_REQUIREMENT = "cognee==1.6.5"
 # Recall trimming defaults, the shared reference values (recall_text.py).
 DEFAULT_RECALL_PASSAGE_CHARS = 2000
 DEFAULT_RECALL_CONTEXT_CHARS = 12000

@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as exc:
         parser.exit(1, f"{exc}\n")
     print(f"Cognee memory plugin installed at {target}")
-    print("Next: run `hermes memory setup` and select `cognee`.")
+    print("Next: run `hermes memory setup cognee` to make it your memory provider.")
     print("After a `pip install -U`, re-run `cognee-hermes-install` to update this copy.")
     return 0
 
