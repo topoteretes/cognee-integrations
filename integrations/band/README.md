@@ -109,7 +109,7 @@ from cognee_band import CogneeMemoryAdapter
 
 async def main() -> None:
     agent = Agent.create(
-        adapter=CogneeMemoryAdapter(AnthropicAdapter()),   # was: AnthropicAdapter()
+        adapter=CogneeMemoryAdapter(AnthropicAdapter()),  # was: AnthropicAdapter()
         agent_id=os.environ["BAND_AGENT_ID"],
         api_key=os.environ["BAND_AGENT_API_KEY"],
     )
@@ -281,7 +281,7 @@ settings = CogneeSettings.resolve(
     dataset="team_platform",
     top_k=8,
     recall_timeout=5.0,
-    session_prefix="prod",       # room <id> -> session prod-<id>
+    session_prefix="prod",  # room <id> -> session prod-<id>
 )
 ```
 
