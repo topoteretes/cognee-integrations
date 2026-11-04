@@ -74,7 +74,7 @@ def test_inline_text_is_sanitized_even_with_capture_off(rh, monkeypatch):
     bodies = []
     text = "keep <private>SENTINEL</private> password=hunter2"
     res = rh.do_remember("http://x", "", text, "ds", "user_context", opener=_capturing(bodies))
-    assert res == {"ok": True}
+    assert res == {"ok": True, "dataset": "ds"}
     assert b"keep [private]" in bodies[0]
     assert b"SENTINEL" not in bodies[0] and b"hunter2" not in bodies[0]
 

@@ -548,7 +548,9 @@ function formatRemember(stdout: string, exitCode: number, dataset: string): { te
   }
   if (parsed.error) return { text: `Cognee remember failed: ${asText(parsed.error)}`, isError: true }
   if (parsed.ok === false) return { text: `Cognee rejected the write: ${raw}`, isError: true }
-  const where = dataset || asText(parsed.dataset) || 'the active dataset'
+  // The wrapper names the dataset it wrote to; the band's snapshot can lag a
+  // switch, so it only stands in when the wrapper did not say.
+  const where = asText(parsed.dataset) || dataset || 'the active dataset'
   if (parsed.queryable === true) return { text: `Stored in ${where}; it is in the graph and recall will find it.`, isError: false }
   const outcome = asText(parsed.wait_outcome)
   if (outcome === 'errored') return { text: `Stored in ${where}, but building the graph from it failed; check the server log.`, isError: true }
@@ -761,8 +763,15 @@ async function refreshSnapshot($: any): Promise<void> {
     const ran = await runPython($, [script, '--json'], { stdin, timeoutMs: RENDERER_TIMEOUT_MS })
     if (ran && ran !== 'timeout' && ran.exitCode === 0 && ran.stdout.trim()) {
       try {
+        const before = snapshot?.dataset ?? ''
         snapshot = JSON.parse(ran.stdout) as Snapshot
         rendererFailures = 0
+        // The session moved to another dataset without the picker (the
+        // cognee-switch-datasets skill runs the switch script from a shell):
+        // the listing still marks the old one current and may lack the new
+        // one. A picker switch relists on its own when it ends.
+        const after = snapshot?.dataset ?? ''
+        if (before && after && before !== after && !switching) void relistDatasets($)
         redraw($)
         return
       } catch {

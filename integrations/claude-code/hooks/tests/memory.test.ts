@@ -259,6 +259,18 @@ test('the remember tool maps the category to its node set and reports the write'
   expect(shown.text).toContain('recall will find it')
 })
 
+test('the remember tool reports the dataset the wrapper wrote to, not a stale band', async ($, on) => {
+  const calls: Call[] = []
+  // The band still shows agent_sessions; the launch record already moved on.
+  wire(on, calls, {
+    'cognee-remember.sh': () => ok(JSON.stringify({ ok: true, dataset: 'demo', dataset_id: 'a1', queryable: true })),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'note' }))
+  expect(shown.text).toContain('Stored in demo')
+})
+
 test('the remember tool stores a file under its real name', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)
@@ -652,6 +664,32 @@ test('an auto that leaves recall restricted keeps the search tool on the active 
   const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
   expect(shown.text).toContain('2 results from the active dataset.')
 })
+test('a switch made outside the picker relists, so the row shows the new dataset', async ($, on) => {
+  const calls: Call[] = []
+  // The skill's shell switch moved the launch record; the renderer reads it.
+  let dataset = 'agent_sessions'
+  let listings = 0
+  const clock = wire(on, calls, {
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset })),
+    'switch-dataset.py': () => {
+      listings += 1
+      const current = dataset
+      return ok(JSON.stringify({ ...SWITCH_LIST, datasets: [{ name: 'agent_sessions', id: 'a1', writable: true, current: current === 'agent_sessions' }, { name: 'demo', id: 'd2', writable: true, current: current === 'demo' }] }))
+    },
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'cognee-dataset', args: '' })
+  const first = listings
+
+  dataset = 'demo'
+  await $.prompt.submit({ text: 'next' })
+  await clock.advance(1100)
+  expect(listings).toBeGreaterThan(first)
+  const answer = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(answer.text).toContain('* demo (current)')
+})
+
 test('a switch answered with an error leaves the recall mode as it was', async ($, on) => {
   const calls: Call[] = []
   // Only the first listing answers, so the relisting after the switch cannot
