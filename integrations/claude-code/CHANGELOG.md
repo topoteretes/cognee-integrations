@@ -10,7 +10,7 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.7.6]
 
 ### Changed
 - **The hooks module runs no shell.** The `search` and `remember` tools and the fix

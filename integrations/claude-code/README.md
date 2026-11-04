@@ -44,9 +44,14 @@ Memory is kept until you delete it (the `cognee-forget` skill, or deleting the
 dataset). The plugin never expires server-side memory on its own.
 
 **Other network calls.** Local mode installs `cognee==1.6.5` from PyPI into
-`~/.cognee-plugin/venv` once. The background idle watcher fetches this repository's
-`marketplace.json` from `raw.githubusercontent.com` at most hourly to offer updates
-(`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
+`~/.cognee-plugin/venv` once. The install is `scripts/session-start.py`, which runs
+`uv pip install` with that pinned version (a `uv` already on PATH, or the copy an
+earlier plugin version left under `~/.cognee-plugin/uv`), or `python -m pip install`
+in a venv built from a Python 3.10–3.14 already on the machine when there is no
+`uv`. Neither `uv` nor a Python is ever downloaded, and nothing fetched is piped
+into a shell. Cloud mode installs nothing. The background idle watcher fetches this
+repository's `marketplace.json` from `raw.githubusercontent.com` at most hourly to
+offer updates (`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
 Anthropic, Cognee or any third party beyond the calls above.
 
 **Claude settings.** In cloud mode the plugin disables native auto-memory unless
@@ -110,10 +115,10 @@ serves two tools Claude can call directly. Everything it does, in full:
   | `scripts/cognee_statusline_render.py --json` | on the events the hooks fire, to draw the row | none |
   | `scripts/switch-dataset.py --list --json` | once when the row is first drawn | lists your datasets on the Cognee server |
   | `scripts/switch-dataset.py <name> --json` | you pick a dataset or run `/cognee-dataset <name>` | moves the session to that dataset on the Cognee server |
-  | `scripts/cognee_search.py <query> <top_k> --graph\|--code [--dataset-id <id>]` | Claude calls the `search` tool | `POST /api/v1/recall` on the Cognee server |
+  | `scripts/cognee_search.py <query> <top_k> --graph\|--code [--dataset-id <id>]` | Claude calls the `search` tool | `POST /api/v1/recall` on the Cognee server, plus `GET /api/v1/agents/connections/me` first when no session id is on record for this launch |
   | `scripts/recall-trim.py --query <query>` | on the search result, before Claude sees it | none |
   | `scripts/cognee_remember.py <text>\|--file <path> --node-set <set>` | Claude calls the `remember` tool | `POST /api/v1/remember` on the Cognee server |
-  | `scripts/doctor.py` | you open the fix dialog | `GET /health` on the Cognee server |
+  | `scripts/doctor.py` | you press **run doctor** in the fix dialog | `GET /health` on the Cognee server. Locally it also asks each candidate Python (the plugin venv's, then the `python3.x` on PATH) for its version with a fixed one-line `-c` probe |
   | `scripts/_env_file.py --append <NAME>` | you save a value in the fix dialog | none |
 
   "The Cognee server" is the one you configured: `http://localhost:8011` in local
@@ -142,8 +147,11 @@ exit watcher (session sync and status), and in local mode the cognee server and,
 when enabled, the Claude observer shim. All are scripts from this folder.
 
 **Credentials it reads.** `COGNEE_API_KEY`, `COGNEE_BASE_URL` and `LLM_API_KEY` from
-`~/.cognee/.env` or the environment. The API key goes only to the Cognee server you
-configured; the LLM key only to the local server's process.
+`~/.cognee/.env` or the environment, plus the plugin's own key files:
+`~/.cognee-plugin/claude-code/agent_key.json` (the plugin's own identity,
+provisioned on your Cognee server) and `~/.cognee-plugin/api_key.json` (a key cached
+from an earlier mint). The order is under [Auth](#auth). The API key goes only to
+the Cognee server you configured; the LLM key only to the local server's process.
 
 **Your Claude subscription.** In local mode with no `LLM_API_KEY` set and the
 `claude` CLI on PATH, the server's own LLM calls (cognify, improve) run as
