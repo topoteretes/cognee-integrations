@@ -639,6 +639,27 @@ test('same-named datasets are offered once, so the open terminal picker still dr
   await ui.unmount()
 })
 
+test('opening the terminal picker lists the datasets afresh', async ($, on) => {
+  const calls: Call[] = []
+  let datasets = SWITCH_LIST.datasets
+  wire(on, calls, {
+    'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, datasets })) : ok('{}')),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await ui.unmount()
+
+  // 'demo' is deleted on the server after the session listed it.
+  datasets = SWITCH_LIST.datasets.filter(d => d.name !== 'demo')
+  const before = listCalls(calls).length
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
+  expect(listCalls(calls).length).toBe(before + 1)
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', '+ new dataset…'])
+  await ui.unmount()
+})
+
 test('an auto that leaves recall restricted keeps the search tool on the active dataset', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, {
@@ -790,14 +811,14 @@ test('an empty name, or the cancel mark, brings the picker back without a switch
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
   calls.length = 0
   await $.ui.input({ plugin: PLUGIN, key: 'newDataset', text: '   ' })
-  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
+  expect(switchArgv(calls)).toBeUndefined()
   expect(await again.find({ type: 'Button', key: 'dataset' })).toBeDefined()
 
   await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
   expect(await again.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
   await $.ui.press({ plugin: PLUGIN, key: 'cancelNew' })
-  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
+  expect(switchArgv(calls)).toBeUndefined()
   expect(await again.find({ type: 'Button', key: 'dataset' })).toBeDefined()
   await again.unmount()
 })

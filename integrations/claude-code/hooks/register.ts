@@ -1389,6 +1389,10 @@ export const register: Register = (on, options) => {
         onPress: () => {
           pickerOpen = true
           redraw($)
+          // Datasets come and go outside this session (deleted, created by
+          // another agent): every open lists them afresh, and the list redraws
+          // when the answer lands.
+          void relistDatasets($)
         },
       })
     // The text field the "new dataset…" entry turns the picker into. Enter
