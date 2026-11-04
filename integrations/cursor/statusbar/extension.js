@@ -198,7 +198,7 @@ class Status {
 
 const LOADING_ITEM = { label: "$(loading~spin) Loading datasets…", alwaysShow: true, loading: true };
 // The picker's first entry: recall from the best-matching dataset (dataset
-// routing, cognee >= 1.6.6) instead of only the one saves go to. Same label as
+// routing, a cognee 1.6.6 server) instead of only the one saves go to. Same label as
 // the Claude Code plugin's picker; the spaces keep it apart from any dataset name.
 const AUTO_RECALL = "auto (best-matching dataset)";
 
@@ -218,8 +218,6 @@ function currentDescription(data) {
       return "current · recall restricted to it by COGNEE_PLUGIN_DATASET";
     case "read_dataset_ids":
       return "current · recall: the COGNEE_PLUGIN_READ_DATASET_IDS datasets";
-    case "server_cannot_route":
-      return "current · recall on it (this server can't route yet)";
     default:
       return "current · recall restricted to it";
   }
@@ -282,7 +280,7 @@ function switchMessage(result, name) {
   if ((reason === "recall_auto" || reason === "already_auto") && result.recall !== "auto") {
     return result.recall_reason === "read_dataset_ids"
       ? "saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets."
-      : `saved; this server can't route yet, so recall stays on ${where}.`;
+      : `saved; recall stays restricted to ${where}.`;
   }
   if (reason === "recall_auto" && result.lifted === "configured_dataset") {
     return `recall is auto for this chat (no longer pinned by COGNEE_PLUGIN_DATASET); saves stay in ${where}.`;

@@ -1,21 +1,20 @@
 """What the prompt hook injects when recall is auto vs pinned (SDK-1393).
 
-Auto recall names no dataset and lets a cognee >= 1.6.6 server pick the
-dataset(s) to read, so nothing the hook injects may claim the memory came from
-the launch's active dataset. Pinned recall reads that dataset only, so a credit
-that names a source names it.
+Auto recall names no dataset and lets the server pick the dataset(s) to read,
+so nothing the hook injects may claim the memory came from the launch's active
+dataset. Pinned recall reads that dataset only, so a credit that names a source
+names it.
 
-Each test drives the hook's real ``auto_recall_active`` (the server version is
-what the /health probe would read) and its real ``recall_via_http`` (the
-request body is captured at the HTTP seam), so the request and the injected
-text come from the same run.
+Each test drives the hook's real ``auto_recall_active`` and its real
+``recall_via_http`` (the request body is captured at the HTTP seam), so the
+request and the injected text come from the same run.
 
 Contract, for every hook-family suite:
-  * auto (server 1.6.6, nothing pinned): the graph request carries no
+  * auto (nothing pinned): the graph request carries no
     ``datasets``/``dataset_ids`` and no session id, shared-memory ids included,
     while the recalled item still reaches the context;
-  * pinned (a configured dataset on 1.6.6, or a server too old to route): the
-    graph request names the active dataset's ids;
+  * pinned (a configured dataset): the graph request names the active
+    dataset's ids;
   * the memory header (``Cognee memory: …``) never names a dataset;
   * claude-code and codex credit with ``🧠 Cognee memory [mN]`` and never name
     a dataset; Antigravity tags nothing;
@@ -37,16 +36,15 @@ OTHER_ID = "22222222-2222-4222-8222-222222222222"
 FACT = "the retry policy backs off exponentially with a 30s ceiling"
 GRAPH_ITEM = {"source": "graph", "text": f"## Relevant passages\n{FACT}."}
 
-#: (server version, COGNEE_PLUGIN_DATASET, expected mode)
+#: (COGNEE_PLUGIN_DATASET, expected mode)
 MODES = {
-    "auto": ("1.6.6", "", "auto"),
-    "pinned_configured": ("1.6.6", DATASET, "pinned"),
-    "pinned_old_server": ("1.6.5", "", "pinned"),
+    "auto": ("", "auto"),
+    "pinned_configured": (DATASET, "pinned"),
 }
 
 
 def _drive(suite, hook_module, monkeypatch, tmp_path, mode: str):
-    version, configured, expected = MODES[mode]
+    configured, expected = MODES[mode]
     module = load_lookup(suite, hook_module, monkeypatch)
     # The isolated sibling the hook imported (Antigravity binds names only).
     pc = sys.modules["_plugin_common"]
@@ -61,9 +59,6 @@ def _drive(suite, hook_module, monkeypatch, tmp_path, mode: str):
     monkeypatch.setattr(
         module, "resolve_active_dataset_ids", lambda *a, **k: (WRITE_ID, [WRITE_ID, OTHER_ID])
     )
-    # The version /health would report; the routing cache lives in the temp dir.
-    monkeypatch.setattr(pc, "_ROUTING_SUPPORT_FILE", tmp_path / "dataset-routing.json")
-    monkeypatch.setattr(pc, "_probe_server_version", lambda base, timeout: (version, ""))
 
     sent: list[dict] = []
 
@@ -100,7 +95,7 @@ def _header(context: str) -> str:
 @pytest.mark.parametrize("mode", list(MODES))
 def test_request_shape_follows_the_recall_mode(suite, hook_module, monkeypatch, tmp_path, mode):
     graph, context = _drive(suite, hook_module, monkeypatch, tmp_path, mode)
-    if MODES[mode][2] == "auto":
+    if MODES[mode][1] == "auto":
         assert "datasets" not in graph and "dataset_ids" not in graph, graph
         assert "session_id" not in graph
     else:
@@ -125,7 +120,7 @@ def test_the_credit_names_the_dataset_only_when_pinned(
     suite, hook_module, monkeypatch, tmp_path, mode
 ):
     _, context = _drive(suite, hook_module, monkeypatch, tmp_path, mode)
-    auto = MODES[mode][2] == "auto"
+    auto = MODES[mode][1] == "auto"
     if suite.name == "antigravity":
         # No credit tagging on this host: the memory goes in bare.
         assert "Crediting Cognee memory" not in context and "[m1" not in context

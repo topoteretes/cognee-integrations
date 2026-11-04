@@ -13,7 +13,7 @@ this is the hermes counterpart of the latter — one JSON map keyed by the
 cognee session never spans two datasets, so every switch mints a fresh one.
 ``recall`` (SDK-1393) is the conversation's own recall choice: "pinned" when
 graph recall is restricted to ``dataset``, "auto" when it names no dataset and
-the server routes it (lifting a pin by the configured dataset too), and
+the server picks (lifting a pin by the configured dataset too), and
 ``RECALL_FOLLOWS_CONFIG`` after a reset, when the configuration decides (a
 configured non-default dataset pins, anything else is auto). A pin-only entry
 (the dataset in use picked, no switch) has ``counter`` 0.

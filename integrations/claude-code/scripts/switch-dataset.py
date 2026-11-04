@@ -10,17 +10,17 @@ Usage:
     switch-dataset.py <dataset-name> [--force] [--json]
     switch-dataset.py auto [--json]            # let routing pick the dataset for recall
 
-Recall is "auto" by default: graph recall names no dataset and a cognee >= 1.6.6
-server picks the best-matching dataset(s) when it can, otherwise it searches
-every readable dataset. Picking a dataset (even the active one) restricts recall
+Recall is "auto" by default: graph recall names no dataset and the server routes
+it (a cognee 1.6.6 server picks the best-matching dataset(s); an older one
+searches every readable dataset). Picking a dataset (even the active one) restricts recall
 to it, and so does an explicitly configured dataset other than the default
 (COGNEE_PLUGIN_DATASET); ``auto`` lifts either restriction for this launch.
 Saves always go to the active dataset, which ``auto`` leaves where it is. "auto"
 is reserved: no dataset can be named so.
 
 ``--list --json`` reports ``recall`` ("auto" or "pinned") as in effect and, when
-pinned, ``reason``: ``dataset_picked``, ``configured_dataset``,
-``read_dataset_ids`` or ``server_cannot_route``.
+pinned, ``reason``: ``dataset_picked``, ``configured_dataset`` or
+``read_dataset_ids``.
 
 Runs under the host's shell tool (no hook payload), so it finds its own launch
 record via ``resolve_host_key_outside_hook``; pass ``--session-key <host id>``
@@ -124,20 +124,6 @@ def _resolve_launch(explicit_key: str) -> tuple[str, dict]:
 # ── listing ────────────────────────────────────────────────────────────────
 
 
-def _recall_mode(host_key: str) -> tuple[str, str]:
-    """The recall mode in effect and why: ``("auto", "")`` only when recall is routed.
-
-    Unpinned recall against a server that cannot route (cognee < 1.6.6, version
-    unknown) still reads the active dataset, so it is reported as pinned
-    (``server_cannot_route``). See ``recall_mode`` for the other reasons.
-    """
-    try:
-        service_url = resolved_http_endpoint_auth()[0]
-        return recall_mode(service_url, host_key)
-    except Exception:
-        return "pinned", ""
-
-
 def _list(host_key: str, rec: dict) -> dict:
     resolved = load_resolved(session_key=host_key)
     user_id = str(resolved.get("user_id") or "")
@@ -151,7 +137,7 @@ def _list(host_key: str, rec: dict) -> dict:
         raise SwitchError(EXIT_ERROR, f"GET /api/v1/datasets failed ({exc})")
     current = str(rec.get("dataset") or resolved.get("dataset") or "")
     rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
-    mode, reason = _recall_mode(host_key)
+    mode, reason = recall_mode(host_key)
     return {
         "current": current,
         "recall": mode,
@@ -451,8 +437,8 @@ def _auto(host_key: str, rec: dict) -> dict:
     # COGNEE_PLUGIN_DATASET for this launch.
     if _read_map_record(host_key).get("recall_pinned") is not False:
         set_recall_pinned(host_key, False)
-    # "recall" says what is in effect (an old server still reads one dataset).
-    mode, why = _recall_mode(host_key)
+    # "recall" says what is in effect (an explicit read set still scopes it).
+    mode, why = recall_mode(host_key)
     return {
         "switched": False,
         "reason": "recall_auto" if lifted else "already_auto",
@@ -481,15 +467,10 @@ def _print_listing(result: dict, as_json: bool) -> None:
         )
     elif result.get("recall") == "pinned" and reason == "read_dataset_ids":
         print("Recall: restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS")
-    elif result.get("recall") == "pinned" and reason == "server_cannot_route":
-        print(f"Recall: on {result['current']} (this server can't route yet)")
     elif result.get("recall") == "pinned":
         print(f"Recall: restricted to {result['current']} (switch-dataset.py auto lifts it)")
     else:
-        print(
-            "Recall: auto (the server picks the best-matching dataset when it can, "
-            "otherwise searches every readable dataset)"
-        )
+        print("Recall: auto (the server picks the best-matching dataset)")
     if not result["datasets"]:
         print("No other writable datasets found.")
     for row in result["datasets"]:
@@ -510,12 +491,7 @@ def _print_switch(result: dict, as_json: bool) -> None:
         if reason == "recall_restricted":
             print(f"Recall restricted to dataset {result['dataset']!r}.")
         elif reason in ("recall_auto", "already_auto") and result.get("recall") != "auto":
-            if result.get("recall_reason") == "read_dataset_ids":
-                print("Saved. COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets.")
-            else:
-                print(
-                    f"Saved. This server can't route yet, so recall stays on {result['dataset']!r}."
-                )
+            print("Saved. COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets.")
         elif reason == "recall_auto" and result.get("lifted") == "configured_dataset":
             print(
                 "Recall is auto for this session (no longer pinned by COGNEE_PLUGIN_DATASET); "

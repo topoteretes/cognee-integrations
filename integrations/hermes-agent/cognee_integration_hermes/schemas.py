@@ -118,10 +118,9 @@ SWITCH_DATASET_SCHEMA = {
     "name": "cognee_switch_dataset",
     "description": (
         "Move this conversation to another Cognee dataset. Unless a dataset is picked "
-        "or a non-default one is configured, recall is auto where the server supports "
-        "it (cognee >= 1.6.6): best-effort, the server picks the best-matching dataset "
-        "when it can, otherwise searches every readable dataset; elsewhere recall stays "
-        "on the active dataset. action='list' shows the datasets visible to this "
+        "or a non-default one is configured, recall is auto: it names no dataset and "
+        "the server picks the best-matching one (cognee 1.6.6; an older server "
+        "searches every readable dataset). action='list' shows the datasets visible to this "
         "principal, 'current' reports the active one and the recall mode in effect "
         "(with the reason when pinned), 'switch' bridges the current session into its "
         "dataset and re-points capture and the session-end improve at the target "

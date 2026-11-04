@@ -23,39 +23,6 @@ const RETRY_BASE_DELAY_MS = 3_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 const NODE_GLOBAL_FETCH_HEADERS_TIMEOUT_MS = 300_000;
-// Dataset routing (unscoped searches go to the best-matching dataset) shipped in cognee 1.6.6.
-export const DATASET_ROUTING_MIN_VERSION = [1, 6, 6] as const;
-const ROUTING_TTL_MS = 60 * 60_000;
-const ROUTING_RETRY_MS = 5 * 60_000;
-
-// A release, or a build of one: a post-release (".postN", PEP 440's "-N"), then
-// "-local" (source checkout, the Docker image), then a "+label". The same rule
-// as the hook-family plugins and hermes.
-const RELEASE_SUFFIX_RE = /^(?:[-.]?post\d*|-\d+)?(?:-local)?(?:\+.*)?$/;
-
-/** Numeric release of a version string: "1.6.6rc1" -> [1, 6, 6]; [] when unparseable. */
-export function versionTuple(value: string): number[] {
-  const release = /^v?(\d+(?:\.\d+)*)/i.exec(value.trim())?.[1];
-  return release ? release.split(".").map(Number) : [];
-}
-
-/**
- * `value` >= `minimum`, PEP 440-style. The release counts when it has no
- * suffix or a build one ("1.6.6", "1.7", "1.6.6-local", "1.6.6.post1-local").
- * Any other suffix (a pre-release such as "1.6.6.rc1", which cognee 1.6.6rc1
- * reports without dataset routing, a dev build, an unknown label) counts only
- * above `minimum`. Unparseable ("unknown", "", "2") is false.
- */
-export function versionAtLeast(value: string, minimum: readonly number[]): boolean {
-  const match = /^v?(\d+(?:\.\d+)+)(.*)$/i.exec(value.trim());
-  if (!match) return false;
-  const parts = match[1].split(".").map(Number);
-  let cmp = 0;
-  for (let i = 0; i < Math.max(parts.length, minimum.length) && cmp === 0; i++) {
-    cmp = Math.sign((parts[i] ?? 0) - (minimum[i] ?? 0));
-  }
-  return RELEASE_SUFFIX_RE.test(match[2].trim().toLowerCase()) ? cmp >= 0 : cmp > 0;
-}
 
 // Node's bundled global fetch has an undici headersTimeout of 300s. Long-running
 // Cognee ingestion endpoints can legitimately wait longer than that before they
@@ -326,9 +293,9 @@ export class CogneeHttpClient {
 
   // -- Health ---------------------------------------------------------------
 
-  async health(timeoutMs: number = this.timeoutMs): Promise<{ status: string }> {
+  async health(): Promise<{ status: string }> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const headers = this.isCloud ? { "X-Api-Key": this.apiKey! } : {};
       const response = await fetch(`${this.baseUrl}/health`, {
@@ -344,54 +311,6 @@ export class CogneeHttpClient {
       clearTimeout(timer);
     }
   }
-
-  /**
-   * `version` from `/health`, whatever the status: an unhealthy cognee answers
-   * 503 and still names its version. "" when the body carries none.
-   */
-  private async healthVersion(timeoutMs: number): Promise<string> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const headers = this.isCloud ? { "X-Api-Key": this.apiKey! } : {};
-      const response = await fetch(`${this.baseUrl}/health`, { method: "GET", headers, signal: controller.signal });
-      const body = (await response.json().catch(() => ({}))) as { version?: unknown } | null;
-      return typeof body?.version === "string" ? body.version.trim() : "";
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  /**
-   * Whether the server routes a search that names no dataset (cognee >= 1.6.6,
-   * dataset routing). Read from `/health`'s `version`, cached for an hour (five
-   * minutes after a failed probe). A failed probe keeps the last answer; with
-   * none, false: recall then stays on its dataset, as on an older server, which
-   * would search every readable dataset instead of routing. `timeoutMs` bounds
-   * the probe (callers on the prompt path pass a short one); concurrent callers
-   * share one in-flight probe.
-   */
-  async routesDatasets(timeoutMs: number = this.timeoutMs): Promise<boolean> {
-    const cached = this.routing;
-    // A failed probe (no version this time) is retried after ROUTING_RETRY_MS even
-    // when an earlier answer is kept, so a downgrade during a restart is noticed.
-    if (cached && Date.now() - cached.checkedAt < (cached.version && !cached.probeFailed ? ROUTING_TTL_MS : ROUTING_RETRY_MS)) return cached.routes;
-    this.routingProbe ??= (async () => {
-      let version = "";
-      try {
-        version = await this.healthVersion(timeoutMs);
-      } catch {
-        version = "";
-      }
-      const routes = version ? versionAtLeast(version, DATASET_ROUTING_MIN_VERSION) : cached?.routes ?? false;
-      this.routing = { version: version || cached?.version || "", routes, checkedAt: Date.now(), probeFailed: !version };
-      return routes;
-    })().finally(() => { this.routingProbe = undefined; });
-    return this.routingProbe;
-  }
-
-  private routing?: { version: string; routes: boolean; checkedAt: number; probeFailed: boolean };
-  private routingProbe?: Promise<boolean>;
 
   // -- Data operations ------------------------------------------------------
 
@@ -826,7 +745,8 @@ export class CogneeHttpClient {
      *  date-scoped questions to TEMPORAL. The session_context scope takes none. */
     searchType?: CogneeSearchType;
     /** Empty = name no dataset: a cognee >= 1.6.6 server routes the query to the
-     *  best-matching readable dataset(s) (auto recall, see routesDatasets). */
+     *  best-matching readable dataset(s) (auto recall); an older one searches
+     *  every readable dataset. */
     datasetIds: string[];
     topK?: number;
     sessionId?: string;

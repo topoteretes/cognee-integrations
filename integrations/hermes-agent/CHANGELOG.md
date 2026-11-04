@@ -13,24 +13,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [1.5.0]
 
 ### Added
-- **Recall is auto by default (SDK-1393).** On a cognee >= 1.6.6 server the per-prompt memory
-  lane and `cognee_recall` name no dataset. Routing is best-effort: the server picks the
-  best-matching dataset when it can, otherwise searches every readable dataset; pin a dataset
-  to keep recall on one. Saves still go to the conversation's dataset. The HTTP backend reads
-  `version` from `/health` (cached for an hour, a failed probe retried after five minutes; the probe comes out of the per-prompt recall
-  budget); in-process the installed cognee decides; against an older or served-SDK cognee
-  recall keeps the dataset. Pre-releases and dev builds count as below their release
-  (`1.6.6rc1`, reported as `1.6.6.rc1`, does not route); `-local`, `+local` and `.postN`
-  count as the release, and an unknown label counts only above 1.6.6. An unhealthy server's
-  503 answer still names its version and counts. While recall is routed, the memory credit
-  says "based on Cognee memory" rather than naming the active dataset. The guidance lane, `cognee_code_search` and recaps keep their
-  datasets.
+- **Recall is auto by default (SDK-1393).** Unless recall is pinned, the per-prompt memory
+  lane and `cognee_recall` name no dataset and the server picks the best-matching one.
+  Routing needs a cognee 1.6.6 server; an older one searches every dataset the user can read.
+  Pin a dataset to keep recall on one. Saves still go to the conversation's dataset. While
+  recall is auto, the memory credit says "based on Cognee memory" rather than naming the
+  active dataset. The guidance lane, `cognee_code_search` and recaps keep their datasets.
 - **`cognee_switch_dataset` pins recall.** Any explicit pick pins recall to that dataset: a
   switch (the default dataset included), or the dataset in use (no new session).
   `action='auto'` lifts the pin; `reset` goes back to the configured dataset and its recall
   mode. `current` reports the mode in effect and, when pinned, a `reason` as the other cognee
-  plugins do: `dataset_picked`, `configured_dataset`, or `server_cannot_route` (where the
-  server cannot route; `auto` then saves the choice but says recall stays on the dataset).
+  plugins do: `dataset_picked` or `configured_dataset`.
   `switch` refuses the name `auto`. The mode is kept in `dataset-overrides.json`; entries
   written before this release stay pinned, except one on the configured dataset
   (indistinguishable from a reset), which follows the configuration.
@@ -44,21 +37,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   before, saves went to a dataset named `auto`.
 
 ### Changed
-- **Local mode installs cognee 1.6.6** (was 1.6.5), and a runtime built for 1.6.5 keeps local
-  mode off until `hermes cognee install-runtime` installs 1.6.6: the plugin never starts a
-  server on a cognee it was not written against, and never downloads one behind the user's
+- **Local mode installs cognee 1.6.6** (was 1.6.5), and a runtime installed for 1.6.5 keeps
+  local mode off until `hermes cognee install-runtime` installs 1.6.6: the plugin never starts
+  a server on a cognee it was not written against, and never downloads one behind the user's
   back. Hermes reports Cognee as unavailable with that command, and `hermes cognee status`
-  shows the runtime as outdated. The new pin is built in a venv of its own
-  (`runtime/venv-1.6.6`) next to the old one, and becomes the active runtime only once its
-  cognee version and server modules check out, by atomically replacing `ready.json`, which now
-  names the interpreter to start from (a marker an older plugin wrote, pointing at
-  `runtime/venv`, is still read). A failed or interrupted build leaves the old runtime as it
-  was, and the next attempt rebuilds the pinned venv from scratch rather than trusting what a
-  cut-short build left. A server already running and the venv it runs from are never touched.
-  Builds are serialized by a lock on POSIX and Windows (`install-runtime` waits up to 15
-  minutes for another one). First installs use the same per-version layout.
-  `install-runtime` and `remove-runtime` delete old runtimes only while nothing listens on the
-  configured local port, and `hermes cognee status` lists the ones left on disk.
+  shows the runtime as outdated. `install-runtime` upgrades `runtime/venv` in place; a failed
+  or interrupted install leaves no ready marker, so local mode stays off and the next
+  `install-runtime` repairs the venv. Restart a local server still running from the old
+  version, and start a new Hermes session.
 
 ## [1.4.1]
 

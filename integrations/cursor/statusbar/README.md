@@ -12,12 +12,11 @@ $(pulse) cognee agent_sessions · cloud · 1 memory hit
   turns red when the plugin reports a failure (`✕ …`).
 - **Click:** pick another dataset for the chat (Cognee: Switch Dataset). The picker opens at once with a spinning "Loading datasets…" row and fills in when the server answers.
   Its first entry, `auto (best-matching dataset)`, sets recall back to auto (`switch-dataset.py auto`:
-  the server picks the dataset for each recall when it can; saves stay where they are). The active
+  the server picks the dataset for each recall; saves stay where they are). The active
   dataset's row shows the recall mode; picking it restricts recall to it without a new session.
   Picking another dataset switches the chat and restricts recall to it. A dataset named `auto` (the
   name is reserved) is not offered, and as the active one it is shown but cannot be picked. The
-  notification after a pick says what changed, e.g. that an older server keeps recall on the active
-  dataset.
+  notification after a pick says what changed.
 - **Which chat:** the most recent prompt across chats. Extensions can't see which Cursor
   chat has focus.
 

@@ -435,7 +435,7 @@ const memoryCogneePlugin = {
                 {
                   cfg,
                   resolveDatasets: resolveToolDatasets,
-                  recall: ({ timeoutMs, ...p }) => recallWithBreaker({ ...p, searchType: p.searchType ?? cfg.searchType, searchPrompt: p.searchPrompt ?? cfg.searchPrompt }, timeoutMs),
+                  recall: (p) => recallWithBreaker({ ...p, searchType: p.searchType ?? cfg.searchType, searchPrompt: p.searchPrompt ?? cfg.searchPrompt }),
                   breakerOpenForSeconds: () => recallBreaker.openForSeconds(),
                   autoRoute: (_agentId, ctx) => autoRecall(ctx),
                   cache: toolReferenceCache,
@@ -500,7 +500,6 @@ const memoryCogneePlugin = {
                     currentDataset: (c) => captureDatasetName(c.agentId, c),
                     currentSessionId: (c) => (cfg.enableSessions && c.sessionId ? conversationSessionId(c.sessionId, c) : undefined),
                     listDatasets: () => client.listDatasets(),
-                    autoRecall: (c) => autoRecall(c),
                     ensureDataset: (name) => client.ensureDataset(name),
                     syncSession: async (datasetName, sid) => {
                       await awaitPendingStores(sid);
@@ -622,22 +621,15 @@ const memoryCogneePlugin = {
     // dataset (a switch, or the dataset in use picked) — or, with no override
     // choosing a mode, the config names a non-default datasetName (an explicit
     // dataset scopes this agent's memory; `action: "auto"` lifts that pin per
-    // conversation) — graph recall names no
-    // dataset and a cognee >= 1.6.6 server routes it (best effort: the
-    // best-matching dataset when it can, otherwise every readable one). Multi-scope mode keeps its configured scopes (an explicit read
-    // set), and an older server keeps the dataset (it would search everything).
-    // The version probe is short (READY_PROBE_TIMEOUT_MS) and shared between
-    // concurrent callers; callers spend it out of their own recall budget.
+    // conversation) — graph recall names no dataset and a cognee >= 1.6.6
+    // server routes it (best effort: the best-matching dataset when it can,
+    // otherwise every readable one; an older server searches every readable
+    // dataset). Multi-scope mode keeps its configured scopes (an explicit read set).
     const recallPinnedByConfig = configPinsRecall(cfg);
     async function autoRecall(ctx?: ConvoCtx): Promise<boolean> {
       if (multiScope) return false;
       await switchStore.ready();
-      if (switchStore.recallPinned(ctx, recallPinnedByConfig)) return false;
-      try {
-        return await client.routesDatasets(READY_PROBE_TIMEOUT_MS);
-      } catch {
-        return false;
-      }
+      return !switchStore.recallPinned(ctx, recallPinnedByConfig);
     }
 
     // Fix #8: Log when scopes have no dataset ID during recall
@@ -1899,9 +1891,6 @@ const memoryCogneePlugin = {
           return;
         }
 
-        // After the breaker and slow-streak checks, so a server known to be
-        // down never pays the version probe; its time comes out of this
-        // prompt's budget (the deadline is fixed above).
         const autoRoute = await autoRecall(ctx);
 
         const recallKey = ctx.sessionId ? `${normalizeAgentId(ctx.agentId, cfg)}::${ctx.sessionId}` : undefined;

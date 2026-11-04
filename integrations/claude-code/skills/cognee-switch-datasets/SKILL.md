@@ -20,9 +20,10 @@ syncing it into the graph) and starts a new one on the chosen dataset. `auto`,
 and picking the dataset the session is already on, only change the recall mode:
 no sync, no new session.
 
-Recall is **auto** by default: a cognee >= 1.6.6 server picks the dataset(s)
-that best match each prompt when it can, and otherwise searches every readable
-dataset; saves go to the active dataset. A `COGNEE_PLUGIN_DATASET` set to a
+Recall is **auto** by default: graph recall names no dataset, and the server
+picks the dataset(s) that best match each prompt, or searches every readable
+dataset when it cannot narrow (routing needs a cognee 1.6.6 server; an older
+one always searches every readable dataset); saves go to the active dataset. A `COGNEE_PLUGIN_DATASET` set to a
 name other than `agent_sessions` restricts recall to that dataset from the
 start. Picking a dataset — another one, or the active one — restricts recall to
 it. `auto` lifts the restriction, a configured one included, and leaves saves
@@ -62,8 +63,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" "$ARGUMENTS" --json
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
 ```
 
-The JSON has `current`, `recall` (`"auto"` or `"pinned"`, the mode in effect:
-an older server that cannot route reads as `"pinned"`), `datasets`
+The JSON has `current`, `recall` (`"auto"` or `"pinned"`, the mode in effect),
+`reason` when pinned (`dataset_picked`, `configured_dataset` or
+`read_dataset_ids`), `datasets`
 (`[{name, id, writable, current}]`), `hidden_readonly` (datasets you can read but not write — never offered) and
 `filtered` (`true` when write access was verified for every row).
 
@@ -94,7 +96,7 @@ of seconds. `"switched": false` carries a `reason`:
 |--------|-----|
 | `already_active` | the session is already on that dataset, recall restricted to it |
 | `recall_restricted` | recall is now restricted to that (already active) dataset |
-| `recall_auto` | recall is auto again; saves still go to `dataset` (if `recall` is `"pinned"`: saved, but this server can't route yet, so recall stays on `dataset`) |
+| `recall_auto` | recall is auto again; saves still go to `dataset` (if `recall` is `"pinned"`: saved, but `COGNEE_PLUGIN_READ_DATASET_IDS` still scopes recall to its datasets) |
 | `already_auto` | recall was already auto; saves go to `dataset` (same `"pinned"` caveat) |
 
 On failure the JSON is `{"error", "code"}`:
@@ -120,4 +122,4 @@ On failure the JSON is `{"error", "code"}`:
   leaves the session where it is — `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id>` (see the **cognee-search** skill).
 
 - `COGNEE_PLUGIN_DATASET` seeds the dataset at launch; a switch overrides it for the rest of the session and survives `--resume`. Set to a name other than `agent_sessions`, it also restricts recall to that dataset until `auto` or a switch changes it for the session. `COGNEE_PLUGIN_DATASET=auto` is not a dataset name: it means the default dataset (`agent_sessions`) with recall on auto.
-- After a switch, recall is restricted to the new dataset, so context from the previous one is no longer injected. `switch-dataset.py auto` puts recall back on auto, which on a cognee >= 1.6.6 server lets the server pick the best-matching readable dataset(s) again. An older server keeps recall on the active dataset.
+- After a switch, recall is restricted to the new dataset, so context from the previous one is no longer injected. `switch-dataset.py auto` puts recall back on auto, which lets the server pick the best-matching readable dataset(s) again.

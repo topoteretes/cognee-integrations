@@ -1775,19 +1775,6 @@ async def _run_heavy(
     # we are already inside it (warm start).
     _reexec_into_venv()
 
-    # Auto recall needs to know whether the server routes datasets (cognee >=
-    # 1.6.6). Read it now, beside the connection work below, with the
-    # reachability budget: the prompt hook can spare only a slice of its recall
-    # budget for /health, which a slow cloud tenant never answers in time. A
-    # fresh cached answer costs no request.
-    routing_warmup = None
-    try:
-        from _plugin_common import warm_dataset_routing
-
-        routing_warmup = warm_dataset_routing()
-    except Exception as exc:
-        hook_log("dataset_routing_probe_failed", {"phase": "warmup", "error": str(exc)[:200]})
-
     # Track the cloud connection outcome so the status line can show a precise
     # "✕ (<reason>)". Stays None in local mode (handled by the health probe at
     # the tail).
@@ -1921,15 +1908,6 @@ async def _run_heavy(
             on_registered()
         except Exception as exc:
             hook_log("phase_end_failed", {"phase": "setting_up", "error": str(exc)[:200]})
-
-    # Let the routing read started above land its answer: bounded by its own
-    # budget, and usually done already, having run beside the registration.
-    try:
-        from _plugin_common import finish_dataset_routing_warmup
-
-        finish_dataset_routing_warmup(routing_warmup)
-    except Exception:
-        pass
 
     # Code graph: index the repository this session opened in, or refresh it if
     # the tree moved while the agent was away. Deliberately last and inside the

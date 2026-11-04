@@ -1,8 +1,7 @@
 /**
  * Auto recall through the plugin's prompt hook and memory_switch_dataset
- * (SDK-1393): the /health version probe runs only after the breaker check and
- * with the short ready-probe timeout, an install with no indexed dataset skips
- * recall even when the server routes, and `current` reports the mode in effect.
+ * (SDK-1393): unpinned prompt recall names no dataset, an install with no
+ * indexed dataset skips recall, a pick pins it, and `current` reports the mode.
  * The harness runs on the default dataset (auto recall); a non-default
  * configured datasetName pins recall unless the conversation picks auto.
  */
@@ -51,7 +50,6 @@ jest.mock("../../src/persistence", () => ({
 
 type RecallParams = { datasetIds: string[]; scope?: string[] };
 const mockRecall = jest.fn(async (_p: RecallParams): Promise<unknown[]> => []);
-const mockRoutes = jest.fn(async (_timeoutMs?: number) => true);
 
 const CONVO = { agentId: "will", sessionId: "s1", sessionKey: "agent:will:tg-1" };
 const PROMPT = { prompt: "what is the plan for the launch?" };
@@ -67,48 +65,44 @@ beforeEach(() => {
   savedOverrides = {};
   mockBreaker.openForSeconds.mockImplementation(async () => 0);
   mockRecall.mockImplementation(async () => []);
-  mockRoutes.mockImplementation(async () => true);
   (CogneeHttpClient as unknown as jest.Mock).mockImplementation(() => ({
     recall: mockRecall,
-    routesDatasets: mockRoutes,
     health: jest.fn(async () => ({ status: "ok" })),
     listDatasets: jest.fn(async () => []),
     setApiKey: jest.fn(),
   }));
 });
 
-describe("prompt recall and the routing probe", () => {
-  it("routes with no dataset ids, probing /health with the short ready-probe timeout", async () => {
+describe("prompt recall", () => {
+  const graphCall = () => mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!;
+
+  it("routes with no dataset ids when unpinned", async () => {
     const h = harness();
     await h.emit("before_prompt_build", PROMPT, CONVO);
-    expect(mockRoutes).toHaveBeenCalledWith(3_000);
-    const graph = mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!;
-    expect(graph.datasetIds).toEqual([]);
+    expect(graphCall().datasetIds).toEqual([]);
   });
 
-  it("skips the probe while the recall breaker is open", async () => {
+  it("skips recall while the recall breaker is open", async () => {
     mockBreaker.openForSeconds.mockImplementation(async () => 42);
     const h = harness();
     await h.emit("before_prompt_build", PROMPT, CONVO);
-    expect(mockRoutes).not.toHaveBeenCalled();
     expect(mockRecall).not.toHaveBeenCalled();
   });
 
-  it("skips recall on an empty install (no dataset with data), even when the server routes", async () => {
+  it("skips recall on an empty install (no dataset with data), even unpinned", async () => {
     datasetState = {};
     const h = harness();
     await h.emit("before_prompt_build", PROMPT, CONVO);
     expect(mockRecall).not.toHaveBeenCalled();
-    expect(mockRoutes).not.toHaveBeenCalled();
     expect(h.logger.debug).toHaveBeenCalledWith(expect.stringContaining("skipping recall (no datasetIds)"));
   });
 
-  it("keeps the dataset when the server does not route", async () => {
-    mockRoutes.mockImplementation(async () => false);
+  it("sends the dataset's id once the conversation picks the dataset in use", async () => {
     const h = harness();
+    const tool = h.tools(CONVO).find((t) => t.name === "memory_switch_dataset")!;
+    await tool.execute("c", { action: "switch", dataset: "agent_sessions" });
     await h.emit("before_prompt_build", PROMPT, CONVO);
-    const graph = mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!;
-    expect(graph.datasetIds).toEqual(["ds-1"]);
+    expect(graphCall().datasetIds).toEqual(["ds-1"]);
   });
 });
 
@@ -118,23 +112,17 @@ describe("memory_switch_dataset reports the recall mode in effect", () => {
     return ((await tool.execute("c", params)) as { details: Record<string, unknown> }).details;
   }
 
-  it("unpinned on a routing server: auto", async () => {
+  it("unpinned: auto", async () => {
     expect(await run(harness(), { action: "current" })).toMatchObject({ recall: "auto" });
   });
 
-  it("unpinned on a server that cannot route: pinned, and action=auto says so", async () => {
-    mockRoutes.mockImplementation(async () => false);
+  it("a pick pins, and action=auto unpins", async () => {
     const h = harness();
-    const cur = await run(h, { action: "current" });
-    expect(cur).toMatchObject({ dataset: "agent_sessions", recall: "pinned" });
-    expect(cur.note).toMatch(/can't route yet, so recall stays on "agent_sessions"/);
-
     await run(h, { action: "switch", dataset: "agent_sessions" });
-    expect(await run(h, { action: "auto" })).toMatchObject({
-      changed: true,
-      recall: "pinned",
-      note: `Saved. This server can't route yet, so recall stays on "agent_sessions".`,
-    });
+    expect(await run(h, { action: "current" })).toMatchObject({ dataset: "agent_sessions", recall: "pinned" });
+    const auto = await run(h, { action: "auto" });
+    expect(auto).toMatchObject({ changed: true, recall: "auto" });
+    expect(String(auto.note)).not.toMatch(/route yet|stays on/);
   });
 });
 
@@ -169,8 +157,6 @@ describe("a non-default config datasetName pins recall", () => {
     const calls = await search(h);
     expect(calls.length).toBeGreaterThan(0);
     for (const c of calls) expect(c.datasetIds).toEqual(["ds-2"]);
-    // Pinned recall never needs the routing probe.
-    expect(mockRoutes).not.toHaveBeenCalled();
   });
 
   it("the default dataset routes: no dataset ids", async () => {

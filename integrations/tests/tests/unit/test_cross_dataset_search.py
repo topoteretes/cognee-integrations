@@ -113,7 +113,7 @@ def test_the_hook_never_offers_other_datasets(lookup, monkeypatch, auto_route):
     """SDK-1393: recall is auto (routed server-side) unless the user pinned a
     dataset, so the prompt hook no longer lists other datasets or asks the
     user to pick one, hit or miss."""
-    for recall in (_MISS, {**_MISS, "graph": [HIT]}):
+    for recall in (_MISS, {**_MISS, **HIT}):
         ctx = _context(drive_recall(lookup, monkeypatch, recall=recall, auto_route=auto_route))
         assert "Other Cognee datasets" not in ctx
         assert "AskUserQuestion" not in ctx

@@ -304,30 +304,9 @@ describe("memory_switch_dataset tool", () => {
     expect(d.ensured).toEqual([]);
   });
 
-  it("reports recall as pinned when unpinned recall does not route, and action=auto still saves the choice", async () => {
-    const d = deps({ autoRecall: async () => false });
-    const cur = await run(d, { action: "current" });
-    expect(cur).toMatchObject({ dataset: "agent_sessions", recall: "pinned", switched: false });
-    expect((cur as { note: string }).note).toBe(`This server can't route yet, so recall stays on "agent_sessions".`);
-
-    await run(d, { action: "switch", dataset: "proj-a" });
-    expect(await run(d, { action: "auto" })).toEqual({
-      action: "auto",
-      dataset: "proj-a",
-      changed: true,
-      recall: "pinned",
-      note: `Saved. This server can't route yet, so recall stays on "proj-a".`,
-    });
-    // The choice is stored: recall routes once the server can.
-    expect(store.recallPinned(ctx)).toBe(false);
-    expect(await run(deps({ autoRecall: async () => true }), { action: "current" })).toMatchObject({ recall: "auto" });
-    // A failed probe counts as not routing.
-    expect(await run(deps({ autoRecall: async () => { throw new Error("down"); } }), { action: "current" })).toMatchObject({ recall: "pinned" });
-  });
-
   it("in multi-scope mode reports recall as restricted to the configured scopes", async () => {
     const multi = resolveConfig({ datasetName: "agent_sessions", companyDataset: "acme", recallScopes: ["company", "agent"] });
-    const d = deps({ cfg: multi, autoRecall: async () => true });
+    const d = deps({ cfg: multi });
     const cur = await run(d, { action: "current" });
     expect(cur).toMatchObject({ recall: "pinned", scopes: ["company", "agent"] });
     expect((cur as { note: string }).note).toMatch(/configured scopes \(company, agent\)/);
@@ -399,7 +378,7 @@ describe("memory_switch_dataset tool", () => {
     });
 
     it("current reports the config pin and says why", async () => {
-      const cur = await run(deps({ cfg: pinnedCfg, autoRecall: async () => true }), { action: "current" });
+      const cur = await run(deps({ cfg: pinnedCfg }), { action: "current" });
       expect(cur).toMatchObject({ dataset: "testds", recall: "pinned", switched: false });
       expect((cur as { note: string }).note).toMatch(/pinned by config datasetName "testds".*action=auto unpins it for this conversation/);
       expect(store.recallPinned(ctx, true)).toBe(true);
@@ -407,7 +386,7 @@ describe("memory_switch_dataset tool", () => {
     });
 
     it("action=auto lifts the config pin for this conversation only, and the choice survives a reload", async () => {
-      const d = deps({ cfg: pinnedCfg, autoRecall: async () => true });
+      const d = deps({ cfg: pinnedCfg });
       const out = await run(d, { action: "auto" });
       expect(out).toMatchObject({ action: "auto", dataset: "testds", changed: true, recall: "auto" });
       expect((out as { note: string }).note).toMatch(/lifts the config datasetName "testds" pin for this conversation only/);
@@ -428,7 +407,7 @@ describe("memory_switch_dataset tool", () => {
     });
 
     it("picking the dataset in use pins again, and reset returns to the config pin", async () => {
-      const d = deps({ cfg: pinnedCfg, autoRecall: async () => true });
+      const d = deps({ cfg: pinnedCfg });
       await run(d, { action: "auto" });
       expect(await run(d, { action: "switch", dataset: "testds" })).toMatchObject({ switched: false, reason: "recall_restricted", recall: "pinned" });
       expect(store.recallMode(ctx)).toBe("pinned");
@@ -444,7 +423,7 @@ describe("memory_switch_dataset tool", () => {
     });
 
     it("an explicit pick over the config pin is recorded, and a legacy override stays pinned", async () => {
-      const d = deps({ cfg: pinnedCfg, autoRecall: async () => true });
+      const d = deps({ cfg: pinnedCfg });
       expect(await run(d, { action: "switch", dataset: "testds" })).toMatchObject({ reason: "recall_restricted", recall: "pinned" });
       expect(store.get(ctx)).toMatchObject({ sessionSuffix: 1, recall: "pinned" });
       expect(await run(d, { action: "switch", dataset: "testds" })).toMatchObject({ reason: "already_active" });
@@ -459,7 +438,7 @@ describe("memory_switch_dataset tool", () => {
 
     it("multi-scope mode ignores the config rule", async () => {
       const multi = resolveConfig({ datasetName: "testds", companyDataset: "acme", recallScopes: ["company", "agent"] });
-      const d = deps({ cfg: multi, autoRecall: async () => true });
+      const d = deps({ cfg: multi });
       const cur = await run(d, { action: "current" });
       expect((cur as { note: string }).note).not.toMatch(/config datasetName/);
       expect(await run(d, { action: "auto" })).toMatchObject({ changed: false, recall: "pinned" });

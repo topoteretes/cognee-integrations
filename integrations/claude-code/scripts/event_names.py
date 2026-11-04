@@ -133,8 +133,6 @@ EVENT_NAMES = {
     "hook:dataset_switched": "dataset.switched",
     "hook:recall_mode_set": "recall.mode_set",
     "hook:recall_auto_route_error": "recall.auto_route_error",
-    "hook:dataset_routing_probe_failed": "dataset.routing_probe_failed",
-    "hook:dataset_routing_cache_write_failed": "dataset.routing_cache_write_failed",
     "hook:drain_backoff_write_failed": "drain.backoff_write_failed",
     "hook:drain_lock_error": "drain.lock_error",
     "hook:drain_lock_release_failed": "drain.lock_release_failed",

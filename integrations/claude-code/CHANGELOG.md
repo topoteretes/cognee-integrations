@@ -13,34 +13,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [1.8.0]
 
 ### Added
-- **Recall is auto by default, unless you configured a dataset (SDK-1393).** On a cognee >= 1.6.6 server the graph recall on each
-  prompt, and a `cognee-search` that names no dataset, send no dataset: the server picks the readable
-  dataset(s) most likely to hold the answer when it can, and otherwise searches every readable
-  dataset (dataset routing, SDK-1317; best effort). Pin a dataset to keep recall on one.
-  Saves still go to the active dataset. The plugin reads the server version from `GET /health`
-  (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly, a failed read retried after five minutes with the last answer kept meanwhile) and keeps
-  recall on the active dataset against an older server; pre-releases and dev builds of 1.6.6 count
-  as older, and so does 1.6.6 with an unknown label (a later release with one routes). An
-  unhealthy server still names its version in its 503 answer, which counts. Session start refreshes that cache with the reachability timeout
-  (`COGNEE_REACHABLE_TIMEOUT`, default 2 s), so a slow cloud `/health` no longer leaves auto recall
-  off; the prompt hook only falls back to a short read out of its recall budget. Session history and guidance, the code
+- **Recall is auto by default, unless you configured a dataset (SDK-1393).** Unless recall is pinned, the graph recall on
+  each prompt, and a `cognee-search` that names no dataset, send no dataset: a cognee 1.6.6 server
+  picks the readable dataset(s) most likely to hold the answer, or searches every readable one
+  when it cannot narrow (dataset routing, SDK-1317; best effort). Routing needs a cognee 1.6.6 server;
+  an older one searches every readable dataset. Pin a dataset to keep recall on one.
+  Saves still go to the active dataset. Session history and guidance, the code
   lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
   memory's dataset ids are dropped with the dataset under auto recall and kept while restricted; recap, evidence and file-context reads stay on the active dataset.
 - **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
   (stored as `recall_pinned` in the launch record); switching to the active dataset restricts
   recall without a new session; `switch-dataset.py auto` lifts the restriction and leaves saves
-  where they are. `--list` reports the mode in effect (`recall: auto|pinned`): unpinned recall a
-  server cannot route reads as `pinned`, and `auto` there says the choice is saved. A session
+  where they are. `--list` reports the mode in effect (`recall: auto|pinned`, and when pinned
+  why: `dataset_picked`, `configured_dataset` or `read_dataset_ids`). A session
   switched before this release stays restricted. `auto` is a reserved name: no dataset can be
   switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset with
   recall on auto.
 - **A configured dataset still restricts recall.** `COGNEE_PLUGIN_DATASET` (exported or in
   `~/.cognee/.env`) set to a name other than the default `agent_sessions` keeps recall on that
-  dataset, as before this release; unset, `agent_sessions` or `auto` gives auto recall. A choice
+  dataset, as before this release; unset, `agent_sessions` (or a name that sanitizes to it, such
+  as `agent sessions`) or `auto` gives auto recall. A choice
   made in the session (`switch-dataset.py auto`, or picking a dataset) wins over it for that
   session.
-- **`cognee-search` falls back to the CLI by its own version.** With the server unreachable, the
-  `cognee-cli` fallback sends no dataset only when the CLI's cognee is 1.6.6 or later.
+- **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
+  `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
 - **The status-row picker and `/cognee-dataset` know about auto recall.** The picker starts with
   `auto (best-matching dataset)` and the row reads `auto (<dataset>)` while recall is auto;
   `/cognee-dataset auto` lifts a restriction, and `/cognee-dataset` alone says which mode is on.

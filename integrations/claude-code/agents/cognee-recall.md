@@ -26,8 +26,8 @@ Cognee organizes knowledge into three categories:
 ## Search command
 
 Run **one** broad search via the wrapper and answer from it. It queries the **running server** (`/api/v1/recall`, the source of truth) and falls back to `cognee-cli` only if the server is unreachable. Which datasets it reads depends on the recall mode:
-- **auto** (the default on cognee >= 1.6.6): the server picks the best-matching readable dataset(s).
-- **restricted**: the user picked a dataset or configured one (`COGNEE_PLUGIN_DATASET` other than `agent_sessions`), or the server can't route. The search reads the session's **active dataset** only.
+- **auto** (the default): the search names no dataset and the server picks the best-matching readable dataset(s) (a cognee 1.6.6 server; an older one searches every readable dataset).
+- **restricted**: the user picked a dataset or configured one (`COGNEE_PLUGIN_DATASET` other than `agent_sessions`), or set a read set (`COGNEE_PLUGIN_READ_DATASET_IDS`). The search reads the session's **active dataset** only (or that read set).
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10

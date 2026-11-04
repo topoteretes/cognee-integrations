@@ -139,14 +139,14 @@ checkout exists, say the mode is unavailable and use the server search above.
 
 Which datasets a graph search reads depends on the recall mode:
 
-- **auto** (the default on a cognee >= 1.6.6 server): the search names no
-  dataset, and the server picks the readable dataset(s) most likely to hold the
-  answer. When those return nothing, it widens to the rest. An authoritative
+- **auto** (the default): the search names no dataset, and the server picks
+  the readable dataset(s) most likely to hold the answer (routing needs a
+  cognee 1.6.6 server; an older one searches every readable dataset). When those return nothing, it widens to the rest. An authoritative
   empty list then means no readable dataset matched. Report that, and don't
   offer other datasets.
-- **restricted**: the user picked a dataset or configured one (`COGNEE_PLUGIN_DATASET` other than `agent_sessions`), or the server can't route (older
-  than 1.6.6, or the version is unknown). The search reads the **active**
-  dataset only, so an empty list may only mean the information lives in
+- **restricted**: the user picked a dataset or configured one (`COGNEE_PLUGIN_DATASET` other than `agent_sessions`), or set a read set
+  (`COGNEE_PLUGIN_READ_DATASET_IDS`). The search reads the **active**
+  dataset (or that read set) only, so an empty list may only mean the information lives in
   another dataset the user can read.
 
 When the mode matters (an empty answer while the user is recalling something),

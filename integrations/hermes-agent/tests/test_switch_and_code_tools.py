@@ -240,29 +240,23 @@ class TestCodeSearch(unittest.TestCase):
 
 class TestAutoRecall(unittest.TestCase):
     """SDK-1393: graph recall names no dataset unless the conversation pinned
-    one, and only where the backend says the server routes datasets."""
+    one (or a non-default dataset is configured): the server picks."""
 
     def _graph_recall(self, provider, fake):
         _call(provider, "cognee_recall", {"query": "what did we decide?"})
         (kwargs,) = [k for k in fake.kwargs_for("recall") if k["scope"] == ["graph"]]
         return kwargs
 
-    def test_recall_is_auto_on_a_server_that_routes(self):
+    def test_unpinned_recall_is_auto(self):
         with fake_backend() as fake:
-            fake.routes_datasets = lambda **kw: True
             provider = make_provider()
             self.assertIsNone(self._graph_recall(provider, fake)["datasets"])
             out = _call(provider, "cognee_switch_dataset", {"action": "current"})
         self.assertEqual(out["recall"], "auto")
-
-    def test_an_older_server_keeps_the_dataset(self):
-        with fake_backend() as fake:
-            provider = make_provider()
-            self.assertEqual(self._graph_recall(provider, fake)["datasets"], ["hermes"])
+        self.assertNotIn("reason", out)
 
     def test_a_switch_pins_recall_and_auto_lifts_it(self):
         with fake_backend() as fake:
-            fake.routes_datasets = lambda **kw: True
             provider = make_provider()
             _call(provider, "cognee_switch_dataset", {"action": "switch", "dataset": "work"})
             self.assertEqual(self._graph_recall(provider, fake)["datasets"], ["work"])
@@ -301,49 +295,29 @@ class TestAutoRecall(unittest.TestCase):
         self.assertFalse(provider._recall_pinned)
         self.assertEqual(provider._session_cognee_id, "hermes_s-1__3")
 
-    def test_current_reports_pinned_where_the_server_cannot_route(self):
-        with fake_backend() as fake:
+    def test_auto_when_already_auto_is_a_noop(self):
+        with fake_backend():
             provider = make_provider()
-            out = _call(provider, "cognee_switch_dataset", {"action": "current"})
-            self.assertEqual(out["recall"], "pinned")
-            fake.routes_datasets = lambda **kw: True
-            out = _call(provider, "cognee_switch_dataset", {"action": "current"})
-            self.assertEqual(out["recall"], "auto")
-        self.assertFalse(provider._recall_pinned)
-
-    def test_auto_is_saved_but_says_recall_stays_where_the_server_cannot_route(self):
-        with fake_backend() as fake:
-            provider = make_provider()
-            _call(provider, "cognee_switch_dataset", {"action": "switch", "dataset": "work"})
-            out = _call(provider, "cognee_switch_dataset", {"action": "auto"})
-            self.assertEqual(out["recall"], "pinned")
-            self.assertEqual(
-                out["note"], "Saved. This server can't route yet, so recall stays on 'work'."
-            )
-            self.assertEqual(dataset_overrides.load_override("s-1")["recall"], "auto")
-            # Once the server routes, the saved choice takes effect.
-            fake.routes_datasets = lambda **kw: True
             out = _call(provider, "cognee_switch_dataset", {"action": "auto"})
         self.assertEqual((out["reason"], out["recall"]), ("already_auto", "auto"))
         self.assertNotIn("note", out)
+        self.assertEqual(dataset_overrides.load_override("s-1"), {})
 
     def test_reset_from_a_switch_reports_the_final_mode(self):
-        for routes, mode in ((True, "auto"), (False, "pinned")):
-            with self.subTest(routes=routes), fake_backend() as fake:
-                fake.routes_datasets = lambda routes=routes, **kw: routes
-                provider = make_provider()
-                _call(provider, "cognee_switch_dataset", {"action": "switch", "dataset": "work"})
-                out = _call(provider, "cognee_switch_dataset", {"action": "reset"})
-                self.assertTrue(out["switched"])
-                self.assertEqual((out["dataset"], out["recall"]), ("hermes", mode))
-                self.assertEqual("note" in out, not routes)
-                self.assertFalse(provider._recall_pinned)
-                override = dataset_overrides.load_override("s-1")
-                self.assertEqual((override["dataset"], override["recall"]), ("hermes", "default"))
+        with fake_backend():
+            provider = make_provider()
+            _call(provider, "cognee_switch_dataset", {"action": "switch", "dataset": "work"})
+            out = _call(provider, "cognee_switch_dataset", {"action": "reset"})
+        self.assertTrue(out["switched"])
+        self.assertEqual((out["dataset"], out["recall"]), ("hermes", "auto"))
+        self.assertNotIn("recall_reason", out)
+        self.assertNotIn("note", out)
+        self.assertFalse(provider._recall_pinned)
+        override = dataset_overrides.load_override("s-1")
+        self.assertEqual((override["dataset"], override["recall"]), ("hermes", "default"))
 
     def test_switching_to_the_default_dataset_pins(self):
-        with fake_backend() as fake:
-            fake.routes_datasets = lambda **kw: True
+        with fake_backend():
             provider = make_provider()
             _call(provider, "cognee_switch_dataset", {"action": "switch", "dataset": "work"})
             _call(provider, "cognee_switch_dataset", {"action": "auto"})

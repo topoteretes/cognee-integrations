@@ -166,9 +166,8 @@ def drive_recall(
     before the attempt; ``slow_streak``/``slow_threshold`` drive timeout
     escalation without touching real streak files.
 
-    ``auto_route`` is what ``auto_recall_active`` answers (recall not pinned
-    and the server routes datasets), or a callable standing in for it; off by
-    default.
+    ``auto_route`` is what ``auto_recall_active`` answers (recall not pinned),
+    or a callable standing in for it; off by default.
 
     ``saves_last_turn`` is what the hook reads back from the save counter (all
     kinds zero by default), so a header test can hand it buffered writes.
@@ -235,8 +234,8 @@ def drive_recall(
     }
     for name, impl in seams.items():
         monkeypatch.setattr(module, name, impl)
-    # Auto recall (SDK-1393) reads the launch record and probes /health for the
-    # server version: answered here, so no hook test reaches either.
+    # Auto recall (SDK-1393) reads the launch record and the environment:
+    # answered here, so no hook test depends on either.
     monkeypatch.setattr(
         module,
         "auto_recall_active",

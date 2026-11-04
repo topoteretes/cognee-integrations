@@ -115,7 +115,6 @@ _BREAKER_COOLDOWN_SECS = 120
 # ``read_dataset_ids`` never applies here.
 RECALL_PIN_PICKED = "dataset_picked"  # this conversation picked a dataset
 RECALL_PIN_CONFIGURED = "configured_dataset"  # the configured dataset is not the default
-RECALL_PIN_NO_ROUTING = "server_cannot_route"  # unpinned, but the server does not route
 
 
 # cognee rejects a dataset name containing a space or a dot (check_dataset_name,
@@ -371,8 +370,9 @@ class CogneeMemoryProvider(MemoryProvider):
         # (see _recall_pinned): RECALL_PIN_PICKED for this conversation's own
         # pick (a switch, or the dataset in use picked), RECALL_PIN_CONFIGURED
         # for a configured non-default dataset. Unpinned, recall is auto
-        # (SDK-1393): it names no dataset and a cognee >= 1.6.6 server routes it
-        # to the best-matching dataset(s).
+        # (SDK-1393): it names no dataset and a cognee 1.6.6 server routes it to
+        # the best-matching dataset(s); an older one searches every readable
+        # dataset.
         self._recall_pin_reason = ""
         # Set by initialize: the configured dataset pins recall when nobody chose.
         self._configured_pins_recall = False
@@ -1719,13 +1719,7 @@ class CogneeMemoryProvider(MemoryProvider):
                     },
                 )
             )
-        # The /health version probe behind auto recall (cached; a request only
-        # every hour) spends this prompt's budget, not time on top of it: it is
-        # bounded by what is left, and the lanes below get what remains after it.
-        remaining = deadline - time.monotonic()
-        routed = remaining >= 0.2 and (
-            self._graph_datasets(probe_timeout=min(2.0, recall_timeout, remaining)) is None
-        )
+        routed = self._graph_datasets() is None
         # HYBRID_COMPLETION combines BM25 + vector + graph retrieval; with
         # only_context the LLM completion is skipped server-side and the item's
         # text is the prompt that completion would have read.
@@ -2269,26 +2263,16 @@ class CogneeMemoryProvider(MemoryProvider):
                 result["recall"] = mode
                 if reason:
                     result["recall_reason"] = reason
-                if reason == RECALL_PIN_NO_ROUTING:
-                    result["note"] = self._auto_unavailable_note()
             return json.dumps(result)
         return json.dumps({"error": "Specify action: list, current, switch, auto, or reset."})
 
     # -- recall mode (SDK-1393) -------------------------------------------------
 
-    def _graph_datasets(self, *, probe_timeout: Optional[float] = None) -> Optional[list[str]]:
+    def _graph_datasets(self) -> Optional[list[str]]:
         """The datasets graph recall names: none (auto, routed server-side)
-        unless recall is pinned or the server does not route datasets."""
-        if self._recall_pinned:
-            return [self._dataset]
-        try:
-            timeout = probe_timeout
-            if timeout is None:
-                timeout = min(2.0, self._timeout("recall_timeout", 120))
-            routes = self._backend.routes_datasets(timeout=timeout)
-        except Exception:
-            routes = False
-        return None if routes else [self._dataset]
+        unless recall is pinned. A server before cognee 1.6.6 does not route:
+        there an unpinned recall searches every dataset the user can read."""
+        return [self._dataset] if self._recall_pinned else None
 
     @property
     def _recall_pinned(self) -> bool:
@@ -2306,22 +2290,10 @@ class CogneeMemoryProvider(MemoryProvider):
         return RECALL_PIN_CONFIGURED if self._configured_pins_recall else ""
 
     def _recall_mode_and_reason(self) -> tuple[str, str]:
-        """The mode in effect and, when pinned, why (the hook family's reasons).
-
-        "auto" only when unpinned and the server routes; unpinned on a server
-        that cannot route reads "pinned" (RECALL_PIN_NO_ROUTING), as it behaves.
-        """
+        """The mode in effect and, when pinned, why (the hook family's reasons)."""
         if self._recall_pin_reason:
             return "pinned", self._recall_pin_reason
-        if self._graph_datasets() is None:
-            return "auto", ""
-        return "pinned", RECALL_PIN_NO_ROUTING
-
-    def _recall_mode(self) -> str:
-        return self._recall_mode_and_reason()[0]
-
-    def _auto_unavailable_note(self) -> str:
-        return f"Saved. This server can't route yet, so recall stays on {self._dataset!r}."
+        return "auto", ""
 
     def _invalidate_prefetch(self) -> None:
         with self._prefetch_lock:
@@ -2330,7 +2302,7 @@ class CogneeMemoryProvider(MemoryProvider):
 
     def _set_recall_auto(self) -> str:
         """Save auto as this conversation's choice; the reply reports the mode in
-        effect, which stays pinned where the server cannot route.
+        effect.
 
         Saved even when only the configured dataset pinned recall: the explicit
         "auto" is what lifts that pin for this conversation.
@@ -2342,19 +2314,15 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._session_id, self._dataset, self._switch_counter, recall="auto"
             )
             self._invalidate_prefetch()
-        mode, why = self._recall_mode_and_reason()
         envelope = {
             "switched": False,
             "reason": "recall_auto" if lifted else "already_auto",
             "dataset": self._dataset,
-            "recall": mode,
+            "recall": "auto",
         }
         if lifted == RECALL_PIN_CONFIGURED:
             # Named so the agent can say the lift lasts this conversation only.
             envelope["lifted"] = lifted
-        if why:
-            envelope["recall_reason"] = why
-            envelope["note"] = self._auto_unavailable_note()
         return json.dumps(envelope)
 
     def _follow_configured_recall(self) -> None:
@@ -2382,8 +2350,6 @@ class CogneeMemoryProvider(MemoryProvider):
         }
         if why:
             envelope["recall_reason"] = why
-        if why == RECALL_PIN_NO_ROUTING:
-            envelope["note"] = self._auto_unavailable_note()
         return json.dumps(envelope)
 
     def _switch_dataset(self, target: str, *, force: bool) -> str:

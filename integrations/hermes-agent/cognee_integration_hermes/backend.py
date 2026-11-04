@@ -22,50 +22,12 @@ import asyncio
 import importlib.util
 import logging
 import os
-import re
 import threading
 from typing import Any, Optional
 
 from .config import LOCAL_COGNEE_REQUIREMENT, ollama_embedding_pins, str_to_bool
 
 logger = logging.getLogger(__name__)
-
-# Dataset routing (an unscoped recall goes to the best-matching dataset) shipped in cognee 1.6.6.
-DATASET_ROUTING_MIN_VERSION = (1, 6, 6)
-
-
-_VERSION = re.compile(r"v?(\d+(?:\.\d+)+)(.*)", re.IGNORECASE | re.DOTALL)
-# A release, or a build of one: a post-release ('.postN', PEP 440's '-N'), then
-# '-local' (source checkout, the Docker image), then a '+label'. The same rule as
-# the hook-family plugins and openclaw.
-_RELEASE_SUFFIX = re.compile(r"(?:[.-]?post\d*|-\d+)?(?:-local)?(?:\+.*)?", re.DOTALL)
-
-
-def version_tuple(value: str) -> tuple[int, ...]:
-    """Leading numeric release of a version string: '1.6.6rc1' -> (1, 6, 6); () if none."""
-    match = _VERSION.fullmatch(str(value or "").strip())
-    return tuple(int(part) for part in match.group(1).split(".")) if match else ()
-
-
-def version_routes_datasets(value: str) -> bool:
-    """Whether cognee *value* routes datasets (>= 1.6.6).
-
-    The release counts when it has no suffix or a build one ('1.6.6', '1.7',
-    '1.6.6-local', '1.6.6.post1-local'). Any other suffix — a pre-release such
-    as '1.6.6.rc1' (which cognee 1.6.6rc1 reports, without routing), a dev
-    build, an unknown label — counts only above 1.6.6. Unparseable ('unknown',
-    '', '2') is False.
-    """
-    text = str(value or "").strip().lower()
-    release = list(version_tuple(text))
-    if not release:
-        return False
-    while release and release[-1] == 0:
-        release.pop()
-    suffix = _VERSION.fullmatch(text).group(2).strip()
-    if _RELEASE_SUFFIX.fullmatch(suffix):
-        return tuple(release) >= DATASET_ROUTING_MIN_VERSION
-    return tuple(release) > DATASET_ROUTING_MIN_VERSION
 
 
 def has_cognee() -> bool:
@@ -152,12 +114,6 @@ class MemoryBackend:
         In-process transports have no server to probe and always answer.
         """
         return True
-
-    def routes_datasets(self, *, timeout: float) -> bool:
-        """Whether a recall that names no dataset is routed to the best-matching
-        dataset(s) (dataset routing, cognee >= 1.6.6). False keeps recall on the
-        conversation's dataset: an older cognee searches every readable dataset."""
-        return False
 
     # -- operations --------------------------------------------------------
 
@@ -354,18 +310,6 @@ class SdkBackend(MemoryBackend):
         self._bridge = _AsyncBridge()
         self._user: Any = None
         self.served = False
-
-    def routes_datasets(self, *, timeout: float) -> bool:
-        """In-process, the installed cognee does the routing; a served instance's
-        version is not known here, so its recall stays on the dataset."""
-        if self.served:
-            return False
-        try:
-            from importlib.metadata import version
-
-            return version_routes_datasets(version("cognee"))
-        except Exception:
-            return False
 
     @property
     def user(self) -> Any:

@@ -96,11 +96,11 @@ class Suite:
     #: (PR #405 / "delete old local SDK mode"); Antigravity keeps it, so its
     #: concurrent fan-out has two dispatch paths to pin, not one.
     has_local_sdk_recall: bool
-    #: Capability: the cross-dataset search flow — ``list_readable_datasets`` /
-    #: ``cached_readable_datasets`` in the common module, ``list-datasets.py``,
-    #: the prompt hook's "Other Cognee datasets you can search" hint on every
-    #: answered prompt, and ``cognee-search.sh --dataset-id`` forcing a foreign dataset to a
-    #: graph-only read. claude-code and codex carry it; Antigravity does not.
+    #: Capability: the cross-dataset search flow — ``list_readable_datasets``
+    #: in the common module, ``list-datasets.py``, and ``cognee-search.sh
+    #: --dataset-id`` reading a foreign dataset graph-only, without the session
+    #: id. The prompt hook no longer offers other datasets (recall is auto,
+    #: SDK-1393). claude-code, codex and cursor carry it; Antigravity does not.
     has_cross_dataset_search: bool
     #: Capability: the recap skills (``cognee-standup`` / ``cognee-digest`` /
     #: ``cognee-timeline``) and the ``cognee-recap.py`` wrapper behind them.

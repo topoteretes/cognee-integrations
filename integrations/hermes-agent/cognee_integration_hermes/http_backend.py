@@ -73,7 +73,7 @@ import urllib.request
 import uuid
 from typing import Any, Optional
 
-from .backend import MemoryBackend, version_routes_datasets
+from .backend import MemoryBackend
 from .config import (  # noqa: F401 — DEFAULT_USER_* re-exported for callers/tests
     DEFAULT_USER_EMAIL,
     DEFAULT_USER_PASSWORD,
@@ -151,12 +151,9 @@ class CogneeHttpError(RuntimeError):
     misconfiguration (4xx — waiting will not help) from server trouble (5xx).
     """
 
-    def __init__(self, status: int, message: str, body: bytes = b""):
+    def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
-        #: The error response's body, for the callers that read it (the /health
-        #: version probe: an unhealthy cognee answers 503 and still names it).
-        self.body = body
 
 
 class CogneeLoginRejected(CogneeHttpError):
@@ -344,16 +341,15 @@ class HttpBackend(MemoryBackend):
             with self._open(request, timeout) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            body, detail = b"", ""
+            detail = ""
             try:
-                body = exc.read() or b""
-                detail = body.decode("utf-8")[:300]
+                detail = exc.read().decode("utf-8")[:300]
             except Exception:
                 pass
             message = f"{method} {path} failed (HTTP {exc.code}): {detail or exc.reason}"
             if exc.code == 401 and self._auth_hint:
                 message = f"{message}. No API key was sent because {self._auth_hint}"
-            raise CogneeHttpError(exc.code, message, body) from exc
+            raise CogneeHttpError(exc.code, message) from exc
         except Exception as exc:  # URLError / timeout / OSError
             raise CogneeUnreachable(
                 f"cognee unreachable at {url}: {str(exc)[:200]}",
@@ -430,47 +426,6 @@ class HttpBackend(MemoryBackend):
             return True
         except Exception:
             return False
-
-    def _health_version(self, timeout: float) -> str:
-        """``version`` from /health, whatever the status: an unhealthy cognee
-        answers 503 and still names its version. "" when the body has none."""
-        try:
-            health = self._request("GET", "/health", timeout=timeout)
-        except CogneeHttpError as exc:
-            try:
-                health = json.loads(exc.body.decode("utf-8") or "{}")
-            except ValueError:
-                return ""
-        return str(health.get("version") or "").strip() if isinstance(health, dict) else ""
-
-    def routes_datasets(self, *, timeout: float) -> bool:
-        """``version`` from /health, cached for an hour (five minutes after a
-        failed probe). A failed probe keeps the last answer; with none, False."""
-        import time
-
-        now = time.monotonic()
-        cached = getattr(self, "_routing", None)
-        # A failed probe is retried after five minutes even when the last answer
-        # is kept, so a server downgraded during a restart is noticed soon.
-        fresh_for = (
-            3600.0 if cached and cached["version"] and not cached.get("probe_failed") else 300.0
-        )
-        if cached and now - cached["checked_at"] < fresh_for:
-            return cached["routes"]
-        version = ""
-        if self.url:
-            try:
-                version = self._health_version(timeout)
-            except Exception as exc:
-                logger.debug("cognee /health version probe failed: %s", exc)
-        routes = version_routes_datasets(version) if version else bool(cached and cached["routes"])
-        self._routing = {
-            "version": version or (cached["version"] if cached else ""),
-            "routes": routes,
-            "checked_at": now,
-            "probe_failed": not version,
-        }
-        return routes
 
     def ensure_dataset(self, *, dataset: str, timeout: float) -> None:
         """Create-or-return the dataset, as the other plugins do at bootstrap.

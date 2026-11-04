@@ -165,17 +165,13 @@ def _launch(suite, home, *, pinned: bool) -> dict:
     return {"COGNEE_SESSION_KEY": key}
 
 
-@pytest.mark.parametrize(
-    ("version", "pinned", "routed"),
-    [("1.6.6", False, True), ("1.6.6", True, False), ("1.6.5", False, False)],
-)
+@pytest.mark.parametrize("pinned", [False, True])
 def test_a_graph_search_naming_no_dataset_is_routed_by_the_server(
-    suite, temp_home, mock_server, assert_clean_real_home, version, pinned, routed
+    suite, temp_home, mock_server, assert_clean_real_home, pinned
 ):
     """Recall is auto unless the user pinned a dataset: a graph search that names
     none sends none (and no session id, which is bound to the active dataset),
-    so a cognee >= 1.6.6 server routes it. An older server keeps the scope."""
-    mock_server.set_server_version(version)
+    so the server routes it. A pinned search keeps the active dataset."""
     result = run_search(
         suite,
         "what did we decide",
@@ -187,7 +183,7 @@ def test_a_graph_search_naming_no_dataset_is_routed_by_the_server(
     assert result.returncode == 0, result.stderr
     body = _recall_body(mock_server)
     assert body["scope"] == ["graph"]
-    if routed:
+    if not pinned:
         assert "datasets" not in body and "dataset_ids" not in body
         assert "session_id" not in body
     else:

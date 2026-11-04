@@ -14,20 +14,14 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 ## [2026.11.3]
 
 ### Added
-- **Unpinned recall is routed by the server (SDK-1393).** On a cognee >= 1.6.6 server,
-  prompt-time graph recall and `memory_search` name no dataset and the server routes the
-  query, best effort: it picks the best-matching dataset when it can, and otherwise searches
-  every readable dataset. Pin a dataset to keep recall on one. Saves still go to the
-  conversation's dataset. `CogneeHttpClient.routesDatasets()` reads `version` from `/health`
-  (short timeout, one shared in-flight probe, cached for an hour, a failed probe retried after five minutes, skipped while the recall
-  breaker is open); the probe's time comes out of the routed recall's timeout (prompt-time
-  recall: out of the prompt's recall budget), while a `memory_search` that does not route — pinned,
-  multi-scope, or a probe that says no, fails or is still pending at `recallTimeoutMs` — sends
-  its recall exactly as before, with the full recall timeout; a pre-release or dev build (`1.6.6rc1`,
-  `1.6.6.dev0`), 1.6.6 with an unknown label, an older server or a failed probe keeps the
-  dataset; an unhealthy server's 503 answer still names its version and counts. Multi-scope mode, the
-  guidance lane and the code lane keep their explicit datasets, and an install with no indexed
-  data still skips prompt recall and `memory_search`. `recall()` omits `dataset_ids` when given none.
+- **Unpinned recall is routed by the server (SDK-1393).** Prompt-time graph recall and
+  `memory_search` name no dataset unless the conversation is pinned, and a cognee >= 1.6.6
+  server routes the query, best effort: it picks the best-matching dataset when it can, and
+  otherwise searches every readable dataset. Routing needs a cognee 1.6.6 server; an older
+  one searches every readable dataset. Pin a dataset to keep recall on one. Saves still go to
+  the conversation's dataset. Multi-scope mode, the guidance lane and the code lane keep their
+  explicit datasets, and an install with no indexed data still skips prompt recall and
+  `memory_search`. `recall()` omits `dataset_ids` when given none.
 - **A configured non-default `datasetName` pins recall (SDK-1393).** An agent scoped to its
   own dataset (`datasetName` / `COGNEE_PLUGIN_DATASET` other than `agent_sessions`) keeps
   recall on it after the upgrade, as before — the hook-family rule. The default, an unset name
@@ -39,7 +33,7 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 - **`memory_switch_dataset` pins recall.** Any explicit switch pins recall to its dataset;
   switching to the dataset in use only pins (a pin-only override, same session);
   `action: "auto"` unpins it; `reset` returns to the configured dataset and its recall rule; `current`
-  reports the mode in effect (`pinned` whenever recall does not route). `"auto"` is reserved
+  reports the mode in effect (`pinned` in multi-scope mode, which does not route). `"auto"` is reserved
   and cannot be switched to. An override saved before this release counts as pinned.
 
 ### Changed

@@ -99,6 +99,7 @@ def hermetic_env(request, monkeypatch, tmp_path):
     # A developer's own runtime venv, ready or outdated, must not decide whether
     # a test's server spawn finds a runtime.
     monkeypatch.setattr(runtime_env, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(runtime_env, "VENV_DIR", tmp_path / "runtime" / "venv")
     monkeypatch.setattr(runtime_env, "READY_MARKER", tmp_path / "runtime" / "ready.json")
 
 

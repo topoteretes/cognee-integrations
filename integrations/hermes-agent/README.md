@@ -40,10 +40,9 @@ Python package with the `hermes_agent.plugins` entry point.
 - Exposes `cognee_forget` for user-directed, per-document deletion ("forget
   what we said about tennis"): find candidates with previews, then delete only
   what the user confirms.
-- Recall is auto by default on a cognee >= 1.6.6 server: the graph recall names
-  no dataset, and routing is best-effort: the server picks the best-matching
-  dataset when it can, otherwise searches every readable dataset. Saves still go
-  to the conversation's dataset. Against an older server recall stays on that
+- Recall is auto by default: the graph recall names no dataset, and the server
+  picks the best-matching one. Routing needs a cognee 1.6.6 server; an older one
+  searches every dataset you can read. Saves still go to the conversation's
   dataset. Pin a dataset to keep recall on one. A configured dataset other than
   the default (`COGNEE_PLUGIN_DATASET`, or the setup wizard's dataset) pins recall
   too, as in the other cognee plugins; `COGNEE_PLUGIN_DATASET=auto` means the
@@ -53,8 +52,8 @@ Python package with the `hermes_agent.plugins` entry point.
   including to the default dataset, or picking the dataset in use) pins recall to
   that dataset, and `action='auto'` lifts the pin, a configured one too, for that
   conversation. `reset` goes back to the configured dataset and its recall mode.
-  `current` reports the mode in effect and, when pinned, why (`dataset_picked`,
-  `configured_dataset`, or `server_cannot_route` on a server that cannot route).
+  `current` reports the mode in effect and, when pinned, why (`dataset_picked` or
+  `configured_dataset`).
 - Indexes repositories into a deterministic code graph (`hermes cognee
   index-repo`) and answers structural code questions exactly via
   `cognee_code_search`, plus an identifier-gated code recall lane.
@@ -99,9 +98,9 @@ Python package with the `hermes_agent.plugins` entry point.
   installs for you (step 2b), and optionally an LLM API key (e.g. OpenAI), which
   cognee uses to build the knowledge graph. Without a key it uses local models
   instead (about 1.5 GB more, see 2b). It lives in a private environment,
-  `~/.cognee-plugin/hermes/runtime/venv-<cognee version>`, because Hermes installs
-  every plugin into one shared environment, where cognee's dependencies conflict
-  with Hermes's pinned ones and would refuse the install for Cloud users too.
+  `~/.cognee-plugin/hermes/runtime/venv`, because Hermes installs every plugin into
+  one shared environment, where cognee's dependencies conflict with Hermes's pinned
+  ones and would refuse the install for Cloud users too.
 - **Python 3.10 or newer** for a pip install (`requires-python = ">=3.10"`,
   cognee's own floor, since local mode builds cognee's environment from the
   interpreter running Hermes). Note that macOS's Xcode Command Line Tools ship
@@ -172,7 +171,7 @@ Type **local** at the mode prompt and paste your LLM API key when asked, or leav
 it blank to run without one (below). If the
 cognee runtime is not installed yet, the wizard offers to install it:
 `cognee==1.6.6` and its dependencies, about 1 GB from PyPI, into
-`~/.cognee-plugin/hermes/runtime/venv-1.6.6`. With uv on your PATH that takes under a
+`~/.cognee-plugin/hermes/runtime/venv`. With uv on your PATH that takes under a
 minute; without it, pip takes a few. Choosing local also clears a Cognee Cloud
 URL and key saved by an earlier remote setup.
 
@@ -187,18 +186,12 @@ After a plugin update that moves the pinned cognee, local mode stays off until
 you run `hermes cognee install-runtime`: the plugin never starts a server on a
 cognee it was not written against, and never downloads one behind your back.
 Hermes reports Cognee as unavailable with that command, and
-`hermes cognee status` shows the runtime as outdated. `install-runtime` builds
-the new pin in a venv of its own next to the old one, and the new runtime takes
-over only once its cognee checks out: a failed or interrupted build leaves the
-old venv as it was, and the next `install-runtime` starts that build over from
-scratch. A server already running, and the old venv it runs from, are left
-alone; start a new Hermes session once the install has finished.
-
-The old runtime is not deleted automatically, since a server another Hermes
-profile started may still run from it. `hermes cognee install-runtime` and
-`hermes cognee remove-runtime` delete it when nothing listens on the configured
-local port; they cannot see a server another profile runs on a port of its own,
-so stop such servers first.
+`hermes cognee status` shows the runtime as outdated. `install-runtime` upgrades
+cognee in place in `runtime/venv`. It drops the ready marker first and writes it
+back only once the new version checks out, so a failed or interrupted install
+leaves local mode off rather than half-upgraded, and the next `install-runtime`
+repairs the venv. Once it has finished, restart a local server still running
+from the old version (or let it exit) and start a new Hermes session.
 
 **Without an LLM key**, cognee builds memory with local models: the GLiNER
 extractor for the graph and the fastembed `BAAI/bge-small-en-v1.5` embedder. The
@@ -718,8 +711,7 @@ straight to the queue.
 
 - **Runs**: in local mode, a cognee server (`uvicorn cognee.api.client:app`) on
   `127.0.0.1:8011` from the plugin's cognee runtime
-  (`~/.cognee-plugin/hermes/runtime/venv-<cognee version>`, built when you ask for
-  it, and in the background when a plugin update moves the pinned cognee), in
+  (`~/.cognee-plugin/hermes/runtime/venv`, built only when you ask for it), in
   `~/.cognee-plugin/hermes/`, with its output in
   `~/.cognee-plugin/hermes/server.log`; a detached exit watcher per Hermes
   process that closes the session if Hermes cannot. The server gets its

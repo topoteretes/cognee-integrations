@@ -463,23 +463,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # name-addressed — it is this repo's own dataset.
     session_dataset = get_dataset(config)
     write_id, read_ids = resolve_active_dataset_ids() if scope_specs else ("", [])
-    # Auto recall (SDK-1393): unless the user pinned a dataset, the graph scope
-    # names none and a cognee >= 1.6.6 server routes it to the best dataset(s).
-    # The server version is cached, so this costs a /health read once an hour.
+    # Auto recall (SDK-1393): unless recall is pinned (a picked dataset, a
+    # configured non-default one, an explicit read set), the graph scope names
+    # no dataset and the server routes it (cognee 1.6.6; an older server reads
+    # every readable dataset). Local state only: it costs no request.
     auto_route = False
     if scope_specs:
         try:
-            auto_route = auto_recall_active(
-                service_url, timeout=max(MIN_SCOPE_TIMEOUT, min(1.0, scope_timeout / 4))
-            )
+            auto_route = auto_recall_active()
         except Exception as exc:
             hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
-        # A /health read on a cache miss comes out of the recall budget, not on
-        # top of it.
-        scope_timeout = min(scope_timeout, max(budget_deadline - time.monotonic(), 0.0))
-        if scope_timeout < MIN_SCOPE_TIMEOUT:
-            hook_log("recall_budget_exceeded", {"collected": 0})
-            scope_specs = []
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's request, run off the event loop.

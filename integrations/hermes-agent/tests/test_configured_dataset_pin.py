@@ -26,9 +26,8 @@ from cognee_integration_hermes import provider as provider_mod  # noqa: E402
 _ENV = {"COGNEE_BASE_URL": "", "COGNEE_SERVICE_URL": "", "COGNEE_EMBEDDED": "true"}
 
 
-def _initialize(fake, dataset=None, session_id="s-1", routes=True, **env):
+def _initialize(fake, dataset=None, session_id="s-1", **env):
     """The real initialize() in embedded mode against ``fake``."""
-    fake.routes_datasets = lambda **kw: routes
     provider = provider_mod.CogneeMemoryProvider(backend=fake)
     if dataset is not None:
         env["COGNEE_PLUGIN_DATASET"] = dataset
@@ -155,7 +154,6 @@ def test_reset_after_a_switch_reports_the_configured_pin():
         "pinned",
         "configured_dataset",
     )
-    assert "note" not in out
 
 
 def test_picking_the_configured_dataset_records_the_pick():
@@ -174,13 +172,6 @@ def test_a_pre_sdk_1393_entry_on_the_configured_dataset_follows_the_config():
         provider = _initialize(fake, "work")
     assert provider._recall_pin_reason == "configured_dataset"
     assert provider._session_cognee_id.endswith("__2")
-
-
-def test_an_unpinned_conversation_on_an_old_server_reports_why():
-    with fake_backend() as fake:
-        provider = _initialize(fake, routes=False)
-        current = _call(provider, "cognee_switch_dataset", {"action": "current"})
-    assert (current["recall"], current["reason"]) == ("pinned", "server_cannot_route")
 
 
 def test_the_credit_names_the_configured_dataset(monkeypatch):

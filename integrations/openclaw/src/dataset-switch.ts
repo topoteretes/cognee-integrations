@@ -25,7 +25,8 @@
 //
 // Recall mode (SDK-1393): without an override, graph recall is "auto" — it
 // names no dataset and a cognee >= 1.6.6 server routes the query (best effort:
-// the best-matching dataset when it can, otherwise every readable dataset) —
+// the best-matching dataset when it can, otherwise every readable dataset; an
+// older server searches every readable dataset) —
 // unless the config names a non-default `datasetName`: an explicitly
 // configured dataset scopes the agent's memory, so it pins recall (the
 // hook-family rule; "auto" or the default name leaves recall on auto). An
@@ -33,9 +34,9 @@
 // override saved before the mode existed stays pinned. A switch restricts recall to the new dataset; switching to the dataset
 // already in use restricts recall to it without a new session (a pin-only
 // override, `sessionSuffix` 1, leaves the session id alone); `action: "auto"`
-// lifts the restriction and keeps the dataset. An older server, a failed
-// version probe and multi-scope mode do not route, so recall then stays
-// pinned whatever the stored mode; `current` reports the mode in effect.
+// lifts the restriction and keeps the dataset. Multi-scope mode does not
+// route, so recall there stays on its scopes whatever the stored mode;
+// `current` reports the mode in effect.
 // ---------------------------------------------------------------------------
 
 import type { CogneePluginConfig, DatasetOverride, DatasetOverridesFile, RetiredSession } from "./types.js";
@@ -313,12 +314,6 @@ export type DatasetSwitchDeps = {
   currentSessionId: (ctx: MemoryToolContext) => string | undefined;
   listDatasets: () => Promise<Array<{ id: string; name: string }>>;
   ensureDataset: (name: string) => Promise<string | undefined>;
-  /**
-   * True when graph recall for this conversation actually routes (unpinned,
-   * single-scope, server >= 1.6.6): the plugin's autoRecall. Unset, the stored
-   * mode is taken as in effect.
-   */
-  autoRecall?: (ctx: MemoryToolContext) => Promise<boolean>;
   /** Bridge the current session into its dataset (server-side improve). */
   syncSession: (datasetName: string, cogneeSessionId: string) => Promise<void>;
   /** Cache a dataset name → id so recall can find it without a server round trip. */
@@ -367,33 +362,25 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     return `Recall is pinned by config datasetName "${deps.cfg.datasetName}" (a non-default dataset scopes this agent's memory); action=auto unpins it for this conversation.`;
   }
 
-  /** The recall mode in effect: auto only when unpinned AND recall routes. */
-  async function effectiveRecall(): Promise<"auto" | "pinned"> {
-    if (multiScope || pinned()) return "pinned";
-    if (!deps.autoRecall) return "auto";
-    try {
-      return (await deps.autoRecall(ctx)) ? "auto" : "pinned";
-    } catch {
-      return "pinned";
-    }
+  /** The recall mode in effect: auto when unpinned, outside multi-scope mode. */
+  function effectiveRecall(): "auto" | "pinned" {
+    return multiScope || pinned() ? "pinned" : "auto";
   }
 
-  /** Why an unpinned conversation still recalls from its dataset (scopes). */
-  function notRoutingNote(dataset: string): string {
-    return multiScope
-      ? `Multi-scope mode recalls from the configured scopes (${deps.cfg.recallScopes.join(", ")}) and does not route.`
-      : `This server can't route yet, so recall stays on "${dataset}".`;
+  /** Why an unpinned conversation still recalls from its scopes (multi-scope mode). */
+  function multiScopeNote(): string {
+    return `Multi-scope mode recalls from the configured scopes (${deps.cfg.recallScopes.join(", ")}) and does not route.`;
   }
 
   async function current(note?: string): Promise<MemorySwitchDatasetResult> {
     const o = deps.store.get(convo);
     const dataset = deps.currentDataset(ctx);
-    const recall = await effectiveRecall();
+    const recall = effectiveRecall();
     const notes = [
       ...(note ? [note] : []),
       ...(o && o.sessionSuffix > 1 ? ["This conversation was switched away from its configured dataset; action=reset returns to it."] : []),
       ...(pinnedOnlyByConfig() ? [configPinNote()] : []),
-      ...(recall === "pinned" && !pinned() ? [notRoutingNote(dataset)] : []),
+      ...(recall === "pinned" && !pinned() ? [multiScopeNote()] : []),
     ];
     return {
       action: "current",
@@ -410,15 +397,15 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
   async function auto(): Promise<MemorySwitchDatasetResult> {
     const dataset = deps.currentDataset(ctx);
     if (!pinned()) {
-      const recall = await effectiveRecall();
-      return { action: "auto", dataset, changed: false, recall, note: recall === "auto" ? "Recall was already auto." : `Recall is already unpinned. ${notRoutingNote(dataset)}` };
+      const recall = effectiveRecall();
+      return { action: "auto", dataset, changed: false, recall, note: recall === "auto" ? "Recall was already auto." : `Recall is already unpinned. ${multiScopeNote()}` };
     }
     if (!ctx.sessionId && !ctx.sessionKey) {
       return { action: "auto", dataset, changed: false, recall: "pinned", note: "no conversation/session in context — recall mode is per conversation" + (pinnedOnlyByConfig() ? `. ${configPinNote()}` : "") };
     }
     const liftsConfigPin = pinnedOnlyByConfig();
     deps.store.setRecall(convo, "auto", dataset, pinnedByConfig);
-    const recall = await effectiveRecall();
+    const recall = effectiveRecall();
     const lifted = liftsConfigPin ? ` This lifts the config datasetName "${deps.cfg.datasetName}" pin for this conversation only.` : "";
     return {
       action: "auto",
@@ -427,7 +414,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
       recall,
       note: (recall === "auto"
         ? `Recall now goes to the best-matching dataset when the server can tell, otherwise every readable dataset; saves still go to "${dataset}".`
-        : `Saved. ${notRoutingNote(dataset)}`) + lifted,
+        : `Saved. ${multiScopeNote()}`) + lifted,
     };
   }
 
@@ -557,7 +544,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     name: "memory_switch_dataset",
     label: "Memory Switch Dataset",
     description:
-      "Move this conversation to another Cognee dataset, or inspect which one it uses. Unpinned recall is best-effort routing on a cognee >= 1.6.6 server: the server picks the best-matching dataset when it can, and otherwise searches every readable dataset; an older server or multi-scope mode keeps recall on the conversation's dataset (scopes). Pin a dataset to keep recall on one; a non-default datasetName in the plugin config pins recall to it unless the conversation picks auto. action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and pins recall to it; action=auto unpins recall; action=current reports the active dataset and the recall mode in effect; action=reset returns to the configured dataset and its recall rule. " +
+      "Move this conversation to another Cognee dataset, or inspect which one it uses. Unpinned recall is routed by the server (cognee >= 1.6.6), best effort: it picks the best-matching dataset when it can, and otherwise searches every readable dataset (as an older server always does); multi-scope mode keeps recall on its configured scopes. Pin a dataset to keep recall on one; a non-default datasetName in the plugin config pins recall to it unless the conversation picks auto. action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and pins recall to it; action=auto unpins recall; action=current reports the active dataset and the recall mode in effect; action=reset returns to the configured dataset and its recall rule. " +
       "Switching is per conversation and does not move memory files or shared company/user memory.",
     parameters: MemorySwitchDatasetSchema as unknown as Record<string, unknown>,
     async execute(_id, params) {

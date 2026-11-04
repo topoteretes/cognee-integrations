@@ -207,16 +207,15 @@ let switching = false
 // make the value one no dataset can be named, so it never collides.
 const NEW_DATASET = '+ new dataset…'
 // The picker's first entry: recall from the best-matching dataset (dataset
-// routing, cognee >= 1.6.6) instead of only the one saves go to. Spaces keep it
+// routing, a cognee 1.6.6 server) instead of only the one saves go to. Spaces keep it
 // apart from any dataset name, like NEW_DATASET.
 const AUTO_RECALL = 'auto (best-matching dataset)'
 // Recall mode in effect from the last listing: 'auto' (routed) or 'pinned' to
-// the active dataset; '' until listed. Anything but 'auto' reads as restricted:
-// unpinned recall on a server that cannot route still reads one dataset.
+// the active dataset; '' until listed. Anything but 'auto' reads as restricted.
 let recallMode: '' | 'auto' | 'pinned' = ''
 // Why recall is restricted, from the same listing (switch-dataset.py's
-// `reason`: dataset_picked, configured_dataset, read_dataset_ids,
-// server_cannot_route); '' when auto or not said.
+// `reason`: dataset_picked, configured_dataset, read_dataset_ids); '' when
+// auto or not said.
 let recallReason = ''
 let namingDataset = false
 // In a terminal the picker stays closed until asked for: a click anywhere on
@@ -950,7 +949,6 @@ async function switchDataset($: any, target: string): Promise<string> {
       else if ((parsed.reason === 'recall_auto' || parsed.reason === 'already_auto') && parsed.recall !== 'auto') {
         // Auto is saved, but something else still scopes recall: say what.
         if (parsed.recall_reason === 'read_dataset_ids') line = 'saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets'
-        else if (parsed.recall_reason === 'server_cannot_route') line = `saved; this server can't route yet, so recall stays on ${where}`
         else line = `saved; recall stays restricted to ${where}`
       }
       else if (parsed.reason === 'recall_auto') line = `recall is auto again (saves stay in ${where})`
@@ -1098,19 +1096,17 @@ export const register: Register = (on, options) => {
       const rows = switchTargets.map(r => (r.current ? `  * ${r.name} (current)` : `  - ${r.name}`)).join('\n')
       const current = switchTargets.find(r => r.current)?.name ?? 'the active dataset'
       // The same branches as switch-dataset.py's listing: the advice depends
-      // on what restricts recall (auto cannot lift a read set or an old server).
+      // on what restricts recall (auto cannot lift a read set).
       const recall =
         recallMode === 'auto'
-          ? 'Recall: auto (the server picks the best-matching dataset when it can, otherwise searches every readable one). /cognee-dataset <name> restricts it to one.'
+          ? 'Recall: auto (the server picks the best-matching dataset). /cognee-dataset <name> restricts it to one.'
           : recallReason === 'configured_dataset'
             ? `Recall: restricted to ${current}, pinned by COGNEE_PLUGIN_DATASET. /cognee-dataset auto lifts it for this session.`
             : recallReason === 'read_dataset_ids'
               ? 'Recall: restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS.'
-              : recallReason === 'server_cannot_route'
-                ? `Recall: on ${current} (this server can't route yet).`
-                : recallReason === 'dataset_picked'
-                  ? `Recall: restricted to ${current}. /cognee-dataset auto lets the server pick the best-matching dataset when it can.`
-                  : `Recall: restricted to ${current}.`
+              : recallReason === 'dataset_picked'
+                ? `Recall: restricted to ${current}. /cognee-dataset auto lets the server pick the best-matching dataset.`
+                : `Recall: restricted to ${current}.`
       pickerOpen = true
       redraw($)
       return {
@@ -1380,9 +1376,9 @@ export const register: Register = (on, options) => {
             return
           }
           // Picking a dataset, the active one included, pins recall to it. The
-          // active one is sent too even when recall already reads "pinned": on a
-          // server that can't route yet that is only the mode in effect, not a
-          // pin, and recall would go auto once the server is upgraded.
+          // active one is sent too even when recall already reads "pinned": a
+          // pin by COGNEE_PLUGIN_DATASET is then recorded for this launch and
+          // outlives a later change to that configuration.
           if (value === AUTO_RECALL) {
             if (!auto) void switchDataset($, 'auto')
             else redraw($)

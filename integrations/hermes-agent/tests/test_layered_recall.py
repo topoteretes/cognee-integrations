@@ -95,8 +95,17 @@ class TestPerPromptRequests(unittest.TestCase):
         # Without a session id the server does not put this conversation's own
         # turns into the item: Hermes already has them.
         self.assertIsNone(kwargs["session_id"])
-        self.assertEqual(kwargs["datasets"], ["hermes"])
+        # Auto recall (SDK-1393): unpinned, it names no dataset and the server picks.
+        self.assertIsNone(kwargs["datasets"])
         self.assertIsNone(kwargs["code_query"])
+
+    def test_a_pinned_graph_request_names_the_dataset(self):
+        with fake_backend() as fake:
+            provider = make_provider(config=_LAYERED)
+            provider._recall_pinned = True
+            _prefetch(provider)
+            (kwargs,) = _by_scope(fake.kwargs_for("recall"), "graph")
+        self.assertEqual(kwargs["datasets"], ["hermes"])
 
     def test_the_guidance_request_carries_the_session_and_the_capture_dataset(self):
         with fake_backend() as fake:
@@ -133,35 +142,6 @@ class TestPerPromptRequests(unittest.TestCase):
             provider = make_provider(config={**_LAYERED, "recall_budget": 0})
             _prefetch(provider)
             self.assertEqual(fake.kwargs_for("recall"), [])
-
-    def test_the_routing_probe_comes_out_of_the_budget(self):
-        """SDK-1393: the /health version probe is bounded by the prompt's budget
-        and the lanes get only what is left after it."""
-        probes = []
-        with fake_backend() as fake:
-
-            def slow_probe(*, timeout):
-                probes.append(timeout)
-                time.sleep(0.4)
-                return True
-
-            fake.routes_datasets = slow_probe
-            provider = make_provider(config={**_LAYERED, "recall_budget": 1})
-            _prefetch(provider)
-            calls = fake.kwargs_for("recall")
-        self.assertEqual(len(probes), 1)
-        self.assertLessEqual(probes[0], 1.0)
-        self.assertIsNone(_by_scope(calls, "graph")[0]["datasets"])
-        self.assertLessEqual(max(kwargs["timeout"] for kwargs in calls), 0.65)
-
-    def test_no_routing_probe_without_budget_for_the_lanes(self):
-        probes = []
-        with fake_backend() as fake:
-            fake.routes_datasets = lambda *, timeout: probes.append(timeout) or True
-            provider = make_provider(config={**_LAYERED, "recall_budget": 0.1})
-            _prefetch(provider)
-            self.assertEqual(fake.kwargs_for("recall"), [])
-        self.assertEqual(probes, [])
 
 
 class TestTrimming(unittest.TestCase):
@@ -430,17 +410,15 @@ class TestSdkBackendLanes(unittest.TestCase):
     serving the other.
     """
 
-    def _sdk_provider(self, config=None, *, routes=False):
+    def _sdk_provider(self, config=None, *, pinned=False):
         backend = SdkBackend()
-        # The gate reads the installed cognee's version (absent locally, 1.6.6 in
-        # CI); pin it so these tests don't depend on what is installed.
-        backend.routes_datasets = lambda *, timeout: routes
         provider = make_provider(backend=backend, config={**_LAYERED, **(config or {})})
+        provider._recall_pinned = pinned
         return backend, provider
 
     def test_memory_request_reaches_cognee_recall_explicitly(self):
         with fake_cognee() as fake:
-            backend, provider = self._sdk_provider()
+            backend, provider = self._sdk_provider(pinned=True)
             try:
                 _prefetch(provider)
                 calls = fake.kwargs_for("recall")
@@ -454,9 +432,9 @@ class TestSdkBackendLanes(unittest.TestCase):
         (guidance,) = _by_scope(calls, "session_context")
         self.assertEqual(guidance["session_id"], "hermes_s-1")
 
-    def test_memory_request_names_no_dataset_when_the_installed_cognee_routes(self):
+    def test_an_unpinned_memory_request_names_no_dataset(self):
         with fake_cognee() as fake:
-            backend, provider = self._sdk_provider(routes=True)
+            backend, provider = self._sdk_provider()
             try:
                 _prefetch(provider)
                 calls = fake.kwargs_for("recall")
@@ -630,10 +608,11 @@ class TestExplicitRecallReadsTheGraph(unittest.TestCase):
             provider.handle_tool_call("cognee_recall", args)
             return fake.only_call("recall")
 
-    def test_the_tool_sends_the_graph_scope_with_the_dataset_and_no_session(self):
+    def test_the_tool_sends_the_graph_scope_with_no_dataset_and_no_session(self):
         kwargs = self._recall_kwargs({"query": "q"})
         self.assertEqual(kwargs["scope"], ["graph"])
-        self.assertEqual(kwargs["datasets"], ["hermes"])
+        # Auto recall (SDK-1393): unpinned, it names no dataset.
+        self.assertIsNone(kwargs["datasets"])
         # As openclaw's memory_search: the conversation is already Hermes'.
         self.assertIsNone(kwargs["session_id"])
         self.assertIsNone(kwargs["query_type"])

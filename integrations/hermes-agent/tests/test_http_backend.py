@@ -25,7 +25,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from _char_helpers import make_provider  # noqa: E402
-from cognee_integration_hermes.backend import version_routes_datasets  # noqa: E402
 from cognee_integration_hermes.http_backend import (  # noqa: E402
     CogneeHttpError,
     CogneeUnreachable,
@@ -926,7 +925,8 @@ class TestProviderOverHttp(unittest.TestCase):
         provider.handle_tool_call("cognee_recall", {"query": "q", "scope": "session"})
         body = opener.json_body("/api/v1/recall")
         self.assertEqual(body["scope"], ["graph"])
-        self.assertEqual(body["datasets"], ["hermes"])
+        # Auto recall (SDK-1393): unpinned, the body names no dataset.
+        self.assertNotIn("datasets", body)
         self.assertNotIn("session_id", body)
 
     def test_remember_reports_the_server_status(self):
@@ -991,173 +991,6 @@ class TestProviderOverHttp(unittest.TestCase):
             opener.json_body("/api/v1/forget"),
             {"datasetId": dataset_id, "dataId": data_id},
         )
-
-
-class TestDatasetRoutingGate(unittest.TestCase):
-    """SDK-1393: auto recall applies only where /health reports cognee >= 1.6.6."""
-
-    def _backend(self, answer):
-        backend = HttpBackend()
-        backend.url = "http://cognee.test"
-        calls = []
-
-        def request(method, path, **kwargs):
-            calls.append(path)
-            if isinstance(answer, Exception):
-                raise answer
-            return answer
-
-        backend._request = request
-        return backend, calls
-
-    def test_routing_starts_at_1_6_6_and_is_cached(self):
-        cases = [("1.6.6", True), ("1.6.6rc1", False), ("1.7.0", True), ("1.6.5", False)]
-        for version, routes in cases:
-            backend, calls = self._backend({"status": "ready", "version": version})
-            self.assertIs(backend.routes_datasets(timeout=1.0), routes, version)
-            backend.routes_datasets(timeout=1.0)
-            self.assertEqual(calls, ["/health"], version)
-
-    def test_no_version_or_a_failed_probe_keeps_recall_scoped(self):
-        backend, _ = self._backend({"status": "ready"})
-        self.assertFalse(backend.routes_datasets(timeout=1.0))
-        backend, _ = self._backend(OSError("refused"))
-        self.assertFalse(backend.routes_datasets(timeout=1.0))
-
-    def test_a_failed_probe_is_retried_within_five_minutes(self):
-        # A server downgraded during a restart: the probe that fails while it is
-        # down keeps the last answer, but only until the next retry, not an hour.
-        answers = [{"status": "ready", "version": "1.6.6"}]
-        backend = HttpBackend()
-        backend.url = "http://cognee.test"
-        calls = []
-
-        def request(method, path, **kwargs):
-            calls.append(path)
-            answer = answers[-1]
-            if isinstance(answer, Exception):
-                raise answer
-            return answer
-
-        backend._request = request
-        clock = [1000.0]
-        with mock.patch("time.monotonic", lambda: clock[0]):
-            self.assertTrue(backend.routes_datasets(timeout=1.0))
-            answers.append(OSError("refused"))
-            clock[0] += 3601
-            self.assertTrue(backend.routes_datasets(timeout=1.0))  # last answer kept
-            answers.append({"status": "ready", "version": "1.6.5"})
-            clock[0] += 299
-            self.assertTrue(backend.routes_datasets(timeout=1.0))
-            self.assertEqual(len(calls), 2)
-            clock[0] += 2
-            self.assertFalse(backend.routes_datasets(timeout=1.0))
-            self.assertEqual(len(calls), 3)
-            answers.append({"status": "ready", "version": "1.6.6"})
-            clock[0] += 3601  # the 1.6.5 answer was a success: cached for the hour
-            self.assertTrue(backend.routes_datasets(timeout=1.0))
-            clock[0] += 3599
-            self.assertTrue(backend.routes_datasets(timeout=1.0))  # cached for the hour
-            self.assertEqual(len(calls), 4)
-
-    def test_a_failed_probe_with_no_history_is_not_retried_on_every_prompt(self):
-        backend, calls = self._backend(OSError("refused"))
-        clock = [1000.0]
-        with mock.patch("time.monotonic", lambda: clock[0]):
-            self.assertFalse(backend.routes_datasets(timeout=1.0))
-            clock[0] += 299
-            self.assertFalse(backend.routes_datasets(timeout=1.0))
-            self.assertEqual(calls, ["/health"])
-            clock[0] += 2
-            self.assertFalse(backend.routes_datasets(timeout=1.0))
-            self.assertEqual(calls, ["/health", "/health"])
-
-    def test_an_unhealthy_server_still_names_its_version(self):
-        # cognee answers /health with 503 while a critical store is down, and the
-        # body still carries the version: an answer, not a failed probe.
-        body = json.dumps({"status": "not ready", "health": "unhealthy", "version": "1.6.6"})
-        backend, _ = self._backend(CogneeHttpError(503, "down", body.encode()))
-        self.assertTrue(backend.routes_datasets(timeout=1.0))
-        self.assertFalse(backend._routing["probe_failed"])
-        backend, _ = self._backend(CogneeHttpError(502, "bad gateway", b"<html>"))
-        self.assertFalse(backend.routes_datasets(timeout=1.0))
-
-    def test_the_request_layer_keeps_the_error_body(self):
-        body = json.dumps({"version": "1.6.6"}).encode()
-        backend = HttpBackend()
-        backend.url = "http://cognee.test"
-        backend._open = mock.Mock(
-            side_effect=urllib.error.HTTPError(
-                "http://cognee.test/health", 503, "down", {}, io.BytesIO(body)
-            )
-        )
-        self.assertTrue(backend.routes_datasets(timeout=1.0))
-
-    def test_a_release_candidate_of_1_6_6_does_not_route(self):
-        # cognee 1.6.6rc1 reports "1.6.6.rc1" on /health and has no routing.
-        backend, _ = self._backend({"status": "ready", "version": "1.6.6.rc1"})
-        self.assertFalse(backend.routes_datasets(timeout=1.0))
-
-
-class TestRoutingVersionRule(unittest.TestCase):
-    """SDK-1393: which cognee versions route datasets (>= 1.6.6)."""
-
-    def test_releases_and_local_or_post_labels_count_as_the_release(self):
-        for version in (
-            "1.6.6",
-            "v1.6.6",
-            "1.6.6-local",
-            "1.6.6+local",
-            "1.6.6.post1",
-            "1.6.6.post1-local",
-            "1.6.6-local+abc",
-            "1.6.6-1",
-            "1.6.6.0",
-            "1.7",
-            "1.7.0",
-            "2.0",
-        ):
-            self.assertTrue(version_routes_datasets(version), version)
-        self.assertTrue(version_routes_datasets("1.7.0-custom"), "an unknown label above 1.6.6")
-        self.assertTrue(version_routes_datasets("1.7.0rc1"), "a pre-release above 1.6.6")
-
-    def test_pre_releases_and_dev_builds_count_below_their_release(self):
-        for version in (
-            "1.6.6.rc1",
-            "1.6.6rc1",
-            "1.6.6-rc1",
-            "1.6.6a1",
-            "1.6.6.alpha1",
-            "1.6.6b2",
-            "1.6.6.beta",
-            "1.6.6.dev0",
-            "1.6.6dev0",
-        ):
-            self.assertFalse(version_routes_datasets(version), version)
-
-    def test_older_or_unparseable_versions_do_not_route(self):
-        for version in (
-            "1.6.5",
-            "1.6.5.post9",
-            "unknown",
-            "",
-            None,
-            "1.6.6-custom",
-            "1.6",
-            "2",
-        ):
-            self.assertFalse(version_routes_datasets(version), version)
-
-    def test_the_installed_sdk_follows_the_same_rule(self):
-        from cognee_integration_hermes.backend import SdkBackend
-
-        for version, routes in (("1.6.6", True), ("1.6.6.rc1", False), ("1.6.6+local", True)):
-            backend = SdkBackend()
-            with mock.patch("importlib.metadata.version", return_value=version):
-                self.assertIs(backend.routes_datasets(timeout=1.0), routes, version)
-        backend.served = True
-        with mock.patch("importlib.metadata.version", return_value="1.7.0"):
-            self.assertFalse(backend.routes_datasets(timeout=1.0))
 
 
 if __name__ == "__main__":
