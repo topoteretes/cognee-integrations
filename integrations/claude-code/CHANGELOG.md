@@ -57,6 +57,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   cache are gone. A one-off search of one dataset (`cognee-search.sh --dataset-id`,
   `list-datasets.py`) is unchanged.
 
+### Fixed
+- **No empty agent-owned copy of the shared dataset (SDK-1393).** Under shared memory the sync's
+  pre-improve dataset ensure posted the launch's dataset by name with the agent key, and the server,
+  which matches a name only among the caller's own datasets, created an empty agent-owned
+  `agent_sessions` beside the canonical one. The ensure now skips the by-name create when the name
+  has a canonical id, and the dataset listing marks only the canonical row as current, not every
+  dataset of that name.
+- **The status row no longer vanishes when the dataset picker opens on same-named datasets.**
+  The terminal picker offered a name once per dataset so named; the engine refuses a `Select` whose
+  values repeat and dropped the whole row, for the rest of the session. Each name is offered once.
+
 ## [1.7.6]
 
 ### Security

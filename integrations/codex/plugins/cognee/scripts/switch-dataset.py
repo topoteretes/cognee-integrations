@@ -141,7 +141,15 @@ def _list(host_key: str, rec: dict) -> dict:
     except Exception as exc:
         raise SwitchError(EXIT_ERROR, f"GET /api/v1/datasets failed ({exc})")
     current = str(rec.get("dataset") or resolved.get("dataset") or "")
-    rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
+    # Under shared memory the active dataset is the record's canonical id, and
+    # same-named copies (another principal's, a legacy per-agent one) are other
+    # datasets: only the canonical row is current. Name-addressed, the name.
+    current_id = str(rec.get("dataset_id") or "").strip()
+    listed_ids = {row["id"] for row in listing["datasets"]}
+    if current_id and current_id in listed_ids:
+        rows = [{**row, "current": row["id"] == current_id} for row in listing["datasets"]]
+    else:
+        rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
     mode, reason = recall_mode(host_key)
     result = {
         "current": current,

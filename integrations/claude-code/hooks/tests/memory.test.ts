@@ -602,6 +602,31 @@ test('in a terminal the closed picker reads "auto (<dataset>)" while recall is a
   await ui.unmount()
 })
 
+test('same-named datasets are offered once, so the open terminal picker still draws', async ($, on) => {
+  const calls: Call[] = []
+  // Another principal's copy of the active dataset's name, listed beside it.
+  const list = {
+    ...SWITCH_LIST,
+    recall: 'auto',
+    datasets: [
+      { name: 'agent_sessions', id: 'a2', writable: true, current: false },
+      { name: 'agent_sessions', id: 'a1', writable: true, current: true },
+      { name: 'demo', id: 'd2', writable: true, current: false },
+    ],
+  }
+  wire(on, calls, { 'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify(list)) : ok('{}')) })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await ui.unmount()
+
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker).toBeDefined()
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', 'demo', '+ new dataset…'])
+  await ui.unmount()
+})
+
 test('an auto that leaves recall restricted keeps the search tool on the active dataset', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, {

@@ -42,6 +42,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
 
+### Fixed
+- **No empty agent-owned copy of the shared dataset (SDK-1393).** Under shared memory the sync's
+  pre-improve dataset ensure posted the launch's dataset by name with the agent key, and the server,
+  which matches a name only among the caller's own datasets, created an empty agent-owned
+  `agent_sessions` beside the canonical one. The ensure now skips the by-name create when the name
+  has a canonical id, and the dataset listing marks only the canonical row as current, not every
+  dataset of that name.
+
 ## [1.6.7]
 
 ### Security

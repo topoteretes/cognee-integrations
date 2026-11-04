@@ -1325,7 +1325,14 @@ export const register: Register = (on, options) => {
     // listing); it heads the options anyway, so the row still reads and the
     // other datasets stay reachable.
     const canPick = switchTargets.length > 0
-    const options = current && !switchTargets.some(r => r.name === current) ? [{ name: current, id: '', current: true }, ...switchTargets] : switchTargets
+    const listed = current && !switchTargets.some(r => r.name === current) ? [{ name: current, id: '', current: true }, ...switchTargets] : switchTargets
+    // One option per name: the engine refuses a Select whose values repeat and
+    // drops the whole row, and a switch goes by name anyway. Same-named
+    // datasets (another principal's copy) collapse onto the current row, or
+    // the first one listed.
+    const byName = new Map<string, (typeof listed)[number]>()
+    for (const r of listed) if (!byName.has(r.name) || (r.current && !byName.get(r.name)!.current)) byName.set(r.name, r)
+    const options = listed.filter(r => byName.get(r.name) === r)
     // Auto recall reads "auto (<dataset saves go to>)"; a pinned one, the name.
     const auto = recallMode === 'auto'
     const pickerLabel = auto ? `auto (${current})` : current

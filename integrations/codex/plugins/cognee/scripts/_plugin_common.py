@@ -5647,6 +5647,12 @@ def ensure_dataset_via_http(dataset: str) -> None:
         return
     if not dataset:
         return
+    # Under shared memory the name has a canonical, parent-owned dataset that
+    # SessionStart already created and granted. The POST resolves a name only
+    # among the CALLER's datasets, so the agent posting it would fork an empty
+    # agent-owned copy of the same name: skip it, the improve goes by the id.
+    if dataset_id_for(dataset):
+        return
     try:
         _json_http_request("/api/v1/datasets", {"name": dataset}, timeout=15.0)
         hook_log("dataset_ensured", {"dataset": dataset})
