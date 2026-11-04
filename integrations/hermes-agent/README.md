@@ -183,18 +183,16 @@ hermes cognee install-runtime   # install, or move it to the plugin's pinned cog
 hermes cognee remove-runtime    # delete it (your data in ~/.cognee is kept)
 ```
 
-After a plugin update that moves the pinned cognee, you don't have to run
-`install-runtime` yourself, and no session start waits for the new cognee. The
-next time the plugin starts the local server, it starts it from the old runtime
-right away and builds the new pin in the background, in a venv of its own next
-to the old one (output in `~/.cognee-plugin/hermes/runtime-upgrade.log`). The new
-runtime takes over only once its cognee checks out, and only for servers started
-after that: a server already running, and the old venv it runs from, are left
-alone. A failed build leaves the old runtime in use and is retried at a server
-start at most once an hour; `hermes cognee install-runtime` retries it at once
-(and waits, up to 15 minutes, for a background build already running).
-`hermes cognee status` shows an outdated runtime, an upgrade in progress, the
-last failure, and old runtimes left on disk.
+After a plugin update that moves the pinned cognee, local mode stays off until
+you run `hermes cognee install-runtime`: the plugin never starts a server on a
+cognee it was not written against, and never downloads one behind your back.
+Hermes reports Cognee as unavailable with that command, and
+`hermes cognee status` shows the runtime as outdated. `install-runtime` builds
+the new pin in a venv of its own next to the old one, and the new runtime takes
+over only once its cognee checks out: a failed or interrupted build leaves the
+old venv as it was, and the next `install-runtime` starts that build over from
+scratch. A server already running, and the old venv it runs from, are left
+alone; start a new Hermes session once the install has finished.
 
 The old runtime is not deleted automatically, since a server another Hermes
 profile started may still run from it. `hermes cognee install-runtime` and

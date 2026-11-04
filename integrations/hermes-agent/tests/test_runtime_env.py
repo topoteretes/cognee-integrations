@@ -1,15 +1,15 @@
 """The private venv local mode starts its cognee server from (runtime_env).
 
 Every subprocess is faked: these check which commands run, in what order, that
-a new pin is built in a venv of its own, and that the ready marker moves to it
-only once the pinned version is really there.
+a new pin is built in a venv of its own, that the ready marker moves to it only
+once the pinned version is really there, and that a runtime built for another
+pin keeps local mode off until it is.
 """
 
 import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from unittest import mock
 
@@ -21,12 +21,10 @@ if str(ROOT) not in sys.path:
 
 from cognee_integration_hermes import runtime_env  # noqa: E402
 from cognee_integration_hermes import server_bootstrap as sb  # noqa: E402
+from cognee_integration_hermes.backend import CogneeNotInstalledError  # noqa: E402
 from cognee_integration_hermes.config import LOCAL_COGNEE_REQUIREMENT  # noqa: E402
 
 PINNED = LOCAL_COGNEE_REQUIREMENT.split("==", 1)[1]
-# conftest swaps it for a no-op so no test launches a real build; these tests
-# fake Popen instead.
-_REAL_START_BACKGROUND_UPGRADE = runtime_env.start_background_upgrade
 
 
 @pytest.fixture
@@ -34,8 +32,6 @@ def runtime(tmp_path, monkeypatch):
     root = tmp_path / "runtime"
     monkeypatch.setattr(runtime_env, "RUNTIME_DIR", root)
     monkeypatch.setattr(runtime_env, "READY_MARKER", root / "ready.json")
-    monkeypatch.setattr(runtime_env, "FAILURE_MARKER", root / "last-failure.json")
-    monkeypatch.setattr(runtime_env, "UPGRADE_LOG", tmp_path / "runtime-upgrade.log")
     return root
 
 
@@ -113,13 +109,28 @@ def test_a_marker_for_another_version_is_not_ready(runtime):
     assert runtime_env.runtime_python() is None
 
 
-def test_an_outdated_runtime_still_counts_as_installed(runtime):
-    # An upgrade from a plugin with an older pin must not turn the provider off.
+def test_an_outdated_runtime_is_not_used(runtime):
+    # A runtime an older plugin built for its own pin keeps local mode off.
     _mark_ready(runtime, requirement="cognee==0.0.1")
     with mock.patch.object(runtime_env, "has_cognee", return_value=False):
         assert runtime_env.outdated_requirement() == "cognee==0.0.1"
-        assert runtime_env.server_python() == str(_legacy(runtime))
-        assert runtime_env.local_ready() is True
+        assert runtime_env.server_python() is None
+        assert runtime_env.local_ready() is False
+    # A cognee installed into Hermes's own environment by hand still works.
+    with mock.patch.object(runtime_env, "has_cognee", return_value=True):
+        assert runtime_env.server_python() == sys.executable
+
+
+def test_the_not_ready_message_names_both_pins_for_an_outdated_runtime(runtime):
+    _mark_outdated(runtime)
+    message = runtime_env.local_not_ready_message()
+    assert "cognee==0.0.1" in message
+    assert LOCAL_COGNEE_REQUIREMENT in message
+    assert "hermes cognee install-runtime" in message
+
+
+def test_the_not_ready_message_without_a_runtime_says_not_installed(runtime):
+    assert "not installed yet" in runtime_env.local_not_ready_message()
 
 
 def test_an_outdated_marker_without_its_venv_is_not_installed(runtime):
@@ -215,9 +226,7 @@ def test_a_failed_upgrade_leaves_the_old_runtime_active_and_untouched(runtime):
         _install(runtime, fail_on="install")
     assert (runtime / "ready.json").read_text() == marker
     assert runtime_env.outdated_requirement() == "cognee==0.0.1"
-    assert runtime_env.server_python() == str(_legacy(runtime))
     assert (runtime / "venv" / "site.txt").read_text() == "old cognee"
-    assert runtime_env.last_failure()["error"].startswith("Installing cognee with uv")
 
 
 def test_a_venv_that_fails_verification_is_not_switched_to(runtime):
@@ -230,33 +239,34 @@ def test_a_venv_that_fails_verification_is_not_switched_to(runtime):
     assert runtime_env.outdated_requirement() == "cognee==0.0.1"
 
 
-def test_a_complete_pinned_venv_is_reused_not_rebuilt(runtime):
-    # A build that verified but died before the marker moved.
+def test_a_pinned_venv_the_marker_does_not_name_is_rebuilt_from_scratch(runtime):
+    # Left by a build cut short: it may pass the version check with half its
+    # dependencies missing, so it is never reused as it is.
     _mark_outdated(runtime)
     _make_venv(_new(runtime))
+    (runtime / f"venv-{PINNED}" / "junk").write_text("half a build")
     _, run = _install(runtime)
-    assert run.commands == []
+    assert not (runtime / f"venv-{PINNED}" / "junk").exists()
+    assert [c[1] for c in run.commands] == ["venv", "pip"]
     assert runtime_env.runtime_python() == str(_new(runtime))
 
 
-def test_an_unfinished_pinned_venv_is_rebuilt_from_scratch(runtime):
+def test_a_leftover_venv_that_cannot_be_cleared_fails_the_build(runtime):
     _make_venv(_new(runtime))
-    (runtime / f"venv-{PINNED}" / "junk").write_text("half a build")
-    run = _FakeRun(runtime)
-    probes = iter([json.dumps({"cognee": "", "missing": ["cognee"]})])
+    with mock.patch.object(runtime_env.shutil, "rmtree"):
+        with pytest.raises(runtime_env.RuntimeInstallError, match="could not clear"):
+            _install(runtime)
+    assert not (runtime / "ready.json").exists()
 
-    def fake(command, **kwargs):
-        if command[-1] == runtime_env._VERIFY_PROBE and (out := next(probes, None)):
-            return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
-        return run(command, **kwargs)
 
-    with (
-        mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
-        mock.patch.object(runtime_env.subprocess, "run", side_effect=fake),
-    ):
-        runtime_env.install_runtime(output=lambda _: None)
-    assert not (runtime / f"venv-{PINNED}" / "junk").exists()
-    assert [c[1] for c in run.commands] == ["venv", "pip"]
+def test_a_marker_that_cannot_be_written_is_an_install_error(runtime):
+    _mark_outdated(runtime)
+    marker = (runtime / "ready.json").read_text()
+    with mock.patch.object(runtime_env.os, "replace", side_effect=PermissionError("in use")):
+        with pytest.raises(runtime_env.RuntimeInstallError, match="in use"):
+            _install(runtime)
+    assert (runtime / "ready.json").read_text() == marker
+    assert not list(runtime.glob(".ready.json.*"))
 
 
 def test_the_marker_is_replaced_atomically(runtime):
@@ -288,13 +298,6 @@ def test_a_failed_first_build_leaves_no_marker(runtime):
     assert runtime_env.runtime_python() is None
 
 
-def test_a_success_clears_the_recorded_failure(runtime):
-    runtime.mkdir()
-    runtime_env._record_failure("boom")
-    _install(runtime)
-    assert runtime_env.last_failure() == {}
-
-
 # -- the install lock ---------------------------------------------------------
 
 
@@ -305,65 +308,6 @@ def test_an_interactive_install_waits_a_bounded_time_for_a_running_build(runtime
         with pytest.raises(runtime_env.RuntimeBusyError, match="still building"):
             runtime_env.install_runtime(output=lines.append, lock_wait=0.05)
     assert "Another process is building the cognee runtime" in lines[0]
-
-
-def test_the_stager_exits_without_installing_while_the_lock_is_held(runtime):
-    _mark_outdated(runtime)
-    with (
-        runtime_env._install_lock(),
-        mock.patch.object(runtime_env.subprocess, "run") as run,
-    ):
-        assert runtime_env.build_in_progress() is True
-        assert runtime_env.stage_runtime() == 0
-    run.assert_not_called()
-    assert runtime_env.build_in_progress() is False
-
-
-def test_the_stager_builds_and_switches(runtime, capsys):
-    _mark_outdated(runtime)
-    run = _FakeRun(runtime)
-    with (
-        mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
-        mock.patch.object(runtime_env.subprocess, "run", side_effect=run),
-    ):
-        assert runtime_env.main(["stage"]) == 0
-    assert runtime_env.runtime_python() == str(_new(runtime))
-    assert (runtime / "venv" / "site.txt").exists()
-
-
-def test_the_stager_never_does_a_first_build(runtime):
-    with mock.patch.object(runtime_env.subprocess, "run") as run:
-        assert runtime_env.stage_runtime() == 0
-    run.assert_not_called()
-
-
-def test_a_failed_build_holds_off_the_next_background_one_for_an_hour(runtime):
-    _mark_outdated(runtime)
-    run = _FakeRun(runtime, fail_on="install")
-    with (
-        mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
-        mock.patch.object(runtime_env.subprocess, "run", side_effect=run),
-    ):
-        assert runtime_env.stage_runtime() == 1
-        assert runtime_env.stage_runtime() == 0  # held back: no second attempt
-    assert len(run.commands) == 2  # venv + the failed install, once
-    with mock.patch.object(runtime_env.subprocess, "Popen") as popen:
-        assert _REAL_START_BACKGROUND_UPGRADE() is False
-    popen.assert_not_called()
-    # An hour later it is tried again.
-    failure = json.loads((runtime / "last-failure.json").read_text())
-    failure["failed_at"] = time.time() - runtime_env.UPGRADE_RETRY_SECS - 1
-    (runtime / "last-failure.json").write_text(json.dumps(failure))
-    with mock.patch.object(runtime_env.subprocess, "Popen") as popen:
-        assert _REAL_START_BACKGROUND_UPGRADE() is True
-    popen.assert_called_once()
-
-
-def test_an_explicit_install_ignores_the_failure_backoff(runtime):
-    _mark_outdated(runtime)
-    runtime_env._record_failure("earlier")
-    _install(runtime)
-    assert runtime_env.runtime_python() == str(_new(runtime))
 
 
 class _FakeMsvcrt:
@@ -398,47 +342,6 @@ def test_windows_locks_with_msvcrt(runtime, monkeypatch):
     assert fake.LK_NBLCK in fake.calls and fake.LK_UNLCK in fake.calls
 
 
-# -- the background launch ----------------------------------------------------
-
-
-def test_the_background_build_is_detached_and_logs_to_a_file(runtime):
-    _mark_outdated(runtime)
-    with mock.patch.object(runtime_env.subprocess, "Popen") as popen:
-        assert _REAL_START_BACKGROUND_UPGRADE() is True
-    argv, kwargs = popen.call_args.args[0], popen.call_args.kwargs
-    assert argv[:2] == [sys.executable, "-c"]
-    assert argv[3] == str(ROOT)
-    if os.name == "nt":
-        assert kwargs["creationflags"]
-    else:
-        assert kwargs["start_new_session"] is True
-    assert kwargs["stdin"] is subprocess.DEVNULL
-    assert kwargs["stdout"] is not None and kwargs["stdout"] is kwargs["stderr"]
-    assert runtime_env.UPGRADE_LOG.exists()
-
-
-def test_the_stager_command_imports_this_package_from_a_bare_interpreter(runtime, tmp_path):
-    # -S -I: no site-packages and no PYTHONPATH, so only the stager's own
-    # sys.path insert can find the package. main() is swapped for a probe.
-    code = runtime_env._STAGER.replace("raise SystemExit(main(['stage']))", "print(main)")
-    result = subprocess.run(
-        [sys.executable, "-I", "-S", "-c", code, runtime_env._package_parent()],
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "function main" in result.stdout
-
-
-def test_nothing_is_launched_while_a_build_runs(runtime):
-    _mark_outdated(runtime)
-    with runtime_env._install_lock(), mock.patch.object(runtime_env.subprocess, "Popen") as popen:
-        assert _REAL_START_BACKGROUND_UPGRADE() is False
-    popen.assert_not_called()
-
-
 # -- server start -------------------------------------------------------------
 
 
@@ -466,50 +369,25 @@ def _spawn_once(**patches):
     return popen.call_args.args[0][0]
 
 
-def test_an_outdated_runtime_starts_the_server_at_once_and_stages_in_the_background(
-    runtime, monkeypatch
-):
+def test_an_outdated_runtime_starts_no_server(runtime):
     _mark_outdated(runtime)
-    started = mock.Mock(return_value=True)
-    monkeypatch.setattr(runtime_env, "start_background_upgrade", started)
-    with mock.patch.object(runtime_env.subprocess, "run") as run:
-        python = _spawn_once()
-    started.assert_called_once_with()
-    run.assert_not_called()  # nothing installed in the foreground
-    assert python == str(_legacy(runtime))
-    assert runtime_env.outdated_requirement() == "cognee==0.0.1"
-
-
-def test_a_failing_background_launch_still_starts_the_server(runtime, monkeypatch, caplog):
-    _mark_outdated(runtime)
-    monkeypatch.setattr(
-        runtime_env, "start_background_upgrade", mock.Mock(side_effect=OSError("no fork"))
-    )
-    with caplog.at_level("WARNING", logger=sb.logger.name):
-        python = _spawn_once()
-    assert python == str(_legacy(runtime))
-    assert "hermes cognee install-runtime" in caplog.text
-
-
-def test_a_current_runtime_starts_without_staging(runtime, monkeypatch):
-    _mark_ready(runtime, python=_new(runtime))
-    started = mock.Mock()
-    monkeypatch.setattr(runtime_env, "start_background_upgrade", started)
-    assert _spawn_once() == str(_new(runtime))
-    started.assert_not_called()
-
-
-def test_a_running_server_is_reused_without_staging(runtime, monkeypatch):
-    _mark_outdated(runtime)
-    started = mock.Mock()
-    monkeypatch.setattr(runtime_env, "start_background_upgrade", started)
     with (
-        mock.patch.object(sb, "health_ok", return_value=True),
+        mock.patch.object(sb, "health_ok", return_value=False),
         mock.patch.object(sb.subprocess, "Popen") as popen,
+        mock.patch.object(runtime_env.subprocess, "run") as run,
+        mock.patch.object(runtime_env, "has_cognee", return_value=False),
     ):
-        assert sb.ensure_local_server(8011) == "http://127.0.0.1:8011"
-    started.assert_not_called()
+        with pytest.raises(CogneeNotInstalledError, match="install-runtime") as raised:
+            sb.ensure_local_server(8011, log_path="/dev/null")
+    assert "cognee==0.0.1" in str(raised.value)
     popen.assert_not_called()
+    run.assert_not_called()  # nothing is installed behind the user's back
+    assert (runtime / "venv" / "site.txt").read_text() == "old cognee"
+
+
+def test_a_current_runtime_starts_the_server(runtime):
+    _mark_ready(runtime, python=_new(runtime))
+    assert _spawn_once() == str(_new(runtime))
 
 
 # -- removal and status -------------------------------------------------------
@@ -539,28 +417,21 @@ def _cli():
     return cli
 
 
-def test_status_names_an_outdated_runtime(runtime):
+def test_status_says_an_outdated_runtime_keeps_local_mode_off(runtime):
     _mark_outdated(runtime)
-    status = _cli()._runtime_status()
+    cli = _cli()
+    with mock.patch.object(cli.importlib.util, "find_spec", return_value=None):
+        status = cli._runtime_status()
     assert status.startswith("outdated (cognee==0.0.1")
-    assert "in the background the next time" in status
+    assert "local mode is off" in status
     assert "hermes cognee install-runtime" in status
 
 
-def test_status_says_an_upgrade_is_running(runtime):
+def test_status_says_a_build_is_running(runtime):
     _mark_outdated(runtime)
     with runtime_env._install_lock():
         status = _cli()._runtime_status()
-    assert "upgrading to " + LOCAL_COGNEE_REQUIREMENT + " in the background" in status
-    assert str(runtime_env.UPGRADE_LOG) in status
-
-
-def test_status_reports_the_last_failure(runtime):
-    _mark_outdated(runtime)
-    runtime_env._record_failure("Installing cognee with uv failed (exit code 2)")
-    status = _cli()._runtime_status()
-    assert "failed at" in status
-    assert "exit code 2" in status
+    assert status == f"being installed ({LOCAL_COGNEE_REQUIREMENT}) by another process"
 
 
 def test_status_lists_old_runtimes(runtime, capsys):

@@ -429,7 +429,7 @@ class CogneeMemoryProvider(MemoryProvider):
             return cognee_not_installed_message("embedded")
         if runtime_env.local_ready():
             return ""
-        return cognee_not_installed_message("local")
+        return runtime_env.local_not_ready_message()
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
@@ -495,9 +495,15 @@ class CogneeMemoryProvider(MemoryProvider):
         print("    local  - a cognee server on this machine")
         local_ready = runtime_env.local_ready()
         if not local_ready:
-            print("  Local mode needs a cognee runtime, which is not installed yet: picking")
-            print(f"  local offers to install it ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from")
-            print("  PyPI). Remote mode needs nothing installed.")
+            outdated = runtime_env.outdated_requirement()
+            if outdated:
+                print(f"  Local mode is off: its runtime holds {outdated}, and this version")
+                print(f"  needs {LOCAL_COGNEE_REQUIREMENT}. Picking local offers to install it")
+                print("  (about 1 GB from PyPI). Remote mode needs nothing installed.")
+            else:
+                print("  Local mode needs a cognee runtime, which is not installed yet: picking")
+                print(f"  local offers to install it ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from")
+                print("  PyPI). Remote mode needs nothing installed.")
 
         current = load_config(hermes_home)
         if _chose_local(hermes_home):

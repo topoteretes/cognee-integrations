@@ -426,39 +426,17 @@ def _runtime_status() -> str:
     if python:
         return f"ready ({runtime_env.LOCAL_COGNEE_REQUIREMENT}, {Path(python).parent.parent})"
     pinned = runtime_env.LOCAL_COGNEE_REQUIREMENT
-    outdated = runtime_env.outdated_requirement()
-    if outdated:
-        status = f"outdated ({outdated}, {runtime_env.active_venv_dir()}): "
-        failure = runtime_env.last_failure()
-        if runtime_env.build_in_progress():
-            status += (
-                f"upgrading to {pinned} in the background (output: {runtime_env.UPGRADE_LOG}); "
-                "the next local server start uses it"
-            )
-        elif failure:
-            status += (
-                f"the upgrade to {pinned} failed at {_fmt_epoch(failure.get('failed_at'))} "
-                f"({failure.get('error') or 'unknown error'}); retried in the background at "
-                "a local server start at most once an hour, or now with: "
-                "hermes cognee install-runtime"
-            )
-        else:
-            status += (
-                f"upgraded to {pinned} in the background the next time the plugin starts the "
-                "local server, or now with: hermes cognee install-runtime"
-            )
-        return status
     if runtime_env.build_in_progress():
         return f"being installed ({pinned}) by another process"
+    outdated = runtime_env.outdated_requirement()
+    if outdated and not importlib.util.find_spec("cognee"):
+        return (
+            f"outdated ({outdated}, {runtime_env.active_venv_dir()}): local mode is off "
+            f"until you install {pinned} with: hermes cognee install-runtime"
+        )
     if importlib.util.find_spec("cognee"):
         return "cognee installed in Hermes's environment"
     return "not installed (local mode: hermes cognee install-runtime)"
-
-
-def _fmt_epoch(value) -> str:
-    if not isinstance(value, (int, float)):
-        return "an unknown time"
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(value))
 
 
 def _local_server_running() -> bool:

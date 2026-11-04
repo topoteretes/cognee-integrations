@@ -44,22 +44,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
   before, saves went to a dataset named `auto`.
 
 ### Changed
-- **Local mode installs cognee 1.6.6** (was 1.6.5), without holding up a session. When the
-  plugin starts the local server from an existing 1.6.5 runtime, it starts it from that
-  runtime at once and builds 1.6.6 in a detached background process, in a new venv
-  (`runtime/venv-1.6.6`) next to the old one, logging to
-  `~/.cognee-plugin/hermes/runtime-upgrade.log`. The new venv becomes the active runtime only
-  once its cognee version and server modules check out, by atomically replacing `ready.json`,
-  which now names the interpreter to start from (a marker an older plugin wrote, pointing at
-  `runtime/venv`, still works). A server already running and the venv it runs from are never
-  touched; the next server start uses the new runtime. A failed or interrupted build leaves
-  the old runtime in use; the next background attempt waits an hour, and
-  `hermes cognee install-runtime` retries at once. Builds are serialized by a lock on POSIX
-  and Windows: a background build finding it held exits, `install-runtime` waits up to 15
-  minutes. First installs use the same per-version layout. `hermes cognee status` shows an
-  outdated runtime, an upgrade in progress, the last failure and old runtimes left on disk;
-  `install-runtime` and `remove-runtime` delete old runtimes only while nothing listens on
-  the configured local port.
+- **Local mode installs cognee 1.6.6** (was 1.6.5), and a runtime built for 1.6.5 keeps local
+  mode off until `hermes cognee install-runtime` installs 1.6.6: the plugin never starts a
+  server on a cognee it was not written against, and never downloads one behind the user's
+  back. Hermes reports Cognee as unavailable with that command, and `hermes cognee status`
+  shows the runtime as outdated. The new pin is built in a venv of its own
+  (`runtime/venv-1.6.6`) next to the old one, and becomes the active runtime only once its
+  cognee version and server modules check out, by atomically replacing `ready.json`, which now
+  names the interpreter to start from (a marker an older plugin wrote, pointing at
+  `runtime/venv`, is still read). A failed or interrupted build leaves the old runtime as it
+  was, and the next attempt rebuilds the pinned venv from scratch rather than trusting what a
+  cut-short build left. A server already running and the venv it runs from are never touched.
+  Builds are serialized by a lock on POSIX and Windows (`install-runtime` waits up to 15
+  minutes for another one). First installs use the same per-version layout.
+  `install-runtime` and `remove-runtime` delete old runtimes only while nothing listens on the
+  configured local port, and `hermes cognee status` lists the ones left on disk.
 
 ## [1.4.1]
 
