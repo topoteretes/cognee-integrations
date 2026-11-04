@@ -2,8 +2,9 @@
  * Auto recall through the plugin's prompt hook and memory_switch_dataset
  * (SDK-1393): unpinned prompt recall names no dataset, an install with no
  * indexed dataset skips recall, a pick pins it, and `current` reports the mode.
- * The harness runs on the default dataset (auto recall); a non-default
- * configured datasetName pins recall unless the conversation picks auto.
+ * The harness runs on the default dataset (auto recall); the config's
+ * recallMode "pinned" pins recall unless the conversation picks auto, and a
+ * datasetName alone never pins.
  */
 
 import plugin from "../../src/plugin";
@@ -126,11 +127,12 @@ describe("memory_switch_dataset reports the recall mode in effect", () => {
   });
 });
 
-describe("a non-default config datasetName pins recall", () => {
-  const PINNED = { datasetName: "testds" };
+describe("configured recallMode", () => {
+  const NAMED = { datasetName: "testds" };
+  const PINNED = { datasetName: "testds", recallMode: "pinned" };
 
   beforeEach(() => {
-    datasetState = { agent_sessions: "ds-1", testds: "ds-2" };
+    datasetState = { agent_sessions: "ds-1", testds: "ds-2", other: "ds-3" };
   });
 
   async function run(h: ReturnType<typeof harness>, params: Record<string, unknown>) {
@@ -151,25 +153,22 @@ describe("a non-default config datasetName pins recall", () => {
     return mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!;
   }
 
-  it("prompt recall and memory_search send the configured dataset's id", async () => {
+  it("a non-default datasetName alone routes: no dataset ids", async () => {
+    const h = harness(NAMED);
+    expect((await promptGraph(h)).datasetIds).toEqual([]);
+    expect((await search(h)).map((c) => c.datasetIds)).toEqual([[]]);
+    expect(await run(h, { action: "current" })).toMatchObject({ dataset: "testds", recall: "auto" });
+  });
+
+  it("recallMode pinned: prompt recall and memory_search send the configured dataset's id", async () => {
     const h = harness(PINNED);
     expect((await promptGraph(h)).datasetIds).toEqual(["ds-2"]);
     const calls = await search(h);
     expect(calls.length).toBeGreaterThan(0);
     for (const c of calls) expect(c.datasetIds).toEqual(["ds-2"]);
-  });
-
-  it("the default dataset routes: no dataset ids", async () => {
-    const h = harness();
-    expect((await promptGraph(h)).datasetIds).toEqual([]);
-    const calls = await search(h);
-    expect(calls.map((c) => c.datasetIds)).toEqual([[]]);
-  });
-
-  it("current reports the config pin", async () => {
-    const cur = await run(harness(PINNED), { action: "current" });
-    expect(cur).toMatchObject({ dataset: "testds", recall: "pinned", switched: false });
-    expect(cur.note).toMatch(/pinned by config datasetName "testds"/);
+    const cur = await run(h, { action: "current" });
+    expect(cur).toMatchObject({ dataset: "testds", recall: "pinned", reason: "configured_pin", switched: false });
+    expect(cur.note).toMatch(/recallMode "pinned"/);
   });
 
   it("action=auto routes this conversation and survives a restart", async () => {
@@ -178,12 +177,25 @@ describe("a non-default config datasetName pins recall", () => {
     expect((await promptGraph(h)).datasetIds).toEqual([]);
     expect((await search(h)).map((c) => c.datasetIds)).toEqual([[]]);
 
-    // Gateway restart: a fresh store loads the saved override.
+    // Gateway restart: a fresh store loads the saved choice — a mode only.
     await DatasetSwitchStore.shared().flush();
-    expect(Object.values(savedOverrides)).toContainEqual(expect.objectContaining({ dataset: "testds", recall: "auto" }));
+    expect(Object.keys(savedOverrides).sort()).toEqual(["key:agent:will:tg-1", "sid:s1"]);
+    for (const v of Object.values(savedOverrides)) expect(v).toEqual({ recall: "auto", chosenAt: expect.any(String) });
     DatasetSwitchStore.resetShared();
     const restarted = harness(PINNED);
     expect((await promptGraph(restarted)).datasetIds).toEqual([]);
     expect(await run(restarted, { action: "current" })).toMatchObject({ recall: "auto" });
+  });
+
+  it("a pin keeps recall pinned, but saves and recall follow a later datasetName change", async () => {
+    const h = harness(NAMED);
+    expect(await run(h, { action: "pin" })).toMatchObject({ action: "pin", changed: true, recall: "pinned", reason: "dataset_picked", dataset: "testds" });
+    expect((await promptGraph(h)).datasetIds).toEqual(["ds-2"]);
+
+    await DatasetSwitchStore.shared().flush();
+    DatasetSwitchStore.resetShared();
+    const moved = harness({ datasetName: "other" });
+    expect(await run(moved, { action: "current" })).toMatchObject({ dataset: "other", recall: "pinned", reason: "dataset_picked", switched: false });
+    expect((await promptGraph(moved)).datasetIds).toEqual(["ds-3"]);
   });
 });

@@ -139,6 +139,7 @@ EVENT_NAMES = {
     "hook:dataset_ensured": "dataset.ensured",
     "hook:dataset_switched": "dataset.switched",
     "hook:recall_mode_set": "recall.mode_set",
+    "hook:recall_mode_invalid": "recall.mode_invalid",
     "hook:recall_auto_route_error": "recall.auto_route_error",
     "hook:launch_dataset_ids_skipped": "launch.dataset_ids_skipped",
     "hook:dim_check_error": "dim.check_error",

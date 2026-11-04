@@ -135,13 +135,15 @@ Which datasets a graph search reads depends on the recall mode:
   cognee 1.6.6 server; an older one searches every readable dataset). When those return nothing, it widens to the rest. An authoritative
   empty list then means no readable dataset matched. Report that, and don't
   offer other datasets.
-- **restricted**: the user picked a dataset or configured one (`COGNEE_PLUGIN_DATASET` other than `agent_sessions`), or set a read set
+- **restricted**: the user picked or pinned a dataset in this session, configured
+  `COGNEE_PLUGIN_RECALL_MODE=pinned`, or set a read set
   (`COGNEE_PLUGIN_READ_DATASET_IDS`). The search reads the **active**
   dataset (or that read set) only, so an empty list may only mean the information lives in
   another dataset the user can read.
 
 When the mode matters (an empty answer while the user is recalling something),
-read it from the `recall` field (`"auto"` or `"pinned"`):
+read it from the `recall` field (`"auto"` or `"pinned"`); to tell the user which
+recall is on and why, relay the listing's `message` as is:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
@@ -180,6 +182,10 @@ a one-off search instead:
    (the session is bound to the active dataset). The active dataset, the Cognee session and where
    writes go are untouched. If the user then wants that dataset for the rest
    of the session, point them to `/cognee-memory:cognee-switch-datasets`.
+   To let the server pick the dataset again they can set recall back to auto
+   (`switch-dataset.py auto`; `pin` restricts it to the active dataset again).
+   `COGNEE_PLUGIN_RECALL_MODE` (`auto` or `pinned`) sets the mode sessions
+   start in.
 
 ## Understanding results
 

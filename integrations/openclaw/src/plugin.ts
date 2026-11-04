@@ -617,14 +617,14 @@ const memoryCogneePlugin = {
       return scopedIndexes[scope]?.datasetId;
     }
 
-    // Auto recall (SDK-1393): unless this conversation restricted recall to its
-    // dataset (a switch, or the dataset in use picked) — or, with no override
-    // choosing a mode, the config names a non-default datasetName (an explicit
-    // dataset scopes this agent's memory; `action: "auto"` lifts that pin per
-    // conversation) — graph recall names no dataset and a cognee >= 1.6.6
-    // server routes it (best effort: the best-matching dataset when it can,
-    // otherwise every readable one; an older server searches every readable
-    // dataset). Multi-scope mode keeps its configured scopes (an explicit read set).
+    // Auto recall (SDK-1393): unless recall is pinned — by this conversation's
+    // own choice (action=pin, or a switch), else by the config's
+    // `recallMode: "pinned"` — graph recall names no dataset and a cognee >=
+    // 1.6.6 server routes it (best effort: the best-matching dataset when it
+    // can, otherwise every readable one; an older server searches every
+    // readable dataset). Pinned recall reads the dataset the conversation saves
+    // to (a switch's, else the configured one). Multi-scope mode keeps its
+    // configured scopes (an explicit read set).
     const recallPinnedByConfig = configPinsRecall(cfg);
     async function autoRecall(ctx?: ConvoCtx): Promise<boolean> {
       if (multiScope) return false;

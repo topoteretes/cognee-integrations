@@ -213,10 +213,9 @@ const AUTO_RECALL = 'auto (best-matching dataset)'
 // Recall mode in effect from the last listing: 'auto' (routed) or 'pinned' to
 // the active dataset; '' until listed. Anything but 'auto' reads as restricted.
 let recallMode: '' | 'auto' | 'pinned' = ''
-// Why recall is restricted, from the same listing (switch-dataset.py's
-// `reason`: dataset_picked, configured_dataset, read_dataset_ids); '' when
-// auto or not said.
-let recallReason = ''
+// What the same listing says about recall, in switch-dataset.py's own words
+// (its `message`); '' until listed or when an older script sent none.
+let recallMessage = ''
 let namingDataset = false
 // In a terminal the picker stays closed until asked for: a click anywhere on
 // the band gives the band the keys, and a focused picker shows its list.
@@ -896,7 +895,7 @@ async function loadDatasets($: any): Promise<void> {
       if (parsed && typeof parsed === 'object' && !parsed.error) {
         switchTargets = datasetRows(parsed)
         recallMode = recallModeOf(parsed)
-        recallReason = recallMode === 'pinned' ? asText(parsed.reason) : ''
+        recallMessage = asText(parsed.message)
         listed = true
       }
     } catch {
@@ -943,31 +942,14 @@ async function switchDataset($: any, target: string): Promise<string> {
     if (ran === 'timeout') line = `the switch ran past ${SWITCH_TIMEOUT_MS / 60_000} min and was stopped; /cognee-dataset shows where the session is`
     else if (!ran) line = 'could not start the switch: no python interpreter found'
     else if (parsed.error) line = asText(parsed.error)
-    else if (parsed.switched === false) {
-      const where = asText(parsed.dataset) || name
-      if (parsed.reason === 'recall_restricted') line = `recall restricted to ${where}`
-      else if ((parsed.reason === 'recall_auto' || parsed.reason === 'already_auto') && parsed.recall !== 'auto') {
-        // Auto is saved, but something else still scopes recall: say what.
-        if (parsed.recall_reason === 'read_dataset_ids') line = 'saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets'
-        else line = `saved; recall stays restricted to ${where}`
-      }
-      else if (parsed.reason === 'recall_auto') line = `recall is auto again (saves stay in ${where})`
-      else if (parsed.reason === 'already_auto') line = `recall is already auto (saves go to ${where})`
-      else line = `already on ${where}`
-    }
-    else if (parsed.switched === true) {
-      const previous = (parsed.previous ?? {}) as { dataset?: unknown; synced?: unknown }
-      const synced = previous.synced === false ? ' (previous session NOT synced)' : ''
-      line = `switched to ${asText(parsed.dataset) || name}${synced}`
-    } else line = `switch failed${ran.stderr.trim() ? `: ${ran.stderr.trim().split('\n').pop()}` : ''}`
+    // The script says what happened in its `message`; the generic line is for
+    // an older script that sends none.
+    else if (parsed.switched === false) line = asText(parsed.message) || `recall is ${asText(parsed.recall) || 'unchanged'} (saves go to ${asText(parsed.dataset) || name})`
+    else if (parsed.switched === true) line = asText(parsed.message) || `switched to ${asText(parsed.dataset) || name}`
+    else line = `switch failed${ran.stderr.trim() ? `: ${ran.stderr.trim().split('\n').pop()}` : ''}`
     const failed = !parsed.switched && parsed.switched !== false
     const mode = recallModeOf(parsed)
-    if (mode) {
-      recallMode = mode
-      // A pick pins recall; auto names what still scopes it, if anything.
-      recallReason =
-        mode !== 'pinned' ? '' : parsed.switched === true || parsed.reason === 'recall_restricted' ? 'dataset_picked' : asText(parsed.recall_reason)
-    }
+    if (mode) recallMode = mode
     $.ui.toast(failed ? `✕ ${line}` : `${line}`)
   } finally {
     switching = false
@@ -1016,8 +998,8 @@ export const register: Register = (on, options) => {
     await refreshSnapshot($)
     await $.command.register({
       name: 'cognee-dataset',
-      description: 'Switch this session to another Cognee dataset (recall is then restricted to it); "auto" lets the server pick the best-matching dataset for each recall when it can; without a name, list them.',
-      argumentHint: '[name|auto]',
+      description: 'Switch this session to another Cognee dataset (recall is then restricted to it); "pin" restricts recall to the active dataset; "auto" lets the server pick the best-matching dataset for each recall when it can; without a name, list them.',
+      argumentHint: '[name|pin|auto]',
     })
     await $.command.register({
       name: 'cognee-tour',
@@ -1095,26 +1077,17 @@ export const register: Register = (on, options) => {
       if (switchTargets.length === 0) return { text: 'Cognee: no datasets listed (is memory connected?).' }
       const rows = switchTargets.map(r => (r.current ? `  * ${r.name} (current)` : `  - ${r.name}`)).join('\n')
       const current = switchTargets.find(r => r.current)?.name ?? 'the active dataset'
-      // The same branches as switch-dataset.py's listing: the advice depends
-      // on what restricts recall (auto cannot lift a read set).
-      const recall =
-        recallMode === 'auto'
-          ? 'Recall: auto (the server picks the best-matching dataset). /cognee-dataset <name> restricts it to one.'
-          : recallReason === 'configured_dataset'
-            ? `Recall: restricted to ${current}, pinned by COGNEE_PLUGIN_DATASET. /cognee-dataset auto lifts it for this session.`
-            : recallReason === 'read_dataset_ids'
-              ? 'Recall: restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS.'
-              : recallReason === 'dataset_picked'
-                ? `Recall: restricted to ${current}. /cognee-dataset auto lets the server pick the best-matching dataset.`
-                : `Recall: restricted to ${current}.`
+      // switch-dataset.py says which recall is on and why; the generic line is
+      // for an older script that sends no message.
+      const recall = recallMessage || (recallMode === 'auto' ? 'Recall is auto.' : `Recall is restricted to ${current}.`)
       pickerOpen = true
       redraw($)
       return {
-        text: `Cognee datasets you can write to:\n${rows}\n\n${recall}\n/cognee-dataset <name> switches this session; the picker on the status row is open too (ctrl+x tab reaches it, arrows move, Enter picks).`,
+        text: `Cognee datasets you can write to:\n${rows}\n\n${recall}\n/cognee-dataset <name> switches this session, /cognee-dataset pin restricts recall to the active dataset, /cognee-dataset auto sets it back to auto; the picker on the status row is open too (ctrl+x tab reaches it, arrows move, Enter picks).`,
       }
     }
     const line = await switchDataset($, name)
-    return { text: `Cognee: ${line}.` }
+    return { text: `Cognee: ${line.endsWith('.') ? line : `${line}.`}` }
   })
 
   // The model's direct line to memory: the same wrappers the skills run,
@@ -1376,13 +1349,19 @@ export const register: Register = (on, options) => {
             return
           }
           // Picking a dataset, the active one included, pins recall to it. The
-          // active one is sent too even when recall already reads "pinned": a
-          // pin by COGNEE_PLUGIN_DATASET is then recorded for this launch and
-          // outlives a later change to that configuration.
+          // active one is `pin` (no new session), sent even when recall already
+          // reads "pinned": a pin by COGNEE_PLUGIN_RECALL_MODE is then recorded
+          // for this launch and outlives a later change to that configuration.
+          // `pin` is the script's action, so another dataset so named is sent
+          // by its id.
           if (value === AUTO_RECALL) {
             if (!auto) void switchDataset($, 'auto')
             else redraw($)
-          } else void switchDataset($, value)
+          } else {
+            const row = options.find(r => r.name === value)
+            if (row?.current) void switchDataset($, 'pin')
+            else void switchDataset($, row?.id && value.trim().toLowerCase() === 'pin' ? row.id : value)
+          }
         },
       })
     // The terminal's closed form: the name as a button that opens the picker.
@@ -1411,6 +1390,11 @@ export const register: Register = (on, options) => {
             onSubmit: (value: string) => {
               if (isReservedName(value)) {
                 $.ui.toast('✕ "auto" is reserved for auto recall; pick another name')
+                return
+              }
+              // `switch-dataset.py pin` pins recall instead of creating "pin".
+              if (value.trim().toLowerCase() === 'pin') {
+                $.ui.toast('✕ "pin" restricts recall to the active dataset; pick another name')
                 return
               }
               namingDataset = false

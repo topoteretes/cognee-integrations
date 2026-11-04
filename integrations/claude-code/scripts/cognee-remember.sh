@@ -27,7 +27,7 @@ PLUGIN_DIR="${HOME}/.cognee-plugin/claude-code"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 
 # "auto" is not a dataset name: COGNEE_PLUGIN_DATASET=auto means the default
-# dataset with auto recall (SDK-1393), which is what an unset variable gives.
+# dataset (SDK-1393), which is what an unset variable gives.
 case "$(printf '%s' "${COGNEE_PLUGIN_DATASET:-}" | tr '[:space:]' ' ' | sed -e 's/^ *//' -e 's/ *$//' | tr '[:upper:]' '[:lower:]')" in
     auto) COGNEE_PLUGIN_DATASET="" ;;
 esac

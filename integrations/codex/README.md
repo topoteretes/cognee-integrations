@@ -273,12 +273,11 @@ export COGNEE_PLUGIN_DATASET="my-project-memory"
 codex
 ```
 
-`COGNEE_PLUGIN_DATASET` seeds the dataset at launch, and saves go to the active dataset. A name
-other than the default `agent_sessions` also restricts recall to that dataset, as before auto
-recall. Unset, `agent_sessions` or `auto` leaves recall on auto (the server picks the dataset when
-it can). `auto` is reserved: `COGNEE_PLUGIN_DATASET=auto` means the default dataset with recall on
-auto. A choice made in the session wins over this rule (see
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch, and saves go to the active dataset. It does
+not restrict recall: recall is auto (the server picks the dataset when it can) unless
+`COGNEE_PLUGIN_RECALL_MODE=pinned` or a choice made in the session says otherwise (see
 [Auto recall and restricting it to one dataset](#auto-recall-and-restricting-it-to-one-dataset)).
+`auto` is reserved: `COGNEE_PLUGIN_DATASET=auto` means the default dataset.
 Data added outside of Codex to the dataset (via SDK or the server for example) is visible in Codex via the Cognee plugin.
 
 ### Switching datasets mid-session
@@ -301,13 +300,14 @@ The choice lives in the launch record (`~/.cognee-plugin/codex/sessions/<host id
 survives a resume and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
 `COGNEE_SESSION_ID`) for the rest of the launch. Retired sessions stay in the record's `touched`
 list and the session-end sync covers them again as a safety net. The script behind the skill is
-`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`, `auto [--json]`,
-`--session-key <host id>` when several launches share a directory).
+`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`, `pin [--json]`,
+`auto [--json]`, `--session-key <host id>` when several launches share a directory). Every
+`--json` result carries `message`, one or two sentences for the user; the text output prints the
+same sentences.
 
 ### Auto recall and restricting it to one dataset
 
-Saves always go to the active dataset, but **recall is auto by default, unless you configured a
-dataset**: the graph recall on each
+Saves always go to the active dataset, but **recall is auto by default**: the graph recall on each
 prompt (and a `cognee-search` that names no dataset) sends no dataset, and the server picks the
 readable dataset(s) most likely to hold the answer (dataset routing). Routing needs a cognee 1.6.6
 server; an older one searches every readable dataset. Routing is best effort: when the server
@@ -318,26 +318,30 @@ dataset that has not been through `improve` on 1.6.6 yet has no routing index an
 searched, and when the picked dataset returns nothing the server widens to the rest. Pin a dataset
 to keep recall on one.
 
-Picking a dataset — another one, or the active one — **restricts recall to it**; `auto` lifts the
-restriction and leaves saves where they are:
+Switching to a dataset **restricts recall to it**, `pin` restricts it to the active dataset, and
+`auto` lifts the restriction. `pin` and `auto` leave saves where they are and start no new
+session:
 
 ```bash
 python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" <dataset>   # saves go there, recall restricted to it
+python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" pin         # recall restricted to the active dataset
 python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # let the server pick the dataset for recall again
 ```
 
-A configured dataset restricts recall too: `COGNEE_PLUGIN_DATASET` (exported or in
-`~/.cognee/.env`) set to a name other than the default `agent_sessions` keeps recall on that
-dataset, as before this release. Unset, `agent_sessions` (or a name that sanitizes to it, such as
-`agent sessions`) or `auto` means auto recall.
+`COGNEE_PLUGIN_RECALL_MODE` (exported or in `~/.cognee/.env`) sets the mode every session starts
+in: `auto` (the default) or `pinned` (recall restricted to the session's dataset, reason
+`configured_pin`). Any other value means `auto`. `COGNEE_PLUGIN_DATASET` only names the dataset:
+it no longer restricts recall, so set `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on a
+configured dataset.
 
 The choice made in a session is stored in the launch record (`recall_pinned`) and wins over the
-configured rule for that session: `auto` gives auto recall even with a configured dataset, and
-picking a dataset restricts recall even without one. A session switched before this release stays
-restricted. `auto` is reserved: no dataset can be named so. A `COGNEE_PLUGIN_READ_DATASET_IDS`
+configured mode for that session: `auto` gives auto recall even under `pinned`, and `pin` or a
+switch restricts recall even under `auto`. A session switched before this release stays
+restricted. `auto` is reserved: no dataset can be named so. `pin` names the action, so a dataset
+called `pin` is switched to by its id. A `COGNEE_PLUGIN_READ_DATASET_IDS`
 read set restricts recall too, and `auto` cannot lift it. `switch-dataset.py --list` prints the
-mode in effect (its `--json` form says `"recall": "auto"` or `"pinned"`, with the `reason` when
-pinned); the status line does not show it. These always keep their explicit dataset: session history and
+mode in effect and why (its `--json` form says `"recall": "auto"` or `"pinned"`, with the `reason`
+when pinned and that sentence as `message`); the status line does not show it. These always keep their explicit dataset: session history and
 guidance (bound to the active dataset), the code lane (this repository's code dataset) and a
 `COGNEE_PLUGIN_READ_DATASET_IDS` read set. Shared agent memory's dataset ids are dropped with the
 dataset under auto recall and kept when it is restricted. When the server is unreachable,
@@ -749,7 +753,8 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
-| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes at launch. A name other than `agent_sessions` also restricts recall to it; unset or `agent_sessions` leaves recall on auto. `auto` is reserved: the default dataset with auto recall. The `cognee-switch-datasets` skill changes both mid-session (config value is informational-only) |
+| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes at launch. It does not restrict recall (see `COGNEE_PLUGIN_RECALL_MODE`). `auto` is reserved: the default dataset. The `cognee-switch-datasets` skill changes it mid-session (config value is informational-only) |
+| — | `COGNEE_PLUGIN_RECALL_MODE` | `auto` | The recall mode a session starts in: `auto` (the server picks the dataset) or `pinned` (recall restricted to the session's dataset). Any other value is `auto`. `switch-dataset.py pin` / `auto` or a switch overrides it for the session |
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `codex` | Prefix for auto-generated session IDs |
@@ -789,7 +794,7 @@ Each operation has its own client timeout, tunable independently (all in seconds
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is auto (the server picks the best-matching dataset, or searches every readable one when it cannot narrow; routing needs a cognee 1.6.6 server, and an older one always searches every readable dataset) unless you restricted it to one by picking a dataset or by setting `COGNEE_PLUGIN_DATASET` to a name other than `agent_sessions`; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction.
+- Recall is auto (the server picks the best-matching dataset, or searches every readable one when it cannot narrow; routing needs a cognee 1.6.6 server, and an older one always searches every readable dataset) unless you restricted it to one by picking or pinning a dataset or by setting `COGNEE_PLUGIN_RECALL_MODE=pinned`; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 

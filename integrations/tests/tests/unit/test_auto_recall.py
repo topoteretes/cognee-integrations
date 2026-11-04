@@ -16,9 +16,9 @@ Contract:
   * the recall mode reads local state only: no request reaches the server;
   * the prompt hook passes ``auto_route`` to the graph scope only;
   * ``shell_runtime_overrides`` tells the shell skills whether recall is auto;
-  * an explicitly configured non-default COGNEE_PLUGIN_DATASET pins recall
-    (compared after sanitizing, as config.py does), but the launch record's own
-    ``recall_pinned`` (True or False) wins over it.
+  * COGNEE_PLUGIN_RECALL_MODE (auto | pinned, default auto, an unknown value is
+    auto) sets the configured mode; COGNEE_PLUGIN_DATASET never pins recall; the
+    launch record's own ``recall_pinned`` (True or False) wins over the setting.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ def pc(suite, isolated_modules, monkeypatch):
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
     monkeypatch.delenv("COGNEE_PLUGIN_READ_DATASET_IDS", raising=False)
     monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
+    monkeypatch.delenv("COGNEE_PLUGIN_RECALL_MODE", raising=False)
     return common
 
 
@@ -256,69 +257,101 @@ def test_the_hook_routes_under_shared_memory(suite, hook_module, monkeypatch):
     assert run.kwargs["graph"]["auto_route"] is True
 
 
-# ── a configured dataset pins recall ───────────────────────────────────────
+# ── COGNEE_PLUGIN_RECALL_MODE ──────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
-    ("value", "pinned"),
+    "dataset", ["", "research", " research ", "agent_sessions", "auto", "agent sessions"]
+)
+def test_recall_is_auto_by_default_whatever_dataset_is_configured(pc, launch, monkeypatch, dataset):
+    """COGNEE_PLUGIN_DATASET only names where saves go: it never pins recall."""
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", dataset)
+    assert pc.configured_recall_mode() == "auto"
+    assert pc.recall_is_pinned(launch) is False
+    assert pc.auto_recall_active(launch) is True
+    assert pc.recall_mode(launch) == ("auto", "")
+
+
+@pytest.mark.parametrize(
+    ("value", "mode"),
     [
-        ("research", True),
-        (" research ", True),
-        ("autos", True),
-        ("", False),
-        ("agent_sessions", False),
-        (" agent_sessions ", False),
-        ("auto", False),
-        (" AUTO ", False),
-        # Names config.py sanitizes to the default dataset are the default.
-        ("agent sessions", False),
-        ("agent.sessions", False),
-        (" agent  sessions ", False),
-        ("agent sessions 2", True),
+        ("pinned", "pinned"),
+        (" PINNED ", "pinned"),
+        ("Pinned", "pinned"),
+        ("auto", "auto"),
+        (" Auto ", "auto"),
+        ("", "auto"),
+        ("pin", "auto"),
+        ("restricted", "auto"),
+        ("true", "auto"),
     ],
 )
-def test_an_explicitly_configured_non_default_dataset_pins_recall(
-    pc, launch, monkeypatch, value, pinned
-):
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", value)
-    assert pc.recall_is_pinned(launch) is pinned
-    assert pc.auto_recall_active(launch) is (not pinned)
-    expected = ("pinned", "configured_dataset") if pinned else ("auto", "")
+def test_the_configured_recall_mode(pc, launch, monkeypatch, value, mode):
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", value)
+    assert pc.configured_recall_mode() == mode
+    expected = ("pinned", "configured_pin") if mode == "pinned" else ("auto", "")
     assert pc.recall_mode(launch) == expected
 
 
-def test_an_explicit_unpin_beats_a_configured_dataset(pc, launch, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
-    assert pc.recall_pin_reason(launch) == "configured_dataset"
+def test_an_unknown_recall_mode_is_auto_and_logged_once(pc, monkeypatch):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(pc, "hook_log", lambda name, data=None, **k: events.append((name, data)))
+    monkeypatch.setattr(pc, "_recall_mode_invalid_logged", False)
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "sticky")
+    assert pc.configured_recall_mode() == "auto"
+    assert pc.configured_recall_mode() == "auto"
+    assert events == [("recall_mode_invalid", {"value": "sticky"})]
+
+
+def test_the_recall_mode_set_only_in_the_env_file_applies(
+    suite, isolated_modules, pc, launch, monkeypatch, tmp_path
+):
+    import os
+
+    ef = isolated_modules(suite, "_env_file")
+    env = tmp_path / "cognee.env"
+    env.write_text('COGNEE_PLUGIN_RECALL_MODE="pinned"\n', encoding="utf-8")
+    monkeypatch.setenv("COGNEE_ENV_FILE", str(env))
+    # Recorded so teardown removes what the loader injects; absent for the load.
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "")
+    os.environ.pop("COGNEE_PLUGIN_RECALL_MODE")
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert pc.recall_mode(launch) == ("pinned", "configured_pin")
+
+
+def test_an_explicit_unpin_beats_a_configured_pin(pc, launch, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
+    assert pc.recall_pin_reason(launch) == "configured_pin"
     pc.set_recall_pinned(launch, False)
     assert pc.recall_is_pinned(launch) is False
     assert pc.auto_recall_active(launch) is True
 
 
-def test_a_pick_beats_a_default_configuration(pc, launch, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "agent_sessions")
+def test_a_pick_beats_a_configured_auto(pc, launch, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "auto")
     pc.set_recall_pinned(launch, True)
     assert pc.recall_pin_reason(launch) == "dataset_picked"
 
 
 def test_a_legacy_switch_is_a_pick_whatever_is_configured(pc, launch, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "auto")
     rec = pc._read_map_record(launch)
     pc._write_map_record(launch, {**rec, "switched_at": "2026-10-01T00:00:00Z"})
     assert pc.recall_pin_reason(launch) == "dataset_picked"
 
 
-def test_a_configured_dataset_pins_recall_outside_a_launch(pc, monkeypatch):
+def test_a_configured_pin_applies_outside_a_launch(pc, monkeypatch):
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
-    assert pc.recall_pin_reason("") == "configured_dataset"
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
+    assert pc.recall_pin_reason("") == "configured_pin"
 
 
 def test_recall_mode_names_why_recall_is_not_auto(pc, launch, monkeypatch):
     assert pc.recall_mode(launch) == ("auto", "")
     monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID]))
     assert pc.recall_mode(launch) == ("pinned", "read_dataset_ids")
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "research")
-    assert pc.recall_mode(launch) == ("pinned", "configured_dataset")
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
+    assert pc.recall_mode(launch) == ("pinned", "configured_pin")
     pc.set_recall_pinned(launch, True)
     assert pc.recall_mode(launch) == ("pinned", "dataset_picked")

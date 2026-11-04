@@ -9,6 +9,7 @@ import { capturePolicyFromEnv } from "./capture-policy.js";
 
 export const DEFAULT_BASE_URL = "http://localhost:8011";
 export const DEFAULT_DATASET_NAME = "agent_sessions";
+export const DEFAULT_RECALL_MODE = "auto" as const;
 export const DEFAULT_SEARCH_TYPE: CogneeSearchType = "HYBRID_COMPLETION";
 export const DEFAULT_DELETE_MODE = "soft" as const;
 export const DEFAULT_MAX_RESULTS = 3;
@@ -101,6 +102,14 @@ export function resolveEnvVars(value: string): string {
 // Config resolution
 // ---------------------------------------------------------------------------
 
+/**
+ * The configured recall mode (SDK-1393): "pinned" (any case, trimmed) pins
+ * recall to the dataset a conversation saves to; anything else is "auto".
+ */
+export function resolveRecallMode(value: unknown): "auto" | "pinned" {
+  return typeof value === "string" && value.trim().toLowerCase() === "pinned" ? "pinned" : DEFAULT_RECALL_MODE;
+}
+
 export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> {
   const raw =
     rawConfig && typeof rawConfig === "object" && !Array.isArray(rawConfig)
@@ -109,13 +118,17 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
 
   const mode: CogneeMode = raw.mode === "cloud" || process.env.COGNEE_MODE === "cloud" ? "cloud" : "local";
   const baseUrl = raw.baseUrl?.trim() || process.env.COGNEE_BASE_URL?.trim() || DEFAULT_BASE_URL;
-  // "auto" is reserved for auto recall (memory_switch_dataset action=auto), so
-  // a configured "auto" means the default dataset with recall left on auto —
-  // the hook-family rule (COGNEE_PLUGIN_DATASET=auto).
+  // "auto" is reserved (memory_switch_dataset action=auto), so a configured
+  // "auto" means the default dataset (COGNEE_PLUGIN_DATASET=auto). The dataset
+  // name says nothing about the recall mode: that is `recallMode`.
   const rawDatasetName = process.env.COGNEE_PLUGIN_DATASET?.trim() || raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
   const datasetName = rawDatasetName.toLowerCase() === "auto"
     ? DEFAULT_DATASET_NAME
     : sanitizeDatasetName(rawDatasetName, DEFAULT_DATASET_NAME);
+  // Config first, then the env var; unknown values mean "auto".
+  const recallMode = resolveRecallMode(
+    (typeof raw.recallMode === "string" && raw.recallMode.trim()) || process.env.COGNEE_PLUGIN_RECALL_MODE,
+  );
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
   const searchPrompt = raw.searchPrompt || "";
   const deleteMode = raw.deleteMode === "hard" ? "hard" : DEFAULT_DELETE_MODE;
@@ -222,7 +235,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const captureRedact = typeof raw.captureRedact === "boolean" ? raw.captureRedact : capturePolicyFromEnv().redact !== false;
 
   return {
-    mode, baseUrl, apiKey, username, password, datasetName,
+    mode, baseUrl, apiKey, username, password, datasetName, recallMode,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
     recallInjectionPosition, memoryHitFooter, memoryHitFooterFormat, weeklyDigest, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, recapTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,

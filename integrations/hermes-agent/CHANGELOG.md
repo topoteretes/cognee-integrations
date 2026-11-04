@@ -16,27 +16,36 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Recall is auto by default (SDK-1393).** Unless recall is pinned, the per-prompt memory
   lane and `cognee_recall` name no dataset and the server picks the best-matching one.
   Routing needs a cognee 1.6.6 server; an older one searches every dataset the user can read.
-  Pin a dataset to keep recall on one. Saves still go to the conversation's dataset. While
-  recall is auto, the memory credit says "based on Cognee memory" rather than naming the
-  active dataset. The guidance lane, `cognee_code_search` and recaps keep their datasets.
-- **`cognee_switch_dataset` pins recall.** Any explicit pick pins recall to that dataset: a
-  switch (the default dataset included), or the dataset in use (no new session).
-  `action='auto'` lifts the pin; `reset` goes back to the configured dataset and its recall
-  mode. `current` reports the mode in effect and, when pinned, a `reason` as the other cognee
-  plugins do: `dataset_picked` or `configured_dataset`.
-  `switch` refuses the name `auto`. The mode is kept in `dataset-overrides.json`; entries
-  written before this release stay pinned, except one on the configured dataset
-  (indistinguishable from a reset), which follows the configuration.
-- **A configured dataset pins recall, as in the other cognee plugins.** A
-  `COGNEE_PLUGIN_DATASET` (or setup-wizard dataset) other than the default `agent_sessions`
-  restricts recall to it (reason `configured_dataset`), compared as the name the dataset
-  resolves to (`agent.sessions` is the default and does not pin). A conversation's own choice
-  wins: `action='auto'` lifts the configured pin for that conversation (the reply names it in
-  `lifted`), and the memory credit names the dataset whenever recall is pinned.
-  `COGNEE_PLUGIN_DATASET=auto` (any case) now means the default dataset with auto recall;
-  before, saves went to a dataset named `auto`.
+  Saves still go to the conversation's dataset. While recall is auto, the memory credit says
+  "based on Cognee memory" rather than naming the active dataset. The guidance lane,
+  `cognee_code_search` and recaps keep their datasets.
+- **The recall mode is a setting: `recall_mode` / `COGNEE_PLUGIN_RECALL_MODE`.** `auto` (the
+  default for everyone) lets the server pick the dataset; `pinned` keeps recall on the active
+  dataset (reason `configured_pin`). Set it with the env var, `recall_mode` in `cognee.json`, or
+  the setup wizard's new recall-mode question. An unknown value is `auto`.
+  `COGNEE_PLUGIN_DATASET=auto` (any case) means the default dataset and says nothing about the
+  mode; before, saves went to a dataset named `auto`.
+- **`cognee_switch_dataset` sets the conversation's recall mode, which wins over the
+  configured one.** New `action='pin'` pins recall to the active dataset (no new session); a
+  `switch` pins recall to its target, and a `switch` to the dataset in use behaves as `pin`.
+  `action='auto'` lets the server pick for that conversation, lifting a configured pin too (the
+  reply names it in `lifted`). `reset` goes back to the configured dataset and recall mode.
+  `current` reports the mode in effect and, when pinned, a `reason` as the other cognee
+  plugins do: `dataset_picked` or `configured_pin`. Every result carries one `message` line
+  built from the mode and reason. `switch` refuses the name `auto`. The memory credit names
+  the dataset whenever recall is pinned.
+- **The mode is kept in `dataset-overrides.json` as a mode.** A pin or `auto` without a switch
+  stores only `{"recall": ...}`: recall applies to the active dataset, which follows the
+  configuration, so after a change of the configured dataset a pinned conversation is pinned
+  to the new one (reason `dataset_picked`). A switch stores its dataset and counter too.
+  Entries written before this release (no `recall`) stay pinned, except one on the configured
+  dataset (indistinguishable from a reset), which follows the configuration.
 
 ### Changed
+- **A configured dataset no longer restricts recall.** Before, recall read only the configured
+  `COGNEE_PLUGIN_DATASET` (or setup-wizard dataset); now recall is auto there too and reaches
+  every dataset the server routes to. To keep recall on it, set
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` (or `recall_mode` in setup).
 - **Local mode installs cognee 1.6.6** (was 1.6.5), and a runtime installed for 1.6.5 keeps
   local mode off until `hermes cognee install-runtime` installs 1.6.6: the plugin never starts
   a server on a cognee it was not written against, and never downloads one behind the user's

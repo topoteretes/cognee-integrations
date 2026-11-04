@@ -435,8 +435,9 @@ def resolve_active_dataset(host_key: str = "") -> str:
 def configured_dataset_name(value: object) -> str:
     """A dataset name from the env or config, or the default when it is unset.
 
-    "auto" is reserved for auto recall (``switch-dataset.py auto``), so a
-    configured "auto" means the default dataset with recall left on auto.
+    "auto" is reserved (``switch-dataset.py auto`` sets the recall mode), so a
+    configured "auto" means the default dataset. The recall mode is
+    COGNEE_PLUGIN_RECALL_MODE's business, not this name's.
     """
     name = str(value or "").strip()
     if not name or name.lower() == "auto":
@@ -742,42 +743,50 @@ def _switch_launch_record_locked(
 # two), but graph recall defaults to "auto": it names no dataset, so a cognee
 # 1.6.6 server routes the query to the readable dataset(s) most likely to hold
 # the answer (SDK-1317); an older server searches every readable dataset.
-# Picking a dataset (switch-dataset.py) pins recall to it; ``switch-dataset.py
-# auto`` unpins. An explicitly configured dataset other than the default
-# (COGNEE_PLUGIN_DATASET, exported or in ~/.cognee/.env) pins recall too, as
-# before auto recall existed, and so does an explicit read set
-# (COGNEE_PLUGIN_READ_DATASET_IDS).
+# COGNEE_PLUGIN_RECALL_MODE (auto | pinned, exported or in ~/.cognee/.env)
+# sets the mode a session starts in; auto by default. The session's own choice
+# wins over it: picking or switching to a dataset (``switch-dataset.py <name>``
+# or ``pin``) pins recall to the active dataset, ``switch-dataset.py auto``
+# unpins. An explicit read set (COGNEE_PLUGIN_READ_DATASET_IDS) always scopes
+# recall. COGNEE_PLUGIN_DATASET only names the dataset saves go to; it says
+# nothing about the recall mode.
 
 # Why recall is restricted rather than auto (``recall_mode``'s reason).
-RECALL_PIN_PICKED = "dataset_picked"  # the user picked a dataset for this launch
-RECALL_PIN_CONFIGURED = "configured_dataset"  # COGNEE_PLUGIN_DATASET names a non-default one
+RECALL_PIN_PICKED = "dataset_picked"  # this launch pinned recall or switched dataset
+RECALL_PIN_CONFIGURED = "configured_pin"  # COGNEE_PLUGIN_RECALL_MODE=pinned
 RECALL_PIN_READ_SET = "read_dataset_ids"  # COGNEE_PLUGIN_READ_DATASET_IDS is an explicit scope
 
+RECALL_MODES = ("auto", "pinned")
+_recall_mode_invalid_logged = False
 
-def configured_dataset_pins_recall() -> bool:
-    """Whether COGNEE_PLUGIN_DATASET explicitly names a dataset other than the default.
+
+def configured_recall_mode() -> str:
+    """COGNEE_PLUGIN_RECALL_MODE: ``"auto"`` (the default) or ``"pinned"``.
 
     Read from the environment, which holds ~/.cognee/.env too (loaded at import).
-    Unset, the default ``agent_sessions``, the reserved "auto" (any case,
-    surrounding whitespace ignored) and any name that sanitizes to the default
-    (``agent sessions``, ``agent.sessions`` — see ``config.load_config``) leave
-    recall on auto.
+    Case and surrounding whitespace are ignored. An unknown value means auto,
+    logged once per process (``recall_mode_invalid``).
     """
-    from config import sanitize_dataset_name  # type: ignore
-
-    configured = configured_dataset_name(os.environ.get("COGNEE_PLUGIN_DATASET", ""))
-    return sanitize_dataset_name(configured) != _DEFAULT_DATASET_NAME
+    global _recall_mode_invalid_logged
+    raw = os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "")
+    value = raw.strip().lower()
+    if value in RECALL_MODES:
+        return value
+    if value and not _recall_mode_invalid_logged:
+        _recall_mode_invalid_logged = True
+        hook_log("recall_mode_invalid", {"value": raw[:100]})
+    return "auto"
 
 
 def recall_pin_reason(host_key: str = "") -> str:
     """Why recall is pinned to the launch's dataset, or "" when it is not.
 
     Precedence: the launch record's own ``recall_pinned`` wins either way —
-    picking a dataset writes True, ``switch-dataset.py auto`` writes False (and
-    so lifts a configured pin for that launch). A record written before recall
-    modes existed has no ``recall_pinned``; a switch on it (``switched_at``) was
-    an explicit pick, so it stays pinned. Otherwise an explicitly configured
-    non-default dataset pins recall (``configured_dataset_pins_recall``).
+    picking or pinning a dataset writes True, ``switch-dataset.py auto`` writes
+    False (and so lifts a configured pin for that launch). A record written
+    before recall modes existed has no ``recall_pinned``; a switch on it
+    (``switched_at``) was an explicit pick, so it stays pinned. Otherwise the
+    configured mode applies (``configured_recall_mode``).
     """
     host_key = _sanitize_session_key(host_key) or get_session_key()
     rec = _read_map_record(host_key) if host_key else {}
@@ -785,7 +794,7 @@ def recall_pin_reason(host_key: str = "") -> str:
         return RECALL_PIN_PICKED if rec.get("recall_pinned") is True else ""
     if rec.get("switched_at"):
         return RECALL_PIN_PICKED
-    if configured_dataset_pins_recall():
+    if configured_recall_mode() == "pinned":
         return RECALL_PIN_CONFIGURED
     return ""
 

@@ -38,9 +38,13 @@ from .config import (
     DEFAULT_LOCAL_PORT,
     DEFAULT_SERVER_BOOT_TIMEOUT,
     LOCAL_COGNEE_REQUIREMENT,
+    RECALL_MODE_AUTO,
+    RECALL_MODE_PINNED,
+    RECALL_MODES,
     SHARED_PLUGIN_STATE_DIR,
     config_path,
     configured_dataset_name,
+    configured_recall_mode,
     load_config,
     resolve_hermes_home,
     resolve_local_roots,
@@ -113,8 +117,27 @@ _BREAKER_COOLDOWN_SECS = 120
 # Why recall is pinned, the hook-family plugins' ``reason`` values (claude-code
 # _plugin_common.RECALL_PIN_*). Hermes has no explicit read-dataset scope, so
 # ``read_dataset_ids`` never applies here.
-RECALL_PIN_PICKED = "dataset_picked"  # this conversation picked a dataset
-RECALL_PIN_CONFIGURED = "configured_dataset"  # the configured dataset is not the default
+RECALL_PIN_PICKED = "dataset_picked"  # this conversation pinned recall (pin or switch)
+RECALL_PIN_CONFIGURED = "configured_pin"  # the configured recall_mode is "pinned"
+
+
+def _recall_message(mode: str, reason: str, dataset: str) -> str:
+    """The one human-readable line of every ``cognee_switch_dataset`` result
+    (current, pin, auto, switch, reset), built from the mode and pin reason."""
+    saves = f"Saves go to dataset {dataset!r}. "
+    if mode != RECALL_MODE_PINNED:
+        return saves + (
+            "Recall is auto: the server picks the best-matching dataset (cognee 1.6.6; "
+            "an older server searches every readable dataset). Use action='pin' to "
+            "keep recall on this dataset."
+        )
+    if reason == RECALL_PIN_CONFIGURED:
+        why = "by the configured recall mode (COGNEE_PLUGIN_RECALL_MODE=pinned)"
+        lift = "Use action='auto' to let the server pick for this conversation."
+    else:
+        why = "by this conversation's own choice"
+        lift = "Use action='auto' to let the server pick, or 'reset' to follow the config."
+    return saves + f"Recall is pinned to {dataset!r} {why}. {lift}"
 
 
 # cognee rejects a dataset name containing a space or a dot (check_dataset_name,
@@ -368,13 +391,16 @@ class CogneeMemoryProvider(MemoryProvider):
         self._retired_sessions: list[tuple[str, str]] = []
         # Why graph recall is restricted to self._dataset, "" when it is not
         # (see _recall_pinned): RECALL_PIN_PICKED for this conversation's own
-        # pick (a switch, or the dataset in use picked), RECALL_PIN_CONFIGURED
-        # for a configured non-default dataset. Unpinned, recall is auto
+        # pin (action='pin' or a switch), RECALL_PIN_CONFIGURED when the
+        # configured recall_mode is "pinned". Unpinned, recall is auto
         # (SDK-1393): it names no dataset and a cognee 1.6.6 server routes it to
         # the best-matching dataset(s); an older one searches every readable
         # dataset.
         self._recall_pin_reason = ""
-        # Set by initialize: the configured dataset pins recall when nobody chose.
+        # This conversation's own recall mode ("auto" / "pinned"), "" when it
+        # follows the configured recall_mode. The conversation's choice wins.
+        self._recall_choice = ""
+        # Set by initialize: the configured recall_mode is "pinned".
         self._configured_pins_recall = False
         # Where Hermes was launched; gates the identifier-based code recall lane.
         self._cwd = ""
@@ -466,6 +492,16 @@ class CogneeMemoryProvider(MemoryProvider):
                 "env_var": "COGNEE_PLUGIN_DATASET",
             },
             {
+                "key": "recall_mode",
+                "description": (
+                    "Recall mode: auto lets the server pick the dataset; pinned keeps "
+                    "recall on the active dataset"
+                ),
+                "default": RECALL_MODE_AUTO,
+                "choices": list(RECALL_MODES),
+                "env_var": "COGNEE_PLUGIN_RECALL_MODE",
+            },
+            {
                 "key": "auto_route",
                 "description": "Let Cognee choose the recall strategy",
                 "default": "true",
@@ -516,6 +552,7 @@ class CogneeMemoryProvider(MemoryProvider):
         env_values: dict[str, str] = {}
         file_values: dict[str, Any] = {
             "dataset": _prompt("Dataset", default=str(current.get("dataset") or DEFAULT_DATASET)),
+            "recall_mode": _prompt_recall_mode(current.get("recall_mode")),
             "auto_route": _prompt_bool("Auto-route recall", current.get("auto_route", True)),
             "improve_on_end": _prompt_bool(
                 "Improve graph on session end",
@@ -590,11 +627,13 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._default_dataset,
             )
         self._dataset = self._default_dataset
-        # A configured non-default dataset pins recall, as in the hook-family
-        # plugins. Compared after sanitizing, so a name that resolves to the
-        # default (``agent.sessions``) does not pin; configured_dataset_name
-        # already turned "auto" and a blank name into the default.
-        self._configured_pins_recall = self._default_dataset != DEFAULT_DATASET
+        # The configured recall_mode, as in the hook-family plugins: "pinned"
+        # keeps recall on the active dataset, anything else is auto. The
+        # configured dataset alone never pins.
+        self._configured_pins_recall = (
+            configured_recall_mode(self._config.get("recall_mode")) == RECALL_MODE_PINNED
+        )
+        self._recall_choice = ""
         self._recall_pin_reason = self._configured_recall_pin()
         self._top_k = int(self._config.get("top_k") or 5)
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
@@ -1411,6 +1450,7 @@ class CogneeMemoryProvider(MemoryProvider):
         # its own switch counter — never the previous conversation's.
         self._dataset = self._default_dataset
         self._switch_counter = 0
+        self._recall_choice = ""
         self._recall_pin_reason = self._configured_recall_pin()
         self._session_cognee_id = self._build_cognee_session_id(new_session_id, **kwargs)
         self._reset_stored()
@@ -2160,31 +2200,34 @@ class CogneeMemoryProvider(MemoryProvider):
     # -- dataset switching -----------------------------------------------------
 
     def _apply_dataset_override(self) -> None:
-        """Re-apply a persisted per-conversation dataset switch, if any."""
+        """Re-apply this conversation's persisted recall mode and dataset switch.
+
+        The mode comes from ``recall``; the dataset only from a real switch
+        entry (a dataset and a counter above 0). A mode stored alone applies to
+        the active dataset, which follows the configuration.
+        """
         override = dataset_overrides.load_override(self._session_id)
         if not override:
             return
+        dataset = str(override.get("dataset") or "")
         try:
-            dataset = str(override.get("dataset") or "")
             counter = int(override.get("counter") or 0)
         except (TypeError, ValueError):
-            return
+            counter = 0
+        switched = bool(dataset) and counter > 0
         recall = override.get("recall")
-        if recall == "pinned":
-            self._recall_pin_reason = RECALL_PIN_PICKED
-        elif recall == "auto":
-            # The conversation's own auto lifts a configured pin too.
-            self._recall_pin_reason = ""
-        elif recall is None and dataset and dataset != self._default_dataset:
+        if recall in RECALL_MODES:
+            self._recall_choice = str(recall)
+        elif recall is None and switched and dataset != self._default_dataset:
             # Entries written before SDK-1393 carry no mode: a switch pinned recall.
-            self._recall_pin_reason = RECALL_PIN_PICKED
+            self._recall_choice = RECALL_MODE_PINNED
         else:
             # A reset (RECALL_FOLLOWS_CONFIG), or a pre-SDK-1393 entry on the
-            # configured default, which an old file cannot tell from a reset:
+            # configured dataset, which an old file cannot tell from a reset:
             # recall follows the configuration.
-            self._recall_pin_reason = self._configured_recall_pin()
-        if not dataset or counter <= 0:
-            # A pin-only entry (counter 0) restricts recall without a switch.
+            self._recall_choice = ""
+        self._recall_pin_reason = self._recall_reason_for(self._recall_choice)
+        if not switched:
             return
         self._dataset = dataset
         self._switch_counter = counter
@@ -2204,10 +2247,13 @@ class CogneeMemoryProvider(MemoryProvider):
                     "recall": mode,
                     **({"reason": reason} if reason else {}),
                     "cognee_session_id": self._session_cognee_id,
+                    "message": _recall_message(mode, reason, self._dataset),
                 }
             )
         if action == "auto":
             return self._set_recall_auto()
+        if action == "pin":
+            return self._pin_recall()
         if action == "list":
             try:
                 rows = self._backend.list_datasets(timeout=30.0)
@@ -2256,15 +2302,17 @@ class CogneeMemoryProvider(MemoryProvider):
                 return self._reset_recall()
             result = json.loads(self._switch_dataset(self._default_dataset, force=force))
             if result.get("switched"):
-                # Back to the configured dataset means back to its recall mode:
-                # auto, unless the configured dataset pins it.
+                # Back to the configured dataset means back to the configured
+                # recall mode.
                 self._follow_configured_recall()
                 mode, reason = self._recall_mode_and_reason()
                 result["recall"] = mode
+                result.pop("recall_reason", None)
                 if reason:
                     result["recall_reason"] = reason
+                result["message"] = _recall_message(mode, reason, self._dataset)
             return json.dumps(result)
-        return json.dumps({"error": "Specify action: list, current, switch, auto, or reset."})
+        return json.dumps({"error": "Specify action: list, current, switch, pin, auto, or reset."})
 
     # -- recall mode (SDK-1393) -------------------------------------------------
 
@@ -2281,92 +2329,113 @@ class CogneeMemoryProvider(MemoryProvider):
 
     @_recall_pinned.setter
     def _recall_pinned(self, pinned: bool) -> None:
-        # Setting it is this conversation's own choice; a configured pin is set
-        # through _recall_pin_reason.
-        self._recall_pin_reason = RECALL_PIN_PICKED if pinned else ""
+        # In memory only (tests): this conversation's own pin, or its own auto.
+        self._recall_choice = RECALL_MODE_PINNED if pinned else RECALL_MODE_AUTO
+        self._recall_pin_reason = self._recall_reason_for(self._recall_choice)
 
     def _configured_recall_pin(self) -> str:
-        """The pin the configuration alone gives, "" for auto."""
+        """The pin the configured recall_mode alone gives, "" for auto."""
         return RECALL_PIN_CONFIGURED if self._configured_pins_recall else ""
+
+    def _recall_reason_for(self, choice: str) -> str:
+        """The pin reason for a conversation choice ("" follows the config)."""
+        if choice == RECALL_MODE_PINNED:
+            return RECALL_PIN_PICKED
+        if choice == RECALL_MODE_AUTO:
+            return ""
+        return self._configured_recall_pin()
 
     def _recall_mode_and_reason(self) -> tuple[str, str]:
         """The mode in effect and, when pinned, why (the hook family's reasons)."""
         if self._recall_pin_reason:
-            return "pinned", self._recall_pin_reason
-        return "auto", ""
+            return RECALL_MODE_PINNED, self._recall_pin_reason
+        return RECALL_MODE_AUTO, ""
 
     def _invalidate_prefetch(self) -> None:
         with self._prefetch_lock:
             self._prefetch_result = ""
             self._prefetch_generation += 1
 
-    def _set_recall_auto(self) -> str:
-        """Save auto as this conversation's choice; the reply reports the mode in
-        effect.
+    def _choose_recall(self, choice: str) -> None:
+        """Make ``choice`` ("auto", "pinned", or "" to follow the config) this
+        conversation's recall mode and persist it.
 
-        Saved even when only the configured dataset pinned recall: the explicit
-        "auto" is what lifts that pin for this conversation.
+        After a switch the entry keeps the switch (dataset and counter); without
+        one it stores the mode only, so recall applies to the active dataset,
+        which follows the configuration. Following the config with no switch
+        leaves nothing to store.
         """
-        lifted = self._recall_pin_reason
-        if lifted:
-            self._recall_pin_reason = ""
+        self._recall_choice = choice
+        self._recall_pin_reason = self._recall_reason_for(choice)
+        if self._switch_counter > 0:
             dataset_overrides.save_override(
-                self._session_id, self._dataset, self._switch_counter, recall="auto"
+                self._session_id,
+                self._dataset,
+                self._switch_counter,
+                recall=choice or dataset_overrides.RECALL_FOLLOWS_CONFIG,
             )
-            self._invalidate_prefetch()
-        envelope = {
-            "switched": False,
-            "reason": "recall_auto" if lifted else "already_auto",
-            "dataset": self._dataset,
-            "recall": "auto",
-        }
-        if lifted == RECALL_PIN_CONFIGURED:
-            # Named so the agent can say the lift lasts this conversation only.
-            envelope["lifted"] = lifted
-        return json.dumps(envelope)
-
-    def _follow_configured_recall(self) -> None:
-        """Drop this conversation's own recall choice: recall follows the config."""
-        self._recall_pin_reason = self._configured_recall_pin()
-        dataset_overrides.save_override(
-            self._session_id,
-            self._dataset,
-            self._switch_counter,
-            recall=dataset_overrides.RECALL_FOLLOWS_CONFIG,
-        )
+        elif choice:
+            dataset_overrides.save_override(self._session_id, None, 0, recall=choice)
+        else:
+            dataset_overrides.clear_override(self._session_id)
         self._invalidate_prefetch()
 
-    def _reset_recall(self) -> str:
-        """``reset`` on the configured dataset: recall goes back to its mode
-        there, auto unless the configured dataset pins it."""
-        before = self._recall_pin_reason
-        self._follow_configured_recall()
+    def _recall_envelope(self, reason: str, **extra: Any) -> str:
+        """A no-switch reply (pin, auto, reset on the configured dataset): the
+        mode in effect, why, and the one message built from them."""
         mode, why = self._recall_mode_and_reason()
-        envelope = {
+        envelope: dict[str, Any] = {
             "switched": False,
-            "reason": "recall_reset" if before != self._recall_pin_reason else "already_default",
+            "reason": reason,
             "dataset": self._dataset,
             "recall": mode,
         }
         if why:
             envelope["recall_reason"] = why
+        envelope.update(extra)
+        envelope["message"] = _recall_message(mode, why, self._dataset)
         return json.dumps(envelope)
+
+    def _set_recall_auto(self) -> str:
+        """``auto``: save auto as this conversation's choice, so it also wins
+        over a later configured ``pinned``; the reply reports the mode in effect."""
+        lifted = self._recall_pin_reason
+        if self._recall_choice != RECALL_MODE_AUTO:
+            self._choose_recall(RECALL_MODE_AUTO)
+        extra = {}
+        if lifted == RECALL_PIN_CONFIGURED:
+            # Named so the agent can say the lift lasts this conversation only.
+            extra["lifted"] = lifted
+        return self._recall_envelope("recall_auto" if lifted else "already_auto", **extra)
+
+    def _pin_recall(self) -> str:
+        """``pin`` (or a switch to the dataset in use): pin recall to the active
+        dataset, no bridge and no new session. Saved as this conversation's own
+        mode even when the configured recall_mode already pins: it then wins
+        over a later configured ``auto``. The mode is stored without the
+        dataset, so recall stays on whatever dataset is active (after a config
+        change, the new configured one unless this conversation switched)."""
+        already = self._recall_pinned
+        if self._recall_choice != RECALL_MODE_PINNED:
+            self._choose_recall(RECALL_MODE_PINNED)
+        return self._recall_envelope("already_active" if already else "recall_restricted")
+
+    def _follow_configured_recall(self) -> None:
+        """Drop this conversation's own recall choice: recall follows the config."""
+        self._choose_recall("")
+
+    def _reset_recall(self) -> str:
+        """``reset`` on the configured dataset: recall goes back to the
+        configured recall_mode."""
+        before = self._recall_pin_reason
+        self._follow_configured_recall()
+        changed = before != self._recall_pin_reason
+        return self._recall_envelope("recall_reset" if changed else "already_default")
 
     def _switch_dataset(self, target: str, *, force: bool) -> str:
         if target == self._dataset:
-            # The dataset in use: restrict recall to it, no new session. Saved as
-            # the conversation's own pick even when the configured dataset
-            # already pins it, so the pick outlives a later config change.
-            reason = "already_active" if self._recall_pinned else "recall_restricted"
-            if self._recall_pin_reason != RECALL_PIN_PICKED:
-                self._recall_pinned = True
-                dataset_overrides.save_override(
-                    self._session_id, target, self._switch_counter, recall="pinned"
-                )
-                self._invalidate_prefetch()
-            return json.dumps(
-                {"switched": False, "reason": reason, "dataset": target, "recall": "pinned"}
-            )
+            # The dataset in use: a switch to it is a pin.
+            return self._pin_recall()
         old_dataset, old_session = self._dataset, self._session_cognee_id
 
         # 1. Flush the turn currently being written, then bridge the session we
@@ -2419,11 +2488,8 @@ class CogneeMemoryProvider(MemoryProvider):
         self._session_cognee_id = f"{base}__{self._switch_counter}"
         self._reset_stored()
         self._dataset = target
-        self._recall_pinned = True
-        dataset_overrides.save_override(self._session_id, target, self._switch_counter)
-        with self._prefetch_lock:
-            self._prefetch_result = ""
-            self._prefetch_generation += 1
+        # A switch pins recall to the target.
+        self._choose_recall(RECALL_MODE_PINNED)
         if self._watcher_state_path is not None and not self._close_handed_off:
             exit_watcher.update(
                 self._watcher_state_path,
@@ -2432,15 +2498,18 @@ class CogneeMemoryProvider(MemoryProvider):
                 improve=bool(self._writes_enabled and self._improve_on_end),
             )
         self._record_success()
+        mode, why = self._recall_mode_and_reason()
         envelope: dict[str, Any] = {
             "switched": True,
             "dataset": target,
-            "recall": "pinned",
+            "recall": mode,
+            "recall_reason": why,
             "cognee_session_id": self._session_cognee_id,
             "previous": {"dataset": old_dataset, "session_id": old_session, "bridged": bridged},
         }
         if bridge_error:
             envelope["previous"]["bridge_error"] = bridge_error
+        envelope["message"] = _recall_message(mode, why, target)
         return json.dumps(envelope)
 
     def _bridge_retired_sessions(self) -> None:
@@ -2686,6 +2755,14 @@ def _offer_runtime_install() -> None:
     except runtime_env.RuntimeInstallError as exc:
         print(f"  Could not install the local runtime: {exc}")
         print("  Retry with: hermes cognee install-runtime")
+
+
+def _prompt_recall_mode(current: Any) -> str:
+    """The setup wizard's recall-mode question; an unknown answer is auto."""
+    print("  Recall mode: auto lets the server pick the dataset for recall; pinned")
+    print("  keeps recall on the active dataset.")
+    answer = _prompt("Recall mode (auto/pinned)", default=configured_recall_mode(current))
+    return configured_recall_mode(answer)
 
 
 def _prompt_bool(label: str, default: bool) -> bool:

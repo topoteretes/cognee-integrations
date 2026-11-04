@@ -43,17 +43,22 @@ Python package with the `hermes_agent.plugins` entry point.
 - Recall is auto by default: the graph recall names no dataset, and the server
   picks the best-matching one. Routing needs a cognee 1.6.6 server; an older one
   searches every dataset you can read. Saves still go to the conversation's
-  dataset. Pin a dataset to keep recall on one. A configured dataset other than
-  the default (`COGNEE_PLUGIN_DATASET`, or the setup wizard's dataset) pins recall
-  too, as in the other cognee plugins; `COGNEE_PLUGIN_DATASET=auto` means the
-  default dataset with auto recall.
+  dataset. The configured dataset does not pin recall: set the recall mode to
+  `pinned` (`COGNEE_PLUGIN_RECALL_MODE=pinned`, or `recall_mode` in the setup
+  wizard) to keep recall on the active dataset. `COGNEE_PLUGIN_DATASET=auto`
+  means the default dataset and says nothing about the recall mode.
 - Exposes `cognee_switch_dataset` to move a conversation to another dataset
-  mid-session, bridging the session it leaves behind; any explicit pick (a switch,
-  including to the default dataset, or picking the dataset in use) pins recall to
-  that dataset, and `action='auto'` lifts the pin, a configured one too, for that
-  conversation. `reset` goes back to the configured dataset and its recall mode.
-  `current` reports the mode in effect and, when pinned, why (`dataset_picked` or
-  `configured_dataset`).
+  mid-session, bridging the session it leaves behind, or to set its recall mode.
+  The conversation's own choice wins over the configured mode: `action='pin'`
+  pins recall to the active dataset (no new session; a `switch` to the dataset in
+  use does the same), a `switch` pins recall to its target, and `action='auto'`
+  lets the server pick, a configured pin lifted too, for that conversation.
+  `reset` goes back to the configured dataset and recall mode. `current` reports
+  the mode in effect and, when pinned, why (`dataset_picked` for the
+  conversation's own pin, `configured_pin` for the configured mode). Every result
+  carries a `message` line to relay to the user. A pin without a switch is stored
+  as the mode only, so it stays on the active dataset: after a change of the
+  configured dataset, recall is pinned to the new one.
 - Indexes repositories into a deterministic code graph (`hermes cognee
   index-repo`) and answers structural code questions exactly via
   `cognee_code_search`, plus an identifier-gated code recall lane.
@@ -379,9 +384,9 @@ which this plugin looks up on the local server at each session start rather than
 reading the others' key file. Whichever plugin boots the server first,
 the rest attach to it — and a fact remembered in Claude Code is recallable in
 Hermes, and vice versa. A separate `COGNEE_PLUGIN_DATASET` keeps Hermes's saves
-apart and pins its recall to that dataset (a conversation can lift the pin with
-`cognee_switch_dataset action='auto'`, which lets recall reach the other plugins'
-datasets again); for full isolation give it its own
+apart; recall still reaches the other plugins' datasets unless
+`COGNEE_PLUGIN_RECALL_MODE=pinned` keeps it on that dataset (a conversation can
+lift the pin with `cognee_switch_dataset action='auto'`); for full isolation give it its own
 `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` *and* `COGNEE_LOCAL_PORT` — a server
 belongs to whoever reaches its port first, so a private store needs a private
 port. The same goes for its LLM key: a server shared by several profiles keeps
@@ -460,7 +465,8 @@ no server.
 
 | Setting | Env var | Default |
 | --- | --- | --- |
-| `dataset` | `COGNEE_PLUGIN_DATASET` (canonical; another name pins recall, `auto` = default) | `agent_sessions` |
+| `dataset` | `COGNEE_PLUGIN_DATASET` (canonical; `auto` = default) | `agent_sessions` |
+| `recall_mode` | `COGNEE_PLUGIN_RECALL_MODE` (`auto`: the server picks the dataset; `pinned`: recall stays on the active dataset; anything else = `auto`) | `auto` |
 | `top_k` | `COGNEE_TOP_K` | `5` |
 | `auto_route` | `COGNEE_AUTO_ROUTE` | `true` |
 | `improve_on_end` | `COGNEE_IMPROVE_ON_END` | `true` |

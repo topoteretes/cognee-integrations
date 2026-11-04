@@ -93,6 +93,7 @@ _TEMPLATE = """\
 
 ## Optional:
 # COGNEE_PLUGIN_DATASET="agent_sessions"
+# COGNEE_PLUGIN_RECALL_MODE="auto"   # auto | pinned (recall only from the dataset above)
 """
 
 

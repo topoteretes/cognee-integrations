@@ -13,8 +13,8 @@ Contract, for every hook-family suite:
   * auto (nothing pinned): the graph request carries no
     ``datasets``/``dataset_ids`` and no session id, shared-memory ids included,
     while the recalled item still reaches the context;
-  * pinned (a configured dataset): the graph request names the active
-    dataset's ids;
+  * pinned (COGNEE_PLUGIN_RECALL_MODE=pinned): the graph request names the
+    active dataset's ids; a configured COGNEE_PLUGIN_DATASET alone stays auto;
   * the memory header (``Cognee memory: …``) never names a dataset;
   * claude-code and codex credit with ``🧠 Cognee memory [mN]`` and never name
     a dataset; Antigravity tags nothing;
@@ -36,10 +36,10 @@ OTHER_ID = "22222222-2222-4222-8222-222222222222"
 FACT = "the retry policy backs off exponentially with a 30s ceiling"
 GRAPH_ITEM = {"source": "graph", "text": f"## Relevant passages\n{FACT}."}
 
-#: (COGNEE_PLUGIN_DATASET, expected mode)
+#: (COGNEE_PLUGIN_RECALL_MODE, expected mode); COGNEE_PLUGIN_DATASET is set in both
 MODES = {
     "auto": ("", "auto"),
-    "pinned_configured": (DATASET, "pinned"),
+    "pinned_configured": ("pinned", "pinned"),
 }
 
 
@@ -51,10 +51,12 @@ def _drive(suite, hook_module, monkeypatch, tmp_path, mode: str):
     # After loading: the harness scrubs COGNEE_* from the environment.
     monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "on")  # Codex and Cursor start off
     monkeypatch.delenv("COGNEE_PLUGIN_READ_DATASET_IDS", raising=False)
+    # A configured dataset names where saves go; only the recall mode pins.
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", DATASET)
     if configured:
-        monkeypatch.setenv("COGNEE_PLUGIN_DATASET", configured)
+        monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", configured)
     else:
-        monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
+        monkeypatch.delenv("COGNEE_PLUGIN_RECALL_MODE", raising=False)
     monkeypatch.setattr(module, "get_dataset", lambda config: DATASET)
     monkeypatch.setattr(
         module, "resolve_active_dataset_ids", lambda *a, **k: (WRITE_ID, [WRITE_ID, OTHER_ID])

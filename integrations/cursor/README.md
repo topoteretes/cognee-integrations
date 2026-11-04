@@ -117,7 +117,7 @@ EOF
 chmod 600 ~/.cognee/.env
 ```
 
-`COGNEE_BACKEND=local|cloud` pins the mode for every Cognee plugin; `COGNEE_CURSOR_BACKEND` does the same for this plugin only. The IDE's hooks inherit the Cursor app's environment, not a terminal's, so put these in `~/.cognee/.env` (re-read by every hook) rather than exporting them in a shell, unless you start Cursor from that shell. All other knobs are the Codex plugin's and are documented in the [Codex README](../codex/README.md): `COGNEE_PLUGIN_DATASET` under *Dataset*, `COGNEE_CAPTURE` and the `COGNEE_CAPTURE_*` allow/deny/redaction lists under capture, and the improve cooldowns under *Session sync and watchers*.
+`COGNEE_BACKEND=local|cloud` pins the mode for every Cognee plugin; `COGNEE_CURSOR_BACKEND` does the same for this plugin only. The IDE's hooks inherit the Cursor app's environment, not a terminal's, so put these in `~/.cognee/.env` (re-read by every hook) rather than exporting them in a shell, unless you start Cursor from that shell. All other knobs are the Codex plugin's and are documented in the [Codex README](../codex/README.md): `COGNEE_PLUGIN_DATASET` under *Dataset* and `COGNEE_PLUGIN_RECALL_MODE` (`auto` or `pinned`) under *Auto recall*, `COGNEE_CAPTURE` and the `COGNEE_CAPTURE_*` allow/deny/redaction lists under capture, and the improve cooldowns under *Session sync and watchers*.
 
 ## Verify
 
@@ -159,7 +159,7 @@ With the opt-in set, `sessionStart` registers it: `scripts/_statusline_config.py
 
 ## Status bar (Cursor IDE)
 
-The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that opens a dataset picker: `auto (best-matching dataset)` sets recall back to auto, the active dataset (its row shows the recall mode) restricts recall to it without a new session, and another dataset switches the chat to it. A dataset named `auto` is never offered as a target. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
+The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that opens a dataset picker: `auto (best-matching dataset)` sets recall back to auto, the active dataset (its row shows the recall mode and the script's sentence about it) restricts recall to it without a new session (`switch-dataset.py pin`), and another dataset switches the chat to it. A dataset named `auto` is never offered as a target. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
 
 Without it, the same text (without ANSI) is the first line of the context the plugin injects at session start and on each turn's first tool call, so the agent can relay it.
 

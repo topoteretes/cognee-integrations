@@ -445,10 +445,10 @@ test('with recall auto the picker reads "auto (<dataset>)", picking a dataset re
       if (argv.includes('--list')) return ok(JSON.stringify({ ...SWITCH_LIST, recall }))
       if (argv.includes('auto')) {
         recall = 'auto'
-        return ok(JSON.stringify({ switched: false, reason: 'recall_auto', dataset: 'agent_sessions', session_id: 'cognee-1', recall }))
+        return ok(JSON.stringify({ switched: false, reason: 'recall_auto', dataset: 'agent_sessions', session_id: 'cognee-1', recall, message: 'MSG auto again.' }))
       }
       recall = 'pinned'
-      return ok(JSON.stringify({ switched: false, reason: 'recall_restricted', dataset: 'agent_sessions', session_id: 'cognee-1', recall }))
+      return ok(JSON.stringify({ switched: false, reason: 'recall_restricted', dataset: 'agent_sessions', session_id: 'cognee-1', recall, message: 'MSG pinned.' }))
     },
   })
   const toasts: string[] = []
@@ -466,11 +466,12 @@ test('with recall auto the picker reads "auto (<dataset>)", picking a dataset re
     (pick!.props.options as { value: string; label: string }[]).find(o => o.value === 'auto (best-matching dataset)')!.label
   expect(autoLabel(picker)).toBe('auto (agent_sessions)')
 
-  // The active dataset, picked while auto, pins recall to it: no new session.
+  // The active dataset, picked while auto, is `pin`: recall pinned, no new session.
   calls.length = 0
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'agent_sessions' })
-  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['agent_sessions', '--json', '--session-key', SESSION])
-  expect(toasts.some(t => t.includes('recall restricted to agent_sessions'))).toBe(true)
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['pin', '--json', '--session-key', SESSION])
+  // The toast is the script's own message.
+  expect(toasts).toContain('MSG pinned.')
   await ui.unmount()
 
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
@@ -480,12 +481,12 @@ test('with recall auto the picker reads "auto (<dataset>)", picking a dataset re
   calls.length = 0
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'auto (best-matching dataset)' })
   expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['auto', '--json', '--session-key', SESSION])
-  expect(toasts.some(t => t.includes('recall is auto again'))).toBe(true)
+  expect(toasts).toContain('MSG auto again.')
   await ui.unmount()
 })
 
 test('picking the active dataset while recall reads pinned still records the pick', async ($, on) => {
-  // A COGNEE_PLUGIN_DATASET pin reads "pinned" with nothing in the launch
+  // A COGNEE_PLUGIN_RECALL_MODE pin reads "pinned" with nothing in the launch
   // record; the pick must still reach the switch script, or it would not
   // outlive a later change to that configuration.
   const calls: Call[] = []
@@ -507,9 +508,70 @@ test('picking the active dataset while recall reads pinned still records the pic
   expect(picker!.props.value).toBe('agent_sessions')
   calls.length = 0
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'agent_sessions' })
-  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['agent_sessions', '--json', '--session-key', SESSION])
-  expect(toasts.some(t => t.includes('recall restricted to agent_sessions'))).toBe(true)
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['pin', '--json', '--session-key', SESSION])
+  // An older script that sends no message: the generic line.
+  expect(toasts).toContain('recall is pinned (saves go to agent_sessions)')
   await ui.unmount()
+})
+
+test('the active dataset owned by someone else is picked as `pin`, another named "pin" by its id', async ($, on) => {
+  // The record holds a foreign-owned dataset by its id; picking it by name
+  // used to start a full switch. `pin` never names it.
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(
+            JSON.stringify({
+              ...SWITCH_LIST,
+              current: 'team-id',
+              recall: 'auto',
+              datasets: [
+                { name: 'team', id: 'team-id', writable: true, current: true },
+                { name: 'pin', id: 'pin-id', writable: true, current: false },
+              ],
+            }),
+          )
+        : ok(JSON.stringify({ switched: false, reason: 'recall_restricted', dataset: 'team-id', session_id: 'cognee-1', recall: 'pinned', message: 'MSG pinned.' })),
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  calls.length = 0
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'team' })
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['pin', '--json', '--session-key', SESSION])
+  calls.length = 0
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'pin' })
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['pin-id', '--json', '--session-key', SESSION])
+  await ui.unmount()
+})
+
+test('/cognee-dataset pin pins recall and relays the script\'s message', async ($, on) => {
+  const calls: Call[] = []
+  let recall = 'auto'
+  wire(on, calls, {
+    'switch-dataset.py': argv => {
+      if (argv.includes('--list')) return ok(JSON.stringify({ ...SWITCH_LIST, recall }))
+      recall = 'pinned'
+      return ok(
+        JSON.stringify({
+          switched: false,
+          reason: 'recall_restricted',
+          dataset: 'agent_sessions',
+          session_id: 'cognee-1',
+          recall: 'pinned',
+          message: "Recall is now pinned to 'agent_sessions', the active dataset; saves go there too.",
+        }),
+      )
+    },
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const answer = await $.command.run({ command: 'cognee-dataset', args: 'pin' })
+  expect(answer.text).toBe("Cognee: Recall is now pinned to 'agent_sessions', the active dataset; saves go there too.")
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['pin', '--json', '--session-key', SESSION])
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
+  expect(shown.text).toContain('2 results from the active dataset.')
 })
 
 test('/cognee-dataset auto lifts the restriction and the listing says which recall is on', async ($, on) => {
@@ -523,9 +585,9 @@ test('/cognee-dataset auto lifts the restriction and the listing says which reca
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
-  expect(listing.text).toContain('Recall: restricted to agent_sessions')
+  expect(listing.text).toContain('Recall is restricted to agent_sessions.')
   const answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
-  expect(answer.text).toBe('Cognee: recall is auto again (saves stay in agent_sessions).')
+  expect(answer.text).toBe('Cognee: recall is auto (saves go to agent_sessions).')
   expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['auto', '--json', '--session-key', SESSION])
 })
 
@@ -535,7 +597,7 @@ test('a listing without a recall mode reads as restricted on every surface', asy
   await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
 
   const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
-  expect(listing.text).toContain('Recall: restricted to agent_sessions')
+  expect(listing.text).toContain('Recall is restricted to agent_sessions.')
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker!.props.value).toBe('agent_sessions')
@@ -572,8 +634,8 @@ test('/cognee-dataset alone says recall is auto when it is', async ($, on) => {
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
-  expect(listing.text).toContain('Recall: auto (the server picks the best-matching dataset).')
-  expect(listing.text).not.toContain('Recall: restricted')
+  expect(listing.text).toContain('Recall is auto.')
+  expect(listing.text).not.toContain('restricted to agent_sessions')
 })
 
 test('in a terminal the closed picker reads "auto (<dataset>)" while recall is auto', async ($, on) => {
@@ -599,68 +661,14 @@ test('auto when recall is already auto says so', async ($, on) => {
     'switch-dataset.py': argv =>
       argv.includes('--list')
         ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'auto' }))
-        : ok(JSON.stringify({ switched: false, reason: 'already_auto', dataset: 'agent_sessions', session_id: 'cognee-1', recall: 'auto' })),
-  })
-  const toasts: string[] = []
-  on('ui.toast', ($, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
-  expect(answer.text).toBe('Cognee: recall is already auto (saves go to agent_sessions).')
-  expect(toasts).toContain('recall is already auto (saves go to agent_sessions)')
-})
-
-test('/cognee-dataset alone gives the advice that fits what restricts recall', async ($, on) => {
-  const calls: Call[] = []
-  let reason: string | undefined
-  wire(on, calls, {
-    'switch-dataset.py': argv =>
-      argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned', ...(reason ? { reason } : {}) })) : ok('{}'),
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  const lift = '/cognee-dataset auto lets the server pick'
-
-  reason = 'dataset_picked'
-  let listing = await $.command.run({ command: 'cognee-dataset', args: '' })
-  expect(listing.text).toContain(`Recall: restricted to agent_sessions. ${lift} the best-matching dataset.`)
-
-  reason = 'configured_dataset'
-  listing = await $.command.run({ command: 'cognee-dataset', args: '' })
-  expect(listing.text).toContain('Recall: restricted to agent_sessions, pinned by COGNEE_PLUGIN_DATASET. /cognee-dataset auto lifts it for this session.')
-  expect(listing.text).not.toContain(lift)
-
-  // Auto cannot lift a read set: no advice to try it.
-  reason = 'read_dataset_ids'
-  listing = await $.command.run({ command: 'cognee-dataset', args: '' })
-  expect(listing.text).toContain('Recall: restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS.')
-  expect(listing.text).not.toContain('/cognee-dataset auto')
-
-  for (const unknown of [undefined, 'some_new_reason']) {
-    reason = unknown
-    listing = await $.command.run({ command: 'cognee-dataset', args: '' })
-    expect(listing.text).toContain('Recall: restricted to agent_sessions.\n')
-    expect(listing.text).not.toContain('/cognee-dataset auto')
-  }
-})
-
-test('auto that leaves recall restricted names what still scopes it', async ($, on) => {
-  const calls: Call[] = []
-  let recallReason: string | undefined
-  wire(on, calls, {
-    'switch-dataset.py': argv =>
-      argv.includes('--list')
-        ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned', ...(recallReason ? { reason: recallReason } : {}) }))
         : ok(
             JSON.stringify({
               switched: false,
-              reason: 'recall_auto',
+              reason: 'already_auto',
               dataset: 'agent_sessions',
               session_id: 'cognee-1',
-              recall: 'pinned',
-              ...(recallReason ? { recall_reason: recallReason } : {}),
+              recall: 'auto',
+              message: "Recall is already auto; saves go to 'agent_sessions'.",
             }),
           ),
   })
@@ -671,15 +679,75 @@ test('auto that leaves recall restricted names what still scopes it', async ($, 
   })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
-  recallReason = 'read_dataset_ids'
-  let answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
-  expect(answer.text).toBe('Cognee: saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets.')
-  expect(toasts).toContain('saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets')
+  const answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
+  expect(answer.text).toBe("Cognee: Recall is already auto; saves go to 'agent_sessions'.")
+  expect(toasts).toContain("Recall is already auto; saves go to 'agent_sessions'.")
+})
 
-  recallReason = undefined
-  answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
-  expect(answer.text).toBe('Cognee: saved; recall stays restricted to agent_sessions.')
-  expect(toasts.at(-1)).toBe('saved; recall stays restricted to agent_sessions')
+test('/cognee-dataset alone shows the listing\'s own message, whatever restricts recall', async ($, on) => {
+  const calls: Call[] = []
+  let reason: string | undefined
+  let message: string | undefined
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned', ...(reason ? { reason } : {}), ...(message ? { message } : {}) }))
+        : ok('{}'),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  for (const [why, said] of [
+    ['dataset_picked', "Recall is pinned to 'agent_sessions', where saves go, as picked in this session."],
+    ['configured_pin', "Recall is pinned to 'agent_sessions', where saves go, because COGNEE_PLUGIN_RECALL_MODE=pinned."],
+    ['read_dataset_ids', 'Recall is restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS.'],
+  ]) {
+    reason = why
+    message = said
+    const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+    expect(listing.text).toContain(`\n\n${said}\n`)
+    expect(listing.text).not.toContain('Recall is restricted to agent_sessions.')
+  }
+
+  // An older script that sends no message: the generic line.
+  reason = 'some_new_reason'
+  message = undefined
+  const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(listing.text).toContain('Recall is restricted to agent_sessions.\n')
+})
+
+test('an auto that leaves recall restricted is told in the script\'s words', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned', reason: 'read_dataset_ids' }))
+        : ok(
+            JSON.stringify({
+              switched: false,
+              reason: 'recall_auto',
+              dataset: 'agent_sessions',
+              session_id: 'cognee-1',
+              recall: 'pinned',
+              recall_reason: 'read_dataset_ids',
+              message: "Recall is set to auto for this session, but COGNEE_PLUGIN_READ_DATASET_IDS still restricts it to its datasets; saves go to 'agent_sessions'.",
+            }),
+          ),
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
+  expect(answer.text).toBe(
+    "Cognee: Recall is set to auto for this session, but COGNEE_PLUGIN_READ_DATASET_IDS still restricts it to its datasets; saves go to 'agent_sessions'.",
+  )
+  expect(toasts.at(-1)).toContain('COGNEE_PLUGIN_READ_DATASET_IDS still restricts it')
+  // Still restricted: the search tool says so.
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
+  expect(shown.text).toContain('2 results from the active dataset.')
 })
 
 test('a switch answered with an error leaves the recall mode as it was', async ($, on) => {
@@ -703,7 +771,7 @@ test('a switch answered with an error leaves the recall mode as it was', async (
   expect(shown.text).toContain('2 results from the active dataset.')
 })
 
-test('a switch answer with a reason the plugin does not know reads as already on the dataset', async ($, on) => {
+test('a switch answer without a message reads generically, whatever its reason', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, {
     'switch-dataset.py': argv =>
@@ -714,7 +782,7 @@ test('a switch answer with a reason the plugin does not know reads as already on
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const answer = await $.command.run({ command: 'cognee-dataset', args: 'agent_sessions' })
-  expect(answer.text).toBe('Cognee: already on agent_sessions.')
+  expect(answer.text).toBe('Cognee: recall is pinned (saves go to agent_sessions).')
 })
 
 test('"auto" is reserved: a dataset so named is not offered, and the namer refuses it', async ($, on) => {
@@ -742,6 +810,11 @@ test('"auto" is reserved: a dataset so named is not offered, and the namer refus
   expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
   expect(toasts.some(t => t.includes('"auto" is reserved'))).toBe(true)
   // The field stays open for another name.
+  expect(await ui.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
+  // "pin" is the script's pin action: as a new name it would pin, not create.
+  await $.ui.input({ plugin: PLUGIN, key: 'newDataset', text: 'Pin' })
+  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
+  expect(toasts.some(t => t.includes('"pin" restricts recall'))).toBe(true)
   expect(await ui.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
   await ui.unmount()
 })

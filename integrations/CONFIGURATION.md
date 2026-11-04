@@ -8,7 +8,18 @@
 
 Default session dataset: `agent_sessions`. Default local server port: `8011`.
 
-`COGNEE_PLUGIN_DATASET` (Claude Code, Codex, Cursor, Antigravity) names the dataset for writes. Set to a name other than `agent_sessions`, it also restricts recall to that dataset. Unset or `agent_sessions` (or a name that sanitizes to it, such as `agent sessions`) leaves recall on auto: graph recall names no dataset, and a cognee 1.6.6 server picks the best-matching readable dataset(s), or searches all readable ones when it cannot narrow. Routing needs a cognee 1.6.6 server; an older one searches every readable dataset. Pinning a dataset keeps recall on that one. `auto` is reserved and means the default dataset with auto recall. A choice made in the session (`switch-dataset.py auto`, or picking a dataset) wins over the configured rule for that session.
+`COGNEE_PLUGIN_DATASET` (Claude Code, Codex, Cursor, Antigravity) names the dataset for writes. It does not restrict recall. `auto` is reserved and means the default dataset.
+
+`COGNEE_PLUGIN_RECALL_MODE` (Claude Code, Codex, Cursor, Antigravity; exported or in `~/.cognee/.env`) sets the recall mode a session starts in:
+
+| Value | Recall |
+|---|---|
+| `auto` (default; also any unknown value) | Graph recall names no dataset: a cognee 1.6.6 server picks the best-matching readable dataset(s), or searches all readable ones when it cannot narrow. An older server searches every readable dataset. |
+| `pinned` | Recall reads only the session's active dataset (reason `configured_pin`). |
+
+A choice made in the session wins over the setting for that session: `switch-dataset.py pin` (or picking the active dataset) and switching to another dataset pin recall (reason `dataset_picked`), `switch-dataset.py auto` unpins it. `COGNEE_PLUGIN_READ_DATASET_IDS` always restricts recall to its datasets (reason `read_dataset_ids`). Before auto recall, recall read only the configured `COGNEE_PLUGIN_DATASET`; set `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it.
+
+Hermes reads the same `COGNEE_PLUGIN_RECALL_MODE` (or `recall_mode` in `cognee.json`, set by the setup wizard; the saved config wins) and its tool takes `action='pin'` / `'auto'` / `'reset'`. OpenClaw takes `recallMode: "auto" | "pinned"` in the plugin config (or `COGNEE_PLUGIN_RECALL_MODE`; the config wins) and `memory_switch_dataset` takes `action: "pin"` / `"auto"` / `"reset"`; multi-scope mode always restricts recall to its scopes. In both, a configured `datasetName` / dataset no longer restricts recall by itself.
 
 Tests live in the shared Claude/Codex suite, Hermes `test_config_contract.py`, and OpenClaw unit tests. This replaces the obsolete config-file contract proposed in #169.
 

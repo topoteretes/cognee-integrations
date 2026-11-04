@@ -81,10 +81,11 @@ class TestSwitchDataset(unittest.TestCase):
         self.assertTrue(provider._recall_pinned)
         self.assertEqual(provider._session_cognee_id, "hermes_s-1")
         self.assertEqual(fake.calls, [])
+        # No switch: the mode alone is stored, so it applies to the active dataset.
         override = dataset_overrides.load_override("s-1")
-        self.assertEqual(
-            (override["dataset"], override["counter"], override["recall"]), ("hermes", 0, "pinned")
-        )
+        self.assertEqual(override["recall"], "pinned")
+        self.assertNotIn("dataset", override)
+        self.assertNotIn("counter", override)
 
     def test_a_failed_bridge_aborts_without_force(self):
         with fake_backend() as fake:
@@ -240,7 +241,7 @@ class TestCodeSearch(unittest.TestCase):
 
 class TestAutoRecall(unittest.TestCase):
     """SDK-1393: graph recall names no dataset unless the conversation pinned
-    one (or a non-default dataset is configured): the server picks."""
+    it (or the configured recall_mode is "pinned"): the server picks."""
 
     def _graph_recall(self, provider, fake):
         _call(provider, "cognee_recall", {"query": "what did we decide?"})
@@ -295,13 +296,17 @@ class TestAutoRecall(unittest.TestCase):
         self.assertFalse(provider._recall_pinned)
         self.assertEqual(provider._session_cognee_id, "hermes_s-1__3")
 
-    def test_auto_when_already_auto_is_a_noop(self):
+    def test_auto_when_already_auto_records_the_choice(self):
+        # Already auto by the config: nothing changes now, but the choice is the
+        # conversation's own and so wins over a later configured "pinned".
         with fake_backend():
             provider = make_provider()
             out = _call(provider, "cognee_switch_dataset", {"action": "auto"})
         self.assertEqual((out["reason"], out["recall"]), ("already_auto", "auto"))
         self.assertNotIn("note", out)
-        self.assertEqual(dataset_overrides.load_override("s-1"), {})
+        override = dataset_overrides.load_override("s-1")
+        self.assertEqual(override["recall"], "auto")
+        self.assertNotIn("dataset", override)
 
     def test_reset_from_a_switch_reports_the_final_mode(self):
         with fake_backend():

@@ -161,7 +161,8 @@ describe("prompt-time recall: one graph request plus the guidance request", () =
     expect(mockRecall).toHaveBeenCalledTimes(2);
     expect(graphCalls()).toHaveLength(1);
     const graph = graphCalls()[0];
-    expect(graph).toMatchObject({ queryText: PROMPT, searchType: "HYBRID_COMPLETION", scope: ["graph"], onlyContext: true, datasetIds: ["ds-1"] });
+    // Auto recall (the default recallMode): no dataset ids, the server routes.
+    expect(graph).toMatchObject({ queryText: PROMPT, searchType: "HYBRID_COMPLETION", scope: ["graph"], onlyContext: true, datasetIds: [] });
     expect(graph.sessionId).toBeUndefined();
     expect(graph.contextProfile).toBeUndefined();
     expect(graph.codeQuery).toBeUndefined();
@@ -322,7 +323,7 @@ describe("memory_search searches the knowledge graph only", () => {
 
     expect(mockRecall).toHaveBeenCalledTimes(1);
     const p = mockRecall.mock.calls[0][0];
-    expect(p).toMatchObject({ queryText: "theme?", searchType: "HYBRID_COMPLETION", scope: ["graph"], datasetIds: ["ds-1"] });
+    expect(p).toMatchObject({ queryText: "theme?", searchType: "HYBRID_COMPLETION", scope: ["graph"], datasetIds: [] });
     expect(p.scope?.some((s) => SESSION_LAYERS.includes(s))).toBe(false);
     expect(p.contextProfile).toBeUndefined();
     expect((p as Record<string, unknown>).context_profile).toBeUndefined();

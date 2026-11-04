@@ -11,12 +11,17 @@ this is the hermes counterpart of the latter — one JSON map keyed by the
 
 ``counter`` feeds the switched cognee session id (``hermes_<id>__N``): a
 cognee session never spans two datasets, so every switch mints a fresh one.
-``recall`` (SDK-1393) is the conversation's own recall choice: "pinned" when
-graph recall is restricted to ``dataset``, "auto" when it names no dataset and
-the server picks (lifting a pin by the configured dataset too), and
-``RECALL_FOLLOWS_CONFIG`` after a reset, when the configuration decides (a
-configured non-default dataset pins, anything else is auto). A pin-only entry
-(the dataset in use picked, no switch) has ``counter`` 0.
+Only a switch stores ``dataset`` and ``counter``.
+
+``recall`` (SDK-1393) is the conversation's own recall mode: "pinned" keeps
+graph recall on the active dataset, "auto" names no dataset and the server
+picks; either wins over the configured ``recall_mode``. ``RECALL_FOLLOWS_CONFIG``
+(after a reset that switched back) leaves the mode to the configuration. A
+mode chosen without a switch is stored as the mode only (``{"recall": ...}``):
+recall then applies to the active dataset, which follows the configuration, so
+after a config change a pinned conversation is pinned to the new dataset.
+Entries written before SDK-1393 carry no ``recall``: a switch to a dataset
+other than the configured one pinned recall.
 Everything here is best-effort — an unreadable file means "no overrides",
 never a failed session.
 """
@@ -73,23 +78,23 @@ def load_override(session_id: str, *, path: Optional[Path] = None) -> dict[str, 
 
 def save_override(
     session_id: str,
-    dataset: str,
+    dataset: Optional[str],
     counter: int,
     *,
     recall: str = "pinned",
     path: Optional[Path] = None,
 ) -> None:
+    """Store a switch (``dataset`` and ``counter`` > 0) with its recall mode,
+    or, with no switch (no dataset or ``counter`` 0), the recall mode alone."""
     if not session_id:
         return
     import time
 
+    entry: dict[str, Any] = {"recall": recall, "updated_at": time.time()}
+    if dataset and counter > 0:
+        entry = {"dataset": dataset, "counter": counter, **entry}
     data = _load(path)
-    data[session_id] = {
-        "dataset": dataset,
-        "counter": counter,
-        "recall": recall,
-        "updated_at": time.time(),
-    }
+    data[session_id] = entry
     _save(data, path)
 
 

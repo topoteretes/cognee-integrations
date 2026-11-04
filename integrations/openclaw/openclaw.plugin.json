@@ -69,7 +69,12 @@
       },
       "datasetName": {
         "type": "string",
-        "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. A non-default name pins recall to this dataset (memory_switch_dataset action=auto lifts it per conversation); \"auto\" means the default dataset with auto recall. Ignored when multi-scope is enabled."
+        "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. \"auto\" means the default dataset. The name does not restrict recall; set recallMode for that. Ignored when multi-scope is enabled."
+      },
+      "recallMode": {
+        "type": "string",
+        "enum": ["auto", "pinned"],
+        "description": "Graph recall mode when a conversation has not chosen one (default: auto). auto: recall names no dataset and a cognee >= 1.6.6 server routes each query. pinned: recall reads only the dataset the conversation saves to. A conversation's memory_switch_dataset action=pin / auto / switch wins over this. Also settable via COGNEE_PLUGIN_RECALL_MODE. Multi-scope mode always recalls from its configured scopes."
       },
       "companyDataset": {
         "type": "string",
@@ -381,6 +386,10 @@
     "datasetName": {
       "label": "Dataset Name (single-scope)",
       "placeholder": "agent_sessions"
+    },
+    "recallMode": {
+      "label": "Recall Mode",
+      "placeholder": "auto"
     },
     "companyDataset": {
       "label": "Company Dataset",

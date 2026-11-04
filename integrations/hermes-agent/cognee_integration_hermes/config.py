@@ -13,6 +13,11 @@ from typing import Any
 # under ~/.cognee-plugin. Hermes joins that convention — same names, same paths —
 # so memory written in any of them is recalled in all of them.
 DEFAULT_DATASET = "agent_sessions"
+# Graph recall modes (SDK-1393): "auto" names no dataset and the server picks
+# the best-matching one; "pinned" keeps recall on the active dataset.
+RECALL_MODE_AUTO = "auto"
+RECALL_MODE_PINNED = "pinned"
+RECALL_MODES = (RECALL_MODE_AUTO, RECALL_MODE_PINNED)
 SHARED_PLUGIN_STATE_DIR = Path.home() / ".cognee-plugin"
 SHARED_COGNEE_HOME = Path.home() / ".cognee"
 # Port for the local cognee server. 8011 matches the other cognee agent plugins
@@ -204,15 +209,23 @@ def resolve_hermes_home(hermes_home: str | Path | None = None) -> Path | None:
 def configured_dataset_name(value: Any) -> str:
     """A dataset name from the env or config, or the default when it is unset.
 
-    "auto" (any case, surrounding whitespace ignored) is reserved for auto
-    recall (``cognee_switch_dataset action='auto'``), so a configured "auto"
-    means the default dataset with recall left on auto, never a dataset named
-    "auto". Same rule as the hook-family plugins' ``configured_dataset_name``.
+    "auto" (any case, surrounding whitespace ignored) is reserved for the
+    recall mode (``cognee_switch_dataset action='auto'``), so a configured
+    "auto" means the default dataset, never a dataset named "auto". It says
+    nothing about the recall mode: that is ``recall_mode``. Same rule as the
+    hook-family plugins' ``configured_dataset_name``.
     """
     name = str(value or "").strip()
     if not name or name.lower() == "auto":
         return DEFAULT_DATASET
     return name
+
+
+def configured_recall_mode(value: Any) -> str:
+    """The configured recall mode: "pinned" (any case, surrounding whitespace
+    ignored) or "auto" for anything else, unset and unknown values included."""
+    mode = str(value or "").strip().lower()
+    return RECALL_MODE_PINNED if mode == RECALL_MODE_PINNED else RECALL_MODE_AUTO
 
 
 def config_path(hermes_home: str | Path | None = None) -> Path | None:
@@ -264,6 +277,9 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         # COGNEE_DATASET is this plugin's 0.1.x name, kept as an alias.
         "dataset": os.environ.get("COGNEE_PLUGIN_DATASET")
         or os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
+        # Graph recall mode: "auto" (the server picks the dataset) or "pinned"
+        # (recall stays on the active dataset). Same variable as the hook family.
+        "recall_mode": os.environ.get("COGNEE_PLUGIN_RECALL_MODE", RECALL_MODE_AUTO),
         "top_k": str_to_int(os.environ.get("COGNEE_TOP_K"), 5),
         "auto_route": str_to_bool(os.environ.get("COGNEE_AUTO_ROUTE"), True),
         "improve_on_end": str_to_bool(os.environ.get("COGNEE_IMPROVE_ON_END"), True),
@@ -327,10 +343,12 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         except Exception:
             pass
 
-    # "auto" names the recall mode, never a dataset: saves go to the default
-    # (configured_dataset_name). A blank name is left as it is (see the tests).
+    # "auto" is reserved for the recall mode, never a dataset: saves go to the
+    # default (configured_dataset_name). It does not set the mode. A blank name
+    # is left as it is (see the tests).
     if str(config.get("dataset") or "").strip().lower() == "auto":
         config["dataset"] = DEFAULT_DATASET
+    config["recall_mode"] = configured_recall_mode(config.get("recall_mode"))
     config["top_k"] = max(1, str_to_int(config.get("top_k"), 5))
     config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 120))
     config["write_timeout"] = max(1, str_to_int(config.get("write_timeout"), 120))

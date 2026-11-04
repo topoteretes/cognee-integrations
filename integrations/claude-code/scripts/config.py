@@ -169,8 +169,9 @@ def load_config() -> dict:
 
     raw_dataset = str(config.get("dataset") or "")
     if raw_dataset.strip().lower() == "auto":
-        # "auto" is reserved for auto recall: a configured "auto" means the
-        # default dataset with recall left on auto, so it never reaches the
+        # "auto" is reserved (switch-dataset.py auto): a configured "auto" means
+        # the default dataset (the recall mode is COGNEE_PLUGIN_RECALL_MODE's
+        # business), so it never reaches the
         # launch record (and from there saves, shared memory and registration).
         config["dataset"] = _DEFAULTS["dataset"]
     else:
@@ -241,8 +242,8 @@ def get_dataset(config: dict) -> str:
                 return recorded
     except Exception:
         pass
-    # "auto" is reserved for auto recall: COGNEE_PLUGIN_DATASET=auto means the
-    # default dataset with recall left on auto.
+    # "auto" is reserved (switch-dataset.py auto): COGNEE_PLUGIN_DATASET=auto
+    # means the default dataset.
     name = str(config.get("dataset") or "").strip()
     return name if name and name.lower() != "auto" else "agent_sessions"
 
