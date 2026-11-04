@@ -8,23 +8,31 @@ Anthropic, CrewAI, ...) with shared Cognee memory:
   * after the turn, the incoming message and the reply the adapter sent are
     stored as one QA pair in the Cognee session cache (fire-and-forget)
   * when a room is removed (``on_cleanup``) or the agent stops
-    (``cleanup_all``), the session cache is bridged into the graph via
-    ``/improve``
+    (``cleanup_all``), that room's pending writes are drained and the session
+    cache is bridged into the graph via ``/improve``
 
-The wrapper deliberately imports nothing from ``band``: the Band ``Agent``
-drives adapters through duck typing (``on_started`` / ``on_event`` /
-``on_cleanup`` / ``cleanup_all`` and a ``setattr`` of ``_band_agent_id``), and
-``AgentInput`` / ``PlatformMessage`` are dataclasses, so interception works via
-attribute delegation and ``dataclasses.replace``. Memory I/O runs in worker
-threads (the client is synchronous stdlib urllib) so Band's event loop never
-blocks, and every memory failure is logged and swallowed — memory must never
-break a turn.
+The wrapper is a ``SimpleAdapter`` that composes the inner adapter the same
+way band-sdk's own ``SlackAdapter`` does: it adopts the inner adapter's
+features, hands it cleanup ownership and model selection, and forwards
+startup, control messages, interrupts and teardown. The Band runtime
+therefore runs the full built-in lifecycle (feature negotiation, the
+model-selection check, ``add_cleanup`` resources) for the inner adapter.
+
+Memory I/O runs in worker threads (the client is synchronous stdlib urllib) so
+Band's event loop never blocks, and every memory failure is logged and
+swallowed — memory must never break a turn.
 """
 
 import asyncio
 import dataclasses
 import json
 import logging
+from typing import Any
+
+from band.core.simple_adapter import SimpleAdapter
+from band.runtime.startup import accept_adapter, arm_adapter, dispose_adapter, dispose_framework
+from band.runtime.tools.registry import LEGACY_SEND_MESSAGE_TOOL, canonicalize_mcp_tool_name
+from band.runtime.tools.types import BandTool
 
 from .client import UNREACHABLE, CogneeClient
 from .config import CogneeSettings
@@ -34,6 +42,10 @@ logger = logging.getLogger("cognee_band")
 # Only real conversation turns get recall + QA capture; tool_call/thought/task
 # events pass through untouched.
 _MEMORY_MESSAGE_TYPES = {"text"}
+
+# Tool names that post a room message: band_send_message, its legacy band-mcp
+# spelling, and (via canonicalize_mcp_tool_name) the MCP ``band-`` prefixed forms.
+_SEND_MESSAGE_TOOLS = frozenset({BandTool.SEND_MESSAGE.value, LEGACY_SEND_MESSAGE_TOOL})
 
 _CONTEXT_HEADER = (
     "Cognee memory — context recalled from shared memory, possibly relevant to the message below:"
@@ -61,7 +73,14 @@ def render_memory_block(results: list) -> str:
 
 
 class _CaptureTools:
-    """Transparent proxy over Band's AgentTools that records sent replies."""
+    """Transparent proxy over Band's AgentTools that records sent replies.
+
+    Adapters reply in two ways: a direct ``tools.send_message(...)`` call, or a
+    ``band_send_message`` tool call dispatched through ``execute_tool_call`` /
+    ``execute_tool_call_structured`` (Anthropic, Agno, Codex, Gemini, ...).
+    The real dispatcher resolves the tool method on itself, so it never reaches
+    this proxy's ``send_message``; the tool-call entry points are wrapped too.
+    """
 
     def __init__(self, inner):
         self._inner = inner
@@ -70,13 +89,31 @@ class _CaptureTools:
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    async def send_message(self, content, mentions=None):
+    def _record(self, content) -> None:
         if isinstance(content, str) and content.strip():
             self.sent.append(content)
-        return await self._inner.send_message(content, mentions=mentions)
+
+    async def send_message(self, content, mentions=None, **kwargs):
+        result = await self._inner.send_message(content, mentions=mentions, **kwargs)
+        self._record(content)
+        return result
+
+    async def execute_tool_call_structured(self, tool_name, arguments):
+        outcome = await self._inner.execute_tool_call_structured(tool_name, arguments)
+        if outcome.ok and _is_send_message(tool_name):
+            self._record((arguments or {}).get("content"))
+        return outcome
+
+    async def execute_tool_call(self, tool_name, arguments):
+        # Mirrors AgentTools.execute_tool_call, so the send is recorded once.
+        return (await self.execute_tool_call_structured(tool_name, arguments)).value
 
 
-class CogneeMemoryAdapter:
+def _is_send_message(tool_name: str) -> bool:
+    return canonicalize_mcp_tool_name(tool_name, _SEND_MESSAGE_TOOLS) in _SEND_MESSAGE_TOOLS
+
+
+class CogneeMemoryAdapter(SimpleAdapter[Any]):
     """Wrap a Band adapter with Cognee-backed memory.
 
     Usage::
@@ -85,33 +122,91 @@ class CogneeMemoryAdapter:
         agent = Agent.create(adapter=adapter, agent_id=..., api_key=...)
     """
 
-    # Attributes that live on the wrapper itself. Everything else — including
-    # the ``_band_agent_id`` the Band Agent sets before on_started — is
-    # forwarded to the inner adapter so it behaves exactly as if unwrapped.
-    _OWN_ATTRS = frozenset({"_inner", "_client", "_settings", "_active_rooms", "_pending_tasks"})
-
     def __init__(
-        self, inner, *, settings: CogneeSettings | None = None, client: CogneeClient | None = None
+        self,
+        inner: SimpleAdapter[Any],
+        *,
+        settings: CogneeSettings | None = None,
+        client: CogneeClient | None = None,
     ):
-        object.__setattr__(self, "_inner", inner)
-        resolved = settings or CogneeSettings.resolve()
-        object.__setattr__(self, "_settings", resolved)
-        object.__setattr__(self, "_client", client or CogneeClient(resolved))
-        object.__setattr__(self, "_active_rooms", set())
-        object.__setattr__(self, "_pending_tasks", set())
+        if not isinstance(inner, SimpleAdapter):
+            raise TypeError(
+                "CogneeMemoryAdapter wraps a band-sdk SimpleAdapter "
+                f"(AnthropicAdapter, LangGraphAdapter, ...), got {type(inner).__name__}"
+            )
+        # Mirror the inner adapter's declared support before SimpleAdapter's
+        # construction-time validation runs (same as band-sdk's SlackAdapter).
+        self.SUPPORTED_EMIT = inner.SUPPORTED_EMIT  # type: ignore[misc]
+        self.SUPPORTED_CAPABILITIES = inner.SUPPORTED_CAPABILITIES  # type: ignore[misc]
+        self._inner = inner
+        super().__init__(history_converter=inner.history_converter)
 
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
+        self._settings = settings or CogneeSettings.resolve()
+        self._client = client or CogneeClient(self._settings)
+        self._active_rooms: set[str] = set()
+        self._pending_tasks: dict[str, set[asyncio.Task]] = {}
 
-    def __setattr__(self, name, value):
-        if name in self._OWN_ATTRS:
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._inner, name, value)
+    @property
+    def inner(self) -> SimpleAdapter[Any]:
+        """The wrapped framework adapter."""
+        return self._inner
+
+    # -- composition: the inner adapter owns features, models and resources ----
+
+    def _resolve_features(self, **features):
+        return self._inner.features
+
+    def apply_effective_features(self, features) -> None:
+        super().apply_effective_features(features)
+        self._inner.apply_effective_features(features)
+
+    @property
+    def _owns_cleanup(self) -> bool:
+        return super()._owns_cleanup or self._inner._owns_cleanup
+
+    def _accept_cleanup(self, owner: object, *, exclusive: bool) -> None:
+        accept_adapter(self._inner, owner, exclusive=exclusive)
+
+    async def _finalize_cleanup(self) -> None:
+        await dispose_adapter(self._inner)
+
+    @property
+    def judges_turns(self) -> bool:
+        return self._inner.judges_turns
+
+    @property
+    def backend_turns(self):
+        return self._inner.backend_turns
+
+    @property
+    def model_selection(self):
+        return self._inner.model_selection
+
+    async def list_models(self):
+        return await self._inner.list_models()
+
+    async def apply_model_selection(self, selection, *, room_id: str) -> None:
+        await self._inner.apply_model_selection(selection, room_id=room_id)
+
+    async def try_handle_control(self, msg, tools) -> bool:
+        return await self._inner.try_handle_control(msg, tools)
+
+    async def on_interrupt(self, room_id: str, mode) -> None:
+        await self._inner.on_interrupt(room_id, mode)
+
+    async def on_message(self, msg, tools, history, participants_msg, contacts_msg, **kwargs):
+        # Turns arrive through on_event below; this only serves callers that
+        # drive run_judged_turn directly.
+        await self._inner.on_message(msg, tools, history, participants_msg, contacts_msg, **kwargs)
 
     # -- lifecycle -------------------------------------------------------------
 
     async def on_started(self, agent_name: str, agent_description: str) -> None:
+        await super().on_started(agent_name, agent_description)
+        if self.platform is not None:
+            # The runtime injects the platform connection on the wrapper only.
+            setattr(self._inner, "platform", self.platform)  # noqa: B010
+        arm_adapter(self._inner)
         await self._inner.on_started(agent_name, agent_description)
         logger.info(
             "cognee memory active: dataset=%s server=%s",
@@ -145,6 +240,7 @@ class CogneeMemoryAdapter:
             if question.strip():
                 answer = "\n\n".join(capture.sent)
                 self._fire_and_forget(
+                    inp.room_id,
                     self._client.store_qa,
                     question,
                     answer,
@@ -156,13 +252,13 @@ class CogneeMemoryAdapter:
             await self._inner.on_cleanup(room_id)
         finally:
             self._active_rooms.discard(room_id)
+            await self._drain_pending(room_id)
             await self._improve(self._settings.session_id_for_room(room_id))
 
     async def cleanup_all(self) -> None:
         try:
-            inner_cleanup = getattr(self._inner, "cleanup_all", None)
-            if inner_cleanup is not None:
-                await inner_cleanup()
+            if self._inner._disposal.builtin_started:
+                await dispose_framework(self._inner)
         finally:
             await self._drain_pending()
             for room_id in sorted(self._active_rooms):
@@ -195,7 +291,7 @@ class CogneeMemoryAdapter:
         except Exception:
             logger.exception("cognee improve failed for %s", session_id)
 
-    def _fire_and_forget(self, fn, *args, **kwargs) -> None:
+    def _fire_and_forget(self, room_id: str, fn, *args, **kwargs) -> None:
         async def runner():
             try:
                 await asyncio.to_thread(fn, *args, **kwargs)
@@ -203,11 +299,21 @@ class CogneeMemoryAdapter:
                 logger.exception("cognee background store failed")
 
         task = asyncio.get_running_loop().create_task(runner())
-        self._pending_tasks.add(task)
-        task.add_done_callback(self._pending_tasks.discard)
+        room_tasks = self._pending_tasks.setdefault(room_id, set())
+        room_tasks.add(task)
+        task.add_done_callback(room_tasks.discard)
 
-    async def _drain_pending(self) -> None:
-        """Let in-flight QA stores land before the final improve bridges them."""
-        pending = [t for t in self._pending_tasks if not t.done()]
+    async def _drain_pending(self, room_id: str | None = None) -> None:
+        """Let in-flight QA stores land before improve bridges them.
+
+        With ``room_id`` only that room's writes are awaited; otherwise all.
+        """
+        if room_id is None:
+            pending = [t for tasks in self._pending_tasks.values() for t in tasks]
+        else:
+            pending = list(self._pending_tasks.get(room_id, ()))
+        pending = [t for t in pending if not t.done()]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+        if room_id is not None:
+            self._pending_tasks.pop(room_id, None)
