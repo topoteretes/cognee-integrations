@@ -85,6 +85,8 @@ const POLL_WINDOW_MS = 30_000
 // (minutes on a cold start); the poll follows that phase past the warm-up,
 // retaking the snapshot every half minute, and stops when the phase ends.
 const WARMUP_MS = 120_000
+// How long after a /clear or /resume the band watches for the new session id.
+const ADOPT_MS = 30_000
 const WARMUP_RETRY_TICKS = 5
 const BOOT_RETRY_TICKS = 30
 // Mirrors the renderer: an active phase older than this is a hook that died.
@@ -163,6 +165,12 @@ const NODE_SETS: Record<string, string> = {
 
 // ── module state (reset on a reload, which is fine: it is all redrawn) ──────
 let sessionId = ''
+// The id a /clear or /resume ended, and the watch for the id that follows it:
+// the engine sends no session.start for the new conversation, so the band
+// adopts it on its own instead of drawing an unbound row until the next prompt.
+let endedSessionId = ''
+let adopting = false
+let adoptWatch: { cancel: () => void } | null = null
 let phasePath = ''
 let bandPath = ''
 let rendererPython: string | null = null
@@ -217,9 +225,6 @@ let recallMode: '' | 'auto' | 'pinned' = ''
 // (its `message`); '' until listed or when an older script sent none.
 let recallMessage = ''
 let namingDataset = false
-// In a terminal the picker stays closed until asked for: a click anywhere on
-// the band gives the band the keys, and a focused picker shows its list.
-let pickerOpen = false
 
 // The first-run tour: one hint line under the row per step, about what is
 // right above it. Shown once per machine (the store key survives sessions);
@@ -431,10 +436,12 @@ function activity(phase: Phase): Activity {
 // engine's own band is often an empty element, which still takes a row in a
 // terminal when stacked under ours, so an empty one is left out.
 // The credit line at the end of an answer, as the recall hook's instruction
-// has the model write it: "> 🧠 Cognee memory [m4, m5]: what it remembered".
-// Returns the text without it, the tags and the note; null when the text
-// does not end with one.
-const CREDIT_LINE = /^(?:>\s*)?🧠\s*Cognee memory \[([^\]]+)\]:\s*(.*)$/u
+// has the model write it: "> Cognee memory: what it remembered, from <document>
+// in the <dataset> dataset". Older answers cite tags, "> 🧠 Cognee memory
+// [m4, m5]: …"; the tags and the brain are taken off those too.
+// Returns the text without it, the tags ('' when untagged) and the note; null
+// when the text does not end with one.
+const CREDIT_LINE = /^(?:>\s*)?(?:🧠\s*)?Cognee memory(?: \[([^\]]+)\])?:\s*(.*)$/u
 
 // The display logotype from cognee.ai/brand-resources (logotype-lavender.svg),
 // which is built from squares on a grid, in braille: one square is one dot (a
@@ -602,6 +609,37 @@ async function markBand($: any): Promise<void> {
     await $.fs.write(bandPath, JSON.stringify({ session_id: sessionId, at: (await $.clock.now()) / 1000, plugin: 'cognee-memory' }))
   } catch {
     // the status line then stays; nothing else depends on the marker
+  }
+}
+
+// After a /clear or /resume: bind the conversation that replaced the ended
+// one as soon as the engine reports its id, and set it up the way a session
+// start does (the snapshot, the warm-up poll, the dataset listing).
+async function adoptSession($: any): Promise<void> {
+  if (adopting || sessionId) return
+  adopting = true
+  try {
+    const id = await $.session.id()
+    if (!id || id === endedSessionId || sessionId) return
+    stopAdoptWatch()
+    await bindSession($)
+    await readPhase($)
+    await refreshSnapshot($)
+    warmupUntil = (await $.clock.now()) + WARMUP_MS
+    await startPoll($, WARMUP_MS)
+    if (bandOn) void loadDatasets($)
+    redraw($)
+  } catch {
+    // the next prompt binds it
+  } finally {
+    adopting = false
+  }
+}
+
+function stopAdoptWatch(): void {
+  if (adoptWatch) {
+    adoptWatch.cancel()
+    adoptWatch = null
   }
 }
 
@@ -1089,10 +1127,9 @@ export const register: Register = (on, options) => {
       // switch-dataset.py says which recall is on and why; the generic line is
       // for an older script that sends no message.
       const recall = recallMessage || (recallMode === 'auto' ? 'Recall is auto.' : `Recall is restricted to ${current}.`)
-      pickerOpen = true
       redraw($)
       return {
-        text: `Cognee datasets you can write to:\n${rows}\n\n${recall}\n/cognee-dataset <name> switches this session, /cognee-dataset pin restricts recall to the active dataset, /cognee-dataset auto sets it back to auto; the picker on the status row is open too (ctrl+x tab reaches it, arrows move, Enter picks).`,
+        text: `Cognee datasets you can write to:\n${rows}\n\n${recall}\n/cognee-dataset <name> switches this session, /cognee-dataset pin restricts recall to the active dataset, /cognee-dataset auto sets it back to auto; the dataset name on the status row is a picker too (a click or ctrl+x tab opens it, arrows move, Enter picks).`,
       }
     }
     const line = await switchDataset($, name)
@@ -1186,6 +1223,7 @@ export const register: Register = (on, options) => {
   // the fallback. A /clear or /resume changes the session id, so rebind here.
   on('prompt.submit', async ($, e, next) => {
     const id = await $.session.id()
+    stopAdoptWatch()
     if (id !== sessionId) await bindSession($)
     setActive($, activity('recalling'))
     let ran
@@ -1238,15 +1276,33 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
       if (active) clearActive($)
+      // The ended session's marker must not be read into the new one's row
+      // (its SessionEnd sync would show as "✓ session saved").
+      if (poll) {
+        poll.cancel()
+        poll = null
+      }
+      endedSessionId = (typeof e.sessionId === 'string' && e.sessionId) || sessionId
+      phasePath = ''
+      bandPath = ''
       result = null
       snapshot = null
       namingDataset = false
-      pickerOpen = false
       sessionId = ''
       rememberCalls = 0
       rememberBytes = 0
       // The next session has a launch record of its own: list again for it.
       resetDatasets()
+      const ran = await next(e)
+      // Bind the new conversation once its id is out, for up to ADOPT_MS.
+      stopAdoptWatch()
+      const until = (await $.clock.now()) + ADOPT_MS
+      adoptWatch = $.clock.every(POLL_MS, async () => {
+        if (sessionId || (await $.clock.now()) > until) stopAdoptWatch()
+        else await adoptSession($)
+      })
+      void adoptSession($)
+      return ran
     }
     return next(e)
   })
@@ -1262,6 +1318,18 @@ export const register: Register = (on, options) => {
     await startPoll($, POLL_WINDOW_MS)
     return ran
   })
+
+  // The terminal picker expands as a click gives it the focus. Datasets come
+  // and go outside this session (deleted, created by another agent): that
+  // focus lists them afresh, and the options redraw when the answer lands.
+  on('ui.focus', async ($, e, next) => {
+    const ran = await next(e)
+    if (e.component === 'Pane') return ran
+    // Not a move a plugin made (its own autoFocus, a `$.ui.focus`).
+    const element = e.element ?? (e as { key?: string }).key
+    if (element === 'dataset' && e.origin?.kind !== 'plugin' && !datasetsListing) void relistDatasets($)
+    return ran
+  }).catch(($, e, next) => next(e))
 
   on('ui.close', { id: FIX_PANE }, ($, e, next) => {
     fixOpen = false
@@ -1326,6 +1394,7 @@ export const register: Register = (on, options) => {
     type Segment = { width: number; drop: number; children: RenderElement[] }
     const segments: Segment[] = []
     const segment = (width: number, drop: number, ...children: RenderElement[]) => segments.push({ width, drop, children })
+    if (!sessionId) void adoptSession($)
     if (!datasetsListed && !datasetsListing && datasetsAttempts < LIST_MAX_ATTEMPTS && datasetsRetryAt === 0) void loadDatasets($)
     void startTourIfFirstRun($)
     const current = switchTargets.find(r => r.current)?.name ?? snap?.dataset ?? ''
@@ -1358,7 +1427,6 @@ export const register: Register = (on, options) => {
         value: auto ? AUTO_RECALL : current,
         ...(e.surface === 'terminal' ? { autoFocus: true as const } : {}),
         onSelect: (value: string) => {
-          pickerOpen = false
           if (value === NEW_DATASET) {
             namingDataset = true
             redraw($)
@@ -1380,21 +1448,12 @@ export const register: Register = (on, options) => {
           }
         },
       })
-    // The terminal's closed form: the name as a button that opens the picker.
-    const closedPicker = () =>
-      Button({
-        key: 'dataset',
-        label: `${pickerLabel} ▾`,
-        plain: true,
-        onPress: () => {
-          pickerOpen = true
-          redraw($)
-          // Datasets come and go outside this session (deleted, created by
-          // another agent): every open lists them afresh, and the list redraws
-          // when the answer lands.
-          void relistDatasets($)
-        },
-      })
+    // In a terminal the picker is drawn from the start: the engine shows it
+    // compact (the selected name) until a click gives it the focus, expanded
+    // while it has it, and compact again on Escape. A Select has no hover style
+    // of its own, so a keyed Box around it lights while the pointer is over it.
+    const hoverable = (child: RenderElement) =>
+      Box({ key: 'datasetHover', flexDirection: 'row', hover: { backgroundColor: 'subtle' }, children: [child] })
     // The text field the "new dataset…" entry turns the picker into. Enter
     // with a name switches there (creating it); Enter on nothing, or the ✕,
     // brings the picker back.
@@ -1472,8 +1531,8 @@ export const register: Register = (on, options) => {
     segment(badgeWidth + 7, 0, ...badge)
     // The dataset: a control when there is a list, the name otherwise.
     if (canPick) {
-      const open = e.surface !== 'terminal' || pickerOpen
-      segment(namingDataset ? 26 : pickerLabel.length + 2, 0, namingDataset ? namer() : open ? picker() : closedPicker())
+      const drawn = namingDataset ? namer() : e.surface === 'terminal' ? hoverable(picker()) : picker()
+      segment(namingDataset ? 26 : pickerLabel.length + 2, 0, drawn)
     } else {
       const name = snap?.dataset ?? 'memory'
       segment(name.length, 0, Text({ children: [name] }))
@@ -1574,9 +1633,9 @@ export const register: Register = (on, options) => {
   // While Claude works: "Thinking · 🧠 recalling…". On the desktop for every
   // phase; in a terminal only for the async phases, whose settings hooks show
   // no statusMessage of their own there.
-  // The credit line under an answer that used memory ("> 🧠 Cognee memory
-  // [m4]: …", written by the model on the recall hook's instruction): the
-  // brain gives way to the wave mark on the desktop and to the display
+  // The credit line under an answer that used memory ("> Cognee memory:
+  // …", written by the model on the recall hook's instruction): the
+  // label gives way to the wave mark on the desktop and to the display
   // logotype in a terminal, which draws no Svg. The engine still draws the
   // reply, with the line taken off its text; the line is drawn under it as a
   // row of its own. The stored message is never changed (ctrl+o, the Stop

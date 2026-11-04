@@ -385,6 +385,26 @@ test('in a terminal the credit line under an answer carries the display logotype
   await ui.unmount()
 })
 
+test('an untagged credit line without the brain (auto recall) is drawn under the answer too', async ($, on) => {
+  const state = { marker: '' }
+  wire(on, state)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({
+    plugin: 'cognee-memory',
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    props: {
+      text: 'Maya kept EU 40.\n\n> Cognee memory: her orders, from maya-7f3a in the live_context_support_agent_demo dataset',
+      isFirstOfReply: true,
+    },
+  })
+  expect(await ui.find({ type: 'Text', text: /^⡏⠁⡏⡇/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Her orders, from maya-7f3a in the live_context_support_agent_demo dataset/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Cognee memory|🧠/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('an answer without a credit line is left to the engine', async ($, on) => {
   const state = { marker: '' }
   wire(on, state)

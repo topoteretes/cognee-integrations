@@ -383,14 +383,16 @@ def format_code_facts(facts: list) -> str:
 # Crediting memory in the answer (SDK-1071)
 # ---------------------------------------------------------------------------
 #
-# Every recalled item the hook injects gets a short tag (``m1``, ``m2``…) and a
-# label saying where it came from. An instruction above the memory asks the
-# agent to end an answer that used memory with one ``🧠 Cognee memory [mN]: …``
-# line. Tags are numbered across the session and a memory recalled again keeps
-# its tag, so a tag always names one memory however many turns later it is
-# cited. The Stop hook checks the answer's credit line against the session's
-# tags: a cited tag that was never handed out is logged as invented. That log
-# is the measure of how reliably agents credit memory.
+# Every recalled item the hook injects is marked with where it came from: a
+# graph item with its document, when it names one, and its dataset,
+# ``[document <name> · dataset <name>]`` (SDK-1393). An instruction above the
+# memory asks the agent to end an answer that used memory with one
+# ``> Cognee memory: …`` line naming them. Items are still numbered across the
+# session behind the scenes (``m1``, ``m2``…; a memory recalled again keeps its
+# number), so the hook can tell which ones were injected on a turn. The Stop
+# hook counts a turn whose answer ends with the credit line; a line that still
+# cites ``[mN]`` (an older answer) is checked against the session's tags, and
+# a cited tag never handed out is logged as invented.
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
@@ -406,6 +408,9 @@ _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.
 #: Only the credit line counts: ``arr[m1]`` in code, or the instruction's own
 #: example quoted back, is not a citation.
 _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
+#: The credit line, "> Cognee memory: …", as the answer's last line (the 🧠
+#: older answers put before the label still counts).
+_UNTAGGED_CREDIT_RE = re.compile(r"^\s*(?:>\s*)?(?:🧠\s*)?Cognee memory:\s*\S")
 _AGENTS = {
     "claude": "Claude Code",
     "codex": "Codex",
@@ -413,17 +418,19 @@ _AGENTS = {
     "antigravity": "Antigravity",
 }
 
+#: Every item is marked with where it came from, a graph item with its document
+#: and dataset (SDK-1393); the credit line names them and carries no tag.
 CREDIT_INSTRUCTION = (
     "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "
-    "as [mN · where it came from]. A memory recalled again in this session keeps its "
-    "tag. If your answer uses information from a tagged item, end the answer with one "
-    "line:\n"
-    "> 🧠 Cognee memory [mN]: <what you remembered, and where or when it came from, "
-    "as the tag says>\n"
-    "Cite several tags as [m1, m3]. Cite only tags Cognee gave you, and only items your "
-    "answer actually used. Never credit Cognee for what you know from project "
-    "instruction files, your own memory files, the code, or this conversation. If no "
-    "tagged item was used, do not mention memory."
+    "with where it came from, as [document <name> · dataset <name>] (the document only "
+    "when known). If your answer uses information from a tagged item, end the answer "
+    "with one line:\n"
+    "> Cognee memory: <what you remembered>, from <document> in the <dataset> dataset\n"
+    "Leave out the document when the tag gives none, name each dataset you used once, "
+    "and for an item tagged with no dataset say where it came from as its tag says. "
+    "Never credit Cognee for what you know from project instruction files, your own "
+    "memory files, the code, or this conversation. If no tagged item was used, do not "
+    "mention memory."
 )
 FIRST_CREDIT_ADDENDUM = (
     "This would be the first Cognee credit in this session, so in that line also say in "
@@ -633,10 +640,12 @@ def has_credited(state_dir, session_key: str) -> bool:
 def check_credits(answer: str, tags: MemoryTags) -> dict:
     """Compare the tags an answer's credit line cites with the session's tags.
 
-    Returns ``{"cited", "valid", "invented", "earlier", "available"}``: tag
-    lists in the order first cited. ``valid`` tags were handed out this
-    session; ``earlier`` are the valid ones not injected on this turn;
-    ``available`` is how many this turn injected.
+    Returns ``{"cited", "valid", "invented", "earlier", "available",
+    "untagged"}``: tag lists in the order first cited. ``valid`` tags were
+    handed out this session; ``earlier`` are the valid ones not injected on
+    this turn; ``available`` is how many this turn injected. ``untagged``,
+    present only when true, means the answer ends with the credit line,
+    which names no tag, on a turn that injected some.
     """
     cited: list[str] = []
     for group in _CITATION_RE.findall(answer or ""):
@@ -646,19 +655,23 @@ def check_credits(answer: str, tags: MemoryTags) -> dict:
     known = {str(r.get("tag")): r for r in tags.records}
     this_turn = {t for t, r in known.items() if r.get("turn") == tags.turn}
     valid = [t for t in cited if t in known]
-    return {
+    result = {
         "cited": cited,
         "valid": valid,
         "invented": [t for t in cited if t not in known],
         "earlier": [t for t in valid if t not in this_turn],
         "available": len(this_turn),
     }
+    last = (answer or "").rstrip().rsplit("\n", 1)[-1]
+    if this_turn and _UNTAGGED_CREDIT_RE.match(last):
+        result["untagged"] = True
+    return result
 
 
 def record_credit(state_dir, session_key: str, result: dict, ts: str = "") -> None:
-    """Count a turn that credited memory with at least one valid tag."""
+    """Count a turn that credited memory: the credit line, or a valid tag."""
     folder = session_state_dir(state_dir, session_key)
-    if not (folder and result.get("valid")):
+    if not (folder and (result.get("valid") or result.get("untagged"))):
         return
     path = folder / CREDIT_FILE
     state = _read_json(path)

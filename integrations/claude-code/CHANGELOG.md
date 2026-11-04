@@ -49,6 +49,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+- **The memory credit names the document and dataset (SDK-1393).** Every graph item the recall
+  hook injects is marked `[document <name> · dataset <name>]` (the document only when the item
+  names one), since under auto recall the server picks the dataset and the mark is the only place
+  the answer learns which one. The credit line is now `> Cognee memory: <what>, from <document> in
+  the <dataset> dataset`, with no `[mN]` tags or brain; items are still numbered behind the scenes.
+  The Stop hook counts a turn whose answer ends with that line (`untagged: true` in the
+  `memory_credit` event); an older line citing `[mN]` is still checked against the session's tags.
+- **The terminal dataset picker is drawn from the start.** It shows the selected name and lights
+  under the pointer; a click or `ctrl+x tab` gives it the focus, which opens the list and lists the
+  datasets afresh. The `▾` button that opened it is gone.
 
 ### Removed
 - **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
@@ -67,6 +77,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **The status row no longer vanishes when the dataset picker opens on same-named datasets.**
   The terminal picker offered a name once per dataset so named; the engine refuses a `Select` whose
   values repeat and dropped the whole row, for the rest of the session. Each name is offered once.
+- **The status row follows `/clear` and `/resume`.** The engine sends no session start for the
+  conversation that replaces the ended one, so the row stayed unbound until the next prompt and
+  could show the ended session's sync as `✓ session saved`. The module now drops the ended
+  session's marker and binds the new conversation as soon as its id is out (watching for up to
+  30 s), with the snapshot, warm-up poll and dataset listing a session start gets.
 
 ## [1.7.6]
 

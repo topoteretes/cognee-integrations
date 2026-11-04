@@ -510,28 +510,32 @@ See [Claude Code's auto-memory settings](https://code.claude.com/docs/en/memory#
 When an answer uses recalled memory, the agent says so in one line at the end:
 
 ```
-> 🧠 Cognee memory [m2]: on Oct 3 (Codex session) you chose the server over the CLI.
+> Cognee memory: Maya's orders and support chat, from maya-7f3a in the live_context_support_agent_demo dataset
 ```
+
+Claude Code draws that line under the answer with the Cognee mark in place of the label.
 
 How it works:
 
-- The recall hook tags every injected item with `m1`, `m2`… and where it came from: an
-  evidence item, a Claude Code or Codex session, a dated session learning, a document,
-  graph entities or facts, code-graph facts, or agent guidance. Tags are numbered across
-  the session, and a memory recalled again keeps its tag: an evidence item by its
-  citation, an earlier turn or trace by its server id, anything else by its text. So a
-  tag names one memory for the whole session. Tags are assigned before the 9,000-char
-  budget and the injection ledger trim the context; only the ones that survive count as
-  this prompt's.
+- The recall hook marks every injected graph item with the dataset it came from, plus
+  the document when the item names one:
+  `[document maya-7f3a · dataset live_context_support_agent_demo]`. With recall set to
+  auto the server picks the dataset, and this mark is the only place the answer can
+  learn which one. Other items say where they came from, e.g. `[agent trace, …]`.
+  Behind the scenes every item is still numbered across the session (`m1`, `m2`…; a
+  memory recalled again keeps its number) before the 9,000-char budget and the
+  injection ledger trim the context; only the ones that survive count as this prompt's.
 - On turns where memory was injected, an instruction above it says how many memories
   Cognee found for this prompt and asks the agent to add the credit line only when the
   answer used a tagged item, and never for what it knows from CLAUDE.md, MEMORY.md, the
   code, or the conversation. The first credit in a session also says in a few words how
   it connects to the earlier work.
-- The Stop hook reads only the credit line (`arr[m1]` in code is not a citation),
-  compares its tags with the session's and logs a `memory_credit` event to `hook.log`:
-  cited, valid, invented, `earlier` (valid but not injected on this turn) and `available`
-  (how many this turn injected). Nothing is sent anywhere.
+- The Stop hook reads only the answer's last line and logs a `memory_credit` event to
+  `hook.log`: `available` (how many this turn injected) and `untagged: true` when the
+  answer ends with the credit line. It cannot tell which items the answer used. A line
+  that still cites `[mN]` (an older answer) is checked against the session's tags:
+  cited, valid, invented and `earlier` (valid but not injected on this turn). Nothing
+  is sent anywhere.
 - The tags, the credit state and the final-sync stored count live in the session's
   folder, `~/.cognee-plugin/claude-code/sessions/<session>/`, which the state sweep
   removes after a week idle.
@@ -1134,12 +1138,11 @@ dataset, creating it (the same rules as a typed switch: no spaces or dots), and
 Enter on nothing or the `✕` brings the picker back. The row says `switching
 dataset…` while it runs and a toast reports the outcome, errors included. Until the
 listing lands, or when it fails (no launch record, server down), the name is plain
-text. In a terminal the picker stays closed until asked for, since a focused
-picker shows its list: the dataset name is a button (`agent_sessions ▾`, or
-`auto (agent_sessions) ▾` while recall is auto); press
-it, or `/cognee-dataset` alone, to open the list, then `ctrl+x tab` or a click
-reaches it, arrows move, Enter picks and the list closes again. Escape returns
-to the prompt.
+text. In a terminal the picker shows the selected name (`agent_sessions`, or
+`auto (agent_sessions)` while recall is auto) and lights under the pointer; a
+click or `ctrl+x tab` gives it the focus, which opens its list and lists the
+datasets afresh. Arrows move, Enter picks; a click on an entry only moves the
+focus. Escape returns to the prompt and the picker shows the name again.
 
 The module also adds, on both surfaces:
 
@@ -1148,7 +1151,7 @@ The module also adds, on both surfaces:
   in the background (saving, learning from the session, indexing, session sync), because the
   recall and compaction hooks already show their own status message there.
 
-The credit inside an answer that used memory (`🧠 Cognee memory [m2]: …`) is the
+The credit inside an answer that used memory (`> Cognee memory: …`) is the
 agent's own, asked for by the recall hook; see [Credit in the answer](#credit-in-the-answer).
 The module only redraws that line: the wave mark on the desktop, the display
 logotype in a terminal (see [Dataset picker and tools](#dataset-picker-and-tools)).
@@ -1232,8 +1235,8 @@ runs; a toast reports the outcome in the script's own words (its `message`, the 
 `switch-dataset.py` prints), for example `Recall is now pinned to 'agent_sessions', the active
 dataset; saves go there too.`, or the script's error (`✕ Selected dataset is not writable`).
 
-The list is read once when the row is first drawn and again after each
-switch; nothing polls. `/cognee-dataset <name>` (or `/cognee-dataset pin`, `/cognee-dataset auto`) does the same from the prompt
+The list is read once when the row is first drawn, again after each switch
+and, in a terminal, each time a click gives the picker the focus; nothing polls. `/cognee-dataset <name>` (or `/cognee-dataset pin`, `/cognee-dataset auto`) does the same from the prompt
 on every surface, and `/cognee-dataset` alone prints the list and the script's sentence about the recall mode.
 
 **Two tools Claude calls directly.** At session start the module registers
@@ -1250,8 +1253,8 @@ does not load mods and for the judgement the skill text carries.
 | `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
 
 The credit line the model writes under an answer that used memory
-(`> 🧠 Cognee memory [m4, m5]: …`) is drawn as the mark and the note alone, the
-label and the tags left to the stored line: the engine still draws the reply,
+(`> Cognee memory: …`) is drawn as the mark and the note alone, the
+label left to the stored line: the engine still draws the reply,
 with the line taken off its text, and the mod draws the row under it. The mark
 is the wave on the desktop; a terminal draws no vector image, so there it is
 the display logotype from the brand resources, which is built on a grid of

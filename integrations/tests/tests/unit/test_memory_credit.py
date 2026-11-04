@@ -341,19 +341,29 @@ def _saved(rt, lookup):
     return rt.MemoryTags.load(_state_dir(lookup), SESSION_KEY)
 
 
+#: The credit line the instruction asks for: Claude Code's names no tag and no
+#: brain (SDK-1393), Codex's cites ``[mN]``.
+CREDIT_LINE_RE = r"> (?:\U0001f9e0 )?Cognee memory(?: \[mN\])?:"
+
+
 def _tag_of(ctx: str, origin: str) -> str:
-    """The tag ``ctx`` shows for the item labelled ``origin``."""
-    match = re.search(rf"\[(m\d+) · {re.escape(origin)}\]", ctx)
-    assert match, f"no [mN · {origin}] in context"
-    return match.group(1)
+    """The tag ``ctx`` shows for the item labelled ``origin``; ``""`` on a host
+    that marks items with where they came from only (Claude Code)."""
+    match = re.search(rf"\[(?:(m\d+) · )?{re.escape(origin)}\]", ctx)
+    assert match, f"no [{origin}] in context"
+    return match.group(1) or ""
 
 
 def _assert_counted_as_shown(ctx: str, tags) -> None:
     """Exactly the tags visible in the context count as this turn's, and the
-    instruction states that number."""
+    instruction states that number. Unnumbered marks (Claude Code) are not
+    matched up one by one; the count still is."""
     shown = {r["tag"] for r in tags.records if r.get("turn") == tags.turn}
     visible = {t for t in re.findall(r"\[(m\d+) · ", ctx)}
-    assert shown == visible
+    if visible or "[m" not in ctx and not shown:
+        assert shown == visible
+    else:
+        assert shown
     if "Crediting Cognee memory" in ctx:  # a tiny size budget can leave it out
         noun = "1 memory" if len(shown) == 1 else f"{len(shown)} memories"
         assert f"Cognee found {noun} for this prompt" in ctx
@@ -365,7 +375,7 @@ def test_hit_is_tagged_and_carries_the_first_credit_instruction(lookup, monkeypa
     _tag_of(ctx, "Claude Code session learning, 2026-10-03")
     _tag_of(ctx, "knowledge graph entities")
     assert "Cognee found 5 memories for this prompt" in ctx
-    assert "Cognee memory [mN]:" in ctx
+    assert re.search(CREDIT_LINE_RE, ctx)
     assert "first Cognee credit in this session" in ctx
     tags = _saved(rt, lookup)
     assert len(tags.records) == 5
@@ -375,6 +385,9 @@ def test_hit_is_tagged_and_carries_the_first_credit_instruction(lookup, monkeypa
 def test_a_memory_recalled_on_a_later_prompt_keeps_its_tag(lookup, monkeypatch, rt):
     first = _context(drive_recall(lookup, monkeypatch, recall=HIT))
     codex_tag = _tag_of(first, "Codex session")
+    first_tag = next(
+        r["tag"] for r in _saved(rt, lookup).records if r["snippet"].startswith("Session ID: codex_01")
+    )
     new = "Session ID: codex_new\n\nQuestion: tabs?\n\nAnswer: spaces."
     more = {
         "graph": [
@@ -386,12 +399,15 @@ def test_a_memory_recalled_on_a_later_prompt_keeps_its_tag(lookup, monkeypatch, 
     assert len(tags.records) == 6  # one new memory, five known ones
     assert next(
         r["tag"] for r in tags.records if r["snippet"].startswith("Session ID: codex_01")
-    ) == (codex_tag)
+    ) == first_tag
     # Shown again it keeps its tag; a host that skips memory already in context
     # does not show it, and then it does not count as this prompt's.
-    if PASSAGE_CODEX in second:
-        assert f"[{codex_tag} · Codex session]" in second
-    assert "[m6 · Codex session]" in second
+    if codex_tag:
+        if PASSAGE_CODEX in second:
+            assert f"[{codex_tag} · Codex session]" in second
+        assert "[m6 · Codex session]" in second
+    else:
+        assert "[Codex session]\nSession ID: codex_new" in second
     _assert_counted_as_shown(second, tags)
 
 
@@ -400,14 +416,15 @@ def test_an_earlier_turn_keeps_its_tag_by_server_id(lookup, monkeypatch, rt):
     edited = dict(turn, answer="a, with feedback")
     first = _context(drive_recall(lookup, monkeypatch, recall={"session_context": [turn]}))
     second = _context(drive_recall(lookup, monkeypatch, recall={"session_context": [edited]}))
-    assert "[m1 · earlier session turn]" in first
-    assert "[m1 · earlier session turn]" in second
+    assert re.search(r"\[(?:m1 · )?earlier session turn\]", first)
+    assert re.search(r"\[(?:m1 · )?earlier session turn\]", second)
+    assert [r["tag"] for r in _saved(rt, lookup).records] == ["m1"]
 
 
 def test_after_a_credit_the_short_instruction(lookup, monkeypatch, rt):
     rt.record_credit(_state_dir(lookup), SESSION_KEY, {"valid": ["m1"]})
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert "Cognee memory [mN]:" in ctx
+    assert re.search(CREDIT_LINE_RE, ctx)
     assert "first Cognee credit" not in ctx
 
 
@@ -435,7 +452,7 @@ def test_a_recall_that_returns_early_still_starts_a_new_turn(lookup, monkeypatch
 def test_opt_out(lookup, monkeypatch, rt):
     monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "off")
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert not re.search(r"\[m\d+ · ", ctx) and "Cognee memory [mN]" not in ctx
+    assert not re.search(r"\[m\d+ · ", ctx) and "Crediting Cognee memory" not in ctx
     assert PASSAGE_CODEX in ctx  # memory itself is unchanged
 
 
@@ -444,7 +461,7 @@ def test_default_per_host(suite, lookup, monkeypatch):
     instruction, until it has been tried live."""
     monkeypatch.delenv("COGNEE_PLUGIN_CITE_MEMORY")
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert bool(re.search(r"\[m\d+ · ", ctx)) is suite.cites_memory_by_default
+    assert ("Crediting Cognee memory" in ctx) is suite.cites_memory_by_default
 
 
 # ── the Stop hook ──────────────────────────────────────────────────────────
@@ -516,8 +533,8 @@ def test_instruction_comes_before_the_memory(lookup, monkeypatch):
     characters, so the instruction must come before the memory, not after it."""
     big = {"graph": [{"source": "graph", "text": CONTEXT + "\n- filler fact." * 1500}]}
     ctx = _context(drive_recall(lookup, monkeypatch, recall=big))
-    at = ctx.index("> 🧠 Cognee memory [mN]:")
-    assert at < re.search(r"\[m\d+ · ", ctx).start()
+    at = re.search(CREDIT_LINE_RE, ctx).start()
+    assert at < ctx.index("=== Cognee memory")
     assert ctx.index("first Cognee credit") < 2_000
 
 

@@ -221,30 +221,59 @@ def _entry_origin(source: str, entry: dict) -> str:
     return f"earlier session turn, {day}" if day else "earlier session turn"
 
 
+def _passage_document(passage: str) -> str:
+    """The named document a passage came from (its ``source:`` line), or ``""``.
+
+    Unnamed text is stored as ``text_<hash>`` and says nothing, so it gives none;
+    a name's trailing content hash is dropped.
+    """
+    first = passage.lstrip().split("\n", 1)[0].strip()
+    if not first.lower().startswith("source:"):
+        return ""
+    # A remembered text may carry its date: "text_<hash> (2026-11-04)".
+    name = re.sub(r"\s*\(\d{4}-\d{2}-\d{2}\)$", "", first.split(":", 1)[1].strip())
+    if re.fullmatch(r"text_[0-9a-f]{32}", name):
+        return ""
+    return re.sub(r"-[0-9a-f]{32}$", "", name)
+
+
 def _injection_sections(
-    by_source: dict, tags: MemoryTags | None = None, labels: dict | None = None
+    by_source: dict,
+    tags: MemoryTags | None = None,
+    labels: dict | None = None,
 ) -> list[dict]:
     """Expose bare records; shared labels belong to one section heading.
 
-    With ``tags``, every item carries its credit tag (SDK-1071): an evidence
-    item, passage, session turn or trace on its own first line, a block of
-    entities, facts or other lines on its heading. Tags are only assigned
-    here; ``labels`` collects each ``[mN · origin]`` so the caller can count
-    the ones that survive the budget and dedupe as shown.
+    With ``tags``, every item carries a mark saying where it came from
+    (SDK-1071): an evidence item, passage, session turn or trace on its own
+    first line, a block of entities, facts or other lines on its heading. A
+    graph item names its document, when it has one, and its dataset:
+    ``[document <name> · dataset <name>]`` (SDK-1393); any other item its
+    origin, ``[agent trace, …]``. Items are still numbered in the session's
+    tags, only not shown; ``labels`` maps the text each mark is on to its tag,
+    so the caller can count the ones that survive the budget and dedupe as
+    shown.
     """
     grouped = {}
+    # The dataset the server says the current graph result came from.
+    result_dataset = [""]
 
-    def label(kind, origin, text, ident=""):
+    def label(kind, origin, text, ident="", document="", whole=False):
         if tags is None:
             return ""
-        tag = tags.assign(kind, origin, text, ident)
-        text = f"[{tag} · {origin}]"
+        dataset = result_dataset[0]
+        tag = tags.assign(kind, f"{origin}, dataset {dataset}" if dataset else origin, text, ident)
+        parts = [f"document {document}"] if document else []
+        if dataset:
+            parts.append(f"dataset {dataset}")
+        mark = "[" + " · ".join(parts or [origin]) + "]"
         if labels is not None:
-            labels[text] = tag
-        return text
+            # Marks repeat, so an item is known by its whole text where it has one.
+            labels[f"{mark}\n{text}" if whole else mark] = tag
+        return mark
 
-    def tagged(text, kind, origin, ident=""):
-        mark = label(kind, origin, text, ident)
+    def tagged(text, kind, origin, ident="", document=""):
+        mark = label(kind, origin, text, ident, document, whole=True)
         return f"{mark}\n{text}" if mark else text
 
     def add_block(source, kind, title, priority, entries, result_id, mark):
@@ -282,6 +311,8 @@ def _injection_sections(
         ("trace", "=== Prior agent trace ===", 10),
     ):
         for result_id, entry in enumerate(by_source.get(source, [])):
+            dataset_name = str(entry.get("dataset_name") or "").strip()
+            result_dataset[0] = dataset_name if source == "graph_context" else ""
             items = evidence_items(entry)
             available = [(render_item(item), item) for item in items or []]
             available = [(text, item) for text, item in available if text]
@@ -292,7 +323,13 @@ def _injection_sections(
                     derived = (item.get("source") or {}).get("derived")
                     origin = "derived graph evidence" if derived else "source evidence"
                     # Keyed by its citation: the same evidence keeps its tag.
-                    text = tagged(text, "evidence", origin, str(item.get("citation") or ""))
+                    text = tagged(
+                        text,
+                        "evidence",
+                        origin,
+                        str(item.get("citation") or ""),
+                        str(item.get("title") or "").strip(),
+                    )
                     add(source, "evidence", title, priority, [text], result_id)
                     grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
                 continue
@@ -321,7 +358,12 @@ def _injection_sections(
                                 add_block(source, kind, label_, rank, entries, result_id, mark)
                                 continue
                             passages = [
-                                tagged(p, "passage", passage_origin(p))
+                                (
+                                    tagged(
+                                        p, "passage", passage_origin(p), document=_passage_document(p)
+                                    ),
+                                    is_session_transcript(p),
+                                )
                                 for p in split_passages(parts[kind])
                             ]
                             # Raw turns bridged from other sessions are the bulk and
@@ -332,7 +374,7 @@ def _injection_sections(
                                 kind,
                                 label_,
                                 rank,
-                                [p for p in passages if not is_session_transcript(_untag(p))],
+                                [p for p, transcript in passages if not transcript],
                                 result_id,
                                 PASSAGE_SEPARATOR,
                             )
@@ -342,7 +384,7 @@ def _injection_sections(
                                 "=== Cognee memory: transcripts ===\n[cognee-memory]\n"
                                 "## Passages from other sessions",
                                 rank - 1,
-                                [p for p in passages if is_session_transcript(_untag(p))],
+                                [p for p, transcript in passages if transcript],
                                 result_id,
                                 PASSAGE_SEPARATOR,
                             )
@@ -367,14 +409,6 @@ def _injection_sections(
                     result_id,
                 )
     return list(grouped.values())
-
-
-def _untag(text: str) -> str:
-    """``text`` without the credit tag line ``_injection_sections`` put on it."""
-    first, sep, rest = text.partition("\n")
-    if sep and first.startswith("[m") and " · " in first and first.endswith("]"):
-        return rest
-    return text
 
 
 def _recall_output(context: str, notice: str = "") -> dict:

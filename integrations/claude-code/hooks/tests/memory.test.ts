@@ -66,6 +66,8 @@ function wire(
   toolRows: string[] = [],
   // What a read of a file answers; undefined reads as empty.
   readFile: (path: string) => string | undefined = () => undefined,
+  // The engine's current session id (a /clear changes it).
+  currentId: () => string = () => SESSION,
 ) {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   mock.env(on, { HOME })
@@ -83,7 +85,9 @@ function wire(
     const { Text } = $.ui.resolve(e)
     return Text({ children: [''] })
   })
-  on('session.id', () => ({ value: SESSION }))
+  on('session.id', () => ({ value: currentId() }))
+  // A focus move the engine lets through (the band holds the keys).
+  on('ui.focus', () => ({}))
   // No marker and no env file: an empty read (a throw from a bottom hook
   // inside a timer would end the timer in the kit, which no real file does).
   on('fs.read', ($, e) => ({ value: readFile(e.path) ?? '' }))
@@ -158,6 +162,17 @@ function switchArgv(calls: Call[]): readonly string[] | undefined {
 function argsAfter(argv: readonly string[], script: string): string[] {
   const i = argv.findIndex(a => a.endsWith(`/scripts/${script}`))
   return argv.slice(i + 1)
+}
+
+// The person's click on the terminal picker: it gives the picker the focus,
+// which the engine shows by opening its list.
+async function focusPicker(
+  $: { ui: { focus: (args: { requestId: string; key: string }) => Promise<unknown> } },
+  ui: { find: (q: { type: 'Select'; key: string }) => Promise<unknown> },
+) {
+  await $.ui.focus({ requestId: 'above-prompt', key: 'dataset' })
+  await new Promise(r => setTimeout(r, 20))
+  await ui.find({ type: 'Select', key: 'dataset' })
 }
 
 // A registered tool answers with the text the model reads; a failure is a
@@ -326,6 +341,34 @@ test('the remember tool has a per-session allowance, with the skill as the way p
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   const again = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'after clear' }))
   expect(again.isError).toBe(false)
+})
+
+test('after a /clear the band binds the new session without waiting for a prompt', async ($, on) => {
+  const calls: Call[] = []
+  const writes: Write[] = []
+  let id = SESSION
+  // The ended session's marker holds its SessionEnd sync; the new one has none.
+  const synced = JSON.stringify({ results: { synced: { ok: true, at: 1_700_000_000 } } })
+  const clock = wire(
+    on,
+    calls,
+    {},
+    writes,
+    undefined,
+    [],
+    path => (path.endsWith(`/phase/${SESSION}.json`) ? synced : undefined),
+    () => id,
+  )
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+
+  id = 's2'
+  await $.session.end({ sessionId: SESSION, reason: 'clear' })
+  await clock.advance(1100)
+  expect(writes.some(w => w.path === `${HOME}/.cognee-plugin/claude-code/band/s2.json`)).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /session saved/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('the remember allowance counts bytes too', async ($, on) => {
@@ -597,7 +640,7 @@ for (const [listed, said] of [
     expect(listing.text).not.toContain('Recall is restricted to agent_sessions.')
   })
 }
-test('in a terminal the closed picker reads "auto (<dataset>)" while recall is auto', async ($, on) => {
+test('in a terminal the picker reads "auto (<dataset>)" while recall is auto', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, {
     'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'auto' })) : ok('{}')),
@@ -608,9 +651,11 @@ test('in a terminal the closed picker reads "auto (<dataset>)" while recall is a
   await ui.unmount()
 
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  const closed = await ui.find({ type: 'Button', key: 'dataset' })
-  expect(closed).toBeDefined()
-  expect(closed!.text).toContain('auto (agent_sessions) ▾')
+  // Drawn compact, the engine shows the selected entry: auto, named after the
+  // dataset saves go to.
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker!.props.value).toBe('auto (best-matching dataset)')
+  expect((picker!.props.options as { label?: string }[])[0]!.label).toBe('auto (agent_sessions)')
   await ui.unmount()
 })
 
@@ -632,14 +677,13 @@ test('same-named datasets are offered once, so the open terminal picker still dr
   await ui.unmount()
 
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker).toBeDefined()
   expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', 'demo', '+ new dataset…'])
   await ui.unmount()
 })
 
-test('opening the terminal picker lists the datasets afresh', async ($, on) => {
+test('a click that focuses the terminal picker lists the datasets afresh', async ($, on) => {
   const calls: Call[] = []
   let datasets = SWITCH_LIST.datasets
   wire(on, calls, {
@@ -653,7 +697,7 @@ test('opening the terminal picker lists the datasets afresh', async ($, on) => {
   datasets = SWITCH_LIST.datasets.filter(d => d.name !== 'demo')
   const before = listCalls(calls).length
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
+  await focusPicker($, ui)
   expect(listCalls(calls).length).toBe(before + 1)
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', '+ new dataset…'])
@@ -806,20 +850,18 @@ test('an empty name, or the cancel mark, brings the picker back without a switch
   await ui.unmount()
   const again = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
 
-  // In a terminal the picker opens from its name button and closes again after.
-  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
+  // In a terminal the picker is drawn from the start, and again after.
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
   calls.length = 0
   await $.ui.input({ plugin: PLUGIN, key: 'newDataset', text: '   ' })
   expect(switchArgv(calls)).toBeUndefined()
-  expect(await again.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await again.find({ type: 'Select', key: 'dataset' })).toBeDefined()
 
-  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
   expect(await again.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
   await $.ui.press({ plugin: PLUGIN, key: 'cancelNew' })
   expect(switchArgv(calls)).toBeUndefined()
-  expect(await again.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await again.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await again.unmount()
 })
 
@@ -1220,15 +1262,13 @@ test('in a terminal the band is the whole status row, the dataset name a picker'
   expect(argvOf(calls, 'switch-dataset.py')).toContain('--list')
 
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  // Closed until asked for: a focused picker shows its list, and the band
-  // focuses its first control on a click. The name is a button.
-  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
-  const closed = await ui.find({ type: 'Button', key: 'dataset' })
-  expect(closed).toBeDefined()
-  expect(closed!.text).toContain('agent_sessions ▾')
+  // The picker from the start: the engine shows it compact until a click
+  // gives it the focus. It sits in a keyed Box, the scope of its hover
+  // highlight (a Select has none of its own).
+  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeUndefined()
+  expect((await ui.find({ type: 'Box', key: 'datasetHover' }))?.children[0]?.props.key).toBe('dataset')
   expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
 
-  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker).toBeDefined()
   expect(picker!.props.value).toBe('agent_sessions')
@@ -1298,13 +1338,13 @@ test('a listing that finds no launch record yet is tried again, and the picker a
   expect(listCalls(calls).length).toBe(1)
 
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeUndefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
   await ui.unmount()
   // The first retry comes five seconds after the failure, on the poll.
   for (let i = 0; i < 7; i += 1) await clock.advance(1000)
   expect(listCalls(calls).length).toBe(2)
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
   // Listed: no more tries.
   for (let i = 0; i < 30; i += 1) await clock.advance(1000)
@@ -1372,7 +1412,7 @@ test('a listing waits for a boot the hook handed to its worker instead of spendi
   await clock.advance(1000)
   expect(listCalls(calls).length).toBe(1)
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -1436,14 +1476,14 @@ test('a narrow band drops the last cost, then the balance, then the activity, an
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 60 } })
   expect(await ui.find({ type: 'Text', text: /credits: \$9.76/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /last improve/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
 
   // 45 cells: the balance goes too; the badge, the dataset and the mode stay.
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 45 } })
   expect(await ui.find({ type: 'Text', text: /credits/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
   await ui.unmount()
 
