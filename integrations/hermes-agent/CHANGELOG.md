@@ -26,21 +26,40 @@ project adheres to [Semantic Versioning](https://semver.org/).
   says "based on Cognee memory" rather than naming the active dataset. The guidance lane, `cognee_code_search` and recaps keep their
   datasets.
 - **`cognee_switch_dataset` pins recall.** Any explicit pick pins recall to that dataset: a
-  switch (the default dataset included), or the dataset in use (no new session). Only
-  `action='auto'` and `reset` (back to the default dataset) lift the pin. `current` reports
-  the mode in effect: where the server cannot route it reads `pinned`, and `auto` saves the
-  choice but says recall stays on the dataset. `switch` refuses the name `auto`. The mode is
-  kept in `dataset-overrides.json`; entries written before this release stay pinned, except
-  one on the configured default dataset (indistinguishable from a reset), which is auto.
+  switch (the default dataset included), or the dataset in use (no new session).
+  `action='auto'` lifts the pin; `reset` goes back to the configured dataset and its recall
+  mode. `current` reports the mode in effect and, when pinned, a `reason` as the other cognee
+  plugins do: `dataset_picked`, `configured_dataset`, or `server_cannot_route` (where the
+  server cannot route; `auto` then saves the choice but says recall stays on the dataset).
+  `switch` refuses the name `auto`. The mode is kept in `dataset-overrides.json`; entries
+  written before this release stay pinned, except one on the configured dataset
+  (indistinguishable from a reset), which follows the configuration.
+- **A configured dataset pins recall, as in the other cognee plugins.** A
+  `COGNEE_PLUGIN_DATASET` (or setup-wizard dataset) other than the default `agent_sessions`
+  restricts recall to it (reason `configured_dataset`), compared as the name the dataset
+  resolves to (`agent.sessions` is the default and does not pin). A conversation's own choice
+  wins: `action='auto'` lifts the configured pin for that conversation (the reply names it in
+  `lifted`), and the memory credit names the dataset whenever recall is pinned.
+  `COGNEE_PLUGIN_DATASET=auto` (any case) now means the default dataset with auto recall;
+  before, saves went to a dataset named `auto`.
 
 ### Changed
-- **Local mode installs cognee 1.6.6** (was 1.6.5). An existing runtime is upgraded in place
-  the first time the plugin starts the local server, which blocks that one start for the
-  install; a session that reuses a running server is not held up, and the upgrade waits for
-  the next start. Until then the provider stays available on the old runtime, and
-  `hermes cognee status` reports it as outdated. If the upgrade fails, the server starts from
-  the old runtime (recall stays on the dataset, as before) and a warning names
-  `hermes cognee install-runtime`; the next start retries.
+- **Local mode installs cognee 1.6.6** (was 1.6.5), without holding up a session. When the
+  plugin starts the local server from an existing 1.6.5 runtime, it starts it from that
+  runtime at once and builds 1.6.6 in a detached background process, in a new venv
+  (`runtime/venv-1.6.6`) next to the old one, logging to
+  `~/.cognee-plugin/hermes/runtime-upgrade.log`. The new venv becomes the active runtime only
+  once its cognee version and server modules check out, by atomically replacing `ready.json`,
+  which now names the interpreter to start from (a marker an older plugin wrote, pointing at
+  `runtime/venv`, still works). A server already running and the venv it runs from are never
+  touched; the next server start uses the new runtime. A failed or interrupted build leaves
+  the old runtime in use; the next background attempt waits an hour, and
+  `hermes cognee install-runtime` retries at once. Builds are serialized by a lock on POSIX
+  and Windows: a background build finding it held exits, `install-runtime` waits up to 15
+  minutes. First installs use the same per-version layout. `hermes cognee status` shows an
+  outdated runtime, an upgrade in progress, the last failure and old runtimes left on disk;
+  `install-runtime` and `remove-runtime` delete old runtimes only while nothing listens on
+  the configured local port.
 
 ## [1.4.1]
 

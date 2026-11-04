@@ -339,7 +339,7 @@ class TestAutoRecall(unittest.TestCase):
                 self.assertEqual("note" in out, not routes)
                 self.assertFalse(provider._recall_pinned)
                 override = dataset_overrides.load_override("s-1")
-                self.assertEqual((override["dataset"], override["recall"]), ("hermes", "auto"))
+                self.assertEqual((override["dataset"], override["recall"]), ("hermes", "default"))
 
     def test_switching_to_the_default_dataset_pins(self):
         with fake_backend() as fake:

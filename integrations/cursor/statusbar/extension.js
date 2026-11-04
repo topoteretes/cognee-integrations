@@ -197,6 +197,104 @@ class Status {
 }
 
 const LOADING_ITEM = { label: "$(loading~spin) Loading datasets…", alwaysShow: true, loading: true };
+// The picker's first entry: recall from the best-matching dataset (dataset
+// routing, cognee >= 1.6.6) instead of only the one saves go to. Same label as
+// the Claude Code plugin's picker; the spaces keep it apart from any dataset name.
+const AUTO_RECALL = "auto (best-matching dataset)";
+
+// "auto" is reserved for auto recall: `switch-dataset.py auto` lifts the
+// restriction instead of switching, so a dataset so named is never a target.
+function isReservedName(name) {
+  return String(name || "").trim().toLowerCase() === "auto";
+}
+
+// How the active dataset's row reads, from `--list --json`'s recall and reason.
+function currentDescription(data) {
+  if (data.recall === "auto") {
+    return "active · saves go here; pick it to restrict recall to it";
+  }
+  switch (data.reason) {
+    case "configured_dataset":
+      return "current · recall restricted to it by COGNEE_PLUGIN_DATASET";
+    case "read_dataset_ids":
+      return "current · recall: the COGNEE_PLUGIN_READ_DATASET_IDS datasets";
+    case "server_cannot_route":
+      return "current · recall on it (this server can't route yet)";
+    default:
+      return "current · recall restricted to it";
+  }
+}
+
+// The picker's rows from `switch-dataset.py --list --json`: the auto entry, then
+// the writable datasets, the active one first-class even when the listing left it
+// out (read-only, or created since). A dataset named "auto" is not offered; when it
+// is the active one it is shown but cannot be picked (`inert`).
+function pickerItems(data) {
+  const current = String(data.current || "");
+  const auto = data.recall === "auto";
+  const rows = (data.datasets || []).filter(
+    (dataset) => dataset.current || (dataset.writable !== false && !isReservedName(dataset.name)),
+  );
+  if (current && !rows.some((dataset) => dataset.current || dataset.name === current)) {
+    rows.unshift({ name: current, current: true });
+  }
+  const items = [
+    {
+      label: AUTO_RECALL,
+      description: auto ? `current · saves go to ${current || "the active dataset"}` : "",
+      target: "auto",
+      current: auto,
+    },
+  ];
+  for (const dataset of rows) {
+    const isCurrent = Boolean(dataset.current || dataset.name === current);
+    const inert = isCurrent && isReservedName(dataset.name);
+    items.push({
+      label: dataset.name,
+      description: inert
+        ? "current · \"auto\" is reserved, pick another dataset to restrict recall"
+        : isCurrent
+          ? currentDescription(data)
+          : "",
+      target: dataset.name,
+      current: isCurrent && !auto,
+      inert,
+    });
+  }
+  return items;
+}
+
+// The notification for `switch-dataset.py <name> --json`'s answer, worded as the
+// Claude Code plugin's toasts and the script's own text output.
+function switchMessage(result, name) {
+  const where = String(result.dataset || name);
+  if (result.switched === true) {
+    const synced = result.previous && result.previous.synced === false ? " (previous session NOT synced)" : "";
+    return `this chat now uses ${where}${synced}.`;
+  }
+  const reason = result.reason;
+  if (reason === "recall_restricted") {
+    return `recall restricted to ${where}.`;
+  }
+  if (reason === "already_active") {
+    return `recall is already restricted to ${where}.`;
+  }
+  if ((reason === "recall_auto" || reason === "already_auto") && result.recall !== "auto") {
+    return result.recall_reason === "read_dataset_ids"
+      ? "saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets."
+      : `saved; this server can't route yet, so recall stays on ${where}.`;
+  }
+  if (reason === "recall_auto" && result.lifted === "configured_dataset") {
+    return `recall is auto for this chat (no longer pinned by COGNEE_PLUGIN_DATASET); saves stay in ${where}.`;
+  }
+  if (reason === "recall_auto") {
+    return `recall is auto again (saves stay in ${where}).`;
+  }
+  if (reason === "already_auto") {
+    return `recall is already auto (saves go to ${where}).`;
+  }
+  return `already on ${where}.`;
+}
 
 // The picker opens before anything else runs, with a spinning "Loading datasets…"
 // row, and fills in when the server answers: listing asks the server and takes a
@@ -212,7 +310,7 @@ async function switchDataset(status) {
   const choice = new Promise((resolve) => {
     picker.onDidAccept(() => {
       const item = picker.selectedItems[0];
-      if (item && !item.loading) {
+      if (item && !item.loading && !item.inert) {
         resolve(item);
         picker.hide();
       }
@@ -248,21 +346,29 @@ async function switchDataset(status) {
     );
     return;
   }
-  const items = (data.datasets || [])
-    .filter((dataset) => dataset.writable !== false)
-    .map((dataset) => ({ label: dataset.name, description: dataset.current ? "current" : "" }));
+  const auto = data.recall === "auto";
+  const items = pickerItems(data);
   picker.items = items;
-  picker.activeItems = items.filter((item) => item.description === "current");
-  picker.placeholder = `Current: ${data.current || "unknown"}`;
+  picker.activeItems = items.filter((item) => item.current);
+  picker.placeholder = `Current: ${data.current || "unknown"} · recall ${auto ? "auto" : "restricted"}`;
 
   const picked = await choice;
   picker.dispose();
-  if (!picked || picked.label === data.current) {
+  // Picking the active dataset pins recall to it (the script answers when it
+  // already is); only "auto" while recall is already auto has nothing to do.
+  if (!picked || (picked.target === "auto" && auto)) {
     return;
   }
+  const target = picked.target;
+  const title =
+    target === "auto"
+      ? "Cognee: setting recall to auto…"
+      : target === data.current
+        ? `Cognee: restricting recall to ${target}…`
+        : `Cognee: switching to ${target}…`;
   const switched = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Cognee: switching to ${picked.label}…` },
-    () => run(switcher, [picked.label, "--json", "--session-key", sessionKey]),
+    { location: vscode.ProgressLocation.Notification, title },
+    () => run(switcher, [target, "--json", "--session-key", sessionKey]),
   );
   let result = {};
   try {
@@ -270,11 +376,12 @@ async function switchDataset(status) {
   } catch {
     // fall through to the error below
   }
-  if (switched.error || result.ok === false || result.error) {
+  if (switched.error || result.ok === false || result.error || typeof result.switched !== "boolean") {
     const detail = result.error || stripAnsi(switched.stderr || switched.stdout).trim();
-    vscode.window.showErrorMessage(`Cognee: could not switch to ${picked.label}. ${detail}`);
+    const what = target === "auto" ? "set recall to auto" : `switch to ${target}`;
+    vscode.window.showErrorMessage(`Cognee: could not ${what}. ${detail}`);
   } else {
-    vscode.window.showInformationMessage(`Cognee: this chat now uses ${picked.label}.`);
+    vscode.window.showInformationMessage(`Cognee: ${switchMessage(result, target)}`);
   }
   status.refresh();
 }
@@ -295,4 +402,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, compact, stripAnsi };
+module.exports = { activate, deactivate, compact, stripAnsi, pickerItems, switchMessage, AUTO_RECALL };

@@ -214,6 +214,10 @@ const AUTO_RECALL = 'auto (best-matching dataset)'
 // the active dataset; '' until listed. Anything but 'auto' reads as restricted:
 // unpinned recall on a server that cannot route still reads one dataset.
 let recallMode: '' | 'auto' | 'pinned' = ''
+// Why recall is restricted, from the same listing (switch-dataset.py's
+// `reason`: dataset_picked, configured_dataset, read_dataset_ids,
+// server_cannot_route); '' when auto or not said.
+let recallReason = ''
 let namingDataset = false
 // In a terminal the picker stays closed until asked for: a click anywhere on
 // the band gives the band the keys, and a focused picker shows its list.
@@ -893,6 +897,7 @@ async function loadDatasets($: any): Promise<void> {
       if (parsed && typeof parsed === 'object' && !parsed.error) {
         switchTargets = datasetRows(parsed)
         recallMode = recallModeOf(parsed)
+        recallReason = recallMode === 'pinned' ? asText(parsed.reason) : ''
         listed = true
       }
     } catch {
@@ -942,8 +947,12 @@ async function switchDataset($: any, target: string): Promise<string> {
     else if (parsed.switched === false) {
       const where = asText(parsed.dataset) || name
       if (parsed.reason === 'recall_restricted') line = `recall restricted to ${where}`
-      else if ((parsed.reason === 'recall_auto' || parsed.reason === 'already_auto') && parsed.recall !== 'auto')
-        line = `saved; this server can't route yet, so recall stays on ${where}`
+      else if ((parsed.reason === 'recall_auto' || parsed.reason === 'already_auto') && parsed.recall !== 'auto') {
+        // Auto is saved, but something else still scopes recall: say what.
+        if (parsed.recall_reason === 'read_dataset_ids') line = 'saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets'
+        else if (parsed.recall_reason === 'server_cannot_route') line = `saved; this server can't route yet, so recall stays on ${where}`
+        else line = `saved; recall stays restricted to ${where}`
+      }
       else if (parsed.reason === 'recall_auto') line = `recall is auto again (saves stay in ${where})`
       else if (parsed.reason === 'already_auto') line = `recall is already auto (saves go to ${where})`
       else line = `already on ${where}`
@@ -954,7 +963,13 @@ async function switchDataset($: any, target: string): Promise<string> {
       line = `switched to ${asText(parsed.dataset) || name}${synced}`
     } else line = `switch failed${ran.stderr.trim() ? `: ${ran.stderr.trim().split('\n').pop()}` : ''}`
     const failed = !parsed.switched && parsed.switched !== false
-    recallMode = recallModeOf(parsed) || recallMode
+    const mode = recallModeOf(parsed)
+    if (mode) {
+      recallMode = mode
+      // A pick pins recall; auto names what still scopes it, if anything.
+      recallReason =
+        mode !== 'pinned' ? '' : parsed.switched === true || parsed.reason === 'recall_restricted' ? 'dataset_picked' : asText(parsed.recall_reason)
+    }
     $.ui.toast(failed ? `✕ ${line}` : `${line}`)
   } finally {
     switching = false
@@ -1082,10 +1097,20 @@ export const register: Register = (on, options) => {
       if (switchTargets.length === 0) return { text: 'Cognee: no datasets listed (is memory connected?).' }
       const rows = switchTargets.map(r => (r.current ? `  * ${r.name} (current)` : `  - ${r.name}`)).join('\n')
       const current = switchTargets.find(r => r.current)?.name ?? 'the active dataset'
+      // The same branches as switch-dataset.py's listing: the advice depends
+      // on what restricts recall (auto cannot lift a read set or an old server).
       const recall =
-        recallMode !== 'auto'
-          ? `Recall: restricted to ${current}. /cognee-dataset auto lets the server pick the best-matching dataset when it can.`
-          : 'Recall: auto (the server picks the best-matching dataset when it can, otherwise searches every readable one). /cognee-dataset <name> restricts it to one.'
+        recallMode === 'auto'
+          ? 'Recall: auto (the server picks the best-matching dataset when it can, otherwise searches every readable one). /cognee-dataset <name> restricts it to one.'
+          : recallReason === 'configured_dataset'
+            ? `Recall: restricted to ${current}, pinned by COGNEE_PLUGIN_DATASET. /cognee-dataset auto lifts it for this session.`
+            : recallReason === 'read_dataset_ids'
+              ? 'Recall: restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS.'
+              : recallReason === 'server_cannot_route'
+                ? `Recall: on ${current} (this server can't route yet).`
+                : recallReason === 'dataset_picked'
+                  ? `Recall: restricted to ${current}. /cognee-dataset auto lets the server pick the best-matching dataset when it can.`
+                  : `Recall: restricted to ${current}.`
       pickerOpen = true
       redraw($)
       return {

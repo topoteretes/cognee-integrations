@@ -81,6 +81,12 @@ def _print_status(args) -> None:
     print("-" * 40)
     print(f"  Active provider: {'yes' if _provider_active() else 'no'}")
     print(f"  Local runtime:   {_runtime_status()}")
+    leftovers = runtime_env.leftover_runtime_dirs()
+    if leftovers:
+        print(
+            f"  Old runtimes:    {', '.join(str(p) for p in leftovers)} (removed by "
+            "`hermes cognee install-runtime` once no local server is running)"
+        )
     print(f"  Plugin version:  {plugin_version or '(unknown)'}")
     print(f"  Mode:            {'remote' if cfg.get('service_url') else 'local'}")
     print(f"  Dataset:         {cfg.get('dataset')}")
@@ -418,17 +424,52 @@ def _print_install(args) -> None:
 def _runtime_status() -> str:
     python = runtime_env.runtime_python()
     if python:
-        return f"ready ({runtime_env.LOCAL_COGNEE_REQUIREMENT}, {runtime_env.VENV_DIR})"
+        return f"ready ({runtime_env.LOCAL_COGNEE_REQUIREMENT}, {Path(python).parent.parent})"
+    pinned = runtime_env.LOCAL_COGNEE_REQUIREMENT
     outdated = runtime_env.outdated_requirement()
     if outdated:
-        return (
-            f"outdated ({outdated}, {runtime_env.VENV_DIR}): upgraded to "
-            f"{runtime_env.LOCAL_COGNEE_REQUIREMENT} when the plugin next starts the local "
-            "server, or now with: hermes cognee install-runtime"
-        )
+        status = f"outdated ({outdated}, {runtime_env.active_venv_dir()}): "
+        failure = runtime_env.last_failure()
+        if runtime_env.build_in_progress():
+            status += (
+                f"upgrading to {pinned} in the background (output: {runtime_env.UPGRADE_LOG}); "
+                "the next local server start uses it"
+            )
+        elif failure:
+            status += (
+                f"the upgrade to {pinned} failed at {_fmt_epoch(failure.get('failed_at'))} "
+                f"({failure.get('error') or 'unknown error'}); retried in the background at "
+                "a local server start at most once an hour, or now with: "
+                "hermes cognee install-runtime"
+            )
+        else:
+            status += (
+                f"upgraded to {pinned} in the background the next time the plugin starts the "
+                "local server, or now with: hermes cognee install-runtime"
+            )
+        return status
+    if runtime_env.build_in_progress():
+        return f"being installed ({pinned}) by another process"
     if importlib.util.find_spec("cognee"):
         return "cognee installed in Hermes's environment"
     return "not installed (local mode: hermes cognee install-runtime)"
+
+
+def _fmt_epoch(value) -> str:
+    if not isinstance(value, (int, float)):
+        return "an unknown time"
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(value))
+
+
+def _local_server_running() -> bool:
+    """Whether anything listens on the configured local port.
+
+    Only that port: a server another profile started on a port of its own is
+    not seen, which is why old runtimes are only ever removed on request.
+    """
+    from .server_bootstrap import port_bound
+
+    return port_bound(int(load_config().get("local_port") or DEFAULT_LOCAL_PORT))
 
 
 def _install_runtime(args) -> int:
@@ -437,16 +478,39 @@ def _install_runtime(args) -> int:
     except runtime_env.RuntimeInstallError as exc:
         print(f"Could not install the cognee runtime: {exc}")
         return 1
+    leftovers = runtime_env.leftover_runtime_dirs()
+    if leftovers and _local_server_running():
+        print(
+            "Kept the old runtime(s) a running local server may use: "
+            f"{', '.join(str(p) for p in leftovers)}. Run this again once it has exited "
+            "to remove them."
+        )
+    elif leftovers:
+        for path in runtime_env.remove_leftover_runtimes():
+            print(f"Removed the old runtime at {path}.")
     print("Start a new hermes session to use local mode.")
     return 0
 
 
 def _remove_runtime(args) -> int:
-    if runtime_env.remove_runtime():
-        print(f"Removed the cognee runtime at {runtime_env.VENV_DIR}.")
+    server_running = _local_server_running()
+    active = runtime_env.active_venv_dir()
+    try:
+        removed = runtime_env.remove_runtime(server_running=server_running)
+    except runtime_env.RuntimeBusyError as exc:
+        print(f"Could not remove the cognee runtime: {exc}")
+        return 1
+    if removed:
+        print(f"Removed the cognee runtime at {active or runtime_env.RUNTIME_DIR}.")
         print("A local server it started keeps running until it exits; data in ~/.cognee is kept.")
     else:
         print("No cognee runtime installed.")
+    leftovers = runtime_env.leftover_runtime_dirs()
+    if leftovers:
+        print(
+            "Kept the old runtime(s) a running local server may use: "
+            f"{', '.join(str(p) for p in leftovers)}. Run this again once it has exited."
+        )
     return 0
 
 

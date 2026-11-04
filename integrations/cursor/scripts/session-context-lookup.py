@@ -841,7 +841,10 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         instruction = ""
         if tags is not None and tags.found:
             first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
-            instruction = credit_instruction(first, len(tags.found), session_dataset) + "\n\n"
+            # A routed recall searched whichever datasets the server picked, so the
+            # credit names none, as cognee-search.sh does on its auto path.
+            credit_dataset = "" if auto_route else session_dataset
+            instruction = credit_instruction(first, len(tags.found), credit_dataset) + "\n\n"
         elif tags is None:
             instruction = CREDITS_OFF_NOTE + "\n\n"
         # Recalled memory can hold credit lines and the credit instruction from

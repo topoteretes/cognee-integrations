@@ -20,7 +20,10 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   every readable dataset. Pin a dataset to keep recall on one. Saves still go to the
   conversation's dataset. `CogneeHttpClient.routesDatasets()` reads `version` from `/health`
   (short timeout, one shared in-flight probe, cached for an hour, a failed probe retried after five minutes, skipped while the recall
-  breaker is open, spent out of the recall budget); a pre-release or dev build (`1.6.6rc1`,
+  breaker is open); the probe's time comes out of the routed recall's timeout (prompt-time
+  recall: out of the prompt's recall budget), while a `memory_search` that does not route — pinned,
+  multi-scope, or a probe that says no, fails or is still pending at `recallTimeoutMs` — sends
+  its recall exactly as before, with the full recall timeout; a pre-release or dev build (`1.6.6rc1`,
   `1.6.6.dev0`), 1.6.6 with an unknown label, an older server or a failed probe keeps the
   dataset; an unhealthy server's 503 answer still names its version and counts. Multi-scope mode, the
   guidance lane and the code lane keep their explicit datasets, and an install with no indexed

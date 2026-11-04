@@ -534,7 +534,7 @@ test('auto on a server that cannot route says the choice is saved and recall sta
     'switch-dataset.py': argv =>
       argv.includes('--list')
         ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned' }))
-        : ok(JSON.stringify({ switched: false, reason: 'recall_auto', dataset: 'agent_sessions', session_id: 'cognee-1', recall: 'pinned' })),
+        : ok(JSON.stringify({ switched: false, reason: 'recall_auto', dataset: 'agent_sessions', session_id: 'cognee-1', recall: 'pinned', recall_reason: 'server_cannot_route' })),
   })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
@@ -615,7 +615,16 @@ test('auto when recall is already auto says so, and says when the server cannot 
     'switch-dataset.py': argv =>
       argv.includes('--list')
         ? ok(JSON.stringify({ ...SWITCH_LIST, recall: routable ? 'auto' : 'pinned' }))
-        : ok(JSON.stringify({ switched: false, reason: 'already_auto', dataset: 'agent_sessions', session_id: 'cognee-1', recall: routable ? 'auto' : 'pinned' })),
+        : ok(
+            JSON.stringify({
+              switched: false,
+              reason: 'already_auto',
+              dataset: 'agent_sessions',
+              session_id: 'cognee-1',
+              recall: routable ? 'auto' : 'pinned',
+              ...(routable ? {} : { recall_reason: 'server_cannot_route' }),
+            }),
+          ),
   })
   const toasts: string[] = []
   on('ui.toast', ($, e) => {
@@ -632,6 +641,85 @@ test('auto when recall is already auto says so, and says when the server cannot 
   answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
   expect(answer.text).toBe("Cognee: saved; this server can't route yet, so recall stays on agent_sessions.")
   expect(toasts).toContain("saved; this server can't route yet, so recall stays on agent_sessions")
+})
+
+test('/cognee-dataset alone gives the advice that fits what restricts recall', async ($, on) => {
+  const calls: Call[] = []
+  let reason: string | undefined
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned', ...(reason ? { reason } : {}) })) : ok('{}'),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const lift = '/cognee-dataset auto lets the server pick'
+
+  reason = 'dataset_picked'
+  let listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(listing.text).toContain(`Recall: restricted to agent_sessions. ${lift} the best-matching dataset when it can.`)
+
+  reason = 'configured_dataset'
+  listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(listing.text).toContain('Recall: restricted to agent_sessions, pinned by COGNEE_PLUGIN_DATASET. /cognee-dataset auto lifts it for this session.')
+  expect(listing.text).not.toContain(lift)
+
+  // Auto cannot lift a read set or an old server: no advice to try it.
+  reason = 'read_dataset_ids'
+  listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(listing.text).toContain('Recall: restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS.')
+  expect(listing.text).not.toContain('/cognee-dataset auto')
+
+  reason = 'server_cannot_route'
+  listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(listing.text).toContain("Recall: on agent_sessions (this server can't route yet).")
+  expect(listing.text).not.toContain('/cognee-dataset auto')
+
+  for (const unknown of [undefined, 'some_new_reason']) {
+    reason = unknown
+    listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+    expect(listing.text).toContain('Recall: restricted to agent_sessions.\n')
+    expect(listing.text).not.toContain('/cognee-dataset auto')
+  }
+})
+
+test('auto that leaves recall restricted names what still scopes it', async ($, on) => {
+  const calls: Call[] = []
+  let recallReason: string | undefined
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned', ...(recallReason ? { reason: recallReason } : {}) }))
+        : ok(
+            JSON.stringify({
+              switched: false,
+              reason: 'recall_auto',
+              dataset: 'agent_sessions',
+              session_id: 'cognee-1',
+              recall: 'pinned',
+              ...(recallReason ? { recall_reason: recallReason } : {}),
+            }),
+          ),
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  recallReason = 'read_dataset_ids'
+  let answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
+  expect(answer.text).toBe('Cognee: saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets.')
+  expect(toasts).toContain('saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets')
+
+  recallReason = 'server_cannot_route'
+  answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
+  expect(answer.text).toBe("Cognee: saved; this server can't route yet, so recall stays on agent_sessions.")
+
+  recallReason = undefined
+  answer = await $.command.run({ command: 'cognee-dataset', args: 'auto' })
+  expect(answer.text).toBe('Cognee: saved; recall stays restricted to agent_sessions.')
+  expect(toasts.some(t => t.includes("can't route"))).toBe(true)
+  expect(toasts.at(-1)).toBe('saved; recall stays restricted to agent_sessions')
 })
 
 test('a switch answered with an error leaves the recall mode as it was', async ($, on) => {

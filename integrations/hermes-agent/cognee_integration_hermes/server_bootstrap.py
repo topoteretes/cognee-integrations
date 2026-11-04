@@ -271,35 +271,38 @@ def _spawn(port, data_root, system_root, log_path, python=None):
             log.close()
 
 
-def _upgrade_outdated_runtime(python):
-    """Move an outdated runtime venv to the pinned cognee before starting from it.
+def _stage_outdated_runtime():
+    """Start building the pinned cognee next to an outdated runtime venv.
 
-    An earlier plugin version built the venv for its own pin. The upgrade runs
-    here, right before a spawn, so it blocks that one start (bounded by the
-    install timeout) and never a session that reuses a running server. Installer
-    output goes to the log, not over Hermes's terminal. On failure the server
-    starts from the old cognee, which still works (recall stays on the dataset
-    against a server too old to route), and the next start retries.
+    An earlier plugin version built the active venv for its own pin. The new
+    one is built by a detached process (``runtime_env.start_background_upgrade``)
+    in a venv of its own, so this start never waits for the download and the old
+    venv, which this server and maybe another profile's run from, is never
+    touched. The server starts from the old cognee (recall stays on the dataset
+    against a server too old to route); the first start after the build
+    finished uses the new one.
     """
     requirement = runtime_env.outdated_requirement()
     if not requirement:
-        return python
-    logger.info(
-        "Upgrading the cognee runtime from %s to %s before starting the local server.",
-        requirement,
-        runtime_env.LOCAL_COGNEE_REQUIREMENT,
-    )
+        return
     try:
-        return runtime_env.install_runtime(output=logger.info, quiet=True)
+        launched = runtime_env.start_background_upgrade()
     except Exception as exc:  # the upgrade must never cost the session
         logger.warning(
-            "Could not upgrade the cognee runtime to %s (%s); starting the local server "
-            "from %s. Retry with: hermes cognee install-runtime",
+            "Could not start upgrading the cognee runtime to %s (%s). "
+            "Upgrade with: hermes cognee install-runtime",
             runtime_env.LOCAL_COGNEE_REQUIREMENT,
             exc,
-            requirement,
         )
-        return python
+        return
+    if launched:
+        logger.info(
+            "Starting the local server from %s; %s is being installed in the background "
+            "(output: %s) and is used from the next server start.",
+            requirement,
+            runtime_env.LOCAL_COGNEE_REQUIREMENT,
+            runtime_env.UPGRADE_LOG,
+        )
 
 
 def default_server_log_path() -> str:
@@ -370,7 +373,7 @@ def ensure_local_server(
     python = server_python()
     if python is None:
         raise CogneeNotInstalledError(cognee_not_installed_message("local"))
-    python = _upgrade_outdated_runtime(python)
+    _stage_outdated_runtime()
     if log_path is None:
         log_path = default_server_log_path()
     proc = None

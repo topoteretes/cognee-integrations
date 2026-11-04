@@ -201,6 +201,20 @@ def resolve_hermes_home(hermes_home: str | Path | None = None) -> Path | None:
         return None
 
 
+def configured_dataset_name(value: Any) -> str:
+    """A dataset name from the env or config, or the default when it is unset.
+
+    "auto" (any case, surrounding whitespace ignored) is reserved for auto
+    recall (``cognee_switch_dataset action='auto'``), so a configured "auto"
+    means the default dataset with recall left on auto, never a dataset named
+    "auto". Same rule as the hook-family plugins' ``configured_dataset_name``.
+    """
+    name = str(value or "").strip()
+    if not name or name.lower() == "auto":
+        return DEFAULT_DATASET
+    return name
+
+
 def config_path(hermes_home: str | Path | None = None) -> Path | None:
     home = resolve_hermes_home(hermes_home)
     return home / "cognee.json" if home else None
@@ -313,6 +327,10 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         except Exception:
             pass
 
+    # "auto" names the recall mode, never a dataset: saves go to the default
+    # (configured_dataset_name). A blank name is left as it is (see the tests).
+    if str(config.get("dataset") or "").strip().lower() == "auto":
+        config["dataset"] = DEFAULT_DATASET
     config["top_k"] = max(1, str_to_int(config.get("top_k"), 5))
     config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 120))
     config["write_timeout"] = max(1, str_to_int(config.get("write_timeout"), 120))

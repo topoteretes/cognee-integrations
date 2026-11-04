@@ -324,7 +324,9 @@ export type MemoryToolsDeps = {
   /**
    * True when recall is auto for this conversation (SDK-1393): memory_search
    * then sends one request naming no dataset and the server routes it. May
-   * probe the server version; that time comes out of the recall timeout.
+   * probe the server version; on the routed path that probe's time comes out
+   * of the recall timeout. A probe still pending after recallTimeoutMs is
+   * treated as false.
    */
   autoRoute?: (agentId?: string, ctx?: MemoryToolContext) => Promise<boolean>;
   cache?: ReferenceCache;
@@ -395,18 +397,28 @@ export function createMemorySearchTool(deps: MemoryToolsDeps, ctx: MemoryToolCon
       const minScore = typeof params.minScore === "number" ? params.minScore : deps.cfg.minScore;
 
       let datasets: Array<{ id: string; label: string }>;
-      // The routing probe spends the recall budget, it does not add to it.
+      // Set only on the routed path: the routed recall gets what the routing
+      // probe left of recallTimeoutMs (the probe spends the budget, it does
+      // not add to it). Dataset resolution is not counted, and a search that
+      // does not route (pinned, multi-scope, a probe that says no, fails or
+      // outlasts the timeout) passes no timeout, so its recall runs exactly
+      // as an unrouted one: the full configured recall timeout.
       let timeoutMs: number | undefined;
       try {
-        const started = performance.now();
         // None of this agent's datasets resolves yet: nothing to search, even
         // routed (the server would only search other agents' datasets), as in
         // the prompt-time recall.
         datasets = await deps.resolveDatasets(ctx.agentId, ctx);
-        // Auto recall: one request with no dataset id ("" below), routed by the server.
-        const routed = deps.autoRoute && datasets.length > 0 ? await withinMs(deps.autoRoute(ctx.agentId, ctx), deps.cfg.recallTimeoutMs, false) : false;
-        if (deps.autoRoute) timeoutMs = Math.max(1, deps.cfg.recallTimeoutMs - (performance.now() - started));
-        if (routed) datasets = [{ id: "", label: "memory" }];
+        if (deps.autoRoute && datasets.length > 0) {
+          const probeStarted = performance.now();
+          // A probe still pending after recallTimeoutMs counts as "not routed".
+          const routed = await withinMs(deps.autoRoute(ctx.agentId, ctx), deps.cfg.recallTimeoutMs, false);
+          if (routed) {
+            // Auto recall: one request with no dataset id ("" below), routed by the server.
+            datasets = [{ id: "", label: "memory" }];
+            timeoutMs = Math.max(1, Math.floor(deps.cfg.recallTimeoutMs - (performance.now() - probeStarted)));
+          }
+        }
       } catch (e) {
         return jsonResult(unavailable(query, corpus, `dataset resolution failed: ${String(e)}`, "Check the Cognee server connection and retry memory_search."));
       }

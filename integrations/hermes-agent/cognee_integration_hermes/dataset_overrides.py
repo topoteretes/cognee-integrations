@@ -11,9 +11,12 @@ this is the hermes counterpart of the latter — one JSON map keyed by the
 
 ``counter`` feeds the switched cognee session id (``hermes_<id>__N``): a
 cognee session never spans two datasets, so every switch mints a fresh one.
-``recall`` (SDK-1393) is "pinned" when graph recall is restricted to
-``dataset`` and "auto" when it names no dataset and the server routes it. A
-pin-only entry (the dataset in use picked, no switch) has ``counter`` 0.
+``recall`` (SDK-1393) is the conversation's own recall choice: "pinned" when
+graph recall is restricted to ``dataset``, "auto" when it names no dataset and
+the server routes it (lifting a pin by the configured dataset too), and
+``RECALL_FOLLOWS_CONFIG`` after a reset, when the configuration decides (a
+configured non-default dataset pins, anything else is auto). A pin-only entry
+(the dataset in use picked, no switch) has ``counter`` 0.
 Everything here is best-effort — an unreadable file means "no overrides",
 never a failed session.
 """
@@ -30,6 +33,9 @@ from .config import SHARED_PLUGIN_STATE_DIR
 logger = logging.getLogger(__name__)
 
 _OVERRIDES_PATH = SHARED_PLUGIN_STATE_DIR / "hermes" / "dataset-overrides.json"
+
+# ``recall`` of an entry that leaves the recall mode to the configuration.
+RECALL_FOLLOWS_CONFIG = "default"
 
 # Overrides for conversations nobody resumes must not accumulate forever.
 _MAX_ENTRIES = 200

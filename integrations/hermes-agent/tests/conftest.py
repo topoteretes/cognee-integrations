@@ -99,8 +99,11 @@ def hermetic_env(request, monkeypatch, tmp_path):
     # A developer's own runtime venv, ready or outdated, must not decide whether
     # a test's server spawn upgrades it (a real install from PyPI).
     monkeypatch.setattr(runtime_env, "RUNTIME_DIR", tmp_path / "runtime")
-    monkeypatch.setattr(runtime_env, "VENV_DIR", tmp_path / "runtime" / "venv")
     monkeypatch.setattr(runtime_env, "READY_MARKER", tmp_path / "runtime" / "ready.json")
+    monkeypatch.setattr(runtime_env, "FAILURE_MARKER", tmp_path / "runtime" / "last-failure.json")
+    monkeypatch.setattr(runtime_env, "UPGRADE_LOG", tmp_path / "runtime-upgrade.log")
+    # And no test may launch a real background build.
+    monkeypatch.setattr(runtime_env, "start_background_upgrade", lambda: False)
 
 
 @pytest.fixture(autouse=True)

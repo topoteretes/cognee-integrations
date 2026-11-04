@@ -15,7 +15,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   prompt, and a `cognee-search` that names no dataset, send no dataset: the server picks the readable
   dataset(s) most likely to hold the answer when it can, and otherwise searches every readable
   dataset (dataset routing, SDK-1317; best effort). Pin a dataset to keep recall on one.
-  Saves still go to the active dataset. The plugin reads the server version from `GET /health`
+  Saves still go to the active dataset. While recall is auto, the credit line says "based on
+  Cognee memory" instead of naming the active dataset. The plugin reads the server version from `GET /health`
   (cached per server in `~/.cognee-plugin/dataset-routing.json`, re-read hourly, a failed read retried after five minutes with the last answer kept meanwhile) and keeps
   recall on the active dataset against an older server; pre-releases and dev builds of 1.6.6 count
   as older, and so does 1.6.6 with an unknown label (a later release with one routes). An
@@ -32,6 +33,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   switched before this release stays restricted. `auto` is a reserved name: no dataset can be
   switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset with
   recall on auto.
+- **The status bar extension's picker knows auto recall.** Its first entry, `auto (best-matching
+  dataset)`, sets recall back to auto; the active dataset's row shows the recall mode (and why it is
+  restricted) and picking it restricts recall to it instead of doing nothing; a dataset named `auto`
+  is no longer offered (picking it ran `switch-dataset.py auto`). The notification after a pick
+  says what changed, e.g. that an older server keeps recall on the active dataset.
 - **A configured dataset still restricts recall.** `COGNEE_PLUGIN_DATASET` (exported or in
   `~/.cognee/.env`) set to a name other than the default `agent_sessions` keeps recall on that
   dataset, as before this release; unset, `agent_sessions` or `auto` gives auto recall. A choice

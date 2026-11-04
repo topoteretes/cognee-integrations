@@ -243,36 +243,82 @@ describe("memory_search auto recall", () => {
     expect(calls).toEqual([["ds-a"]]);
   });
 
-  it("takes the routing probe's time out of the recall timeout", async () => {
+  const slow = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+
+  it("takes only the routing probe's time out of the recall timeout", async () => {
     const timeouts: Array<number | undefined> = [];
-    await search({
+    const out = await search({
       cfg: { ...cfg, recallTimeoutMs: 1_000 },
-      resolveDatasets: async () => [{ id: "ds-a", label: "agent" }],
-      autoRoute: () => new Promise((resolve) => setTimeout(() => resolve(true), 300)),
+      // Slow dataset resolution (a listDatasets cache miss) is not the probe's time.
+      resolveDatasets: () => slow(400, [{ id: "ds-a", label: "agent" }]),
+      autoRoute: () => slow(300, true),
       recall: async (p) => {
         timeouts.push(p.timeoutMs);
-        return [];
+        return [{ id: "x", text: "routed", score: 0.9 }];
       },
     });
+    expect(out.results).toHaveLength(1);
     expect(timeouts).toHaveLength(1);
     expect(timeouts[0]).toBeLessThanOrEqual(710);
-    expect(timeouts[0]).toBeGreaterThan(0);
+    // Had resolution been counted too, at most ~300 ms would be left.
+    expect(timeouts[0]).toBeGreaterThan(450);
   });
 
-  it("stops waiting for a probe that outlasts the recall timeout", async () => {
-    const calls: string[][] = [];
+  it("gives a pinned search the full recall timeout despite slow dataset resolution", async () => {
+    // No explicit timeout, as before routing: the recall runs with the
+    // configured recallTimeoutMs, the same request as an unrouted search.
+    const params: Array<Record<string, unknown>> = [];
+    const out = await search({
+      cfg: { ...cfg, recallTimeoutMs: 100 },
+      resolveDatasets: () => slow(250, [{ id: "ds-a", label: "agent" }]),
+      autoRoute: async () => false,
+      recall: async (p) => {
+        params.push(p);
+        return [{ id: "x", text: "pinned", score: 0.9 }];
+      },
+    });
+    expect(out.results).toHaveLength(1);
+    expect(params).toHaveLength(1);
+    expect(params[0].datasetIds).toEqual(["ds-a"]);
+    expect(params[0]).not.toHaveProperty("timeoutMs");
+  });
+
+  it("gives every multi-scope dataset the full recall timeout despite slow dataset resolution", async () => {
+    // Multi-scope mode never routes (autoRoute answers false at once).
+    const params: Array<Record<string, unknown>> = [];
+    const out = await search({
+      cfg: { ...cfg, recallTimeoutMs: 100 },
+      resolveDatasets: () => slow(250, [{ id: "ds-a", label: "agent" }, { id: "ds-b", label: "user" }]),
+      autoRoute: async () => false,
+      recall: async (p) => {
+        params.push(p);
+        return [{ id: `x-${(p.datasetIds as string[])[0]}`, text: "hit", score: 0.9 }];
+      },
+    });
+    expect(out.results).toHaveLength(2);
+    expect(params.map((p) => p.datasetIds)).toEqual([["ds-a"], ["ds-b"]]);
+    for (const p of params) expect(p).not.toHaveProperty("timeoutMs");
+  });
+
+  it("stops waiting for a probe that outlasts the recall timeout and searches the datasets with the full timeout", async () => {
+    const params: Array<Record<string, unknown>> = [];
     const started = Date.now();
-    await search({
+    const out = await search({
       cfg: { ...cfg, recallTimeoutMs: 50 },
       resolveDatasets: async () => [{ id: "ds-a", label: "agent" }],
       autoRoute: () => new Promise(() => {}),
       recall: async (p) => {
-        calls.push(p.datasetIds);
-        return [];
+        params.push(p);
+        return [{ id: "x", text: "pinned", score: 0.9 }];
       },
     });
     expect(Date.now() - started).toBeLessThan(1_000);
-    // Not known to route: the conversation's datasets.
-    expect(calls).toEqual([["ds-a"]]);
+    // Not known to route: the conversation's datasets, sent like an unrouted
+    // search (full recall timeout), not with what the probe left (nothing).
+    expect(params.map((p) => p.datasetIds)).toEqual([["ds-a"]]);
+    expect(params[0]).not.toHaveProperty("timeoutMs");
+    expect(out.disabled).toBeUndefined();
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0].text).toBe("pinned");
   });
 });

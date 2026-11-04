@@ -1,0 +1,145 @@
+"""What the prompt hook injects when recall is auto vs pinned (SDK-1393).
+
+Auto recall names no dataset and lets a cognee >= 1.6.6 server pick the
+dataset(s) to read, so nothing the hook injects may claim the memory came from
+the launch's active dataset. Pinned recall reads that dataset only, so a credit
+that names a source names it.
+
+Each test drives the hook's real ``auto_recall_active`` (the server version is
+what the /health probe would read) and its real ``recall_via_http`` (the
+request body is captured at the HTTP seam), so the request and the injected
+text come from the same run.
+
+Contract, for every hook-family suite:
+  * auto (server 1.6.6, nothing pinned): the graph request carries no
+    ``datasets``/``dataset_ids`` and no session id, shared-memory ids included,
+    while the recalled item still reaches the context;
+  * pinned (a configured dataset on 1.6.6, or a server too old to route): the
+    graph request names the active dataset's ids;
+  * the memory header (``Cognee memory: …``) never names a dataset;
+  * claude-code and codex credit with ``🧠 Cognee memory [mN]`` and never name
+    a dataset; Antigravity tags nothing;
+  * Cursor's credit line names its source: ``based on the <dataset> dataset``
+    when pinned, ``based on Cognee memory`` when routed, matching what
+    ``cognee-search.sh`` prints on its auto path.
+"""
+
+from __future__ import annotations
+
+import sys
+
+import pytest
+from utils.recall import drive_recall, load_lookup
+
+DATASET = "research_notes"
+WRITE_ID = "11111111-1111-4111-8111-111111111111"
+OTHER_ID = "22222222-2222-4222-8222-222222222222"
+FACT = "the retry policy backs off exponentially with a 30s ceiling"
+GRAPH_ITEM = {"source": "graph", "text": f"## Relevant passages\n{FACT}."}
+
+#: (server version, COGNEE_PLUGIN_DATASET, expected mode)
+MODES = {
+    "auto": ("1.6.6", "", "auto"),
+    "pinned_configured": ("1.6.6", DATASET, "pinned"),
+    "pinned_old_server": ("1.6.5", "", "pinned"),
+}
+
+
+def _drive(suite, hook_module, monkeypatch, tmp_path, mode: str):
+    version, configured, expected = MODES[mode]
+    module = load_lookup(suite, hook_module, monkeypatch)
+    # The isolated sibling the hook imported (Antigravity binds names only).
+    pc = sys.modules["_plugin_common"]
+    # After loading: the harness scrubs COGNEE_* from the environment.
+    monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "on")  # Codex and Cursor start off
+    monkeypatch.delenv("COGNEE_PLUGIN_READ_DATASET_IDS", raising=False)
+    if configured:
+        monkeypatch.setenv("COGNEE_PLUGIN_DATASET", configured)
+    else:
+        monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
+    monkeypatch.setattr(module, "get_dataset", lambda config: DATASET)
+    monkeypatch.setattr(
+        module, "resolve_active_dataset_ids", lambda *a, **k: (WRITE_ID, [WRITE_ID, OTHER_ID])
+    )
+    # The version /health would report; the routing cache lives in the temp dir.
+    monkeypatch.setattr(pc, "_ROUTING_SUPPORT_FILE", tmp_path / "dataset-routing.json")
+    monkeypatch.setattr(pc, "_probe_server_version", lambda base, timeout: (version, ""))
+
+    sent: list[dict] = []
+
+    def fake_http(path, payload, timeout=None, **kw):
+        sent.append(dict(payload))
+        return [dict(GRAPH_ITEM)] if payload.get("scope") == ["graph"] else []
+
+    monkeypatch.setattr(pc, "_json_http_request", fake_http)
+    real_recall = module.recall_via_http
+    modes: list[bool] = []
+
+    def real_auto(*a, **k):
+        modes.append(pc.auto_recall_active(*a, **k))
+        return modes[-1]
+
+    run = drive_recall(
+        module,
+        monkeypatch,
+        recall=lambda prompt, **kw: real_recall(prompt, **kw),
+        auto_route=real_auto,
+    )
+    assert modes == [expected == "auto"], "the hook asks for the recall mode once"
+    (graph,) = [p for p in sent if p.get("scope") == ["graph"]]
+    context = run.output["hookSpecificOutput"]["additionalContext"]
+    return graph, context
+
+
+def _header(context: str) -> str:
+    """The ``Cognee memory: …`` line (the Codex-derived cores put their status
+    line above it)."""
+    return next(line for line in context.splitlines() if line.startswith("Cognee memory:"))
+
+
+@pytest.mark.parametrize("mode", list(MODES))
+def test_request_shape_follows_the_recall_mode(suite, hook_module, monkeypatch, tmp_path, mode):
+    graph, context = _drive(suite, hook_module, monkeypatch, tmp_path, mode)
+    if MODES[mode][2] == "auto":
+        assert "datasets" not in graph and "dataset_ids" not in graph, graph
+        assert "session_id" not in graph
+    else:
+        assert graph["dataset_ids"] == [WRITE_ID, OTHER_ID], graph
+    # Routed or not, what the server returned is rendered.
+    assert FACT in context
+
+
+@pytest.mark.parametrize("mode", list(MODES))
+def test_the_memory_header_never_names_a_dataset(suite, hook_module, monkeypatch, tmp_path, mode):
+    _, context = _drive(suite, hook_module, monkeypatch, tmp_path, mode)
+    header = _header(context)
+    assert DATASET not in header and "dataset" not in header.lower(), header
+    if suite.name == "claude-code":
+        assert header.startswith("Cognee memory: recall 1 memory;"), header
+    else:
+        assert header.startswith("Cognee memory: 1 memory hit"), header
+
+
+@pytest.mark.parametrize("mode", list(MODES))
+def test_the_credit_names_the_dataset_only_when_pinned(
+    suite, hook_module, monkeypatch, tmp_path, mode
+):
+    _, context = _drive(suite, hook_module, monkeypatch, tmp_path, mode)
+    auto = MODES[mode][2] == "auto"
+    if suite.name == "antigravity":
+        # No credit tagging on this host: the memory goes in bare.
+        assert "Crediting Cognee memory" not in context and "[m1" not in context
+        assert DATASET not in context
+        return
+    assert "Crediting Cognee memory: Cognee found 1 memory for this prompt" in context
+    if suite.name in ("claude-code", "codex"):
+        assert "> \U0001f9e0 Cognee memory [mN]:" in context
+        assert DATASET not in context
+        return
+    # Cursor: the credit line says where the memory came from.
+    assert suite.name == "cursor", f"{suite.name}: add its credit wording here"
+    if auto:
+        assert "based on Cognee memory." in context
+        assert DATASET not in context
+    else:
+        assert f"based on the {DATASET} dataset." in context

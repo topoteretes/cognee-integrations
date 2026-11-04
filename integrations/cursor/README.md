@@ -159,7 +159,7 @@ With the opt-in set, `sessionStart` registers it: `scripts/_statusline_config.py
 
 ## Status bar (Cursor IDE)
 
-The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that switches the chat's dataset. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
+The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that opens a dataset picker: `auto (best-matching dataset)` sets recall back to auto, the active dataset (its row shows the recall mode) restricts recall to it without a new session, and another dataset switches the chat to it. A dataset named `auto` is never offered as a target. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
 
 Without it, the same text (without ANSI) is the first line of the context the plugin injects at session start and on each turn's first tool call, so the agent can relay it.
 

@@ -1236,6 +1236,7 @@ dataset while auto only restricts recall to it; picking `auto` lifts that
 - `recall restricted to agent_sessions` after picking the active dataset;
 - `recall is auto again (saves stay in agent_sessions)` and `recall is already auto (saves go to agent_sessions)` after `auto`;
 - `saved; this server can't route yet, so recall stays on agent_sessions` after `auto` on a server that cannot route (older than cognee 1.6.6, or its version unknown); the choice is kept and applies once the server routes;
+- `saved; COGNEE_PLUGIN_READ_DATASET_IDS still scopes recall to its datasets` after `auto` while that read set is configured (it keeps its explicit scope), or `saved; recall stays restricted to agent_sessions` when the script names no reason;
 - or the script's error (`✕ Selected dataset is not writable`).
 
 The list is read once when the row is first drawn and again after each
