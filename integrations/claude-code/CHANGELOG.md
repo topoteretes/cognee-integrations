@@ -10,6 +10,26 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.6]
+
+### Changed
+- **The hooks module runs no shell.** The `search` and `remember` tools and the fix
+  dialog's doctor now start the plugin's own Python scripts directly, each named in full
+  at its call site (`scripts/cognee_search.py`, `scripts/cognee_remember.py`,
+  `scripts/doctor.py`), instead of `bash scripts/<name>.sh`. The search and remember logic
+  moved out of the shell wrappers, and their twelve inline `python3 - <<'PY'` blocks, into
+  those two scripts; `cognee-search.sh` and `cognee-remember.sh` stay for the skills as
+  one-line wrappers around them, with the same arguments and output. The tools also work
+  where no `bash` is on PATH now.
+- **`_plugin_common.py` is back under the plugin directory's 256 KiB per-file limit**
+  (270 KB → 250 KB). The update check moved to `_update_check.py` and the state sweep to
+  `_state_sweep.py`; `_plugin_common` re-exports every name, so no importer changes. A
+  unit test fails on any plugin file over the limit.
+- **The README says everything the hooks module reads, writes, starts and sends**: the one
+  file it writes and why, each script it runs with when and what network call it makes,
+  the interpreter order (`python3`, `python`, `py`), the two tools it answers and that its
+  catch-all `tool.call` hook hands every other call on to the real tool.
+
 ## [1.7.5]
 
 ### Changed

@@ -115,12 +115,12 @@ function wire(
       case 'switch-dataset.py':
         if (e.argv.includes('--list')) return ok(JSON.stringify(SWITCH_LIST))
         return ok(JSON.stringify({ switched: true, dataset: e.argv[2], session_id: 'cognee-2', previous: { dataset: 'agent_sessions', synced: true } }))
-      case 'cognee-search.sh':
+      case 'cognee_search.py':
         return ok(JSON.stringify(HITS))
       case 'recall-trim.py':
         // The trimmer answers with the list it was given, each text marked.
         return ok(JSON.stringify((JSON.parse(e.init?.stdin ?? '[]') as { text: string }[]).map(h => ({ ...h, text: `${h.text} [trimmed]` }))))
-      case 'cognee-remember.sh':
+      case 'cognee_remember.py':
         return ok(JSON.stringify({ ok: true, dataset_id: 'a1', queryable: true, wait_outcome: 'completed' }))
       case '_env_file.py':
         return ok(`${HOME}/.cognee/.env\n`)
@@ -185,16 +185,16 @@ test('the tools row can be switched off', { options: { tools: false } }, async (
   expect(registrations.tools).toEqual([])
 })
 
-test('the search tool runs the search wrapper and hands the model the hits as text', async ($, on) => {
+test('the search tool runs the search script and hands the model the hits as text', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'how does tempo replicate?', top_k: 5 })
-  const argv = argvOf(calls, 'cognee-search.sh')
+  const argv = argvOf(calls, 'cognee_search.py')
   expect(argv).toBeDefined()
-  expect(argv![0]).toBe('bash')
-  expect(argsAfter(argv!, 'cognee-search.sh')).toEqual(['how does tempo replicate?', '5', '--graph'])
+  expect(argv![0]).toBe('python3')
+  expect(argsAfter(argv!, 'cognee_search.py')).toEqual(['how does tempo replicate?', '5', '--graph'])
 
   const shown = resultText(ran)
   expect(shown.isError).toBe(false)
@@ -211,17 +211,17 @@ test('the search tool reads another dataset by id and the code graph by scope', 
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft', dataset_id: 'd2' })
-  expect(argsAfter(argvOf(calls, 'cognee-search.sh')!, 'cognee-search.sh')).toEqual(['raft', '10', '--graph', '--dataset-id', 'd2'])
+  expect(argsAfter(argvOf(calls, 'cognee_search.py')!, 'cognee_search.py')).toEqual(['raft', '10', '--graph', '--dataset-id', 'd2'])
 
   calls.length = 0
   const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'process_payment', scope: 'code' })
-  expect(argsAfter(argvOf(calls, 'cognee-search.sh')!, 'cognee-search.sh')).toEqual(['process_payment', '10', '--code'])
+  expect(argsAfter(argvOf(calls, 'cognee_search.py')!, 'cognee_search.py')).toEqual(['process_payment', '10', '--code'])
   expect(resultText(ran).text).toContain('from the code graph')
 })
 
 test('an unreachable server is an error result, never an empty answer', async ($, on) => {
   const calls: Call[] = []
-  wire(on, calls, { 'cognee-search.sh': () => ({ value: { exitCode: 1, stdout: 'UNREACHABLE\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) })
+  wire(on, calls, { 'cognee_search.py': () => ({ value: { exitCode: 1, stdout: 'UNREACHABLE\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'anything' })
@@ -232,7 +232,7 @@ test('an unreachable server is an error result, never an empty answer', async ($
 
 test('an empty list from a reachable server is authoritative', async ($, on) => {
   const calls: Call[] = []
-  wire(on, calls, { 'cognee-search.sh': () => ok('[]') })
+  wire(on, calls, { 'cognee_search.py': () => ok('[]') })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'nothing here' }))
@@ -246,7 +246,7 @@ test('the remember tool maps the category to its node set and reports the write'
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'The retry budget lives in the client.', category: 'project' })
-  expect(argsAfter(argvOf(calls, 'cognee-remember.sh')!, 'cognee-remember.sh')).toEqual([
+  expect(argsAfter(argvOf(calls, 'cognee_remember.py')!, 'cognee_remember.py')).toEqual([
     'The retry budget lives in the client.',
     '--node-set',
     'project_docs',
@@ -263,7 +263,7 @@ test('the remember tool stores a file under its real name', async ($, on) => {
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, file: 'src/payments.py', category: 'project' })
-  expect(argsAfter(argvOf(calls, 'cognee-remember.sh')!, 'cognee-remember.sh')).toEqual(['--file', 'src/payments.py', '--node-set', 'project_docs'])
+  expect(argsAfter(argvOf(calls, 'cognee_remember.py')!, 'cognee_remember.py')).toEqual(['--file', 'src/payments.py', '--node-set', 'project_docs'])
 })
 
 test('the remember tool refuses a text past its cap and points at the skill', async ($, on) => {
@@ -275,7 +275,7 @@ test('the remember tool refuses a text past its cap and points at the skill', as
   expect(shown.isError).toBe(true)
   expect(shown.text).toContain('cognee-remember skill')
   // Nothing ran: no cognify was paid for.
-  expect(argvOf(calls, 'cognee-remember.sh')).toBeUndefined()
+  expect(argvOf(calls, 'cognee_remember.py')).toBeUndefined()
 })
 
 test('the remember tool refuses a file past its cap without reading it', async ($, on) => {
@@ -287,7 +287,7 @@ test('the remember tool refuses a file past its cap without reading it', async (
   expect(shown.isError).toBe(true)
   expect(shown.text).toContain('500000 bytes')
   expect(shown.text).toContain('cognee-remember skill')
-  expect(argvOf(calls, 'cognee-remember.sh')).toBeUndefined()
+  expect(argvOf(calls, 'cognee_remember.py')).toBeUndefined()
 })
 
 test('the remember tool has a per-session allowance, with the skill as the way past it', async ($, on) => {
@@ -300,12 +300,12 @@ test('the remember tool has a per-session allowance, with the skill as the way p
     const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: `note ${i}` }))
     expect(shown.isError).toBe(false)
   }
-  expect(calls.filter(c => argvOf([c], 'cognee-remember.sh')).length).toBe(5)
+  expect(calls.filter(c => argvOf([c], 'cognee_remember.py')).length).toBe(5)
   const sixth = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'one more' }))
   expect(sixth.isError).toBe(true)
   expect(sixth.text).toContain('allowance')
   expect(sixth.text).toContain('cognee-remember skill')
-  expect(calls.filter(c => argvOf([c], 'cognee-remember.sh')).length).toBe(5)
+  expect(calls.filter(c => argvOf([c], 'cognee_remember.py')).length).toBe(5)
 
   // A /clear starts a fresh allowance.
   await $.session.end({ sessionId: SESSION, reason: 'clear' })
@@ -326,7 +326,7 @@ test('the remember allowance counts bytes too', async ($, on) => {
   const fifth = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x'.repeat(15_000) }))
   expect(fifth.isError).toBe(true)
   expect(fifth.text).toContain('allowance')
-  expect(calls.filter(c => argvOf([c], 'cognee-remember.sh')).length).toBe(4)
+  expect(calls.filter(c => argvOf([c], 'cognee_remember.py')).length).toBe(4)
 })
 
 test('the transcript row of a plugin tool call is labelled plainly, not as an MCP server', async ($, on) => {
@@ -353,7 +353,7 @@ test('the transcript row of a plugin tool call is labelled plainly, not as an MC
 
 test('a write the server never received is reported as not stored', async ($, on) => {
   const calls: Call[] = []
-  wire(on, calls, { 'cognee-remember.sh': () => ({ value: { exitCode: 1, stdout: 'UNREACHABLE\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) })
+  wire(on, calls, { 'cognee_remember.py': () => ({ value: { exitCode: 1, stdout: 'UNREACHABLE\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x' }))
@@ -651,7 +651,7 @@ test('the fix pane runs the doctor and shows its report', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, {
     'cognee_statusline_render.py': () => ok(JSON.stringify({ ...FAIL_SNAPSHOT, reason: 'unreachable' })),
-    'cognee-doctor.sh': () => ok('Mode: Local\nServer: http://localhost:8011\nHealth: unreachable\n'),
+    'doctor.py': () => ok('Mode: Local\nServer: http://localhost:8011\nHealth: unreachable\n'),
   })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
@@ -664,7 +664,7 @@ test('the fix pane runs the doctor and shows its report', async ($, on) => {
   // No key field for a reason no single value fixes.
   expect(await pane.find({ type: 'Input', key: 'secret' })).toBeUndefined()
   await $.ui.press({ plugin: PLUGIN, key: 'doctor' })
-  expect(argvOf(calls, 'cognee-doctor.sh')).toBeDefined()
+  expect(argvOf(calls, 'doctor.py')).toBeDefined()
   expect(await pane.find({ type: 'Code', text: /Health: unreachable/ })).toBeDefined()
   await pane.unmount()
 })
@@ -737,7 +737,7 @@ test('a remember call cut off by its timeout is reported as outcome unknown, nev
   const calls: Call[] = []
   wire(on, calls, {
     // The engine rejects a call whose child outlasts its time; the kit's bottom refuses it the same way.
-    'cognee-remember.sh': () => ({ deny: 'process timed out after 150000 ms' }),
+    'cognee_remember.py': () => ({ deny: 'process timed out after 150000 ms' }),
   })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
