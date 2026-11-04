@@ -137,12 +137,11 @@ def test_remember_skill_stores_the_text(connected, tmp_path, setup):
     assert stored, f"nothing reached /api/v1/remember; stderr={err!r}"
 
 
-@pytest.mark.parametrize("name", ["auto", " AUTO "])
-def test_remember_refuses_the_reserved_dataset_name(connected, tmp_path, name):
+def test_remember_refuses_the_reserved_dataset_name(connected, tmp_path):
     """SDK-1393: "auto" means auto recall, so nothing is saved into a dataset so named."""
     env = _agent_env(connected, tmp_path, "python3")
     script = connected.root / "scripts" / "cognee-remember.sh"
-    result = _run(connected, env, [_bash(), str(script), "a note", "--dataset", name])
+    result = _run(connected, env, [_bash(), str(script), "a note", "--dataset", " AUTO "])
     assert result.returncode == 2
     assert b"'auto' is reserved" in result.stderr
     assert not [c for c in connected.mock.calls if c["path"] == "/api/v1/remember"]

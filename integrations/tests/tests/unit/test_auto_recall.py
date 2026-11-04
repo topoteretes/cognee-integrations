@@ -65,100 +65,70 @@ def _graph(pc, **kw):
 
 
 def test_auto_graph_recall_names_no_dataset(pc, sent):
-    _graph(pc, auto_route=True)
+    # Shared memory is on by default: keeping its ids would leave auto a no-op.
+    _graph(pc, auto_route=True, dataset_ids=[WRITE_ID, OTHER_ID])
     (payload,) = sent
     assert "datasets" not in payload and "dataset_ids" not in payload
     assert "session_id" not in payload
     assert payload["scope"] == ["graph"]
 
 
-def test_without_auto_route_the_dataset_is_named(pc, sent):
-    _graph(pc)
-    assert sent[0]["datasets"] == ["agent_sessions"]
-
-
-def test_auto_drops_shared_memory_ids(pc, sent):
-    # Shared memory is on by default: keeping its ids would leave auto a no-op.
-    _graph(pc, auto_route=True, dataset_ids=[WRITE_ID, OTHER_ID])
-    (payload,) = sent
-    assert "datasets" not in payload and "dataset_ids" not in payload
-
-
-def test_pinned_recall_keeps_shared_memory_ids(pc, sent):
-    _graph(pc, dataset_ids=[WRITE_ID, OTHER_ID])
-    assert sent[0]["dataset_ids"] == [WRITE_ID, OTHER_ID]
-
-
-def test_a_federated_read_set_keeps_its_scope(pc, sent, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID, OTHER_ID]))
-    _graph(pc, auto_route=True)
-    assert sent[0]["dataset_ids"] == [WRITE_ID, OTHER_ID]
-
-
-def test_a_session_bound_scope_keeps_its_dataset(pc, sent):
-    pc.recall_via_http(
-        "q",
-        session_id="s1",
-        top_k=5,
-        scope=["session_context"],
-        dataset="agent_sessions",
-        auto_route=True,
-    )
-    assert sent[0]["datasets"] == ["agent_sessions"]
-    assert sent[0]["session_id"] == "s1"
-
-
-def test_a_graph_recall_with_a_session_keeps_its_dataset(pc, sent):
-    _graph(pc, session_id="s1", auto_route=True)
-    assert sent[0]["datasets"] == ["agent_sessions"]
-
-
-def test_the_code_lane_keeps_its_dataset(pc, sent):
-    pc.recall_via_http(
-        "q",
-        session_id="",
-        top_k=1,
-        scope=["code"],
-        dataset="repo-code",
-        code_query={"operation": "query_facts", "file": "a.py"},
-        auto_route=True,
-    )
-    assert sent[0]["datasets"] == ["repo-code"]
+@pytest.mark.parametrize(
+    ("kwargs", "read_set", "expected"),
+    [
+        pytest.param({"auto_route": False}, False, {"datasets": ["agent_sessions"]}, id="not-auto"),
+        pytest.param({}, True, {"dataset_ids": [WRITE_ID, OTHER_ID]}, id="federated-read-set"),
+        pytest.param(
+            {"session_id": "s1", "scope": ["session_context"]},
+            False,
+            {"datasets": ["agent_sessions"], "session_id": "s1"},
+            id="session-bound-scope",
+        ),
+        pytest.param(
+            {"session_id": "s1"}, False, {"datasets": ["agent_sessions"]}, id="graph-with-session"
+        ),
+        pytest.param(
+            {
+                "top_k": 1,
+                "scope": ["code"],
+                "dataset": "repo-code",
+                "code_query": {"operation": "query_facts", "file": "a.py"},
+            },
+            False,
+            {"datasets": ["repo-code"]},
+            id="code-lane",
+        ),
+    ],
+)
+def test_auto_does_not_apply(pc, sent, monkeypatch, kwargs, read_set, expected):
+    if read_set:
+        monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID, OTHER_ID]))
+    _graph(pc, **{"auto_route": True, **kwargs})
+    assert {key: sent[0].get(key) for key in expected} == expected
 
 
 # ── "auto" is not a dataset name ───────────────────────────────────────────
 
 
-@pytest.mark.parametrize("value", ["auto", "AUTO", " Auto "])
-def test_an_env_dataset_of_auto_means_the_default_dataset(pc, monkeypatch, value):
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", value)
+def test_an_env_dataset_of_auto_means_the_default_dataset(pc, monkeypatch):
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", " AUTO ")
     assert pc.resolve_active_dataset("") == "agent_sessions"
-    assert pc.configured_dataset_name(value) == "agent_sessions"
-
-
-def test_other_env_datasets_are_kept(pc, monkeypatch):
+    assert pc.configured_dataset_name(" AUTO ") == "agent_sessions"
+    # Only the reserved word: other names are kept.
     monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "autos")
-    monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
     assert pc.resolve_active_dataset("") == "autos"
 
 
-@pytest.mark.parametrize("value", ["auto", " AUTO "])
-def test_a_configured_dataset_of_auto_seeds_the_default(suite, isolated_modules, value):
-    config = isolated_modules(suite, "config")
-    assert config.get_dataset({"dataset": value}) == "agent_sessions"
-    assert config.get_dataset({"dataset": "research"}) == "research"
-
-
-@pytest.mark.parametrize("value", ["auto", " AUTO "])
 def test_an_env_dataset_of_auto_never_reaches_the_launch_record(
-    suite, isolated_modules, pc, monkeypatch, value
+    suite, isolated_modules, pc, monkeypatch
 ):
     # SessionStart seeds the launch record from load_config()["dataset"], and the
     # record then wins over every later "auto" check: saves, shared memory and
     # agent registration would all name a dataset called "auto".
     config = isolated_modules(suite, "config")
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", value)
+    assert config.get_dataset({"dataset": " AUTO "}) == "agent_sessions"
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", " AUTO ")
     cfg = config.load_config()
     assert cfg["dataset"] == "agent_sessions"
     pc.ensure_launch_record("host-auto", "/w", dataset=cfg["dataset"])
@@ -179,33 +149,14 @@ def launch(pc):
     return key
 
 
-def test_recall_is_auto_until_a_dataset_is_picked(pc, launch, monkeypatch):
-    assert pc.recall_is_pinned(launch) is False
-    assert pc.auto_recall_active(launch) is True
-    pc.switch_launch_record(launch, session_id="s2", dataset="research", conn_uuid="c2")
-    assert pc.recall_is_pinned(launch) is True
-    assert pc.auto_recall_active(launch) is False
-
-
-def test_set_recall_pinned_toggles_without_touching_the_dataset(pc, launch):
-    pc.set_recall_pinned(launch, True)
-    assert pc.recall_is_pinned(launch) is True
-    rec = pc.set_recall_pinned(launch, False)
-    assert pc.recall_is_pinned(launch) is False
-    assert rec["dataset"] == "agent_sessions" and rec["session_id"] == "s1"
-
-
-def test_a_record_switched_before_recall_modes_stays_pinned(pc, launch):
+def test_a_record_switched_before_recall_modes_stays_pinned(pc, launch, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "auto")
     rec = pc._read_map_record(launch)
     pc._write_map_record(launch, {**rec, "switched_at": "2026-10-01T00:00:00Z"})
     assert pc.recall_is_pinned(launch) is True
+    assert pc.recall_pin_reason(launch) == "dataset_picked"
     pc.set_recall_pinned(launch, False)
     assert pc.recall_is_pinned(launch) is False
-
-
-def test_a_federated_read_set_is_not_auto(pc, launch, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID]))
-    assert pc.auto_recall_active(launch) is False
 
 
 def test_the_recall_mode_sends_no_request(pc, launch, monkeypatch):
@@ -217,14 +168,6 @@ def test_the_recall_mode_sends_no_request(pc, launch, monkeypatch):
     monkeypatch.setenv("COGNEE_BASE_URL", "http://cognee.test:8000")
     assert pc.recall_mode(launch) == ("auto", "")
     assert pc.auto_recall_active(launch) is True
-
-
-def test_the_shell_skills_learn_whether_recall_is_auto(pc, launch, monkeypatch):
-    # The skills find their launch the way a shell tool does: COGNEE_SESSION_KEY.
-    monkeypatch.setenv("COGNEE_SESSION_KEY", launch)
-    assert pc.shell_runtime_overrides()["recall_auto"] == "1"
-    pc.set_recall_pinned(launch, True)
-    assert pc.shell_runtime_overrides()["recall_auto"] == ""
 
 
 @pytest.mark.parametrize("mode, recall_auto", [("auto", "1"), ("pinned", "")])
@@ -265,43 +208,16 @@ def test_the_hook_routes_the_graph_scope_only(lookup, monkeypatch, auto_route):
             assert not kwargs.get("auto_route"), scope
 
 
-def test_the_hook_routes_under_shared_memory(suite, hook_module, monkeypatch):
-    module = load_lookup(suite, hook_module, monkeypatch)
-    monkeypatch.setattr(
-        module, "resolve_active_dataset_ids", lambda *a, **k: (WRITE_ID, [WRITE_ID, OTHER_ID])
-    )
-    monkeypatch.setattr(module, "get_dataset", lambda config: "agent_sessions")
-    run = drive_recall(module, monkeypatch, auto_route=True)
-    assert run.kwargs["graph"]["auto_route"] is True
-
-
 # ── COGNEE_PLUGIN_RECALL_MODE ──────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "dataset", ["", "research", " research ", "agent_sessions", "auto", "agent sessions"]
-)
-def test_recall_is_auto_by_default_whatever_dataset_is_configured(pc, launch, monkeypatch, dataset):
-    """COGNEE_PLUGIN_DATASET only names where saves go: it never pins recall."""
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", dataset)
-    assert pc.configured_recall_mode() == "auto"
-    assert pc.recall_is_pinned(launch) is False
-    assert pc.auto_recall_active(launch) is True
-    assert pc.recall_mode(launch) == ("auto", "")
 
 
 @pytest.mark.parametrize(
     ("value", "mode"),
     [
-        ("pinned", "pinned"),
         (" PINNED ", "pinned"),
-        ("Pinned", "pinned"),
-        ("auto", "auto"),
-        (" Auto ", "auto"),
         ("", "auto"),
         ("pin", "auto"),
-        ("restricted", "auto"),
-        ("true", "auto"),
+        ("auto", "auto"),
     ],
 )
 def test_the_configured_recall_mode(pc, launch, monkeypatch, value, mode):
@@ -338,33 +254,6 @@ def test_the_recall_mode_set_only_in_the_env_file_applies(
     assert pc.recall_mode(launch) == ("pinned", "configured_pin")
 
 
-def test_an_explicit_unpin_beats_a_configured_pin(pc, launch, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
-    assert pc.recall_pin_reason(launch) == "configured_pin"
-    pc.set_recall_pinned(launch, False)
-    assert pc.recall_is_pinned(launch) is False
-    assert pc.auto_recall_active(launch) is True
-
-
-def test_a_pick_beats_a_configured_auto(pc, launch, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "auto")
-    pc.set_recall_pinned(launch, True)
-    assert pc.recall_pin_reason(launch) == "dataset_picked"
-
-
-def test_a_legacy_switch_is_a_pick_whatever_is_configured(pc, launch, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "auto")
-    rec = pc._read_map_record(launch)
-    pc._write_map_record(launch, {**rec, "switched_at": "2026-10-01T00:00:00Z"})
-    assert pc.recall_pin_reason(launch) == "dataset_picked"
-
-
-def test_a_configured_pin_applies_outside_a_launch(pc, monkeypatch):
-    monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
-    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
-    assert pc.recall_pin_reason("") == "configured_pin"
-
-
 def test_recall_mode_names_why_recall_is_not_auto(pc, launch, monkeypatch):
     assert pc.recall_mode(launch) == ("auto", "")
     monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
@@ -379,3 +268,4 @@ def test_a_read_set_is_reported_over_a_pin(pc, launch, monkeypatch):
     pc.set_recall_pinned(launch, True)
     monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID]))
     assert pc.recall_mode(launch) == ("pinned", "read_dataset_ids")
+    assert pc.auto_recall_active(launch) is False

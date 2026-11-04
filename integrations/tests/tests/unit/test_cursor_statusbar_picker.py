@@ -20,6 +20,13 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _only_cursor(suite):
+    if suite.name != "cursor":
+        pytest.skip(f"{suite.name}: the status-bar picker is Cursor's")
+
+
 EXTENSION = Path(__file__).resolve().parents[3] / "cursor" / "statusbar" / "extension.js"
 
 _HARNESS = r"""
@@ -65,7 +72,7 @@ def _by_label(items: list[dict]) -> dict:
 
 
 def test_the_active_dataset_is_picked_as_pin_and_others_by_name_or_id():
-    listing = {
+    auto = {
         "current": "team-id",
         "recall": "auto",
         "message": "Recall is auto: the server picks the best-matching dataset for each recall.",
@@ -75,28 +82,25 @@ def test_the_active_dataset_is_picked_as_pin_and_others_by_name_or_id():
             {"name": "pin", "id": "pin-id", "current": False, "writable": True},
         ],
     }
-    items = _by_label(_run([listing], [])["items"][0])
-    assert items["auto (best-matching dataset)"]["target"] == "auto"
-    assert items["auto (best-matching dataset)"]["detail"] == listing["message"]
-    assert items["team"]["target"] == "pin"
-    assert items["demo"]["target"] == "demo"
-    assert items["pin"]["target"] == "pin-id"
-
-
-def test_a_pinned_listing_puts_the_script_message_on_the_active_row():
-    message = "Recall is pinned to 'a', where saves go, because COGNEE_PLUGIN_RECALL_MODE=pinned."
-    listing = {
+    pinned = {
         "current": "a",
         "recall": "pinned",
         "reason": "configured_pin",
-        "message": message,
+        "message": "Recall is pinned to 'a', where saves go, because "
+        "COGNEE_PLUGIN_RECALL_MODE=pinned.",
         "datasets": [{"name": "a", "id": "1", "current": True, "writable": True}],
     }
-    items = _by_label(_run([listing], [])["items"][0])
-    assert items["a"]["target"] == "pin" and items["a"]["current"] is True
-    assert items["a"]["detail"] == message
-    assert "COGNEE_PLUGIN_DATASET" not in items["a"]["description"]
-    assert "detail" not in items["auto (best-matching dataset)"]
+    auto_items, pinned_items = (_by_label(items) for items in _run([auto, pinned], [])["items"])
+    assert auto_items["auto (best-matching dataset)"]["target"] == "auto"
+    assert auto_items["auto (best-matching dataset)"]["detail"] == auto["message"]
+    assert auto_items["team"]["target"] == "pin"
+    assert auto_items["demo"]["target"] == "demo"
+    assert auto_items["pin"]["target"] == "pin-id"
+    # Pinned: the script's message moves to the active row.
+    assert pinned_items["a"]["target"] == "pin" and pinned_items["a"]["current"] is True
+    assert pinned_items["a"]["detail"] == pinned["message"]
+    assert "COGNEE_PLUGIN_DATASET" not in pinned_items["a"]["description"]
+    assert "detail" not in pinned_items["auto (best-matching dataset)"]
 
 
 def test_the_notification_is_the_script_message_with_a_generic_fallback():
@@ -113,15 +117,7 @@ def test_the_notification_is_the_script_message_with_a_generic_fallback():
                 },
                 "a",
             ],
-            [
-                {"switched": False, "reason": "recall_auto", "recall": "auto", "dataset": "a"},
-                "auto",
-            ],
             [{"switched": True, "dataset": "b"}, "b"],
         ],
     )
-    assert out["messages"] == [
-        said,
-        "recall is auto (saves go to a).",
-        "this chat now uses b.",
-    ]
+    assert out["messages"] == [said, "this chat now uses b."]

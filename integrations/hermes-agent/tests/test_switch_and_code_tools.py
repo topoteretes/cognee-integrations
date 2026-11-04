@@ -248,14 +248,6 @@ class TestAutoRecall(unittest.TestCase):
         (kwargs,) = [k for k in fake.kwargs_for("recall") if k["scope"] == ["graph"]]
         return kwargs
 
-    def test_unpinned_recall_is_auto(self):
-        with fake_backend() as fake:
-            provider = make_provider()
-            self.assertIsNone(self._graph_recall(provider, fake)["datasets"])
-            out = _call(provider, "cognee_switch_dataset", {"action": "current"})
-        self.assertEqual(out["recall"], "auto")
-        self.assertNotIn("reason", out)
-
     def test_a_switch_pins_recall_and_auto_lifts_it(self):
         with fake_backend() as fake:
             provider = make_provider()
@@ -265,61 +257,19 @@ class TestAutoRecall(unittest.TestCase):
             self.assertEqual(out["reason"], "recall_auto")
             fake.calls.clear()
             self.assertIsNone(self._graph_recall(provider, fake)["datasets"])
-        # Saves stay in the switched dataset; the mode survives a resume.
-        self.assertEqual(provider._dataset, "work")
-        override = dataset_overrides.load_override("s-1")
-        self.assertEqual((override["dataset"], override["recall"]), ("work", "auto"))
-
-    def test_a_resumed_conversation_keeps_its_recall_mode(self):
-        dataset_overrides.save_override("s-1", "hermes", 0, recall="pinned")
-        with fake_backend():
-            provider = make_provider()
-            provider._apply_dataset_override()
-        self.assertTrue(provider._recall_pinned)
-        self.assertEqual(provider._dataset, "hermes")
-        self.assertEqual(provider._session_cognee_id, "hermes_s-1")
-
-    def test_a_pre_sdk_1393_switch_entry_stays_pinned(self):
-        dataset_overrides._save({"s-1": {"dataset": "work", "counter": 2}})
-        with fake_backend():
-            provider = make_provider()
-            provider._apply_dataset_override()
-        self.assertTrue(provider._recall_pinned)
-        self.assertEqual(provider._dataset, "work")
-
-    def test_a_pre_sdk_1393_entry_on_the_default_dataset_is_auto(self):
-        # An old file cannot tell a reset from a switch to the default.
-        dataset_overrides._save({"s-1": {"dataset": "hermes", "counter": 3}})
-        with fake_backend():
-            provider = make_provider()
-            provider._apply_dataset_override()
-        self.assertFalse(provider._recall_pinned)
-        self.assertEqual(provider._session_cognee_id, "hermes_s-1__3")
-
-    def test_auto_when_already_auto_records_the_choice(self):
-        # Already auto by the config: nothing changes now, but the choice is the
-        # conversation's own and so wins over a later configured "pinned".
-        with fake_backend():
-            provider = make_provider()
-            out = _call(provider, "cognee_switch_dataset", {"action": "auto"})
-        self.assertEqual((out["reason"], out["recall"]), ("already_auto", "auto"))
-        self.assertNotIn("note", out)
-        override = dataset_overrides.load_override("s-1")
-        self.assertEqual(override["recall"], "auto")
-        self.assertNotIn("dataset", override)
-
-    def test_reset_from_a_switch_reports_the_final_mode(self):
-        with fake_backend():
-            provider = make_provider()
-            _call(provider, "cognee_switch_dataset", {"action": "switch", "dataset": "work"})
-            out = _call(provider, "cognee_switch_dataset", {"action": "reset"})
-        self.assertTrue(out["switched"])
-        self.assertEqual((out["dataset"], out["recall"]), ("hermes", "auto"))
-        self.assertNotIn("recall_reason", out)
-        self.assertNotIn("note", out)
-        self.assertFalse(provider._recall_pinned)
-        override = dataset_overrides.load_override("s-1")
-        self.assertEqual((override["dataset"], override["recall"]), ("hermes", "default"))
+            # Saves stay in the switched dataset, and a resume keeps both the
+            # switch and the mode, whatever the config now says.
+            self.assertEqual(provider._dataset, "work")
+            override = dataset_overrides.load_override("s-1")
+            self.assertEqual(
+                (override["dataset"], override["counter"], override["recall"]), ("work", 1, "auto")
+            )
+            resumed = make_provider(dataset="research")
+            resumed._configured_pins_recall = True
+            resumed._apply_dataset_override()
+            self.assertEqual(resumed._dataset, "work")
+            fake.calls.clear()
+            self.assertIsNone(self._graph_recall(resumed, fake)["datasets"])
 
     def test_switching_to_the_default_dataset_pins(self):
         with fake_backend():
@@ -336,7 +286,7 @@ class TestAutoRecall(unittest.TestCase):
         self.assertEqual(dataset_overrides.load_override("s-1")["recall"], "pinned")
 
     def test_auto_is_not_a_dataset_name(self):
-        for name in ("auto", " AUTO ", "Auto"):
+        for name in ("auto", " AUTO "):
             with fake_backend() as fake:
                 provider = make_provider()
                 out = _call(

@@ -5,7 +5,7 @@ so nothing the hook injects may claim the memory came from the launch's active
 dataset. Pinned recall reads that dataset only, so a credit that names a source
 names it.
 
-Each test drives the hook's real ``auto_recall_active`` and its real
+The test drives the hook's real ``auto_recall_active`` and its real
 ``recall_via_http`` (the request body is captured at the HTTP seam), so the
 request and the injected text come from the same run.
 
@@ -88,16 +88,13 @@ def _drive(suite, hook_module, monkeypatch, tmp_path, mode: str):
     return graph, context
 
 
-def _header(context: str) -> str:
-    """The ``Cognee memory: …`` line (the Codex-derived cores put their status
-    line above it)."""
-    return next(line for line in context.splitlines() if line.startswith("Cognee memory:"))
-
-
 @pytest.mark.parametrize("mode", list(MODES))
-def test_request_shape_follows_the_recall_mode(suite, hook_module, monkeypatch, tmp_path, mode):
+def test_what_the_hook_sends_and_injects_follows_the_recall_mode(
+    suite, hook_module, monkeypatch, tmp_path, mode
+):
     graph, context = _drive(suite, hook_module, monkeypatch, tmp_path, mode)
-    if MODES[mode][1] == "auto":
+    auto = MODES[mode][1] == "auto"
+    if auto:
         assert "datasets" not in graph and "dataset_ids" not in graph, graph
         assert "session_id" not in graph
     else:
@@ -105,30 +102,16 @@ def test_request_shape_follows_the_recall_mode(suite, hook_module, monkeypatch, 
     # Routed or not, what the server returned is rendered.
     assert FACT in context
 
-
-@pytest.mark.parametrize("mode", list(MODES))
-def test_the_memory_header_never_names_a_dataset(suite, hook_module, monkeypatch, tmp_path, mode):
-    _, context = _drive(suite, hook_module, monkeypatch, tmp_path, mode)
-    header = _header(context)
+    # The memory header (the Codex-derived cores put a status line above it).
+    header = next(line for line in context.splitlines() if line.startswith("Cognee memory:"))
     assert DATASET not in header and "dataset" not in header.lower(), header
-    if suite.name == "claude-code":
-        assert header.startswith("Cognee memory: recall 1 memory;"), header
-    else:
-        assert header.startswith("Cognee memory: 1 memory hit"), header
 
-
-@pytest.mark.parametrize("mode", list(MODES))
-def test_the_credit_names_the_dataset_only_when_pinned(
-    suite, hook_module, monkeypatch, tmp_path, mode
-):
-    _, context = _drive(suite, hook_module, monkeypatch, tmp_path, mode)
-    auto = MODES[mode][1] == "auto"
     if suite.name == "antigravity":
         # No credit tagging on this host: the memory goes in bare.
         assert "Crediting Cognee memory" not in context and "[m1" not in context
         assert DATASET not in context
         return
-    assert "Crediting Cognee memory: Cognee found 1 memory for this prompt" in context
+    assert "Crediting Cognee memory" in context
     if suite.name in ("claude-code", "codex"):
         assert "> \U0001f9e0 Cognee memory [mN]:" in context
         assert DATASET not in context

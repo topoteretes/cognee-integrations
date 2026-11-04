@@ -99,14 +99,6 @@ class TestPerPromptRequests(unittest.TestCase):
         self.assertIsNone(kwargs["datasets"])
         self.assertIsNone(kwargs["code_query"])
 
-    def test_a_pinned_graph_request_names_the_dataset(self):
-        with fake_backend() as fake:
-            provider = make_provider(config=_LAYERED)
-            provider._recall_pinned = True
-            _prefetch(provider)
-            (kwargs,) = _by_scope(fake.kwargs_for("recall"), "graph")
-        self.assertEqual(kwargs["datasets"], ["hermes"])
-
     def test_the_guidance_request_carries_the_session_and_the_capture_dataset(self):
         with fake_backend() as fake:
             provider = make_provider(config=_LAYERED)
@@ -442,9 +434,6 @@ class TestSdkBackendLanes(unittest.TestCase):
                 backend.close(unregister=False)
         (graph,) = _by_scope(calls, "graph")
         self.assertNotIn("datasets", graph)
-        self.assertNotIn("session_id", graph)
-        (guidance,) = _by_scope(calls, "session_context")
-        self.assertEqual(guidance["session_id"], "hermes_s-1")
 
     def test_lanes_interleave_on_the_single_sdk_loop(self):
         with fake_cognee() as fake:

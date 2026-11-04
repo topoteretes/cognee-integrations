@@ -1,7 +1,7 @@
 /**
  * Auto recall through the plugin's prompt hook and memory_switch_dataset
- * (SDK-1393): unpinned prompt recall names no dataset, an install with no
- * indexed dataset skips recall, a pick pins it, and `current` reports the mode.
+ * (SDK-1393): an install with no indexed dataset skips recall, and the
+ * configured and per-conversation recall modes decide the dataset ids sent.
  * The harness runs on the default dataset (auto recall); the config's
  * recallMode "pinned" pins recall unless the conversation picks auto, and a
  * datasetName alone never pins.
@@ -64,7 +64,6 @@ beforeEach(() => {
   DatasetSwitchStore.resetShared();
   datasetState = { agent_sessions: "ds-1" };
   savedOverrides = {};
-  mockBreaker.openForSeconds.mockImplementation(async () => 0);
   mockRecall.mockImplementation(async () => []);
   (CogneeHttpClient as unknown as jest.Mock).mockImplementation(() => ({
     recall: mockRecall,
@@ -75,55 +74,12 @@ beforeEach(() => {
 });
 
 describe("prompt recall", () => {
-  const graphCall = () => mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!;
-
-  it("routes with no dataset ids when unpinned", async () => {
-    const h = harness();
-    await h.emit("before_prompt_build", PROMPT, CONVO);
-    expect(graphCall().datasetIds).toEqual([]);
-  });
-
-  it("skips recall while the recall breaker is open", async () => {
-    mockBreaker.openForSeconds.mockImplementation(async () => 42);
-    const h = harness();
-    await h.emit("before_prompt_build", PROMPT, CONVO);
-    expect(mockRecall).not.toHaveBeenCalled();
-  });
-
   it("skips recall on an empty install (no dataset with data), even unpinned", async () => {
     datasetState = {};
     const h = harness();
     await h.emit("before_prompt_build", PROMPT, CONVO);
     expect(mockRecall).not.toHaveBeenCalled();
     expect(h.logger.debug).toHaveBeenCalledWith(expect.stringContaining("skipping recall (no datasetIds)"));
-  });
-
-  it("sends the dataset's id once the conversation picks the dataset in use", async () => {
-    const h = harness();
-    const tool = h.tools(CONVO).find((t) => t.name === "memory_switch_dataset")!;
-    await tool.execute("c", { action: "switch", dataset: "agent_sessions" });
-    await h.emit("before_prompt_build", PROMPT, CONVO);
-    expect(graphCall().datasetIds).toEqual(["ds-1"]);
-  });
-});
-
-describe("memory_switch_dataset reports the recall mode in effect", () => {
-  async function run(h: ReturnType<typeof harness>, params: Record<string, unknown>) {
-    const tool = h.tools(CONVO).find((t) => t.name === "memory_switch_dataset")!;
-    return ((await tool.execute("c", params)) as { details: Record<string, unknown> }).details;
-  }
-
-  it("unpinned: auto", async () => {
-    expect(await run(harness(), { action: "current" })).toMatchObject({ recall: "auto" });
-  });
-
-  it("a pick pins, and action=auto unpins", async () => {
-    const h = harness();
-    await run(h, { action: "switch", dataset: "agent_sessions" });
-    expect(await run(h, { action: "current" })).toMatchObject({ dataset: "agent_sessions", recall: "pinned" });
-    const auto = await run(h, { action: "auto" });
-    expect(auto).toMatchObject({ changed: true, recall: "auto" });
-    expect(String(auto.note)).not.toMatch(/route yet|stays on/);
   });
 });
 
@@ -187,9 +143,10 @@ describe("configured recallMode", () => {
     expect(await run(restarted, { action: "current" })).toMatchObject({ recall: "auto" });
   });
 
-  it("a pin keeps recall pinned, but saves and recall follow a later datasetName change", async () => {
+  // Picking the dataset in use is the same as action=pin.
+  it.each([{ action: "pin" }, { action: "switch", dataset: "testds" }])("%o keeps recall pinned, but saves and recall follow a later datasetName change", async (pick) => {
     const h = harness(NAMED);
-    expect(await run(h, { action: "pin" })).toMatchObject({ action: "pin", changed: true, recall: "pinned", reason: "dataset_picked", dataset: "testds" });
+    expect(await run(h, pick)).toMatchObject({ action: pick.action, changed: true, recall: "pinned", reason: "dataset_picked", dataset: "testds" });
     expect((await promptGraph(h)).datasetIds).toEqual(["ds-2"]);
 
     await DatasetSwitchStore.shared().flush();

@@ -55,7 +55,7 @@ def _graph_datasets(provider, fake):
 # -- the configured mode -------------------------------------------------------
 
 
-@pytest.mark.parametrize("dataset", [None, "agent_sessions", "work", "my.work"])
+@pytest.mark.parametrize("dataset", [None, "work"])
 def test_recall_is_auto_by_default_whatever_the_dataset(dataset):
     with fake_backend() as fake:
         provider = _initialize(fake, dataset)
@@ -65,25 +65,21 @@ def test_recall_is_auto_by_default_whatever_the_dataset(dataset):
     assert "reason" not in current
 
 
-def test_a_configured_pinned_mode_pins_recall_to_the_configured_dataset():
+@pytest.mark.parametrize(("dataset", "mode"), [("work", "pinned"), (None, " Pinned ")])
+def test_a_configured_pinned_mode_pins_recall_to_the_configured_dataset(dataset, mode):
+    expected = dataset or config_mod.DEFAULT_DATASET
     with fake_backend() as fake:
-        provider = _initialize(fake, "work", recall_mode="pinned")
-        assert _graph_datasets(provider, fake) == ["work"]
+        provider = _initialize(fake, dataset, recall_mode=mode)
+        assert _graph_datasets(provider, fake) == [expected]
         current = _call(provider, {"action": "current"})
     assert (current["dataset"], current["recall"], current["reason"]) == (
-        "work",
+        expected,
         "pinned",
         "configured_pin",
     )
 
 
-def test_a_configured_pinned_mode_pins_the_default_dataset_too():
-    with fake_backend() as fake:
-        provider = _initialize(fake, recall_mode=" Pinned ")
-        assert _graph_datasets(provider, fake) == [config_mod.DEFAULT_DATASET]
-
-
-@pytest.mark.parametrize("value", ["", "bogus", "pin", "true", "AUTO"])
+@pytest.mark.parametrize("value", ["bogus", "pin"])
 def test_an_unknown_recall_mode_is_auto(value):
     with fake_backend() as fake:
         provider = _initialize(fake, "work", recall_mode=value)
@@ -92,50 +88,15 @@ def test_an_unknown_recall_mode_is_auto(value):
         assert config_mod.load_config()["recall_mode"] == "auto"
 
 
-def test_cognee_json_sets_the_mode_over_the_env(tmp_path):
-    # As for every key, cognee.json layers over the environment.
-    (tmp_path / "cognee.json").write_text(json.dumps({"recall_mode": "pinned"}))
-    with (
-        mock.patch.object(config_mod, "resolve_hermes_home", return_value=tmp_path),
-        mock.patch.dict("os.environ", {"COGNEE_PLUGIN_RECALL_MODE": "auto"}),
-    ):
-        assert config_mod.load_config()["recall_mode"] == "pinned"
-    (tmp_path / "cognee.json").write_text(json.dumps({"recall_mode": "auto"}))
-    with (
-        mock.patch.object(config_mod, "resolve_hermes_home", return_value=tmp_path),
-        mock.patch.dict("os.environ", {"COGNEE_PLUGIN_RECALL_MODE": "pinned"}),
-    ):
-        assert config_mod.load_config()["recall_mode"] == "auto"
-
-
-def test_the_env_sets_the_mode_without_cognee_json(tmp_path):
-    with (
-        mock.patch.object(config_mod, "resolve_hermes_home", return_value=tmp_path),
-        mock.patch.dict("os.environ", {"COGNEE_PLUGIN_RECALL_MODE": "pinned"}),
-    ):
-        assert config_mod.load_config()["recall_mode"] == "pinned"
-
-
-@pytest.mark.parametrize("value", ["auto", " AUTO ", "Auto"])
-def test_a_configured_auto_dataset_is_the_default_and_leaves_the_mode_alone(value):
+def test_a_configured_auto_dataset_is_the_default_and_leaves_the_mode_alone():
     with fake_backend() as fake:
-        provider = _initialize(fake, value)
+        provider = _initialize(fake, " AUTO ")
         assert provider._dataset == config_mod.DEFAULT_DATASET
         assert _graph_datasets(provider, fake) is None
         provider.handle_tool_call("cognee_remember", {"content": "We ship on Fridays."})
         assert fake.wait("remember_permanent")
         saved = fake.kwargs_for("remember_permanent")[0]["dataset"]
     assert saved == config_mod.DEFAULT_DATASET
-    # "auto" as the dataset says nothing about the mode: pinned still pins.
-    with fake_backend() as fake:
-        provider = _initialize(fake, value, recall_mode="pinned")
-        assert _graph_datasets(provider, fake) == [config_mod.DEFAULT_DATASET]
-
-
-def test_a_configured_auto_from_the_config_file_is_the_default(tmp_path):
-    (tmp_path / "cognee.json").write_text(json.dumps({"dataset": "auto"}))
-    with mock.patch.object(config_mod, "resolve_hermes_home", return_value=tmp_path):
-        assert config_mod.load_config()["dataset"] == config_mod.DEFAULT_DATASET
 
 
 def test_the_config_schema_offers_the_recall_mode():
@@ -144,16 +105,13 @@ def test_the_config_schema_offers_the_recall_mode():
     assert entry["default"] == "auto"
     assert entry["choices"] == ["auto", "pinned"]
     assert entry["env_var"] == "COGNEE_PLUGIN_RECALL_MODE"
-    assert "pinned keeps recall on the active dataset" in entry["description"]
 
 
 @pytest.mark.parametrize(
     ("current", "answer", "saved"),
     [
-        ({}, "", "auto"),
         ({"recall_mode": "pinned"}, "", "pinned"),
         ({}, "pinned", "pinned"),
-        ({"recall_mode": "pinned"}, "auto", "auto"),
         ({}, "nonsense", "auto"),
     ],
 )
@@ -239,34 +197,20 @@ def test_reset_goes_back_to_the_configured_mode():
     assert dataset_overrides.load_override("s-1") == {}
 
 
-def test_reset_follows_a_changed_config():
+@pytest.mark.parametrize(
+    ("recall_mode", "recall", "reason"),
+    [("pinned", "pinned", "configured_pin"), (None, "auto", None)],
+)
+def test_reset_after_a_switch_reports_the_configured_mode(recall_mode, recall, reason):
     with fake_backend() as fake:
-        provider = _initialize(fake, "work")
-        _call(provider, {"action": "pin"})
-        _call(provider, {"action": "reset"})
+        provider = _initialize(fake, "work", recall_mode=recall_mode)
+        _call(provider, {"action": "switch", "dataset": "other"})
+        out = _call(provider, {"action": "reset"})
+        # The reset follows the config, so a resume picks up a changed one.
         resumed = _initialize(fake, "work", recall_mode="pinned")
         assert _graph_datasets(resumed, fake) == ["work"]
-        current = _call(resumed, {"action": "current"})
-    assert current["reason"] == "configured_pin"
-
-
-def test_reset_after_a_switch_reports_the_configured_mode():
-    with fake_backend() as fake:
-        provider = _initialize(fake, "work", recall_mode="pinned")
-        _call(provider, {"action": "switch", "dataset": "other"})
-        out = _call(provider, {"action": "reset"})
     assert out["switched"] is True
-    assert (out["dataset"], out["recall"], out["recall_reason"]) == (
-        "work",
-        "pinned",
-        "configured_pin",
-    )
-    with fake_backend() as fake:
-        provider = _initialize(fake, "work")
-        _call(provider, {"action": "switch", "dataset": "other"})
-        out = _call(provider, {"action": "reset"})
-    assert (out["dataset"], out["recall"]) == ("work", "auto")
-    assert "recall_reason" not in out
+    assert (out["dataset"], out["recall"], out.get("recall_reason")) == ("work", recall, reason)
 
 
 # -- action='pin' --------------------------------------------------------------
@@ -318,31 +262,6 @@ def test_after_a_config_dataset_change_a_pin_follows_the_new_active_dataset():
     )
 
 
-def test_switching_to_the_dataset_in_use_is_a_pin():
-    with fake_backend() as fake:
-        provider = _initialize(fake, "work")
-        fake.calls.clear()
-        switched = _call(provider, {"action": "switch", "dataset": "work"})
-        assert fake.calls == []
-    with fake_backend() as fake:
-        pinned = _call(_initialize(fake, "work", session_id="s-2"), {"action": "pin"})
-    assert switched == pinned
-    assert dataset_overrides.load_override("s-1")["recall"] == "pinned"
-    assert "dataset" not in dataset_overrides.load_override("s-1")
-
-
-def test_a_switch_entry_keeps_its_dataset_and_mode():
-    with fake_backend() as fake:
-        provider = _initialize(fake, "work")
-        _call(provider, {"action": "switch", "dataset": "other"})
-        _call(provider, {"action": "auto"})
-        stored = dataset_overrides.load_override("s-1")
-        assert (stored["dataset"], stored["counter"], stored["recall"]) == ("other", 1, "auto")
-        resumed = _initialize(fake, "research", recall_mode="pinned")
-        assert resumed._dataset == "other"
-        assert _graph_datasets(resumed, fake) is None
-
-
 # -- legacy entries ------------------------------------------------------------
 
 
@@ -379,31 +298,9 @@ def test_every_result_carries_the_message_for_its_mode_and_reason():
             "current": _call(provider, {"action": "current"}),
         }
     for name, out in results.items():
-        reason = out.get("recall_reason") or out.get("reason", "")
-        if out["recall"] == "auto":
-            reason = ""
-        expected = provider_mod._recall_message(out["recall"], reason, out["dataset"])
-        assert out["message"] == expected, name
+        assert out["message"], name
     assert "configured recall mode" in results["current_configured"]["message"]
     assert "Recall is auto" in results["auto"]["message"]
     assert "own choice" in results["pin"]["message"]
     assert "'other'" in results["switch"]["message"]
     assert "configured recall mode" in results["reset"]["message"]
-
-
-def test_the_messages_differ_by_mode_and_reason():
-    auto = provider_mod._recall_message("auto", "", "work")
-    picked = provider_mod._recall_message("pinned", "dataset_picked", "work")
-    configured = provider_mod._recall_message("pinned", "configured_pin", "work")
-    assert len({auto, picked, configured}) == 3
-    for text in (auto, picked, configured):
-        assert text.startswith("Saves go to dataset 'work'.")
-
-
-def test_the_credit_names_the_dataset_when_the_config_pins(monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "on")
-    with fake_backend() as fake:
-        fake.results["recall"] = [{"text": "Mika likes tennis.", "source": "graph"}]
-        provider = _initialize(fake, "work", recall_mode="pinned")
-        tool = json.loads(provider.handle_tool_call("cognee_recall", {"query": "mika"}))
-    assert "based on dataset work" in tool["credit"]

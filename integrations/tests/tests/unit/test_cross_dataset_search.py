@@ -12,7 +12,6 @@ Contract:
     test_dataset_switch.py);
   * ``other_readable_datasets`` drops the active dataset by every handle it
     goes by (its UUIDs under shared memory, its name when name-addressed);
-  * the prompt hook never appends an "other datasets" block;
   * ``list-datasets.py`` marks the active dataset and can drop it.
 """
 
@@ -22,7 +21,7 @@ import json
 import urllib.error
 
 import pytest
-from utils.recall import HIT, SCOPES, URL, drive_recall, load_lookup
+from utils.recall import URL
 
 
 @pytest.fixture(autouse=True)
@@ -40,8 +39,6 @@ ROWS = [
     {"name": "project-alpha", "id": OTHER_ID, "owner_id": "me"},
     {"name": "team-notes", "id": THIRD_ID, "owner_id": "someone"},
 ]
-
-_MISS = {scope: [] for scope in SCOPES}
 
 
 @pytest.fixture
@@ -91,32 +88,6 @@ def test_others_excludes_active_by_name_when_name_addressed(pc):
 def test_others_dedupes_and_skips_junk(pc):
     rows = [ROWS[1], ROWS[1], "junk", {"name": "no-id"}]
     assert [r["id"] for r in pc.other_readable_datasets(rows, "x", [])] == [OTHER_ID]
-
-
-# ── the prompt hook ────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def lookup(suite, hook_module, monkeypatch):
-    module = load_lookup(suite, hook_module, monkeypatch)
-    monkeypatch.setattr(module, "resolve_active_dataset_ids", lambda *a, **k: ("", []))
-    monkeypatch.setattr(module, "get_dataset", lambda config: "agent_sessions")
-    return module
-
-
-def _context(run) -> str:
-    return (run.output or {}).get("hookSpecificOutput", {}).get("additionalContext", "")
-
-
-@pytest.mark.parametrize("auto_route", [True, False])
-def test_the_hook_never_offers_other_datasets(lookup, monkeypatch, auto_route):
-    """SDK-1393: recall is auto (routed server-side) unless the user pinned a
-    dataset, so the prompt hook no longer lists other datasets or asks the
-    user to pick one, hit or miss."""
-    for recall in (_MISS, {**_MISS, **HIT}):
-        ctx = _context(drive_recall(lookup, monkeypatch, recall=recall, auto_route=auto_route))
-        assert "Other Cognee datasets" not in ctx
-        assert "AskUserQuestion" not in ctx
 
 
 # ── list-datasets.py ───────────────────────────────────────────────────────

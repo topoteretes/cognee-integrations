@@ -199,8 +199,8 @@ def test_switch_skill_offers_auto_recall(suite):
     also say how to go back to auto recall."""
     if suite.name != "claude-code":
         pytest.skip("Claude Code switch skill")
-    fm = frontmatter("cognee-switch-datasets")
-    assert "auto" in fm["description"] and "auto" in fm["when_to_use"]
+    text = (PLUGIN / "skills" / "cognee-switch-datasets" / "SKILL.md").read_text(encoding="utf-8")
+    assert 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" auto --json' in text
 
 
 # ── routing evals (claude plugin eval, evals/) ──────────────────────────────

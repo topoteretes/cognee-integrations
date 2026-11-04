@@ -373,6 +373,13 @@ describe("memory verbs send what the server expects", () => {
     expect(Object.keys(body).sort()).toEqual(["dataset_ids", "only_context", "query", "search_type"]);
   });
 
+  it("recall with no dataset ids sends no dataset_ids, so the server routes", async () => {
+    await localClient().recall({ queryText: "q", searchPrompt: "", datasetIds: [], scope: ["graph"] });
+
+    const body = mock.assertCalled("POST", "/recall").json as Record<string, unknown>;
+    expect(body).not.toHaveProperty("dataset_ids");
+  });
+
   it("recall normalises an empty result set to an array", async () => {
     mock.setResponse("POST", "/recall", { results: [] });
     await expect(
