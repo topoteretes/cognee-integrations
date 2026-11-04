@@ -16,6 +16,16 @@ const CLOUD_EVIDENCE =
   'canary token for the checkout service is SMOKE-1. It is rotated every Friday."';
 
 describe("parseAnswer", () => {
+  it("cites a content-addressed upload by the name the user uploaded", () => {
+    const hash = "0123456789abcdef0123456789abcdef";
+    const result = parseAnswer(
+      "A.\n\nEvidence:\n" +
+        `- chunk 1 of document index-${hash}.ts (chunk_id: c1): x\n` +
+        `- chunk 2 of document note-${hash} (chunk_id: c2): y`,
+    );
+    expect(result.citations.map((c) => c.documentName)).toEqual(["index.ts", "note"]);
+  });
+
   it("returns the answer verbatim when there is no Evidence block", () => {
     const result = parseAnswer("Just a plain answer.");
     expect(result.answer).toBe("Just a plain answer.");

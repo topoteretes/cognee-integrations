@@ -1,0 +1,217 @@
+name: Plugin Clean Install
+
+# Installs the Codex and Claude Code plugins the way a user does on a fresh
+# machine: `codex plugin marketplace add` / `claude plugin marketplace add`
+# against GitHub, then `plugin add` / `plugin install`. Both CLIs clone the
+# WHOLE repository for a marketplace add, so any file anywhere in the repo can
+# break installation. That is why this runs on every pull request with no
+# `paths:` filter.
+#
+# The regression it guards against: a committed local cognee database
+# (n8n_workflows/.../.cognee_system, LanceDB files with 228-char paths) pushed
+# the clone past Windows' 260-char MAX_PATH. Checkout failed and Codex reported
+# "plugin `cognee` was not found in marketplace `cognee`" on every Windows
+# install. The Windows test job had worked around it with core.longpaths and a
+# sparse checkout, so CI never saw what users saw.
+#
+# Nothing here may enable core.longpaths: users don't have it, so neither does CI.
+#
+# The same limit bit again on 2026-10-24 without any change to the repo: Codex
+# 0.164.0 moved its marketplace clone into a deeper staging directory
+# (`.staging\marketplace-windows-XXXXXX\checkout`, openai/codex#55689) and a
+# 148-char langgraph example path landed exactly on Git's 248-char directory
+# limit. The repo-hygiene budget below is derived from that layout, and the
+# `codex latest` leg is the only one that sees a new layout, so keep it.
+#
+# The second regression it guards against: a manifest key only a recent CLI
+# understands. cognee-memory 1.7.0 declared a `userConfig` option with an
+# `options` list, which Claude Code added in 2.1.271; every older Claude Code
+# rejected the whole manifest (`userConfig.icon: Invalid input`) and the plugin
+# could not be installed at all. CI never saw it because it installed the newest
+# CLI. So the install now runs against five CLI releases, oldest to newest.
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main]
+  # Catch breakage from new codex / claude CLI releases even when the repo is quiet.
+  schedule:
+    - cron: '40 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: plugin-clean-install-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Longest tracked path allowed. Since Codex 0.164.0 a marketplace add clones
+  # into
+  #   <home>\.codex\.tmp\marketplaces\.staging\marketplace-windows-XXXXXX\checkout\
+  # which is 94 chars for C:\Users\<15-char name> (109 on this job's runner, see
+  # "Create a fresh user profile"). Git refuses to *create a directory* whose
+  # full path reaches 248 chars (MAX_PATH minus an 8.3 name) and a file at 260,
+  # so with core.longpaths off the deepest tracked directory must stay under
+  # 248 - 109 = 139 chars here. 130 keeps the whole tracked path (file included)
+  # under that with ~30 chars of headroom for longer profile names. The 160 that
+  # preceded it assumed the pre-0.164 staging path and let a 148-char example
+  # file through that failed this job's `codex latest` leg on Windows.
+  MAX_REPO_PATH: 130
+
+jobs:
+  repo-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Reject paths too long for a Windows marketplace clone
+        run: |
+          long=$(git ls-files | awk -v max="$MAX_REPO_PATH" 'length > max { print length, $0 }' | sort -rn)
+          if [ -n "$long" ]; then
+            echo "::error::Tracked paths longer than $MAX_REPO_PATH chars break 'codex/claude plugin marketplace add' on Windows:"
+            echo "$long"
+            exit 1
+          fi
+          echo "Longest tracked path: $(git ls-files | awk '{ print length }' | sort -n | tail -1) chars (limit $MAX_REPO_PATH)"
+
+      - name: Reject committed cognee / vector-store databases
+        run: |
+          found=$(git ls-files | grep -Ei '(^|/)\.cognee_(system|data)/|\.(lance|lancedb|kuzu|lbug|db|db-wal|db-shm|sqlite|sqlite3)$' || true)
+          if [ -n "$found" ]; then
+            echo "::error::Local database files are committed. Remove them with 'git rm --cached' and add them to .gitignore:"
+            echo "$found"
+            exit 1
+          fi
+
+  clean-install:
+    name: clean-install (${{ matrix.os }}, claude ${{ matrix.cli.claude }}, codex ${{ matrix.cli.codex }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # Five releases of each CLI, oldest first: the floor, a mid-year
+        # release, the two releases either side of the recent plugin-system
+        # changes, and latest. The oldest legs are the floor the plugins
+        # promise to install on:
+        #   - Claude Code 2.1.83 (2026-03-24) introduced plugin options
+        #     (`userConfig`); every manifest key we use loads there.
+        #   - Codex 0.139.0 (2026-06-09) is the first release where
+        #     `plugin marketplace add` and `plugin add` take `--json`, which the
+        #     steps below parse. 0.135.0 has the plugin commands without it.
+        # Claude Code 2.1.270 (2026-09-12) is the last release before the
+        # `options` key on a userConfig field (2.1.271), the one that broke
+        # cognee-memory 1.7.0; 2.1.290 (2026-10-05) is the first with mods on,
+        # so the hooks module loads there. The newest leg stays at `latest` so a
+        # new CLI release is covered by the nightly run. When raising the floor,
+        # drop the oldest row and add one near the newest pinned release.
+        cli:
+          - { claude: '2.1.83', codex: '0.139.0' }
+          - { claude: '2.1.200', codex: '0.146.0' }
+          - { claude: '2.1.270', codex: '0.151.0' }
+          - { claude: '2.1.290', codex: '0.159.3' }
+          - { claude: latest, codex: latest }
+    defaults:
+      run:
+        shell: bash
+    env:
+      DISABLE_AUTOUPDATER: '1'
+      # What `marketplace add` clones. A PR installs from its head repo (forks
+      # included); everything else installs from this repo at the pushed ref.
+      SOURCE_REPO: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Claude Code's `#ref` is passed to `git clone --branch`, so it takes a
+      # branch or tag, not a SHA.
+      SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}
+    steps:
+      # Pin Git's default so a runner image that enables long paths can't hide
+      # the failure this job exists to catch.
+      - name: Use Git's default path-length limit
+        run: git config --global core.longpaths false
+
+      # A plain full checkout is itself a clean-clone check on Windows.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the Codex and Claude Code CLIs
+        run: |
+          npm install -g "@openai/codex@${{ matrix.cli.codex }}" "@anthropic-ai/claude-code@${{ matrix.cli.claude }}"
+          codex --version
+          claude --version
+
+      # A fresh profile, with a space in it and a path roughly as long as a
+      # real C:\Users\<First Last> profile, so clone paths are measured the way
+      # users hit them.
+      - name: Create a fresh user profile
+        run: |
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = "Windows" ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          home="$base/Users/Cognee Install Tester"
+          mkdir -p "$home/.codex" "$home/.claude"
+          {
+            echo "CODEX_HOME=$home/.codex"
+            echo "CLAUDE_CONFIG_DIR=$home/.claude"
+          } >> "$GITHUB_ENV"
+
+      - name: "Codex: add the GitHub marketplace"
+        run: codex plugin marketplace add "$SOURCE_REPO" --ref "$SOURCE_SHA" --json
+
+      # The root marketplace pins the plugin to git-subdir @ main, so this is
+      # exactly what a user gets today, independent of the PR's plugin tree.
+      - name: "Codex: install cognee@cognee"
+        run: |
+          out=$(codex plugin add cognee@cognee --json)
+          echo "$out"
+          dir=$(echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).installedPath))')
+          test -f "$dir/.codex-plugin/plugin.json"
+          test -f "$dir/hooks.json"
+
+      # The PR's own plugin tree, through the local marketplace that ships with it.
+      - name: "Codex: install this revision's plugin (cognee@cognee-local)"
+        run: |
+          codex plugin marketplace add "$GITHUB_WORKSPACE/integrations/codex" --json
+          out=$(codex plugin add cognee@cognee-local --json)
+          echo "$out"
+          dir=$(echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).installedPath))')
+          test -f "$dir/.codex-plugin/plugin.json"
+          test -f "$dir/hooks.json"
+
+      - name: "Codex: plugins are listed as installed"
+        run: |
+          codex plugin list --json | node -e '
+            let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+              const ids = JSON.parse(s).installed.filter(p => p.installed && p.enabled).map(p => p.pluginId);
+              console.log("installed:", ids.join(", "));
+              for (const id of ["cognee@cognee", "cognee@cognee-local"])
+                if (!ids.includes(id)) { console.error(`::error::${id} is not installed and enabled`); process.exit(1); }
+            });'
+
+      - name: "Claude Code: add the GitHub marketplace"
+        run: |
+          claude plugin marketplace add "$SOURCE_REPO#$SOURCE_BRANCH"
+          cloned=$(git -C "$CLAUDE_CONFIG_DIR/plugins/marketplaces/cognee" rev-parse HEAD)
+          if [ "$cloned" != "$SOURCE_SHA" ]; then
+            echo "::warning::$SOURCE_BRANCH moved during the run (cloned $cloned, expected $SOURCE_SHA)"
+          fi
+
+      # The marketplace source is ./integrations/claude-code, so this installs
+      # the plugin tree of the revision just cloned. No `--json` on the install:
+      # `plugin install` only takes it from 2.1.270 on, and the result is read
+      # from `plugin list --json` below, which every pinned release supports.
+      - name: "Claude Code: install cognee-memory@cognee"
+        run: |
+          claude plugin install cognee-memory@cognee
+          claude plugin list --json | node -e '
+            let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+              const p = JSON.parse(s).find(p => p.id === "cognee-memory@cognee" && p.enabled);
+              if (!p) { console.error("::error::cognee-memory@cognee is not installed and enabled"); process.exit(1); }
+              console.log(`installed ${p.id} ${p.version} at ${p.installPath}`);
+              require("fs").accessSync(require("path").join(p.installPath, ".claude-plugin", "plugin.json"));
+            });'

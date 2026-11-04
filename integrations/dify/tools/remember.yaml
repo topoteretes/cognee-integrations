@@ -1,0 +1,191 @@
+identity:
+  name: "remember"
+  author: "topoteretes"
+  label:
+    en_US: "Remember"
+    zh_Hans: "记忆"
+    pt_BR: "Lembrar"
+    ja_JP: "記憶"
+description:
+  human:
+    en_US: "Ingest text and build the memory in one step (add + cognify) on your Cognee server"
+    zh_Hans: "在Cognee 服务器上一步完成文本摄取并构建内存（add + cognify）"
+    pt_BR: "Ingerir texto e construir a memória em uma única etapa (add + cognify) no seu servidor Cognee"
+    ja_JP: "Cognee サーバーでテキストの取り込みとメモリ構築を一度に実行（add + cognify）"
+  llm: "Store text in Cognee memory and make it searchable in one call. Combines adding data to a dataset and building the knowledge graph. Use this instead of Add Data followed by Cognify when you just want the text remembered. Blocks until the memory is built unless run_in_background is true."
+parameters:
+  - name: text_data
+    type: string
+    required: true
+    label:
+      en_US: "Text Data"
+      zh_Hans: "文本数据"
+      pt_BR: "Dados de Texto"
+      ja_JP: "テキストデータ"
+    human_description:
+      en_US: "Text content to remember"
+      zh_Hans: "要记忆的文本内容"
+      pt_BR: "Conteúdo de texto para lembrar"
+      ja_JP: "記憶するテキスト内容"
+    llm_description: "The text content to remember. It is stored in the dataset and processed into the knowledge graph."
+    form: llm
+  - name: dataset_name
+    type: string
+    required: false
+    label:
+      en_US: "Dataset Name"
+      zh_Hans: "数据集名称"
+      pt_BR: "Nome do Dataset"
+      ja_JP: "データセット名"
+    human_description:
+      en_US: "Name of the target dataset (created if missing). Either dataset_name or dataset_id must be provided."
+      zh_Hans: "目标数据集名称（不存在则创建）。dataset_name 或 dataset_id 必须提供其一。"
+      pt_BR: "Nome do dataset de destino (criado se não existir). dataset_name ou dataset_id deve ser fornecido."
+      ja_JP: "対象データセット名（存在しない場合は作成）。dataset_name または dataset_id のいずれかが必要です。"
+    llm_description: "The name of the dataset to remember the text in. Created if it does not exist. Either dataset_name or dataset_id must be provided."
+    form: llm
+  - name: dataset_id
+    type: string
+    required: false
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of an existing dataset. Either dataset_name or dataset_id must be provided."
+      zh_Hans: "已有数据集的 UUID。dataset_name 或 dataset_id 必须提供其一。"
+      pt_BR: "UUID de um dataset existente. dataset_name ou dataset_id deve ser fornecido."
+      ja_JP: "既存データセットの UUID。dataset_name または dataset_id のいずれかが必要です。"
+    llm_description: "The UUID of an existing dataset. Either dataset_name or dataset_id must be provided."
+    form: llm
+  - name: node_set
+    type: string
+    required: false
+    label:
+      en_US: "Node Set"
+      zh_Hans: "节点集"
+      pt_BR: "Conjunto de Nós"
+      ja_JP: "ノードセット"
+    human_description:
+      en_US: "Comma-separated node set names for graph organization"
+      zh_Hans: "用于图谱组织的节点集名称，用逗号分隔"
+      pt_BR: "Nomes de conjuntos de nós separados por vírgula para organização do grafo"
+      ja_JP: "グラフ構成用のノードセット名（カンマ区切り）"
+    llm_description: "Optional comma-separated node set names for organizing data in the knowledge graph"
+    form: llm
+  - name: session_id
+    type: string
+    required: false
+    label:
+      en_US: "Session ID"
+      zh_Hans: "会话 ID"
+      pt_BR: "ID da Sessão"
+      ja_JP: "セッション ID"
+    human_description:
+      en_US: "Session to attribute this memory to, so Recall can find it with the session scope. Cannot be combined with an ontology."
+      zh_Hans: "将此记忆归属到的会话，以便 Recall 通过会话范围找到它。不能与本体一起使用。"
+      pt_BR: "Sessão à qual atribuir esta memória, para que o Recall a encontre com o escopo de sessão. Não pode ser combinada com uma ontologia."
+      ja_JP: "この記憶を紐付けるセッション。Recall のセッションスコープで検索できます。オントロジーとは併用できません。"
+    llm_description: "Optional session identifier (e.g. the conversation id) to attribute this memory to, so later Recall calls with the same session_id can use it"
+    form: llm
+  - name: custom_prompt
+    type: string
+    required: false
+    label:
+      en_US: "Custom Prompt"
+      zh_Hans: "自定义提示"
+      pt_BR: "Prompt Personalizado"
+      ja_JP: "カスタムプロンプト"
+    human_description:
+      en_US: "Custom prompt for entity extraction and graph generation"
+      zh_Hans: "用于实体提取和图谱生成的自定义提示"
+      pt_BR: "Prompt personalizado para extração de entidades e geração de grafo"
+      ja_JP: "エンティティ抽出とグラフ生成のためのカスタムプロンプト"
+    llm_description: "Optional custom prompt for entity extraction and knowledge graph generation. Overrides the default prompt."
+    form: llm
+  - name: run_in_background
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Run in Background"
+      zh_Hans: "后台运行"
+      pt_BR: "Executar em Segundo Plano"
+      ja_JP: "バックグラウンド実行"
+    human_description:
+      en_US: "Return as soon as the server accepted the text instead of waiting until the memory is built. The build always runs server-side; by default this tool waits for it to finish so Recall can follow."
+      zh_Hans: "服务器接受文本后立即返回，而不等待内存构建完成。构建始终在服务器端进行；默认情况下此工具会等待其完成，以便后续 Recall。"
+      pt_BR: "Retornar assim que o servidor aceitar o texto, em vez de aguardar a construção da memória. A construção sempre ocorre no servidor; por padrão esta ferramenta aguarda a conclusão para que o Recall possa seguir."
+      ja_JP: "メモリ構築の完了を待たず、サーバーがテキストを受け付けた時点で返します。構築は常にサーバー側で行われ、デフォルトではこのツールは完了を待ってから Recall に進めます。"
+    llm_description: "Set to true to return immediately without waiting for the memory to be built; it may not be recallable right away"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+  - name: self_improvement
+    type: select
+    required: false
+    default: "default"
+    label:
+      en_US: "Self Improvement"
+      zh_Hans: "自我改进"
+      pt_BR: "Autoaperfeiçoamento"
+      ja_JP: "自己改善"
+    human_description:
+      en_US: "Whether to run the improve loop after building the memory. Default lets the server decide."
+      zh_Hans: "构建内存后是否运行改进循环。默认由服务器决定。"
+      pt_BR: "Executar ou não o ciclo de aperfeiçoamento após construir a memória. O padrão deixa o servidor decidir."
+      ja_JP: "メモリ構築後に改善ループを実行するかどうか。デフォルトではサーバーが判断します。"
+    llm_description: "Whether to run the improve loop after the memory is built"
+    form: form
+    options:
+      - value: "default"
+        label:
+          en_US: "Server default"
+          zh_Hans: "服务器默认"
+          pt_BR: "Padrão do servidor"
+          ja_JP: "サーバーのデフォルト"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+output_schema:
+  type: object
+  properties:
+    status:
+      type: string
+      description: "completed, running (background) or session_stored"
+    dataset_id:
+      type: string
+      description: "The UUID of the dataset"
+    dataset_name:
+      type: string
+      description: "The dataset name the text was remembered in"
+    pipeline_run_id:
+      type: string
+      description: "Pipeline run UUID, useful to track a background run"
+    items_processed:
+      type: number
+      description: "Number of data items processed"
+extra:
+  python:
+    source: tools/remember.py

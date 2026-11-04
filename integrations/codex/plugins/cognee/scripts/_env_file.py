@@ -6,7 +6,7 @@ in every shell. This module makes that a one-time step: values placed in
 Claude Code and Codex plugins) are injected into ``os.environ`` at process
 start with **setdefault** semantics, so:
 
-  real exported env vars  >  ~/.cognee/.env  >  config.json  >  defaults
+  real exported env vars  >  ~/.cognee/.env  >  defaults
 
 Every existing ``os.environ.get(...)`` call site — and every child process the
 hooks spawn (the local cognee server, idle/exit watchers) — picks the values up
@@ -16,9 +16,20 @@ Deliberately stdlib-only: hook scripts must run outside the plugin venv on the
 cloud path, so python-dotenv is not an option. The parser accepts a leading
 ``export `` so users can paste their existing shell export lines verbatim.
 
+The file may hold BOTH modes' variables at once (cloud connection + local LLM
+key); with nothing exported, cloud wins because ``COGNEE_BASE_URL`` routes the
+connection. One export flips a single terminal: ``COGNEE_BACKEND=local`` (or
+``=cloud``), with the plugin-specific variable (``_PLUGIN_BACKEND_VAR``)
+beating the shared name. A forced-local switch is applied to ``os.environ``
+itself (see ``_apply_backend_switch``) so the HTTP hot paths and spawned
+children — which read ``COGNEE_BASE_URL`` from the environment directly, not
+via ``config.load_config`` — see the same mode.
+
 Loading must never break a hook: any parse or IO problem results in the file
 being (partially) ignored, never an exception.
 """
+
+from __future__ import annotations
 
 import os
 import stat
@@ -34,11 +45,26 @@ _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 _DENYLIST_EXACT = {"PATH", "HOME", "PYTHONPATH", "PYTHONHOME", "SHELL", "USER"}
 _DENYLIST_PREFIXES = ("LD_", "DYLD_")
 
+# Explicit per-terminal mode switch. The shared name flips every Cognee plugin
+# in the terminal; the plugin-specific name beats it when both are set. The
+# plugin var is the ONE line that differs between the Claude Code and Codex
+# copies of this module.
+_PLUGIN_BACKEND_VAR = "COGNEE_CODEX_BACKEND"
+_SHARED_BACKEND_VAR = "COGNEE_BACKEND"
+_LOCAL_BACKEND_VALUES = ("local", "native", "sdk")
+_CLOUD_BACKEND_VALUES = ("cloud", "http", "api", "server")
+
 _TEMPLATE = """\
 # Cognee plugin configuration — shared by the Claude Code and Codex plugins.
 # Values here are loaded at session start and act like shell exports, except
 # you only set them once. A real `export` in your shell still wins over this
 # file. Lines starting with `#` are comments; a leading `export ` is allowed.
+#
+# You can fill in BOTH modes below. When both are configured, cloud wins.
+# To pick a mode for a single terminal, export the switch before launching:
+#   export COGNEE_BACKEND=local    # this terminal: local mode
+#   export COGNEE_BACKEND=cloud    # this terminal: cloud mode
+# (COGNEE_CLAUDE_BACKEND / COGNEE_CODEX_BACKEND target one plugin only.)
 
 ## Cloud / remote mode — point the plugins at a Cognee instance:
 # COGNEE_BASE_URL="https://your-instance.cognee.ai"
@@ -48,6 +74,15 @@ _TEMPLATE = """\
 ## local Cognee API; only an LLM key is required:
 # LLM_API_KEY="sk-..."
 # LLM_MODEL="openai/gpt-4o-mini"
+
+## Local mode backends (optional) — the defaults (sqlite/lancedb/openai) need
+## nothing here. Configuring a provider below makes session start install the
+## matching cognee driver extra into the plugin venv automatically:
+# DB_PROVIDER="postgres"
+# VECTOR_DB_PROVIDER="pgvector"
+# GRAPH_DATABASE_PROVIDER="neo4j"
+# EMBEDDING_PROVIDER="fastembed"
+# LLM_PROVIDER="ollama"
 
 ## Optional:
 # COGNEE_PLUGIN_DATASET="agent_sessions"
@@ -113,7 +148,10 @@ def load_env_file() -> None:
     """Inject env-file values into os.environ (setdefault). Never raises.
 
     Idempotent per process: repeated calls (this module is imported from
-    several entry-point modules) parse the file at most once.
+    several entry-point modules) parse the file at most once. The backend
+    switch is applied afterwards — and also when there is no file at all, so
+    ``COGNEE_BACKEND=local`` beats a ``COGNEE_BASE_URL`` exported in the shell
+    the same way it beats one defined in the file.
     """
     global _loaded
     if _loaded:
@@ -122,15 +160,55 @@ def load_env_file() -> None:
 
     try:
         path = env_file_path()
-        if not path.is_file():
-            return
-        _tighten_permissions(path)
-        for key, value in parse_env_file(path).items():
-            if _blocked(key):
-                continue
-            os.environ.setdefault(key, value)
+        if path.is_file():
+            _tighten_permissions(path)
+            for key, value in parse_env_file(path).items():
+                if _blocked(key):
+                    continue
+                os.environ.setdefault(key, value)
     except Exception:
         pass
+    _apply_backend_switch()
+
+
+def forced_backend_with_source() -> tuple[str, str]:
+    """The exported backend switch: ("local"|"cloud", var name), or ("", "").
+
+    The plugin-specific variable beats the shared ``COGNEE_BACKEND``; a
+    variable holding an unrecognized value is skipped rather than honored.
+    """
+    for var in (_PLUGIN_BACKEND_VAR, _SHARED_BACKEND_VAR):
+        value = os.environ.get(var, "").strip().lower()
+        if value in _LOCAL_BACKEND_VALUES:
+            return "local", var
+        if value in _CLOUD_BACKEND_VALUES:
+            return "cloud", var
+    return "", ""
+
+
+def forced_backend() -> str:
+    """ "local", "cloud", or "" — the exported backend switch, if any."""
+    return forced_backend_with_source()[0]
+
+
+def _apply_backend_switch() -> None:
+    """Make a forced-local terminal actually local, everywhere.
+
+    ``config.load_config`` clears base_url/api_key on the backend switch, but
+    the HTTP hot paths (``_plugin_common``) and every child process read
+    ``COGNEE_BASE_URL`` from the environment directly — so the switch must land
+    in the environment itself. Overwrite with EMPTY strings rather than
+    deleting: a child re-running this loader must not re-inject the file's
+    cloud values (setdefault skips keys that are present, even when empty).
+
+    Forced cloud scrubs nothing: the cloud connection variables are exactly
+    what that mode needs, and missing ones are surfaced by the status line
+    rather than silently falling back to local.
+    """
+    if forced_backend() != "local":
+        return
+    os.environ["COGNEE_BASE_URL"] = ""
+    os.environ["COGNEE_API_KEY"] = ""
 
 
 def _tighten_permissions(path: Path) -> None:
@@ -171,6 +249,9 @@ def env_file_status() -> dict:
     """Diagnostics for doctor: existence, perms, and key *names* (no values)."""
     path = env_file_path()
     info: dict = {"path": str(path), "exists": path.is_file()}
+    mode, var = forced_backend_with_source()
+    if mode:
+        info["forced_backend"] = {"mode": mode, "var": var}
     if not info["exists"]:
         return info
     try:
@@ -188,9 +269,36 @@ def env_file_status() -> dict:
     return info
 
 
+def append_env_value(name: str, value: str) -> Path:
+    """Append ``NAME="value"`` to the env file (``COGNEE_ENV_FILE`` honoured),
+    creating it owner-only. One line; the value may not hold a newline."""
+    if not name or not all(c.isalnum() or c == "_" for c in name):
+        raise ValueError("not a variable name")
+    if "\n" in value or "\r" in value:
+        raise ValueError("one line only")
+    path = env_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    head = existing if not existing or existing.endswith("\n") else existing + "\n"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    with os.fdopen(os.open(path, flags, 0o600), "w", encoding="utf-8") as handle:
+        handle.write(f'{head}{name}="{value}"\n')
+    _tighten_permissions(path)
+    return path
+
+
 if __name__ == "__main__":
     import json
 
+    if len(sys.argv) >= 3 and sys.argv[1] == "--append":
+        # The value comes on stdin, never on the command line (ps would show it).
+        try:
+            written = append_env_value(sys.argv[2], sys.stdin.read().strip())
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        print(written)
+        sys.exit(0)
     load_env_file()
     json.dump(env_file_status(), sys.stdout, indent=2)
     print()

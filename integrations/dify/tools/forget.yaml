@@ -1,0 +1,128 @@
+identity:
+  name: "forget"
+  author: "topoteretes"
+  label:
+    en_US: "Forget"
+    zh_Hans: "遗忘"
+    pt_BR: "Esquecer"
+    ja_JP: "忘却"
+description:
+  human:
+    en_US: "Forget a data item, a dataset, or only its memory on your Cognee server"
+    zh_Hans: "在Cognee 服务器上遗忘某个数据项、整个数据集或仅其内存"
+    pt_BR: "Esquecer um item de dados, um dataset ou apenas sua memória no seu servidor Cognee"
+    ja_JP: "Cognee サーバー上のデータ項目、データセット、またはそのメモリのみを忘却"
+  llm: "Remove data from Cognee memory. Give a dataset name or ID to delete the whole dataset, add a data ID to delete one item, or set memory_only to clear the knowledge graph and embeddings while keeping the raw data so it can be cognified again."
+parameters:
+  - name: dataset_name
+    type: string
+    required: false
+    label:
+      en_US: "Dataset Name"
+      zh_Hans: "数据集名称"
+      pt_BR: "Nome do Dataset"
+      ja_JP: "データセット名"
+    human_description:
+      en_US: "Name of the dataset to forget. Either dataset_name or dataset_id must be provided."
+      zh_Hans: "要遗忘的数据集名称。dataset_name 或 dataset_id 必须提供其一。"
+      pt_BR: "Nome do dataset a esquecer. dataset_name ou dataset_id deve ser fornecido."
+      ja_JP: "忘却するデータセット名。dataset_name または dataset_id のいずれかが必要です。"
+    llm_description: "The name of the dataset to forget. Either dataset_name or dataset_id must be provided; the ID wins when both are given."
+    form: llm
+  - name: dataset_id
+    type: string
+    required: false
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of the dataset to forget. Either dataset_name or dataset_id must be provided."
+      zh_Hans: "要遗忘的数据集 UUID。dataset_name 或 dataset_id 必须提供其一。"
+      pt_BR: "UUID do dataset a esquecer. dataset_name ou dataset_id deve ser fornecido."
+      ja_JP: "忘却するデータセットの UUID。dataset_name または dataset_id のいずれかが必要です。"
+    llm_description: "The UUID of the dataset to forget. Either dataset_name or dataset_id must be provided."
+    form: llm
+  - name: data_id
+    type: string
+    required: false
+    label:
+      en_US: "Data ID"
+      zh_Hans: "数据 ID"
+      pt_BR: "ID dos Dados"
+      ja_JP: "データ ID"
+    human_description:
+      en_US: "UUID of a single data item to forget. Leave empty to forget the whole dataset."
+      zh_Hans: "要遗忘的单个数据项 UUID。留空则遗忘整个数据集。"
+      pt_BR: "UUID de um único item de dados a esquecer. Deixe vazio para esquecer o dataset inteiro."
+      ja_JP: "忘却する単一データ項目の UUID。空の場合はデータセット全体を忘却します。"
+    llm_description: "Optional UUID of one data item (as returned by Add Data) to forget instead of the whole dataset"
+    form: llm
+  - name: memory_only
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Memory Only"
+      zh_Hans: "仅内存"
+      pt_BR: "Apenas Memória"
+      ja_JP: "メモリのみ"
+    human_description:
+      en_US: "Clear only the knowledge graph and embeddings; keep the raw data so the dataset can be cognified again"
+      zh_Hans: "仅清除图谱和向量嵌入；保留原始数据以便重新 cognify"
+      pt_BR: "Limpar apenas o grafo e os embeddings; manter os dados brutos para que o dataset possa ser cognificado novamente"
+      ja_JP: "ナレッジグラフと埋め込みのみを削除し、元データは保持して再 cognify 可能にする"
+    llm_description: "Set to true to clear only the memory (graph and embeddings) and keep the raw data"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+  - name: everything
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Everything (danger)"
+      zh_Hans: "全部（危险）"
+      pt_BR: "Tudo (perigo)"
+      ja_JP: "すべて（危険）"
+    human_description:
+      en_US: "Permanently delete ALL datasets and data owned by the configured user. Ignores the dataset and data fields."
+      zh_Hans: "永久删除所配置用户拥有的所有数据集和数据。忽略数据集和数据字段。"
+      pt_BR: "Excluir permanentemente TODOS os datasets e dados do usuário configurado. Ignora os campos de dataset e dados."
+      ja_JP: "設定ユーザーが所有するすべてのデータセットとデータを完全に削除します。データセットとデータの指定は無視されます。"
+    llm_description: "Fixed in the workflow configuration; not settable by the model"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+output_schema:
+  type: object
+  properties:
+    succeeded:
+      type: boolean
+      description: "Whether the forget operation succeeded"
+extra:
+  python:
+    source: tools/forget.py

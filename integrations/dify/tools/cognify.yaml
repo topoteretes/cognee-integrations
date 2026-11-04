@@ -8,11 +8,11 @@ identity:
     ja_JP: "Cognify"
 description:
   human:
-    en_US: "Build a knowledge graph from one or more Cognee datasets"
-    zh_Hans: "从一个或多个 Cognee 数据集构建知识图谱"
-    pt_BR: "Construir um grafo de conhecimento a partir de um ou mais datasets Cognee"
-    ja_JP: "1つ以上の Cognee データセットからナレッジグラフを構築"
-  llm: "Process datasets to build a knowledge graph. Run this after adding data to datasets. This operation may take several minutes depending on the data volume."
+    en_US: "Build a memory from one or more datasets on your Cognee server"
+    zh_Hans: "从Cognee 服务器的一个或多个数据集构建内存"
+    pt_BR: "Construir um memória a partir de um ou mais datasets no seu servidor Cognee"
+    ja_JP: "Cognee サーバーの1つ以上のデータセットからメモリを構築"
+  llm: "Process datasets to build a memory on the Cognee server. Run this after adding data to datasets. This operation may take several minutes depending on the data volume."
 parameters:
   - name: datasets
     type: string
@@ -27,7 +27,7 @@ parameters:
       zh_Hans: "要处理的数据集名称，用逗号分隔。datasets 或 dataset_ids 必须提供其一。"
       pt_BR: "Lista de nomes de datasets separados por vírgula. datasets ou dataset_ids deve ser fornecido."
       ja_JP: "処理するデータセット名のカンマ区切りリスト。datasets または dataset_ids のいずれかが必要です。"
-    llm_description: "Comma-separated list of dataset names to build the knowledge graph from. Either datasets or dataset_ids must be provided."
+    llm_description: "Comma-separated list of dataset names to build the memory from. Either datasets or dataset_ids must be provided."
     form: llm
   - name: dataset_ids
     type: string

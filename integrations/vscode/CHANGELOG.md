@@ -3,6 +3,16 @@
 All notable changes to the Cognee VS Code extension are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] - 2026-09-29
+
+### Fixed
+- Remembering a note, selection or file no longer fails after the first one on cognee >= 1.6.0,
+  which treats an upload's filename as its identity in the dataset and refuses (409) a known name
+  with different content. Notes were all uploaded as `note.md`, and two files sharing a basename
+  collided. Uploads are now named `<name>-<sha256[:32]>.<ext>`, keeping the extension, and
+  citations strip the suffix so they still resolve to the original file.
+  Refs [#444](https://github.com/topoteretes/cognee-integrations/issues/444).
+
 ## [0.1.0] - 2026-07-23
 
 ### Added

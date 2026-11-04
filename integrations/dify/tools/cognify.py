@@ -1,25 +1,28 @@
 from collections.abc import Generator
 from typing import Any
 
-import httpx
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
+from tools.cognee_client import (
+    authorize,
+    base_url_of,
+    error_text,
+    make_client,
+    parse_json,
+    split_csv,
+)
+
+COGNIFY_TIMEOUT = 21600
 
 
 class CognifyTool(Tool):
     def _invoke(self, tool_parameters: dict[str, Any]) -> Generator[ToolInvokeMessage]:
-        base_url = self.runtime.credentials["base_url"].rstrip("/")
-        api_key = self.runtime.credentials["api_key"]
+        base_url = base_url_of(self.runtime)
 
-        datasets_str = tool_parameters.get("datasets", "")
-        dataset_ids_str = tool_parameters.get("dataset_ids", "")
+        datasets = split_csv(tool_parameters.get("datasets", ""))
+        dataset_ids = split_csv(tool_parameters.get("dataset_ids", ""))
         custom_prompt = tool_parameters.get("custom_prompt", "")
-        ontology_key_str = tool_parameters.get("ontology_key", "")
-
-        datasets = [d.strip() for d in datasets_str.split(",") if d.strip()] if datasets_str else []
-        dataset_ids = (
-            [d.strip() for d in dataset_ids_str.split(",") if d.strip()] if dataset_ids_str else []
-        )
+        ontology_keys = split_csv(tool_parameters.get("ontology_key", ""))
 
         if not datasets and not dataset_ids:
             error_msg = "Either datasets or dataset_ids must be provided"
@@ -34,31 +37,27 @@ class CognifyTool(Tool):
             body["datasetIds"] = dataset_ids
         if custom_prompt:
             body["customPrompt"] = custom_prompt
-        if ontology_key_str:
-            body["ontologyKey"] = [k.strip() for k in ontology_key_str.split(",") if k.strip()]
+        if ontology_keys:
+            body["ontologyKey"] = ontology_keys
 
         try:
-            response = httpx.post(
-                f"{base_url}/cognify",
-                json=body,
-                headers={
-                    "X-Api-Key": api_key,
-                    "Content-Type": "application/json",
-                },
-                timeout=1200,
-            )
-            response.raise_for_status()
-            result = response.json()
+            with make_client() as client:
+                response = client.post(
+                    f"{base_url}/api/v1/cognify",
+                    json=body,
+                    headers=authorize(client, self.runtime, json=True),
+                    timeout=COGNIFY_TIMEOUT,
+                )
+                response.raise_for_status()
+                result = parse_json(response)
 
-            label = ", ".join(datasets) if datasets else ", ".join(dataset_ids)
-            yield self.create_json_message(result)
-            yield self.create_variable_message("datasets", label)
-            yield self.create_text_message(f"Successfully cognified dataset(s): {label}")
-        except httpx.HTTPStatusError as e:
-            error_msg = f"Cognee API error {e.response.status_code}: {e.response.text}"
-            yield self.create_json_message({"error": error_msg})
-            yield self.create_text_message(error_msg)
+                label = ", ".join(datasets) if datasets else ", ".join(dataset_ids)
+                yield self.create_json_message(
+                    result if isinstance(result, dict) else {"result": result}
+                )
+                yield self.create_variable_message("datasets", label)
+                yield self.create_text_message(f"Successfully cognified dataset(s): {label}")
         except Exception as e:
-            error_msg = f"Failed to cognify: {str(e)}"
+            error_msg = error_text(e, "Failed to cognify")
             yield self.create_json_message({"error": error_msg})
             yield self.create_text_message(error_msg)

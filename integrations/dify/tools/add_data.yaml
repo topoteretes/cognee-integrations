@@ -8,11 +8,11 @@ identity:
     ja_JP: "データ追加"
 description:
   human:
-    en_US: "Add text data to a Cognee dataset for knowledge graph processing"
-    zh_Hans: "向 Cognee 数据集添加文本数据以进行知识图谱处理"
-    pt_BR: "Adicionar dados de texto a um dataset Cognee para processamento de grafo de conhecimento"
-    ja_JP: "ナレッジグラフ処理のために Cognee データセットにテキストデータを追加"
-  llm: "Add text data to a Cognee dataset. Use this to ingest text content into a named dataset before running cognify to build the knowledge graph."
+    en_US: "Add text data to a dataset on your Cognee server"
+    zh_Hans: "向Cognee 服务器的数据集添加文本数据"
+    pt_BR: "Adicionar dados de texto a um dataset no seu servidor Cognee"
+    ja_JP: "Cognee サーバーのデータセットにテキストデータを追加"
+  llm: "Add text data to a dataset on the Cognee server. Use this to ingest text content into a named dataset before running cognify to build the memory."
 parameters:
   - name: text_data
     type: string

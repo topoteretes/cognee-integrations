@@ -1,0 +1,26 @@
+services:
+  cognee:
+    image: cognee/cognee:1.6.1
+    container_name: cognee-sdk-local
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - ENVIRONMENT=local
+      # Since cognee 1.6 the default user only gets a password when the server
+      # is started with DEFAULT_USER_PASSWORD. These must match the User Email
+      # and User Password configured in the Dify plugin.
+      - DEFAULT_USER_EMAIL=default_user@example.com
+      - DEFAULT_USER_PASSWORD=default_password
+    volumes:
+      - .env:/app/.env
+      # The 1.6 image stores its databases and raw files under /cognee-storage.
+      - cognee_system:/cognee-storage/system
+      - cognee_data:/cognee-storage/data
+    deploy:
+      resources:
+        limits:
+          memory: 8GB
+volumes:
+  cognee_system:
+  cognee_data:

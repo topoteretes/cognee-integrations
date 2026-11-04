@@ -10,6 +10,1456 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.8]
+
+### Security
+- **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
+  wrap in the tag is replaced with `[private]` before the plugin writes it to a file or
+  log, sends it as a query, or stores it; the text around it is kept. Spans don't nest:
+  each opener ends at the next close, and text between two spans is kept; a span may
+  cross lines and carry attributes. An opener with no close is left as plain text. No setting turns this off. Codex still sees the span in the live turn.
+- **Explicit remember is sanitized like automatic capture.** `cognee-remember.sh` text,
+  and its `cognee-cli` fallback, now goes through the same `<private>` stripping and
+  secret patterns, whatever `COGNEE_CAPTURE` says. So does text passed to
+  `cognee-cli.sh remember|add|recall|search`, the source-checkout fallback; a file path
+  given there, like a `--file` upload, is still sent byte for byte.
+- **Queries are sanitized**: the per-prompt recall, `cognee-search.sh` and its CLI
+  fallback, and the timeline topic. A `--code-query` (here or through `cognee-cli.sh`)
+  is sanitized field by field, so it stays valid JSON.
+- **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it
+  keeps; the `sync_payload` line in `hook.log` records field names and size instead of
+  the payload's first 200 characters.
+
+### Changed
+- `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
+  affects `<private>` spans.
+- The forget skill searches for what surrounds a secret, never the value itself.
+
+## [1.7.7]
+
+### Changed
+- **Plugin identity provisioning no longer waits on cognee#4942** (SDK-1002). Effective
+  write permissions are computed on the plugin side from routes released servers already
+  have, and `create_only` is replaced by per-machine keys (cognee#6113):
+  - **Every machine holds its own key; provisioning never logs another one out.** The
+    plugin provisions only against a server whose provision route adds keys and revokes
+    none (`x-cognee-additive-plugin-keys` in its OpenAPI; cognee#6113). Released servers
+    rotate every key on provision, so against them the plugin runs as the principal
+    (`auto`) or raises (`true`) instead of provisioning. A key the server rejects (401) is
+    replaced in the same session start. A full agent (409) runs as the principal and is
+    not silent: every session start warns that this machine is on the personal key and
+    points at the `cognee-keys` skill, and the doctor's Memory Sharing line names the key
+    limit, until the machine gets its own key.
+  - **New `cognee-keys` skill and `scripts/plugin-keys.py`.** Lists the plugin agent's
+    keys most recently used first (this machine's marked; `--all` covers every plugin
+    agent of the user) and revokes the one the user chooses — the way to free a slot.
+  - **Shared-memory registration works on cognee 1.6.3.** The agent registers its session
+    with the canonical dataset by UUID only. Since 1.6.3 the server resolves dataset names
+    among the caller's own datasets, and the canonical dataset belongs to the parent, so
+    sending the name too made every agent registration fail with 403 and the launch fall
+    back to the principal.
+  - **A refused registration (403) never discards a working key.** Only a 401 marks the
+    key dead; blocking it on 403 would make every launch mint another key.
+  - **Reverting a fresh identity revokes only that key** (by id), never the plugin's other
+    machines' keys.
+  - **Effective write permissions.** The dataset picker and the dataset readiness check
+    union the identity's direct grants with the shared role's and the tenant's, asked for
+    from the server (`GET /permissions/principals/{role|tenant}/datasets`), instead of
+    trusting the marker's memo of attempted grants.
+
+- New hook events: `plugin_identity_blocked` (a rejected credential set aside),
+  `plugin_identity_reprovisioned` (replaced in the same launch), `plugin_key_revoke_failed`
+  and `plugin_capability_probe_failed` (the server's OpenAPI could not be read; no
+  provisioning in that launch). `plugin_disconnect_failed` is gone: the plugin no longer
+  disconnects itself.
+
+### Fixed
+- **A failed venv build logs why.** `cognee_install_failed` now carries the last 300
+  characters of what `uv` / `pip` printed, next to the exception. The exception alone
+  was the command and its exit status, which could not distinguish a missing
+  interpreter from a full disk when the runtime failed to build on Ubuntu 26.04.
+
+## [1.7.6]
+
+### Added
+- **Answers can credit Cognee memory (off by default on Codex).** With
+  `COGNEE_PLUGIN_CITE_MEMORY=on`, every recalled item is tagged (`m1`, `m2`…) with where
+  it came from, and on turns where memory was injected the agent is told how many
+  memories Cognee found and asked to end an answer that used them with one
+  `🧠 Cognee memory [mN]: …` line; the first credit in a session also says how it
+  connects to the earlier work. Tags are numbered across the session and a memory
+  recalled again keeps its tag (an earlier turn or trace by its server id, anything else
+  by its text). The Stop hook reads only the credit line, checks its tags against the
+  session's and logs a `memory_credit` event (valid, invented, and valid tags from an
+  earlier turn). Off by default because Codex shows the injected instruction in the
+  terminal and it hasn't been tried live there yet (SDK-1071).
+- **Reopening a chat says whether it was sent to long-term memory.** With the same
+  setting on, resuming a chat shows once, in the terminal and to the agent, when the
+  conversation was sent to Cognee, or why the send failed. It says "sent" because the
+  submit runs in the background and a server-side skip on a held lock looks the same
+  until COG-6828 (SDK-1071).
+
+### Changed
+- **Bundled cognee is 1.6.5** (was 1.6.3; `_PINNED_COGNEE_VERSION`). The shared
+  `~/.cognee-plugin/venv` is upgraded on the next cold boot, which runs that release's
+  one new migration: additive columns that count embedding tokens apart from LLM tokens.
+  1.6.5 lets typed QA and trace entries carry a `node_set`, so `COGNEE_PROJECT_NODE_SET`
+  now works against the bundled server: captures are tagged with the project and keep
+  the tag through improve. On 1.6.3 the plugin's capability check failed and every
+  capture of the session stayed queued
+  ([#442](https://github.com/topoteretes/cognee-integrations/issues/442)); a session
+  that already recorded that error keeps it, and the next session recovers. 1.6.5 also
+  refuses a typed entry that names a different dataset than the one its session is bound
+  to. The `postgres-binary`, `neo4j`, `fastembed` and `ollama` extras the plugin probes
+  for are unchanged. The Claude Code, Antigravity and OpenClaw plugins, which share the
+  venv, move to 1.6.5 at the same time, so they never reinstall over each other.
+- **An empty recall no longer injects a memory header.** The "0 hits" line went into the
+  agent's context on most turns; it is still shown to the user, and the recall audit log
+  now records it in a `header` field.
+- **Shell commands that mention "cognee" are captured again.** Automatic capture used to
+  drop any shell command containing the word, which lost most real work inside Cognee
+  repositories. Only commands that actually run the plugin or the Cognee CLI are now
+  skipped, together with successful read-only lookups (`cat`, `ls`, `grep`, `git log`,
+  …). Failures, builds, tests, edits and pipelines are kept. Skips are logged without
+  the command text.
+
+### Fixed
+- **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
+  on the session alone and kept for an hour, so a chat that was resumed and left again
+  within the hour was skipped as already synced, and its new turns waited for the idle
+  sync's 90-minute cooldown. The marker is now keyed on the session plus its running
+  stored-item count (buffered writes included): the two workers of one exit still sync
+  once, an exit after new turns syncs again, and an exit with nothing new is skipped. The
+  count is an append-only file per session, so parallel store hooks never lose or reset
+  it. A final sync whose every attempt failed releases its marker, so the next exit
+  retries (SDK-1071).
+- The memory tags, credit state and stored count live in the session's
+  `sessions/<session>/` folder, which the state sweep now removes after a week idle.
+- **Reading a secret file through the shell no longer stores it in memory.** Automatic
+  capture skipped `.env`, SSH keys, `~/.aws/credentials`, `.npmrc` and the other
+  secret-file globs only when the file arrived as a structured path (`Read`,
+  `Edit`, …). A shell call such as `cat ~/.aws/credentials`, `less ~/.ssh/id_rsa`,
+  `source .env.local` or `grep KEY .env` was captured with its output. A shell
+  command is now split into words (quotes removed, `$HOME` / `${HOME}` read as `~`,
+  words cut at `|`, `;`, `&`, `<`, `>`, parentheses and backticks) and is not captured
+  when any word matches the same globs, `COGNEE_CAPTURE_DENY_PATHS` included. A path
+  reached through another variable or a glob (`cat ~/.aws/cred*`) is not recognised.
+- **Redaction missed AWS and npm credentials.** The credential rule only fired when a
+  secret word ended the name, so `aws_secret_access_key = …`, `aws_access_key_id = …`,
+  `SECRET_KEY = …`, `SecretAccessKey` / `SessionToken` in AWS JSON and the
+  `.npmrc` `_authToken=` / `_auth=` lines passed through. These names are now
+  redacted, as are AWS access key ids anywhere (`AKIA…`, `ASIA…`, … plus 16
+  characters), `npm_…` tokens and `pypi-…` upload tokens.
+
+## [1.7.5]
+
+### Changed
+- **Local mode no longer downloads anything but the pinned `cognee` package.** Plugin
+  directories admit only code that is in the reviewed repository or a
+  package pinned to an exact version, and the bootstrap broke that rule twice: when uv
+  was missing it ran `curl https://astral.sh/uv/install.sh | sh`, and it let uv fetch a
+  standalone Python 3.12 from GitHub when none was installed. Both are gone.
+  `session-start.py` now builds the runtime venv only from tooling already on the
+  machine: an existing uv (invoked with `UV_PYTHON_DOWNLOADS=never` and a `>=3.10,<3.15`
+  interpreter request, so it picks whatever compatible Python is installed instead of
+  one it would have to download), otherwise the stdlib `venv` + pip. The only network
+  install left is `cognee==1.6.1` from PyPI.
+- **The stdlib fallback looks past the hook's own interpreter.** Previously it built the
+  venv from `sys.executable` and refused when that was older than 3.10 — on macOS that
+  is `/usr/bin/python3` 3.9.6, even with a Homebrew 3.12 beside it. It now probes
+  `python3.14` … `python3.10`, `python3`, `python` on PATH, newest first, and uses the
+  first inside cognee's supported range (3.10–3.14; a newer Python is skipped too). If uv is present but finds no suitable interpreter, the
+  same fallback runs instead of giving up.
+- **Local mode has a stated prerequisite: a Python 3.10–3.14 installed on the machine.**
+  The hooks themselves still run on 3.9+. Machines with only the macOS 3.9.6 and no uv
+  used to be zero-setup through the downloaded interpreter; they now get the existing
+  `host_python_too_old_for_venv` refusal at every session start, reworded to name the
+  interpreters checked and how to install one, until a 3.10+ Python exists. Cloud mode
+  is unaffected. README and `CONFIGURATION.md` updated accordingly.
+- **Per-prompt timeouts sized for a loaded cloud tenant.** Gateway logs from a
+  production tenant showed the plugin giving up on requests the server would have
+  answered: half of the readiness probes past 1 s, two thirds of recalls past 12 s,
+  with normal completions at 0.3 s and 8 s. The defaults were tuned for localhost.
+  `COGNEE_READY_PROBE_TIMEOUT` is now `3.0` (was `1.0`) and `COGNEE_RECALL_BUDGET`
+  is `20` (was `12`). Ceilings, not costs: a fast server answers exactly as before,
+  a slow one stops producing empty recalls and false "not responding" verdicts.
+- **Idle/auto improves of one session run at most every 90 minutes.**
+  `COGNEE_IMPROVE_COOLDOWN` defaults to `5400` (was `1800`). The session-end final
+  sync, the explicit sync skill and the dataset-switch sync still ignore the
+  cooldown.
+
+### Added
+- **The missing-interpreter case is now visible in three places, and names the cause.**
+  The session-start message opens with *"Cognee requires Python 3.10 or newer (up to
+  3.14), and no such interpreter is installed on this machine"*, lists what was
+  checked, and says cloud mode is exempt. The status line shows
+  `✕ (cognee_needs_python_3_10)` — proven from the SessionStart marker like
+  `missing_cognee_base_url`, so it appears at once rather than as a misleading
+  `unreachable`. `doctor.py` gained a `Runtime Python` row: the venv's interpreter once
+  built, otherwise the 3.10+ interpreter the next session start will use, otherwise
+  `MISSING - Cognee needs Python 3.10-3.14`. All three clear on the first session after
+  an interpreter is installed.
+
+### Fixed
+- **Warm-up buffer mutex lost an append on Windows.** `_buffer_lock` treated a
+  `PermissionError` from `O_CREAT|O_EXCL` as a broken lock and fell open without it.
+  On Windows that error is what a lock file in the *delete-pending* window answers
+  with (the holder unlinked it while another waiter still had a stat handle on it), so
+  under contention one writer skipped the mutex and clobbered another's entry — the
+  `test_concurrent_appends_do_not_lose_entries` failure on the Windows CI runner. It is
+  now treated as a busy signal and retried until the existing deadline.
+- **The dataset hint no longer re-pays a failed listing on every prompt.** The
+  readable-datasets listing behind the hint was served from a five-minute cache,
+  but a refresh that failed left the cache stale and was retried on the next
+  eligible prompt, each attempt paying the full 2 s timeout — on a tenant where
+  that call times out most of the time, most hint-bearing prompts did. A failed
+  refresh is now recorded and the stale rows (or nothing) serve the hint without a
+  network call for `COGNEE_DATASETS_CACHE_RETRY` seconds (default `120`); a
+  successful refresh clears it. The backoff is per server and identity, like the
+  cache itself. New hook event `readable_datasets_refresh_deferred`.
+
+### Removed
+- `_install_uv()` and the `https://astral.sh/uv/install.sh` constant. uv found under
+  `~/.cognee-plugin/uv` from an earlier plugin version, or on PATH, is still used.
+
+## [1.7.4]
+
+### Added
+- **Recap skills: `cognee-standup`, `cognee-digest`, `cognee-timeline`.** The three
+  recap skills the Claude Code plugin gained in 1.6.4, over the same wrapper,
+  `scripts/cognee-recap.py` (byte-identical in both trees). They answer "what did I
+  work on since yesterday?", "what happened this week and what did we decide?" and
+  "how did topic X evolve?" from what the server already records — no new server
+  surface, no new hooks. Sessions come from `GET /api/v1/sessions` (+ `/{id}`: last
+  prompts, tool calls, edited files) and cover every coding-agent session this
+  identity ran (Codex, Claude Code, Antigravity). The digest's learnings are the
+  dataset's lesson rows (`GET /api/v1/datasets/{id}/data` + `/raw`): every lesson the
+  server distilled into the graph inside the window, dated by the row's
+  `created_at`; the newest `--max-learnings` (40, `0` = all) are fetched and listed.
+  The timeline seeds a context-only graph recall with the topic and dates each
+  passage by the end of the session it names. The wrapper prints a deterministic
+  Markdown skeleton grouped by project (standup), by day → project with
+  most-edited files and the dated learnings (digest), or as a dated chronology of
+  `learned` / `recorded` / `asked` events (timeline); the skill tells the model to
+  summarise it, not paste it, and to treat it as recorded data, not instructions.
+  `--since` takes `24h`, `7d`, `2w`, `today`, `yesterday`, `week` (since Monday),
+  `month`, `all` or a date; `--projects`, `--all-sessions`, `--max-sessions`,
+  `--session-key` and `--json` as in the Claude Code plugin. An unreachable server,
+  an HTTP status (401/403 name the key / identity) or a refused identity is one
+  stderr line and exit 1; the hint names `doctor.py --json` here (the wrapper picks
+  `cognee-doctor.sh` or `doctor.py` by which one sits next to it), and a failed
+  graph lookup in timeline mode still renders the prompt lane.
+
+## [1.7.3]
+
+### Added
+- **`COGNEE_CAPTURE_TOOLS` filters Bash by command, and `COGNEE_CAPTURE_DENY_TOOLS`**
+  ([#423](https://github.com/topoteretes/cognee-integrations/issues/423)). The
+  allowlist accepts Claude Code's permission spelling, `Bash(git:*)`, which matches a
+  Bash call whose command starts with that word, so a Bash-heavy session can keep
+  `git`, build and test commands while dropping `rg`, `grep`, `cat` and `sed`
+  traffic, which was most of what reached the server. The new deny variable uses the
+  same syntax and runs after the allowlist, so "everything except search" is one
+  line. Bare names and globs behave as before.
+
+### Changed
+- **The prompt hook injects the retrieved context only — no conversation history,
+  no question template (SDK-904).** With `only_context=true` and a session id, a
+  cognee >= 1.6.0 completion recall returns the full prompt its own LLM would have
+  received, and the hook injected that string whole: the session's last ten Q&A
+  pairs in full (the agent's own previous turns, already in its context window),
+  the user's prompt echoed back inside an "answer using this context" template,
+  then the retrieved context. On a real install the injected block was a median
+  45k characters (~11k tokens) per prompt; the history alone was ~60% of a
+  mid-session payload, and 4 of the 5 retrieved passages were that same session's
+  own bridged turns. Now:
+  - the graph recall (`scope=["graph"]`, `HYBRID_COMPLETION`, `only_context`,
+    `top_k` unchanged) is sent **without** the session id, so no history comes back;
+  - a second, parallel `scope=["session_context"]` request with the session id
+    fetches the server-rendered guidance block (capped server-side), injected under
+    `=== Active agent guidance ===` as before SDK-741;
+  - `_recall_text.py` (new, shared verbatim by the hook suites) cuts the question
+    template away — anchored on the prompt the hook itself sent and the final
+    backtick, so it holds for every server template — and shrinks the context:
+    passages that are this session's own bridged chunks are dropped, each remaining
+    passage is capped at `COGNEE_RECALL_PASSAGE_CHARS` (default `2000`, cut at a
+    paragraph break and marked), entity bullets that say nothing (`X is a concept.`,
+    `X belongs to set …`) are pruned, facts are kept, and `COGNEE_RECALL_CONTEXT_CHARS`
+    (default `12000`) trims passages from the end as a last resort. An item the
+    trimmer cannot read is injected whole (fail-open) and logged.
+  - Measured on captured server output: 44.6k → 3.2k characters on a mid-session
+    prompt whose turns were already bridged; 34.7k → 6.9k when every passage came
+    from another session.
+  - New events: `recall.context_trimmed` (with the per-step counters),
+    `recall.context_unparsed`, and `recall.guidance_absent` for a 404 on the
+    guidance request (no guidance exists yet — an answer, not an error).
+- **The "Other Cognee datasets you can search" block rides along once per session**
+  — the first prompt the server answered — and again on any prompt memory answered
+  with nothing, instead of on every prompt. It is static text; repeating it cost
+  ~3k characters a prompt on an account with 40 datasets.
+- **The code lane injects only when it found something.** A `query_facts` payload
+  with an empty `facts` list — 36 of 57 armed turns on a real install — is a miss,
+  not a hit, and is no longer injected as raw JSON. Non-empty facts render one line
+  per symbol (`name [kind] file:line`, then `→ relation target`) instead of JSON.
+- `pre-compact.py` is unchanged: at compaction the conversation history is about to
+  be dropped, so the full item is still the right anchor there.
+
+### Fixed
+- **A misspelled capture pattern no longer disables capture in silence.** `Bash(rg)`,
+  `Bash()` and the like used to match nothing, which switched off capture for every
+  tool with no message anywhere. They now raise in the policy: the store hook skips
+  the trace and logs `capture_tools_invalid`, the warmup drain leaves its buffer
+  untouched instead of consuming it, and the recall hook repeats the problem to the
+  user on every prompt until the value is fixed.
+
+## [1.7.2]
+
+### Changed
+- **Bundled cognee is 1.6.1** (was 1.6.0; `_PINNED_COGNEE_VERSION`). The shared
+  `~/.cognee-plugin/venv` is upgraded on the next cold boot, which runs that
+  release's migrations. 1.6.1 is a patch release: chunks carry their document's
+  external metadata into hybrid retrieval, provenance is scoped to the caller's
+  readable datasets, and `dlt` is now a core dependency, which the venv install
+  pulls in on its own. The `postgres-binary`, `neo4j`, `fastembed` and `ollama`
+  extras the plugin probes for are unchanged in 1.6.1.
+
+### Fixed
+- **No false `✕ (incorrect_llm_api_key)` for a server the plugin did not start**
+  ([#371](https://github.com/topoteretes/cognee-integrations/issues/371),
+  [#377](https://github.com/topoteretes/cognee-integrations/issues/377)). The idle
+  watcher validated the LLM key for every loopback `COGNEE_BASE_URL`, but a docker or
+  systemd cognee published on `127.0.0.1` reads its key from its own environment. With
+  no key in the plugin's environment the check wrote `not_set`, and the status line
+  showed a permanent ✕ while the server answered LLM calls normally. The check now
+  runs only against a server the plugin started. It is skipped, and any earlier
+  verdict withdrawn, when `COGNEE_MANAGED_ENDPOINT` is set, or when a server answers on the port without the
+  plugin's pidfile. When nothing answers yet (the plugin's own server still booting),
+  the check runs as before.
+- **Explicit remember no longer loses every save after the first on cognee >= 1.6.0**
+  ([#444](https://github.com/topoteretes/cognee-integrations/issues/444)). Inline
+  text was uploaded as `{node_set}.txt`, and cognee 1.6.0 treats an upload's
+  filename as its identity in the dataset: a known name arriving with different
+  content is refused with a 409. So after the first `user_context` remember in a
+  dataset, every later one was refused, and with the default background write the
+  failure only reached the server log. Inline text now uploads as
+  `{node_set}-{sha256[:32]}.txt`: distinct texts get distinct names, and the same
+  text reuses its name, which the server's content-hash dedup keeps a no-op.
+  `--file` uploads keep their real basename, since the extension selects the
+  server-side loader.
+  A background remember that the server refuses for another reason can still
+  report `queryable: true`; that half of #444 is still open.
+- **Session sync no longer skips a backend whose `/health` is slow**
+  ([#443](https://github.com/topoteretes/cognee-integrations/issues/443)). Every
+  session sync first checks the backend with a `/health` probe that gave up after a
+  hard-coded 1.5s, so on a tenant slower than that each sync was recorded as
+  `unreachable`, nothing was submitted, and the replay backlog never drained, while
+  `cognee-doctor`, which waits 5s, reported the same backend as reachable. The probe
+  now waits 2s by default and reads `COGNEE_REACHABLE_TIMEOUT` (seconds); `0`,
+  negative, non-finite and unparsable values fall back to the default.
+
+## [1.7.1]
+
+### Added
+- **`COGNEE_MANAGED_ENDPOINT` — never boot over a managed endpoint.** When
+  `COGNEE_BASE_URL` points at a self-hosted deployment that lives on a loopback
+  address (docker compose stack, systemd service, reverse proxy), an outage at
+  session start used to silently boot the embedded local server on the
+  deployment's own port. The shadow instance then squats the port, answers 401
+  to the deployment's API keys (which reads as a baffling auth failure on the
+  real stack), and captures memory into an embedded database nobody reads.
+  Setting `COGNEE_MANAGED_ENDPOINT=true` (env var, `~/.cognee/.env`, or config
+  key `managed_endpoint`) declares the endpoint externally managed: when it is
+  unreachable, `SessionStart` reports **Cognee Memory OFFLINE** loudly (system
+  message + agent context) and refuses to install or boot anything. Extends the
+  forced-cloud misconfiguration surfacing and the present-but-busy boot refusal
+  to configured-URL deployments that are cleanly down. The outage is also
+  recorded as `unreachable` in the shared connection marker, so the status line
+  and the recall gate stop trusting the previous session's verdict. Default
+  behavior without the flag is unchanged. Contributed by @feyola (#341).
+
+- New events: `boot.refused_managed_endpoint`, `endpoint.managed_down`.
+
+- **`COGNEE_RECALL_MIN_PROMPT_CHARS` — skip recall on short prompts.** The
+  per-prompt context lookup ran on every prompt of five or more characters, so
+  acknowledgements and one-word nudges ("Try again", "approved") each cost a
+  lookup and an injected context block. Raising the floor (surrounding
+  whitespace not counted) skips recall for shorter prompts; values below `5` or
+  non-numeric fall back to the stock gate, and unset nothing changes. Prompt
+  capture keeps its own five-character floor, so short replies still enter the
+  session record. Contributed by @nagelm (#403).
+- New event: `recall.lookup_short_prompt`.
+
+- **Graph recall is scoped to the session's project.** Every prompt's graph
+  recall searched the whole dataset, so on a shared graph other projects'
+  documents and sessions dominated the hits. A session that names a project
+  (`COGNEE_PROJECT_NODE_SET`, or the recall-only `COGNEE_RECALL_PROJECT_NODE_SET`)
+  now sends `node_name=[<project>, <shared sets>]` with the `OR` operator on the
+  graph scope. `COGNEE_RECALL_SHARED_NODE_SETS` (default `global,user_context`)
+  names the sets every project may read, so preferences saved with
+  `cognee-remember` stay recallable everywhere; `COGNEE_RECALL_PROJECT_SCOPE=false`
+  turns scoping off. Session, trace and code recall stay unfiltered, and nothing
+  changes without a project name. In the author's A/B over 18 judged prompts
+  across five projects, cross-project bleed fell from 0.72 to 0.06 and injected
+  context shrank by 20%. Contributed by @nagelm (#402).
+
+- **Per-operation timeouts for remember and register.** Only recall was
+  tunable; the explicit remember submit and the session register call had
+  hardcoded client timeouts. `COGNEE_REMEMBER_TIMEOUT` (default `120`) and
+  `COGNEE_REGISTER_TIMEOUT` (default `15`) now set them independently, falling
+  back to those historical values when unset, malformed, zero, negative or
+  non-finite; an explicit caller timeout still wins. The README's new "Per-operation timeouts" table also
+  documents `COGNEE_RECALL_BUDGET` and `COGNEE_RECALL_TIMEOUT`. Originally
+  contributed by @RajdeepKushwaha5 (#167), reworked by @rshkarin (#259).
+
+### Fixed
+- **Capture hooks no longer wait on identity lookups.** `store-to-session.py`
+  resolved the session with `load_resolved()`, which queries
+  `/agents/connections/me` and then `/users/me` (10s timeout each) on every
+  PostToolUse and Stop, although no store path uses the user id. Codex runs
+  these hooks synchronously, so on a slow backend every tool call and answer
+  could wait up to ~20s. The hooks now resolve local fields only
+  (`identity=False`). Diagnosed by @Zozi96 (#270).
+
+- **A mid-session `COGNEE_BASE_URL` change is reported.** Hooks re-read
+  `~/.cognee/.env` in every process, so editing the URL during a session reached
+  later hooks while the session stayed registered on the server SessionStart
+  connected to, and it half-applied silently. SessionStart now records the
+  launch's server; when a later prompt resolves a different one, the recall hook
+  shows a one-time notice naming both servers and asking for a new session
+  (events `endpoint.base_url_changed_mid_session`). Nothing is re-registered
+  mid-session. Prompted by #262 by @rshkarin (a rework of #192 by @SaviPandey).
+
+- **Dataset names are sanitized for cognee.** cognee rejects a dataset name
+  containing a space or a dot, and a `COGNEE_PLUGIN_DATASET` like `my project`
+  or `team.v2` used to reach the server unchanged and fail every write. The
+  configured name now has spaces and dots replaced with `_` (logged as
+  `config.dataset_name_sanitized`); nothing else changes, so every name the
+  server already accepts stays exactly as it is. The switch-datasets command
+  refuses such a name and suggests the sanitized form instead of rewriting it.
+  Code-graph datasets for repositories with a dot in their name (`foo.js`) are
+  now `codebase-foo-js-…` and can be indexed. The rule is shared across
+  integrations in `integrations/conformance/dataset_name_cases.json`. First
+  implemented by @eiza763 (#226).
+- **A dataset switch whose sync times out fails cleanly.** The pre-switch sync's
+  timeout escaped as a crash, so `--force` could not continue past it; it is now
+  reported as a sync failure (exit code and `switch.sync_timeout` event), and a
+  malformed or non-positive `COGNEE_SWITCH_SYNC_TIMEOUT` falls back to 900s.
+
+## [1.7.0]
+
+### Changed
+- **Bundled cognee is 1.6.0** (was 1.5.4; `_PINNED_COGNEE_VERSION`). The shared
+  `~/.cognee-plugin/venv` is upgraded on the next local-mode session start, which
+  runs that release's migrations. 1.6.0 made `fastembed` and `onnxruntime` core
+  dependencies (the `fastembed` and `codegraph` extras are now empty shims), so the
+  venv grows and a cold install takes longer. Search and recall now answer an
+  unresolvable dataset name, or a dataset without a graph yet, with `404` instead
+  of an empty list; the explicit search path (`cognee-search.sh`) treats that as an
+  empty result rather than an error, as the prompt hook already did.
+- **One recall request per prompt, and the memory block is what the LLM would have
+  been given (SDK-741, cognee #5085).** With `only_context=true`, a completion search
+  type on cognee 1.6.0 returns one item per dataset whose `text` is the full LLM
+  input: the conversation history for the session, the question with the retrieved
+  graph context rendered through the retriever's template, and the session guidance
+  block (a separate `system_prompt` field carries the task template and is ignored).
+  `session-context-lookup.py` therefore no longer fans out over the `session`, `trace`, `session_context` and `graph` scopes: The single request is
+  `scope=["graph"]`, `HYBRID_COMPLETION`, `only_context=true`, with the session id —
+  kept explicit because the server's `auto` scope would add raw session entries next
+  to the prompt (or short-circuit the graph on a session hit) and an unpinned type
+  lets the router pick `CHUNKS`, which builds no prompt. The item's `text` is injected
+  whole under `=== Cognee memory ===` (label `[cognee-memory]`, formerly
+  `[graph-snapshot]`); the 1500-character cap is gone, since the context sits in the
+  middle of that string and the guidance at its end, so a cut removed exactly what
+  memory is for — `top_k` bounds the size server-side. The header keeps its hit-count wording; `last_recall.json` keeps all five `hits` keys, the retired ones at zero, and `per_scope` lists only the scopes dispatched. The optional
+  code-graph lane is unchanged and still runs only on identifier-shaped prompts.
+  Against a pre-1.6.0 server the item holds the bare retrieval context and is
+  rendered the same way; the session layers are then not injected.
+
+- **Automatic improves run at most every 30 minutes** per session (was 10):
+  `COGNEE_IMPROVE_COOLDOWN` now defaults to `1800`. The idle and auto triggers honour
+  it, and a failed attempt arms the same window as a backoff; the session-end sync,
+  the sync skill and a dataset switch still improve regardless.
+- **Search is graph and code only.** `cognee-search.sh` no longer has a `--session`
+  mode and no longer defaults to session-then-graph; every search is a graph-scope
+  recall (or `--code`). The session cache is written and bridged, never searched:
+  on cognee 1.6.0 the graph item's prompt already carries this session's history.
+- **The "from past sessions" count is gone** from the memory header, the status
+  line and `last_recall.json` (`cross_session_hits`). It guessed provenance by
+  looking for the session id inside each graph passage; the 1.6.0 memory item is one
+  rendered prompt that mixes history, retrieved context and guidance, so no substring
+  can say where a fact came from, and memory is graph-only recall now anyway.
+
+### Fixed
+- **A hook that crashes is reported instead of failing silently.** Every hook now
+  runs through `scripts/hook_runner.py`. On Windows every hook was exiting 1 before
+  any of its own error handling ran: Codex showed only "Hook failed", nothing reached
+  `hook.log`, and the `|| python` fallback ran the hook a second time. An uncaught
+  exception, import-time ones included, is now written with its traceback to
+  `~/.cognee-plugin/codex/hook-crash.log`, shown once per hour as a `systemMessage`,
+  and the hook exits 0. An explicit `sys.exit(code)` is left as it was. The runner
+  also switches the hook's stdin/stdout to UTF-8, since Windows pipes default to the
+  ANSI code page. The venv re-exec keeps going through the runner.
+- **Windows hooks have their own launch commands.** Every hook in `hooks.json` has a
+  `commandWindows` that tries `py -3` and then `python`. Codex runs it through
+  `cmd.exe` on Windows, where `python3` is usually the Microsoft Store stub.
+- **Fresh installs against cognee 1.6.0 could not mint their owner API key
+  (SDK-740).** cognee 1.6.0 stopped baking `default_password` into the default user:
+  the server creates that user at startup only when `DEFAULT_USER_PASSWORD` is set,
+  sets the password once, and never rewrites a stored one. The owner-key bootstrap
+  logs in as `default_user@example.com` / `default_password`, so on a fresh venv the
+  login answered `400 "This user does not have a password"` and the plugin never got
+  a key. The server this plugin boots is now started with
+  `DEFAULT_USER_EMAIL=default_user@example.com` and
+  `DEFAULT_USER_PASSWORD=default_password` (the literals every Cognee plugin shares,
+  since they all share one server and one database), `setdefault` so an operator's
+  own `DEFAULT_USER_*` export wins. Existing installs are untouched: their user row
+  already holds that password. `COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` still pick
+  the user the plugin logs in as, and a non-default user must already exist. Against
+  a server the plugin did not start, the two 400 answers now produce an actionable
+  message (start the server with `DEFAULT_USER_PASSWORD` matching
+  `COGNEE_USER_PASSWORD`, or set `COGNEE_API_KEY`) instead of the generic "set the
+  credentials correctly". README gains a paragraph on where the default user's
+  password comes from and what to set for an externally managed server.
+
+## [1.6.7]
+
+### Fixed
+- **The cross-dataset search hint broke on an install path containing a space.** The
+  "Other Cognee datasets you can search" line the prompt hook appends spells out
+  `cognee-search.sh "<query>" 10 --graph --dataset-id <id>` with the script's resolved
+  absolute path, and that path was interpolated bare — so on such an install the model
+  was handed a command that word-split before it could run. Quoted. Codex's own hook
+  manifest already quoted `${PLUGIN_ROOT}`, so only this one command was affected;
+  the Claude Code plugin hit the same defect across its whole manifest
+  ([#5154](https://github.com/topoteretes/cognee/issues/5154)).
+
+## [1.6.6]
+
+### Added
+- **The status bar says when credits are not enough, and where to top up.** Until now a
+  cloud tenant that ran out of credits saw nothing: every recall, save and improve came
+  back `HTTP 402 Payment Required`, the plugin logged it as a generic `recall_error` and
+  moved on, and the credits segment kept showing the last balance it had read — or
+  nothing at all on a tenant whose billing overview could not be fetched. Now a 402 from
+  any billable route (recall, trace/answer save, `/remember`, improve) is recorded on the
+  tenant's credits marker as `payment_required: {op, at}`, and the segment renders it:
+  - balance above a dollar but refused: `credits: $2.04 (not enough for recall)`;
+  - a dollar or less left: `credits: $0.61 · top up: https://platform.cognee.ai/billing` —
+    the cloud refuses requests before the balance reaches zero, so the threshold is a
+    dollar, not zero;
+  - refused with no balance reading at all (the platform fetch itself failed): `credits: not enough for recall`, with the top-up link.
+
+  The top-up link is the production billing page; staging and dev sessions set
+  `COGNEE_BILLING_URL` (the web frontend's host is not derivable from the tenant host).
+  The platform API host the balance is fetched from IS derived from the service URL:
+  beside a `tenant-<id>.<env>.cognee.ai` data plane it is `api.<env>.cognee.ai`, so a dev
+  tenant asks the dev platform instead of production (which answered `401` and left the
+  segment blank). A non-tenant URL falls back to the production platform;
+  `COGNEE_PLATFORM_API_URL` overrides.
+
+  The next billable operation that succeeds clears the note, so a top-up shows through
+  on the following prompt. The note is written under the same per-tenant lock as the
+  balance and survives the balance refresh: a small positive balance can still be "not
+  enough", and only a successful operation knows otherwise. New events:
+  `credits_payment_required`, `credits_payment_cleared`, `credits_marker_write_failed`.
+- **Search another dataset without switching.** Recall reads only the active dataset,
+  so information living in another dataset was invisible unless the user switched —
+  a full switch (sync, new Cognee session, repointed launch record) just to look
+  something up. Now, on every prompt the server answers, the recall hook appends an
+  `Other Cognee datasets you can search` block to the injected context: every other
+  dataset the identity can read (read-only ones included), with UUIDs, plus the
+  command to search one. It rides along on hits too: graph retrieval is
+  nearest-neighbour and returns something from any populated dataset, so "zero
+  hits" never happens and only the model can tell whether the recalled context
+  answers the user. If the user is recalling something the active dataset did not
+  have, Codex offers those datasets as a numbered list; the chosen one gets a one-off
+  **graph-only** search and the answer names its source dataset. The active dataset,
+  session and write target are untouched. The same flow is spelled out in the
+  `memory` skill for when an explicit search comes back empty.
+  - `scripts/list-datasets.py [--others]` lists every readable dataset (JSON) with
+    the active one marked (`switch-dataset.py --list` still shows only switch
+    targets). `list_readable_datasets` is the shared listing both build on.
+  - `cognee-search.sh --dataset-id <uuid>` addresses a dataset by UUID (a name only
+    resolves among owned datasets). Any dataset other than the active one is forced
+    to graph scope with the session id dropped — session history is bound to the
+    active dataset — with a note on stderr; the active dataset named by hand keeps
+    the full scope.
+  - The hint's listing comes from a per-plugin cache
+    (`~/.cognee-plugin/codex/readable-datasets.json`, keyed by server and identity)
+    refreshed at most every `COGNEE_DATASETS_CACHE_TTL` seconds (default 300) and
+    only inside what remains of the recall budget, so the prompt path never waits on
+    it. `COGNEE_RECALL_DATASET_HINT=off` disables the hint. Every other readable
+    dataset is named — nothing ranks them, so the user chooses.
+  - New hook events: `recall.dataset_hint`, `datasets.readable_refresh_failed`,
+    `datasets.list_failed`.
+
+### Removed
+- **The `· switched` status-line tag.** After `/cognee-switch-datasets` the bar appended
+  a faint `· switched` after the mode. The dataset name beside it already says which
+  dataset the session is on, so the tag added nothing, cluttered the line, and read
+  as a state that wanted acting on. Gone; the launch record still carries
+  `switched_at` for the hooks.
+
+### Fixed
+- **Repo indexing submitted the repository under a field the server had stopped
+  reading, so every index 400'd ([#420](https://github.com/topoteretes/cognee-integrations/issues/420)).**
+  cognee 1.5.4 renamed the form field that carries the repository spec on
+  `POST /api/v1/remember` with `content_type=code` from `repositories` to
+  `raw_data`. The plugin still sent the old name, and an unrecognised multipart part is
+  dropped by the server rather than refused — so each request arrived naming no
+  repository at all and came back `HTTP 400: content_type='code' requires at least
+  one repository path or git URL in 'raw_data'`. Local paths and git URLs failed
+  alike. The spec now goes in `raw_data`. The bundled server has been pinned to 1.5.4
+  since the previous release, so a fresh install hit this on its first
+  `/cognee-code`.
+- **A 400 the server could explain was reported as "your server is too old".** The
+  error branch treated any 400 whose body mentioned `content_type` as a server
+  predating `content_type='code'`. Every 400 the server's code branch raises names
+  that field — including the one above — so the actionable message was overwritten
+  with advice to upgrade a deployment that was already new enough, and the reporter
+  of #420 spent the session chasing the wrong problem. Only the server's own
+  "Unsupported content_type" wording counts as a version problem now; every other
+  400 is passed through verbatim.
+
+## [1.6.5]
+
+### Fixed
+- **The recall header no longer reports buffered writes as saved (SDK-467).** While
+  the server was unreachable for two and a half weeks, every prompt's header kept
+  reading `saved last turn 1 prompt / 6 trace / 1 answer` — the store hooks
+  diverted every trace and answer to the warmup buffer and bumped the same save
+  counter as a real write, so a durable outage produced no visible signal at all.
+  Buffered writes now have their own counter kinds (`trace_buffered`,
+  `answer_buffered`) and the header shows them as their own segment, followed by
+  what still waits for replay across every session on the machine and how long
+  the oldest entry has waited:
+
+  ```
+  Cognee memory: 0 memory hits · memory warming up (3 turns) · saved last turn 1 prompt / 0 trace / 0 answer · buffered last turn 6 trace / 1 answer (not saved yet) · 7 awaiting replay, oldest 20d
+  ```
+
+  Nothing is added when nothing was buffered and nothing awaits
+  replay, so the healthy header reads exactly as before. To make the age
+  visible, every buffered entry now carries a `_buffered_at` stamp in
+  `~/.cognee-plugin/codex/bridge/`; like the ambiguous-replay marker it is
+  stripped before the entry is sent, so nothing new reaches the server. Entries
+  buffered before this release take their file's mtime, a lower bound on their age.
+- **A prompt whose recall is skipped because the server is known bad now gets a
+  header too.** It used to return nothing — no header, no sign that memory was
+  off — and because the save counter was only read on a successful recall, the
+  first header after recovery presented weeks of buffered writes as one turn's
+  saves. The header now reads `Cognee memory: recall skipped (server unreachable)`
+  (or `auth failed` / `server error` / `server not responding`), followed by the saved,
+  buffered and awaiting-replay segments, and the counter is read and reset on
+  every prompt. The model receives the same line as its context.
+- **`cognee-plugin metrics` reports buffered writes apart from saves.** The
+  offline rollup added warmup-buffered writes to the saved totals and ignored the
+  after-error buffering entirely. It now has a `buffered` section (`trace` /
+  `answer`) fed by `store_buffered_warming`, `trace_buffered_after_error` and
+  `store_buffered_after_error`, and `saves` counts only what the server received.
+- **Skills reached for the `cognee-cli` before the server, and the CLI paths were
+  unreachable anyway (SDK-622).** The `setup` and `local-ui` skills declared
+  `uv run cognee-cli ...` the "primary interface"/"primary launcher", directly
+  contradicting `memory`'s own rule ("Prefer the server-first paths"). Both also
+  assumed a cognee **source checkout**: `scripts/cognee-cli.sh` exits 64 ("Run
+  this from the Cognee repository root") anywhere else, and the skills bypassed
+  even that wrapper with bare `uv run cognee-cli`, which inherits uv's
+  project-directory requirement and never uses the plugin's own venv — a venv
+  that in cloud mode is never built at all. So on any normal install the
+  "primary" path could not run, and the behaviour was masked on developer
+  machines that happen to have `cognee-cli` on PATH.
+  - `setup` is now **Cognee Connection And Status**: it answers from
+    `scripts/doctor.py --json` (mode, resolved URL, reachability, key source) and
+    an HTTP `/health` probe, with the CLI demoted to a last resort gated on
+    *local mode plus a checkout*. Dropped `uv sync --dev --all-extras
+    --reinstall` (there is no cognee repo to sync on a plugin install, and in the
+    user's own project it rebuilds their dependencies) and `serve --logout`.
+    The env-file / `COGNEE_BACKEND` material is now the configuration section
+    rather than a paragraph buried under CLI content.
+  - `local-ui` now **checks the mode first and stops on cloud**, where there is
+    no local UI and launching one would create a second, empty instance holding
+    none of the user's memory. Its description no longer competes with `setup`
+    for "is Cognee running?". `cognee-cli -ui`'s own `:8000`/`:3000` surfaces are
+    kept but marked as a separate dev instance, explicitly not evidence about the
+    plugin's `:8011` server.
+  - Every remaining CLI invocation routes through `scripts/cognee-cli.sh`, so a
+    missing checkout fails with a clear message instead of an opaque `uv` error,
+    and exit 64 is documented as "not a Cognee fault to report".
+  - `memory`'s "CLI only" extras (staged `add`+`cognify`, the `-t
+    GRAPH_COMPLETION/CHUNKS/CODE` search modes, `improve --node-name`) are
+    reframed as *unavailable without a checkout* rather than as a reason to leave
+    the server path.
+- **The recommended "server-first" `curl` 401'd in local mode — and pushed the
+  agent to the CLI.** `memory`'s authoritative recall example sent
+  `-H "X-Api-Key: ${COGNEE_API_KEY:-}"`, but in local mode that variable is
+  empty: the key is minted into `~/.cognee-plugin/api_key.json` and never
+  exported to the shell. The server-first path therefore failed with a 401 that
+  looked like a server fault, and the skill's own fallback rule then sent the
+  agent to the CLI. Recall now goes through `scripts/cognee-search.sh` (which
+  resolves endpoint, session and key the way the hooks do), and the raw-endpoint
+  form is shown with `eval "$(scripts/cognee-forget.sh env)"` in the same shell
+  invocation.
+- **The plugin manifest advertised itself as CLI-first.** `plugin.json`'s
+  description ("CLI-first Cognee workflows"), long description ("skills for
+  running Cognee's CLI workflows") and default prompts ("Use Cognee CLI to
+  remember ...") pointed users and the agent at the CLI before any skill body was
+  read. All three now describe the HTTP/server path, with the CLI named as the
+  fallback it is.
+- **A local server's redirect broke every by-name dataset switch (SDK-622).**
+  `switch-dataset.py` failed with a bare `307` for any dataset named rather than
+  addressed by UUID, so the dataset picker could not switch at all. Real Cognee
+  servers disagree about the trailing slash on `/api/v1/datasets` and answer 307
+  to the spelling they do not serve — in **opposite** directions: cloud tenants
+  redirect the bare path to the slashed one, a local server redirects the slashed
+  path to the bare one. The clients hard-coded the slash for the cloud's benefit,
+  and urllib's `HTTPRedirectHandler` refuses to replay a POST across a 307 (it
+  raises `HTTPError` instead), so the create surfaced as a 307 the caller treated
+  as a failure. Because `ensure_dataset_ready_via_api` runs unconditionally on the
+  by-name path, an *existing* dataset failed exactly like a new one.
+
+  Both HTTP helpers (`_json_http_request` and `config._cloud_http_request`) now
+  replay a 307/308 themselves, preserving method and body, so either spelling
+  works against either server shape. The replay is **same-origin only** — these
+  requests carry `X-Api-Key`, which must never be sent to another host — and
+  bounded to two hops, so a redirect loop cannot spin a hook. A cross-origin
+  target, a missing `Location`, or any other status leaves the original error
+  untouched. The two `# trailing slash on purpose` workarounds are gone.
+
+  The suite missed this because the mock server accepted both spellings
+  unconditionally. It can now redirect either way
+  (`set_collection_redirect`), and the regression tests assert dataset creation
+  through both helpers in both directions, plus the same-origin gate and the
+  refusals.
+
+## [1.6.4]
+
+### Fixed
+- **Hotfix: the hooks run on Python 3.9 again (SDK-617).** Every hook script
+  failed at import time under a 3.9 `python3` — the one macOS ships with the
+  Xcode Command Line Tools — with `TypeError: unsupported operand type(s) for |`,
+  because `X | None` annotations are evaluated when a function is defined.
+  Nothing in the hooks needs 3.10 at runtime: they are stdlib HTTP clients, and
+  cognee runs in the uv-managed Python 3.12 venv the bootstrap builds. Every
+  script now carries `from __future__ import annotations`, so the plugin works
+  on any Python 3.9+ host; the shared suite runs on 3.9 in CI to keep it that
+  way. Shipped in place, without a version bump.
+- **The uv-less install fallback refuses a host python older than 3.10.** When
+  uv is unavailable and cannot be downloaded, the bootstrap builds the runtime
+  venv from the host interpreter, which then inherits cognee's 3.10+ floor.
+  Instead of building a venv cognee cannot install into, it now logs
+  `host_python_too_old_for_venv` to `~/.cognee-plugin/codex/hook.log`, prints the interpreter path and
+  version to stderr, and leaves a marker that every following SessionStart turns
+  into a systemMessage naming the fix (install uv or a 3.10+ python3) until a
+  venv is built. README states the requirement up front: 3.9+ for the hooks,
+  3.10+ only for that fallback.
+
+### Changed
+- **Per-prompt recall dispatches every scope at once.** The scopes (`session`,
+  `trace`, `session_context`, `graph`, plus the `code` lane when it is armed)
+  were requested one after another, so every cheap scope was a full round trip
+  on top of the graph search — three of them against a cloud server — and an
+  armed code lane could burn seconds before graph even started. All scopes are
+  now in flight together and the prompt waits for the slowest one, not the sum;
+  the results are folded into the same injected context, in the same order.
+  With the graph search the only expensive call, a prompt's recall now costs
+  about what the graph search alone costs.
+  - The per-prompt recall now has one knob: `COGNEE_RECALL_BUDGET` (default
+    12s) is the deadline every scope gets. With the scopes concurrent, a
+    per-scope timeout and a whole-recall budget bounded the same interval, so
+    `COGNEE_RECALL_TIMEOUT` is no longer read by this hook (it still bounds the
+    explicit `cognee-search` path). `recall_budget_exceeded` fires only when
+    the budget is too small for any request at all.
+  - A refused connection or a 401/403 no longer cuts the fan-out short (every
+    request is already in flight and fails in the same round trip); it is still
+    recorded as one verdict per prompt, never one per scope.
+  - `per_scope` in the `context_lookup_*` events keeps its canonical order and
+    per-scope `elapsed_ms`, which now overlap rather than add up.
+  - The `context_lookup_hit` / `context_lookup_empty` events now also carry the
+    recall's aggregate `elapsed_ms` (previously Claude Code only): with the
+    per-scope timings overlapping, the total is no longer their sum, so it is
+    logged outright.
+
+- **No background credits polling.** The exit watcher polled the billing
+  overview every 5 minutes for the life of every open terminal so the
+  status-line balance would not age out of its 15-minute TTL while idle. That
+  was the plugin's only idle network traffic, and its throttle read a marker
+  field that does not exist until a refresh has succeeded for the connected
+  tenant — with no tenant binding (self-hosted remote server, unresolved
+  connection lookup) it fell through to a refresh attempt every 2 seconds and
+  ~14k `credits_refresh_skipped_no_tenant` log lines a day. The balance cannot
+  move from this machine while it is idle, so the poll is gone: the hook-time
+  refreshes (prompt start, turn end, remember, improve) are the whole cadence.
+  The renderer no longer hides an old reading; past 15 minutes it appends an
+  age hint (`credits: $14.23 (2h ago)`), and hides only once the entry is
+  older than the marker's own 7-day prune. `COGNEE_CREDITS_CHECK_INTERVAL` and
+  the `exit-watcher:credits_check_error` event are retired.
+
+## [1.6.3]
+
+### Fixed
+- **One improve per trigger, and no improve at all on the idle watcher's way
+  out.** Three things multiplied improve submits — and every submit is
+  recorded by the server as an improve operation, whether or not it did any
+  work:
+  - The idle watcher ran a last "shutdown" improve when it was stopped by the
+    SessionEnd hook, whenever anything had happened since its previous improve
+    (after a Stop hook: always). The SessionEnd sync that stops it spawns the
+    session's final improve itself, and the exit watcher spawns the same worker
+    when the host dies without a SessionEnd, so the flush only ever collided
+    with the final sync. Removed; `shutdown_trigger` / `shutdown_bridge_*` events
+    are gone.
+  - A busy answer from the server (its per-session improve lock held by another
+    run) was re-submitted every 15 s for up to ten minutes, and the final sync
+    then retried that whole loop three times. In one local log that was 13,915
+    busy re-submits against 1,819 real improves, and one session accumulated
+    ~640 submits over three days with no successful bridge. Repeated and
+    parallel improves are safe server-side — every stage is guarded by a
+    per-session watermark or dedups by content hash — so waiting on the lock
+    bought nothing: the in-flight run persists everything above the watermark
+    and the next trigger covers the rest. A busy answer is now reported and
+    left alone. The final sync logs it as `sync_bridge_deferred_busy` and no
+    longer counts it as incomplete, so its strict retries fire only for
+    transport failures, timed-out submits and undelivered warmup entries.
+    `COGNEE_IMPROVE_BUSY_DEADLINE` and `COGNEE_IMPROVE_BUSY_RETRY_INTERVAL` are
+    gone.
+  - The plugin's own machine-wide per-session improve lock (`improve-locks/`),
+    which existed only to pre-empt that busy loop, is removed with it; the
+    `improve_lock_*` / `improve_skipped_concurrent` events are gone and the
+    state sweep removes the leftover directory.
+- **A failed improve now arms the cooldown too.** Only a success used to write
+  the per-session improve state, so a server that was busy, slow or down was
+  re-submitted after every 60-second pause. Any attempt that does not land
+  (busy, timed out, unreachable, HTTP error) stamps `last_failed_at`, and the
+  idle/auto triggers honour it as a `backoff` for `COGNEE_IMPROVE_COOLDOWN`
+  seconds. The session-end, manual and dataset-switch syncs still always run.
+
+- **A failed idle improve no longer disables the watcher for the rest of the
+  session.** The idle watcher used to set a process-local flag after one
+  failed attempt and keep polling without ever improving again, while its
+  liveness stopped the next prompt from respawning it. It now exits after one
+  attempt, landed or not (`bridge_done` / `bridge_failed`), so the next prompt
+  respawns it and the failure backoff decides when it tries again.
+  `bridge_disabled_after_failure` is gone.
+
+### Changed
+- **Pipeline-status polling after an improve submit is gone.** It was
+  observability only (it never changed the outcome) and cost one
+  `GET /datasets/status` every 3 s for up to ten minutes per improve.
+  `COGNEE_IMPROVE_POLL_DEADLINE` and `_plugin_common.wait_for_cognify` are
+  removed; the remember path keeps its own bounded poll.
+- **One default for the improve submit timeout.** `COGNEE_IMPROVE_SUBMIT_TIMEOUT`
+  now has a single source of truth (`IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS`,
+  420 s) instead of an import-time environment default, a function fallback and
+  a README value that disagreed. For Codex this raises the effective default from 180 s to 420 s, the value Claude Code has used since the same diagnosis.
+- `run_session_improve` is replaced by `run_session_improve_detailed`, which
+  returns `{"ok", "reason", "error"}` with `reason` one of `busy`,
+  `unreachable`, `incomplete_drain` or `failed`, so callers can tell "someone
+  else is bridging" from "nothing was bridged".
+
+## [1.6.2]
+
+### Changed
+- **Per-prompt recall waits long enough for growing graphs.** The defaults
+  for `COGNEE_RECALL_TIMEOUT` (per scope) and `COGNEE_RECALL_BUDGET` (whole
+  hook) go from 2.5s/4s to 10s/12s. Graph search time grows with the dataset
+  and with the round trip to a remote (cloud) server, and a scope that
+  overruns its timeout is recorded as zero hits, so the old caps could
+  silently drop graph memory from recall once a graph got large.
+  Both values remain overridable via the environment or `~/.cognee/.env`. The
+  cheap scopes are unaffected, so a fast prompt is not slower; only a slow
+  graph query is now allowed to complete instead of being discarded.
+
+## [1.6.1]
+
+### Removed
+- **The in-process "local SDK" execution path is gone.** Every hook is now an
+  HTTP client to the Cognee server (the one the plugin boots on localhost, or a
+  remote one via `COGNEE_BASE_URL`); no hook imports `cognee` any more. The
+  path had been unreachable for the per-prompt hooks since endpoint resolution
+  started defaulting to the local server URL, but two places still executed
+  cognee in-process against the local server's own database files from a
+  second process: PreCompact ran the unbounded SDK `setup()` and read the
+  session cache through the session manager, and the empty-recall
+  embedding-dimension probe opened the local LanceDB directly. Deleted:
+  `config.ensure_identity` / `_ensure_identity_via_sdk` /
+  `_ensure_local_databases` / `ensure_dataset_ready` /
+  `improve_session_local` / `is_local_mode`, `_plugin_common.resolve_user`,
+  `sync_lock`, the embedding-dimension probe
+  (`bounded_dim_mismatch_hint` and helpers), the `local_sdk` runtime mode,
+  and the SDK branches in `store-to-session`, `store-user-prompt`,
+  `session-context-lookup`, `session-start`, `idle-watcher`,
+  `sync-session-to-graph` and `pre-compact`. Their log events
+  (`resolve_user_failed`, `trace_fallback_*`, `sync_lock_*`,
+  `precompact_direct_fetch_error`, `precompact_*_dump_failed`,
+  `prompt_prepare_warning`, `context_lookup_dim_mismatch`,
+  `dim_check_error`, `improve_local_unsupported`,
+  `default_user_resolve_failed`, `bridge_skipped_lock_busy`,
+  `sync_lock_import_error`, `sync_skipped_lock_busy`) are retired.
+
+### Changed
+- **PreCompact builds its anchor over HTTP.** It now resolves the endpoint like
+  every other hook (`resolve_runtime_mode`), recalls through `/api/v1/recall`,
+  and, when the empty-query seed recall returns nothing, reads the recent QA
+  and trace rows from `GET /api/v1/sessions/{id}` instead of the in-process
+  session manager. Against a remote server this is the first time the anchor
+  is produced at all: the old direct read only worked when the plugin had
+  booted the server under the same HOME. New events:
+  `precompact_server_unusable` (skipped because the server is known down),
+  `auto_improve_skipped_no_auth`, `sync_skipped_no_auth` and
+  `idle-watcher:bridge_skipped_no_auth` (an improve had no server credentials
+  to submit with; previously these fell through to the local SDK path).
+
+## [1.6.0]
+
+### Added
+- **Plugin identity: the plugin can now run as its own cognee agent sub-user.**
+  Cognee servers that expose `POST /api/v1/integrations/plugins/codex/provision`
+  mint a dedicated agent identity (sub-user + labeled API key) per plugin, so the
+  dashboard attributes sessions, traces, and datasets to *this plugin* instead of
+  the shared principal key. The provisioned key is cached per service URL at
+  `~/.cognee-plugin/codex/agent_key.json` and outranks the env/cached principal
+  for data-plane traffic; datasets the agent creates are auto-shared to the
+  parent user.
+  - **Identity policy is `COGNEE_PLUGIN_IDENTITY` = `auto` (default) / `true` /
+    `false`.** `auto` provisions only in service of shared agent memory (below) and
+    reverts to the principal when that cannot be wired, so nothing the principal
+    owns is ever stranded; `true` is explicit and strict — provisioning is required
+    and never falls back to the owner; `false` runs as the principal and ignores a
+    cached identity.
+  - **Safe create-only provisioning, credentials bound to server and principal.**
+    Provisioning uses the SDK's `create_only` contract and never rotates an existing
+    key; a credential the server rejected is blocked and never reused, and one bound
+    to another principal is never used. Under `true` those stop with an error; under
+    `auto` the plugin runs as the principal and logs why. Local startup is serialized
+    with an OS lock; credential files are written atomically with owner-only
+    permissions. Servers without `create_only` (or the provision endpoint) leave
+    `auto` installs on the principal.
+  - The doctor reports the new key source as **Plugin identity**.
+- **Shared agent memory (default): one memory across all of your plugin
+  agents.** A plugin identity is its own user, and cognee's grants flow
+  child→parent only — left alone, per-plugin identities would silo memory
+  (Codex could not recall what Claude Code stored). Session start now wires
+  the agent into a shared `cognee-agent` role in your tenant (created for a
+  tenant-less fresh install) with read+write on your datasets, backfilled on
+  every launch and every ~60s by the idle watcher so a dataset another plugin
+  creates shows up without a restart. The launch's dataset becomes a
+  canonical, user-owned dataset addressed by UUID (`dataset_id`/`dataset_ids`
+  on the launch record) — a name only resolves among datasets the caller owns,
+  which would fork an empty per-agent copy — and recall, remember, the
+  session-entry store, improve and the skills all address it that way;
+  pre-existing same-named copies stay in the recall set.
+  - **Opt out** with `"shared_agent_memory": false` in config.json or
+    `COGNEE_SHARED_AGENT_MEMORY=false` for separated, per-plugin memory (the
+    previous behaviour, name-addressed). The agent is removed from the
+    shared role — it can no longer read or write your datasets — keeps its
+    identity, and starts writing to its own, private dataset; what it shared
+    before stays in your user's dataset (still yours, still visible in the
+    dashboard). Re-enabling puts it back into the same role and dataset.
+  - Degrades to separated memory — never fails a session — when the server
+    has no permissions API or cannot store session entries by dataset UUID,
+    when you are not the owner of your tenant, or when a tenant-less user
+    already owns datasets (activating a tenant would hide them). Under
+    `auto` an install that hits one of those stays on the principal.
+  - Every tenant/role/grant call runs as the *principal*: an agent key can
+    never widen its own access (server-enforced, owner-only).
+  - The doctor shows **Memory Sharing** (`shared (role: cognee-agent)` /
+    `separated (<reason>)` / `principal (...)`).
+- **Dataset UUIDs throughout registration, remember, improve, recall, and
+  switching.** A UUID-shaped dataset is addressed as an id; effective write
+  permissions (not ownership alone) determine the datasets you can switch to,
+  and a failed switch persistence keeps the previous session and unregisters
+  the unused new connection.
+- **Explicit graph read datasets** through `COGNEE_PLUGIN_READ_DATASET_IDS`
+  (a JSON array of UUIDs): federated graph recall separate from the session's
+  single write dataset; it takes precedence over the datasets shared memory
+  resolved.
+
+### Changed
+- Native plugin connection types replace the generic API type.
+- Identity provisioning requires `COGNEE_PLUGIN_IDENTITY=true` in `~/.cognee/.env`.
+  `false` explicitly disables cached identities; there is no config.json setting.
+- Safe identity provisioning requires an SDK exposing the `create_only` parameter.
+
+## [1.5.4]
+
+### Fixed
+- **The improve cooldown now actually works.** `COGNEE_IMPROVE_COOLDOWN` (600 s)
+  was kept as a variable inside the idle-watcher process, and that process
+  exits after every bridge and is respawned on the next prompt with the
+  variable reset to zero — so since 2026-05-07 the cooldown gated nothing and
+  a server-side improve ran after essentially every prompt followed by a
+  minute of quiet (one real log: 62 improves on a single session). The last
+  successful improve is now recorded per session on disk
+  (`~/.cognee-plugin/codex/improve-state/<sha1(session)>.json`, written by the improve functions
+  themselves on a confirmed submit), and both automatic triggers — the idle
+  watcher and the every-`COGNEE_AUTO_IMPROVE_EVERY`-entries fire — consult it:
+  no automatic improve runs inside the cooldown, and none runs at all until a
+  new prompt, tool call or answer has been stored since the last one. A
+  throttled watcher keeps polling instead of exiting, so a quiet stretch that
+  outlasts the cooldown still gets exactly one bridge. The session-end final
+  sync, the `cognee-sync` skill and the dataset-switch sync always run.
+- `COGNEE_AUTO_IMPROVE_EVERY=0` now disables the every-N trigger, as the
+  README always claimed; it used to fall back to the default of 150.
+- The watcher's shutdown bridge (SIGTERM from the SessionEnd sync) now runs
+  only when activity is newer than the last recorded improve, instead of
+  always — it used to double the final sync.
+
+### Removed
+- **The legacy full-document bridges.** Any 404/405/422 from
+  `/api/v1/improve` used to mark the server "improve-unsupported" for 24 hours
+  and switch every sync to re-posting the whole accumulated session — every
+  prompt, answer and raw tool output — through `/remember` for a complete
+  re-cognify, per sync. The local-SDK path had a sibling fallback on
+  `TypeError`. Both are gone, along with the `improve-unsupported.json`
+  marker, the per-session qa/trace text mirror in the bridge buffer, and the
+  `COGNEE_BRIDGE_POLL_DEADLINE` / `COGNEE_BRIDGE_SUBMIT_TIMEOUT` knobs. A
+  server without session-aware improve is now logged as `improve_unsupported`
+  and the session is reported as not synced.
+
+## [1.5.3]
+
+### Fixed
+- **Local mode: configured backend providers now get their drivers installed
+  (#232).** The shared self-managed install ran a bare `cognee==<pin>`, which
+  carries no Postgres/Neo4j/Ollama/fastembed drivers, so pointing the plugin
+  at any non-default backend (`DB_PROVIDER=postgres`,
+  `VECTOR_DB_PROVIDER=pgvector`, `GRAPH_DATABASE_PROVIDER=neo4j`,
+  `EMBEDDING_PROVIDER=fastembed`, `LLM_PROVIDER=ollama`) crashed the spawned
+  server on its first use of that backend. The install now detects the
+  configured providers from the same env vars cognee's own config classes
+  read — exports and `~/.cognee/.env` alike — and installs exactly the
+  matching cognee extras. Mirrors the Claude Code plugin fix (both plugins
+  share the venv); continues @GrowDev1's work in #271.
+- **A backend configured after the venv was built no longer stays broken.**
+  The at-pin install skip checked only the cognee version, so the drivers for
+  a provider configured later never arrived — the pin was satisfied and the
+  install never re-ran. The skip now also probes the venv for the required
+  drivers and falls through to the install only when one is missing; a bare
+  install done by another plugin sharing the venv can no longer strand a
+  configured backend either.
+
+### Changed
+- The `~/.cognee/.env` template now lists the backend provider variables, so a
+  local Postgres/Neo4j/Ollama/fastembed setup is discoverable in the same file
+  that already holds the LLM key.
+
+## [1.5.2]
+
+### Fixed
+- **Recall no longer reports an error for a graph that simply doesn't exist yet.**
+  A dataset nobody has cognified yet has no graph, and the server answers the
+  graph recall scope with 404 until the first sync lands — on a fresh install
+  that is every prompt of the first session. That expected answer was logged as
+  `recall_error` and counted against connection health alongside real failures.
+  It is now logged as `recall_graph_not_built` (debug, not error) and kept out
+  of the health accounting, so genuine failures stay visible.
+- **The pending-prompt buffer no longer leaves an empty file behind per session.**
+  Consuming the last buffered prompt wrote `{}` back instead of removing the
+  file, so `pending/` collected one 2-byte husk per session forever. The buffer
+  file is now deleted when its last entry is consumed, and the session-start
+  sweep clears the husks older versions already left.
+- **Cloud: creating a dataset through the API no longer fails on a redirect.**
+  Cloud tenants answer `POST /api/v1/datasets` with a 307 to the trailing-slash
+  path, and the stdlib HTTP client will not replay a POST body across a 307, so
+  ensuring the target dataset (setup, and switching datasets mid-session) failed
+  against cloud with a redirect status. The client now posts to
+  `/api/v1/datasets/` directly.
+- **Status line: a stale red ✕ now heals itself while you are idle.** Recovery
+  from a recorded failure verdict (`unreachable`, `server_error`,
+  `not_responding`, `auth_failed`) was prompt-driven: nothing re-checked the
+  shared marker until a hook ran, so a server that came back while the terminal
+  sat idle kept a red glyph on the bar for up to the 30-minute fade — long
+  enough to tempt a needless restart. The session-long exit watcher now
+  re-probes about once a minute (`COGNEE_CONN_REPROBE_INTERVAL`) while, and
+  only while, the marker holds a failure state for this session's own
+  `base_url`, and writes `ready` on success. Only a positive verdict is ever
+  written — timeouts stay no-verdict, so this can clear a wrong red but never
+  paint one — and `auth_failed` clears only on an authenticated success, since
+  `/health` answering 200 says nothing about the key.
+
+## [1.5.1]
+
+### Changed
+- **Memory header in plain words, plus a per-session total.** The
+  `Cognee memory: recall 4 session / 5 trace / 0 graph / 1 agent; saved …` line
+  that opens every prompt's recalled context now reads
+  `Cognee memory: 5 memory hits (3 from past sessions) · 12/40 turns had hits
+  this session · saved last turn 1 prompt / 3 trace / 1 answer` — how many
+  memories this turn injected, how many of those are knowledge-graph passages
+  from an earlier session or a remembered document (what this conversation alone
+  could not have supplied), and on how many of this session's prompts memory
+  fired at all (`memory warming up (7 turns)` until the first hit). The running
+  total is accumulated by `session-context-lookup.py` in `last_recall.json`
+  (`session_totals`, stamped with `session_key` so another terminal's count is
+  never continued); `cross_session_hits` is written alongside. Mirrors the
+  Claude Code status-line change.
+
+## [1.5.0]
+
+### Added
+- **Switch datasets mid-session: `the `cognee-switch-datasets` skill`.** Lists the
+  datasets you can write to (owned by the principal behind your API key — `GET
+  /api/v1/datasets` returns everything readable, so read-only ones are filtered out
+  and counted), presents them as a numbered list (Codex has no picker outside plan mode), and moves the launch: the current session is
+  synced into its dataset first (`sync-session-to-graph.py --strict`; the switch
+  aborts if that fails, `--force` to proceed anyway), a **new** Cognee session is
+  registered on the target dataset under a fresh connection handle, and only then
+  is the old handle released — so a local agent-mode server never drops to zero
+  connections. Backed by `scripts/switch-dataset.py` (`--list [--json]`, `<name>
+  [--force] [--json]`, `--session-key`).
+
+- **`cognee-forget` skill — user-directed deletion of memory.** "Forget what we
+  talked about tennis" now has a first-class guided flow (ported from the
+  Claude Code plugin): the agent syncs the live session (so unsynced content
+  becomes a deletable document), lists the plugin dataset, judges candidate
+  documents by their raw content, confirms with the user, and deletes each
+  match via `POST /api/v1/forget`. Documents from the same session are treated
+  as a group — deleting one while keeping its siblings would leave the topic
+  recallable. The `memory` skill's Forget section now routes to this flow; the
+  bare `cognee-cli forget` commands remain as the server-unreachable fallback.
+- **`scripts/cognee-forget.sh`** — the skill's server access. Subcommands
+  (`sync`, `datasets`, `data`, `raw`, `forget`, `env`) each resolve credentials
+  per invocation the same way the other wrappers do (shell env →
+  `~/.cognee/.env` → the auto-minted `api_key.json` at the shared plugin root).
+  Every API command appends a final `HTTP <status>` line; with no key
+  resolvable the helper exits 2 with guidance instead of sending a request that
+  can only 401. Single-document deletion only — dataset-wide and `everything`
+  scopes stay behind an explicit-user-request warning in the skill. Ids are validated as UUIDs and the request body is built with `json.dumps` rather than string interpolation, so a crafted id cannot redirect the request to another endpoint or append body fields — an injected `everything: true` would have deleted every dataset the user owns.
+- **E2e coverage in the shared suite.** `tests/e2e/test_forget_script.py` runs
+  the wrapper as a subprocess against the mock server for BOTH suites
+  (credential resolution incl. the `api_key.json` fallback and the exit-2 path,
+  payload shape, status trailer, 404 pass-through).
+
+- **Code graph.** Repositories can be indexed into cognee's deterministic,
+  enola-backed code graph (symbols, calls, imports, endpoints, dependencies)
+  and queried from the plugin — with **no LLM or embedding calls** on either
+  side. Requires a cognee server >= 1.5.3.
+  - **Automatic indexing**: opening Codex inside a git repository indexes
+    it in the background at session start (never blocking the first prompt)
+    and refreshes an already-indexed repo whose tree changed. New repos are
+    auto-indexed only against a *local* server, where the code stays on the
+    machine; a remote server needs `COGNEE_CODE_AUTOINDEX=always` or an explicit
+    index. Non-git directories, repos with no source files, and repos over 3000
+    source files are skipped (explicit indexing has no cap).
+  - **Freshness**: the Stop hook re-submits an indexed repo when a turn changed
+    its working tree, detected by a git fingerprint (HEAD, dirty set, tracked
+    diff, untracked stats). Failures keep the fingerprint — the edits stay
+    pending — behind an escalating backoff (30s → 15min cap) so an unresolved
+    failure cannot re-submit once per turn forever; a new session always gets
+    one attempt.
+  - **Auto-recall code lane**: prompts naming an identifier-shaped token
+    (`process_payment`, `UserService`, `billing/api.py`) inside an indexed repo
+    get code facts injected under `=== Code graph facts ===`. The lane is
+    additive to the semantic scopes, gated syntactically, and contributes
+    nothing when it misses — conversational prompts are unchanged.
+  - **Explicit tools**: `cognee-index-repo.sh <path-or-git-url>`,
+    `cognee-search.sh "<seed>" --code [--code-query '<json>']` (operations:
+    `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
+    `delta`), `cognee-remember.sh --file <path>` (uploads under the real
+    filename so code routes as code, not prose), and the `codebase` skill (rewritten off the CLI).
+- One dataset per indexed repository, `codebase-<repo>-<digest>`. The path
+  digest is load-bearing: same-basename checkouts sharing a dataset would share
+  a graph database, where cognee's repo-scoped stale-node sweep would let each
+  re-index delete the other's nodes. `--code` searches resolve the dataset from
+  the current checkout.
+
+
+### Changed
+- **Pinned cognee bumped to 1.5.3** (`_PINNED_COGNEE_VERSION` in
+  `session-start.py`). 1.5.3 carries the session-invalidation work the forget
+  skill depends on: deleting a document now also removes
+  the session Q&A turns whose answers cited the deleted graph elements, the
+  feedback and distilled guidance descending from them, and clamps the persist
+  watermark to the surviving entry count so post-delete turns are not silently
+  skipped by the next sync. Dataset-level deletes drop every session attributed
+  to the dataset. The plugin always installs the exact pin so the server's
+  lifespan migrations run on a known-good release.
+
+  Documented core limit, reflected in the skill: agent **trace** entries carry
+  no graph-element ids and are not matched, so trace content is not invalidated
+  by a document delete and a later sync can re-persist it as new trace
+  documents. The skill states this rather than promising the session cache is
+  clean.
+
+- **The active dataset now lives in the launch record**
+  (`~/.cognee-plugin/codex/sessions/<host id>.json`), seeded at SessionStart
+  from `COGNEE_PLUGIN_DATASET`/default. `config.get_dataset`, `load_resolved`, the
+  `cognee-search.sh`/`cognee-remember.sh` wrappers, the idle and exit watchers and
+  the status line all read it, so a switch is followed everywhere and survives
+  a resume. A switched record beats an exported `COGNEE_SESSION_ID`.
+- **In-context status line** shows the launch's recorded dataset and a plain `· switched` tag
+  once it differs from the launch-time one.
+- **Final sync covers every session the launch touched.** The record keeps a
+  `touched` list of `{session_id, dataset, conn_uuid}` triples; the SessionEnd /
+  exit-watcher sync bridges each pair (current last) and releases every handle, so a
+  write that raced a switch is never lost.
+- `sync-session-to-graph.py --strict` exits non-zero on an incomplete bridge.
+
+- **Pinned cognee version is now `1.5.3`** (was `1.5.0`) — the release that
+  opened `content_type="code"` on `/api/v1/remember` and the `code` recall
+  scope. Installed into the managed venv on next session start.
+- The freshness model is documented as a property of where the server runs:
+  a local server reflects the working tree (uncommitted changes included); a
+  cloud server reflects the last *pushed* commit, since its clone cannot see
+  local edits.
+
+## [1.4.3]
+
+### Fixed
+- **A replayed write can no longer duplicate a turn the server already holds.**
+  The v1.4.2 failure buffering treated every retryable error the same, but a
+  write that *times out* (or dies on a gateway 500/502/504) may still have
+  committed server-side — and `/remember/entry` has no idempotency: every
+  accepted write creates and embeds a fresh entry, so replaying a committed
+  write stored the same content twice and fed the duplicate to the next
+  improve. Failures are now classified at the buffering point
+  (`write_outcome_ambiguous`): connection-refused/DNS failures and 503s
+  provably never reached the cache and replay blind as before, while
+  ambiguous outcomes are marked in the buffer and verified by the drain —
+  one `GET /api/v1/sessions/{id}` per drain (only when an ambiguous entry is
+  actually pending) supplies the server's recent QA/trace tails, and an entry
+  whose content is already there is consumed without being re-sent (reported
+  as `deduped` in the `warmup_drained` event). A failed verification read
+  degrades to the old replay-everything behavior: a rare duplicate beats a
+  lost turn. Also corrected two comments that claimed `/remember/entry`
+  writes are "deduped server-side" — they never were; the single-drainer
+  lock and this verify pass are the real guards.
+
+### Changed
+- **Pinned cognee version is now `1.5.0`** (was `1.4.2`). The plugin installs
+  this into its own managed venv on session start, so existing installs pick it
+  up on the next session; the local server's lifespan migrations handle any
+  database upgrades on first start. Cognee 1.5.0 is a minor release with no
+  user-facing breaking changes — it hardens large-scale dataset migrations,
+  improves Ladybug graph-adapter reliability and performance, and adds
+  `LLM_TEMPERATURE`/`LLM_SEED` plumbing. No plugin-side behavior changes.
+
+## [1.4.2]
+
+### Fixed
+- **A turn captured while the server is down is no longer lost.** Writes were
+  buffered to the warmup spillway only when `server_usable()` already reported
+  False. That check relies on a ready marker with a 30s TTL, so a server dying
+  inside that window left it returning True: the write was attempted for real,
+  it raised, and the `except` branch only logged `stop_store_error` — the entry
+  was buffered nowhere and the turn was gone. Both the Stop (QA) and PostToolUse
+  (trace) paths now buffer on failure and replay when the server returns.
+
+  Failures that cannot succeed on replay are *not* buffered. A 4xx is dropped
+  with `"buffered": false` in the log, because the drain stops at the first entry
+  it cannot send and only removes what it drained — a permanently rejected entry
+  would sit at the head of the queue and block everything behind it. Transport
+  failures and 5xx are retried; new events: `store_buffered_after_error`,
+  `trace_buffered_after_error`.
+
+- **`improve` now reports whether the graph actually finished building.**
+  `improve_session_via_http` submitted and returned `ok` without polling, so a
+  caller could not tell an accepted bridge from a completed one — the graph could
+  still be empty while the result said success. It now polls the cognify and
+  memify pipelines (`COGNEE_IMPROVE_POLL_DEADLINE`, default 600s, split between
+  the two) and reports `cognify_status` / `memify_status`. Best-effort: a poll
+  that times out never turns a successful submit into a failure. This was the one
+  piece of the background-remember work that did not travel with the rest.
+
+## [1.4.1]
+
+### Fixed
+- **Boot points no longer mistake a busy server for an absent one.** The boot
+  decision previously rested on a single 2s `/health` probe, so a server busy
+  cognifying could miss the deadline, be declared absent, and have the venv
+  upgraded and migrations run underneath it while it still held the graph
+  store's file lock (2026-08-13 incident). Server presence is now judged from
+  three evidence sources — the classified HTTP probe, the bare TCP handshake
+  (a busy server still accepts it; a dead one refuses), and a server pidfile
+  written at uvicorn spawn — and only a positively-absent verdict (refused
+  port, no live server pid, confirmed by a delayed re-probe) licenses
+  installing or booting. The verdict and its evidence are recorded on every
+  `endpoint_mode_selected` decision, the license is re-verified after the
+  (minutes-long) install and again under the boot lock, and a spawned server
+  that dies before becoming healthy (e.g. lost port-bind race) is detected
+  instead of being waited out.
+
+## [1.4.0]
+
+### Added
+- **`COGNEE_BACKEND` per-terminal mode switch.** `~/.cognee/.env` may now hold
+  the cloud vars (`COGNEE_BASE_URL`, `COGNEE_API_KEY`) *and* the local vars
+  (`LLM_API_KEY`, …) together; with nothing exported, cloud wins as before.
+  `export COGNEE_BACKEND=local` (or `=cloud`) flips a single terminal — the
+  shared name switches both the Claude Code and Codex plugins at once, while
+  `COGNEE_CODEX_BACKEND` targets this plugin only and beats the shared name.
+- **Forced cloud is pinned, and misconfiguration is surfaced.** With
+  `COGNEE_BACKEND=cloud` but no `COGNEE_BASE_URL`, the plugin no longer
+  silently falls back to local (no local server boot, no venv build); the
+  status line shows `✕ (missing_cognee_base_url)` and `doctor`'s mode row
+  explains what forced the decision and what is missing.
+
+### Fixed
+- **`COGNEE_CODEX_BACKEND=local` now holds on the HTTP hot paths.** The switch
+  used to clear the cloud URL only in `load_config()`'s view, while
+  recall/remember read `COGNEE_BASE_URL` from the environment — where the env
+  file had already injected the cloud URL — so those calls still went to the
+  cloud. A forced-local switch now scrubs `COGNEE_BASE_URL`/`COGNEE_API_KEY`
+  from the process environment itself (with empty strings, so re-running the
+  loader in child processes cannot re-inject the file's values).
+
+## [1.3.5]
+
+### Changed
+- **Pinned cognee version is now `1.4.2`** (was `1.4.0`). The plugin installs
+  this into its own managed venv on session start, so existing installs pick it
+  up on the next session. No plugin-side behavior changes: cognee 1.4.1+ resolves
+  an *omitted* session id to a per-dataset default (`default_session_<dataset_id>`),
+  but the plugin always sends its explicit per-session session id, which passes
+  through unchanged.
+- **Background remember + cognify status polling in the session→graph bridge**,
+  ported from the claude-code plugin. The legacy document bridge
+  (`persist_session_cache_to_graph_via_http`) previously POSTed to
+  `/api/v1/remember` synchronously (`run_in_background=false`) with a 600s
+  timeout — roughly the cloud's 10-minute NGINX request ceiling. A large
+  cognify got abandoned mid-flight (504/HTML; the server still finishes), so
+  the bridge wrongly read it as a failure and retried, duplicating work. The
+  bridge now submits with `run_in_background=true` and polls
+  `GET /api/v1/datasets/status` (`wait_for_cognify`) to completion, and marks
+  the SHA256 dedup digest ONLY on completed/unknown — errored/timeout stay
+  unmarked so the detached retry re-submits (no loss, no dup-on-success).
+  Tunables registered in config: `COGNEE_BRIDGE_POLL_DEADLINE`,
+  `COGNEE_BRIDGE_SUBMIT_TIMEOUT`, `COGNEE_COGNIFY_POLL_INTERVAL`,
+  `COGNEE_STATUS_REQUEST_TIMEOUT`.
+- **Explicit remember now confirms queryability**, also ported from the
+  claude-code plugin. `cognee-remember.sh` submitted in the background but
+  discarded the response, so it could never confirm completion — a recall
+  right after "remember this" silently hit the not-yet-cognified graph, and
+  an errored cognify was never surfaced. `_remember_http.py` now captures the
+  enqueue handle (`dataset_id`, `pipeline_run_id`, `status`) and, by default,
+  waits a bounded `COGNEE_REMEMBER_WAIT_SECONDS` (8s) polling
+  `GET /api/v1/datasets/status`, adding `queryable`/`wait_outcome` to the
+  result. Set `COGNEE_REMEMBER_WAIT_SECONDS=0` for fire-and-forget, or
+  `COGNEE_REMEMBER_BACKGROUND=false` for a fully synchronous write. The
+  memory skill documents the background + eventual-consistency semantics.
+
+### Added
+- **Pipeline-health warning in the status line.** The status injected into
+  model context now leads with `⚠ N pipeline(s) stuck` or `⚠ server-down`
+  when the external pipeline-health sweep has a fresh finding, matching the
+  Claude Code bar. Reads the machine-wide, integration-neutral
+  `~/.cognee-plugin/pipeline-health.json` the sweep already writes — plain
+  text (no ANSI), never raises, and hides findings older than 30 minutes
+  (a stale file means the sweep itself stopped, which this glyph does not
+  monitor). Bare `warn` classifications stay silent per the notify policy;
+  only `alert`/`critical` (or a down server) surface.
+
+## [1.3.4]
+
+### Added
+- **Cloud credits in the status line.** Cloud sessions now show the
+  connected tenant's balance right after the mode — `credits: $14.23`, plain
+  text (`-$…` once negative) — followed by the approximate cost of the last
+  memory operation, e.g. `· last turn ~$0.04`. Motivated by an incident where
+  a tenant overshot its budget by ~$159 through the integration path with no
+  client-side visibility at any point.
+  - **Costs appear when the turn finishes, not one prompt later.** A dedicated
+    `credits-refresh.py` hook on `Stop` diffs the tenant's spend counter
+    against the turn-start baseline and attributes the delta as `turn`;
+    explicit `remember` and `improve` operations are attributed at their own
+    completion points. (Codex does not support async command hooks — an
+    `async: true` hook is skipped entirely — so the refresh runs as a plain
+    Stop entry with a 10s timeout; Codex launches matching hooks
+    concurrently, so the QA store on the same event does not wait on it.)
+    Costs carry a `~` on purpose: spend aggregates asynchronously and
+    concurrent operations overlap, so the delta is an attribution, not an
+    invoice. Most conversational turns genuinely cost ~$0 — recall runs with
+    `only_context=true` (no LLM completion) — so the label typically moves on
+    improve/remember, while the balance refreshes every turn.
+  - **Multi-tenant correct.** The balance comes from the platform API's
+    per-tenant spend records (`/api/v1/billing/credits/overview` on
+    `COGNEE_PLATFORM_API_URL`, default `https://api.aws.cognee.ai` — the
+    tenant data plane has no billing routes), selected by the tenant id the
+    `connections/me` lookup already returns (zero extra calls). The marker
+    (`credits.json`) is a map keyed by tenant id, so several terminals
+    connected to different tenants each display their own balance, and one
+    tenant's spend can never be misattributed to another's turn. Entries are
+    written atomically under a lock (per-pid staging files), so concurrent
+    refreshes can't tear the file or drop each other's tenants.
+  - The status-line renderer stays pure-local (reads only the marker, 15-min
+    staleness TTL). Strictly the connected tenant's budget or nothing: the
+    segment hides entirely for local servers (no credits concept) and
+    whenever the connected tenant cannot be determined — never another
+    workspace's number, never the all-tenants aggregate. Refresh cadence: per turn (prompt + turn end)
+    plus a session-long background poll (`COGNEE_CREDITS_CHECK_INTERVAL`,
+    300s), so the balance stays fresh through long idle stretches. Opt
+    out with `COGNEE_STATUSLINE_CREDITS=off`.
+
+## [1.3.3]
+
+### Fixed
+- **False `✕ (unreachable)` in the status line.** Probe and recall
+  timeouts were classified as "unreachable" and persisted into the shared
+  connection state, so a busy-but-healthy server randomly turned the status red
+  and skipped recall — in both local and cloud mode. Timeouts are now a
+  no-verdict: transport failures are classified (connection refused / DNS →
+  `unreachable`; timeout → keep prior state), and `unreachable` is only ever
+  written on positive absence.
+  - The recall attempt itself is now the health probe: a successful scope call
+    marks ready, a refused connection marks `unreachable`, a 401/403 marks
+    `auth_failed` (detected from the real request, remaining scopes skipped),
+    and all-5xx marks `server_error`. The synthetic pre-recall probe survives
+    only as a re-entry check while the marker holds a failure state.
+  - The recall circuit breaker is keyed by `base_url` (cloud failures no
+    longer red a local status, and vice versa — including across the Claude
+    Code plugin, which shares the breaker file), counts failures in a sliding
+    window instead of forever, re-arms half-open after cooldown, never counts
+    timeouts, and the status line renders its real trip reason.
+  - The renderer shows a ✕ only for fresh, definitive failures (30 min TTL);
+    stale or ambiguous state renders no glyph.
+  - Breaker state writes use tmp + atomic replace so readers never see a torn
+    file.
+
+### Added
+- **`✕ (not_responding)` status** — distinct from `unreachable`: the server
+  accepts connections but hasn't answered for N consecutive timeout-only
+  prompts (default 3, `COGNEE_SLOW_STREAK_THRESHOLD`; streak window
+  `COGNEE_SLOW_STREAK_WINDOW`, 600s). A single slow response never triggers
+  it. Lifted back to `●` by the next successful probe or recall.
+
+## [1.3.2]
+
+### Fixed
+- **Prompts no longer stall 10–30s replaying the warmup buffer** (#298). The
+  ready marker (30s TTL) is only refreshed on the prompt path, so during any
+  long agent turn it expired while the server was healthy; every tool trace
+  then piled into the warmup buffer, and the next prompt's lookup hook —
+  reading TTL expiry as "the server just came up" — synchronously replayed the
+  whole backlog (N sequential `/remember/entry` calls, ~1s each, no deadline)
+  before recall even started. Three moves, per the excellent analysis in #298:
+  - **The buffer stops filling against a healthy server.** The per-tool-call
+    store hook now uses `server_usable()`: on a stale marker it makes one
+    bounded 1s `/health` probe and re-marks ready on success, keeping the
+    marker fresh for the whole turn. It buffers only when the server is
+    actually unreachable, and a failed probe is memoized for 10s so a real
+    outage costs one probe per window, not one per tool call.
+  - **The drain is out of the lookup hook.** `session-context-lookup.py` never
+    replays the buffer anymore; `store-user-prompt.py` — the sibling hook on
+    the same UserPromptSubmit event, which recall does not wait on — drains
+    instead, after its fast bookkeeping. (Codex does not support async command
+    hooks yet, so the drain still occupies that hook's window — but Codex runs
+    matching hooks concurrently, and the new budget caps the worst case at
+    ~20s versus unbounded before.) Entries buffered at the tail of a turn may
+    land one turn later; that is the accepted trade for never stalling recall.
+  - **The drain itself is time-boxed.** An overall budget
+    (`COGNEE_DRAIN_BUDGET`, 20s; the detached SessionEnd/idle sync uses
+    `COGNEE_DRAIN_BUDGET_FINAL`, 120s) stops the replay with the unreplayed
+    tail preserved, and each entry's socket timeout is clamped to the budget
+    remaining so one hung call cannot eat it all.
+- **A poisoned session backlog can no longer be retried forever** (#298). One
+  real incident had a SessionEnd worker grinding against a server that 503'd
+  every write for 6.5 hours. Consecutive HTTP-status drain failures now back
+  the session off exponentially (60s doubling, capped at 1h, logged as
+  `warmup_drain_backoff`), skipped before any network I/O; progress resets the
+  streak. Network errors deliberately don't count — the readiness gates
+  already cover a down server, and backing off on them would delay recovery
+  after a restart.
+
 ## [1.3.1]
 
 ### Fixed
@@ -41,6 +1491,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   budget left is skipped outright instead of being dispatched with a doomed
   deadline. The budget is a hard ceiling now; `recall_budget_exceeded` only
   fires when the budget was genuinely spent on useful work.
+- **No more "clamping SessionEnd hook timeout to 3s" warning at session start**
+  (#303). The SessionEnd entry in `hooks.json` still declared `timeout: 120`
+  from the era when the hook ran the final session sync inline; Codex hard-caps
+  SessionEnd hooks at 3s (they block CLI exit) and warned about the clamp on
+  every startup. The hook has long since done its real work in a detached
+  worker not subject to hook timeouts — it only stops the idle watcher and
+  spawns that worker, well inside 3s — so the vestigial declaration is removed
+  and Codex's default applies. Sync behavior is unchanged.
 
 ## [1.3.0]
 

@@ -8,11 +8,11 @@ identity:
     ja_JP: "検索"
 description:
   human:
-    en_US: "Search the Cognee knowledge graph for relevant information"
-    zh_Hans: "在 Cognee 知识图谱中搜索相关信息"
-    pt_BR: "Pesquisar informações relevantes no grafo de conhecimento Cognee"
-    ja_JP: "Cognee ナレッジグラフで関連情報を検索"
-  llm: "Search the Cognee knowledge graph to retrieve relevant information from previously ingested and cognified datasets."
+    en_US: "Search the memory on your Cognee server"
+    zh_Hans: "在Cognee 服务器的内存中搜索"
+    pt_BR: "Pesquisar no grafo de conhecimento do seu servidor Cognee"
+    ja_JP: "Cognee サーバーのメモリを検索"
+  llm: "Search the memory on the Cognee server to retrieve relevant information from previously ingested and cognified datasets."
 parameters:
   - name: query
     type: string
@@ -27,7 +27,7 @@ parameters:
       zh_Hans: "搜索查询"
       pt_BR: "A consulta de pesquisa"
       ja_JP: "検索クエリ"
-    llm_description: "The natural language search query to find relevant information in the knowledge graph"
+    llm_description: "The natural language search query to find relevant information in the memory"
     form: llm
   - name: datasets
     type: string
@@ -59,6 +59,21 @@ parameters:
       ja_JP: "検索するデータセット UUID のカンマ区切りリスト"
     llm_description: "Comma-separated list of dataset UUIDs to search"
     form: llm
+  - name: node_name
+    type: string
+    required: false
+    label:
+      en_US: "Node Name"
+      zh_Hans: "节点名称"
+      pt_BR: "Nome do Nó"
+      ja_JP: "ノード名"
+    human_description:
+      en_US: "Comma-separated node set names to filter search results"
+      zh_Hans: "用于过滤搜索结果的节点集名称，用逗号分隔"
+      pt_BR: "Nomes de conjuntos de nós separados por vírgula para filtrar resultados"
+      ja_JP: "検索結果をフィルタリングするノードセット名（カンマ区切り）"
+    llm_description: "Optional comma-separated node set names to restrict the search to specific node sets in the knowledge graph"
+    form: llm
   - name: search_type
     type: select
     required: true
@@ -72,7 +87,7 @@ parameters:
       zh_Hans: "要执行的搜索类型"
       pt_BR: "O tipo de pesquisa a ser realizada"
       ja_JP: "実行する検索タイプ"
-    llm_description: "The search strategy to use. GRAPH_COMPLETION uses the knowledge graph for LLM completion. GRAPH_COMPLETION_COT adds chain-of-thought reasoning. RAG_COMPLETION uses retrieval-augmented generation. CHUNKS returns raw text chunks. SUMMARIES returns summaries. TRIPLET_COMPLETION completes from graph triplets. GRAPH_SUMMARY_COMPLETION combines graph and summaries. CYPHER runs a Cypher query. NATURAL_LANGUAGE uses natural language graph queries. GRAPH_COMPLETION_CONTEXT_EXTENSION extends context from the graph. FEELING_LUCKY returns a best guess. TEMPORAL searches temporal data. CODING_RULES searches coding rules. CHUNKS_LEXICAL uses lexical chunk search."
+    llm_description: "The search strategy: GRAPH_COMPLETION uses the knowledge graph, HYBRID_COMPLETION combines passages and graph entities, GRAPH_COMPLETION_COT uses chain-of-thought reasoning, RAG_COMPLETION uses retrieval-augmented generation"
     form: form
     default: "GRAPH_COMPLETION"
     options:
@@ -82,6 +97,18 @@ parameters:
           zh_Hans: "图谱补全"
           pt_BR: "Completude do Grafo"
           ja_JP: "グラフ補完"
+      - value: "HYBRID_COMPLETION"
+        label:
+          en_US: "Hybrid Completion"
+          zh_Hans: "混合补全"
+          pt_BR: "Completude Híbrida"
+          ja_JP: "ハイブリッド補完"
+      - value: "GRAPH_COMPLETION_DECOMPOSITION"
+        label:
+          en_US: "Graph Completion (Query Decomposition)"
+          zh_Hans: "图谱补全（查询分解）"
+          pt_BR: "Completude do Grafo (Decomposição da Consulta)"
+          ja_JP: "グラフ補完（クエリ分解）"
       - value: "GRAPH_COMPLETION_COT"
         label:
           en_US: "Graph Completion (Chain of Thought)"
@@ -100,65 +127,71 @@ parameters:
           zh_Hans: "图谱摘要补全"
           pt_BR: "Completude de Resumo do Grafo"
           ja_JP: "グラフサマリー補完"
+      - value: "GRAPH_REPORT"
+        label:
+          en_US: "Graph Report"
+          zh_Hans: "图谱报告"
+          pt_BR: "Relatório do Grafo"
+          ja_JP: "グラフレポート"
       - value: "RAG_COMPLETION"
         label:
           en_US: "RAG Completion"
           zh_Hans: "RAG 补全"
           pt_BR: "Completude RAG"
           ja_JP: "RAG 補完"
-      - value: "CHUNKS"
+      - value: "TRIPLET_COMPLETION"
         label:
-          en_US: "Chunks"
-          zh_Hans: "文本块"
-          pt_BR: "Chunks"
-          ja_JP: "チャンク"
-      - value: "CHUNKS_LEXICAL"
-        label:
-          en_US: "Chunks (Lexical)"
-          zh_Hans: "文本块（词法）"
-          pt_BR: "Chunks (Léxico)"
-          ja_JP: "チャンク（レキシカル）"
+          en_US: "Triplet Completion"
+          zh_Hans: "三元组补全"
+          pt_BR: "Completude de Tripleto"
+          ja_JP: "トリプレット補完"
       - value: "SUMMARIES"
         label:
           en_US: "Summaries"
           zh_Hans: "摘要"
           pt_BR: "Resumos"
           ja_JP: "サマリー"
-      - value: "TRIPLET_COMPLETION"
+      - value: "CHUNKS"
         label:
-          en_US: "Triplet Completion"
-          zh_Hans: "三元组补全"
-          pt_BR: "Completude de Tripla"
-          ja_JP: "トリプレット補完"
+          en_US: "Chunks"
+          zh_Hans: "文档块"
+          pt_BR: "Chunks"
+          ja_JP: "チャンク"
+      - value: "CHUNKS_LEXICAL"
+        label:
+          en_US: "Chunks (Lexical)"
+          zh_Hans: "文档块（词法）"
+          pt_BR: "Chunks (Léxico)"
+          ja_JP: "チャンク（語彙）"
       - value: "CYPHER"
         label:
-          en_US: "Cypher Query"
-          zh_Hans: "Cypher 查询"
-          pt_BR: "Consulta Cypher"
-          ja_JP: "Cypher クエリ"
+          en_US: "Cypher"
+          zh_Hans: "Cypher"
+          pt_BR: "Cypher"
+          ja_JP: "Cypher"
       - value: "NATURAL_LANGUAGE"
         label:
           en_US: "Natural Language"
           zh_Hans: "自然语言"
           pt_BR: "Linguagem Natural"
           ja_JP: "自然言語"
-      - value: "FEELING_LUCKY"
-        label:
-          en_US: "Feeling Lucky"
-          zh_Hans: "手气不错"
-          pt_BR: "Com Sorte"
-          ja_JP: "ラッキー検索"
       - value: "TEMPORAL"
         label:
           en_US: "Temporal"
           zh_Hans: "时序"
           pt_BR: "Temporal"
           ja_JP: "時系列"
+      - value: "FEELING_LUCKY"
+        label:
+          en_US: "Feeling Lucky"
+          zh_Hans: "手气不错"
+          pt_BR: "Estou com Sorte"
+          ja_JP: "I'm Feeling Lucky"
       - value: "CODING_RULES"
         label:
           en_US: "Coding Rules"
           zh_Hans: "编码规则"
-          pt_BR: "Regras de Codificação"
+          pt_BR: "Regras de Código"
           ja_JP: "コーディングルール"
   - name: system_prompt
     type: string
@@ -174,21 +207,6 @@ parameters:
       pt_BR: "Prompt do sistema para pesquisas do tipo Completion"
       ja_JP: "Completion タイプの検索に使用するシステムプロンプト"
     llm_description: "Optional system prompt to be used for Completion type searches in Cognee"
-    form: llm
-  - name: node_name
-    type: string
-    required: false
-    label:
-      en_US: "Node Name"
-      zh_Hans: "节点名称"
-      pt_BR: "Nome do Nó"
-      ja_JP: "ノード名"
-    human_description:
-      en_US: "Comma-separated node set names to filter search results"
-      zh_Hans: "用于过滤搜索结果的节点集名称，用逗号分隔"
-      pt_BR: "Nomes de conjuntos de nós separados por vírgula para filtrar resultados"
-      ja_JP: "検索結果をフィルタリングするノードセット名（カンマ区切り）"
-    llm_description: "Optional comma-separated node set names to restrict the search to specific node sets in the knowledge graph"
     form: llm
   - name: top_k
     type: number
@@ -218,19 +236,25 @@ parameters:
       pt_BR: "Apenas Contexto"
       ja_JP: "コンテキストのみ"
     human_description:
-      en_US: "Return only the raw context instead of LLM-generated completion"
-      zh_Hans: "仅返回原始上下文而非 LLM 生成的补全结果"
-      pt_BR: "Retornar apenas o contexto bruto em vez da completude gerada pelo LLM"
-      ja_JP: "LLM による補完ではなく生のコンテキストのみを返す"
-    llm_description: "Set to true to return only the raw context Cognee sends to the LLM, instead of the LLM completion response"
+      en_US: "Return what the LLM would have received instead of its answer. For completion search types this is the full user prompt (question plus retrieved context); retrieval-only types return their context. No LLM call is made."
+      zh_Hans: "返回 LLM 本应接收的内容而非其回答。对于补全类搜索，这是完整的用户提示（问题加检索到的上下文）；仅检索类搜索返回其上下文。不会调用 LLM。"
+      pt_BR: "Retorna o que o LLM teria recebido em vez da resposta. Para pesquisas do tipo Completion é o prompt completo do usuário (pergunta mais contexto recuperado); tipos somente de recuperação retornam seu contexto. Nenhuma chamada ao LLM é feita."
+      ja_JP: "LLM の回答ではなく、LLM が受け取るはずだった内容を返します。Completion タイプの検索では完全なユーザープロンプト（質問と取得したコンテキスト）、取得専用タイプではそのコンテキストを返します。LLM は呼び出されません。"
+    llm_description: "Set to true to skip the LLM and return what it would have received: for completion search types the full user prompt (question plus retrieved context), for retrieval-only types their context"
     form: form
     options:
       - value: "false"
         label:
           en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
       - value: "true"
         label:
           en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
   - name: verbose
     type: select
     required: false
@@ -241,19 +265,25 @@ parameters:
       pt_BR: "Detalhado"
       ja_JP: "詳細出力"
     human_description:
-      en_US: "Return verbose output with additional details"
-      zh_Hans: "返回包含更多详细信息的输出"
-      pt_BR: "Retornar saída detalhada com informações adicionais"
-      ja_JP: "追加の詳細情報を含む出力を返す"
-    llm_description: "Set to true to return verbose output with additional search details"
+      en_US: "Return the completion, retrieval context and graph objects per dataset instead of just the result"
+      zh_Hans: "按数据集返回补全结果、检索上下文和图谱对象，而不仅是结果"
+      pt_BR: "Retornar a completude, o contexto recuperado e os objetos do grafo por dataset em vez de apenas o resultado"
+      ja_JP: "結果だけでなく、データセットごとに補完・取得コンテキスト・グラフオブジェクトを返す"
+    llm_description: "Set to true to return verbose output with the completion, context and graph objects"
     form: form
     options:
       - value: "false"
         label:
           en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
       - value: "true"
         label:
           en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
 output_schema:
   type: object
   properties:

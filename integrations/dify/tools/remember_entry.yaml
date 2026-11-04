@@ -1,0 +1,121 @@
+identity:
+  name: "remember_entry"
+  author: "topoteretes"
+  label:
+    en_US: "Remember Entry"
+    zh_Hans: "记忆会话条目"
+    pt_BR: "Lembrar Entrada"
+    ja_JP: "セッション記憶"
+description:
+  human:
+    en_US: "Store a question and answer in a session's memory on your Cognee server"
+    zh_Hans: "将一组问答存入Cognee 服务器上某个会话的记忆"
+    pt_BR: "Armazenar uma pergunta e resposta na memória de uma sessão no seu servidor Cognee"
+    ja_JP: "Cognee サーバー上のセッションメモリに質問と回答を保存"
+  llm: "Store a question and its answer in the memory of a session, so later Recall calls with the same session_id can use them. Call this after answering the user. This is fast and does not rebuild the knowledge graph."
+parameters:
+  - name: session_id
+    type: string
+    required: true
+    label:
+      en_US: "Session ID"
+      zh_Hans: "会话 ID"
+      pt_BR: "ID da Sessão"
+      ja_JP: "セッション ID"
+    human_description:
+      en_US: "Session to store the entry in (e.g. the conversation id)"
+      zh_Hans: "存储该条目的会话（例如对话 ID）"
+      pt_BR: "Sessão na qual armazenar a entrada (por exemplo, o id da conversa)"
+      ja_JP: "エントリを保存するセッション（例: 会話 ID）"
+    llm_description: "The session identifier, e.g. the conversation id. Use the same value in Recall."
+    form: llm
+  - name: question
+    type: string
+    required: true
+    label:
+      en_US: "Question"
+      zh_Hans: "问题"
+      pt_BR: "Pergunta"
+      ja_JP: "質問"
+    human_description:
+      en_US: "The question that was asked"
+      zh_Hans: "被提出的问题"
+      pt_BR: "A pergunta que foi feita"
+      ja_JP: "尋ねられた質問"
+    llm_description: "The user's question"
+    form: llm
+  - name: answer
+    type: string
+    required: true
+    label:
+      en_US: "Answer"
+      zh_Hans: "回答"
+      pt_BR: "Resposta"
+      ja_JP: "回答"
+    human_description:
+      en_US: "The answer that was given"
+      zh_Hans: "给出的回答"
+      pt_BR: "A resposta que foi dada"
+      ja_JP: "与えられた回答"
+    llm_description: "The answer given to the question"
+    form: llm
+  - name: context
+    type: string
+    required: false
+    label:
+      en_US: "Context"
+      zh_Hans: "上下文"
+      pt_BR: "Contexto"
+      ja_JP: "コンテキスト"
+    human_description:
+      en_US: "Context the answer was based on, e.g. the Recall results"
+      zh_Hans: "回答所依据的上下文，例如 Recall 的结果"
+      pt_BR: "Contexto no qual a resposta se baseou, por exemplo os resultados do Recall"
+      ja_JP: "回答の根拠となったコンテキスト（例: Recall の結果）"
+    llm_description: "Optional context the answer was based on"
+    form: llm
+  - name: dataset_name
+    type: string
+    required: false
+    label:
+      en_US: "Dataset Name"
+      zh_Hans: "数据集名称"
+      pt_BR: "Nome do Dataset"
+      ja_JP: "データセット名"
+    human_description:
+      en_US: "Dataset the session belongs to (default: main_dataset)"
+      zh_Hans: "会话所属的数据集（默认：main_dataset）"
+      pt_BR: "Dataset ao qual a sessão pertence (padrão: main_dataset)"
+      ja_JP: "セッションが属するデータセット（デフォルト: main_dataset）"
+    llm_description: "Optional dataset name the session belongs to; defaults to main_dataset"
+    form: llm
+  - name: dataset_id
+    type: string
+    required: false
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of the dataset the session belongs to; takes precedence over the name"
+      zh_Hans: "会话所属数据集的 UUID；优先于名称"
+      pt_BR: "UUID do dataset ao qual a sessão pertence; tem precedência sobre o nome"
+      ja_JP: "セッションが属するデータセットの UUID。名前より優先されます"
+    llm_description: "Optional dataset UUID; takes precedence over dataset_name"
+    form: llm
+output_schema:
+  type: object
+  properties:
+    status:
+      type: string
+      description: "session_stored on success"
+    entry_id:
+      type: string
+      description: "ID of the stored entry"
+    session_id:
+      type: string
+      description: "The session the entry was stored in"
+extra:
+  python:
+    source: tools/remember_entry.py

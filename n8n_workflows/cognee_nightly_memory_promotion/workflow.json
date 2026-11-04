@@ -1,0 +1,192 @@
+{
+  "name": "Cognee nightly memory promotion",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Every 24 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -620,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "session",
+        "operation": "getMany",
+        "sessionRange": "24h",
+        "sessionLimit": 500
+      },
+      "id": "sessions",
+      "name": "Sessions Active Today",
+      "type": "n8n-nodes-cognee.cognee",
+      "typeVersion": 1,
+      "position": [
+        -380,
+        0
+      ],
+      "credentials": {
+        "cogneeApi": {
+          "id": "REPLACE_WITH_YOUR_COGNEE_CREDENTIAL",
+          "name": "Cognee API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateIndividualFields",
+        "fieldsToAggregate": {
+          "fieldToAggregate": [
+            {
+              "fieldToAggregate": "session_id",
+              "renameField": true,
+              "outputFieldName": "session_ids"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "collect",
+      "name": "Collect Session IDs",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        -140,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-sessions",
+              "leftValue": "={{ ($json.session_ids ?? []).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "any",
+      "name": "Any Sessions?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "memory",
+        "operation": "improve",
+        "improveSessionIds": "={{ $json.session_ids }}",
+        "improveDatasetName": "main_dataset",
+        "improveAdditionalFields": {}
+      },
+      "id": "improve",
+      "name": "Promote Sessions Into Graph",
+      "type": "n8n-nodes-cognee.cognee",
+      "typeVersion": 1,
+      "position": [
+        360,
+        -100
+      ],
+      "credentials": {
+        "cogneeApi": {
+          "id": "REPLACE_WITH_YOUR_COGNEE_CREDENTIAL",
+          "name": "Cognee API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Cognee nightly memory promotion\n\nOnce a day, every session that was active in the last 24 hours is promoted into the knowledge graph (`POST /api/v1/improve`). Improve is idempotent per session, so re-submitting a session only processes the turns added since the last run.\n\n**Setup**\n1. Select your Cognee API credential on both Cognee nodes.\n2. Set **Dataset Name** on *Promote Sessions Into Graph* to the dataset your Cognee Memory sub-nodes write to (their *Dataset Name* option, `main_dataset` by default).\n3. Activate the workflow.\n\nPair this with the **Cognee Memory** sub-node's *Promote To Graph* option: keep its default interval for a safety net, or set it to *Never* and let this workflow do all promotion at a fixed hour.",
+        "height": 420,
+        "width": 520
+      },
+      "id": "note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -620,
+        -520
+      ]
+    }
+  ],
+  "connections": {
+    "Every 24 Hours": {
+      "main": [
+        [
+          {
+            "node": "Sessions Active Today",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sessions Active Today": {
+      "main": [
+        [
+          {
+            "node": "Collect Session IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Session IDs": {
+      "main": [
+        [
+          {
+            "node": "Any Sessions?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Sessions?": {
+      "main": [
+        [
+          {
+            "node": "Promote Sessions Into Graph",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

@@ -7,6 +7,7 @@ name = "cognee-integration-aider"
 version = "0.1.0"
 description = "Sessionized Cognee graph memory for the Aider CLI"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "cognee>=0.4.0,<2.0.0",

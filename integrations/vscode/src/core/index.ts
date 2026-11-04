@@ -12,3 +12,4 @@ export * from "./git";
 export * from "./evidence";
 export * from "./client";
 export * from "./httpClient";
+export * from "./uploadName";

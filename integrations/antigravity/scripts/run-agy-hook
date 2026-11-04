@@ -1,0 +1,7 @@
+#!/bin/sh
+# Select the interpreter before starting the adapter. Do not retry a hook after
+# it has begun: prompt/tool capture can make durable state changes.
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$(dirname "$0")/agy_hook.py" "$@"
+fi
+exec python "$(dirname "$0")/agy_hook.py" "$@"

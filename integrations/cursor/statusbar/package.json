@@ -1,0 +1,49 @@
+{
+  "name": "cognee-cursor-status",
+  "displayName": "Cognee Memory Status for Cursor",
+  "description": "Shows the Cognee memory plugin's status in Cursor's status bar (connection, dataset, mode, memory hits) and switches the chat's dataset on click.",
+  "version": "0.1.0",
+  "publisher": "cognee",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/topoteretes/cognee-integrations"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cognee.switchDataset",
+        "title": "Cognee: Switch Dataset"
+      },
+      {
+        "command": "cognee.refreshStatus",
+        "title": "Cognee: Refresh Status"
+      }
+    ],
+    "configuration": {
+      "title": "Cognee",
+      "properties": {
+        "cognee.pluginRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Folder of the Cognee Cursor plugin (the one holding scripts/). Empty: the newest installed copy under ~/.cursor/plugins."
+        },
+        "cognee.python": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter for the plugin's scripts. Empty: python3 (python on Windows)."
+        }
+      }
+    }
+  }
+}

@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
+import type { CogneePluginKey } from "./plugin-keys.js";
+import type { RecapApi } from "./recap.js";
+import { Agent, FormData as UndiciFormData, fetch as undiciFetch } from "undici";
 import type {
   CogneeAddResponse,
+  CogneeDataItem,
   CogneeDeleteMode,
+  CogneeImproveResult,
   CogneeMode,
   CogneeRememberItem,
   CogneeRememberResponse,
@@ -17,6 +22,42 @@ const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 3_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
+const NODE_GLOBAL_FETCH_HEADERS_TIMEOUT_MS = 300_000;
+
+// Node's bundled global fetch has an undici headersTimeout of 300s. Long-running
+// Cognee ingestion endpoints can legitimately wait longer than that before they
+// send response headers, so use a package-local undici dispatcher with its own
+// header/body limits disabled. The AbortController in fetchAPI remains the real
+// per-request timeout.
+const LONG_REQUEST_DISPATCHER = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+
+function bodyForUndici(body: BodyInit | null | undefined): unknown {
+  if (typeof FormData === "undefined" || !(body instanceof FormData)) return body;
+
+  // npm undici must receive its own FormData implementation; passing Node's
+  // global FormData can serialize as the literal string "[object FormData]" on
+  // versions where the bundled and package undici differ. Rebuild the form for
+  // every attempt so retries do not depend on body reusability.
+  const copied = new UndiciFormData();
+  body.forEach((value, name) => {
+    if (typeof value === "string") copied.append(name, value);
+    else copied.append(name, value, value.name);
+  });
+  return copied;
+}
+
+async function fetchWithLongRequestSupport(url: string, init: RequestInit): Promise<Response> {
+  // DOM RequestInit and npm undici's RequestInit are structurally compatible at
+  // runtime but come from different type declarations. Keep that bridge isolated
+  // here instead of leaking undici types through the client API.
+  const undiciInit = {
+    ...init,
+    body: bodyForUndici(init.body),
+    dispatcher: LONG_REQUEST_DISPATCHER,
+  } as unknown as Parameters<typeof undiciFetch>[1];
+  const response = await undiciFetch(url, undiciInit);
+  return response as unknown as Response;
+}
 
 // ---------------------------------------------------------------------------
 // CogneeHttpClient — shared HTTP transport with auth, retry, timeout
@@ -24,6 +65,52 @@ const DEFAULT_INGESTION_TIMEOUT_MS = 300_000;
 // Extracted so both the memory plugin and skills plugin can share one
 // implementation instead of duplicating ~200 lines of fetch/auth logic.
 // ---------------------------------------------------------------------------
+
+/**
+ * A non-2xx answer from Cognee. The message keeps the historical
+ * "Cognee request failed (<status>): <body>" shape; `status` lets callers tell
+ * outcomes apart without parsing it (e.g. 402 = LLM budget exhausted).
+ */
+export class CogneeRequestError extends Error {
+  constructor(readonly status: number, readonly body: string) {
+    super(`Cognee request failed (${status}): ${body}`);
+    this.name = "CogneeRequestError";
+  }
+}
+
+/** HTTP status of a failed Cognee request, or undefined for transport errors. */
+export function requestErrorStatus(error: unknown): number | undefined {
+  return error instanceof CogneeRequestError ? error.status : undefined;
+}
+
+/**
+ * Turn a failed /auth/login response into an actionable error message.
+ *
+ * cognee >= 1.6.0 no longer bakes in a default-user password: the server creates
+ * the default user only when DEFAULT_USER_PASSWORD is set at startup, and a
+ * password-less user answers a login with 400 "does not have a password". Bad
+ * credentials come back as 400 LOGIN_BAD_CREDENTIALS. The raw status and body
+ * are always kept in the message.
+ */
+export function loginFailureMessage(status: number, body: string): string {
+  const base = `Cognee login failed (${status}): ${body}`;
+  if (status === 400 && /does not have a password/i.test(body)) {
+    return (
+      `${base} — the Cognee server's default user has no password (cognee >= 1.6.0 creates ` +
+      `none unless DEFAULT_USER_PASSWORD is set when the server starts). Either start the ` +
+      `server with DEFAULT_USER_PASSWORD set to the same value as the plugin's password ` +
+      `setting (config "password" / COGNEE_PASSWORD), or set COGNEE_API_KEY directly.`
+    );
+  }
+  if (status === 400 && /LOGIN_BAD_CREDENTIALS/.test(body)) {
+    return (
+      `${base} — the Cognee server rejected the configured username/password. Check the ` +
+      `plugin's "username" / "password" settings (or COGNEE_USERNAME / COGNEE_PASSWORD), ` +
+      `or set COGNEE_API_KEY to skip the password login.`
+    );
+  }
+  return base;
+}
 
 export class CogneeHttpClient {
   private authToken: string | undefined;
@@ -71,7 +158,7 @@ export class CogneeHttpClient {
       });
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Cognee login failed (${response.status}): ${errorText}`);
+        throw new Error(loginFailureMessage(response.status, errorText));
       }
       const data = (await response.json()) as { access_token?: string; token?: string };
       this.authToken = data.access_token ?? data.token;
@@ -134,11 +221,15 @@ export class CogneeHttpClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(`${this.baseUrl}${path}`, {
+        const requestInit = {
           ...init,
           headers: { ...this.buildHeaders(), ...(init.headers as Record<string, string>) },
           signal: controller.signal,
-        });
+        };
+        const response =
+          timeoutMs >= NODE_GLOBAL_FETCH_HEADERS_TIMEOUT_MS
+            ? await fetchWithLongRequestSupport(`${this.baseUrl}${path}`, requestInit)
+            : await fetch(`${this.baseUrl}${path}`, requestInit);
 
         // On 401, try re-login once and retry
         if (response.status === 401 && !this.apiKey) {
@@ -150,16 +241,23 @@ export class CogneeHttpClient {
           const retryController = new AbortController();
           const retryTimeout = setTimeout(() => retryController.abort(), timeoutMs);
           try {
-            const retryResponse = await fetch(`${this.baseUrl}${path}`, {
+            const retryInit = {
               ...init,
               headers: { ...this.buildHeaders(), ...(init.headers as Record<string, string>) },
               signal: retryController.signal,
-            });
+            };
+            const retryResponse =
+              timeoutMs >= NODE_GLOBAL_FETCH_HEADERS_TIMEOUT_MS
+                ? await fetchWithLongRequestSupport(`${this.baseUrl}${path}`, retryInit)
+                : await fetch(`${this.baseUrl}${path}`, retryInit);
             if (!retryResponse.ok) {
               const errorText = await retryResponse.text();
-              throw new Error(`Cognee request failed (${retryResponse.status}): ${errorText}`);
+              throw new CogneeRequestError(retryResponse.status, errorText);
             }
-            return responseParser(retryResponse);
+            // `await` keeps the retry's abort timer armed while the body is read;
+            // without it `finally` clears the timer first, and a stalled body on
+            // the long-request transport (bodyTimeout: 0) would never time out.
+            return await responseParser(retryResponse);
           } finally {
             clearTimeout(retryTimeout);
           }
@@ -167,7 +265,7 @@ export class CogneeHttpClient {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(`Cognee request failed (${response.status}): ${errorText}`);
+          throw new CogneeRequestError(response.status, errorText);
         }
         // Honor responseParser on the success path (gh #195, SDK-242) — the
         // `await` is load-bearing: it keeps a parser/body-read rejection (a
@@ -268,6 +366,7 @@ export class CogneeHttpClient {
     runInBackground?: boolean;
     customPrompt?: string;
     chunksPerBatch?: number;
+    chunkSize?: number;
   }): Promise<{
     datasetId: string;
     datasetName: string;
@@ -296,9 +395,12 @@ export class CogneeHttpClient {
     if (typeof params.chunksPerBatch === "number") {
       formData.append("chunks_per_batch", String(params.chunksPerBatch));
     }
-    if (params.nodeSet && params.nodeSet.length > 0) {
-      for (const node of params.nodeSet) formData.append("node_set", node);
+    if (typeof params.chunkSize === "number" && params.chunkSize > 0) {
+      formData.append("chunk_size", String(params.chunkSize));
     }
+    // cognee >= 1.6.3 answers a blank node_set entry with 400 on /add and
+    // /update; never send one.
+    for (const node of cleanNodeSet(params.nodeSet)) formData.append("node_set", node);
 
     const response = await this.fetchAPI<CogneeRememberResponse>(
       path,
@@ -374,6 +476,91 @@ export class CogneeHttpClient {
     return { datasetId: data.dataset_id, datasetName: data.dataset_name, dataId };
   }
 
+  // GET /api/v1/datasets/{id}/data — every stored document in a dataset.
+  // DataDTO is camelCased on the wire (createdAt, mimeType, datasetId, …);
+  // older servers may still emit snake_case, so both are accepted.
+  async listDatasetData(datasetId: string): Promise<CogneeDataItem[]> {
+    const path = this.isCloud ? `/datasets/${datasetId}/data` : `/api/v1/datasets/${datasetId}/data`;
+    const items = await this.fetchAPI<unknown>(path, { method: "GET" });
+    if (!Array.isArray(items)) return [];
+    const out: CogneeDataItem[] = [];
+    for (const raw of items) {
+      if (!raw || typeof raw !== "object") continue;
+      const r = raw as Record<string, unknown>;
+      const id = typeof r.id === "string" ? r.id : undefined;
+      if (!id) continue;
+      const pick = (camel: string, snake: string): string | undefined => {
+        const v = r[camel] ?? r[snake];
+        return typeof v === "string" ? v : undefined;
+      };
+      const meta = r.externalMetadata ?? r.external_metadata;
+      out.push({
+        id,
+        name: typeof r.name === "string" ? r.name : id,
+        datasetId: pick("datasetId", "dataset_id") ?? datasetId,
+        ...(pick("createdAt", "created_at") ? { createdAt: pick("createdAt", "created_at") } : {}),
+        ...(pick("updatedAt", "updated_at") ? { updatedAt: pick("updatedAt", "updated_at") } : {}),
+        ...(pick("mimeType", "mime_type") ? { mimeType: pick("mimeType", "mime_type") } : {}),
+        ...(typeof r.extension === "string" ? { extension: r.extension } : {}),
+        ...(typeof r.label === "string" ? { label: r.label } : {}),
+        ...(meta && typeof meta === "object" ? { externalMetadata: meta as Record<string, unknown> } : {}),
+      });
+    }
+    return out;
+  }
+
+  // GET /api/v1/datasets/{id}/data/{dataId}/raw — the original stored text
+  // (FileResponse, so parsed as text, not JSON).
+  async readRawData(datasetId: string, dataId: string, maxChars?: number): Promise<string> {
+    const path = this.isCloud
+      ? `/datasets/${datasetId}/data/${dataId}/raw`
+      : `/api/v1/datasets/${datasetId}/data/${dataId}/raw`;
+    const text = await this.fetchAPI<string>(path, { method: "GET" }, this.timeoutMs, async (r: Response) => await r.text());
+    return typeof maxChars === "number" && text.length > maxChars ? text.slice(0, maxChars) : text;
+  }
+
+  /**
+   * The endpoints the standup / digest / timeline recaps read (recap.ts does
+   * no HTTP itself). Same requests as cognee-recap.py in the claude-code and
+   * codex plugins.
+   */
+  recapApi(): RecapApi {
+    const p = (path: string) => (this.isCloud ? path : `/api/v1${path}`);
+    const RECAP_TIMEOUT_MS = 30_000;
+    return {
+      listSessions: ({ range, limit, offset }) =>
+        this.fetchAPI<unknown>(p(`/sessions?${new URLSearchParams({ range, limit: String(limit), offset: String(offset) })}`), { method: "GET" }),
+      getSession: async (sessionId) => {
+        try {
+          return await this.fetchAPI<unknown>(p(`/sessions/${encodeURIComponent(sessionId)}`), { method: "GET" });
+        } catch (error) {
+          if (requestErrorStatus(error) === 404) return null; // unknown session: empty, not an error
+          throw error;
+        }
+      },
+      listDatasetData: (datasetId, { limit, offset }) =>
+        this.fetchAPI<unknown>(
+          p(`/datasets/${datasetId}/data?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`),
+          { method: "GET" },
+          RECAP_TIMEOUT_MS,
+        ),
+      getDataRaw: (datasetId, dataId) =>
+        this.fetchAPI<string>(p(`/datasets/${datasetId}/data/${dataId}/raw`), { method: "GET" }, RECAP_TIMEOUT_MS, async (r: Response) => await r.text()),
+      recallGraph: ({ query, datasetIds, topK, timeoutMs }) =>
+        this.fetchAPI<unknown>(
+          p("/recall"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, top_k: topK, scope: ["graph"], only_context: true, dataset_ids: datasetIds }),
+          },
+          timeoutMs,
+          undefined,
+          0,
+        ),
+    };
+  }
+
   async resolveDataIdFromDataset(datasetId: string, fileName: string): Promise<string | undefined> {
     try {
       const path = this.isCloud ? `/datasets/${datasetId}/data` : `/api/v1/datasets/${datasetId}/data`;
@@ -413,13 +600,17 @@ export class CogneeHttpClient {
   // legacy per-item DELETE for older deployments that don't expose /forget.
   async forget(params: {
     dataId?: string;
+    /** Dataset NAME (server resolves by name). Mutually exclusive with datasetId. */
     dataset?: string;
+    /** Dataset UUID. Preferred when known (e.g. from listDatasetData). */
+    datasetId?: string;
     everything?: boolean;
   }): Promise<{ datasetId?: string; dataId?: string; deleted: boolean; error?: string }> {
     try {
       const body: Record<string, unknown> = {};
       if (params.everything) body.everything = true;
-      if (params.dataset) body.dataset = params.dataset;
+      if (params.datasetId) body.dataset_id = params.datasetId;
+      else if (params.dataset) body.dataset = params.dataset;
       if (params.dataId) body.data_id = params.dataId;
 
       const forgetPath = this.isCloud ? "/forget" : "/api/v1/forget";
@@ -434,19 +625,20 @@ export class CogneeHttpClient {
         // In that case, fall back to per-item DELETE when enough identifiers are provided.
         const msg = error instanceof Error ? error.message : String(error);
         const missingForgetEndpoint = msg.includes("(404)") || msg.includes("(405)");
-        const canUseLegacyDelete = this.isCloud && !!params.dataset && !!params.dataId;
+        const legacyDataset = params.datasetId ?? params.dataset;
+        const canUseLegacyDelete = this.isCloud && !!legacyDataset && !!params.dataId;
         if (!missingForgetEndpoint || !canUseLegacyDelete) {
           throw error;
         }
-        await this.fetchAPI<unknown>(`/datasets/${params.dataset}/data/${params.dataId}`, {
+        await this.fetchAPI<unknown>(`/datasets/${legacyDataset}/data/${params.dataId}`, {
           method: "DELETE",
         });
       }
 
-      return { datasetId: params.dataset, dataId: params.dataId, deleted: true };
+      return { datasetId: params.datasetId ?? params.dataset, dataId: params.dataId, deleted: true };
     } catch (error) {
       return {
-        datasetId: params.dataset,
+        datasetId: params.datasetId ?? params.dataset,
         dataId: params.dataId,
         deleted: false,
         error: error instanceof Error ? error.message : String(error),
@@ -465,7 +657,8 @@ export class CogneeHttpClient {
 
   async memify(params: { datasetIds?: string[] } = {}): Promise<{ status?: string }> {
     const datasetId = params.datasetIds?.[0];
-    return this.fetchAPI<{ status?: string }>("/api/v1/memify", {
+    const path = this.isCloud ? "/memify" : "/api/v1/memify";
+    return this.fetchAPI<{ status?: string }>(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dataset_id: datasetId }),
@@ -486,9 +679,9 @@ export class CogneeHttpClient {
     nodeName?: string[];
     sessionIds?: string[];
     runInBackground?: boolean;
-  }): Promise<{ status?: string }> {
+  }): Promise<CogneeImproveResult> {
     const path = this.isCloud ? "/improve" : "/api/v1/improve";
-    return this.fetchAPI<{ status?: string }>(path, {
+    const data = await this.fetchAPI<unknown>(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -502,6 +695,7 @@ export class CogneeHttpClient {
         ...(typeof params.runInBackground === "boolean" ? { run_in_background: params.runInBackground } : {}),
       }),
     });
+    return normalizeImproveResponse(data);
   }
 
   async search(params: {
@@ -536,14 +730,30 @@ export class CogneeHttpClient {
   // the server returns the retrieved context and SKIPS the LLM completion
   // step, which dominates recall latency in the *_COMPLETION search types.
   // Injected memories should be stored context, not generated answers.
+  //
+  // Since cognee 1.6.0 a completion-type, only_context call with
+  // scope ["graph"] and a session_id returns ONE item per dataset whose
+  // `text` is the full LLM input (conversation history + templated question
+  // and context + session guidance) and a separate `system_prompt` the plugin
+  // ignores. 1.5.x servers put the bare retrieval context in `text`; both
+  // pass through normalizeSearchResults unchanged. The former `context_format`
+  // request field no longer exists and is never sent.
   async recall(params: {
     queryText: string;
     searchPrompt: string;
-    searchType: CogneeSearchType;
+    /** Always set for graph and code recall: unset, cognee >= 1.6.3 auto-routes
+     *  date-scoped questions to TEMPORAL. The session_context scope takes none. */
+    searchType?: CogneeSearchType;
     datasetIds: string[];
     topK?: number;
     sessionId?: string;
+    /** Recall sources: "graph" | "session" | "trace" | "session_context" | "code" | "all" | "auto" or a list.
+     *  Omitted = server "auto", which is graph-only whenever dataset_ids/search_type are set. */
     scope?: string | string[];
+    /** "session_context" rendering profile: "qa" (conversational) or "agent" (tool/workflow). */
+    contextProfile?: "qa" | "agent";
+    /** "code" scope only: structured code-graph query ({operation, ...args}). Requires scope to include "code". */
+    codeQuery?: Record<string, unknown>;
     onlyContext?: boolean;
     /** Per-call timeout for the prompt hot path. When set, retries are
      *  disabled so a slow server fails fast instead of eating the budget. */
@@ -557,13 +767,15 @@ export class CogneeHttpClient {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: params.queryText,
-          search_type: params.searchType,
+          ...(params.searchType ? { search_type: params.searchType } : {}),
           dataset_ids: params.datasetIds,
           only_context: params.onlyContext ?? true,
           ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
           ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
           ...(params.sessionId ? { session_id: params.sessionId } : {}),
           ...(params.scope ? { scope: params.scope } : {}),
+          ...(params.contextProfile ? { context_profile: params.contextProfile } : {}),
+          ...(params.codeQuery ? { code_query: params.codeQuery } : {}),
         }),
       },
       params.timeoutMs ?? this.timeoutMs,
@@ -604,7 +816,10 @@ export class CogneeHttpClient {
   }): Promise<{ ok: boolean; connectionId?: string }> {
     const body: Record<string, unknown> = {
       agent_session_name: params.agentSessionName,
-      type: "api",
+      // Self-declared connection type: "openclaw" is one of the server's
+      // documented KNOWN_AGENT_CONNECTION_TYPES, so the dashboard attributes
+      // this connection to the Openclaw plugin instead of generic API usage.
+      type: "openclaw",
       memory_mode: "hybrid",
       source: "api",
     };
@@ -657,6 +872,75 @@ export class CogneeHttpClient {
     );
   }
 
+  /**
+   * POST /datasets — create-or-return by name (the server is idempotent here).
+   *
+   * Exists for one reason: on Cognee <= 1.4.0 `improve(session_ids=…)` looks the
+   * dataset up with an *existing-only* resolver and, when the name has never
+   * been written to, swallows the failure as "non-fatal" — the session cache is
+   * never bridged and the first session on a fresh dataset is lost, while the
+   * trailing memify then creates the dataset so every later session works. Newer
+   * servers resolve-or-create up front, where this is a harmless no-op.
+   */
+  async ensureDataset(name: string): Promise<string | undefined> {
+    const path = this.isCloud ? "/datasets" : "/api/v1/datasets";
+    const ds = await this.fetchAPI<{ id?: string }>(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    return typeof ds?.id === "string" ? ds.id : undefined;
+  }
+
+  // -- Plugin agent keys (cognee#6113) -------------------------------------
+  //
+  // Every machine a cognee plugin runs on holds its own API key for that
+  // plugin's agent; the server caps them. These let a user free a slot for any
+  // plugin agent of theirs. They authenticate as the principal — the plugin
+  // agent cannot manage its own keys — which is what this client is.
+
+  /** Plugin keys the server knows (`GET /integrations/status`), provisioned or not. */
+  async listPluginStatuses(): Promise<{ key: string; connected: boolean }[]> {
+    const path = this.isCloud ? "/integrations/status" : "/api/v1/integrations/status";
+    const body = await this.fetchAPI<{ plugins?: { key?: string; connected?: boolean }[] }>(path, { method: "GET" });
+    return (body.plugins ?? [])
+      .filter((p) => typeof p.key === "string" && p.key)
+      .map((p) => ({ key: p.key as string, connected: p.connected === true }));
+  }
+
+  /** The keys of `plugin`'s agent, metadata only. Empty when the server has no key routes. */
+  async listPluginKeys(plugin: string): Promise<CogneePluginKey[]> {
+    const base = this.isCloud ? "/integrations/plugins" : "/api/v1/integrations/plugins";
+    let body: { keys?: Record<string, unknown>[] };
+    try {
+      body = await this.fetchAPI<{ keys?: Record<string, unknown>[] }>(`${base}/${encodeURIComponent(plugin)}/keys`, { method: "GET" });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes("(404)") || msg.includes("(405)")) return [];
+      throw error;
+    }
+    return (body.keys ?? []).map((k) => ({
+      plugin,
+      id: String(k.id ?? ""),
+      label: String(k.label ?? ""),
+      createdAt: String(k.created_at ?? k.createdAt ?? ""),
+      lastUsedAt: String(k.last_used_at ?? k.lastUsedAt ?? ""),
+    }));
+  }
+
+  /** Revoke one key of `plugin`'s agent. `found: false` when there is no such key. */
+  async revokePluginKey(plugin: string, keyId: string): Promise<{ found: boolean }> {
+    const base = this.isCloud ? "/integrations/plugins" : "/api/v1/integrations/plugins";
+    try {
+      await this.fetchAPI<unknown>(`${base}/${encodeURIComponent(plugin)}/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+      return { found: true };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes("(404)")) return { found: false };
+      throw error;
+    }
+  }
+
   async listDatasets(): Promise<{ id: string; name: string }[]> {
     const path = this.isCloud ? "/datasets" : "/api/v1/datasets";
     return this.fetchAPI<{ id: string; name: string }[]>(path, { method: "GET" });
@@ -677,6 +961,48 @@ export class CogneeHttpClient {
   /**
    * Poll cognify pipeline status. Returns the status string ("completed", "running", "failed", etc.).
    */
+  /**
+   * POST /api/v1/remember with content_type="code": index one repository
+   * (local path the server can read, or a git URL it clones) into a code-graph
+   * dataset via the enola pipeline. No LLM/embedding calls unless
+   * indexVectors. Requires cognee >= 1.5.4: 1.5.3 opened content_type="code"
+   * but read the repo spec from a field named `repositories`, which 1.5.4
+   * renamed to `raw_data` (see issue #420).
+   */
+  async indexRepository(params: {
+    datasetName: string;
+    repository: string;
+    indexVectors?: boolean;
+    runInBackground?: boolean;
+  }): Promise<CogneeRememberResponse> {
+    const path = this.isCloud ? "/remember" : "/api/v1/remember";
+    const formData = new FormData();
+    formData.append("datasetName", params.datasetName);
+    formData.append("content_type", "code");
+    // A 1.5.4 server drops the old `repositories` part silently (unknown Form
+    // fields are ignored), so the spec never arrives and the index 400s.
+    formData.append("raw_data", params.repository);
+    formData.append("run_in_background", params.runInBackground === false ? "false" : "true");
+    formData.append("index_vectors", params.indexVectors ? "true" : "false");
+    return this.fetchAPI<CogneeRememberResponse>(path, { method: "POST", body: formData }, this.ingestionTimeoutMs);
+  }
+
+  /**
+   * GET /api/v1/datasets/status?dataset=…&pipeline=… — status of one pipeline
+   * for one dataset, lower-cased ("completed", "errored", "processing", …) or
+   * "unknown". A single pipeline yields {id: status}; several yield
+   * {id: {pipeline: status}}; both shapes are handled.
+   */
+  async pipelineStatus(datasetId: string, pipeline: string): Promise<string> {
+    const q = `dataset=${encodeURIComponent(datasetId)}&pipeline=${encodeURIComponent(pipeline)}`;
+    const path = this.isCloud ? `/datasets/status?${q}` : `/api/v1/datasets/status?${q}`;
+    const resp = await this.fetchAPI<Record<string, unknown>>(path, { method: "GET" });
+    let val: unknown = resp?.[datasetId];
+    if (val === undefined && resp && Object.keys(resp).length === 1) val = Object.values(resp)[0];
+    if (val && typeof val === "object") val = (val as Record<string, unknown>)[pipeline];
+    return typeof val === "string" && val ? val.toLowerCase().replace("dataset_processing_", "") : "unknown";
+  }
+
   async datasetStatus(datasetId: string): Promise<string> {
     // Cognee 1.0.3 renamed the query param from `dataset_id` to `dataset`.
     const path = this.isCloud ? `/datasets/status?dataset=${datasetId}` : `/api/v1/datasets/status?dataset=${datasetId}`;
@@ -693,7 +1019,7 @@ export class CogneeHttpClient {
 // ---------------------------------------------------------------------------
 
 function sanitizeFilePath(filePath: string): string {
-  var mutatedPath = filePath.replace(/\//g, '_');
+  var mutatedPath = filePath.replace(/[\\/]/g, '_');
   mutatedPath = mutatedPath.replace(/\./g, '-');
   return mutatedPath;
 }
@@ -714,7 +1040,46 @@ function extractDataId(value: unknown): string | undefined {
   return extractDataId(record.data_ingestion_info);
 }
 
-function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
+const RECALL_SOURCES: ReadonlySet<string> = new Set(["graph", "session", "trace", "session_context", "code", "tools", "system"]);
+
+function asString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+/**
+ * Render one recall entry to text according to its `source` (RecallResponse
+ * discriminator). Session layers don't carry `text`: Q&A turns have
+ * question/answer, trace steps have origin_function/status/return_value,
+ * session_context has content.
+ */
+function recallEntryText(record: Record<string, unknown>, source: string | undefined): string {
+  // Graph items (and the 1.6.0 full-prompt `text`) win outright: `text` is
+  // returned verbatim, never `content`/`search_result`, and `system_prompt`
+  // (the retriever's task template on cognee >= 1.6.0) is never read.
+  if (typeof record.text === "string") return record.text;
+  if (source === "session" || (typeof record.question === "string" && typeof record.answer === "string")) {
+    const q = asString(record.question).trim();
+    const a = asString(record.answer).trim();
+    const fb = typeof record.feedback_text === "string" && record.feedback_text.trim() ? `\nFeedback: ${record.feedback_text.trim()}` : "";
+    return `Q: ${q}\nA: ${a}${fb}`;
+  }
+  if (source === "trace" || typeof record.origin_function === "string") {
+    const fn = asString(record.origin_function);
+    const status = asString(record.status) || "success";
+    const params = record.method_params !== undefined && record.method_params !== null ? ` params=${asString(record.method_params).slice(0, 300)}` : "";
+    const ret = record.return_value !== undefined && record.return_value !== null ? `\nreturned: ${asString(record.return_value).slice(0, 500)}` : "";
+    const fb = typeof record.feedback_text === "string" && record.feedback_text.trim() ? `\nLesson: ${record.feedback_text.trim()}` : "";
+    return `${fn} (${status})${params}${ret}${fb}`;
+  }
+  if (typeof record.content === "string") return record.content;
+  if (Array.isArray(record.search_result)) return record.search_result.map(String).join("\n"); // cloud format
+  if (typeof record.search_result === "string") return record.search_result;
+  return JSON.stringify(record);
+}
+
+export function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
   if (Array.isArray(data)) {
     return data.map((item, index) => {
       if (typeof item === "string") {
@@ -722,26 +1087,19 @@ function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
       }
       if (item && typeof item === "object") {
         const record = item as Record<string, unknown>;
-
-        // Extract text: prefer .text, then .search_result (cloud format), then stringify
-        let text: string;
-        if (typeof record.text === "string") {
-          text = record.text;
-        } else if (Array.isArray(record.search_result)) {
-          text = record.search_result.map(String).join("\n");
-        } else if (typeof record.search_result === "string") {
-          text = record.search_result;
-        } else {
-          text = JSON.stringify(record);
-        }
+        const rawSource = typeof record.source === "string" ? record.source
+          : typeof record._source === "string" ? record._source : undefined;
+        const source = rawSource && RECALL_SOURCES.has(rawSource) ? (rawSource as CogneeSearchResult["source"]) : undefined;
 
         return {
           id: typeof record.id === "string" ? record.id
-            : typeof record.dataset_id === "string" ? record.dataset_id
-              : `result-${index}`,
-          text,
+            : typeof record.entry_id === "string" ? record.entry_id
+              : typeof record.dataset_id === "string" ? record.dataset_id
+                : `result-${index}`,
+          text: recallEntryText(record, source),
           score: typeof record.score === "number" ? record.score : 1,
           metadata: record.metadata as Record<string, unknown> | undefined,
+          ...(source ? { source } : {}),
         };
       }
       return { id: `result-${index}`, text: String(item), score: 1 };
@@ -751,4 +1109,56 @@ function normalizeSearchResults(data: unknown): CogneeSearchResult[] {
     return normalizeSearchResults((data as { results: unknown }).results);
   }
   return [];
+}
+
+/**
+ * Collapse the `/improve` response to one shape. Cognee >= 1.4 answers
+ * `{ "<dataset_uuid>": { status, pipeline_run_id, ... }, ... }`; older servers
+ * a flat `{ status, ... }`. Reading `.status` off the map yielded undefined
+ * and the plugin logged `status=?` on every session end.
+ */
+/** Trimmed, non-empty node_set entries (cognee >= 1.6.3 rejects blank ones). */
+export function cleanNodeSet(nodeSet: readonly string[] | undefined): string[] {
+  return (nodeSet ?? []).map((n) => (typeof n === "string" ? n.trim() : "")).filter(Boolean);
+}
+
+export function normalizeImproveResponse(data: unknown): CogneeImproveResult {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { error: `unexpected improve response: ${data === null ? "null" : Array.isArray(data) ? "array" : typeof data}` };
+  }
+  const record = data as Record<string, unknown>;
+
+  const flatStatus = typeof record.status === "string" ? record.status : undefined;
+  const flatRun = typeof record.pipeline_run_id === "string" ? record.pipeline_run_id : undefined;
+  if (flatStatus !== undefined || flatRun !== undefined) {
+    return {
+      ...(flatStatus !== undefined ? { status: flatStatus } : {}),
+      ...(flatRun !== undefined ? { pipelineRunId: flatRun } : {}),
+      ...(typeof record.dataset_id === "string" ? { datasetId: record.dataset_id } : {}),
+    };
+  }
+
+  const entries = Object.entries(record).filter(([, v]) => v && typeof v === "object" && !Array.isArray(v));
+  if (entries.length === 0) {
+    const keys = Object.keys(record);
+    return { error: `unexpected improve response: object with keys [${keys.slice(0, 8).join(", ")}${keys.length > 8 ? ", …" : ""}]` };
+  }
+
+  const datasets: NonNullable<CogneeImproveResult["datasets"]> = {};
+  for (const [dsId, v] of entries) {
+    const inner = v as Record<string, unknown>;
+    datasets[dsId] = {
+      ...(typeof inner.status === "string" ? { status: inner.status } : {}),
+      ...(typeof inner.pipeline_run_id === "string" ? { pipelineRunId: inner.pipeline_run_id } : {}),
+    };
+  }
+  const statuses = new Set(Object.values(datasets).map((d) => d.status).filter((s): s is string => typeof s === "string"));
+  const status = statuses.size === 1 ? [...statuses][0] : statuses.size > 1 ? "mixed" : undefined;
+  const single = entries.length === 1 ? datasets[entries[0][0]] : undefined;
+  return {
+    ...(status !== undefined ? { status } : {}),
+    ...(single?.pipelineRunId ? { pipelineRunId: single.pipelineRunId } : {}),
+    ...(entries.length === 1 ? { datasetId: entries[0][0] } : {}),
+    datasets,
+  };
 }

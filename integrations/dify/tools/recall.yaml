@@ -1,0 +1,306 @@
+identity:
+  name: "recall"
+  author: "topoteretes"
+  label:
+    en_US: "Recall"
+    zh_Hans: "回忆"
+    pt_BR: "Recordar"
+    ja_JP: "想起"
+description:
+  human:
+    en_US: "Query the memory on your Cognee server with automatic search routing and session-aware lookup"
+    zh_Hans: "在Cognee 服务器上查询内存，自动选择搜索类型并支持会话感知查找"
+    pt_BR: "Consultar a memória no seu servidor Cognee com roteamento automático de pesquisa e busca ciente da sessão"
+    ja_JP: "Cognee サーバーのメモリを検索。検索タイプを自動選択し、セッションを考慮した検索を行います"
+  llm: "Recall relevant information from Cognee memory. Picks the search strategy automatically and, when a session_id is given, checks the session's own memory first. Use this before answering to ground the response in what has been remembered."
+parameters:
+  - name: query
+    type: string
+    required: true
+    label:
+      en_US: "Query"
+      zh_Hans: "查询"
+      pt_BR: "Consulta"
+      ja_JP: "クエリ"
+    human_description:
+      en_US: "The question to answer from memory"
+      zh_Hans: "要从内存中回答的问题"
+      pt_BR: "A pergunta a responder a partir da memória"
+      ja_JP: "メモリから回答する質問"
+    llm_description: "The natural language question to answer from memory"
+    form: llm
+  - name: datasets
+    type: string
+    required: false
+    label:
+      en_US: "Datasets"
+      zh_Hans: "数据集"
+      pt_BR: "Datasets"
+      ja_JP: "データセット"
+    human_description:
+      en_US: "Comma-separated list of dataset names to recall from"
+      zh_Hans: "要回忆的数据集名称，用逗号分隔"
+      pt_BR: "Lista de nomes de datasets separados por vírgula"
+      ja_JP: "検索対象のデータセット名のカンマ区切りリスト"
+    llm_description: "Comma-separated list of dataset names to recall from (e.g. 'dataset1,dataset2')"
+    form: llm
+  - name: dataset_ids
+    type: string
+    required: false
+    label:
+      en_US: "Dataset IDs"
+      zh_Hans: "数据集 ID"
+      pt_BR: "IDs dos Datasets"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "Comma-separated list of dataset UUIDs to recall from"
+      zh_Hans: "要回忆的数据集 UUID，用逗号分隔"
+      pt_BR: "Lista de UUIDs de datasets separados por vírgula"
+      ja_JP: "検索対象のデータセット UUID のカンマ区切りリスト"
+    llm_description: "Comma-separated list of dataset UUIDs to recall from"
+    form: llm
+  - name: session_id
+    type: string
+    required: false
+    label:
+      en_US: "Session ID"
+      zh_Hans: "会话 ID"
+      pt_BR: "ID da Sessão"
+      ja_JP: "セッション ID"
+    human_description:
+      en_US: "Session whose remembered questions, answers and context feed the recall"
+      zh_Hans: "其已记忆的问答和上下文将用于回忆的会话"
+      pt_BR: "Sessão cujas perguntas, respostas e contexto lembrados alimentam a recordação"
+      ja_JP: "記憶された質問・回答・コンテキストを想起に使うセッション"
+    llm_description: "Optional session identifier (e.g. the conversation id). Entries stored with Remember Entry for this session are checked first."
+    form: llm
+  - name: scope
+    type: select
+    required: false
+    default: "AUTO"
+    label:
+      en_US: "Scope"
+      zh_Hans: "范围"
+      pt_BR: "Escopo"
+      ja_JP: "スコープ"
+    human_description:
+      en_US: "Which memory sources to include. Auto: session first when a session_id is set, otherwise the graph."
+      zh_Hans: "包含哪些记忆来源。自动：设置了 session_id 时优先会话，否则使用图谱。"
+      pt_BR: "Quais fontes de memória incluir. Auto: sessão primeiro quando session_id está definido, caso contrário o grafo."
+      ja_JP: "含めるメモリソース。自動: session_id がある場合はセッション優先、なければグラフ。"
+    llm_description: "Which memory sources to include: AUTO, graph, session, session_first, session_context or all"
+    form: form
+    options:
+      - value: "AUTO"
+        label:
+          en_US: "Auto"
+          zh_Hans: "自动"
+          pt_BR: "Automático"
+          ja_JP: "自動"
+      - value: "graph"
+        label:
+          en_US: "Graph"
+          zh_Hans: "图谱"
+          pt_BR: "Grafo"
+          ja_JP: "グラフ"
+      - value: "session"
+        label:
+          en_US: "Session"
+          zh_Hans: "会话"
+          pt_BR: "Sessão"
+          ja_JP: "セッション"
+      - value: "session_first"
+        label:
+          en_US: "Session first, then graph"
+          zh_Hans: "先会话，后图谱"
+          pt_BR: "Sessão primeiro, depois grafo"
+          ja_JP: "セッション優先、次にグラフ"
+      - value: "session_context"
+        label:
+          en_US: "Session context"
+          zh_Hans: "会话上下文"
+          pt_BR: "Contexto da sessão"
+          ja_JP: "セッションコンテキスト"
+      - value: "all"
+        label:
+          en_US: "All"
+          zh_Hans: "全部"
+          pt_BR: "Todos"
+          ja_JP: "すべて"
+  - name: search_type
+    type: select
+    required: false
+    default: "AUTO"
+    label:
+      en_US: "Search Type"
+      zh_Hans: "搜索类型"
+      pt_BR: "Tipo de Pesquisa"
+      ja_JP: "検索タイプ"
+    human_description:
+      en_US: "Override the automatically chosen search strategy for the graph lookup"
+      zh_Hans: "覆盖图谱查找时自动选择的搜索策略"
+      pt_BR: "Sobrescrever a estratégia de pesquisa escolhida automaticamente para a busca no grafo"
+      ja_JP: "グラフ検索で自動選択される検索戦略を上書き"
+    llm_description: "Optional search strategy override; AUTO lets Cognee route the query"
+    form: form
+    options:
+      - value: "AUTO"
+        label:
+          en_US: "Auto"
+          zh_Hans: "自动"
+          pt_BR: "Automático"
+          ja_JP: "自動"
+      - value: "HYBRID_COMPLETION"
+        label:
+          en_US: "Hybrid Completion"
+          zh_Hans: "混合补全"
+          pt_BR: "Completude Híbrida"
+          ja_JP: "ハイブリッド補完"
+      - value: "GRAPH_COMPLETION"
+        label:
+          en_US: "Graph Completion"
+          zh_Hans: "图谱补全"
+          pt_BR: "Completude do Grafo"
+          ja_JP: "グラフ補完"
+      - value: "GRAPH_COMPLETION_COT"
+        label:
+          en_US: "Graph Completion (Chain of Thought)"
+          zh_Hans: "图谱补全（思维链）"
+          pt_BR: "Completude do Grafo (Cadeia de Pensamento)"
+          ja_JP: "グラフ補完（思考の連鎖）"
+      - value: "RAG_COMPLETION"
+        label:
+          en_US: "RAG Completion"
+          zh_Hans: "RAG 补全"
+          pt_BR: "Completude RAG"
+          ja_JP: "RAG 補完"
+      - value: "CHUNKS"
+        label:
+          en_US: "Chunks"
+          zh_Hans: "文档块"
+          pt_BR: "Chunks"
+          ja_JP: "チャンク"
+      - value: "SUMMARIES"
+        label:
+          en_US: "Summaries"
+          zh_Hans: "摘要"
+          pt_BR: "Resumos"
+          ja_JP: "サマリー"
+      - value: "TEMPORAL"
+        label:
+          en_US: "Temporal"
+          zh_Hans: "时序"
+          pt_BR: "Temporal"
+          ja_JP: "時系列"
+      - value: "FEELING_LUCKY"
+        label:
+          en_US: "Feeling Lucky"
+          zh_Hans: "手气不错"
+          pt_BR: "Estou com Sorte"
+          ja_JP: "I'm Feeling Lucky"
+  - name: system_prompt
+    type: string
+    required: false
+    label:
+      en_US: "System Prompt"
+      zh_Hans: "系统提示"
+      pt_BR: "Prompt do Sistema"
+      ja_JP: "システムプロンプト"
+    human_description:
+      en_US: "System prompt for completion-type searches"
+      zh_Hans: "用于补全类型搜索的系统提示"
+      pt_BR: "Prompt do sistema para pesquisas do tipo Completion"
+      ja_JP: "Completion タイプの検索に使用するシステムプロンプト"
+    llm_description: "Optional system prompt for completion-type searches"
+    form: llm
+  - name: top_k
+    type: number
+    required: false
+    default: 15
+    min: 1
+    max: 100
+    label:
+      en_US: "Top K"
+      zh_Hans: "Top K"
+      pt_BR: "Top K"
+      ja_JP: "Top K"
+    human_description:
+      en_US: "Maximum number of results to return"
+      zh_Hans: "返回的最大结果数"
+      pt_BR: "Número máximo de resultados a retornar"
+      ja_JP: "返却する最大結果数"
+    llm_description: "Maximum number of results to return (default: 15)"
+    form: form
+  - name: only_context
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Only Context"
+      zh_Hans: "仅上下文"
+      pt_BR: "Apenas Contexto"
+      ja_JP: "コンテキストのみ"
+    human_description:
+      en_US: "Return what the LLM would have received instead of its answer. No LLM call is made."
+      zh_Hans: "返回 LLM 本应接收的内容而非其回答。不会调用 LLM。"
+      pt_BR: "Retorna o que o LLM teria recebido em vez da resposta. Nenhuma chamada ao LLM é feita."
+      ja_JP: "LLM の回答ではなく、LLM が受け取るはずだった内容を返します。LLM は呼び出されません。"
+    llm_description: "Set to true to skip the LLM and return the prompt it would have received"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+  - name: include_references
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Include References"
+      zh_Hans: "包含引用"
+      pt_BR: "Incluir Referências"
+      ja_JP: "参照を含める"
+    human_description:
+      en_US: "Attach source references to completion-type results"
+      zh_Hans: "为补全类型结果附加来源引用"
+      pt_BR: "Anexar referências de origem aos resultados do tipo Completion"
+      ja_JP: "Completion タイプの結果にソース参照を付加"
+    llm_description: "Set to true to attach source references to the results"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+output_schema:
+  type: object
+  properties:
+    results_count:
+      type: number
+      description: "Number of entries returned"
+    results_text:
+      type: string
+      description: "Formatted entries, each tagged by its source (graph, session, session_context, system)"
+    answer:
+      type: string
+      description: "Text of the first graph entry, or of the first entry if there is none – ready to pass to an LLM node"
+extra:
+  python:
+    source: tools/recall.py

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: negative-claude-md-note
+context:
+  scaffold_script: isolate.sh

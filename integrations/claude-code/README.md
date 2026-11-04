@@ -1,3 +1,15 @@
+<div align="center">
+  <a href="https://www.cognee.ai">
+    <img src="https://raw.githubusercontent.com/topoteretes/cognee-integrations/main/assets/cognee-logo.svg" alt="Cognee" width="260">
+  </a>
+  <p><strong>Cognee memory for Claude Code</strong> — persistent knowledge-graph memory with automatic capture of prompts and tool traces, and relevant recall on every turn.</p>
+  <p>
+    <a href="https://docs.cognee.ai">Docs</a> ·
+    <a href="https://discord.gg/NQPKmU5CCg">Discord</a> ·
+    <a href="https://github.com/topoteretes/cognee">Cognee core</a>
+  </p>
+</div>
+
 # Cognee Memory Plugin for Claude Code
 
 Adds persistent memory to Claude Code through Cognee.
@@ -7,7 +19,107 @@ The integration:
 - injects relevant context on prompt submit
 - syncs session memory into graph memory on session end/final exit
 
+## What this plugin runs, stores and sends
+
+Everything below is the plugin's own readable Python and shell under this folder; it
+runs no code from anywhere else.
+
+**Captured.** Your prompts, the tool calls Claude makes (name, arguments and output,
+filtered by the [capture controls](#automatic-capture-controls)), and Claude's
+answers, plus a short memory anchor before compaction. Credentials, private keys and
+database URLs are redacted before anything is stored or uploaded, and `.env`,
+credential and key files are never captured. Text you wrap in `<private>…</private>`
+never leaves the hooks; see [private spans](#private-spans). `COGNEE_CAPTURE=false` turns automatic
+capture off; recall and explicit remember keep working.
+
+**Where it goes.** To the Cognee server you configure, and nowhere else.
+- *Local mode* (default): a cognee server the plugin starts on this machine, bound
+  to `localhost:8011`. Memory is stored on this machine. To build the graph, that
+  server sends captured text to the LLM and embedding provider you configured
+  (`LLM_API_KEY`, `LLM_PROVIDER`), or to Claude Code through the observer below.
+- *Cloud mode*: your Cognee Cloud instance at `COGNEE_BASE_URL`, over HTTPS,
+  authenticated with your `COGNEE_API_KEY`. The status line's credit balance comes
+  from the Cognee platform API (`api.aws.cognee.ai`).
+
+Memory is kept until you delete it (the `cognee-forget` skill, or deleting the
+dataset). The plugin never expires server-side memory on its own.
+
+**Other network calls.** Local mode installs `cognee==1.6.5` from PyPI into
+`~/.cognee-plugin/venv` once. The background idle watcher fetches this repository's
+`marketplace.json` from `raw.githubusercontent.com` at most hourly to offer updates
+(`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
+Anthropic, Cognee or any third party beyond the calls above.
+
+**Claude settings.** In cloud mode the plugin disables native auto-memory unless
+you explicitly enabled it, keeping an ownership marker and previous value for
+restoration. Set `COGNEE_DISABLE_AUTO_MEMORY=false` to opt out. Existing memory
+files are retained. See [Memory preference](#memory-preference).
+
+**Stored locally.** `~/.cognee-plugin/claude-code/` (logs, status markers, buffered
+turns, swept automatically; see [Logs and state](#logs-and-state)),
+`~/.cognee-plugin/venv/`, `~/.cognee-plugin/api_key.json`, and your settings in
+`~/.cognee/.env`.
+
+**Settings it writes.** One entry, and only where it is needed: in a session
+whose status row the hooks module draws above the prompt, nothing is written;
+in a session where the module does not load (an older Claude Code,
+`--safe-mode`, an organisation that allows only its own mods), session start
+installs the `statusLine` entry in `~/.claude/settings.json` that draws the line
+below the prompt, and refreshes it when the plugin moved. Only an entry whose
+command runs the plugin's own `cognee-statusline.sh` is ever written or
+replaced; a status line you set yourself is never touched. Nothing else in your
+Claude Code settings is touched. The entry is one file for every session, and
+each session start writes what its own session needs: with two sessions open at
+once where only one has the module (an older CLI beside the Desktop app, a
+`--safe-mode` session beside a normal one), the one with the module removes the
+entry and the one without puts it back, so the line below the prompt in the
+session without the module can go away until its next session start.
+
+**Claude's own files.** The plugin reads the hook payloads Claude Code sends it, not
+your transcript or Claude Code's memory files, and writes to neither.
+
+**Code that runs inside Claude Code.** `hooks/register.ts` is a hooks module (a
+[Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview)) that draws
+the memory status row above the prompt (in a terminal and in the Desktop app),
+shows what memory is doing while it works, makes the dataset name a picker and
+serves two tools Claude can call directly. On its own it reads one file, the
+plugin's own activity marker under `~/.cognee-plugin/claude-code/phase/`, writes
+one, `band/<session>.json`, which tells the settings-file status line to stay
+quiet for that session, and runs one program, the plugin's own status-line
+renderer (`scripts/cognee_statusline_render.py --json`, local, no network), on
+the events the hooks fire. On your explicit action in the fix dialog it also runs
+`cognee-doctor.sh` (read-only diagnostics) and appends a value you typed to
+`~/.cognee/.env`. Everything else it runs is one of this
+folder's scripts, on your action or Claude's: `switch-dataset.py --list` once when
+the band is first drawn and `switch-dataset.py <name>` when you pick a dataset or
+run `/cognee-dataset <name>`; the `search` tool runs `cognee-search.sh` (and
+`recall-trim.py` on its output); the `remember` tool runs `cognee-remember.sh`.
+Those are the same programs the skills
+run, with the same server traffic. The module itself makes no network requests,
+writes no settings, reads only `HOME` / `USERPROFILE` from the environment, and
+answers only its own two tools. `claude plugin validate` lists exactly that.
+
+**Background processes.** Detached helpers that outlive a hook: the idle watcher and
+exit watcher (session sync and status), and in local mode the cognee server and,
+when enabled, the Claude observer shim. All are scripts from this folder.
+
+**Credentials it reads.** `COGNEE_API_KEY`, `COGNEE_BASE_URL` and `LLM_API_KEY` from
+`~/.cognee/.env` or the environment. The API key goes only to the Cognee server you
+configured; the LLM key only to the local server's process.
+
+**Your Claude subscription.** In local mode with no `LLM_API_KEY` set and the
+`claude` CLI on PATH, the server's own LLM calls (cognify, improve) run as
+`claude -p --safe-mode` under your Claude Code login and count against your
+subscription usage. Your login is passed only to that child process, never to any
+server. Session start says so every time it is in use;
+`COGNEE_LLM_OBSERVER=false` turns it off. Details under
+[Claude observer](#claude-observer-local-mode-on-your-claude-subscription).
+
 ## Install
+
+**Requirements.** Any Python 3.9 or newer available as `python3` (or `python`) on PATH runs the hooks — they are stdlib-only HTTP clients and never import cognee, so the Python 3.9.6 that ships with macOS's Xcode Command Line Tools is enough for them. **Local mode additionally needs a Python 3.10–3.14 installed on the machine** (python.org, Homebrew, pyenv, or `uv python install 3.12`): the plugin builds its own virtualenv for the Cognee server under `~/.cognee-plugin/venv` from an interpreter it finds, and installs exactly `cognee==<pinned version>` into it. The plugin never downloads installers or interpreters — it uses [uv](https://docs.astral.sh/uv/) if you already have it (with interpreter downloads disabled), otherwise the stdlib `venv` + pip with the newest `python3.x` it finds on PATH. If no 3.10+ interpreter exists it refuses, logs `host_python_too_old_for_venv` to `hook.log`, and every session start says so until one is installed. Cloud mode never builds a runtime. **Claude Code:** the memory pipeline (hooks, skills, recall, sync) runs on any Claude Code that reads plugin `userConfig`; the live status row, spinner text and the two memory tools come from the hooks module and need Claude Code 2.1.287 or newer (2.1.286 in the Desktop app), see [Status line](#status-line). (SDK-based integrations such as LangGraph or CrewAI import cognee in-process and need Python 3.10+; see [`CONFIGURATION.md`](../CONFIGURATION.md#python-version-requirements).)
+
+**If local mode refuses to start.** A session that opens with *"Cognee requires Python 3.10 or newer (up to 3.14), and no such interpreter is installed on this machine"* means exactly that: the hooks ran (they only need 3.9), but the Cognee server has nothing to run on, and the plugin will not download an interpreter. The status line shows `✕ (cognee_needs_python_3_10)` and `doctor.py` reports `Runtime Python: MISSING` until you install one (`brew install python@3.12`, python.org, pyenv, or `uv python install 3.12`) and start a new session — nothing else to configure. Cloud mode has no such requirement.
 
 Install from the Claude Code marketplace. The recommended way is from your shell, *before* launching Claude Code, so the first `claude` launch is a clean session that runs the plugin bootstrap automatically — no in-app restart needed:
 
@@ -18,7 +130,7 @@ claude plugin install cognee-memory@cognee
 
 These CLI subcommands use the exact same plugin manager as the in-chat `/plugin` commands — same marketplace clone, same install cache, same global state — they just run before you enter the terminal. Default install scope is `user` (global); pass `--scope project` or `--scope local` to confine it.
 
-Then configure your runtime mode — **once** — in `~/.cognee/.env`. The file is created with a commented template on the first session start; values in it act exactly like shell exports (a real `export` in your shell still overrides the file, per terminal). It is shared with the Codex plugin, so both read the same configuration. Lines may optionally start with `export `, so existing export lines can be pasted verbatim.
+Then configure your runtime mode — **once** — in `~/.cognee/.env`. The file is created with a commented template on the first session start; values in it act exactly like shell exports (a real `export` in your shell still overrides the file, per terminal). It is shared with the Codex plugin, so both read the same configuration. Lines may optionally start with `export `, so existing export lines can be pasted verbatim. Pick one of the two modes below — or configure **both** and flip a terminal with a single export (see [Which mode wins, and how to switch](#which-mode-wins-and-how-to-switch)).
 
 **Cognee Cloud or a remote server** — set both (one paste, no editor needed):
 
@@ -31,9 +143,9 @@ EOF
 chmod 600 ~/.cognee/.env
 ```
 
-> Cloud mode is a pure thin client: it talks to your remote server over HTTP only and does **not** install a local Cognee runtime. The bundled virtualenv (`~/.cognee-plugin/venv`) is built only in local mode, where an in-process server actually runs.
+> The plugin is an HTTP client in both modes; the hooks never import cognee in-process. Cloud mode does **not** install a local Cognee runtime. The bundled virtualenv (`~/.cognee-plugin/venv`) is built only in local mode, where it runs the local Cognee server the hooks talk to.
 
-**Local mode** (default when `COGNEE_BASE_URL` is not set) — the plugin bootstraps a local Cognee API at `http://localhost:8011`. Only `LLM_API_KEY` is required; `COGNEE_API_KEY` is auto-minted if absent:
+**Local mode** (default when `COGNEE_BASE_URL` is not set) — the plugin bootstraps a local Cognee API at `http://localhost:8011`. `COGNEE_API_KEY` is auto-minted if absent. The server needs an LLM for cognify: either give it a provider key of your own —
 
 ```bash
 mkdir -p ~/.cognee
@@ -42,6 +154,10 @@ LLM_API_KEY="sk-..."
 EOF
 chmod 600 ~/.cognee/.env
 ```
+
+— or set nothing at all and let it run on your **Claude subscription**: with no `LLM_API_KEY` configured and the `claude` CLI on PATH, session start switches the local server's LLM calls to the [Claude observer](#claude-observer-local-mode-on-your-claude-subscription) (`claude -p` behind a loopback OpenAI-compatible shim) and embeddings to a local model. No key, no extra account.
+
+**Default user and its password.** The local server is started with `DEFAULT_USER_EMAIL=default_user@example.com` and `DEFAULT_USER_PASSWORD=default_password`, which is how cognee 1.6.0 and later create the default user at all (a server started without `DEFAULT_USER_PASSWORD` creates no default account, and the password is set once and never rewritten). The plugin logs in as that user to mint its owner API key, so a fresh install needs no manual step and an existing install keeps working. Exporting `DEFAULT_USER_EMAIL`/`DEFAULT_USER_PASSWORD` yourself overrides what the plugin passes; `COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` pick the user the plugin logs in as, and a non-default user must already exist on the server. When pointing at a server you run yourself (`COGNEE_BASE_URL`), either start it with `DEFAULT_USER_PASSWORD` set to the same value as `COGNEE_USER_PASSWORD`, or set `COGNEE_API_KEY` so no login is needed; a server without either answers the login with an error that says so.
 
 **Windows (PowerShell)** — same idea, same file:
 
@@ -53,16 +169,32 @@ COGNEE_API_KEY="ck_..."
 '@ | Add-Content "$env:USERPROFILE\.cognee\.env"
 ```
 
-Re-running any of these blocks is safe: when a key appears more than once, the **last value wins**, so pasting again with a new value updates the configuration. Editing the file directly (`nano ~/.cognee/.env`) works too — e.g. to remove a variable such as `COGNEE_BASE_URL` when switching from cloud back to local mode. Changes apply on the next session launch. Plain shell `export`s in the launching terminal still take precedence over `~/.cognee/.env` — useful to override the shared config for one terminal. See [Managing the env file](#managing-the-env-file) for the file format and how to add, change, or remove variables later.
+Re-running any of these blocks is safe: when a key appears more than once, the **last value wins**, so pasting again with a new value updates the configuration. Editing the file directly (`nano ~/.cognee/.env`) works too. Changes apply on the next session launch. Plain shell `export`s in the launching terminal still take precedence over `~/.cognee/.env` — useful to override the shared config for one terminal. See [Managing the env file](#managing-the-env-file) for the file format and how to add, change, or remove variables later.
 
-You can also set config in `~/.cognee-plugin/claude-code/config.json`:
+### Which mode wins, and how to switch
 
-```json
-{
-  "base_url": "https://your-instance.cognee.ai",
-  "dataset": "agent_sessions"
-}
+You can configure **both modes at once** — keep `COGNEE_BASE_URL` + `COGNEE_API_KEY` *and* `LLM_API_KEY` in the file together. The mode is then decided per terminal, by three rules in order:
+
+1. **A `COGNEE_BACKEND` export wins.** `export COGNEE_BACKEND=local` (or `=cloud`) pins that terminal to that mode. Nothing else needs to change.
+2. **Otherwise, cloud wins when configured.** If `COGNEE_BASE_URL` is set (in the file or the shell), the plugin connects to it.
+3. **Otherwise, local.** With no URL anywhere, the plugin boots the local server.
+
+So with both modes in `~/.cognee/.env`:
+
+```bash
+claude                          # → cloud (the configured URL routes)
+COGNEE_BACKEND=local claude     # → local, this launch only
+export COGNEE_BACKEND=local     # → local for every launch from this shell
 ```
+
+Details worth knowing:
+
+- **The switch is pinned.** `COGNEE_BACKEND=cloud` with no `COGNEE_BASE_URL` configured still counts as cloud: the plugin does **not** silently fall back to local, and the status line shows `✕ (missing_cognee_base_url)` so you know exactly what to fix.
+- **To go local, use the switch — not `unset COGNEE_BASE_URL`.** Unsetting doesn't work: the env file re-injects the URL at the next launch. (Deleting the line from the file works, but that changes the default for *every* terminal.)
+- The shared `COGNEE_BACKEND` flips both the Claude Code **and** Codex plugins in that terminal. To flip only one, use `COGNEE_CLAUDE_BACKEND` / `COGNEE_CODEX_BACKEND` — the plugin-specific name beats the shared one.
+- Accepted values: `local` (aliases: `native`, `sdk`) and `cloud` (aliases: `http`, `api`, `server`). Anything else is ignored.
+- `COGNEE_BACKEND` can also live in `~/.cognee/.env` to make a mode the durable default; a shell export still overrides it per terminal.
+- Not sure what a terminal resolved? The status line's mode field shows it live, and `doctor.py` prints the decision with its cause, e.g. `Mode: Local — forced by COGNEE_BACKEND=local`.
 
 Then launch `claude`. All setup happens in the `SessionStart` hook, which fires once per fresh launch — so with the shell install above, the first launch connects memory with no extra steps.
 
@@ -72,24 +204,118 @@ On startup you should see a "Cognee Memory Connected" system message.
 
 ## Auth
 
-The integration uses a **single auth principal** — one API key, one user.
+The integration authenticates with **one principal** (one API key, one user), and —
+on servers that support it — a **plugin identity** derived from that principal: a
+dedicated agent sub-user with its own labeled API key, provisioned via
+`POST /api/v1/integrations/plugins/claude-code/provision`. Running under a plugin
+identity lets the cognee dashboard attribute sessions, traces and datasets to this
+plugin; datasets the plugin creates are automatically shared with your user.
 
-Key resolution order:
-1. `COGNEE_API_KEY` env var
-2. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
-3. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
+Key resolution order for data-plane traffic:
+1. `~/.cognee-plugin/claude-code/agent_key.json` (the provisioned plugin identity)
+2. `COGNEE_API_KEY` env var
+3. `~/.cognee-plugin/api_key.json` (cached from a previous mint)
+4. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
+
+Provisioning policy:
+- `COGNEE_PLUGIN_IDENTITY` selects the identity policy:
+  - `auto` (default) — an identity **in service of shared agent memory** (below). When
+    shared memory is on, session start provisions one (never revoking a key
+    another machine holds — see "Keys and multiple machines" below), wires the shared role, and pins the canonical dataset; if that
+    wiring cannot be done (older server, not the tenant owner, tenant-less user who already
+    owns data) the plugin stays on the principal key and says why in `cognee-doctor`. With
+    shared memory off it stays on the principal.
+  - `true` — explicit identity: provisioning is required and never falls back to the owner.
+    A server that does not add plugin keys per machine, an identity at its key limit, a
+    cached credential bound to another principal, or rejected credentials that cannot be
+    replaced stop with an error instead of revoking keys or silently using the owner's
+    authority.
+  - `false` — principal mode; a cached identity is ignored.
+- A cached credential is bound to its server and principal. A credential that belongs to
+  another account is never used.
+- **Keys and multiple machines.** Every machine holds its own key for the plugin's agent.
+  The plugin provisions only against a cognee server whose provision route adds keys and
+  never revokes one (it advertises `x-cognee-additive-plugin-keys`; cognee#6113). On older
+  servers, where provisioning would log every other machine out, the plugin runs as the
+  principal.
+  - A new machine never logs out another. When the agent is full, the server prunes keys
+    unused for 30 days (24 hours if never used) to make room.
+  - A key the server rejects (401: revoked from the dashboard, or pruned) is replaced in the
+    same session start. A refused registration (403) never discards a working key.
+  - A full agent (10 keys in use) makes the plugin run as the principal. Every session start
+    then warns about it, and the doctor's Memory Sharing line names the key limit, until
+    this machine gets its own key. Free a slot with the `cognee-keys` skill: it lists the
+    agent's keys most recently used first (this machine's marked), and revokes the one you
+    choose (`scripts/plugin-keys.py list` / `revoke <id>`; `--all` covers every plugin
+    agent of your user).
+- Use dataset UUIDs for shared write targets. Dataset switching checks effective write
+  permissions. Set `COGNEE_PLUGIN_READ_DATASET_IDS` to a JSON array of allowed UUIDs for
+  graph recall across datasets you granted yourself; it takes precedence over the datasets
+  shared memory resolved, and session history stays scoped to its own dataset.
+
+### Shared agent memory
+
+A plugin identity is its own cognee user, and grants only flow child→parent: your user
+sees what the agent writes, but the agent sees nothing your user (or another plugin's
+agent) owns. Left alone, that would silo memory per plugin — Claude Code could not recall
+what Codex stored. **Shared agent memory, on by default, makes every plugin agent of
+your user share one memory:**
+
+- Session start ensures your user owns a tenant (one is created for a fresh, tenant-less
+  install) and a `cognee-agent` role in it, adds the agent to both, and grants the role
+  read+write on your datasets. Grants are backfilled on every session start and every
+  ~60 s by the idle watcher, so a dataset another plugin creates becomes visible here
+  without a restart.
+- The launch's dataset is a **canonical, user-owned dataset addressed by UUID** (the
+  launch record's `dataset_id` for writes, `dataset_ids` for recall — including any
+  same-named per-agent copies from before). Every hook and skill addresses it that way;
+  a plain name would only resolve among datasets the agent itself owns.
+- All tenant/role/grant calls run as your user, never as the agent — the server only
+  lets the tenant owner manage roles, so an agent key cannot widen its own access.
+
+Turn it off with `"shared_agent_memory": false` in `config.json` or
+`COGNEE_SHARED_AGENT_MEMORY=false` for separated, per-plugin memory (name-addressed,
+agent-owned datasets). Opting out removes the agent from the shared role — it can no
+longer read or write your datasets — and starts it on a private dataset; it does not move
+data, so what it shared before stays in your user's dataset. Re-enabling puts the agent
+back into the same role and dataset. `cognee-doctor` shows the current state under
+**Memory Sharing**.
+
+#### How the two settings combine
+
+`COGNEE_PLUGIN_IDENTITY` decides *who the plugin authenticates as, and how strictly*;
+`COGNEE_SHARED_AGENT_MEMORY` decides *what an agent identity can see*. Sharing is a
+property of agent identities — your own user sees everything regardless — so the second
+setting only matters once an identity exists.
+
+| `COGNEE_PLUGIN_IDENTITY` \ `COGNEE_SHARED_AGENT_MEMORY` | `true` (default) | `false` |
+|---|---|---|
+| `auto` (default) | **Shared memory, graceful.** Provisions an identity when the server allows it, wires the shared role, and falls back to your principal key whenever that cannot be done. | **Principal, unless already provisioned.** A fresh install never provisions (`auto` provisions only in service of sharing). An identity provisioned earlier is kept, leaves the shared role, and writes to its own private dataset. |
+| `true` | **Shared memory, strict.** Same wiring; any obstacle (a server that does not add plugin keys per machine, an identity at its key limit, a credential bound to another principal, a rejected key that cannot be replaced) is an error — never a silent fall back to the owner's key. | **Separated identities, strict.** Each plugin is its own agent with its own private memory, blind to your other datasets. This is the isolation mode: a leaked or revoked plugin key affects only that plugin. |
+| `false` | **Principal only.** The sharing setting has no effect. | **Principal only.** Identical to the cell above. |
+
+Practical reading: leave both at their defaults for one memory across all of your plugins;
+set `COGNEE_PLUGIN_IDENTITY=true` when you want the strict guarantees; add
+`COGNEE_SHARED_AGENT_MEMORY=false` to that for fully separated per-plugin memory. Setting
+`COGNEE_PLUGIN_IDENTITY=false` makes the sharing setting irrelevant. `cognee-doctor` reports the
+resulting state under **API Key Source** and **Memory Sharing**.
 
 ## Mode selection rules
 
 At startup (`SessionStart`):
-- `COGNEE_BASE_URL` set → `managed_endpoint`, either local, or on Cognee Cloud (API key needed in cloud case)
+- `COGNEE_BACKEND` (or `COGNEE_CLAUDE_BACKEND`) exported → that mode, pinned — see [Which mode wins](#which-mode-wins-and-how-to-switch)
+- otherwise `COGNEE_BASE_URL` set → `managed_endpoint`, either local, or on Cognee Cloud (API key needed in cloud case)
 - otherwise → `integration_local` (local API bootstrap)
 
-At hook runtime:
-- hooks resolve mode through runtime endpoint auth (env + `api_key.json`), not only config intent
-- `http` mode skips local SDK initialization
+A forced-local switch also scrubs `COGNEE_BASE_URL`/`COGNEE_API_KEY` from the process environment, so the per-prompt recall/remember calls and every spawned worker resolve the same local endpoint — not just `SessionStart`. A forced-cloud switch with no URL configured never boots the local server; the connection attempt fails visibly instead (status line + doctor).
 
-The hooks emit `mode_decision` logs with `mode`, `service_url`, `url_source`, `key_source`, `api_key_present`.
+**Self-hosted deployments on loopback:** when the configured URL is a loopback address (`127.0.0.1`, `localhost`) and the server is down at session start, the plugin normally boots its embedded local server on that port. If the URL actually belongs to an externally managed deployment (docker compose stack, systemd service), set `COGNEE_MANAGED_ENDPOINT=true`: an outage then makes `SessionStart` report **Cognee Memory OFFLINE** loudly instead of silently booting an unrelated fallback instance over the deployment's port.
+
+At hook runtime:
+- hooks resolve the endpoint through runtime endpoint auth (env + `api_key.json`), not only config intent
+- every hook talks to that endpoint over HTTP; there is no in-process (SDK) fallback
+
+The hooks emit `mode_decision` logs with `mode` (always `http`), `service_url`, `url_source`, `key_source`, `api_key_present`.
 
 ## Sessions
 
@@ -121,12 +347,78 @@ Set a custom dataset at launch:
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
 
-`~/.cognee-plugin/claude-code/config.json` may still show a `dataset` value for
-visibility, but runtime dataset selection does not read it.
-
-The dataset is fixed for the lifetime of a launch. Recall searches only the active dataset. If you want to
-change the active dataset, you have to exit Claude, change the dataset via env, and then start Claude again.
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset (but see
+[Searching another dataset without switching](#searching-another-dataset-without-switching)).
 Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
+
+### Switching datasets mid-session
+
+Run `/cognee-memory:cognee-switch-datasets` (optionally with a dataset name) to move the
+running session to another dataset. Without a name it lists the datasets you can write to —
+those owned by the principal behind your API key; datasets you can only read are counted but
+never offered — and asks you to pick one. A name that is not listed is created for you.
+
+A Cognee session never spans two datasets, so the switch:
+
+1. syncs the current session into its dataset (aborts if that fails — nothing changes);
+2. registers a **new** Cognee session on the chosen dataset under a fresh connection handle,
+   then releases the old handle (register-then-unregister, so a local agent-mode server never
+   sees zero connections);
+3. repoints this launch's record so every hook, the shell wrappers, the idle/exit watchers and
+   the status line follow it.
+
+With the hooks module loaded there are two faster ways to the same switch, neither of
+which spends a model turn: `/cognee-dataset <name>` runs it from the prompt (alone, it
+lists the datasets you can write to), and the dataset name in the status row above
+the prompt is a picker that switches on pick. Both run the same script and a toast
+reports the outcome. See [Dataset picker and tools](#dataset-picker-and-tools).
+
+The choice lives in the launch record (`~/.cognee-plugin/claude-code/sessions/<host id>.json`),
+so it survives `--resume` and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
+`COGNEE_SESSION_ID`) for the rest of the launch. Retired sessions stay in the record's `touched`
+list and the session-end sync covers them again as a safety net. The script behind the skill is
+`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`,
+`--session-key <host id>` when several launches share a directory).
+
+### Searching another dataset without switching
+
+Recall only ever reads the active dataset. On every prompt the server answers, the hook also
+appends a block to the injected context naming **every other dataset you can read** (with their
+UUIDs — nothing ranks them, so you choose; read-only ones included, since a search needs no write
+access) and the command to search one of them. Whether the recalled context actually answers you
+is a call only the model can make — graph retrieval returns its nearest matches from any populated
+dataset, relevant or not — so the block is worded for it to act on only when memory did not answer.
+If you are asking Claude to recall something and the active dataset did not have it, it offers those datasets as a picker; pick one and Claude runs a **one-off, graph-only search** on
+it and tells you which dataset the answer came from. Nothing else moves: the active dataset,
+the Cognee session and where writes go stay as they were — this is for looking something up
+elsewhere, not for working there (that is what the switch above is for). The block tells
+Claude not to switch datasets on its own. If you ask for a switch, it runs
+`/cognee-memory:cognee-switch-datasets`.
+
+The same flow is available on demand through the `cognee-search` skill when an explicit search comes
+back empty, and through the `search` tool's `dataset_id` argument. Under the hood:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candidates
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid>
+```
+
+Every search reads the knowledge graph (or, with `--code`, a repository's code graph); the
+session cache is written, never searched. The session id is bound to the active dataset, so the
+wrapper drops it for any other dataset; the active dataset named by hand keeps it. Datasets are
+addressed by UUID because a name only resolves among the
+datasets your identity owns. The listing behind the hint is cached per plugin
+(`~/.cognee-plugin/claude-code/readable-datasets.json`) and refreshed at most every
+`COGNEE_DATASETS_CACHE_TTL` seconds (default `300`), inside what is left of the recall budget,
+so the prompt path never waits on it. A refresh that fails (timeout, unreachable) is not
+retried for `COGNEE_DATASETS_CACHE_RETRY` seconds (default `120`): the stale rows serve the
+hint meanwhile, so a loaded server costs one listing timeout per window, not one per prompt.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_RECALL_DATASET_HINT` | `on` | Set `off` to stop the prompt hook from naming the other datasets. On, the block is injected once per session (the first prompt the server answered) and again on any prompt memory answered with nothing. The explicit skill flow is unaffected. |
+| `COGNEE_DATASETS_CACHE_TTL` | `300` | Seconds the cached readable-datasets listing is served before one bounded refresh. |
+| `COGNEE_DATASETS_CACHE_RETRY` | `120` | Seconds after a failed refresh before the listing is fetched again; the stale rows are served meanwhile. |
 
 ## Hooks
 
@@ -134,14 +426,35 @@ Data added outside of Claude to the dataset (via SDK or the server for example) 
 |---|---|
 | `SessionStart` | mode select, identity setup, dataset readiness, watcher bootstrap |
 | `UserPromptSubmit` | dataset-scoped context lookup + async prompt staging |
+| `PreToolUse` (`Read`) | [file-scoped context](#file-context-on-read): code-graph facts about the file about to be read, injected as `additionalContext` |
 | `PostToolUse` | async trace write |
-| `Stop` | assistant answer write + optional transcript clear hook |
+| `Stop` | assistant answer write + credits refresh |
 | `PreCompact` | memory anchor build before compaction |
 | `SessionEnd` | trigger detached final sync worker |
 
 Claude-specific contracts are preserved:
 - `hookSpecificOutput` payload format
 - async hook behavior for write hooks
+
+## Memory value
+
+Ask “how did Cognee perform?” to use `cognee-report`, or run:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_session_stats.py" --session <host-session-id> --days 7
+```
+
+Per-session counters live at `sessions/<host-session-id>/stats.json` under the
+plugin state directory. They count recalls, turns with hits, injected and deduped
+entries, characters, accepted saves, completed improves, and delivered digest items.
+“Digest items used” means supplied to context, not proven use in an answer. No prompt
+or memory text is stored in this file. A session-start notice summarizes the last
+completed session for the same dataset/server. The status line shows cumulative
+items injected during this session.
+
+The seven-day counter total includes sessions started within that period. The report
+skill also reads event timestamps for calendar-window metrics and latency. Old logs
+may have clipped context, so exact `context_chars` is used where available.
 
 ## Memory preference
 
@@ -152,41 +465,167 @@ automatically, so Claude consults Cognee first when answering. To reinforce this
 Cognee as authoritative and prefer the Cognee tools/skills over Claude Code's built-in
 file memory (`MEMORY.md`).
 
-Note: a plugin **cannot reliably disable** Claude Code's native auto memory
-(`MEMORY.md` is injected as context, not a tool call that hooks can intercept). This
-feature steers the model toward Cognee rather than hard-disabling native memory. To
-turn the steer off, set `COGNEE_PREFER_MEMORY=false`. To additionally suppress native
-auto memory yourself, disable it in Claude Code (e.g. `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`
-in the launching shell, if your Claude Code version supports it).
+In cloud mode, SessionStart sets `autoMemoryEnabled: false` in
+`~/.claude/settings.json` when you have not chosen a value. An explicit `true` is
+preserved and reported once. The change takes effect next session. Set
+`COGNEE_DISABLE_AUTO_MEMORY=false` to restore the previous value the next time
+SessionStart runs. The status-line cleanup also restores it when the plugin is
+removed or disabled, provided its renderer still exists and runs, and when the plugin
+next starts outside cloud mode. A later user choice is always preserved, including
+removing the key. The file is edited in place: a symlinked `settings.json`, its
+permissions and its indentation are kept. `cognee-doctor.sh` reports the setting
+and ownership.
+See [Claude Code's auto-memory settings](https://code.claude.com/docs/en/memory#enable-or-disable-auto-memory).
+
+`COGNEE_PREFER_MEMORY=false` independently disables the memory preference instruction.
 
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_PREFER_MEMORY` | `true` | Inject SessionStart steer asserting Cognee as the preferred memory |
+| `COGNEE_PLUGIN_CITE_MEMORY` | `on` | Credit recalled memory in the answer; say on resume whether the chat was sent to long-term memory |
+
+### Credit in the answer
+
+When an answer uses recalled memory, the agent says so in one line at the end:
+
+```
+> 🧠 Cognee memory [m2]: on Oct 3 (Codex session) you chose the server over the CLI.
+```
+
+How it works:
+
+- The recall hook tags every injected item with `m1`, `m2`… and where it came from: an
+  evidence item, a Claude Code or Codex session, a dated session learning, a document,
+  graph entities or facts, code-graph facts, or agent guidance. Tags are numbered across
+  the session, and a memory recalled again keeps its tag: an evidence item by its
+  citation, an earlier turn or trace by its server id, anything else by its text. So a
+  tag names one memory for the whole session. Tags are assigned before the 9,000-char
+  budget and the injection ledger trim the context; only the ones that survive count as
+  this prompt's.
+- On turns where memory was injected, an instruction above it says how many memories
+  Cognee found for this prompt and asks the agent to add the credit line only when the
+  answer used a tagged item, and never for what it knows from CLAUDE.md, MEMORY.md, the
+  code, or the conversation. The first credit in a session also says in a few words how
+  it connects to the earlier work.
+- The Stop hook reads only the credit line (`arr[m1]` in code is not a citation),
+  compares its tags with the session's and logs a `memory_credit` event to `hook.log`:
+  cited, valid, invented, `earlier` (valid but not injected on this turn) and `available`
+  (how many this turn injected). Nothing is sent anywhere.
+- The tags, the credit state and the final-sync stored count live in the session's
+  folder, `~/.cognee-plugin/claude-code/sessions/<session>/`, which the state sweep
+  removes after a week idle.
+
+**When you reopen a chat.** The session-end sync runs after the chat is closed, so its
+outcome is shown when you resume the same chat:
+
+```
+🧠 This conversation was sent to Cognee's long-term memory when you left at 14:32.
+🧠 This conversation wasn't saved to Cognee when you left at 14:32: the Cognee server was unreachable.
+```
+
+It is shown once per sync, in the terminal and to the agent, and only on resume: a new
+chat, `/clear` or a compaction shows nothing. It says "sent", not "saved": the submit
+runs in the background, and a sync the server skipped because another improve held the
+dataset lock can't be told apart until the server fix for that lands (COG-6828).
+
+Both are off with `COGNEE_PLUGIN_CITE_MEMORY=off`.
 
 ## Session sync and watchers
 
-Session→graph sync runs through Cognee's session-aware `improve` endpoint: the server bridges the session from its own session cache (feedback weights, Q&A persist, compact trace-feedback persist, distillation, enrichment) instead of the plugin re-posting the full accumulated session text — which used to trigger a complete re-cognify of the whole transcript on every sync. Servers without session-aware improve automatically fall back to the legacy document bridge.
+Session→graph sync runs through Cognee's session-aware `improve` endpoint: the server bridges the session from its own session cache (feedback weights, Q&A persist, compact trace-feedback persist, distillation, enrichment) instead of the plugin re-posting the full accumulated session text — which used to trigger a complete re-cognify of the whole transcript on every sync. There is no fallback: a server without session-aware improve (`/api/v1/improve` answering 404/405/422) is logged as `improve_unsupported` and the session is reported as not synced.
 
-An idle watcher runs in the background for the lifetime of each launch. It polls activity every `COGNEE_IDLE_POLL` seconds and fires an improve when the session has been quiet for `COGNEE_IDLE_THRESHOLD` seconds, then waits at least `COGNEE_IMPROVE_COOLDOWN` seconds before the next run. An automatic improve also fires every `COGNEE_AUTO_IMPROVE_EVERY` stored tool calls/stops.
+A background watcher runs for the lifetime of each launch. It runs the update and LLM-key checks at start, then wakes every `COGNEE_IDLE_POLL` seconds to refresh shared agent memory when due and to notice a stop. An automatic improve fires every `COGNEE_AUTO_IMPROVE_EVERY` stored tool calls/stops (`0` disables it).
+
+That automatic trigger honours a **per-session cooldown**: after any successful improve of a session (auto, manual or final), no further auto improve runs for `COGNEE_IMPROVE_COOLDOWN` seconds, and none runs at all until at least one new prompt, tool call or answer has been stored since. The timestamp and turn count are persisted per session under `~/.cognee-plugin/claude-code/improve-state/`, so they survive across hook processes. (Until 1.4.4 the cooldown lived only in that process's memory and was reset on every respawn, so in practice an improve ran after every prompt.) The session-end final sync, the `/cognee-memory:cognee-sync` skill and the dataset-switch sync ignore the cooldown and always run. Leaving a chat syncs it once per exit that has something new: the two workers one exit can start (the `SessionEnd` hook and the exit watcher) share a marker keyed on the session and its running stored-item count, so a resumed chat that is left again after new turns syncs again, and an exit with nothing new is skipped. A final sync whose every attempt failed releases its marker, so the next exit retries.
+
+A **failed** attempt arms the same window as a **backoff**: if the submit timed out, the server was unreachable, or the server answered *busy* (its per-session improve lock is held by another run), no automatic improve of that session runs again until `COGNEE_IMPROVE_COOLDOWN` seconds have passed. A busy answer is never retried by the plugin — the in-flight improve persists everything above the session's server-side watermark, and the next trigger covers whatever landed after it. (Until 1.5.3 only a success armed the cooldown, the plugin held its own per-session lock, and a busy answer was re-submitted every 15 seconds for up to ten minutes, each re-submit counted by the server as one more improve.)
 
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
-| `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle improve fires |
-| `COGNEE_IMPROVE_COOLDOWN` | `600` | Minimum seconds between idle improve runs |
-| `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (0 disables) |
-| `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `180` | Read timeout for the improve POST (distillation runs inside the request) |
-| `COGNEE_IMPROVE_POLL_DEADLINE` | `600` | Best-effort wait for cognify/memify completion after submit |
-| `COGNEE_IMPROVE_BUSY_DEADLINE` | `600` | How long to wait for a concurrent improve's session lock before giving up |
-| `COGNEE_IMPROVE_BUSY_RETRY_INTERVAL` | `15` | Seconds between re-submits while the session lock is held |
+| `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session; persisted per session |
+| `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
+| `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST (agent-context extraction and distillation run inside the request) |
 
 Final sync on session end is triggered by the `SessionEnd` detached worker, with an exit watcher as fallback if the process exits without firing `SessionEnd`.
 
 ## Skills
 
-- `/cognee-memory:cognee-remember`
-- `/cognee-memory:cognee-search`
-- `/cognee-memory:cognee-sync`
+Claude chooses a skill from your request in plain words. It matches against each skill's
+`description` and its `when_to_use` example requests. You can also run any skill as a slash
+command, such as `/cognee-memory:cognee-search <query>`.
+
+| Skill | Example requests |
+|---|---|
+| `cognee-remember` | "remember that I prefer pytest over unittest", "save this to memory" |
+| `cognee-search` | "search Cognee for the retry policy", "check research for vector indexes" (once, without switching) |
+| `cognee-sync` | "sync this session to Cognee", "make what we just did searchable" |
+| `cognee-handoff` | "write a handoff", "I'm done for today, save progress" |
+| `cognee-forget` | "forget what we talked about tennis", "I pasted a secret, wipe it" |
+| `cognee-switch-datasets` | "switch to research", "use project-alpha from now on" |
+| `cognee-keys` | "list the Cognee keys", "revoke an old machine's key", "the agent is full of keys" |
+| `cognee-code` | "index this repo", "what calls or uses process_payment?" |
+| `cognee-architecture` | "explain the architecture of this repo", "where are the hotspots?" |
+| `cognee-standup` | "prep my standup", "what did I work on yesterday?" |
+| `cognee-digest` | "recap my week", "what did we ship and decide this week?" |
+| `cognee-timeline` | "how did the retry policy evolve?", "when did we first discuss dataset switching?" |
+| `cognee-report` | "evaluate Cognee", "is Cognee worth it?" |
+| `cognee-how-it-works` | "what does this plugin send to the cloud?", "how do I turn off capture?" |
+
+The standup, digest and timeline recaps are covered in
+[Recaps](#recaps-standup-digest-timeline) below. [`evals/`](evals/README.md) holds a
+`claude plugin eval` suite that checks this routing: two requests per skill, plus four
+look-alike requests that should reach no Cognee skill.
+
+With the hooks module loaded (Claude Code 2.1.287+), two more commands and two tools
+join them: `/cognee-dataset [name]` and `/cognee-tour`, and the tools
+`mcp__cognee-memory__search` and `mcp__cognee-memory__remember`, described under
+[Dataset picker and tools](#dataset-picker-and-tools). The skills stay the path for the
+judgement-heavy work (forget, sync, code indexing, the recaps) and for every Claude
+Code that does not load mods.
+
+## Recaps: standup, digest, timeline
+
+Three skills answer "what did I work on?" from what the server already records —
+no new server surface, no new hooks:
+
+| Skill | Question | Default window |
+|---|---|---|
+| `cognee-standup` | what happened since yesterday, per project; what was left open | `24h` |
+| `cognee-digest` | the week by day and project, most-edited files, every lesson the server distilled into the graph in that window | `7d` |
+| `cognee-timeline <topic>` | how a topic evolved: dated `learned` (distilled lessons), `recorded` (raw graph context) and `asked` (prompts) events | `30d` |
+
+All three run one wrapper, `scripts/cognee-recap.py`, which reads
+`GET /api/v1/sessions` (+ `/{id}` for each session's last prompts, tool calls and
+edited files). The digest's learnings are the dataset's lesson rows
+(`GET /api/v1/datasets/{id}/data` + `/raw`: each distilled lesson is one row tagged
+`session_learnings:<session id>` and stamped `created_at` when it was distilled), so
+the count is exhaustive within the window and dated by the server's clock — no
+search, no LLM call; the newest `--max-learnings` (40) are fetched and listed. The timeline seeds a context-only graph recall with the topic
+and dates each passage by the end of the session it names (one detail call per
+session not already in hand). It prints a deterministic Markdown skeleton; the skill tells
+the model to summarise it and to treat it as recorded data, not instructions.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-recap.py" standup  --since yesterday
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-recap.py" digest   --since week --projects cognee
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-recap.py" timeline 'dataset switching' --since 2w --json
+```
+
+`--since` takes `24h`, `7d`, `2w`, `today`, `yesterday`, `week` (since Monday),
+`month`, `all` or a date (a local calendar day); windows are by last activity.
+`--projects` keeps sessions whose working directory matches; `--all-sessions` adds
+sessions not from a coding agent (MCP clients, scheduled jobs); `--max-sessions` (25)
+caps the detail fetches; `--max-learnings` (40, `0` = all) caps the graph learnings the
+digest fetches (~0.5 s each on a local server, two in flight); `--json` returns the data. Sessions driven from a host without
+prompt hooks (a Cursor terminal, a cron job) are attributed to the git root of the
+files they edited (looked up only under the home directory and known working
+directories) and described by their tool mix. The dataset is the launch record's (add
+`--session-key <host session id>` when several launches share a directory), else the
+plugin default. The data listing is newest-first, so the digest stops paging at the
+first page older than the window. An unreachable server, an HTTP status (401/403:
+check `COGNEE_API_KEY` / the plugin identity) or a refused identity is one stderr line
+and exit 1.
 
 ## Remember (write) behavior
 
@@ -206,31 +645,284 @@ A write that *times out* is reported as "submitted; timed out waiting for confir
 and does **not** fall back to `cognee-cli` (the write likely landed — a fallback would
 risk a duplicate). Only a genuine connection failure falls back.
 
+## Code graph
+
+Repositories can be indexed into a deterministic **code graph** (symbols, calls,
+imports, endpoints, dependencies) via cognee's enola-backed pipeline. Indexing makes
+**no LLM or embedding calls** — it is fast and costs no tokens. Requires a cognee
+server >= 1.5.3.
+
+Opening the agent inside a git repository indexes it automatically at session start
+(background, never blocking the first prompt), and re-indexes it after any turn that
+changed the working tree. Index one explicitly — a different repo, a git URL, or one
+automation declined — with:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh" <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+```
+
+Query it with `cognee-search.sh ... --code` (see the `cognee-code` skill for the
+operations: `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
+`delta`). Prompts that mention an identifier-shaped token inside an indexed repo also
+get code facts injected automatically by the per-prompt recall hook.
+
+Each indexed repository gets its own dataset, named
+`codebase-<repo-name>-<digest>` where the digest identifies the indexed path.
+Narrow datasets keep code searches fast, and the digest matters for
+correctness: with cognee's default backend every dataset is a separate graph
+database, and two checkouts sharing a basename (`~/work/a/service`,
+`~/work/b/service`) landing in one database would let each re-index's
+stale-node sweep delete the other's nodes. `--code` searches resolve the
+dataset from the current checkout, so the generated name rarely needs typing.
+
+Indexing writes enola's snapshot into the indexed repository itself, at
+`<repo>/.enola/` (untracked). Add `.enola/` to the repository's `.gitignore` or
+your global excludes; the plugin's change detection already ignores it, so the
+indexer's own output never triggers a re-index.
+
+### What the graph reflects: working tree vs. pushed commits
+
+**The freshness model differs by where the server runs.** This is a property of the
+architecture, not a limitation to work around — but it is worth knowing which one you
+are using, because the output looks identical either way.
+
+| Server | Indexed from | Graph reflects | Updated by |
+|---|---|---|---|
+| **Local** (default) | The repository path on this machine | Your working tree, **including uncommitted and untracked changes** | Every turn that changes a file |
+| **Cloud / remote** | A git URL the server clones | The **last pushed commit** on the cloned branch | Pushing, then re-indexing |
+
+A remote server cannot read your disk. It only ever sees code you have pushed, so a
+local edit — however recent — is invisible to it until it lands on the remote. The
+plugin therefore does not re-submit URL-indexed repositories after local edits: doing
+so would re-pull the same commits and change nothing.
+
+The practical consequence on cloud: if you refactor locally and ask about the old
+symbol, the graph answers from the pushed state and the answer *looks* authoritative.
+**Push before relying on code answers about work in progress**, or use a local server
+for branches you are actively editing. `{"operation": "delta"}` reports what the last
+index actually changed, which is the quickest way to confirm what the graph currently
+knows.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_CODE_AUTOINDEX` | `auto` | `auto`: auto-index new repositories only when the server is local (code never leaves the machine) · `always`: also auto-index against a remote server · `off`: never auto-index new repositories (explicitly indexed ones still refresh) |
+
+Automatic indexing skips directories that are not git repositories, hold no source
+files, or exceed 3000 source files. Explicit indexing has no size cap.
+
+### File context on Read
+
+Every `Read` of a source file inside an indexed repository is preceded by a
+`PreToolUse` hook (`file-context.py`) that hands the model what the code graph knows
+about that file *before* the contents arrive — a map, so it can jump to the right line
+instead of scrolling, and see which other files the read one leans on:
+
+```
+## Cognee: about base_config.py
+Symbols in cognee/base_config.py (name:line):
+  classes: BaseConfig:22
+  functions: _tracing_explicitly_disabled:15 (private), get_base_config:168
+  methods: BaseConfig.validate_personalization_knobs:60, BaseConfig.validate_paths:78, BaseConfig.to_dict:156
+Calls out to: cognee/root_dir (ensure_absolute_path, get_absolute_path); cognee/shared/logging_utils (get_logger)
+Imports: base64, cognee.modules.observability.observers, cognee.root_dir, ...
+(Cognee file context — from the code graph; for callers or impact use `cognee-search.sh "<symbol>" --code`.)
+```
+
+It is purely additive (never blocks or alters the read), deterministic (a
+`query_facts` lookup filtered to the file — no LLM, no embedding call), and cheap: one
+request against the repo's own dataset, typically ~100 ms warm, bounded by a budget.
+Each file is served **once per session** (per `COGNEE_FILE_CONTEXT_TTL`) — the model
+already has the map after the first read. It stays silent for files outside every
+indexed repo, non-code files, sensitive paths (the capture deny list: `.env`, keys,
+credentials), a server known to be down, or an open circuit breaker; every skip is
+logged as `file_context_skipped` with its reason.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `COGNEE_FILE_CONTEXT` | `true` | `false` turns the hook off. |
+| `COGNEE_FILE_CONTEXT_SCOPES` | `code` | Lanes to run. Add `graph` (`code,graph`) to also inject up to 3 knowledge-graph hits about the file (notes, decisions, prior-session facts) — a HYBRID_COMPLETION search over the session dataset, so it costs a graph round trip on every first read of a file. |
+| `COGNEE_FILE_CONTEXT_BUDGET` | `3.0` | Seconds for the whole hook; a lane that cannot finish inside it is dropped. |
+| `COGNEE_FILE_CONTEXT_TTL` | `1800` | Seconds before the same file is served again in the same session. |
+| `COGNEE_FILE_CONTEXT_MAX_SYMBOLS` | `40` | Cap on listed symbols (the rest is summarised as a count). |
+
+## Forget (delete) behavior
+
+`cognee-forget` deletes memory the user asks to forget ("forget what we talked about
+tennis"). The agent syncs the live session first (so unsynced content becomes a
+deletable document), reads candidate documents' raw content to decide what matches,
+confirms with the user, and deletes each matching document via `POST /api/v1/forget` —
+which removes the raw data, its derived graph knowledge, and — best-effort — the session
+Q&A turns whose answers cited the deleted graph elements (plus guidance derived from
+them; agent trace entries are not matched). All server access goes through
+`scripts/cognee-forget.sh`, which resolves the API key like the other wrappers (env →
+`~/.cognee/.env` → the auto-minted local `api_key.json`) and always authenticates; it
+refuses to run without a key rather than send requests that can only 401. Deletion is
+irreversible; dataset-wide or delete-everything scopes require an explicit, unambiguous
+user request.
+
+## Claude observer: local mode on your Claude subscription
+
+> **It spends your Claude usage.** With the observer on, every cognify/improve call the
+> local server makes is a real `claude -p` run billed to your Claude subscription and
+> counted against its usage limits — and building the graph is token-heavy. Session
+> start announces it every time it is in use. Set `LLM_API_KEY` to use a provider of
+> your own, or `COGNEE_LLM_OBSERVER=false` to turn it off.
+
+Local mode needs an LLM for cognify, improve and graph completion. When no
+`LLM_API_KEY` (and no `LLM_PROVIDER`) is configured, session start runs those calls
+through **Claude Code itself** instead of asking for a key:
+
+1. `_observer.py` decides, before the cognee install/boot, that this launch has no LLM
+   of its own and the `claude` CLI is available. "Of its own" includes the `.env` the
+   server itself loads (cognee's `load_dotenv(override=True)` finds the first `.env`
+   walking up from the plugin venv: `~/.cognee-plugin/venv`, `~/.cognee-plugin`, `~`,
+   …): an `LLM_API_KEY` or `LLM_PROVIDER` there keeps the observer off;
+2. it points cognee's `custom` provider at a loopback OpenAI-compatible shim
+   (`LLM_PROVIDER=custom`, `LLM_MODEL=openai/claude-observer`,
+   `LLM_ENDPOINT=http://127.0.0.1:8017/v1`) and, unless you configured an embedder of
+   your own, sets embeddings to a local model (`EMBEDDING_PROVIDER=fastembed`,
+   `BAAI/bge-small-en-v1.5`, 384 dims — installed into the plugin venv like any other
+   provider extra);
+3. it starts the shim, `claude-observer.py`, detached. Every `/v1/chat/completions`
+   the server sends becomes one `claude -p --safe-mode --output-format json` run —
+   `--json-schema` carries cognee's structured-output schemas, `--safe-mode` keeps
+   your OAuth login but disables hooks, plugins and CLAUDE.md in the child so the
+   plugin never re-enters itself (every hook also exits at once when
+   `COGNEE_OBSERVER_CHILD` is set). The child keeps your Claude Code login
+   (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, Bedrock/Vertex settings) but not
+   `ANTHROPIC_API_KEY`, so the calls stay on the subscription. The shim retires itself
+   a few minutes after the cognee server is gone.
+
+The shim listens on loopback only and requires a bearer token on every route but
+`/health`: `~/.cognee-plugin/observer/token` (created once, mode 0600), which cognee
+receives as its `LLM_API_KEY`. Requests carrying an `Origin` header are refused, so a
+web page cannot drive it.
+
+A running server keeps the LLM config it booted with. The server's pidfile records
+whether it was started on the observer, and a session joining it follows that record:
+a server booted on the observer keeps the shim running (and keeps using the
+subscription) even after you set a key, until it restarts — it stops on its own once
+every session using it has closed.
+
+**Embeddings and datasets.** Vectors from different embedding models cannot be
+compared, so a dataset is tied to the embedder that built it. Turning the observer on
+switches embeddings to fastembed (384 dims), and turning it off (by setting
+`LLM_API_KEY`) switches them back to your provider's model. Either way, switch to a
+new dataset (`/cognee-memory:cognee-switch-datasets`, or `COGNEE_PLUGIN_DATASET`)
+rather than reusing one built with the other embedder. Session start and `doctor.py`
+repeat this whenever the observer is in use.
+
+Session start says so in its system message (`⚠ LLM: Claude Code (observer) …`),
+`doctor.py` shows it in the `LLM` row, and the status line's key check asks the shim
+instead of litellm: a Claude login problem shows as `✕ (claude_not_logged_in)`, not as
+an incorrect key. The tokens are billed to your Claude subscription (`haiku` by
+default); each completion is logged with model, duration and token count in
+`~/.cognee-plugin/observer/observer-events.log`, the shim's own log is
+`observer.log` next to it. The server still needs the local runtime, so the
+requirements above (a Python 3.10–3.14 on the machine for the venv) are unchanged.
+
+Setting `LLM_API_KEY` in `~/.cognee/.env` switches back to a provider of your own on
+the next launch; cloud mode never uses the observer (the remote server owns its LLM).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `COGNEE_LLM_OBSERVER` | `auto` | `auto`: observer when no `LLM_API_KEY`/`LLM_PROVIDER` is configured (in the environment, `~/.cognee/.env` or the server's `.env`) and `claude` is found. `true`: always (a missing CLI is reported at session start). `false`: never — local mode then needs a key as before. |
+| `COGNEE_OBSERVER_MODEL` | `haiku` | Claude model for the server's LLM calls (`haiku`, `sonnet`, `opus`, or a full model id). A value that cannot be a model name (spaces, a leading `-`, shell characters) is ignored with a warning at session start and in `doctor.py`, and `haiku` is used. |
+| `COGNEE_OBSERVER_CLAUDE` | found on PATH | Path to the `claude` executable. |
+| `COGNEE_OBSERVER_PORT` | `8017` | Loopback port of the shim. |
+| `COGNEE_OBSERVER_CONCURRENCY` | `2` | Parallel `claude -p` runs the shim allows. |
+| `COGNEE_OBSERVER_TIMEOUT` | `240` | Seconds per completion before the shim answers 504. |
+
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude-observer.py" status|probe|stop` inspects
+the shim, checks that `claude` can actually answer (one tiny real call), or stops it.
+
+## Visible Cognee searches
+
+The search, code-graph and architecture skills ask Claude to name Cognee in its
+normal user-visible progress text before a search, for example “Searching Cognee
+for the earlier decision…”. Session-start guidance also asks for a natural
+acknowledgement when supplied memory actually informs the response. This uses
+assistant progress text; it does not add a native host chip or change the
+host's private reasoning display. It is model guidance, not a guaranteed host UI
+event. Irrelevant background recall does not require an announcement.
+
 ## Status line
 
-The status line displays `cognee: <dataset> · <mode>`, for example:
+> **Where it is drawn.** The row sits **above the prompt**, on every surface, with
+> the dataset name as a picker, drawn by the plugin's hooks module (Claude Code
+> 2.1.287+) from the plugin's own renderer. On a Claude Code that does not load
+> the module (older versions, `--safe-mode`, an organisation that allows only
+> its own mods) the same renderer draws the line below the prompt instead,
+> through a settings-file `statusLine` that session start installs there; see
+> [A line below the prompt](#a-line-below-the-prompt). One or the other, never
+> both. Everything in this section describes the row's content, which is the
+> same either way.
 
-```
-cognee: agent_sessions · local
-cognee: my-project · cloud
+The status row highlights `cognee` between the connection glyph and a purple
+square, with bold dataset and location and what memory is doing. As a text
+line it can read:
+
+```text
+● cognee manual · cloud · 3 memories used
 ```
 
-`<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host. The mode is rendered **bold and coloured** — cyan for `local`, magenta for `cloud` — because it is the one field worth a double-take: it tells you which memory you are about to write to. (Red/green/amber are left to the health glyph and the warnings; bold and colour are set together so a terminal that ignores one still shows the other.)
+The glyph in front of `cognee` is the connection: a green `●` once the server is
+confirmed up and authenticated, a dim `○` while nothing is known yet (warming up),
+and on a failure the line leads with the red `✕ (<reason>)`; see the health
+rules below. The wordmark is bold in the brand purple, the dataset plain and the
+mode purple, the same row the mod draws above the prompt.
+
+- **No counters.** What the latest prompt recalled is the activity segment's
+  (`3 memories used`); a session total, a per-prompt hit count and a turn
+  ratio are deliberately not shown. The classic line keeps its own counters.
+
+The renderer only reads local counters; measurement happens in the existing
+recall hook without additional requests.
+
+The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
+Failures remain red, update notices amber, and credits retain their semantic
+colours. Unknown connection health appears as a dim `○` before the wordmark.
+
+When `COLUMNS` is set, the line is fitted to that width; Claude Code does not
+normally export it, and then the full line is shown as in classic mode. When
+fitting, the highlighted brand stays visible: token units shorten, then the
+spacing compacts, before the estimate is dropped. Credit warnings and update notices are
+never dropped: the narrowest form keeps health plus the notices, and only very
+narrow lines are clipped. Output is UTF-8 in both styles; ASCII (`#`, `-`, `[x]`)
+is used only if stdout cannot be switched to UTF-8. A renderer error falls back
+to classic output.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
+| `COGNEE_STATUSLINE_THEME` | from Claude Code's `theme` | `light` uses the darker purple palette, `dark` the brand lavender; unset, a `light` or `light-daltonized` Claude Code theme picks the darker one (`auto` cannot be told apart, so set this or the theme on a light terminal) |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Classic line only: its memory-hit counters; `full` shows per-scope recall/saved diagnostics; `false` hides them |
+
+`<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
+`cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /
+`COGNEE_CLAUDE_BACKEND` overrides it. The dataset and location are bold, using the same purple as the brand. Sections
+use wider spacing where it fits, then compact spacing before dropping fields.
+
+**Classic presentation and shared health rules.** The examples below describe
+`COGNEE_STATUSLINE_STYLE=classic`: its green dot, cyan/magenta mode labels and
+verbose counters remain available unchanged. The same connection and credential
+rules apply to the default presentation, using a purple square for healthy state.
 
 A connection glyph precedes the line:
 
 ```
 ● cognee: agent_sessions · cloud          # connected (server up and authenticated)
 ✕ (incorrect_cognee_api_key) cognee: … · cloud   # server reachable, but COGNEE_API_KEY was rejected
-✕ (unreachable) cognee: … · cloud         # server down / not reachable
+✕ (unreachable) cognee: … · cloud         # server positively absent (connection refused / DNS)
 ✕ (server_error) cognee: … · cloud        # server returned a 5xx
+✕ (missing_cognee_base_url) cognee: … · cloud   # COGNEE_BACKEND=cloud is exported, but no COGNEE_BASE_URL is configured
 ```
 
-`●` shows once the server is confirmed up **and** authenticated. On a failure the glyph flips to `✕ (<reason>)` — `incorrect_cognee_api_key` (a missing, wrong, or expired `COGNEE_API_KEY`), `unreachable` (server down, including a server that dies mid-session), or `server_error` (5xx). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so the line stays green until a failure is actually observed, and clears back to `●` on the next success. The glyph is read from local state only — no network on refresh. It is **colour-coded**: a bold green `●` when the connection is confirmed good, and a bold red `✕ (<reason>)` — reason included, so the whole verdict reads as one unit — when it is confirmed bad. The LLM-key failure is red as well — the two are told apart by the reason itself (`incorrect_cognee_api_key` for the key this plugin uses to reach the server, `incorrect_llm_api_key` for the key the local server uses to reach the LLM) rather than by colour.
+`●` shows once the server is confirmed up **and** authenticated. On a failure the glyph flips to `✕ (<reason>)` — `incorrect_cognee_api_key` (a missing, wrong, or expired `COGNEE_API_KEY`), `unreachable` (server positively absent: connection refused or DNS failure, including a server that dies mid-session), `server_error` (5xx). Recall timeouts are recorded as latency diagnostics; even repeated timeouts do not mark the server down or block the next prompt. Legacy `not_responding` markers no longer gate recall. One reason is special: `missing_cognee_base_url` means the terminal was pinned to cloud with the `COGNEE_BACKEND` switch but no `COGNEE_BASE_URL` is configured anywhere — a misconfiguration the renderer proves directly from the environment, shown immediately rather than after a failed connection attempt. `cognee_needs_python_3_10` is proven the same way: local mode, and the last session start found no Python 3.10–3.14 for the Cognee server to run on (the plugin does not download one) — install an interpreter and start a new session; see [Install](#install). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so the line stays green until a failure is actually observed, and clears back to `●` on the next success. The glyph is read from local state only — no network on refresh. It is **colour-coded**: a bold green `●` when the connection is confirmed good, and a bold red `✕ (<reason>)` — reason included, so the whole verdict reads as one unit — when it is confirmed bad. The LLM-key failure is red as well — the two are told apart by the reason itself (`incorrect_cognee_api_key` for the key this plugin uses to reach the server, `incorrect_llm_api_key` for the key the local server uses to reach the LLM) rather than by colour.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_READY_PROBE_TIMEOUT` | `1.0` | Seconds the per-prompt readiness probe waits before giving up and skipping recall for that turn. It sits on the keystroke→answer path, so the default is deliberately tight; raise it on a slow or loaded server that is otherwise healthy. |
+| `COGNEE_READY_PROBE_TIMEOUT` | `3.0` | Seconds the per-prompt readiness probe waits before giving up and skipping recall for that turn. It sits on the keystroke→answer path, so the default is deliberately tight; raise it on a slow or loaded server that is otherwise healthy. |
 
 **Local-mode LLM key.** In local mode the plugin also surfaces problems with `LLM_API_KEY` (the key the local server uses to call the LLM) **in that same leading glyph slot**, with its own reasons:
 
@@ -240,24 +932,58 @@ A connection glyph precedes the line:
 
 The slot holds one sign, by precedence: a server-connection failure wins (if the server can't be reached or authenticated, its LLM key isn't the actionable problem), otherwise an LLM-key failure is shown **in place of** the green `●` — the `llm_*` reason already tells you the server side itself is fine, so you never see a contradictory `●` and `✕` side by side.
 
-Both cases show the same reason — the fix is the same either way, and `llm-state.json` still records which of the two it was. Both verdicts come from a single authority: the background idle watcher (never the prompt path). It resolves the key exactly as the server does — Cognee's own config, so a key in `LLM_API_KEY`, a `.env`, or Cognee's config file all count — and validates it with one tiny `max_tokens=1` call through the same LLM stack Cognee uses. That makes it **provider-agnostic**: a rejection is caught for **any** provider (OpenAI, Anthropic, Gemini, Azure, Bedrock, …), not just OpenAI. Only a `401`/`403` counts as a key failure — providers authenticate before validating anything else, so any other response (including the `400` that reasoning models return when one token is too few to finish a message) proves the key works. A transport failure with no HTTP status is inconclusive and leaves the previous verdict alone. It runs once per idle-watcher launch — at session start, and again on any prompt that finds no live watcher (the watcher exits after each idle-bridge cycle) — never more often than once per `COGNEE_LLM_CHECK_INTERVAL` seconds; there is no periodic timer. The verdict clears once the key checks out, and expires after 30 minutes, so one left behind by a session that has ended never haunts the bar. See **Per-terminal status** below for how two terminals that disagree about the key each show their own truth. Local mode only (in cloud the LLM key lives on the remote server). Disable with `COGNEE_LLM_KEY_CHECK=false`.
+Both cases show the same reason — the fix is the same either way, and `llm-state.json` still records which of the two it was. Both verdicts come from a single authority: the background idle watcher (never the prompt path). It resolves the key exactly as the server does — Cognee's own config, so a key in `LLM_API_KEY`, a `.env`, or Cognee's config file all count — and validates it with one tiny `max_tokens=1` call through the same LLM stack Cognee uses. That makes it **provider-agnostic**: a rejection is caught for **any** provider (OpenAI, Anthropic, Gemini, Azure, Bedrock, …), not just OpenAI. Only a `401`/`403` counts as a key failure — providers authenticate before validating anything else, so any other response (including the `400` that reasoning models return when one token is too few to finish a message) proves the key works. A transport failure with no HTTP status is inconclusive and leaves the previous verdict alone. It runs once per idle-watcher launch — at session start, and again on any prompt that finds no live watcher — never more often than once per `COGNEE_LLM_CHECK_INTERVAL` seconds; there is no periodic timer. The verdict clears once the key checks out, and expires after 30 minutes, so one left behind by a session that has ended never haunts the bar. See **Per-terminal status** below for how two terminals that disagree about the key each show their own truth. Local mode only (in cloud the LLM key lives on the remote server), and only for a server the plugin started: a docker or systemd cognee on a loopback URL reads its own key, so the check is skipped when `COGNEE_MANAGED_ENDPOINT` is set or when a server answers on the port without the plugin's pidfile. Disable with `COGNEE_LLM_KEY_CHECK=false`.
 
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_LLM_KEY_CHECK` | `true` | Background, provider-agnostic `LLM_API_KEY` validation (local mode) surfacing `✕ (incorrect_llm_api_key)` |
 | `COGNEE_LLM_CHECK_INTERVAL` | `300` | Minimum seconds between LLM-key checks |
 
-**Recall counts.** The line ends with what memory actually did, faint so it stays secondary:
+**Activity.** The line ends with what memory is doing right now, and once it is done,
+what it did:
 
 ```
-● cognee: agent_sessions · local · recall 4s/5t/0g/1a · saved 2p/41t/2a
+● cognee agent_sessions · local · recalling…
+● cognee agent_sessions · local · 3 memories used
+● cognee agent_sessions · local · saving…
+● cognee agent_sessions · local · ✓ memory saved
+● cognee agent_sessions · local · learning from this session…
+○ cognee agent_sessions · local · setting up memory · starting memory server…
 ```
 
-`recall` is what this turn's lookup found — `s`ession turns, `t`races, `g`raph context, `a`gent guidance — and `saved` is what the *previous* turn persisted: `p`rompts, `t`races, `a`nswers. These are the same numbers the Codex plugin puts in the `Cognee memory: recall …` header it injects into model context; on Claude Code they live in the bar instead. `UserPromptSubmit` already writes them to `~/.cognee-plugin/claude-code/last_recall.json`, so the renderer stays network-free, and the counts are stamped with the session that produced them so a second terminal's numbers never show up here. Hide them with `COGNEE_STATUSLINE_COUNTS=false`.
+(`COGNEE_STATUSLINE_STYLE=classic` keeps the activity segment too, at the end of
+its line.)
+
+While an operation runs the segment is present tense and coloured (`connecting…`,
+`recalling…`, `saving…`, `learning from this session…` for the automatic improve pass,
+`indexing repository…`, `preserving context…` before compaction, `saving session…`
+at exit). When it finishes, the result replaces it in plain words with its number
+(`3 memories used`, `✓ memory saved` for this turn's tool calls and answer,
+`✓ learned`, `memory ready`, `✓ repository indexed`, `✓ context kept`,
+`✓ session saved`); a recall that found nothing says `nothing relevant` rather
+than counting to zero. Work that failed is never ticked: a recall the server
+could not answer says `recall failed`, a write dropped for good `save failed`,
+one spooled for replay after a transport error `save queued`, an exit sync
+that did not finish `session sync failed`, a compaction anchor that could not
+be built `context not kept`. The number is recall's alone, since that is what helped
+this turn; the save side shows a tick, because what it stored (the captured
+prompt, tool calls and answer of the turn) is bookkeeping nobody can act on. A
+result stays until the next operation begins, turns faint after a minute and
+leaves the line after five, so a fresh `3 memories used` and one left over from
+ten minutes ago never read the same.
+
+The hooks write one activity marker per session,
+`~/.cognee-plugin/claude-code/phase/<session>.json`, at the start and end of every
+operation (`phase_begin` / `phase_end` in `_plugin_common.py`), so the renderer
+stays network-free and a second terminal's activity never shows up here. An
+operation left marked active for more than 90 seconds (a hook that died) is
+ignored rather than shown forever. The per-session recall counts are still written
+to `recall/<session>.json` for `cognee-plugin metrics`.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Show the trailing `recall …/saved …` counts |
+| `COGNEE_STATUSLINE_ACTIVITY` | `true` | `false` hides the activity segment |
+| `COGNEE_STATUSLINE_ICON` | unset | `brain` puts a 🧠 in front of the name (`🧠 cognee: …`). Off by default: the emoji is double-width and some terminal fonts misrender it. |
 
 **Per-terminal status.** Every signal in the line answers *for this terminal*, not for the machine. That matters because terminals legitimately disagree: one shell exported `LLM_API_KEY` and another didn't, or two hold different `COGNEE_API_KEY`s against the same server. Both sessions show the truth at the same time:
 
@@ -278,29 +1004,242 @@ through), `COGNEE_AGENT_SESSION_NAME`, `COGNEE_PLUGIN_IN_VENV` (the re-exec guar
 and `COGNEE_SYNC_DATASET` / `COGNEE_SYNC_SESSION_ID` (arguments to the final-sync
 worker). Setting them yourself does not configure anything — the plugin overwrites
 them during startup — and a stale value can misroute identity or session resolution.
-Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to pin a dataset.
+Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the dataset
+(a mid-session `/cognee-memory:cognee-switch-datasets` overrides both for that launch).
 
-It is configured automatically on first launch when no custom status line is already configured. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward. Existing non-Cognee `statusLine` settings are preserved; set `COGNEE_STATUSLINE=false` before launching Claude Code to opt out entirely.
+#### A line below the prompt
 
-The entry sets `refreshInterval: 2`, so Claude re-runs the (network-free, local-only) renderer every 2 seconds in addition to its event-driven updates. Without it, Claude only refreshes the status line on events (a new message, `/compact`, etc.), which go quiet while the session is idle — so a connection change detected right after launch (e.g. a rejected API key) wouldn't show until your next prompt. Tune it with `COGNEE_STATUSLINE_REFRESH_INTERVAL` (seconds; a value below `1`, e.g. `0`, disables idle polling and reverts to event-only refresh).
+The renderer behind the row, `scripts/cognee_statusline_render.py`, is also a
+complete Claude Code `statusLine` command, through `scripts/cognee-statusline.sh`.
+Session start writes it into your settings in a session where the hooks module
+does not draw the row, and removes it again in a session where the module does:
+Claude Code keeps a status-line row reserved under the prompt for as long as the
+entry exists, even when the command prints nothing, so an entry left over from
+before the module would show as a blank row. Only the plugin's own entry is ever
+written or removed; one you set yourself is left alone either way. The last
+session to start decides: a terminal that cannot load the module (an older
+Claude Code, `--safe-mode`) installs the line again, and the next session with
+the module removes it. `COGNEE_STATUSLINE=0` stops the plugin touching the entry
+at all. You can also add it yourself, for instance if you prefer the line below
+the prompt:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "[ -x \"<plugin dir>/scripts/cognee-statusline.sh\" ] && exec \"<plugin dir>/scripts/cognee-statusline.sh\" || true",
+  "refreshInterval": 2
+}
+```
+
+`<plugin dir>` is the folder holding this README (`/plugin list` prints it as
+"Read from"). `refreshInterval: 2` re-runs the network-free renderer every two
+seconds while the session is idle, so a connection change shows without a prompt.
+In a session where the hooks module draws the row above the prompt, this line
+prints nothing (the module marks its session, see below), so the two never show
+together. The renderer removes the entry itself when the plugin is disabled or
+uninstalled but its files linger.
 
 The status line reads only local state — no network calls on every refresh:
-1. Dataset: `COGNEE_PLUGIN_DATASET` env var, otherwise `agent_sessions`
-2. Mode: `COGNEE_BASE_URL` env var, then `~/.cognee-plugin/claude-code/config.json` (`base_url`)
+1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
+2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then `COGNEE_BASE_URL` env var
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
 5. LLM key: `llm-state/<session>.json`, then `llm-state.json`
-6. Counts: `recall/<session>.json`, then `last_recall.json`
+6. Activity: `phase/<session>.json`
+7. Counts: `recall/<session>.json`, then `last_recall.json`; cumulative entries from `sessions/<host id>/stats.json`
 
-## Auto-clear demo hook
+### Desktop app and the hooks module
 
-For demo flows where each response should clear local transcript context:
+The plugin's hooks module, `hooks/register.ts` (a
+[Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview)), draws
+the status row **above the prompt**, in the Code tab of the Claude Desktop app and
+in a terminal alike:
 
-```bash
-export COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE=true
+```
+● cognee [agent_sessions ▾] · local · 3 memories used
+⠹ cognee [agent_sessions ▾] · local · recalling…
 ```
 
-This clears the transcript file on `Stop` after memory capture.
+On the desktop the row leads with cognee's waveform mark, the official icon
+itself (an inline SVG from `assets/icon-lavender.svg`, read once at session
+start), then the wordmark in the brand lavender. A terminal gets the wordmark
+alone: no character looks like the mark, so none stands in for it, there or
+after the spinner or in toasts (the credit line under an answer is the one
+place a terminal draws the display logotype). The `icon` row in `/config`
+(`wave` or `none`) switches both off; the text line has no mark either, only the
+glyph and the wordmark. The module runs the plugin's own
+renderer in `--json` mode and lays the result
+out: the dataset, mode, credits,
+connection reason and update nudge are the renderer's, so the row and a
+[line below the prompt](#a-line-below-the-prompt) cannot drift. While an
+operation runs a braille spinner leads the row; a failure leads it with the red
+`✕ (<reason>)`, and unknown health with a dim `○`, as on the text line. The module
+marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`) and the
+renderer, run as a settings-file status line, prints nothing for a marked session,
+so the row is never shown twice.
+
+The row is laid out in segments that are never split: in a terminal too narrow
+for all of them, the least useful go first (the last operation's cost, then a
+healthy credit balance, then what memory did last), and what must stay (the
+badge, the dataset, the mode, an exhausted balance, an update notice) wraps
+onto a second line as whole segments rather than breaking a word in two. The
+dataset name is a picker whenever the server listed any writable datasets;
+the listing waits for the SessionStart hook (which writes the launch record it
+reads) and is retried a few times while a server is still starting, so a slow
+start means a late picker, not a missing one. A server that session start hands
+to its bootstrap worker shows `setting up memory · starting memory server…`
+for as long as the boot runs, and `memory ready` once the session is
+registered; the row never says `memory unavailable` while the connection
+marker says the server is up.
+
+Credits read as on the text line, green, red once exhausted or a request was
+refused; where the text line prints `top up: <url>`, the row draws **top up** as a
+link to billing instead, an anchor in the Desktop app and a terminal hyperlink
+where the terminal supports one (`COGNEE_BILLING_URL` overrides the target). To
+see that state without an empty balance, set `COGNEE_STATUSLINE_CREDITS=exhausted`
+(in `~/.cognee/.env`, or exported): the renderer then shows a preview balance of
+`-$0.40` with the link, reading no marker and writing nothing; `false` hides the
+credits segment altogether.
+
+The dataset name in the row is a **picker**: it lists the datasets you can write to
+(one `switch-dataset.py --list` when the band is first drawn, not awaited, and again
+after each switch), and choosing another one switches the session there at once,
+with no model turn, the way `/cognee-dataset <name>` does. Its last entry, `+ new
+dataset…`, turns the picker into a text field: Enter with a name switches to that
+dataset, creating it (the same rules as a typed switch: no spaces or dots), and
+Enter on nothing or the `✕` brings the picker back. The row says `switching
+dataset…` while it runs and a toast reports the outcome, errors included. Until the
+listing lands, or when it fails (no launch record, server down), the name is plain
+text. In a terminal the picker stays closed until asked for, since a focused
+picker shows its list: the dataset name is a button (`agent_sessions ▾`); press
+it, or `/cognee-dataset` alone, to open the list, then `ctrl+x tab` or a click
+reaches it, arrows move, Enter picks and the list closes again. Escape returns
+to the prompt.
+
+The module also adds, on both surfaces:
+
+- **After the spinner, while Claude works:** `Thinking · recalling…`, `· saving…`.
+  On the desktop for every phase; in a terminal only for the phases whose hooks run
+  in the background (saving, learning from the session, indexing, session sync), because the
+  recall and compaction hooks already show their own status message there.
+
+The credit inside an answer that used memory (`🧠 Cognee memory [m2]: …`) is the
+agent's own, asked for by the recall hook; see [Credit in the answer](#credit-in-the-answer).
+The module only redraws that line: the wave mark on the desktop, the display
+logotype in a terminal (see [Dataset picker and tools](#dataset-picker-and-tools)).
+
+**A `see fix` button beside every red ✕.** When the row shows a failure, a small
+`[ see fix ]` button right after `✕ (<reason>)` opens a dialog above the prompt
+(Escape closes it) that says in plain words what is wrong and what to do, for each
+reason the row can show:
+
+| Reason on the row | The dialog says |
+|---|---|
+| `incorrect_cognee_api_key` | the server rejected the plugin's key; cloud: paste the key from your account (saved to `~/.cognee/.env`); local: delete `~/.cognee-plugin/api_key.json` and start a new session |
+| `incorrect_llm_api_key` | the local server cannot reach its LLM; paste a provider key, or remove `LLM_API_KEY` to run on your Claude subscription |
+| `missing_cognee_base_url` | cloud is forced but no URL is set; paste the URL, or `unset COGNEE_BACKEND` |
+| `cognee_needs_python_3_10` | install a Python 3.10–3.14 and start a new session, or use Cognee Cloud |
+| `unreachable` | local: a new session restarts the server, `hook.log` says why it died; cloud: check the URL and the network |
+| `server_error` | the server answers 5xx; restart locally, retry on cloud |
+| `not_responding` | the server is busy; wait, or raise `COGNEE_READY_PROBE_TIMEOUT` |
+
+Every dialog has a **run doctor** button that runs `cognee-doctor.sh` (read-only)
+and shows its report in the dialog. Where one value is the fix (a key, a URL) the
+dialog has a field for it: Enter appends `NAME="value"` to `~/.cognee/.env`,
+where the last value of a key wins, with no shell history involved; a new session
+applies it. The dialog never edits anything else.
+
+**First-run tour.** The first session on a machine gets three short hints under
+the row, each about what is right above it, with `next` and `skip` buttons:
+
+```
+cognee [agent_sessions ▾] · local
+The dataset name ↑ is a picker: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
+```
+
+then that the dot means memory is connected, local/cloud where it lives and the
+end of the row what memory is doing, then that Claude uses the memories Cognee
+recalls on every prompt, and the two commands. `done` or `skip` ends it and it is not shown again:
+the plugin's own store (Claude Code keeps it per plugin, across sessions) records
+that this version of the tour was seen. `/cognee-tour` replays it any time. In a
+terminal, focus the band with `ctrl+x tab` to press the buttons, or click them.
+
+Four rows in `/config` switch each piece: `icon` (`wave` or `none`), `band` (off,
+no row is drawn and no session is marked, so a line you added below the prompt
+shows again), `spinner`, `tour` (a fifth, `tools`, is described below).
+
+The module never calls the Cognee server and runs nothing on a timer while the
+session is idle. It reads the activity marker when the hooks fire (session start,
+each prompt, each tool call, the end of a turn, compaction), polls it once a second
+only while an operation is running or for thirty seconds after one started in the
+background, and runs the renderer (a local process, no network) at session start
+and after each recall. For two minutes after a session starts, while the row still
+shows the connection as unknown (`○`), it retakes that snapshot every five seconds,
+since the SessionStart hook writes the connection marker only once it has
+connected. Server traffic is exactly what the hooks produce without it.
+It hooks only Claude Code's native events, never the `classic.*` mirrors of the
+settings hooks, which the built-in guard withholds from a user-installed mod for
+Team and Enterprise sign-ins.
+
+Needs Claude Code 2.1.287 in the terminal or 2.1.286 in the Desktop app. On an
+older version, with `--safe-mode`, with `disableAllHooks`, or where an organisation
+allows only its own mods, the module does not load and everything else in this
+README works unchanged: the settings hooks run the memory pipeline. The status row
+is the module's, so there it is not drawn; add the
+[line below the prompt](#a-line-below-the-prompt) yourself if you want one.
+
+### Dataset picker and tools
+
+The module also gives the dataset a control of its own and a direct line for
+Claude. All of it runs the scripts in this folder, with the same server traffic as
+the skills.
+
+**The dataset picker.** The dataset name in the status row above the prompt is a
+picker of the datasets you can write to, the current one selected, with `+ new
+dataset…` last for a name that does not exist yet. Picking another
+runs `switch-dataset.py <name>` at once, with no model turn: the session it leaves
+is synced first, a new Cognee session starts on the chosen dataset, and the row
+follows. `switching dataset…` shows while it runs; a toast reports `switched to
+demo`, `already on demo`, or the script's error (`✕ Selected dataset is not
+writable`). The list is read once when the row is first drawn and again after each
+switch; nothing polls. `/cognee-dataset <name>` does the same from the prompt on
+every surface, and `/cognee-dataset` alone prints the list.
+
+**Two tools Claude calls directly.** At session start the module registers
+`mcp__cognee-memory__search` and `mcp__cognee-memory__remember`. Both sit behind
+tool search, so they cost nothing on the turns Claude does not reach for them, and
+Claude loads the schema when it needs one. They replace the skill-file read and the
+Bash row the `cognee-search` and `cognee-remember` skills need, with typed
+arguments instead of a command line; the skills remain for every Claude Code that
+does not load mods and for the judgement the skill text carries.
+
+| Tool | Arguments | Runs | Returns |
+|---|---|---|---|
+| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from the active dataset.` then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
+| `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
+
+The credit line the model writes under an answer that used memory
+(`> 🧠 Cognee memory [m4, m5]: …`) is drawn as the mark and the note alone, the
+label and the tags left to the stored line: the engine still draws the reply,
+with the line taken off its text, and the mod draws the row under it. The mark
+is the wave on the desktop; a terminal draws no vector image, so there it is
+the display logotype from the brand resources, which is built on a grid of
+squares, in two rows of braille (11 columns, one dot a square), bold in the
+darker brand purple so the thin dots read on light and dark backgrounds, the
+letters in the logotype's own proportions. Other surfaces keep the line as
+written. The stored message is
+never changed, so ctrl+o shows the original and the Stop hook's credit check
+reads what the model wrote. The `icon` row in `/config` turns the mark off
+here as in the band.
+
+While a tool runs the spinner says `· searching memory…` or `· remembering…`
+on both surfaces, as it says `· switching dataset…` during a switch. The
+`tools` row in `/config` turns the registration off; the skills are unaffected.
+
+Everything here hooks only Claude Code's native events, as the band does: no
+`classic.*` mirrors, nothing on a timer, and no system-prompt or skill-text
+rewriting (which the built-in guard withholds from a user-installed mod for Team
+and Enterprise sign-ins anyway).
 
 ## Logs and state
 
@@ -319,6 +1258,24 @@ tail -f ~/.cognee-plugin/claude-code/watcher.log
 tail -f ~/.cognee-plugin/claude-code/exit-watcher.log
 tail -f ~/.cognee-plugin/claude-code/recall-audit.log
 ```
+
+Every log is capped: when one passes `COGNEE_PLUGIN_LOG_MAX_BYTES` (default 20 MiB) it
+is rotated to `<name>.1` and started fresh, so a log is never bigger than twice
+the cap and the stretch just before a failure survives in the `.1` file. Set the
+variable (in `~/.cognee/.env` or the shell) to change the ceiling; `0` disables
+rotation. The local server's own log lives under `~/.cognee/logs/` (rotated by
+cognee, ten files kept); `bootstrap.log` holds only the plugin's bootstrap
+worker output, and `server-console.log` the first megabyte of the server's
+console output for the current boot (previous boot in `server-console.log.1`) —
+where a boot that failed before the server could open its own log explains itself.
+
+At every SessionStart the plugin also sweeps its own state directory: per-session
+files whose session is over (status markers, bridge caches and pending buffers
+untouched for a week; launch records a week after their host process died, or
+after 30 days), improve-state files untouched for a week, and files and
+directories older versions left behind (such as `improve-locks/`). It
+never touches another plugin's subdirectory. One `state_sweep` line in
+`hook.log` records what was removed.
 
 Shared state (used by both Claude Code and Codex plugins):
 
@@ -382,7 +1339,8 @@ configuration needed to receive them:
 - **Status line:** an amber `⬆ Cognee update available <installed>→<latest>`
   segment appears, and disappears once you update.
 - **SessionStart:** a one-time message per new version, e.g. *"Cognee update
-  available 1.0.0 → 1.2.0 — run `/plugin update cognee-memory@cognee`."*
+  available 1.0.0 → 1.1.0 — run `/plugin update cognee-memory@cognee`."* (the id
+  names whichever marketplace you installed from, e.g. `@anthropic-plugin-directory`)
 
 A background check in the idle watcher runs **at most once per day** and fetches a
 single public file — the marketplace manifest on the tracked git ref, via
@@ -403,8 +1361,14 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 
 ## Troubleshooting
 
+**Terminal connects to cloud when you wanted local (or the reverse)**
+- The mode is routed by `COGNEE_BASE_URL`: configured anywhere (env file or shell) → cloud; otherwise → local. An exported `COGNEE_BACKEND=local` / `=cloud` overrides that for the terminal — see [Which mode wins](#which-mode-wins-and-how-to-switch).
+- `unset COGNEE_BASE_URL` does **not** go local: the env file re-injects the URL at the next launch. Export `COGNEE_BACKEND=local` instead.
+- Check what the terminal actually resolved: the status line's mode field shows it live, and `doctor.py` prints the decision with its cause (`Mode: Local — forced by COGNEE_BACKEND=local`).
+- If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
+
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (`COGNEE_PLUGIN_DATASET` / `agent_sessions`).
+- Recall is scoped to the active dataset (the one in the status line — `COGNEE_PLUGIN_DATASET` / `agent_sessions` at launch, or whatever you switched to).
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 
@@ -429,10 +1393,13 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 Config precedence:
 1. env vars (shell exports)
 2. `~/.cognee/.env` (one-time setup file, shared with the Codex plugin; loaded into the environment at process start, so every env var below can live here)
-3. `~/.cognee-plugin/claude-code/config.json`
-4. defaults
+3. defaults
 
-`~/.cognee/.env` is created with a commented template on first session start (permissions `0600`; the path can be overridden with `COGNEE_ENV_FILE`). Run `doctor.py` to see which keys the file defines and which are overridden by shell exports.
+There is no `config.json`. Older versions wrote `~/.cognee-plugin/claude-code/config.json` and SessionStart read a `base_url` from it while the per-turn hooks did not, so a stale URL there could point the two halves of the plugin at different servers. SessionStart now deletes a leftover file; put everything in `~/.cognee/.env` instead.
+
+One exception sits above all three layers: the `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` mode switch. When exported, it pins the mode regardless of where the connection variables are defined — forced local ignores a configured `COGNEE_BASE_URL` entirely (it is scrubbed from the process environment), and forced cloud stays cloud even when the URL is missing. See [Which mode wins](#which-mode-wins-and-how-to-switch).
+
+`~/.cognee/.env` is created with a commented template on first session start (permissions `0600`; the path can be overridden with `COGNEE_ENV_FILE`). Run `doctor.py` to see which keys the file defines, which are overridden by shell exports, and — in the mode row — whether a backend switch forced the mode decision.
 
 ### Managing the env file
 
@@ -472,24 +1439,207 @@ export LLM_API_KEY="sk-..."             # a leading 'export ' is tolerated, so
 
 Keys are letters, digits, and underscores. Values are taken literally — no `$VAR` interpolation, no multi-line values. Malformed lines are skipped silently, never fatal, and process-critical variables (`PATH` and friends) are ignored by design.
 
-**Remove a variable** — delete (or comment out) its line in the editor. The common case is switching from cloud back to local mode: remove the `COGNEE_BASE_URL` line and make sure `LLM_API_KEY` is set.
+**Remove a variable** — delete (or comment out) its line in the editor. To switch modes you usually don't need to remove anything: keep both modes' variables in the file and export the switch instead — `export COGNEE_BACKEND=local` (see [Which mode wins](#which-mode-wins-and-how-to-switch)). Remove the `COGNEE_BASE_URL` line only when you want local to become the permanent default for every terminal.
 
-**Apply and verify** — the file is read at session start, so changes take effect on the next `claude` launch. If a value seems to be ignored, check whether the same variable is `export`ed in your shell: real exports always win over the file. The doctor's **Env File** row lists which keys the file defines and flags any that a shell export is overriding.
+**Apply and verify** — changes take effect on the next `claude` launch: the session registers on its server at start. Hooks re-read the file in every process, so a `COGNEE_BASE_URL` edited mid-session is detected: the next prompt shows a one-time notice naming the old and new server, and a new session applies the change. If a value seems to be ignored, check whether the same variable is `export`ed in your shell: real exports always win over the file. The doctor's **Env File** row lists which keys the file defines and flags any that a shell export is overriding.
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
-| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall (config value is informational-only) |
+| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall at launch; `/cognee-memory:cognee-switch-datasets` changes it mid-session (config value is informational-only) |
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `cc` | Prefix for auto-generated session IDs |
 | `base_url` | `COGNEE_BASE_URL` | unset | Set to enable managed endpoint mode |
+| `managed_endpoint` | `COGNEE_MANAGED_ENDPOINT` | unset | `true` = the URL is an externally managed deployment: never boot a local fallback on its port; outages fail loudly |
 | `api_key` | `COGNEE_API_KEY` | unset | API key; auto-minted if absent in local mode |
+| mode switch | `COGNEE_BACKEND` | unset | `local` or `cloud` — pins the terminal's mode, overriding the URL rule; flips the Claude Code **and** Codex plugins |
+| plugin-only mode switch | `COGNEE_CLAUDE_BACKEND` | unset | Same, for this plugin only; beats `COGNEE_BACKEND` |
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |
 | local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
-| demo auto-clear | `COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE` | disabled | Clear transcript on Stop after capture |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
-| idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle improve fires |
-| idle watcher cooldown | `COGNEE_IMPROVE_COOLDOWN` | `600` | Minimum seconds between idle improve runs |
-| auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (0 disables) |
-| improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `180` | Read timeout for the improve POST |
-| improve poll deadline | `COGNEE_IMPROVE_POLL_DEADLINE` | `600` | Best-effort wait for pipeline completion after submit |
+| improve cooldown | `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session |
+| auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
+| improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST |
+| recall minimum prompt length | `COGNEE_RECALL_MIN_PROMPT_CHARS` | `5` | Prompts shorter than this (surrounding whitespace not counted) skip the per-prompt recall. Values below `5` or non-numeric fall back to `5`. Capture is unaffected. |
+
+### Per-operation timeouts
+
+The `/api/v1/agents/connections/me` identity lookup has a 15-second client timeout
+in both runtime resolution and the explicit-search fallback. Prompt recall resolves
+its session locally and keeps its separate 45-second cloud budget.
+
+Each operation has its own client timeout, tunable independently (all in seconds):
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_RECALL_BUDGET` | `45` cloud / `20` local | Whole-recall deadline in seconds for the per-prompt lookup; a scope that overruns contributes no hits |
+| `COGNEE_RECALL_SLOW_BUDGET` | `5` | Per-prompt recall deadline after `COGNEE_SLOW_STREAK_THRESHOLD` (default `3`) consecutive timeout-only prompts. It lasts `COGNEE_SLOW_STREAK_WINDOW` seconds (default `600`) or until a recall answers; then one prompt tries the full budget again, and each re-test that times out doubles the window, up to an hour |
+| `COGNEE_INJECT_MAX_CHARS` | `9000` | Maximum serialized hook output, including headers and notices. Values are clamped to `1024`–`9000` so the JSON envelope and visibility header fit; whole memory entries are dropped first. |
+| `COGNEE_RECALL_PASSAGE_CHARS` | `1200` | Per-passage cap, cut at a paragraph break and marked with how much was cut; `0` disables this trimming. The final output still obeys `COGNEE_INJECT_MAX_CHARS`. |
+| `COGNEE_RECALL_CONTEXT_CHARS` | `0` | Optional passage-trimming budget, disabled by default. The final `COGNEE_INJECT_MAX_CHARS` cap drops whole entries, including entities and facts when necessary; graph facts have priority over passages. |
+| `COGNEE_RECALL_TIMEOUT` | `120` | Client timeout for an explicit search (`cognee-search`); the per-prompt lookup uses `COGNEE_RECALL_BUDGET` instead |
+| `COGNEE_REMEMBER_TIMEOUT` | `120` | Client timeout for the explicit remember submit POST; with `COGNEE_REMEMBER_BACKGROUND` on (the default) it returns once the work is queued |
+| `COGNEE_REGISTER_TIMEOUT` | `15` | Client timeout for the session register call (session start and dataset switch) |
+| `COGNEE_REACHABLE_TIMEOUT` | `2` | Client timeout for the `/health` probe that gates a session sync; raise it for a backend whose `/health` is slow, or every sync is skipped as unreachable |
+
+### Capture retry receipts
+
+Cloud captures persist a unique `client_event_id` with each spool entry. When the
+server advertises `capture_idempotency_v1`, the worker pins the complete request
+before its first POST and reuses it after an uncertain response. It requires the
+matching server receipt before removing the queued event. Separate identical
+events keep separate IDs. A changed-payload conflict is retained in `spool/expired`
+for inspection instead of being retried indefinitely.
+
+This guarantee requires a server with the SQL capture-receipt contract. Older or
+unsupported backends keep the existing best-effort verification path. Already
+ambiguous legacy events cannot acquire server idempotency retroactively.
+
+### Automatic capture controls
+
+Bash capture excludes actual plugin/CLI invocations, not commands that merely
+mention Cognee in a repository path, search pattern or Python import. Successful
+read-only inspections are low signal; grep/rg exit 1 with no stderr is also an
+inspection. Failures, tests/builds, changes, heredocs and compound pipelines are
+retained. Ambiguous sed/awk programs and mutating options are retained conservatively.
+`COGNEE_CAPTURE_DENY_TOOLS=Bash` opts out of Bash capture entirely.
+`/cognee-report` shows per-session captured, skipped-self and skipped-low-signal
+counts. Captured includes buffered writes; confirmed saves remain a separate metric.
+
+Set these in `~/.cognee/.env` or the host environment. Shell environment values
+win over the shared file. Changes apply when a new hook process starts.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `COGNEE_CAPTURE` | `true` | Set `false` to disable automatic prompt, answer and tool capture, including buffered replay. Recall and explicit remember remain available. |
+| `COGNEE_CAPTURE_TOOLS` | all registered tools | Pipe-separated allowlist of tool names, globs or `Tool(prefix:*)` command matchers, e.g. `Bash(git:*)\|Bash(pytest:*)\|Read\|Edit`; everything else is not captured. |
+| `COGNEE_CAPTURE_DENY_TOOLS` | empty | Same syntax, applied after the allowlist: a matching call is not captured, e.g. `Bash(rg:*)\|Bash(grep:*)\|Bash(cat:*)` keeps every Bash call except search and inspection. |
+| `COGNEE_CAPTURE_DENY_PATHS` | sensitive file patterns | Comma-separated patterns or a JSON array extending the built-in `.env`, credential and private-key exclusions. |
+| `COGNEE_CAPTURE_REDACT` | `true` | Redacts common credentials, authorization values, database URLs and private-key blocks before truncation, persistence or upload. `false` turns these patterns off; `<private>` spans are removed regardless. |
+| `COGNEE_CAPTURE_REDACT_PATTERNS` | empty | JSON array of additional regular expressions. Invalid expressions prevent the affected content from being captured. |
+
+`Tool(prefix:*)` borrows Claude Code's permission spelling: `Bash(git:*)` matches a
+Bash call whose command, after leading whitespace, is `git` or starts with `git `
+followed by anything. It is a prefix test on the first word, not a shell parser, so
+`gitx` does not match and `cd x && git status` is seen as `cd`. A bare name such as
+`Bash` keeps matching every call of that tool, and `[...]` remains an fnmatch
+character class. A pattern that is not understood (`Bash(rg)`, `Bash()`) switches
+automatic capture off and is reported on the next prompt, instead of silently
+matching nothing. Both variables also accept a JSON array of strings.
+
+Redaction is best effort. The master switch is the strict control for repositories
+where automatic content capture is inappropriate. Disabling capture does not erase
+existing memory or retained buffers; use the forget workflow to remove stored data.
+Sensitive-path exclusions inspect structured tool path arguments, not arbitrary
+shell command syntax.
+
+#### Private spans
+
+Wrap anything you don't want remembered in `<private>…</private>`, in a prompt or in
+text you ask Claude to remember:
+
+```
+Deploy with the staging key <private>the value is in 1Password under "staging"</private>.
+```
+
+The span is replaced with `[private]` before the text is written to a plugin file or
+log, sent as a recall or search query, or stored, and the text around it is kept.
+This applies to automatic capture and to explicit remember (`/cognee-remember`,
+`/cognee-handoff`) alike, and neither `COGNEE_CAPTURE` nor `COGNEE_CAPTURE_REDACT`
+turns it off. Spans don't nest: each `<private>` ends at the next `</private>`, so an
+opener inside a span is hidden with it, and text between two spans is kept. A span may
+cross lines and its tags may carry attributes (`<private reason="x">`). An opener with no
+closing tag is left as plain text, so close every span you open. The secret patterns
+above then run on what is left.
+
+Two limits: Claude itself still sees the span in the live turn, and a `--file` upload
+(`cognee-remember.sh --file`) is sent byte for byte.
+
+### HTTP backend compatibility
+
+The memory data plane uses `/health` for reachability. A 404 from optional agent
+registration/unregistration is logged as an unsupported lifecycle API and does not
+prevent session startup. Authentication errors (401/403), transport failures and
+server errors remain failures. Prompt recall has an elapsed-time deadline in
+addition to socket timeouts; late read results are discarded.
+
+
+### Project tags and companion sessions
+
+`COGNEE_PROJECT_NODE_SET=auto` tags captured QA and traces with a readable project
+name plus a hash of the canonical path; a fixed value provides an explicit tag.
+The setting is pinned for the session, including buffered writes and detached
+improve workers. The backend must expose `node_set` on typed QA/trace entries and
+preserve it through improve. Older backends leave capture queued with an explicit
+`project_memory_prepared` error instead of silently losing the tags.
+
+When a session names a project, **graph recall is scoped to it**: every prompt's
+graph lookup sends `node_name=[<project>, <shared sets>]` (OR-joined), so other
+projects' documents and sessions stop crowding the hits. Session and trace
+recall are keyed by session and stay unfiltered, and the code lane is never
+filtered. Scoping needs nothing new from the backend, so a recall-only project
+name works where capture tagging is not available yet.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_RECALL_PROJECT_NODE_SET` | unset | Names the project for **recall only**, without tagging capture. `COGNEE_PROJECT_NODE_SET` wins when both are set; `auto`, `off` and blank are ignored. |
+| `COGNEE_RECALL_SHARED_NODE_SETS` | `global,user_context` | Comma-separated node sets every project may read. `user_context` keeps what `cognee-remember` saved about you (preferences, facts) recallable in every project. |
+| `COGNEE_RECALL_PROJECT_SCOPE` | `true` | Set `false` to keep project tagging on capture but leave recall unfiltered. |
+
+`COGNEE_SESSION_COMPANION_DATASET=true` asks the backend to provision
+`<primary>-agent_sessions`. Writes and improve use the companion only after the
+server attests its permission snapshot. Graph recall reads both datasets in
+separate requests so primary graph reads do not conflict with the session binding.
+Unsupported routes, insufficient rights, collisions and permission mismatches
+fall back to the primary. The client never reads local SQL tables for remote ACLs.
+
+These options require the server project-tags/session-companion extension. The
+companion endpoint currently requires the primary owner and copies an ACL snapshot;
+later sharing changes must be reconciled explicitly. Connection credentials are
+hashed in the local decision record, and a changed principal cannot reuse it.
+Defaults remain off. Start a new host session when changing project routing policy.
+
+Cloud sessions read a distilled project digest from `context-cache/<dataset-id>.json` at
+startup without a network request. The worker refreshes it after confirmed improve and
+at most every 30 minutes while active. Caches older than 24 hours or from another tenant
+or credential are ignored. Resuming a conversation skips the digest. The digest is capped
+at 6,000 characters and seeds the injection ledger. Its sources are the `agent` guidance
+profile and graph node sets `session_learnings` and `project_docs`; raw turns are excluded.
+
+Discovery on the configured 1.6.3 tenant found both guidance and distilled graph context,
+but no `session_summaries` records. Structured last-session prose therefore depends on
+the WS7 server release; measured prior-session statistics are available independently.
+
+Cloud trace capture skips Read, Grep and Glob plus successful Bash commands with empty
+output. These skips remain visible as `traces_skipped` in session statistics. Bash errors and
+nonempty output remain eligible for capture under the configured capture policy.
+
+Structured summaries and guidance usage tracking require a server release advertising
+`session_summary_v1` / `context_usage_v1` in `/health`. The cache records the actual server
+version and checks capabilities before using those fields; it does not assume a future
+version number guarantees deployment. Current 1.6.3 tenants fall back to distilled facts
+and measured session statistics. After deployment, manually review ten sessions for
+usefulness; the extractor keeps its five-lesson per-batch cap. The seven useful entries per session
+criterion is measured across batches and remains a manual rollout acceptance check.
+
+### Evaluating memory delivery
+
+Ask “evaluate Cognee”, “how is Cognee performing”, “is Cognee worth it” or
+“did the update help” to use `/cognee-report`. Standup and digest requests retain
+their activity-summary skills. Matching evaluation prompts receive one short
+report hint within the existing injection budget; `COGNEE_REPORT_HINT=false`
+disables it.
+
+The report leads with **What Cognee did for you**, per-session delivery evidence,
+quality bars for reliability, usefulness, cost and hygiene, the measured scorecard,
+then the unchanged grade. There is no latency bar or "Needs attention" section;
+latency measurements remain in the scorecard.
+`report --full` shows the original complete recommendation layout;
+`report --ascii` uses #/- score bars; `--format markdown` fences the bars.
+Delivery segments classify each recall once (zero hit, fully in transcript,
+fully repeated, then new graph/session context). Missing evidence is explicitly
+unmeasured. Historical clipped text gives a lower-bound novelty estimate;
+receipt hashes refer only to the last recorded turn within the selected window.
+Delivery does not prove that memory changed an answer. Failed gates and low-n
+metrics are never hidden or converted to a positive grade.
+The internal team-skills `cognee-eval` is retained only for legacy Notion export.

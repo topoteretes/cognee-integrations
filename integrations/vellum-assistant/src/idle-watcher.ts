@@ -1,16 +1,9 @@
 /**
- * Idle watcher daemon — persists quiet sessions into Cognee.
+ * Idle watcher daemon.
  *
- * Ported from idle-watcher.py. A background daemon that:
- *   - Polls the activity file timestamp
- *   - When idle for > IDLE_SECONDS, triggers sync-session-to-graph
- *   - Stops on SIGTERM or watcher.stop sentinel file
- *
- * Launched detached from session-start. Polls
- * `$VELLUM_WORKSPACE_DIR/plugins/cognee/data/vellum-assistant/activity.ts`
- * every POLL_SECONDS.
- * When the last activity is older than IDLE_SECONDS and we haven't
- * bridged since that point, persists the session cache to the graph.
+ * Ported from idle-watcher.py. A background daemon that polls every
+ * POLL_SECONDS and stops on SIGTERM, the watcher.stop sentinel file, or its
+ * pidfile being taken over by a newer watcher.
  */
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync } from "node:fs";
@@ -22,14 +15,8 @@ import { hookLog, pluginStateDir, loadConfig } from "./plugin-common.ts";
 // ─── Tunables (via env) ───────────────────────────────────────────────────────
 
 const POLL_SECONDS = Number(process.env.COGNEE_IDLE_POLL ?? 10);
-const IDLE_SECONDS = Number(process.env.COGNEE_IDLE_THRESHOLD ?? 60);
-const IMPROVE_COOLDOWN = Number(process.env.COGNEE_IMPROVE_COOLDOWN ?? 120);
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
-
-function activityPath(): string {
-  return join(pluginStateDir(), "activity.ts");
-}
 
 function pidfilePath(): string {
   return join(pluginStateDir(), "watcher.pid");
@@ -49,16 +36,6 @@ let shouldStop = false;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function readActivityTs(): number | null {
-  if (!existsSync(activityPath())) return null;
-  try {
-    return parseFloat(readFileSync(activityPath(), "utf-8").trim());
-  } catch (err) {
-    hookLog("idle_watcher_activity_read_failed", { error: String(err).slice(0, 200) });
-    return null;
-  }
-}
-
 function ownsPidfile(): boolean {
   try {
     return parseInt(readFileSync(pidfilePath(), "utf-8").trim(), 10) === process.pid;
@@ -75,34 +52,6 @@ function installSignalHandlers(): void {
 
   process.on("SIGTERM", () => handler("SIGTERM"));
   process.on("SIGINT", () => handler("SIGINT"));
-}
-
-// ─── Bridge (sync to graph) ───────────────────────────────────────────────────
-
-/**
- * Fire one session bridge cycle. Spawns the sync-session-to-graph module
- * as a detached process. Returns true on success.
- */
-async function improveOnce(
-  sessionId: string,
-  dataset: string,
-): Promise<boolean> {
-  try {
-    // Import the sync module and call syncSessionToGraph directly.
-    // This keeps everything in-process — no subprocess needed.
-    const { syncSessionToGraph } = await import("./sync-session-to-graph.ts");
-    const ok = await syncSessionToGraph(false);
-    hookLog("idle_watcher_session_bridge_done", {
-      session: sessionId,
-      dataset,
-      via: "http_remember",
-      ok,
-    });
-    return ok;
-  } catch (err) {
-    hookLog("idle_watcher_bridge_error", { error: String(err).slice(0, 300) });
-    return false;
-  }
 }
 
 // ─── Main loop ────────────────────────────────────────────────────────────────
@@ -165,12 +114,9 @@ export async function runIdleWatcher(config: IdleWatcherConfig): Promise<void> {
     dataset,
     user_id: config.user_id ?? "",
     poll: POLL_SECONDS,
-    idle: IDLE_SECONDS,
   });
 
-  let lastImprovedAt = 0.0;
   let exitReason = "loop_complete";
-  let bridgeDisabled = false;
 
   while (!shouldStop) {
     // Check stop conditions.
@@ -185,60 +131,11 @@ export async function runIdleWatcher(config: IdleWatcherConfig): Promise<void> {
       break;
     }
 
-    const now = Date.now() / 1000;
-    const ts = readActivityTs();
-    if (ts === null) {
-      await sleep(POLL_SECONDS * 1000);
-      continue;
-    }
-
-    const idleFor = now - ts;
-    const timeSinceImprove = now - lastImprovedAt;
-
-    if (
-      !bridgeDisabled &&
-      idleFor >= IDLE_SECONDS &&
-      timeSinceImprove >= IMPROVE_COOLDOWN
-    ) {
-      hookLog("idle_watcher_idle_trigger", { idle_for: Math.round(idleFor * 10) / 10 });
-      const ok = await improveOnce(sessionId, dataset);
-      if (ok) {
-        lastImprovedAt = Date.now() / 1000;
-        hookLog("idle_watcher_bridge_done");
-        exitReason = "bridge_complete";
-        break;
-      }
-      bridgeDisabled = true;
-      hookLog("idle_watcher_bridge_disabled_after_failure");
-    }
-
     await sleep(POLL_SECONDS * 1000);
   }
 
   if (shouldStop) {
     exitReason = "signal";
-  }
-
-  // On shutdown (signal or stop sentinel), do one final bridge if there's
-  // been activity since the last improve.
-  const ts = readActivityTs();
-  if (
-    !bridgeDisabled &&
-    (exitReason === "signal" || exitReason === "stop_sentinel") &&
-    ts !== null &&
-    ts > lastImprovedAt
-  ) {
-    hookLog("idle_watcher_shutdown_trigger", {
-      reason: exitReason,
-      activity_age: Math.round((Date.now() / 1000 - ts) * 10) / 10,
-    });
-    const ok = await improveOnce(sessionId, dataset);
-    if (ok) {
-      lastImprovedAt = Date.now() / 1000;
-      hookLog("idle_watcher_shutdown_bridge_done");
-    } else {
-      hookLog("idle_watcher_shutdown_bridge_failed");
-    }
   }
 
   hookLog("idle_watcher_exiting", { reason: exitReason });

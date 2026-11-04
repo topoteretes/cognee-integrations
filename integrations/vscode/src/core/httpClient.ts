@@ -7,6 +7,7 @@ import type {
 } from "./client";
 import { CogneeApiError, CogneeNetworkError } from "./errors";
 import type { RecallResponseItem, RememberResult } from "./types";
+import { contentAddressedName } from "./uploadName";
 
 export interface HttpCogneeClientOptions {
   /** Base URL of the backend (already normalized, no trailing slash). */
@@ -103,7 +104,7 @@ export class HttpCogneeClient implements CogneeClient {
         form.append("node_set", tag);
       }
     }
-    const filename = options.filename?.trim() || "memory.txt";
+    const filename = contentAddressedName(options.filename?.trim() || "memory.txt", data);
     form.append("data", new Blob([data], { type: "text/plain" }), filename);
 
     const response = await this.send(

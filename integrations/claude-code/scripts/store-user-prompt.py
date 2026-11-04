@@ -9,6 +9,8 @@ Configuration:
     Resolves session state via Cognee HTTP endpoints.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -18,23 +20,27 @@ from pathlib import Path
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
+from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _plugin_common import (
     bump_save_counter,
+    drain_warmup_entries,
     get_session_key,
     hook_log,
+    is_observer_child,
     load_resolved,
     notify,
     quiet_hook_output,
+    refresh_credits,
     remember_pending_prompt,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
-    resolve_user,
-    server_ready_hint,
+    server_usable,
     set_session_key,
     touch_activity,
 )
 from _proc import pid_alive
-from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
+from config import get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
 _STATE_DIR = Path.home() / ".cognee-plugin" / "claude-code"
@@ -43,16 +49,17 @@ _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _WATCHER_SCRIPT = Path(__file__).with_name("idle-watcher.py")
 
 
-def _load_session() -> tuple[str, str, str]:
-    resolved = load_resolved()
+def _load_session() -> tuple[str, str, str, str]:
+    resolved = load_resolved(identity=False) if cloud_enabled() else load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
+    tenant_id = resolved.get("tenant_id", "")
     if not session_id or not dataset:
         config = load_config()
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
-    return session_id, dataset, user_id
+    return session_id, dataset, user_id, tenant_id
 
 
 def _watcher_alive() -> bool:
@@ -67,7 +74,16 @@ def _watcher_alive() -> bool:
 
 
 def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: dict) -> None:
-    """Start the idle watcher on a new prompt if the prior one exited after bridging."""
+    """Start the idle watcher on a new prompt if none is running.
+
+    In cloud mode the per-user cloud worker replaces it; the prompt only marks
+    the session active for that worker.
+    """
+    if cloud_enabled():
+        from _cloud_worker import touch_session
+
+        touch_session()
+        return
     if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() in ("1", "true", "yes"):
         return
     if not session_id or _watcher_alive():
@@ -94,6 +110,7 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
     log_path = _STATE_DIR / "watcher.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(log_path)  # the child writes it; cap it at handover
         log_fh = log_path.open("a", encoding="utf-8")
     except Exception as exc:
         hook_log("prompt_watcher_log_open_failed", {"error": str(exc)[:200]})
@@ -126,7 +143,13 @@ def _prompt_context(payload: dict) -> str:
 
 
 async def _store(prompt: str, payload: dict):
-    session_id, dataset, user_id = _load_session()
+    from _capture_policy import capture_enabled, sanitize
+
+    if not capture_enabled():
+        return
+    prompt = sanitize(prompt)
+    payload = sanitize(payload)
+    session_id, dataset, user_id, tenant_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"event": "prompt"})
         return
@@ -147,16 +170,6 @@ async def _store(prompt: str, payload: dict):
             "api_key_present": runtime.get("api_key_present", False),
         },
     )
-    if runtime["mode"] == "local_sdk" and server_ready_hint(runtime.get("base_url", "")):
-        # Keep Cognee initialization parity with Claude so fresh local
-        # databases, identities, and datasets are ready before Stop writes.
-        # Skipped while the server is still warming so this hook never blocks;
-        # the prompt is still buffered below and flushed once the server is up.
-        try:
-            await ensure_cognee_ready(config)
-            await resolve_user(user_id)
-        except Exception as exc:
-            hook_log("prompt_prepare_warning", {"error": str(exc)[:200]})
 
     # Round-trip through utf-8 with errors="replace": prompts pasted from
     # transcripts can carry lone surrogates, and one stored surrogate 500s
@@ -170,10 +183,37 @@ async def _store(prompt: str, payload: dict):
     )
     hook_log("prompt_pending", {"chars": len(prompt), "turn_id": payload.get("turn_id")})
     notify(f"user prompt pending ({len(prompt)} chars)")
+    if cloud_enabled(runtime):
+        # A pending prompt is durable locally, but is not a server save yet.
+        return
     bump_save_counter(session_id, "prompt")
+
+    # Replay any warmup-buffered entries. This hook is the async sibling of
+    # session-context-lookup on the same UserPromptSubmit event — identical
+    # trigger point, but nothing waits on it, so the drain (N sequential
+    # /remember/entry calls) can no longer stall the prompt (#298). It runs
+    # LAST so a mid-drain kill cannot cost the fast bookkeeping above; the
+    # drain itself is a cheap no-op on an empty buffer, preserves the
+    # unreplayed tail on failure, and is single-flighted by its own lock
+    # against the improve/SessionEnd paths that also drain.
+    if server_usable(runtime.get("base_url", "")):
+        try:
+            drain_warmup_entries(dataset, session_id)
+        except Exception as exc:
+            hook_log("warmup_drain_failed", {"error": str(exc)[:200]})
+        # Status-line credits: unlabeled refresh at turn START. This reading
+        # is the baseline the Stop-time refresh (credits-refresh.py) diffs
+        # against to attribute the finished turn's cost — labeling it here
+        # would misattribute the PREVIOUS turn's tail as this turn's recall.
+        # tenant_id (from this turn's connections/me lookup) binds the marker
+        # entry to our tenant, so the tenantless Stop-hook refresh can find it
+        # by base_url. Never raises; no-ops on a local server.
+        refresh_credits(tenant_id=tenant_id)
 
 
 def main():
+    if is_observer_child():
+        return
     payload_raw = sys.stdin.read()
     if not payload_raw.strip():
         return

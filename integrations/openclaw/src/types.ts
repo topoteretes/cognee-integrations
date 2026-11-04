@@ -84,6 +84,21 @@ export type CogneePluginConfig = {
    * Requires enableSessions. Default: true.
    */
   captureSession?: boolean;
+  /**
+   * Capture policy, the same rules as the claude-code/codex COGNEE_CAPTURE_*
+   * settings (each unset key falls back to that env var). Tool entries are a
+   * name, an fnmatch glob, or `Tool(prefix:*)` matched against the first word
+   * of a shell command; names match case-insensitively. An entry that cannot
+   * be parsed turns trace capture off until it is fixed (fail closed).
+   */
+  captureTools?: string[];
+  captureDenyTools?: string[];
+  /** Added to the built-in deny list (.env*, *.pem, *.key, ssh/aws credentials, …). */
+  captureDenyPaths?: string[];
+  /** Scrub secrets (keys, tokens, DB URLs, credential assignments) before storing. Default: true. */
+  captureRedact?: boolean;
+  /** Extra regex sources to redact. */
+  captureRedactPatterns?: string[];
 
   // --- Search ---
   searchType?: CogneeSearchType;
@@ -91,11 +106,113 @@ export type CogneePluginConfig = {
   deleteMode?: CogneeDeleteMode;
   maxResults?: number;
   minScore?: number;
+  /** Deprecated, no effect: recall is bounded by recallPassageChars / recallContextChars. */
   maxTokens?: number;
+  /** Cap per recalled passage, cut at a paragraph break. 0 = no cap. Default: COGNEE_RECALL_PASSAGE_CHARS or 2000. */
+  recallPassageChars?: number;
+  /** Cap on everything one prompt injects (graph context, guidance, code facts); each dataset's context drops whole passages from the end to fit, then the total is held to it. 0 = no cap. Default: COGNEE_RECALL_CONTEXT_CHARS or 12000. */
+  recallContextChars?: number;
 
   // --- Recall injection ---
   /** Where recalled memories are injected in the prompt. Default: prependSystemContext */
   recallInjectionPosition?: "prependSystemContext" | "appendSystemContext" | "prependContext";
+
+  // --- Code graph ---
+  /**
+   * Register `memory_code_search`: deterministic structural queries (callers,
+   * impact, paths, endpoints) against repositories indexed with
+   * `openclaw cognee index-repo`. Default: true.
+   */
+  codeSearchTool?: boolean;
+  /** Register the memory_recap tool (standup / digest / timeline of recorded sessions). Default: true. */
+  recapTool?: boolean;
+  /**
+   * Add a "code" recall lane when a prompt carries an identifier-shaped token
+   * and at least one code graph is registered or listed in codeDatasets.
+   * Additive — never replaces the semantic scopes. Default: true.
+   */
+  codeGraphRecall?: boolean;
+  /** Extra code-graph dataset names to query (e.g. indexed from another machine). */
+  codeDatasets?: string[];
+
+  // --- Memory steer ---
+  /**
+   * Append a short, static system-prompt line on every agent run asserting
+   * Cognee as the preferred, authoritative long-term memory and naming the
+   * memory tools — the OpenClaw counterpart of claude-code's
+   * COGNEE_PREFER_MEMORY steer. Cached by providers (system context), so no
+   * per-turn token cost beyond the first. Skipped on harness-noise turns.
+   * Default: true.
+   */
+  memorySteer?: boolean;
+  /** Replace the default steer text entirely. */
+  memorySteerText?: string;
+
+  // --- Recall layers ---
+  /**
+   * Deprecated, no effect. Recall fetches the graph context and this session's
+   * guidance (session_context) itself. Kept so existing configs keep validating.
+   */
+  recallSessionLayers?: boolean;
+
+  // --- Agent tools ---
+  /**
+   * Register the `memory_search` / `memory_get` agent tools that OpenClaw's
+   * memory slot expects (active-memory allow-lists exactly these). Independent
+   * of autoRecall. Default: true.
+   */
+  memoryTools?: boolean;
+  /**
+   * Also register `memory_forget`: user-directed deletion of individual
+   * documents ("forget what we said about X"). Two-phase — `find` lists
+   * candidates with previews, `forget` deletes only the listed data ids and
+   * only with confirm=true; whole-dataset wipes stay CLI-only. Requires a
+   * Cognee server >= 1.5.3 for targeted session invalidation. Default: true.
+   */
+  memoryForgetTool?: boolean;
+  /**
+   * Also register `memory_switch_dataset`: move ONE conversation to another
+   * dataset (list / current / switch / reset). The switch syncs the current
+   * session, then repoints capture, session-end improve and the agent/single
+   * recall scope for that conversation, with a fresh Cognee session id.
+   * Overrides persist in ~/.openclaw/memory/cognee/dataset-overrides.json.
+   * Default: true.
+   */
+  datasetSwitchTool?: boolean;
+
+  // --- Memory-hit visibility ---
+  /**
+   * Append a one-line footer to the agent's final reply on turns where
+   * auto-recall injected >= 1 memory (e.g. "[cognee: 3 memories]"). Turns
+   * with no hits get no footer. Default: true.
+   */
+  memoryHitFooter?: boolean;
+  /**
+   * Footer template. Placeholders: {count}, {memories} (singular/plural),
+   * {sources} (comma-joined source labels). Default: "[cognee: {count} {memories}]"
+   */
+  memoryHitFooterFormat?: string;
+  /**
+   * Once per 7 days, append a digest to the agent's next reply summarizing
+   * turns-with-hits, total turns and top memory sources. Suppressed when the
+   * week had zero hits. Default: true.
+   */
+  weeklyDigest?: boolean;
+
+  // --- Harness-noise filter ---
+  /**
+   * ctx.trigger values treated as harness-generated turns: their prompts are
+   * excluded from auto-recall and QA capture (host instructions, not user
+   * queries). Default: ["heartbeat", "cron"]. Set [] to disable this layer.
+   */
+  noiseTriggers?: string[];
+  /**
+   * Regex sources matched against the prompt (leading whitespace stripped) to
+   * catch harness templates on hosts that don't stamp ctx.trigger — e.g.
+   * "Read HEARTBEAT.md…", "System: …", "[cron:…]". Matching prompts are
+   * excluded from auto-recall and QA capture. Set [] to disable this layer.
+   */
+  noisePatterns?: string[];
 
   // --- Automation ---
   autoRecall?: boolean;
@@ -109,11 +226,18 @@ export type CogneePluginConfig = {
   // --- Timeouts ---
   requestTimeoutMs?: number;
   ingestionTimeoutMs?: number;
+  /**
+   * Maximum tokens per chunk when syncing memory files, sent as `chunk_size`
+   * on /remember. 0 (the default) sends nothing, so the server's own default
+   * (4096) applies. /update takes no chunk size, so files updated in place are
+   * chunked by the server default.
+   */
+  chunkSize?: number;
 
   // --- Recall budget + circuit breaker (claude/codex parity) ---
-  /** Per recall HTTP call timeout on the prompt hot path (no retries). Default: 2500 */
+  /** Per recall HTTP call timeout on the prompt hot path (no retries). Default: 10000 */
   recallTimeoutMs?: number;
-  /** Overall wall-clock budget for the recall step per prompt. Default: 4000 */
+  /** Overall wall-clock budget for the recall step per prompt. Default: 12000 */
   recallBudgetMs?: number;
   /** Consecutive breaker-eligible failures (network/timeout/5xx) before the breaker opens. Default: 5 */
   recallBreakerThreshold?: number;
@@ -150,14 +274,97 @@ export type CogneeRememberResponse = {
   error?: string;
 };
 
+/**
+ * Recall source discriminator as returned by the server (RecallResponse):
+ * "graph" (knowledge graph), "session" (cached Q&A turns), "trace" (tool-call
+ * steps + feedback), "session_context" (distilled agent guidance), "code",
+ * "tools", "system". Absent on legacy/cloud shapes that carry no tag.
+ */
+export type CogneeRecallSource = "graph" | "session" | "trace" | "session_context" | "code" | "tools" | "system";
+
 export type CogneeSearchResult = {
   id: string;
   text: string;
   score: number;
   metadata?: Record<string, unknown>;
+  source?: CogneeRecallSource;
+};
+
+/**
+ * Normalized `/improve` response. Cognee >= 1.4 returns a per-dataset map
+ * `{ "<dataset_uuid>": { status, pipeline_run_id, ... } }`; older servers a
+ * flat `{ status, ... }`. Both collapse to this shape.
+ */
+export type CogneeImproveResult = {
+  /** Pipeline status ("PipelineRunCompleted", "PipelineRunStarted", …), or "mixed" across datasets. */
+  status?: string;
+  pipelineRunId?: string;
+  datasetId?: string;
+  /** Per-dataset detail when the server returned a map. */
+  datasets?: Record<string, { status?: string; pipelineRunId?: string }>;
+  /** Set when the response matched neither the flat nor the per-dataset shape (server version mismatch?). */
+  error?: string;
+};
+
+/** One stored document, from GET /api/v1/datasets/{id}/data (DataDTO, camelCased on the wire). */
+export type CogneeDataItem = {
+  id: string;
+  name: string;
+  datasetId: string;
+  createdAt?: string;
+  updatedAt?: string;
+  mimeType?: string;
+  extension?: string;
+  label?: string;
+  externalMetadata?: Record<string, unknown>;
 };
 
 export type DatasetState = Record<string, string>;
+
+/** A (dataset, session) pair a conversation used before a switch. */
+export type RetiredSession = {
+  dataset: string;
+  sessionId: string;
+  /** Whether its session cache was bridged into the graph when it was retired. */
+  synced: boolean;
+  retiredAt: string;
+};
+
+/** One conversation's dataset switch (memory_switch_dataset). */
+export type DatasetOverride = {
+  dataset: string;
+  /** Ordinal appended to the Cognee session id: `<base>__<sessionSuffix>`. */
+  sessionSuffix: number;
+  switchedAt: string;
+  /** Datasets this conversation used before, newest last (informational). */
+  previous: string[];
+  /**
+   * Sessions retired by switches, newest last. Session-end re-syncs the ones
+   * whose sync failed at switch time (`force`), so no captured turn is lost.
+   */
+  retired: RetiredSession[];
+};
+
+/** Keyed by `key:<sessionKey>` and `sid:<sessionId>` (both written per switch). */
+export type DatasetOverridesFile = Record<string, DatasetOverride>;
+
+/** One repository indexed into a code-graph dataset via `openclaw cognee index-repo`. */
+export type CodeGraphRecord = {
+  dataset: string;
+  datasetId?: string;
+  /** Spec as given (local path or git URL). */
+  spec: string;
+  /** Realpath for local checkouts, trimmed URL for remotes. */
+  canonical: string;
+  kind: "path" | "url";
+  indexVectors: boolean;
+  indexedAt: string;
+  /** Last known code_graph_pipeline status, when polled. */
+  lastStatus?: string;
+};
+
+/** Keyed by dataset name. */
+export type CodeGraphsFile = Record<string, CodeGraphRecord>;
 
 export type SyncIndex = {
   datasetId?: string;

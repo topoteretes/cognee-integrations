@@ -2,7 +2,7 @@
   "name": "cognee-vscode",
   "displayName": "Cognee — Project Memory",
   "description": "Give your editor a persistent, citable memory of the project. Remember and recall knowledge without leaving VS Code, and ask your project memory with answers linked back to source files — powered by Cognee.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "cognee",
   "license": "Apache-2.0",
   "icon": "media/icon.png",

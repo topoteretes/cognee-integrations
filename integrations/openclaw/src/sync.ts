@@ -121,6 +121,7 @@ export async function syncFiles(
         files: toAdd.map((f) => ({ filePath: f.path, data: wrapWithMetadata(f) })),
         datasetName: dsName,
         datasetId: resolvedDatasetId,
+        chunkSize: cfg.chunkSize,
       });
 
       if (rememberResponse.datasetId && rememberResponse.datasetId !== datasetId) {

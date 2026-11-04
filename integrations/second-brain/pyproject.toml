@@ -7,6 +7,7 @@ name = "cognee-integration-second-brain"
 version = "0.1.0"
 description = "Cross-transport personal second-brain memory bot — Telegram + web feed one per-user memory you can capture, recall (with citations), link across apps, and forget."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Cognee team" }]
 dependencies = [

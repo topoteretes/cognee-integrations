@@ -1,6 +1,15 @@
 ---
 name: cognee-sync
-description: Sync session cache entries into the permanent Cognee knowledge graph. Run this to make session memory searchable, or it runs automatically at session end.
+description: >-
+  Sync the current session from Cognee's session cache into the permanent knowledge
+  graph now (Q&A turns, tool feedback, distilled lessons), so it becomes searchable and
+  shows up in digests. Also runs at session end.
+when_to_use: >-
+  To get this session into long-term memory before it ends, e.g. "sync this session to
+  Cognee", "flush session memory to the graph", "make what we just did searchable",
+  "distill this session now", "Cognee can't find what we did earlier". Not for one fact
+  (cognee-remember), a note with next steps (cognee-handoff), git sync or push, or a
+  "sync" meeting (cognee-standup).
 ---
 
 # Sync Session to Permanent Graph
@@ -12,7 +21,7 @@ Bridge session cache entries into the permanent knowledge graph.
 Run the sync script:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"
 ```
 
 ## What this does

@@ -7,6 +7,7 @@ name = "cognee-integration-strands"
 version = "0.2.0"
 description = "A powerful integration between Strands and Cognee providing intelligent knowledge management and retrieval capabilities for AI agents"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "cognee>=1.0.0,<=1.1.2",
