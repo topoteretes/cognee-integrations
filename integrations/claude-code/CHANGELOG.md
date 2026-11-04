@@ -10,6 +10,35 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.6]
+
+### Security
+- **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
+  wrap in the tag is replaced with `[private]` before the plugin writes it to a file or
+  log, sends it as a query, or stores it; the text around it is kept. Spans don't nest:
+  each opener ends at the next close, and text between two spans is kept; a span may
+  cross lines and carry attributes. An opener with no close is left as plain text. No setting turns this off. Claude still sees the span in the live turn.
+- **Explicit remember is sanitized like automatic capture.** `/cognee-remember` text,
+  and its `cognee-cli` fallback, used to be uploaded exactly as given, credentials
+  included. It now goes through the same `<private>` stripping and secret patterns,
+  whatever `COGNEE_CAPTURE` says. A `--file` upload is still sent byte for byte, so
+  `/cognee-handoff` now passes its note as text. Supersedes
+  [#468](https://github.com/topoteretes/cognee-integrations/pull/468), thanks to
+  @Tilzen for the report and the first fix.
+- **Queries are sanitized.** The per-prompt recall (graph, session and code lanes),
+  `cognee-search.sh` and its CLI fallback, the timeline topic and the evidence index
+  no longer send a span's content or a recognised secret to the server. A `--code-query`
+  is sanitized field by field, so it stays valid JSON.
+- **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it
+  keeps and no longer copies the full text of every deduplicated memory entry. The
+  `sync_payload` line in `hook.log` records the payload's field names and size instead
+  of its first 200 characters.
+
+### Changed
+- `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
+  affects `<private>` spans.
+- `/cognee-forget` searches for what surrounds a secret, never the value itself.
+
 ## [1.7.5]
 
 ### Changed

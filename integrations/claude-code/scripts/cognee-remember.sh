@@ -164,5 +164,7 @@ elif [ -n "$FILE_PATH" ]; then
     exit 1
 else
     echo "[cognee-remember] falling back to cognee-cli (degraded — server unreachable; verify the store succeeded once the server is back)" >&2
+    # The server path sanitizes inside _remember_http.py; the CLI gets the same text.
+    CONTENT="$(python3 "${SELF_DIR}/_capture_policy.py" "$CONTENT")" || exit 1
     cognee-cli remember "$CONTENT" -d "$DATASET" --node-set "$NODE_SET" 2>/dev/null || true
 fi

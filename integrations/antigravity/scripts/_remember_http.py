@@ -142,9 +142,9 @@ def _poll_status(
 ):
     """Poll /api/v1/datasets/status (cognify_pipeline) until terminal or the deadline.
 
-    Returns "completed" | "errored" | "timeout" | "unknown". Deliberately mirrors
-    _plugin_common.wait_for_cognify but stays stdlib-only and opener-injectable so this
-    module keeps running under bare python3 (no plugin venv) and remains test-mockable.
+    Returns "completed" | "errored" | "timeout" | "unknown". The only cognify
+    poller in the plugin: stdlib-only and opener-injectable so this module keeps
+    running under bare python3 (no plugin venv) and remains test-mockable.
     """
     if not dataset_id:
         return "unknown"
@@ -222,6 +222,10 @@ def do_remember(
     ``.txt`` rename would silently ingest code as prose through the LLM
     pipeline. Reading the file here (not in the shell) also avoids ARG_MAX
     limits on large sources.
+
+    Inline text is sanitized first (``<private>`` spans, then the secret
+    patterns), whatever ``COGNEE_CAPTURE`` says: that switch is for automatic
+    capture. File bytes are uploaded unchanged.
     """
     url = service_url.rstrip("/") + "/api/v1/remember"
     if file_path:
@@ -230,6 +234,10 @@ def do_remember(
                 content = fh.read()
         except OSError as e:
             return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
+    elif isinstance(content, str):
+        from _capture_policy import sanitize
+
+        content = sanitize(content)
     if isinstance(content, str):
         content = content.encode("utf-8")
     # Hash only when the name needs it: a --file upload keeps its basename.
@@ -334,6 +342,10 @@ def main(argv):
     # are uploaded under their real basename so code files route as code.
     # dataset_id (arg 7) addresses the dataset by UUID instead of the name.
     a = list(argv) + [""] * 7
+    # COGNEE_CAPTURE_REDACT(_PATTERNS) may live in ~/.cognee/.env, as for the hooks.
+    from _env_file import load_env_file
+
+    load_env_file()
     result = do_remember(
         a[0],
         a[1],
