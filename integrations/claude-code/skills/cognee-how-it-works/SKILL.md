@@ -24,6 +24,10 @@ Explain the paths relevant to the question:
 
 - Prompts, answers, and selected tool traces are captured by hooks, with credential
   redaction and sensitive-file exclusions. `COGNEE_CAPTURE=false` opts out.
+- Text inside `<private>…</private>` is replaced with `[private]` before it is
+  logged, stored, sent as a query or uploaded. This covers explicit remember
+  (`/cognee-remember`, `/cognee-handoff`) too, and no setting turns it off. Claude
+  still sees the span in the live turn; a `--file` upload is sent unchanged.
 - Cloud calls go to `COGNEE_BASE_URL` using `COGNEE_API_KEY`; local mode uses a local
   server. Cloud credit status comes from the Cognee platform API.
 - Recall injects selected memory into Claude's context. The injection budget drops

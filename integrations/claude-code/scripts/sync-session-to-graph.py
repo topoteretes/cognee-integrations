@@ -423,6 +423,14 @@ async def _sync(
                     )
 
 
+def _payload_keys(payload_raw: str) -> list:
+    try:
+        payload = json.loads(payload_raw) if payload_raw.strip() else {}
+    except json.JSONDecodeError:
+        return []
+    return sorted(str(key) for key in payload)[:20] if isinstance(payload, dict) else []
+
+
 def main():
     if is_observer_child():
         return
@@ -445,7 +453,9 @@ def main():
             "is_session_end": is_session_end,
             "detached_final": detached_final,
             "forced_session_end": forced_session_end,
-            "payload_preview": payload_raw[:200],
+            # Names and size only: a payload may carry prompt text.
+            "payload_keys": _payload_keys(payload_raw),
+            "payload_bytes": len(payload_raw.encode("utf-8", "replace")),
         },
     )
 
