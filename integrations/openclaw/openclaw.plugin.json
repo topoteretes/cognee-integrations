@@ -285,7 +285,7 @@
       },
       "datasetSwitchTool": {
         "type": "boolean",
-        "description": "Also register the memory_switch_dataset agent tool: move one conversation to another dataset (list / current / switch / reset). Syncs the current session first; later capture, recall and session-end improve for that conversation target the new dataset (default: true)"
+        "description": "Also register the memory_switch_dataset agent tool: move one conversation to another dataset or set its recall mode (list / current / switch / pin / auto / reset). A switch syncs the current session first; later capture and session-end improve for that conversation target the new dataset, and recall follows the recall mode (default: true)"
       },
       "improveOnSessionEnd": {
         "type": "boolean",

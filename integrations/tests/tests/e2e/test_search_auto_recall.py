@@ -121,8 +121,8 @@ def test_search_with_auto_only_in_the_env_file_names_the_default_dataset(
     suite, temp_home, mock_server, value
 ):
     _env_file(temp_home, value)
-    # No launch record, so the search names its dataset and the name is visible.
-    result = _run(suite, temp_home, mock_server.url, {})
+    # Pinned, so the search names its dataset and the name is visible.
+    result = _run(suite, temp_home, mock_server.url, {"COGNEE_PLUGIN_RECALL_MODE": "pinned"})
     assert result.returncode == 0, result.stderr
     body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
     assert body["datasets"] == ["agent_sessions"]
@@ -157,7 +157,12 @@ def test_remember_with_auto_only_in_the_env_file_saves_to_the_default_dataset(
 def test_a_spaced_dataset_name_is_not_auto_in_the_shell_either(suite, temp_home, mock_server):
     # The shell check trims the ends only, as Python's str.strip() does: "a uto"
     # is not the reserved word anywhere (it is sanitised as a name instead).
-    result = _run(suite, temp_home, mock_server.url, {"COGNEE_PLUGIN_DATASET": "a uto"})
+    result = _run(
+        suite,
+        temp_home,
+        mock_server.url,
+        {"COGNEE_PLUGIN_DATASET": "a uto", "COGNEE_PLUGIN_RECALL_MODE": "pinned"},
+    )
     assert result.returncode == 0, result.stderr
     body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
     assert body["datasets"] not in (["agent_sessions"], ["auto"])

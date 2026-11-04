@@ -596,7 +596,7 @@ def shell_runtime_overrides(service_url: str = "", host_key: str = "") -> dict:
         "dataset_ids": ",".join(read_ids),
         "api_key": active_agent_key(service_url),
         # "1" when graph recall names no dataset (auto, routed server-side).
-        "recall_auto": "1" if host_key and auto_recall_active(host_key) else "",
+        "recall_auto": "1" if auto_recall_active(host_key) else "",
     }
 
 
@@ -852,12 +852,13 @@ def recall_mode(host_key: str = "") -> tuple[str, str]:
     ``reason`` is one of the ``RECALL_PIN_*`` values. Reads only local state
     (the launch record and the environment): auto recall needs no server probe.
     """
+    # The user's own federated read set is an explicit scope, and the recall
+    # request sends it over any pin (recall_fields), so it is checked first.
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
+        return "pinned", RECALL_PIN_READ_SET
     reason = recall_pin_reason(host_key)
     if reason:
         return "pinned", reason
-    # The user's own federated read set is an explicit scope.
-    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
-        return "pinned", RECALL_PIN_READ_SET
     return "auto", ""
 
 
@@ -5522,7 +5523,8 @@ def recall_via_http(
     # the scope includes "code": the server rejects code_query without it.
     if code_query:
         payload["code_query"] = code_query
-    # Always scope to the plugin's dataset. Without it the server resolves EVERY
+    # Scope to the plugin's dataset unless auto recall routes a graph-only read
+    # (below). Without a dataset the server resolves EVERY
     # readable dataset and then reconciles against the session's binding, so the
     # graph scope depends on that binding existing: an unbound session with more
     # than one readable dataset is rejected as ambiguous rather than searched.

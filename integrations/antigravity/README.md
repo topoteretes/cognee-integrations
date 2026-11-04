@@ -150,6 +150,16 @@ The codebase skill uses the current code-graph indexing and search endpoints.
 The plugin follows dataset changes recorded for a conversation and includes its
 retired sessions in final sync.
 
+**Recall mode.** With a remote Cognee server, graph recall names no dataset by
+default (`auto`): a cognee 1.6.6 server picks the readable dataset(s) most likely
+to hold the answer, and saves still go to the active dataset. Set
+`COGNEE_PLUGIN_RECALL_MODE=pinned` (exported or in `~/.cognee/.env`) to keep recall
+on the active dataset. For one session, `python3 scripts/switch-dataset.py pin`
+restricts recall to the dataset in use, `switch-dataset.py auto` lifts it, and
+`switch-dataset.py --list` shows the mode in effect. `COGNEE_PLUGIN_READ_DATASET_IDS`
+always restricts recall to its datasets. The recall mode applies to recall over
+HTTP; local mode's in-process recall names no dataset either way.
+
 ## Verify
 
 Re-run the native validator after changing the package:

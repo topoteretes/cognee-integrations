@@ -28,7 +28,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   be switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset.
 - **One message per result.** `switch-dataset.py --json` adds `message`, one or two plain
   sentences for the user, to the `--list` output (which recall is on and why) and to every switch,
-  `pin` and `auto` result; the text output prints the same sentences, and the skills relay them.
+  `pin` and `auto` result; the text output prints the same sentences.
 - **`COGNEE_PLUGIN_RECALL_MODE` sets the recall mode a session starts in.** `auto` (the default)
   or `pinned` (recall restricted to the session's dataset, reason `configured_pin`), exported or
   in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or

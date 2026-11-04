@@ -14,14 +14,14 @@
 #            (operations: query_facts, explore, traverse, find_path,
 #            impact_analysis, delta). The repository's own code dataset is
 #            resolved from the current directory automatically.
-# --dataset: override the dataset to search (default: the plugin dataset, or
-#            the current repo's code dataset in --code mode). A name only
-#            resolves among datasets this identity OWNS; anything else must be
-#            addressed by UUID.
-# --dataset-id: search another dataset by UUID (the cross-dataset picker flow:
-#            list-datasets.py names the candidates). A dataset other than the
-#            launch's active one is read without the session id, which is bound
-#            to the active dataset.
+# --dataset: override the dataset to search (default: the recall mode decides —
+#            auto names no dataset and the server routes the search, pinned
+#            uses the plugin dataset; --code uses the current repo's code
+#            dataset). A name only resolves among datasets this identity OWNS;
+#            anything else must be addressed by UUID.
+# --dataset-id: search another dataset by UUID (list-datasets.py names the
+#            candidates). A dataset other than the launch's active one is
+#            read without the session id, which is bound to the active dataset.
 # No flag:   same as --graph. Memory is read from the graph and the code graph
 #            only; the session cache is written, never searched.
 #
@@ -279,8 +279,8 @@ esac
 # Only a 2xx response is authoritative (an empty list = genuinely no hits).
 # Any non-2xx / error / unreachable returns the UNREACHABLE sentinel so we fall
 # back to cognee-cli and warn — never reporting a server failure as "not found".
-# $DATASET is resolved above (COGNEE_PLUGIN_DATASET → default)
-# and scopes the search to the plugin's dataset so unrelated datasets don't bleed in.
+# $DATASET is resolved above (COGNEE_PLUGIN_DATASET → default) and scopes the
+# search to that dataset, unless auto recall cleared it above (routed server-side).
 # Logic lives in _recall_http.py (stdlib-only, unit-tested); stderr is surfaced.
 # No COGNEE_PLUGIN_STATE_DIR override here: the circuit breaker must be the ONE
 # at ~/.cognee-plugin/recall-breaker.json that the per-prompt hooks, doctor and

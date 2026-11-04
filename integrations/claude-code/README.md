@@ -90,8 +90,8 @@ the events the hooks fire. On your explicit action in the fix dialog it also run
 `cognee-doctor.sh` (read-only diagnostics) and appends a value you typed to
 `~/.cognee/.env`. Everything else it runs is one of this
 folder's scripts, on your action or Claude's: `switch-dataset.py --list` once when
-the band is first drawn and `switch-dataset.py <name>` (or `auto`) when you pick a dataset or
-run `/cognee-dataset <name>`; the `search` tool runs `cognee-search.sh` (and
+the band is first drawn and `switch-dataset.py <name>` (`pin` for the dataset in use, `auto`,
+or a dataset's id when it is named `pin`) when you pick a dataset or run `/cognee-dataset`; the `search` tool runs `cognee-search.sh` (and
 `recall-trim.py` on its output); the `remember` tool runs `cognee-remember.sh`.
 Those are the same programs the skills
 run, with the same server traffic. The module itself makes no network requests,

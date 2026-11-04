@@ -462,8 +462,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # name-addressed — it is this repo's own dataset.
     session_dataset = get_dataset(config)
     write_id, read_ids = resolve_active_dataset_ids() if scope_specs else ("", [])
-    # Auto recall (SDK-1393): unless recall is pinned (a picked dataset, a
-    # configured non-default one, an explicit read set), the graph scope names
+    # Auto recall (SDK-1393): unless recall is pinned (a picked dataset,
+    # COGNEE_PLUGIN_RECALL_MODE=pinned, an explicit read set), the graph scope names
     # no dataset and the server routes it (cognee 1.6.6; an older server reads
     # every readable dataset). Local state only: it costs no request.
     auto_route = False
@@ -578,8 +578,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             # (scopes_answered_err) so real failures stay visible (SDK-469).
             # It IS an answer, though: the server was reached and said so. Since
             # memory became one request (SDK-741) nothing else answers on such a
-            # prompt, so this must count as ok or the ready marker, the breaker
-            # and the dataset hint would all read a fresh dataset as an outage.
+            # prompt, so this must count as ok or the ready marker and the
+            # breaker would both read a fresh dataset as an outage.
             hook_log("recall_graph_not_built", {"scope": scope_list, "dataset": scope_dataset})
             scopes_ok += 1
             continue

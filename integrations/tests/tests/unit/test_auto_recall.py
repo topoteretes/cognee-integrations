@@ -227,6 +227,24 @@ def test_the_shell_skills_learn_whether_recall_is_auto(pc, launch, monkeypatch):
     assert pc.shell_runtime_overrides()["recall_auto"] == ""
 
 
+@pytest.mark.parametrize("mode, recall_auto", [("auto", "1"), ("pinned", "")])
+def test_the_shell_skills_follow_the_configured_mode_without_a_launch(
+    pc, monkeypatch, mode, recall_auto
+):
+    # A search run where no launch resolves (a plain terminal) still follows
+    # COGNEE_PLUGIN_RECALL_MODE instead of falling back to a pinned search.
+    for var in (
+        "COGNEE_SESSION_KEY",
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_SESSION_ID",
+        "CODEX_THREAD_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(pc, "resolve_host_key_outside_hook", lambda cwd="": ("", "not_found"))
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", mode)
+    assert pc.shell_runtime_overrides()["recall_auto"] == recall_auto
+
+
 # ── the prompt hook ────────────────────────────────────────────────────────
 
 
@@ -349,9 +367,15 @@ def test_a_configured_pin_applies_outside_a_launch(pc, monkeypatch):
 
 def test_recall_mode_names_why_recall_is_not_auto(pc, launch, monkeypatch):
     assert pc.recall_mode(launch) == ("auto", "")
-    monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID]))
-    assert pc.recall_mode(launch) == ("pinned", "read_dataset_ids")
     monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
     assert pc.recall_mode(launch) == ("pinned", "configured_pin")
     pc.set_recall_pinned(launch, True)
     assert pc.recall_mode(launch) == ("pinned", "dataset_picked")
+
+
+def test_a_read_set_is_reported_over_a_pin(pc, launch, monkeypatch):
+    # The recall request sends the read set over any pin, so that is the reason.
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
+    pc.set_recall_pinned(launch, True)
+    monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", json.dumps([WRITE_ID]))
+    assert pc.recall_mode(launch) == ("pinned", "read_dataset_ids")
