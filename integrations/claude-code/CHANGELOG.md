@@ -82,6 +82,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   could show the ended session's sync as `✓ session saved`. The module now drops the ended
   session's marker and binds the new conversation as soon as its id is out (watching for up to
   30 s), with the snapshot, warm-up poll and dataset listing a session start gets.
+- **Searching another dataset while recall is restricted takes the person's pick (SDK-1393).**
+  The skills already said to list the other datasets and ask before a one-off search of one, but
+  `cognee-search.sh --dataset-id` and the `search` tool's `dataset_id` searched any id they were
+  given, so an agent could leave a pinned dataset on an id it found in a recalled memory. While
+  recall is pinned or limited to a read set, the wrapper now refuses a dataset other than the
+  active one (exit 2, a JSON `error` saying how to ask, no request sent) unless `--user-picked`
+  marks it as the person's choice: one they picked when asked or named in their request. The
+  `search` tool passes it for `user_picked: true`; the skills, the `cognee-recall` agent and the
+  README carry the flag. Auto recall, and the active dataset named by hand, need no flag.
 
 ## [1.7.6]
 

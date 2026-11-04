@@ -132,7 +132,7 @@ On failure the JSON is `{"error", "code"}`:
 ## Notes
 
 - A switch is not needed just to *look* in another dataset: a one-off graph search
-  leaves the session where it is — `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id>` (see the **cognee-search** skill).
+  leaves the session where it is — `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id> --user-picked`, for a dataset the user named or picked (see the **cognee-search** skill).
 
 - `COGNEE_PLUGIN_DATASET` seeds the dataset at launch; a switch overrides it for the rest of the session and survives `--resume`. It never restricts recall. `COGNEE_PLUGIN_DATASET=auto` is not a dataset name: it means the default dataset (`agent_sessions`).
 - `COGNEE_PLUGIN_RECALL_MODE` (`auto`, the default, or `pinned`; exported or in `~/.cognee/.env`) is the recall mode a session starts in; an unknown value means `auto`. `pin`, `auto` or a switch in the session wins over it for that session.

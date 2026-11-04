@@ -231,9 +231,26 @@ test('the search tool reads another dataset by id and the code graph by scope', 
   expect(argsAfter(argvOf(calls, 'cognee-search.sh')!, 'cognee-search.sh')).toEqual(['raft', '10', '--graph', '--dataset-id', 'd2'])
 
   calls.length = 0
+  await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft', dataset_id: 'd2', user_picked: true })
+  expect(argsAfter(argvOf(calls, 'cognee-search.sh')!, 'cognee-search.sh')).toEqual(['raft', '10', '--graph', '--dataset-id', 'd2', '--user-picked'])
+
+  calls.length = 0
   const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'process_payment', scope: 'code' })
   expect(argsAfter(argvOf(calls, 'cognee-search.sh')!, 'cognee-search.sh')).toEqual(['process_payment', '10', '--code'])
   expect(resultText(ran).text).toContain('from the code graph')
+})
+
+test('a restricted recall refuses another dataset the person did not pick, as an error result', async ($, on) => {
+  const calls: Call[] = []
+  const refusal = 'recall is restricted to agent_sessions, so another dataset is searched only when the person chooses it.'
+  wire(on, calls, {
+    'cognee-search.sh': () => ({ value: { exitCode: 2, stdout: JSON.stringify({ error: refusal }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft', dataset_id: 'd2' }))
+  expect(shown.isError).toBe(true)
+  expect(shown.text).toContain(refusal)
 })
 
 test('an unreachable server is an error result, never an empty answer', async ($, on) => {

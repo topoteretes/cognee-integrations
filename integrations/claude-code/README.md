@@ -433,8 +433,13 @@ the recall mode as they are:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candidates
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid>
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid> --user-picked
 ```
+
+While recall is restricted (a picked or pinned dataset, or a read set), the wrapper searches
+another dataset only with `--user-picked`, which marks it as your choice: a dataset you named
+or picked when the agent asked. Without the flag it refuses and says how to ask. The `search`
+tool takes the same mark as `user_picked: true`. Under auto recall the flag is not needed.
 
 Every search reads the knowledge graph (or, with `--code`, a repository's code graph); the
 session cache is written, never searched. The session id is bound to the active dataset, so the
@@ -1249,7 +1254,7 @@ does not load mods and for the judgement the skill text carries.
 
 | Tool | Arguments | Runs | Returns |
 |---|---|---|---|
-| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from memory.` (`from the active dataset.` once recall is restricted to it) then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
+| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one), `user_picked` (the person chose that dataset; required for another dataset while recall is restricted) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id> [--user-picked]]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from memory.` (`from the active dataset.` once recall is restricted to it) then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
 | `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
 
 The credit line the model writes under an answer that used memory

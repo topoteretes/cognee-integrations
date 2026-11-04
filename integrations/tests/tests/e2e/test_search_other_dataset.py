@@ -145,3 +145,77 @@ def test_foreign_dataset_never_falls_back_to_the_cli(
     assert result.stdout.strip() == "UNREACHABLE"
     assert "search not run" in result.stderr
     assert "falling back to cognee-cli" not in result.stderr
+
+
+# --- Restricted recall: another dataset only on the person's pick -----------
+
+
+def _only_claude_code(suite):
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: no --user-picked gate in its wrapper")
+
+
+PINNED = {"COGNEE_SESSION_ID": "pinned_session", "COGNEE_PLUGIN_RECALL_MODE": "pinned"}
+
+
+def test_restricted_recall_refuses_a_dataset_the_person_did_not_pick(
+    suite, temp_home, mock_server, assert_clean_real_home
+):
+    """An id the agent found on its own (a recalled memory quoting one) must not
+    widen a pinned recall: the wrapper refuses before any request is sent."""
+    _only_claude_code(suite)
+    result = run_search(
+        suite,
+        "anything",
+        "5",
+        "--graph",
+        "--dataset-id",
+        OTHER_ID,
+        home=temp_home,
+        service_url=mock_server.url,
+        extra=PINNED,
+    )
+    assert result.returncode == 2
+    error = json.loads(result.stdout)["error"]
+    assert "recall is restricted" in error and "--user-picked" in error
+    mock_server.assert_not_called("POST", "/api/v1/recall")
+
+
+def test_restricted_recall_searches_a_dataset_the_person_picked(
+    suite, temp_home, mock_server, assert_clean_real_home
+):
+    _only_claude_code(suite)
+    mock_server.set_recall_results([{"source": "graph", "content": "from elsewhere"}])
+    result = run_search(
+        suite,
+        "anything",
+        "5",
+        "--graph",
+        "--dataset-id",
+        OTHER_ID,
+        "--user-picked",
+        home=temp_home,
+        service_url=mock_server.url,
+        extra=PINNED,
+    )
+    assert result.returncode == 0, result.stderr
+    body = _recall_body(mock_server)
+    assert body["dataset_ids"] == [OTHER_ID] and "session_id" not in body
+
+
+def test_restricted_recall_reads_the_active_dataset_named_by_hand_without_a_pick(
+    suite, temp_home, mock_server, assert_clean_real_home
+):
+    _only_claude_code(suite)
+    result = run_search(
+        suite,
+        "anything",
+        "5",
+        "--dataset",
+        "agent_sessions",
+        home=temp_home,
+        service_url=mock_server.url,
+        extra={**PINNED, "COGNEE_PLUGIN_DATASET": "agent_sessions"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert _recall_body(mock_server)["datasets"] == ["agent_sessions"]

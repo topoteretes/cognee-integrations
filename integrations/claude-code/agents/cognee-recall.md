@@ -76,10 +76,14 @@ so the main agent can offer the picker and run the one-off graph search on the
 chosen dataset without switching:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id>
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id> --user-picked
 ```
 
-If the caller already named a dataset to search (`--dataset-id <id>` in the
+`--user-picked` says the user chose that dataset; while recall is restricted
+the wrapper refuses another dataset without it. Do not run it yourself on a
+dataset you listed: the caller asks the user first.
+
+If the caller already named a dataset the user chose (`--dataset-id <id>` in the
 request), run that command directly and label the results with the dataset.
 
 ## Output
