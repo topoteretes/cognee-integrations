@@ -221,6 +221,19 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
     # everything, so an immediate re-resolve would only repeat its calls.
     next_shared_refresh = time.time() + SHARED_REFRESH_SECONDS
 
+    def _refresh_recall_capability() -> None:
+        try:
+            from _plugin_common import refresh_recall_session_history_support
+
+            refresh_recall_session_history_support()
+        except Exception as exc:
+            _log("recall_capability_probe_failed", error=str(exc)[:200])
+
+    # Whether the server's recall takes session_history, recorded here so the
+    # prompt hook only reads it: probing there would add a request to every
+    # prompt's deadline.
+    _refresh_recall_capability()
+
     def _refresh_shared_memory() -> None:
         try:
             from _plugin_common import refresh_shared_memory
@@ -244,6 +257,7 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         if SHARED_REFRESH_SECONDS > 0 and now >= next_shared_refresh:
             next_shared_refresh = now + SHARED_REFRESH_SECONDS
             _refresh_shared_memory()
+            _refresh_recall_capability()
         await asyncio.sleep(POLL_SECONDS)
 
     if _should_stop:

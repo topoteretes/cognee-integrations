@@ -307,6 +307,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:pidfile_replaced` | `idle_watcher.pidfile_replaced` |
 | `idle-watcher:pidfile_unlink_failed` | `idle_watcher.pidfile_unlink_failed` |
 | `idle-watcher:pidfile_write_failed` | `idle_watcher.pidfile_write_failed` |
+| `idle-watcher:recall_capability_probe_failed` | `idle_watcher.recall_capability_probe_failed` |
 | `idle-watcher:session_bridge_done` | `idle_watcher.session_bridge_done` |
 | `idle-watcher:shutdown_bridge_done` | `idle_watcher.shutdown_bridge_done` |
 | `idle-watcher:shutdown_bridge_failed` | `idle_watcher.shutdown_bridge_failed` |

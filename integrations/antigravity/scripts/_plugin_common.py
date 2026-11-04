@@ -5134,6 +5134,61 @@ def unregister_agent_via_http(
         return False, 0
 
 
+_RECALL_SESSION_HISTORY_MARKER = _PLUGIN_DIR / "recall-session-history.json"
+
+
+def recall_session_history_supported(service_url: str = "") -> bool:
+    """Does this server's ``POST /api/v1/recall`` take ``session_history``?
+
+    Read from the verdict ``refresh_recall_session_history_support`` keeps on
+    disk, never from the network: this runs on the prompt path, where a probe
+    against a slow server would cost a second deadline. No verdict for this
+    server reads as False, the safe answer: a server without the field ignores
+    it and would put the conversation history into the graph recall's prompt.
+    """
+    url = _normalize_service_url(service_url or _local_api_url())
+    try:
+        cached = json.loads(_RECALL_SESSION_HISTORY_MARKER.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return (
+        isinstance(cached, dict)
+        and cached.get("base_url") == url
+        and cached.get("supported") is True
+    )
+
+
+def refresh_recall_session_history_support(service_url: str = "") -> None:
+    """Record whether the server takes ``session_history``, once per cognee version.
+
+    Run by the idle watcher, off the prompt path. The version comes from
+    ``/health``; ``/openapi.json`` is read only when it changed. A failed
+    request records nothing, so a transient failure never settles the verdict.
+    """
+    url = _normalize_service_url(service_url or _local_api_url())
+    health = _json_http_request("/health", method="GET", base_url=url, timeout=4)
+    version = str(health.get("version") or "") if isinstance(health, dict) else ""
+    try:
+        cached = json.loads(_RECALL_SESSION_HISTORY_MARKER.read_text(encoding="utf-8"))
+    except Exception:
+        cached = {}
+    if (
+        version
+        and isinstance(cached, dict)
+        and cached.get("base_url") == url
+        and cached.get("version") == version
+    ):
+        return
+    spec = _json_http_request("/openapi.json", method="GET", base_url=url, timeout=4)
+    spec = spec if isinstance(spec, dict) else {}
+    fields = _openapi_request_properties(spec, "/api/v1/recall")
+    supported = bool({"session_history", "sessionHistory"} & fields)
+    _write_json_file(
+        _RECALL_SESSION_HISTORY_MARKER,
+        {"base_url": url, "version": version, "supported": supported},
+    )
+
+
 def recall_via_http(
     query: str,
     *,
@@ -5147,6 +5202,7 @@ def recall_via_http(
     dataset_ids: list[str] | None = None,
     code_query: dict | None = None,
     timeout: float = 10.0,
+    session_history: bool = True,
 ) -> list:
     payload = {
         "query": query,
@@ -5193,6 +5249,15 @@ def recall_via_http(
         payload["dataset_ids"] = ids
     else:
         payload.update(fields)
+    # session_history off: the session tags the recall's activity row while
+    # its history stays out of the prompt. A server that does not know the
+    # field ignores it and would add the history, so there the session is
+    # dropped, as before.
+    if not session_history and payload.get("session_id"):
+        if recall_session_history_supported():
+            payload["session_history"] = False
+        else:
+            payload.pop("session_id", None)
     if search_type:
         payload["search_type"] = search_type
     if context_profile:

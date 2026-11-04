@@ -529,10 +529,11 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             scope_dataset_ids = (
                 read_ids if scope_list == ["graph"] else [write_id] if write_id else []
             )
-        # The graph recall carries no session id (see scope_specs): the
-        # history it would add is the agent's own conversation. Only the
-        # guidance request needs the session.
-        scope_session_id = "" if scope_list == ["graph"] else session_id
+        # The graph recall's prompt carries no conversation history (see
+        # scope_specs): it is the agent's own conversation. It still sends the
+        # session, with session_history off, so the recall is attributed to it.
+        scope_session_id = session_id
+        scope_session_history = scope_list != ["graph"]
         part, exc = None, None
         t0 = time.monotonic()
         try:
@@ -543,6 +544,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 recall_via_http,
                 prompt,
                 session_id=scope_session_id,
+                session_history=scope_session_history,
                 top_k=TOP_K,
                 scope=scope_list,
                 only_context=True,

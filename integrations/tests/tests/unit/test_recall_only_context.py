@@ -132,11 +132,12 @@ def test_an_item_the_trimmer_cannot_read_is_injected_whole(lookup, monkeypatch):
     assert run.detail("context_lookup_hit")["counts"]["graph_context"] == 1
 
 
-def test_a_plain_prompt_makes_two_requests_and_only_guidance_carries_the_session(
+def test_a_plain_prompt_makes_two_requests_and_only_guidance_uses_the_session_history(
     lookup, monkeypatch
 ):
-    """The graph recall goes WITHOUT the session id — with it the server prepends
-    the conversation history — and the guidance request goes WITH it."""
+    """The graph recall sends the session with session_history off — it tags the
+    recall, while the history it would prepend stays out — and the guidance
+    request uses the session as usual."""
     run = drive_recall(lookup, monkeypatch, prompt=PROMPT, recall={"graph": [ITEM_160]})
 
     assert sorted(run.calls) == sorted(SCOPES), run.calls
@@ -144,7 +145,8 @@ def test_a_plain_prompt_makes_two_requests_and_only_guidance_carries_the_session
     assert graph["scope"] == ["graph"]
     assert graph["search_type"] == "HYBRID_COMPLETION"
     assert graph["only_context"] is True
-    assert not graph.get("session_id"), f"the graph recall must not carry the session: {graph}"
+    assert graph["session_id"] == OWN_SESSION
+    assert graph["session_history"] is False, f"the graph recall must not use the history: {graph}"
     guidance = run.kwargs["session_context"]
     assert guidance["scope"] == ["session_context"]
     assert guidance["session_id"] == OWN_SESSION

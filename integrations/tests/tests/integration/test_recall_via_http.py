@@ -62,3 +62,104 @@ def test_non_list_response_is_coerced_to_empty(pc, mock_server):
     """The client contract is a list; anything else must not leak upward."""
     mock_server.force_response("POST", RECALL, 200, {"unexpected": "shape"})
     assert _recall(pc, dataset="ds") == []
+
+
+OPENAPI = "/openapi.json"
+
+
+def _spec(*recall_fields):
+    """An /openapi.json whose recall request body lists ``recall_fields``."""
+    ref = "#/components/schemas/RecallPayloadDTO"
+    return {
+        "paths": {
+            RECALL: {
+                "post": {
+                    "requestBody": {"content": {"application/json": {"schema": {"$ref": ref}}}}
+                }
+            }
+        },
+        "components": {
+            "schemas": {"RecallPayloadDTO": {"properties": {f: {} for f in recall_fields}}}
+        },
+    }
+
+
+@pytest.fixture
+def marker(pc, tmp_path, monkeypatch):
+    path = tmp_path / "recall-session-history.json"
+    monkeypatch.setattr(pc, "_RECALL_SESSION_HISTORY_MARKER", path)
+    return path
+
+
+def _openapi_calls(mock_server):
+    return [c for c in mock_server.calls if c["method"] == "GET" and c["path"] == OPENAPI]
+
+
+def _health(mock_server, version):
+    mock_server.force_response("GET", "/health", 200, {"status": "healthy", "version": version})
+
+
+def test_recall_without_session_history_attributes_the_session(pc, mock_server, marker):
+    """A server that knows the field gets the session for attribution only."""
+    _health(mock_server, "1.6.7")
+    mock_server.force_response("GET", OPENAPI, 200, _spec("sessionId", "sessionHistory"))
+    pc.refresh_recall_session_history_support()
+
+    _recall(pc, dataset="ds", session_history=False)
+
+    body = mock_server.assert_called("POST", RECALL)["json"]
+    assert body["session_id"] == "s"
+    assert body["session_history"] is False
+
+
+def test_recall_drops_the_session_on_a_server_without_session_history(pc, mock_server, marker):
+    """An older server would ignore the field and put the history in the prompt."""
+    _health(mock_server, "1.6.6")
+    mock_server.force_response("GET", OPENAPI, 200, _spec("sessionId"))
+    pc.refresh_recall_session_history_support()
+
+    _recall(pc, dataset="ds", session_history=False)
+
+    body = mock_server.assert_called("POST", RECALL)["json"]
+    assert "session_id" not in body
+    assert "session_history" not in body
+
+
+def test_recall_never_probes_the_server_itself(pc, mock_server, marker):
+    """The prompt path only reads the recorded verdict: a probe there would add a
+    request to every prompt's deadline. No verdict reads as unsupported."""
+    _recall(pc, dataset="ds", session_history=False)
+
+    assert "session_id" not in mock_server.assert_called("POST", RECALL)["json"]
+    assert _openapi_calls(mock_server) == []
+
+
+def test_recall_with_session_history_sends_the_session_without_the_flag(pc, mock_server, marker):
+    _recall(pc, dataset="ds")
+
+    body = mock_server.assert_called("POST", RECALL)["json"]
+    assert body["session_id"] == "s"
+    assert "session_history" not in body
+
+
+def test_refresh_reads_the_spec_once_per_cognee_version(pc, mock_server, marker):
+    _health(mock_server, "1.6.7")
+    mock_server.force_response("GET", OPENAPI, 200, _spec("sessionHistory"))
+
+    pc.refresh_recall_session_history_support()
+    pc.refresh_recall_session_history_support()
+    assert len(_openapi_calls(mock_server)) == 1
+
+    _health(mock_server, "1.6.8")
+    pc.refresh_recall_session_history_support()
+    assert len(_openapi_calls(mock_server)) == 2
+
+
+def test_a_failed_refresh_records_nothing(pc, mock_server, marker):
+    _health(mock_server, "1.6.7")
+    mock_server.force_response("GET", OPENAPI, 503, {"detail": "down"})
+
+    with pytest.raises(Exception):
+        pc.refresh_recall_session_history_support()
+
+    assert not marker.exists()
