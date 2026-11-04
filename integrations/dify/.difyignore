@@ -184,4 +184,3 @@ tests/
 # Dify plugin CLI binary and packages
 dify-plugin
 *.difypkg
-

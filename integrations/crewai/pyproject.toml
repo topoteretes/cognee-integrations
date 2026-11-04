@@ -7,6 +7,7 @@ name = "cognee-integration-crewai"
 version = "0.1.1"
 description = "CrewAI integration for Cognee - enables AI agents to store and retrieve information from Cognee's knowledge graph"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "cognee>=0.4.0,<0.5.4",

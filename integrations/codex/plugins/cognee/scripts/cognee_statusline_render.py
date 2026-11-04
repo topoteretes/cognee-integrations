@@ -2,12 +2,14 @@
 """Render the Cognee status line (Codex).
 
 Invoked via ``cognee-statusline.sh``, which pipes a JSON context on stdin.
-Deliberately standalone and pure-local: reads only env vars and
-``~/.cognee-plugin/config.json`` — no network calls, no ``_plugin_common``
-import.
+Deliberately standalone and pure-local: reads only env vars
+(``~/.cognee/.env`` included) and the plugin's own state files — no network
+calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -16,14 +18,15 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from _env_file import load_env_file
+from _env_file import forced_backend, load_env_file
 
 # ~/.cognee/.env is pure-local too, so loading it here keeps the renderer's
 # no-network/no-_plugin_common contract while honoring one-time config.
+# load_env_file also applies the COGNEE_BACKEND switch (forced local scrubs the
+# cloud connection vars), so the mode shown below matches what the hooks use.
 load_env_file()
 
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
-_CONFIG_PATH = _SHARED_ROOT / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "codex" / "update-check.json"
@@ -38,18 +41,103 @@ _CONN_STATE_DIR = _SHARED_ROOT / "codex" / "conn-state"
 # there is no periodic re-check — so a verdict this old came from a session that is
 # gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
 _LLM_STATE_STALE_SECONDS = 30 * 60
+_CREDITS_PATH = _SHARED_ROOT / "codex" / "credits.json"
+
+# Credits balance age. The marker is written only when this machine does
+# something billable (prompt start, turn end, remember, improve) — there is no
+# background poll, so an idle terminal makes no billing calls. The balance
+# cannot move from here while idle, so an old reading is still the right
+# number for this session; past this age it carries an "Nm ago" hint so the
+# user knows it predates the idle stretch. Hidden only once older than the
+# marker's own prune horizon (`_plugin_common._CREDITS_ENTRY_MAX_AGE_SECONDS`).
+_CREDITS_AGE_HINT_SECONDS = 15 * 60
+_CREDITS_MAX_AGE_SECONDS = 7 * 24 * 3600
+# A balance at or below this is "running out": the number turns red and the
+# top-up link appears. Not zero — the cloud stops serving before the balance
+# reaches zero (a 402 arrives with cents left), so zero is never observed.
+_CREDITS_LOW_USD = 1.0
+# Where to top up. Shown next to a low balance and next to a 402 refusal that
+# arrived without any balance reading. The production billing page, hardcoded:
+# the web frontend's host cannot be derived from the tenant's data-plane host
+# (``tenant-<id>.aws.cognee.ai`` pairs with ``platform.cognee.ai``, but
+# ``tenant-<id>.dev-aws.cognee.ai`` pairs with ``staging.cognee.ai`` — a lookup,
+# not a rule). Staging/dev sessions set ``COGNEE_BILLING_URL``.
+_BILLING_URL_DEFAULT = "https://platform.cognee.ai/billing"
+
+
+def _billing_url() -> str:
+    return os.environ.get("COGNEE_BILLING_URL", "").strip() or _BILLING_URL_DEFAULT
+
+
+def _payment_required_op(entry: dict) -> str:
+    """The operation the server last refused with HTTP 402, or "".
+
+    The hooks stamp ``payment_required: {op, at}`` on the tenant's entry when a
+    billable request comes back 402 and remove it on the next success. Stale
+    notes (older than the marker's prune horizon) are ignored: nothing has been
+    tried against this tenant for a week, so nothing is known about it.
+    """
+    note = entry.get("payment_required")
+    if not isinstance(note, dict):
+        return ""
+    op = str(note.get("op") or "").strip()
+    if not op:
+        return ""
+    try:
+        if time.time() - float(note.get("at", 0) or 0) > _CREDITS_MAX_AGE_SECONDS:
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return op
+
+
+def _credits_age_hint(age_seconds: float) -> str:
+    """``"16m ago"`` / ``"3h ago"`` / ``"2d ago"`` once a reading is older than
+    ``_CREDITS_AGE_HINT_SECONDS``; ``""`` while it is recent enough to read as
+    current. Coarse on purpose — it says "this number predates your idle
+    stretch", not a timestamp."""
+    if age_seconds <= _CREDITS_AGE_HINT_SECONDS:
+        return ""
+    minutes = int(age_seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
+
+
 _DEFAULT_DATASET = "agent_sessions"
 # Must match _plugin_common._DEFAULT_LOCAL_SERVICE_URL: the hooks stamp this URL into
 # the markers this renderer compares against.
 _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 
 
-def _active_dataset() -> str:
-    # 1. env var (inherited from the shell that launched Codex)
+_SESSIONS_DIR = _SHARED_ROOT / "codex" / "sessions"
+
+
+def _launch_record(host_id: str) -> dict:
+    """This launch's record (``sessions/<host id>.json``), or {}.
+
+    The host session key handed to the renderer is the same key SessionStart
+    files the record under, so the bar reads the dataset the launch is actually
+    writing to — including one chosen with the ``cognee-switch-datasets`` skill.
+    """
+    if not _path_safe(host_id):
+        return {}
+    return _read_json(_SESSIONS_DIR / f"{host_id}.json")
+
+
+def _active_dataset(host_id: str = "") -> str:
+    # 1. the launch record (authoritative once SessionStart has run; switchable)
+    recorded = str(_launch_record(host_id).get("dataset") or "").strip()
+    if recorded:
+        return recorded
+    # 2. env var (inherited from the shell that launched Codex)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. default
+    # 3. default
     return _DEFAULT_DATASET
 
 
@@ -57,29 +145,35 @@ _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
 
 
 def _active_mode() -> str:
-    # 1. env var
-    url = os.environ.get("COGNEE_BASE_URL", "").strip()
-    # 2. config file
-    if not url:
-        try:
-            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                url = str(data.get("base_url") or "").strip()
-        except Exception:
-            pass
-    if not url:
+    # 0. explicit backend switch: forced local always reads local (the env
+    # scrub in load_env_file guarantees it, this is just the direct answer);
+    # forced cloud with no URL to inspect reads cloud — the misconfig glyph
+    # (see _forced_cloud_unconfigured) reports what is missing.
+    forced = forced_backend()
+    if forced == "local":
         return "local"
+    url = os.environ.get("COGNEE_BASE_URL", "").strip()
+    if not url:
+        return "cloud" if forced == "cloud" else "local"
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
 
 
-_FAIL_STATES = ("auth_failed", "unreachable", "server_error")
+_FAIL_STATES = ("auth_failed", "unreachable", "server_error", "not_responding")
 # Of those, the ones that are a property of the SERVER rather than of the credential
 # the observing session happened to use. Only these may cross session boundaries: if
 # one terminal can't reach the server, neither can the others — but one terminal's
 # rejected API key says nothing about anyone else's. Letting auth_failed cross put a
 # red ✕ (incorrect_cognee_api_key) on a healthy local terminal for a few seconds
 # whenever a keyless cloud terminal started up.
-_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error")
+# "not_responding" (N consecutive recall timeouts) is server-wide too: a server
+# that isn't answering one terminal isn't answering the others either.
+_SERVER_WIDE_FAIL_STATES = ("unreachable", "server_error", "not_responding")
+
+# A failure verdict is only worth a ✕ while it is FRESH. The hooks refresh a
+# genuine outage on every prompt (probe or recall attempt), so a failure marker
+# older than this means no session has re-confirmed it — ambiguous, and ambiguity
+# renders no glyph (same as the warming case) rather than a stale accusation.
+_FAIL_STATE_STALE_SECONDS = 30 * 60
 
 
 def _active_base_url() -> str:
@@ -97,14 +191,6 @@ def _active_base_url() -> str:
         url = os.environ.get(var, "").strip()
         if url:
             return url.rstrip("/")
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            url = str(data.get("base_url") or "").strip()
-            if url:
-                return url.rstrip("/")
-    except Exception:
-        pass
     return _DEFAULT_LOCAL_BASE_URL
 
 
@@ -165,6 +251,14 @@ def _connection_marker(session_id: str) -> dict:
 # `llm-state.json` still records which of the two it was.
 _COGNEE_KEY_REASON = "incorrect_cognee_api_key"
 _LLM_KEY_REASON = "incorrect_llm_api_key"
+_MISSING_URL_REASON = "missing_cognee_base_url"
+# Local mode with no Python the Cognee server can run on. SessionStart writes the
+# marker when it finds no 3.10+ interpreter (the plugin does not download one) and
+# clears it once a runtime venv exists; like the missing-URL case it is proven
+# from local state, not inferred from a failed connection — so it is shown at
+# once, and named for the fix rather than the symptom (``unreachable``).
+_PYTHON_REQUIRED_REASON = "cognee_needs_python_3_10"
+_HOST_PYTHON_MARKER = _SHARED_ROOT / "host-python-unsupported.json"
 _REASON_LABELS = {"auth_failed": _COGNEE_KEY_REASON}
 
 
@@ -179,14 +273,44 @@ def _url_mismatch(active_url: str, marked_url: str) -> bool:
     return bool(active_url and marked_url and active_url != marked_url)
 
 
+def _breaker_glyph(active_url: str) -> str:
+    """ "✕ (<trip reason>) " when THIS server's breaker is open, else "".
+
+    The breaker file is keyed by base_url (SDK-356): an entry for a different
+    server — a cloud tenant while this terminal is local, or Claude Code's
+    target — must not red this bar. A legacy flat file (machine-wide,
+    target-blind) is ignored for the same reason. The reason travels from the
+    trip site, so a breaker opened by 5xx reads ``server_error``, not a false
+    ``unreachable``.
+    """
+    try:
+        raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    servers = raw.get("servers") if isinstance(raw, dict) else None
+    if not isinstance(servers, dict):
+        return ""
+    entry = servers.get(active_url.rstrip("/"))
+    if not isinstance(entry, dict):
+        return ""
+    try:
+        if float(entry.get("cooldown_until", 0) or 0) <= time.time():
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    reason = str(entry.get("reason") or "unreachable")
+    return f"✕ ({_REASON_LABELS.get(reason, reason)}) "
+
+
 def _health_prefix(session_id: str = "") -> str:
     """Server-connection glyph for THIS session, from local markers (no network).
 
-    Precedence — we keep it green until we actually know it is red:
-      1. a recorded failure state in the marker → ``✕ (<reason>)``
-      2. an open recall breaker (repeated recall failure) → ``✕ (unreachable)``
+    Precedence — the ✕ is reserved for CONFIRMED, FRESH, DEFINITIVE failures:
+      1. a fresh recorded failure state in the marker → ``✕ (<reason>)``
+         (older than _FAIL_STATE_STALE_SECONDS → ambiguous → no glyph)
+      2. an open recall breaker for THIS base_url → ``✕ (<trip reason>)``
       3. a "ready" marker → ``● ``
-      4. otherwise (no marker / warming / different target) → no glyph
+      4. otherwise (no marker / warming / stale / different target) → no glyph
     The marker (``server-ready.json``) carries {state, base_url, ...}; a state is
     trusted only when its base_url matches this session's, so a local-ready marker
     never greens a cloud session (or vice versa).
@@ -200,23 +324,15 @@ def _health_prefix(session_id: str = "") -> str:
     if marker and not url_mismatch:
         state = str(marker.get("state") or ("ready" if marker.get("ready_at") else ""))
         if state in _FAIL_STATES:
-            return f"✕ ({_REASON_LABELS.get(state, state)}) "
+            if time.time() - _checked_at(marker) <= _FAIL_STATE_STALE_SECONDS:
+                return f"✕ ({_REASON_LABELS.get(state, state)}) "
+            # Stale verdict: nobody has re-confirmed the failure — treat as
+            # unknown rather than keep accusing a server that may be fine.
+            return _breaker_glyph(active_url)
         if state == "ready":
-            try:
-                raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-                if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
-                    return "✕ (unreachable) "
-            except Exception:
-                pass
-            return "● "
+            return _breaker_glyph(active_url) or "● "
 
-    try:
-        raw = json.loads(_BREAKER_PATH.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and float(raw.get("cooldown_until", 0) or 0) > time.time():
-            return "✕ (unreachable) "
-    except Exception:
-        pass
-    return ""
+    return _breaker_glyph(active_url)
 
 
 def _update_segment() -> str:
@@ -316,29 +432,135 @@ def _llm_prefix(session_id: str = "") -> str:
     return ""
 
 
+def _forced_cloud_unconfigured() -> bool:
+    """Forced cloud (backend switch) with no URL anywhere: nothing to connect
+    to — a definitive misconfiguration this renderer can see directly from
+    the environment, without waiting for a hook to record a failed attempt.
+    """
+    if forced_backend() != "cloud":
+        return False
+    return not os.environ.get("COGNEE_BASE_URL", "").strip()
+
+
+def _runtime_python_missing() -> bool:
+    """Local mode, and SessionStart recorded that no Python 3.10+ exists for the
+    Cognee server. Marker-only (no probing): the hook that tried is the authority."""
+    if _active_mode() != "local":
+        return False
+    try:
+        return _HOST_PYTHON_MARKER.is_file()
+    except OSError:
+        return False
+
+
 def _status_prefix(session_id: str = "") -> str:
     """The single leading glyph slot shared by the server- and LLM-key signals.
 
     One slot, by precedence — showing a ● next to an ✕ would read as
     contradictory:
+      0. forced cloud with no URL configured: a misconfiguration this renderer
+         can prove on its own — the precise reason beats any marker-derived one
+         (likewise local mode with no Python 3.10+ for the Cognee server,
+         recorded by SessionStart: ``cognee_needs_python_3_10``)
       1. a server-connection failure wins: if we can't reach or authenticate
          against the server, its LLM key is not the actionable problem
       2. otherwise an LLM-key failure, which *replaces* the ● (the ``llm_*``
          reason already says the server side itself is fine)
       3. otherwise whatever the server signal is (``● `` or nothing).
     """
+    if _forced_cloud_unconfigured():
+        return f"✕ ({_MISSING_URL_REASON}) "
+    if _runtime_python_missing():
+        return f"✕ ({_PYTHON_REQUIRED_REASON}) "
     server = _health_prefix(session_id)
     if server.startswith("✕"):
         return server
     return _llm_prefix(session_id) or server
 
 
+def _credits_segment() -> str:
+    """Cloud credits balance + approximate cost of the last memory operation.
+
+    Pure-local like everything here: reads only ``credits.json`` — a MAP keyed
+    by tenant id (several terminals can be on different tenants at once), each
+    entry carrying the service base_url it was observed under. Select OUR
+    tenant's entry by that binding. Plain text (the Codex line carries no ANSI
+    styling). Renders nothing unless ALL of: cloud mode, matching entry with a
+    numeric balance younger than ``_CREDITS_MAX_AGE_SECONDS``, not opted out
+    (``COGNEE_STATUSLINE_CREDITS=off``). A reading older than
+    ``_CREDITS_AGE_HINT_SECONDS`` renders with an ``(Nm ago)`` age hint.
+    """
+    if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return ""
+    if _active_mode() != "cloud":
+        return ""
+    marker = _read_json(_CREDITS_PATH)
+    active = _active_base_url().rstrip("/")
+    entry = None
+    for candidate in marker.values():
+        if (
+            isinstance(candidate, dict)
+            and str(candidate.get("base_url") or "").rstrip("/") == active
+        ):
+            entry = candidate
+            break
+    if entry is None:
+        return ""
+    remaining = entry.get("remaining_usd")
+    if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+        remaining = None
+    age = 0.0
+    if remaining is not None:
+        try:
+            age = time.time() - float(entry.get("checked_at", 0) or 0)
+        except (TypeError, ValueError):
+            remaining = None
+        if age > _CREDITS_MAX_AGE_SECONDS:
+            remaining = None
+    refused_op = _payment_required_op(entry)
+    if remaining is None:
+        if not refused_op:
+            return ""
+        # The server refused to pay for an operation but there is no balance to
+        # show (the billing fetch itself failed): the refusal is the segment, and
+        # the way out is the same as for a low balance — top up.
+        return f" · credits: not enough for {refused_op}{_top_up_hint()}"
+    exhausted = remaining <= _CREDITS_LOW_USD
+    sign = "-" if remaining < 0 else ""
+    seg = f" · credits: {sign}${abs(remaining):,.2f}"
+    if refused_op and not exhausted:
+        seg += f" (not enough for {refused_op})"
+    last_op = entry.get("last_op")
+    if isinstance(last_op, dict):
+        label = str(last_op.get("label") or "").strip()
+        cost = last_op.get("cost_usd")
+        if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            seg += f" · last {label} ~${cost:,.2f}"
+    hint = _credits_age_hint(age)
+    if hint:
+        seg += f" ({hint})"
+    if exhausted:
+        seg += _top_up_hint()
+    return seg
+
+
+def _top_up_hint() -> str:
+    """A plain URL: the host line carries no styling, and terminals linkify it."""
+    return f" · top up: {_billing_url()}"
+
+
 def render_status_for_host(host_id: str) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
     return (
-        f"{_status_prefix(str(host_id or ''))}cognee: {_active_dataset()} · {_active_mode()}"
-        f"{_update_segment()}"
+        f"{_status_prefix(str(host_id or ''))}"
+        f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
+        f"{_credits_segment()}{_update_segment()}"
     )
 
 
@@ -357,12 +579,20 @@ def main() -> None:
         except Exception:
             pass
 
+    ctx: dict = {}
     try:
-        json.load(sys.stdin)  # consume stdin as required by the host
+        ctx = json.load(sys.stdin)  # consume stdin as required by the host
     except Exception:
-        pass
+        ctx = {}
+    if not isinstance(ctx, dict):
+        ctx = {}
+    # The host session id (when the context carries one) selects this launch's
+    # record, so the dataset shown follows a switch.
+    host_id = str(ctx.get("session_id") or ctx.get("thread_id") or "")
     sys.stdout.write(
-        f"{_status_prefix()}cognee: {_active_dataset()} · {_active_mode()}{_update_segment()}"
+        f"{_status_prefix()}"
+        f"cognee: {_active_dataset(host_id)} · {_active_mode()}"
+        f"{_credits_segment()}{_update_segment()}"
     )
 
 

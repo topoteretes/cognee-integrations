@@ -7,6 +7,7 @@ name = "cognee-integration-chat-memory"
 version = "0.1.0"
 description = "Shared chat-memory adapter core for cognee-powered bots (Slack, Telegram, Discord, a personal second brain)."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Cognee team" }]
 dependencies = [

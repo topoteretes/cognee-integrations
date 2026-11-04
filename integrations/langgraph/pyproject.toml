@@ -7,6 +7,7 @@ name = "cognee-integration-langgraph"
 version = "0.1.7"
 description = "A powerful integration between LangGraph and Cognee providing intelligent knowledge management and retrieval capabilities for AI agents"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     {name = "Cognee team"}

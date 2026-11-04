@@ -12,6 +12,8 @@ Never modifies configuration, initialises databases, registers
 resources, writes files, or mutates state.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import pathlib
@@ -56,7 +58,8 @@ def _resolve_local_cognee_version() -> str:
 def _resolve_mode() -> str:
     """Return the resolved operating mode: Local, Local Managed, or Cloud.
 
-    - No base_url configured → Local
+    - No base_url configured → Local (or Cloud when the backend switch forces
+      cloud — the mode is pinned even though there is nothing to connect to)
     - base_url pointing to localhost / 127.0.0.1 / ::1 → Local Managed
     - Remote base_url → Cloud
     """
@@ -68,7 +71,7 @@ def _resolve_mode() -> str:
     base_url = str(cfg.get("base_url") or "").strip()
 
     if not base_url:
-        return "Local"
+        return "Cloud" if cfg.get("_forced_backend") == "cloud" else "Local"
 
     hostname = urllib.parse.urlparse(base_url).hostname or ""
     if hostname in ("localhost", "127.0.0.1", "::1"):
@@ -77,21 +80,40 @@ def _resolve_mode() -> str:
     return "Cloud"
 
 
+def _mode_annotation() -> str:
+    """Suffix for the mode row when the backend switch forced the decision."""
+    from _env_file import forced_backend_with_source
+    from config import load_config
+
+    forced, var = forced_backend_with_source()
+    if not forced:
+        return ""
+    note = f" — forced by {var}={forced}"
+    if forced == "cloud" and not str(load_config().get("base_url") or "").strip():
+        note += " (missing COGNEE_BASE_URL — nothing to connect to)"
+    return note
+
+
 def _resolve_server_url() -> tuple:
     """Return (display_url, raw_url).
 
     In local mode the display value is "-" (no remote server), but the
     raw_url is still resolved so the health-check can probe localhost.
+    Forced cloud with no URL configured has nothing to probe at all.
     """
     from _plugin_common import _local_api_url_with_source
+    from config import load_config
 
-    url, _source = _local_api_url_with_source()
     mode = _resolve_mode()
+    if mode == "Cloud" and not str(load_config().get("base_url") or "").strip():
+        return "-", ""
+    url, _source = _local_api_url_with_source()
     display = "-" if mode == "Local" else url
     return display, url
 
 
 _KEY_SOURCE_LABELS = {
+    "plugin_agent_key": "Plugin identity",
     "env_api_key": "ENV",
     "cache_single_key": "Config",
     "missing": "Default",
@@ -112,6 +134,44 @@ def _resolve_api_key_source() -> str:
         if file_key and file_key == key:
             label = "Env file"
     return label
+
+
+def _resolve_memory_sharing() -> str:
+    """How this plugin's memory relates to the user's other agents.
+
+    ``shared (role: cognee-agent)`` when the agent is wired into the shared
+    role; otherwise ``separated`` with the reason: the user opted out, the
+    plugin runs as the principal (no agent identity — the principal sees
+    everything anyway), or the wiring was skipped (older server, not the
+    tenant owner, tenant-less install that already owns data).
+    """
+    from _plugin_common import (
+        AGENT_ROLE_NAME,
+        active_agent_key,
+        key_limit_message,
+        load_shared_memory_marker,
+        shared_memory_enabled,
+    )
+
+    if not shared_memory_enabled():
+        return "separated (opt-out)"
+    marker = load_shared_memory_marker()
+    if not active_agent_key() and key_limit_message():
+        return "principal (plugin key limit reached: free a slot with the cognee-keys skill)"
+    if not active_agent_key():
+        # An install that could not be wired (or whose identity is blocked or
+        # bound to another principal) runs as the principal; say why, so "no
+        # agent identity" is not mistaken for a broken install.
+        reason = str(marker.get("reason") or "").replace("_", " ")
+        return (
+            f"principal (shared memory unavailable: {reason})"
+            if reason
+            else ("principal (no agent identity)")
+        )
+    if marker.get("mode") == "shared":
+        return f"shared (role: {AGENT_ROLE_NAME})"
+    reason = str(marker.get("reason") or "not wired yet").replace("_", " ")
+    return f"separated ({reason})"
 
 
 def _check_health(server_url: str, timeout: float = 5.0) -> dict:
@@ -152,6 +212,71 @@ def _resolve_server_version(health_body: dict | None) -> str:
     return "Unknown"
 
 
+_RUNTIME_PYTHON_MIN = (3, 10)
+_RUNTIME_PYTHON_MAX = (3, 14)
+_HOST_PYTHON_CANDIDATES = (
+    "python3.14",
+    "python3.13",
+    "python3.12",
+    "python3.11",
+    "python3.10",
+    "python3",
+    "python",
+)
+
+
+def _python_version_of(python: str) -> tuple:
+    """``(major, minor, micro)`` of an interpreter on disk, or ``()``."""
+    try:
+        out = subprocess.run(
+            [python, "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return tuple(int(part) for part in out.stdout.strip().split("."))
+    except Exception:
+        pass
+    return ()
+
+
+def _resolve_runtime_python() -> str:
+    """The Python the local Cognee server runs on — or why there is none.
+
+    Cognee requires 3.10-3.14 and the plugin builds its runtime venv only from an
+    interpreter already installed (it downloads none), so this is the first thing
+    to check when local mode will not start. Reports the venv's interpreter once
+    built; before that, the SessionStart refusal marker if one was recorded,
+    otherwise the newest suitable ``python3.x`` on PATH (the one the next session
+    start will use). Read-only: probes versions, builds nothing.
+    """
+    import shutil
+
+    from _plugin_common import _SHARED_PLUGIN_ROOT, _VENV_PYTHON
+
+    if _resolve_mode() == "Cloud":
+        return "Not needed (remote server)"
+    if _VENV_PYTHON.exists():
+        version = _python_version_of(str(_VENV_PYTHON))
+        label = ".".join(str(part) for part in version) if version else "unknown version"
+        return f"{label} (plugin venv)"
+    need = "Cognee needs Python {}.{}-{}.{}".format(*_RUNTIME_PYTHON_MIN, *_RUNTIME_PYTHON_MAX)
+    marker = _SHARED_PLUGIN_ROOT / "host-python-unsupported.json"
+    if marker.exists():
+        return f"MISSING - {need}; none found at last session start (install one, then restart)"
+    seen = set()
+    for name in _HOST_PYTHON_CANDIDATES + (sys.executable,):
+        found = shutil.which(name) if os.sep not in name else name
+        if not found or found in seen:
+            continue
+        seen.add(found)
+        version = _python_version_of(found)
+        if version and _RUNTIME_PYTHON_MIN <= version[:2] <= _RUNTIME_PYTHON_MAX:
+            return "{}.{}.{} ({}, venv not built yet)".format(*version[:3], found)
+    return f"MISSING - {need}; none found on PATH (install one, then start a session)"
+
+
 def _resolve_circuit_breaker() -> str:
     """Return a human description of the circuit breaker state."""
     from _cognee_client import breaker_open
@@ -173,6 +298,50 @@ def _resolve_embedding() -> tuple[str, str]:
     model = (os.environ.get("EMBEDDING_MODEL") or "").strip() or "Default"
     dims = (os.environ.get("EMBEDDING_DIMENSIONS") or "").strip() or "Default"
     return model, dims
+
+
+def _resolve_llm() -> str:
+    """Where the local server's LLM calls go: a configured provider key, or the
+    Claude observer (Claude Code's own subscription via ``claude -p``).
+
+    Local mode only — a remote server owns its own LLM. Read-only: decides as
+    session-start would (``resolve_observer``) and asks the shim's ``/health``;
+    it never starts the shim or touches the environment.
+    """
+    from _observer import observer_alive, resolve_observer
+    from config import load_config
+
+    cfg = load_config()
+    mode = _resolve_mode()
+    if mode == "Cloud":
+        return "Remote server (not applicable)"
+    try:
+        decision = resolve_observer(cfg)
+    except Exception as exc:
+        return f"Unknown ({str(exc)[:80]})"
+    if decision.get("active"):
+        from _observer import SPEND_WARNING, embedding_warning
+
+        shim = "shim running" if observer_alive(decision.get("port")) else "shim not running"
+        return (
+            f"Claude Code observer (`claude -p`, model {decision.get('model')}, "
+            f"{decision.get('endpoint')}, {shim}). {SPEND_WARNING} {embedding_warning()}"
+            + (f" Warning: {decision['model_warning']}" if decision.get("model_warning") else "")
+        )
+    if decision.get("error"):
+        return f"None — {decision['error']}"
+    reason = str(decision.get("reason") or "")
+    if reason in ("llm_key_configured", "llm_provider_configured"):
+        provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
+        model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
+        return f"Configured provider ({provider}, model {model})"
+    if reason == "server_dotenv_configured":
+        return f"Configured provider (in the server's {decision.get('dotenv') or '.env'})"
+    if reason == "claude_cli_missing":
+        return "None — no LLM_API_KEY and no `claude` executable for the observer"
+    if reason == "disabled":
+        return "None — no LLM_API_KEY; observer disabled (COGNEE_LLM_OBSERVER=false)"
+    return "None — no LLM_API_KEY configured"
 
 
 def _resolve_env_file() -> str:
@@ -197,27 +366,35 @@ def _resolve_env_file() -> str:
 
 def collect_report() -> dict:
     """Gather all diagnostic fields into an ordered dict."""
+    from _auto_memory import state as auto_memory_state
+
     mode = _resolve_mode()
     display_url, raw_url = _resolve_server_url()
     api_key_source = _resolve_api_key_source()
+    memory_sharing = _resolve_memory_sharing()
     health = _check_health(raw_url)
     cognee_server = _resolve_server_version(health["raw_body"])
     cognee_local = _resolve_local_cognee_version()
+    runtime_python = _resolve_runtime_python()
     circuit_breaker = _resolve_circuit_breaker()
     embedding_model, embedding_dimensions = _resolve_embedding()
 
     return {
-        "mode": mode,
+        "mode": mode + _mode_annotation(),
         "env_file": _resolve_env_file(),
         "server_url": display_url if display_url != "-" else None,
         "api_key_source": api_key_source,
+        "memory_sharing": memory_sharing,
         "reachable": health["reachable"],
         "latency_ms": health["latency_ms"],
+        "runtime_python": runtime_python,
         "cognee_local": cognee_local,
         "cognee_server": cognee_server,
+        "llm": _resolve_llm(),
         "embedding_model": embedding_model,
         "embedding_dimensions": embedding_dimensions,
         "circuit_breaker": circuit_breaker,
+        "auto_memory": auto_memory_state(),
     }
 
 
@@ -226,13 +403,17 @@ _DISPLAY_ORDER = [
     ("Env File", "env_file"),
     ("Server URL", "server_url"),
     ("API Key Source", "api_key_source"),
+    ("Memory Sharing", "memory_sharing"),
     ("Reachable", "reachable"),
     ("Latency", "latency_ms"),
+    ("Runtime Python", "runtime_python"),
     ("Cognee (local)", "cognee_local"),
     ("Cognee (server)", "cognee_server"),
+    ("LLM", "llm"),
     ("Embedding Model", "embedding_model"),
     ("Embedding Dims", "embedding_dimensions"),
     ("Circuit Breaker", "circuit_breaker"),
+    ("Claude Auto Memory", "auto_memory"),
 ]
 
 

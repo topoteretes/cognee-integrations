@@ -1,0 +1,49 @@
+{
+  "cognee-bootstrap": {
+    "PreInvocation": [
+      {
+        "command": "scripts/run-agy-hook session-start.py",
+        "timeout": 120
+      }
+    ]
+  },
+  "cognee-recall": {
+    "PreInvocation": [
+      {
+        "command": "scripts/run-agy-hook session-context-lookup.py",
+        "timeout": 120
+      }
+    ]
+  },
+  "cognee-capture": {
+    "PreInvocation": [
+      {
+        "command": "scripts/run-agy-hook store-user-prompt.py",
+        "timeout": 120
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "command": "scripts/run-agy-hook store-to-session.py",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  },
+  "cognee-stop": {
+    "Stop": [
+      {
+        "command": "scripts/run-agy-hook store-to-session.py --stop",
+        "timeout": 120
+      },
+      {
+        "command": "scripts/run-agy-hook sync-session-to-graph.py",
+        "timeout": 30
+      }
+    ]
+  }
+}

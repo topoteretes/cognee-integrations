@@ -6,13 +6,30 @@ import { runPluginCommandWithTimeout } from "openclaw/plugin-sdk/sandbox";
 
 const COGNEE_PLUGIN_BASE = join(homedir(), ".cognee-plugin");
 const API_KEY_CACHE_PATH = join(COGNEE_PLUGIN_BASE, "api_key.json");
+const BOOT_ERROR_MARKER_PATH = join(COGNEE_PLUGIN_BASE, ".venv-error.json");
+
+/**
+ * Why the last ensure_and_boot.py install attempt failed, or "" when it did not
+ * (or nothing recorded one). The boot script daemonizes with stdout/stderr
+ * closed, so this marker is the only channel for its failure reason — e.g. a
+ * host python3 too old to build the fallback venv when uv is unavailable.
+ */
+export async function readBootError(): Promise<string> {
+  try {
+    const raw = await readFile(BOOT_ERROR_MARKER_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as { error?: unknown };
+    return typeof parsed.error === "string" ? parsed.error : "";
+  } catch {
+    return "";
+  }
+}
 
 // Combined install-and-boot script written to ~/.cognee-plugin/ensure_and_boot.py on first use.
 // Handles: (1) creating the venv + installing cognee if absent, (2) booting uvicorn.
 // Self-daemonizes so runPluginCommandWithTimeout returns in < 1 s regardless of install time.
 // Inlining avoids import.meta.url path resolution issues in ts-jest.
 const ENSURE_SCRIPT_PATH = join(COGNEE_PLUGIN_BASE, "ensure_and_boot.py");
-const ENSURE_SCRIPT_CONTENT = [
+export const ENSURE_SCRIPT_CONTENT = [
   "import subprocess, sys, os, json, time",
   "",
   "BASE = os.path.join(os.path.expanduser('~'), '.cognee-plugin')",
@@ -24,8 +41,9 @@ const ENSURE_SCRIPT_CONTENT = [
   "UV_DIR = os.path.join(BASE, 'uv')",
   "UV_BIN = os.path.join(UV_DIR, 'uv' + _ext)",
   "READY_MARKER = os.path.join(BASE, '.venv-ready.json')",
+  "ERROR_MARKER = os.path.join(BASE, '.venv-error.json')",
   "INSTALL_LOCK = os.path.join(BASE, 'venv-install.lock')",
-  "COGNEE_VERSION = '1.2.2.dev3'",
+  "COGNEE_VERSION = '1.6.5'",
   "",
   "# Self-daemonize so the caller returns immediately.",
   "if '--daemon' not in sys.argv:",
@@ -68,6 +86,36 @@ const ENSURE_SCRIPT_CONTENT = [
   "    try: os.unlink(path)",
   "    except Exception: pass",
   "",
+  "# The interpreter range cognee supports (its requires-python). uv gets it as",
+  "# a range so it can use any suitable Python already on the machine; it is",
+  "# never allowed to download one (UV_PYTHON_DOWNLOADS=never). The stdlib",
+  "# fallback probes PATH for one in the same range, newest first.",
+  "PY_MIN = (3, 10)",
+  "PY_MAX = (3, 14)",
+  "UV_PYTHON_REQUEST = '>=%d.%d,<%d.%d' % (PY_MIN[0], PY_MIN[1], PY_MAX[0], PY_MAX[1] + 1)",
+  "HOST_PYTHON_CANDIDATES = ('python3.14', 'python3.13', 'python3.12', 'python3.11',",
+  "                          'python3.10', 'python3', 'python')",
+  "",
+  "def python_version(exe):",
+  "    try:",
+  "        out = subprocess.run(",
+  "            [exe, '-c', 'import sys; print(\"%d.%d\" % sys.version_info[:2])'],",
+  "            check=True, capture_output=True, text=True, timeout=10,",
+  "        ).stdout.strip()",
+  "        major, minor = out.split('.')",
+  "        return (int(major), int(minor))",
+  "    except Exception:",
+  "        return None",
+  "",
+  "def find_host_python():",
+  "    import shutil",
+  "    candidates = [sys.executable] + [shutil.which(n) or '' for n in HOST_PYTHON_CANDIDATES]",
+  "    for exe in candidates:",
+  "        if not exe: continue",
+  "        v = python_version(exe)",
+  "        if v and PY_MIN <= v <= PY_MAX: return exe",
+  "    return ''",
+  "",
   "def install_cognee():",
   "    os.makedirs(BASE, exist_ok=True)",
   "    if not acquire_lock(INSTALL_LOCK):",
@@ -79,49 +127,169 @@ const ENSURE_SCRIPT_CONTENT = [
   "    try:",
   "        import shutil",
   "        uv = UV_BIN if os.path.exists(UV_BIN) else (shutil.which('uv') or '')",
+  "        installed_via_uv = False",
+  "        uv_error = ''",
   "        if uv:",
   "            uv_env = os.environ.copy()",
-  "            if not os.path.exists(VENV_PYTHON):",
+  "            uv_env['UV_PYTHON_DOWNLOADS'] = 'never'",
+  "            try:",
+  "                if not os.path.exists(VENV_PYTHON):",
+  "                    subprocess.run(",
+  "                        [uv, 'venv', VENV_DIR, '--python', UV_PYTHON_REQUEST],",
+  "                        env=uv_env, cwd=BASE, check=True, capture_output=True, timeout=300,",
+  "                    )",
   "                subprocess.run(",
-  "                    [uv, 'venv', VENV_DIR, '--python', '3.12'],",
-  "                    env=uv_env, check=True, capture_output=True, timeout=300,",
+  "                    [uv, 'pip', 'install', '--upgrade', '--python', VENV_PYTHON,",
+  "                     f'cognee=={COGNEE_VERSION}'],",
+  "                    env=uv_env, cwd=BASE, check=True, capture_output=True, timeout=600,",
   "                )",
-  "            subprocess.run(",
-  "                [uv, 'pip', 'install', '--upgrade', '--python', VENV_PYTHON,",
-  "                 f'cognee=={COGNEE_VERSION}'],",
-  "                env=uv_env, check=True, capture_output=True, timeout=600,",
-  "            )",
-  "        elif not os.path.exists(VENV_PYTHON):",
-  "            subprocess.run(",
-  "                [sys.executable, '-m', 'venv', VENV_DIR],",
-  "                check=True, capture_output=True, timeout=120,",
-  "            )",
-  "            subprocess.run(",
-  "                [PIP, 'install', '--upgrade', f'cognee=={COGNEE_VERSION}'],",
-  "                check=True, capture_output=True, timeout=600,",
-  "            )",
+  "                installed_via_uv = True",
+  "            except Exception as exc:",
+  "                # CalledProcessError's str() has no output; the reason is in stderr.",
+  "                detail = getattr(exc, 'stderr', b'') or b''",
+  "                if isinstance(detail, bytes): detail = detail.decode('utf-8', 'replace')",
+  "                uv_error = (str(exc) + (': ' + detail.strip()[-300:] if detail.strip() else ''))[:500]",
+  "        if not installed_via_uv:",
+  "            # No uv, or uv found no suitable interpreter (it may not download",
+  "            # one). The stdlib venv inherits the host interpreter, so it must be",
+  "            # in cognee's range; the script itself runs on any 3.9+.",
+  "            if not os.path.exists(VENV_PYTHON):",
+  "                host = find_host_python()",
+  "                if not host:",
+  "                    raise RuntimeError(",
+  "                        'no Python %d.%d-%d.%d found to build the cognee runtime (cognee '",
+  "                        'requires one, and the plugin never downloads an interpreter). '",
+  "                        'Install Python 3.10 or newer, or uv, and restart the gateway.%s'",
+  "                        % (PY_MIN + PY_MAX + ((' uv failed: ' + uv_error) if uv_error else '',)))",
+  "                try:",
+  "                    subprocess.run(",
+  "                        [host, '-m', 'venv', VENV_DIR],",
+  "                        cwd=BASE, check=True, capture_output=True, timeout=120,",
+  "                    )",
+  "                except Exception as exc:",
+  "                    # Keep uv's reason and the venv module's stderr: a bare",
+  "                    # 'exit status 1' says nothing about a missing ensurepip",
+  "                    # or an interpreter the runner image no longer ships.",
+  "                    detail = getattr(exc, 'stderr', b'') or b''",
+  "                    if isinstance(detail, bytes): detail = detail.decode('utf-8', 'replace')",
+  "                    raise RuntimeError(",
+  "                        ('uv failed first: %s; then ' % uv_error if uv_error else '')",
+  "                        + 'creating the venv with %s failed: %s'",
+  "                        % (host, detail.strip()[-300:] or str(exc)[:200]))",
+  "            try:",
+  "                # A venv uv built has no pip (uv venv does not seed it): an",
+  "                # existing install from uv, or one uv created just before its",
+  "                # install step failed. Seed pip before falling back to it.",
+  "                if subprocess.run([VENV_PYTHON, '-m', 'pip', '--version'],",
+  "                                  capture_output=True, timeout=60).returncode != 0:",
+  "                    subprocess.run([VENV_PYTHON, '-m', 'ensurepip', '--upgrade'],",
+  "                                   cwd=BASE, check=True, capture_output=True, timeout=300)",
+  "                subprocess.run(",
+  "                    [VENV_PYTHON, '-m', 'pip', 'install', '--upgrade', f'cognee=={COGNEE_VERSION}'],",
+  "                    cwd=BASE, check=True, capture_output=True, timeout=600,",
+  "                )",
+  "            except Exception as exc:",
+  "                detail = getattr(exc, 'stderr', b'') or b''",
+  "                if isinstance(detail, bytes): detail = detail.decode('utf-8', 'replace')",
+  "                code = getattr(exc, 'returncode', None)",
+  "                pip_reason = detail.strip()[-300:] or str(exc)[:200]",
+  "                # uv's reason first: it is usually the real one, and the marker is capped.",
+  "                raise RuntimeError(",
+  "                    ('uv failed first: %s; then ' % uv_error if uv_error else '')",
+  "                    + 'installing cognee with pip failed%s: %s'",
+  "                    % ((' (exit %s)' % code) if code is not None else '', pip_reason))",
   "        tmp = READY_MARKER + '.tmp'",
   "        with open(tmp, 'w') as f:",
   "            json.dump({'cognee_version': COGNEE_VERSION, 'python': VENV_PYTHON,",
   "                       'updated_at': time.time()}, f)",
   "        os.replace(tmp, READY_MARKER)",
+  "        try: os.unlink(ERROR_MARKER)",
+  "        except Exception: pass",
   "        return True",
-  "    except Exception: return False",
+  "    except Exception as exc:",
+  "        # The daemon has no stdout/stderr; leave the reason where the gateway",
+  "        # (readBootError) and a human (cat the file) can find it.",
+  "        try:",
+  "            with open(ERROR_MARKER, 'w') as f:",
+  "                json.dump({'error': str(exc)[:1000], 'python': sys.executable,",
+  "                           'python_version': '%d.%d.%d' % sys.version_info[:3],",
+  "                           'updated_at': time.time()}, f)",
+  "        except Exception: pass",
+  "        return False",
   "    finally: release_lock(INSTALL_LOCK)",
+  "",
+  "# One-time server configuration (LLM_API_KEY, providers, ...) lives in",
+  "# ~/.cognee/.env, the file the claude-code and codex plugins load too, so the",
+  "# shared server gets the same settings whichever plugin starts it. Same rules",
+  "# as their _env_file.py: COGNEE_ENV_FILE names another file; KEY=VALUE lines,",
+  "# '#' comments, an optional leading 'export ', optional quotes; a variable",
+  "# already in the environment wins; names that could hijack the process are",
+  "# skipped. Never raises.",
+  "ENV_DENY = {'PATH', 'HOME', 'PYTHONPATH', 'PYTHONHOME', 'SHELL', 'USER'}",
+  "ENV_DENY_PREFIXES = ('LD_', 'DYLD_')",
+  "",
+  "def cognee_env_file():",
+  "    override = os.environ.get('COGNEE_ENV_FILE', '').strip()",
+  "    return os.path.expanduser(override) if override else os.path.join(os.path.expanduser('~'), '.cognee', '.env')",
+  "",
+  "def parse_env_file(path):",
+  "    result = {}",
+  "    try:",
+  "        try: text = open(path, encoding='utf-8-sig').read()",
+  "        except UnicodeDecodeError: text = open(path, encoding='utf-16').read()",
+  "    except Exception:",
+  "        return result",
+  "    for raw in text.splitlines():",
+  "        line = raw.strip()",
+  "        if not line or line.startswith('#') or '=' not in line: continue",
+  "        if line.startswith('export '): line = line[len('export '):].lstrip()",
+  "        key, _, value = line.partition('=')",
+  "        key = key.strip()",
+  "        if not key or not all(c.isalnum() or c == '_' for c in key): continue",
+  "        value = value.strip()",
+  "        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('\"', \"'\"): value = value[1:-1]",
+  "        result[key] = value",
+  "    return result",
+  "",
+  "def load_cognee_env(env):",
+  "    try:",
+  "        path = cognee_env_file()",
+  "        if not os.path.isfile(path): return",
+  "        for key, value in parse_env_file(path).items():",
+  "            if key in ENV_DENY or key.startswith(ENV_DENY_PREFIXES): continue",
+  "            env.setdefault(key, value)",
+  "    except Exception: pass",
   "",
   "def boot_server():",
   "    if not os.path.exists(VENV_PYTHON): return",
   "    home = os.path.expanduser('~')",
   "    env = dict(os.environ)",
+  "    load_cognee_env(env)",
   "    env['COGNEE_AGENT_MODE'] = 'true'",
   "    env['AUTO_FEEDBACK'] = 'true'",
   "    env['CACHING'] = 'true'",
+  "    # cognee >= 1.6.0 creates NO default user unless DEFAULT_USER_PASSWORD is",
+  "    # set, and a password-less user cannot log in (400), so the plugin's",
+  "    # one-time JWT login that mints its API key would fail on a fresh server.",
+  "    # This server is bound to localhost and shared by every Cognee plugin on the",
+  "    # machine (one server, one database), so always hand it the LITERAL default",
+  "    # user - never a plugin's configured credentials, or whichever plugin boots",
+  "    # first would define the default user for all of them (cognee sets the",
+  "    # password once and never rewrites an existing user's). setdefault: an",
+  "    # operator who exported DEFAULT_USER_EMAIL / DEFAULT_USER_PASSWORD wins.",
+  "    env.setdefault('DEFAULT_USER_EMAIL', 'default_user@example.com')",
+  "    env.setdefault('DEFAULT_USER_PASSWORD', 'default_password')",
   "    env['SYSTEM_ROOT_DIRECTORY'] = os.path.join(home, '.cognee', 'system')",
   "    env['DATA_ROOT_DIRECTORY'] = os.path.join(home, '.cognee', 'data')",
   "    env['CACHE_ROOT_DIRECTORY'] = os.path.join(home, '.cognee', 'cache')",
+  "    # cognee >= 1.6.2 loads the first .env it finds walking up from its working",
+  "    # directory, with override=True, so a .env in whatever directory the gateway",
+  "    # was started from would silently replace every value set above. Run from",
+  "    # the plugin's own state directory, which holds no .env; configuration",
+  "    # belongs in ~/.cognee/.env (load_cognee_env above).",
   "    subprocess.Popen(",
   "        [VENV_PYTHON, '-m', 'uvicorn', 'cognee.api.client:app', '--port', PORT],",
-  "        env=env, start_new_session=True, close_fds=True,",
+  "        env=env, cwd=BASE, start_new_session=True, close_fds=True,",
   "        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,",
   "    )",
   "",
@@ -140,7 +308,11 @@ const ENSURE_SCRIPT_CONTENT = [
 ].join("\n");
 
 // System Python candidates for running ensure_and_boot.py on a cold machine
-// (before the plugin venv exists). Only stdlib is needed so any Python 3 works.
+// (before the plugin venv exists). Only stdlib is needed, so any Python 3.9+
+// works: cognee itself runs in the venv the script builds from a 3.10-3.14
+// interpreter already on the machine (uv picks one, or the script probes PATH;
+// nothing is downloaded). With none found, the script refuses and records why
+// (see readBootError) rather than building a venv cognee cannot install into.
 const SYSTEM_PYTHON_CANDIDATES = [
   "/usr/bin/python3",          // macOS Xcode CLT + most Linux
   "/usr/local/bin/python3",    // some Linux, older Homebrew
@@ -174,7 +346,9 @@ async function saveApiKeyCache(baseUrl: string, key: string): Promise<void> {
 /**
  * Resolve a permanent Cognee API key for this deployment, using the same
  * strategy as the claude-code and codex integrations:
- *   1. COGNEE_API_KEY env
+ *   1. Explicitly configured key (config apiKey / COGNEE_API_KEY, both
+ *      resolved by the config layer and passed in as configuredApiKey —
+ *      this module deliberately does not read credential env vars itself)
  *   2. Cached key in ~/.cognee-plugin/api_key.json
  *   3. Existing key returned by GET /api/v1/auth/api-keys
  *   4. Mint a new one via POST /api/v1/auth/api-keys and cache it
@@ -186,9 +360,10 @@ async function saveApiKeyCache(baseUrl: string, key: string): Promise<void> {
 export async function resolveOrMintApiKey(
   client: ApiKeyClient,
   logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
+  configuredApiKey = "",
 ): Promise<string> {
-  const envKey = (process.env["COGNEE_API_KEY"] ?? "").trim();
-  if (envKey) return envKey;
+  const configuredKey = configuredApiKey.trim();
+  if (configuredKey) return configuredKey;
 
   try {
     const cache = JSON.parse(await readFile(API_KEY_CACHE_PATH, "utf-8")) as Record<string, unknown>;
@@ -258,6 +433,11 @@ export async function bootServerIfNeeded(
   const result = await runPluginCommandWithTimeout({
     argv: [python, ENSURE_SCRIPT_PATH, String(port)],
     timeoutMs: 5_000,
+    // The script derives every path from `~`, this module from `homedir()`.
+    // Pin the two together: identical in production, and the only way a
+    // redirected homedir (the test suite's sandbox) also redirects the venv
+    // and server state instead of landing them in the real home.
+    env: { ...process.env, HOME: homedir() },
   });
   if (result.code !== 0) {
     logger.warn?.(`cognee-openclaw: boot script exited ${result.code}: ${result.stderr}`);
@@ -281,9 +461,15 @@ const EXIT_WATCHER_CONTENT = [
   "",
   "POLL = 2.0",
   "LOG_PATH = os.path.join(os.path.expanduser('~'), '.openclaw', 'cognee', 'exit-watcher.log')",
+  "# Same ceiling as the Python plugins' logs (COGNEE_PLUGIN_LOG_MAX_BYTES, default 20 MiB):",
+  "# rotate to .1 when over it, so a watcher that logs for months stays readable.",
+  "try: LOG_MAX = max(0, int(float(os.environ.get('COGNEE_PLUGIN_LOG_MAX_BYTES', '') or 20 * 1024 * 1024)))",
+  "except ValueError: LOG_MAX = 20 * 1024 * 1024",
   "",
   "def log(msg):",
   "    try:",
+  "        if LOG_MAX and os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX:",
+  "            os.replace(LOG_PATH, LOG_PATH + '.1')",
   "        with open(LOG_PATH, 'a') as f:",
   "            f.write(time.strftime('%Y-%m-%dT%H:%M:%S') + ' ' + str(msg) + '\\n')",
   "    except Exception: pass",
@@ -345,7 +531,7 @@ const EXIT_WATCHER_CONTENT = [
   "gw_pid = int(a.get('gateway_pid', 0))",
   "name = str(a.get('agent_session_name', ''))",
   "base_url = str(a.get('base_url', 'http://localhost:8011'))",
-  "api_key = str(a.get('api_key', '') or '')",
+  "api_key = str(a.get('api_key', '') or os.environ.get('COGNEE_API_KEY', '') or '')",
   "pidfile = str(a.get('pidfile', ''))",
   "dataset_name = str(a.get('dataset_name', '') or '')",
   "cognee_session_id = str(a.get('cognee_session_id', '') or '')",
@@ -366,11 +552,20 @@ const EXIT_WATCHER_CONTENT = [
   "",
   "if owns_pidfile(pidfile):",
   "    log(f'gateway dead, deregistering name={name}')",
+  "    # A dataset switch after spawn moves the conversation to another session",
+  "    # id and dataset; the plugin keeps the current pair in <pidfile>.bridge.json.",
+  "    bridge_file = pidfile + '.bridge.json'",
   "    if dataset_name and cognee_session_id:",
+  "        try:",
+  "            b = json.loads(open(bridge_file).read())",
+  "            dataset_name = str(b.get('dataset_name') or dataset_name)",
+  "            cognee_session_id = str(b.get('cognee_session_id') or cognee_session_id)",
+  "        except Exception: pass",
   "        bridge_session(base_url, dataset_name, cognee_session_id, api_key)",
   "    deregister(base_url, name, api_key)",
-  "    try: os.unlink(pidfile)",
-  "    except Exception: pass",
+  "    for path in (pidfile, bridge_file):",
+  "        try: os.unlink(path)",
+  "        except Exception: pass",
   "else:",
   "    log(f'pidfile gone (clean exit) name={name}')",
 ].join("\n");
@@ -379,6 +574,26 @@ const EXIT_WATCHER_CONTENT = [
 export function exitWatcherPidfilePath(agentSessionName: string): string {
   const safe = agentSessionName.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 200);
   return join(EXIT_WATCHERS_DIR, `${safe}.pid`);
+}
+
+/**
+ * Point an exit-watcher's unclean-exit bridge at the conversation's current
+ * session and dataset. The watcher is spawned at the first prompt; a later
+ * dataset switch changes both, and it reads this file (if present) when the
+ * gateway dies. Best-effort.
+ */
+export async function writeExitWatcherBridge(
+  agentSessionName: string,
+  target: { datasetName: string; cogneeSessionId: string },
+): Promise<void> {
+  try {
+    await mkdir(EXIT_WATCHERS_DIR, { recursive: true });
+    await writeFile(
+      `${exitWatcherPidfilePath(agentSessionName)}.bridge.json`,
+      JSON.stringify({ dataset_name: target.datasetName, cognee_session_id: target.cogneeSessionId }),
+      "utf-8",
+    );
+  } catch { /* best-effort */ }
 }
 
 /**
@@ -403,11 +618,12 @@ export async function spawnExitWatcher(params: {
   try {
     await mkdir(EXIT_WATCHERS_DIR, { recursive: true });
     await writeFile(EXIT_WATCHER_SCRIPT_PATH, EXIT_WATCHER_CONTENT, "utf-8");
+    // The API key goes through the environment, not argv: argv is readable by
+    // every local user via ps / /proc/<pid>/cmdline for the watcher's lifetime.
     const args = JSON.stringify({
       gateway_pid: params.gatewayPid,
       agent_session_name: params.agentSessionName,
       base_url: params.baseUrl,
-      api_key: params.apiKey ?? "",
       pidfile: params.pidfilePath,
       dataset_name: params.datasetName ?? "",
       cognee_session_id: params.cogneeSessionId ?? "",
@@ -415,6 +631,7 @@ export async function spawnExitWatcher(params: {
     const python = findSystemPython();
     const result = await runPluginCommandWithTimeout({
       argv: [python, EXIT_WATCHER_SCRIPT_PATH, args],
+      env: { ...process.env, COGNEE_API_KEY: params.apiKey ?? "" },
       timeoutMs: 5_000,
     });
     if (result.code !== 0) {

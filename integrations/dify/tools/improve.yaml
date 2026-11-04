@@ -1,0 +1,134 @@
+identity:
+  name: "improve"
+  author: "topoteretes"
+  label:
+    en_US: "Improve"
+    zh_Hans: "改进"
+    pt_BR: "Aperfeiçoar"
+    ja_JP: "改善"
+description:
+  human:
+    en_US: "Enrich and index a dataset's memory, optionally bridging session memory into the knowledge graph"
+    zh_Hans: "丰富并索引数据集的内存，可选择将会话记忆桥接到图谱中"
+    pt_BR: "Enriquecer e indexar a memória de um dataset, opcionalmente integrando a memória de sessões ao grafo"
+    ja_JP: "データセットのメモリを強化・索引化し、任意でセッションメモリをナレッジグラフに統合"
+  llm: "Run Cognee's self-improvement loop over a dataset. Pass session IDs to persist those sessions' remembered questions, answers and learnings into the permanent knowledge graph. Without session IDs only the graph enrichment stages run. This can take a while; use run_in_background for large datasets."
+parameters:
+  - name: dataset_name
+    type: string
+    required: false
+    label:
+      en_US: "Dataset Name"
+      zh_Hans: "数据集名称"
+      pt_BR: "Nome do Dataset"
+      ja_JP: "データセット名"
+    human_description:
+      en_US: "Name of the dataset to improve. Either dataset_name or dataset_id must be provided."
+      zh_Hans: "要改进的数据集名称。dataset_name 或 dataset_id 必须提供其一。"
+      pt_BR: "Nome do dataset a aperfeiçoar. dataset_name ou dataset_id deve ser fornecido."
+      ja_JP: "改善するデータセット名。dataset_name または dataset_id のいずれかが必要です。"
+    llm_description: "The name of the dataset to improve. Either dataset_name or dataset_id must be provided."
+    form: llm
+  - name: dataset_id
+    type: string
+    required: false
+    label:
+      en_US: "Dataset ID"
+      zh_Hans: "数据集 ID"
+      pt_BR: "ID do Dataset"
+      ja_JP: "データセット ID"
+    human_description:
+      en_US: "UUID of the dataset to improve. Either dataset_name or dataset_id must be provided."
+      zh_Hans: "要改进的数据集 UUID。dataset_name 或 dataset_id 必须提供其一。"
+      pt_BR: "UUID do dataset a aperfeiçoar. dataset_name ou dataset_id deve ser fornecido."
+      ja_JP: "改善するデータセットの UUID。dataset_name または dataset_id のいずれかが必要です。"
+    llm_description: "The UUID of the dataset to improve. Either dataset_name or dataset_id must be provided."
+    form: llm
+  - name: session_ids
+    type: string
+    required: false
+    label:
+      en_US: "Session IDs"
+      zh_Hans: "会话 ID"
+      pt_BR: "IDs das Sessões"
+      ja_JP: "セッション ID"
+    human_description:
+      en_US: "Comma-separated session IDs whose remembered entries are bridged into the knowledge graph"
+      zh_Hans: "其记忆条目将被桥接到图谱中的会话 ID，用逗号分隔"
+      pt_BR: "IDs de sessão separados por vírgula cujas entradas lembradas são integradas ao grafo"
+      ja_JP: "記憶されたエントリをナレッジグラフに統合するセッション ID（カンマ区切り）"
+    llm_description: "Optional comma-separated session IDs (as used in Remember Entry and Recall) to persist into the permanent graph"
+    form: llm
+  - name: build_global_context_index
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Build Global Context Index"
+      zh_Hans: "构建全局上下文索引"
+      pt_BR: "Construir Índice de Contexto Global"
+      ja_JP: "グローバルコンテキスト索引を構築"
+    human_description:
+      en_US: "Also build the global context index after enrichment"
+      zh_Hans: "丰富后同时构建全局上下文索引"
+      pt_BR: "Também construir o índice de contexto global após o enriquecimento"
+      ja_JP: "強化後にグローバルコンテキスト索引も構築する"
+    llm_description: "Set to true to also build the global context index"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+  - name: run_in_background
+    type: select
+    required: false
+    default: "false"
+    label:
+      en_US: "Run in Background"
+      zh_Hans: "后台运行"
+      pt_BR: "Executar em Segundo Plano"
+      ja_JP: "バックグラウンド実行"
+    human_description:
+      en_US: "Return immediately with status running instead of waiting for all stages"
+      zh_Hans: "立即返回 running 状态，而不等待所有阶段完成"
+      pt_BR: "Retornar imediatamente com status running em vez de aguardar todas as etapas"
+      ja_JP: "すべてのステージの完了を待たず、running ステータスで即座に返す"
+    llm_description: "Set to true to run the stages as a background task and return immediately"
+    form: form
+    options:
+      - value: "false"
+        label:
+          en_US: "False"
+          zh_Hans: "否"
+          pt_BR: "Falso"
+          ja_JP: "False"
+      - value: "true"
+        label:
+          en_US: "True"
+          zh_Hans: "是"
+          pt_BR: "Verdadeiro"
+          ja_JP: "True"
+output_schema:
+  type: object
+  properties:
+    status:
+      type: string
+      description: "completed, errored, skipped or running"
+    stages_completed:
+      type: number
+      description: "Number of stages that completed (or were already complete)"
+    stages_total:
+      type: number
+      description: "Number of stages reported by the server"
+extra:
+  python:
+    source: tools/improve.py

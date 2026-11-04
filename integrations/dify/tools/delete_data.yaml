@@ -8,11 +8,11 @@ identity:
     ja_JP: "データ削除"
 description:
   human:
-    en_US: "Delete a specific data item from a Cognee dataset"
-    zh_Hans: "从 Cognee 数据集中删除特定数据项"
-    pt_BR: "Excluir um item de dados específico de um dataset Cognee"
-    ja_JP: "Cognee データセットから特定のデータ項目を削除"
-  llm: "Delete a specific data item from a Cognee dataset by its UUID. Requires both the dataset ID and the data item ID."
+    en_US: "Delete a specific data item from a dataset on your Cognee server"
+    zh_Hans: "从Cognee 服务器的数据集中删除特定数据项"
+    pt_BR: "Excluir um item de dados específico de um dataset no seu servidor Cognee"
+    ja_JP: "Cognee サーバーのデータセットから特定のデータ項目を削除"
+  llm: "Delete a specific data item from a dataset on the Cognee server by its UUID. Requires both the dataset ID and the data item ID."
 parameters:
   - name: dataset_id
     type: string

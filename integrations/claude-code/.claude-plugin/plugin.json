@@ -1,9 +1,56 @@
 {
   "name": "cognee-memory",
+  "displayName": "Cognee Memory",
   "description": "Cognee knowledge graph memory for Claude Code — session-aware storage, auto-routing recall, and persistent learning across sessions. Supports local mode and Cognee Cloud.",
-  "version": "1.2.1",
+  "version": "1.7.6",
   "author": {
-    "name": "Cognee"
+    "name": "Cognee",
+    "url": "https://www.cognee.ai"
   },
-  "keywords": ["memory", "knowledge-graph", "cognee", "reasoning", "session"]
+  "homepage": "https://docs.cognee.ai",
+  "repository": "https://github.com/topoteretes/cognee-integrations",
+  "license": "Apache-2.0",
+  "privacyPolicyUrl": "https://www.cognee.ai/privacy-notice",
+  "documentationUrl": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/claude-code#readme",
+  "supportUrl": "https://github.com/topoteretes/cognee-integrations/issues",
+  "icon": "./icon.png",
+  "keywords": [
+    "memory",
+    "knowledge-graph",
+    "cognee",
+    "reasoning",
+    "session"
+  ],
+  "userConfig": {
+    "icon": {
+      "type": "string",
+      "title": "Cognee mark",
+      "description": "The cognee mark: the waveform icon on the status row and the credit line in the Desktop app (the official SVG), and the display logotype on the credit line in a terminal. none turns both off.",
+      "default": "wave"
+    },
+    "band": {
+      "type": "boolean",
+      "title": "Status row above the prompt",
+      "description": "Draw the Cognee status row above the prompt, in the Desktop app and in a terminal: the badge, the dataset name as a picker, the counters and what memory is doing. Off, no row is drawn (add the plugin's statusLine entry to your settings yourself for a line below the prompt).",
+      "default": true
+    },
+    "spinner": {
+      "type": "boolean",
+      "title": "Spinner activity",
+      "description": "Add what Cognee is doing (recalling, saving, consolidating) after the spinner while Claude works.",
+      "default": true
+    },
+    "tools": {
+      "type": "boolean",
+      "title": "Memory tools for Claude",
+      "description": "Register search and remember as tools Claude can call directly (mcp__cognee-memory__search / remember) instead of going through a skill and a shell command.",
+      "default": true
+    },
+    "tour": {
+      "type": "boolean",
+      "title": "First-run tour",
+      "description": "On the first session on this machine, show three short hints under the status row about what it shows and does (/cognee-tour replays them).",
+      "default": true
+    }
+  }
 }

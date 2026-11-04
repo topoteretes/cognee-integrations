@@ -7,6 +7,7 @@ import type {
   CogneeSearchResult,
   CogneeSearchType,
 } from "./types.js";
+import { hash } from "./runtime.js";
 
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 3_000;
@@ -94,7 +95,7 @@ export class CogneeHttpClient {
     init: RequestInit,
     timeoutMs = this.timeoutMs,
     responseParser: (r: Response) => Promise<T> = async (r: Response) => (await r.json()) as T,
-    retries = MAX_RETRIES,
+    retries = init.method === "GET" ? MAX_RETRIES : 0,
   ): Promise<T> {
     await this.ensureAuth();
 
@@ -132,7 +133,7 @@ export class CogneeHttpClient {
               const errorText = await retryResponse.text();
               throw new Error(`Cognee request failed (${retryResponse.status}): ${errorText}`);
             }
-            return responseParser(retryResponse);
+            return await responseParser(retryResponse);
           } finally {
             clearTimeout(retryTimeout);
           }
@@ -147,7 +148,9 @@ export class CogneeHttpClient {
         // parser/body-read rejection inside this try, so the catch still clears
         // the timer and retries on abort. No opencode caller passes a custom
         // parser today, but the shared transport must not silently force JSON. (gh #195)
-        return await responseParser(response);
+        const parsed = await responseParser(response);
+        clearTimeout(timer);
+        return parsed;
       } catch (error) {
         clearTimeout(timer);
         const isTimeout =
@@ -195,7 +198,15 @@ export class CogneeHttpClient {
   }> {
     const path = this.isCloud ? "/remember" : "/api/v1/remember";
     const formData = new FormData();
-    formData.append("data", new Blob([params.data], { type: "text/plain" }), "memory.txt");
+    // cognee >= 1.6.0 treats an upload's filename as its identity in the dataset
+    // and refuses (409) a known name with new content, so a fixed "memory.txt"
+    // failed every remember after the first. Naming by content keeps distinct
+    // texts distinct; the same text reuses its name and stays a dedup no-op.
+    formData.append(
+      "data",
+      new Blob([params.data], { type: "text/plain" }),
+      `memory-${hash(params.data).slice(0, 32)}.txt`,
+    );
     formData.append("datasetName", params.datasetName);
     if (params.datasetId) formData.append("datasetId", params.datasetId);
     if (params.sessionId) formData.append("session_id", params.sessionId);
@@ -223,6 +234,7 @@ export class CogneeHttpClient {
     datasetIds: string[];
     topK?: number;
     sessionId?: string;
+    timeoutMs?: number;
   }): Promise<CogneeSearchResult[]> {
     const recallPath = this.isCloud ? "/recall" : "/api/v1/recall";
     const data = await this.fetchAPI<unknown>(recallPath, {
@@ -236,7 +248,7 @@ export class CogneeHttpClient {
         ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),
         ...(params.sessionId ? { session_id: params.sessionId } : {}),
       }),
-    });
+    }, params.timeoutMs ?? this.timeoutMs, undefined, 0);
     return normalizeSearchResults(data);
   }
 
@@ -253,8 +265,32 @@ export class CogneeHttpClient {
         ...(params.datasetId ? { dataset_id: params.datasetId } : {}),
         ...(params.datasetName ? { dataset_name: params.datasetName } : {}),
         ...(params.sessionIds ? { session_ids: params.sessionIds } : {}),
+        run_in_background: true,
       }),
     });
+  }
+
+  async entry(dataset: string, session: string, entry: Record<string, unknown>): Promise<void> {
+    const data = await this.fetchAPI<{status?: string; error?: string}>(this.isCloud ? "/remember/entry" : "/api/v1/remember/entry", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dataset_name: dataset, session_id: session, entry }),
+    }, this.ingestionTimeoutMs, undefined, 0);
+    if (data.error || data.status === "errored") throw new Error("Cognee rejected the session entry");
+  }
+  async lifecycle(session: string, dataset: string, remove = false): Promise<boolean> {
+    try {
+      await this.fetchAPI("/api/v1/agents/" + (remove ? "unregister" : "register"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(remove ? {agent_session_name: session} : {agent_session_name: session, session_id: session, dataset_names: [dataset], type: "opencode", source: "api", memory_mode: "hybrid", metadata: {type: "opencode", source: "api"}}),
+      }, 2500, undefined, 0);
+      return true;
+    } catch (error) { if (/request failed \(404\)/.test(String(error))) return false; throw error; }
+  }
+  async hasEntry(session: string, entry: Record<string, unknown>): Promise<boolean> {
+    try {
+      const data = await this.fetchAPI<Record<string, unknown>>("/api/v1/sessions/" + encodeURIComponent(session), {method: "GET"}, 2500, undefined, 0);
+      const marker = entry.type === "qa" ? String(entry.context) : String((entry.method_params as Record<string, unknown>)?.cognee_capture_id);
+      return marker.length > 0 && JSON.stringify(data).includes(marker);
+    } catch { return false; }
   }
 
   async listDatasets(): Promise<{ id: string; name: string }[]> {

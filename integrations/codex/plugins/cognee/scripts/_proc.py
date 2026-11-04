@@ -8,6 +8,8 @@ on Windows, where signal 0 raises ``OSError`` (``WinError 87``), so the check
 needs a native Windows path.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 

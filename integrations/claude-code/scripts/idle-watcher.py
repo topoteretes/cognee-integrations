@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Idle watcher daemon - persists quiet Codex sessions into Cognee.
+"""Background watcher daemon.
 
-Launched detached from ``session-start.py``. Polls
-``~/.cognee-plugin/activity.ts`` every ``POLL_SECONDS``. When the last
-activity is older than ``IDLE_SECONDS`` and we haven't bridged since
-that point, persists the session cache and refreshes graph context.
+Launched detached from ``session-start.py`` (and respawned by the next prompt
+if it is not running). Runs the update check and the LLM-key check once at
+start, then refreshes shared agent memory every ``SHARED_REFRESH_SECONDS``
+until stopped.
 
 Stops cleanly on:
   * ``~/.cognee-plugin/watcher.stop`` sentinel file.
   * Receiving SIGTERM (from SessionEnd hook or manual kill).
   * The pidfile being overwritten by a newer watcher (restart case).
-
-Survives Codex crashes better than foreground hooks.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -20,19 +20,20 @@ import os
 import signal
 import sys
 import time
-from contextlib import nullcontext
 from pathlib import Path
-from typing import Optional
 
-# Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
-# threshold means you have to actively pause a full minute, and the 10-minute
-# improve cooldown prevents back-to-back improve runs when activity is sporadic.
+from _logfiles import append_line as _append_log_line
+from event_names import event_fields
+
+# Loop tick: bounds how quickly a stop (sentinel, SIGTERM, replaced pidfile)
+# is noticed and how late a due shared-memory refresh can run.
 POLL_SECONDS = float(os.environ.get("COGNEE_IDLE_POLL", "10"))
-IDLE_SECONDS = float(os.environ.get("COGNEE_IDLE_THRESHOLD", "60"))
-IMPROVE_COOLDOWN = float(os.environ.get("COGNEE_IMPROVE_COOLDOWN", "600"))
+# Shared agent memory: how often to re-resolve the active dataset's UUIDs and
+# backfill the shared role's grants, so a dataset another plugin created shows
+# up here within this interval rather than at the next session start.
+SHARED_REFRESH_SECONDS = float(os.environ.get("COGNEE_SHARED_MEMORY_REFRESH", "60"))
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
-_ACTIVITY = _PLUGIN_DIR / "activity.ts"
 _PIDFILE = _PLUGIN_DIR / "watcher.pid"
 _STOPFILE = _PLUGIN_DIR / "watcher.stop"
 _LOGFILE = _PLUGIN_DIR / "watcher.log"
@@ -43,24 +44,17 @@ _should_stop = False
 
 def _log(event: str, **detail) -> None:
     try:
-        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-        line = {"ts": time.time(), "pid": os.getpid(), "event": event}
+        line = {
+            "ts": time.time(),
+            "pid": os.getpid(),
+            "event": event,
+            **event_fields(event, "idle-watcher"),
+        }
         if detail:
             line["detail"] = detail
-        with _LOGFILE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+        _append_log_line(_LOGFILE, json.dumps(line, default=str))
     except Exception:
         pass
-
-
-def _read_activity_ts() -> Optional[float]:
-    if not _ACTIVITY.exists():
-        return None
-    try:
-        return float(_ACTIVITY.read_text(encoding="utf-8").strip())
-    except Exception as exc:
-        _log("activity_read_failed", error=str(exc)[:200])
-        return None
 
 
 def _owns_pidfile() -> bool:
@@ -80,78 +74,6 @@ def _install_signal_handlers() -> None:
 
     signal.signal(signal.SIGTERM, _handler)
     signal.signal(signal.SIGINT, _handler)
-
-
-async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
-    """Fire one session improve cycle. Returns True on success."""
-    sys.path.insert(0, os.path.dirname(__file__))
-    try:
-        from _plugin_common import (  # type: ignore
-            http_api_ready,
-            load_resolved,
-            resolve_user,
-            run_session_improve,
-            set_session_key,
-            sync_lock,
-        )
-
-        session_key = str(config.get("session_key") or "").strip()
-        if session_key:
-            set_session_key(session_key)
-        api_mode = http_api_ready()
-        # Server-side improve has its own per-session lock; only local SDK
-        # mode needs the cross-hook file lock.
-        lock = nullcontext(True) if api_mode else sync_lock("idle-watcher")
-    except Exception as exc:
-        _log("sync_lock_import_error", error=str(exc)[:200])
-        api_mode = False
-        lock = nullcontext(True)
-
-    with lock as acquired:
-        if not acquired:
-            _log("bridge_skipped_lock_busy", session=session_id, dataset=dataset)
-            return False
-
-        try:
-            from config import (  # type: ignore
-                ensure_cognee_ready,
-                ensure_dataset_ready,
-                ensure_identity,
-                improve_session_local,
-            )
-
-            if api_mode:
-                wrote = run_session_improve(dataset, session_id)
-                _log(
-                    "session_bridge_done",
-                    session=session_id,
-                    dataset=dataset,
-                    via="http_improve",
-                    wrote=wrote,
-                )
-                return True
-
-            await ensure_cognee_ready(config)
-            user_id = str(config.get("user_id") or load_resolved().get("user_id") or "")
-            if not user_id:
-                user_id, _ = await ensure_identity(config)
-
-            user = await resolve_user(user_id) if user_id else None
-            if user:
-                await ensure_dataset_ready(dataset, user)
-                result = await improve_session_local(dataset, session_id, user)
-                _log(
-                    "session_bridge_done",
-                    session=session_id,
-                    dataset=dataset,
-                    user_id=str(user.id),
-                    via="local_improve",
-                    ok=bool(result.get("ok")),
-                )
-            return True
-        except Exception as exc:
-            _log("bridge_error", error=str(exc)[:300])
-            return False
 
 
 def _run_update_check() -> None:
@@ -195,7 +117,9 @@ def _check_llm_key(config: dict) -> None:
             return
         sys.path.insert(0, os.path.dirname(__file__))
         from _plugin_common import (
+            clear_llm_state,
             get_session_key,
+            llm_key_owner,
             read_llm_state,
             service_url_is_local,
             write_llm_state,
@@ -204,6 +128,13 @@ def _check_llm_key(config: dict) -> None:
         base_url = str(config.get("base_url") or "")
         if base_url and not service_url_is_local(base_url):
             return  # cloud: the remote server owns its own LLM key
+        # Loopback is not ownership: a server this plugin did not start reads its
+        # key from its own environment, so ours says nothing about it (#371).
+        owner = llm_key_owner(config)
+        if owner:
+            clear_llm_state()
+            _log("llm_key_check_skipped", reason=owner)
+            return
 
         # Throttle against OUR OWN last verdict only. The marker is machine-wide, so
         # honouring another session's timestamp would let a keyless launch's verdict
@@ -213,6 +144,40 @@ def _check_llm_key(config: dict) -> None:
         if str(prior.get("session_key") or "") == get_session_key() and (
             time.time() - float(prior.get("checked_at", 0) or 0) < interval
         ):
+            return
+
+        # Claude observer: the "key" is Claude Code's own login, and the shim knows
+        # whether `claude` can answer. Ask it instead of litellm — no cognee import,
+        # and a failure names the actual fix (log in to Claude Code), not a key.
+        from _observer import is_active as _observer_active
+        from _observer import observer_probe
+
+        if _observer_active():
+            verdict = observer_probe(timeout=75.0)
+            auth = verdict.get("auth")
+            if auth == "ok":
+                write_llm_state("ok")
+                _log("llm_key_ok", source="observer")
+            elif auth == "failed":
+                write_llm_state(
+                    "auth_failed",
+                    detail=str(verdict.get("detail") or "")[:200],
+                    reason="claude_not_logged_in",
+                )
+                _log(
+                    "llm_key_auth_failed",
+                    source="observer",
+                    detail=str(verdict.get("detail") or "")[:200],
+                )
+            else:
+                # The shim is down or claude failed for a non-auth reason: no key
+                # verdict either way.
+                _log(
+                    "llm_key_check_inconclusive",
+                    source="observer",
+                    status=verdict.get("status"),
+                    error=str(verdict.get("detail") or "")[:200],
+                )
             return
 
         from cognee.infrastructure.llm.config import get_llm_config
@@ -278,16 +243,25 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         dataset=dataset,
         user_id=config.get("user_id", ""),
         poll=POLL_SECONDS,
-        idle=IDLE_SECONDS,
     )
     # Runs once per watcher launch (≈ once per session); the check itself is
     # internally rate-limited to ≤ once per COGNEE_UPDATE_CHECK_INTERVAL.
     _run_update_check()
     # Validate the LLM key once at session start (background, provider-agnostic).
     _check_llm_key(config)
-    last_improved_at = 0.0
     exit_reason = "loop_complete"
-    bridge_disabled = False
+    # First shared-memory refresh one interval in: SessionStart just resolved
+    # everything, so an immediate re-resolve would only repeat its calls.
+    next_shared_refresh = time.time() + SHARED_REFRESH_SECONDS
+
+    def _refresh_shared_memory() -> None:
+        try:
+            from _plugin_common import refresh_shared_memory
+
+            if refresh_shared_memory():
+                _log("shared_memory_refreshed", session=session_id)
+        except Exception as exc:
+            _log("shared_memory_refresh_failed", error=str(exc)[:200])
 
     while not _should_stop:
         if _STOPFILE.exists():
@@ -300,47 +274,13 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
             break
 
         now = time.time()
-        ts = _read_activity_ts()
-        if ts is None:
-            await asyncio.sleep(POLL_SECONDS)
-            continue
-
-        idle_for = now - ts
-        time_since_improve = now - last_improved_at
-        if (
-            not bridge_disabled
-            and idle_for >= IDLE_SECONDS
-            and time_since_improve >= IMPROVE_COOLDOWN
-        ):
-            _log("idle_trigger", idle_for=round(idle_for, 1))
-            ok = await _improve_once(session_id, dataset, config)
-            if ok:
-                last_improved_at = time.time()
-                _log("bridge_done")
-                exit_reason = "bridge_complete"
-                break
-            bridge_disabled = True
-            _log("bridge_disabled_after_failure")
-
+        if SHARED_REFRESH_SECONDS > 0 and now >= next_shared_refresh:
+            next_shared_refresh = now + SHARED_REFRESH_SECONDS
+            _refresh_shared_memory()
         await asyncio.sleep(POLL_SECONDS)
 
     if _should_stop:
         exit_reason = "signal"
-
-    ts = _read_activity_ts()
-    if (
-        not bridge_disabled
-        and exit_reason in {"signal", "stop_sentinel"}
-        and ts
-        and ts > last_improved_at
-    ):
-        _log("shutdown_trigger", reason=exit_reason, activity_age=round(time.time() - ts, 1))
-        ok = await _improve_once(session_id, dataset, config)
-        if ok:
-            last_improved_at = time.time()
-            _log("shutdown_bridge_done")
-        else:
-            _log("shutdown_bridge_failed")
 
     _log("exiting", reason=exit_reason)
     try:
@@ -351,6 +291,11 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
 
 
 def main():
+    from _cloud_worker import enabled, ensure_worker
+
+    if enabled():
+        ensure_worker()
+        return
     _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
 
     # Config passed as a single JSON arg to avoid shell-quoting hazards.

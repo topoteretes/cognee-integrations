@@ -22,6 +22,8 @@
  * best text match for the snippet.
  */
 
+import { originalUploadName } from "./uploadName";
+
 export interface Citation {
   /** The chunk ordinal as printed by the server (e.g. "3"). */
   chunkLabel: string;
@@ -93,7 +95,7 @@ export function parseEvidenceBlock(block: string): Citation[] {
     const [, chunkLabel, documentName, metadata, snippet] = match;
     const citation: Citation = {
       chunkLabel: chunkLabel.trim(),
-      documentName: documentName.trim(),
+      documentName: originalUploadName(documentName.trim()),
       raw,
     };
     const chunkId = extractId(metadata, CHUNK_ID_RE);

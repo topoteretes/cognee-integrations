@@ -7,10 +7,10 @@ identity:
     pt_BR: "Cognee"
     ja_JP: "Cognee"
   description:
-    en_US: "Knowledge engine to build personalized and dynamic AI memory for agents."
-    zh_Hans: "个性化和动态AI记忆的构建知识引擎"
-    pt_BR: "Engenheiro de conhecimento para construir memória personalizada e dinâmica para agentes de IA."
-    ja_JP: "AI エージェントのための個性化された動的なAIメモリを構築するための知識エンジン。"
+    en_US: "AI memory for agents: remember, recall and manage knowledge on Cognee Cloud or a self-hosted Cognee server."
+    zh_Hans: "面向智能体的 AI 记忆：在 Cognee Cloud 或自托管 Cognee 服务器上记忆、回忆和管理知识。"
+    pt_BR: "Memória de IA para agentes: lembre, recorde e gerencie conhecimento no Cognee Cloud ou em um servidor Cognee auto-hospedado."
+    ja_JP: "エージェントのための AI メモリ：Cognee Cloud またはセルフホスト Cognee サーバーで知識を記憶・想起・管理。"
   icon: "cognee.svg"
   tags:
     - search
@@ -21,47 +21,89 @@ credentials_for_provider:
     type: text-input
     required: true
     label:
-      en_US: "Base URL"
-      zh_Hans: "Base URL"
-      pt_BR: "Base URL"
-      ja_JP: "Base URL"
+      en_US: "Cognee Server URL"
+      zh_Hans: "Cognee 服务器 URL"
+      pt_BR: "URL do Servidor Cognee"
+      ja_JP: "Cognee サーバー URL"
     placeholder:
-      en_US: "https://tenant-xxx.cloud.cognee.ai/api"
-      zh_Hans: "https://tenant-xxx.cloud.cognee.ai/api"
-      pt_BR: "https://tenant-xxx.cloud.cognee.ai/api"
-      ja_JP: "https://tenant-xxx.cloud.cognee.ai/api"
+      en_US: "https://tenant-xxx.cloud.cognee.ai or http://localhost:8000"
+      zh_Hans: "https://tenant-xxx.cloud.cognee.ai 或 http://localhost:8000"
+      pt_BR: "https://tenant-xxx.cloud.cognee.ai ou http://localhost:8000"
+      ja_JP: "https://tenant-xxx.cloud.cognee.ai または http://localhost:8000"
     help:
-      en_US: "Your Cognee API base URL (e.g. https://tenant-xxx.cloud.cognee.ai/api)"
-      zh_Hans: "您的 Cognee API base URL（例如 https://tenant-xxx.cloud.cognee.ai/api）"
-      pt_BR: "Sua URL base da API Cognee (ex: https://tenant-xxx.cloud.cognee.ai/api)"
-      ja_JP: "Cognee API のベース URL（例: https://tenant-xxx.cloud.cognee.ai/api）"
+      en_US: "Root URL of your Cognee Cloud tenant or self-hosted Cognee server. A trailing /api is accepted."
+      zh_Hans: "您的 Cognee Cloud 租户或自托管 Cognee 服务器的根 URL。允许以 /api 结尾。"
+      pt_BR: "URL raiz do seu tenant Cognee Cloud ou servidor Cognee auto-hospedado. Um /api final é aceito."
+      ja_JP: "Cognee Cloud テナントまたはセルフホスト Cognee サーバーのルート URL。末尾の /api も受け付けます。"
   api_key:
     type: secret-input
-    required: true
+    required: false
     label:
       en_US: "API Key"
-      zh_Hans: "API Key"
-      pt_BR: "API Key"
-      ja_JP: "API Key"
+      zh_Hans: "API 密钥"
+      pt_BR: "Chave de API"
+      ja_JP: "API キー"
     placeholder:
-      en_US: "Enter your Cognee API key"
-      zh_Hans: "请输入您的 Cognee API Key"
-      pt_BR: "Insira sua chave de API Cognee"
-      ja_JP: "Cognee API キーを入力してください"
+      en_US: "Cognee API key (Cloud dashboard, or POST /api/v1/auth/api-keys on your server)"
+      zh_Hans: "Cognee API 密钥（Cloud 控制台，或服务器上的 POST /api/v1/auth/api-keys）"
+      pt_BR: "Chave de API Cognee (painel Cloud, ou POST /api/v1/auth/api-keys no seu servidor)"
+      ja_JP: "Cognee API キー（Cloud ダッシュボード、またはサーバーの POST /api/v1/auth/api-keys）"
     help:
-      en_US: "Your Cognee API key for authentication"
-      zh_Hans: "用于认证的 Cognee API Key"
-      pt_BR: "Sua chave de API Cognee para autenticação"
-      ja_JP: "認証用の Cognee API キー"
+      en_US: "Preferred. Required for Cognee Cloud. Leave empty to log in with User Email and User Password instead."
+      zh_Hans: "推荐。Cognee Cloud 必填。留空则改用用户邮箱和密码登录。"
+      pt_BR: "Preferencial. Obrigatória para o Cognee Cloud. Deixe vazia para entrar com Email e Senha do usuário."
+      ja_JP: "推奨。Cognee Cloud では必須。空の場合はユーザーメールとパスワードでログインします。"
+  user_email:
+    type: text-input
+    required: false
+    label:
+      en_US: "User Email"
+      zh_Hans: "用户邮箱"
+      pt_BR: "Email do Usuário"
+      ja_JP: "ユーザーメール"
+    placeholder:
+      en_US: "default_user@example.com"
+      zh_Hans: "default_user@example.com"
+      pt_BR: "default_user@example.com"
+      ja_JP: "default_user@example.com"
+    help:
+      en_US: "Self-hosted only, used when no API key is set. Must match DEFAULT_USER_EMAIL on the server."
+      zh_Hans: "仅自托管，未设置 API 密钥时使用。需与服务器上的 DEFAULT_USER_EMAIL 一致。"
+      pt_BR: "Apenas auto-hospedado, usado quando não há chave de API. Deve corresponder a DEFAULT_USER_EMAIL no servidor."
+      ja_JP: "セルフホストのみ。API キー未設定時に使用。サーバーの DEFAULT_USER_EMAIL と一致させてください。"
+  user_password:
+    type: secret-input
+    required: false
+    label:
+      en_US: "User Password"
+      zh_Hans: "用户密码"
+      pt_BR: "Senha do Usuário"
+      ja_JP: "ユーザーパスワード"
+    placeholder:
+      en_US: "default_password"
+      zh_Hans: "default_password"
+      pt_BR: "default_password"
+      ja_JP: "default_password"
+    help:
+      en_US: "Self-hosted only, used when no API key is set. Must match DEFAULT_USER_PASSWORD on the server."
+      zh_Hans: "仅自托管，未设置 API 密钥时使用。需与服务器上的 DEFAULT_USER_PASSWORD 一致。"
+      pt_BR: "Apenas auto-hospedado, usado quando não há chave de API. Deve corresponder a DEFAULT_USER_PASSWORD no servidor."
+      ja_JP: "セルフホストのみ。API キー未設定時に使用。サーバーの DEFAULT_USER_PASSWORD と一致させてください。"
 
 tools:
+  - tools/remember.yaml
+  - tools/recall.yaml
+  - tools/remember_entry.yaml
+  - tools/forget.yaml
+  - tools/improve.yaml
+  - tools/create_dataset.yaml
   - tools/add_data.yaml
   - tools/add_file.yaml
   - tools/cognify.yaml
   - tools/search.yaml
-  - tools/create_dataset.yaml
   - tools/get_datasets.yaml
   - tools/get_dataset_data.yaml
+  - tools/update_data.yaml
   - tools/delete_dataset.yaml
   - tools/delete_data.yaml
 extra:

@@ -1,0 +1,20 @@
+# Minimal cognee server for local dev and the live smoke test — embedded
+# SQLite + LanceDB + Kuzu, no external services to stand up.
+#
+# Usage: `LLM_API_KEY=sk-... docker compose -f examples/docker-compose.smoke.yml up`,
+# then `COGNEE_LIVE=1 npm run test:live` from this package's root.
+#
+# Auth is enforced on every route regardless of REQUIRE_AUTHENTICATION
+# (cognee 1.5.4); default_user@example.com / default_password ships built in.
+services:
+  cognee:
+    image: cognee/cognee:main
+    ports: ["8000:8000"]
+    # Offline variant (no OpenAI key needed): replace LLM_API_KEY below with
+    #   LLM_PROVIDER: "ollama"
+    #   LLM_MODEL: "ollama_chat/llama3.1"
+    #   EMBEDDING_PROVIDER: "fastembed"
+    # (needs a separately-running Ollama instance with llama3.1 pulled;
+    # fastembed runs embeddings locally, no external embedding key needed).
+    environment:
+      LLM_API_KEY: ${LLM_API_KEY}

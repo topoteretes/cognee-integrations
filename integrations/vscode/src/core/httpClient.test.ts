@@ -96,6 +96,21 @@ describe("HttpCogneeClient.remember", () => {
     expect(form.get("datasetName")).toBe("vscode_abc");
     expect(result.status).toBe("completed");
   });
+
+  it("names each upload by its content and keeps the extension", async () => {
+    // cognee >= 1.6.0 refuses (409) a known upload name with new content.
+    const { fetch, calls } = stubFetch(() => new Response("{}", { status: 200 }));
+    const client = new HttpCogneeClient({ endpoint: "http://localhost:8011", fetch });
+
+    for (const data of ["first", "second", "first"]) {
+      await client.remember(data, { datasetName: "vscode_abc", filename: "note.md" });
+    }
+
+    const names = calls.map((call) => ((call.init.body as FormData).get("data") as File).name);
+    expect(names[0]).toMatch(/^note-[0-9a-f]{32}\.md$/);
+    expect(names[0]).not.toBe(names[1]);
+    expect(names[0]).toBe(names[2]);
+  });
 });
 
 describe("HttpCogneeClient.forget", () => {

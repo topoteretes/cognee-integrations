@@ -74,7 +74,7 @@ From the **cognee repo root**, with venv active and `.env` containing `OPENAI_AP
 uv pip install -e ".[...]"   # from cognee-integration-langgraph dir, or as needed
 
 # Load demo data into Cognee (prune, add per user, cognify, share permissions, sanity search)
-python examples/data/cognee_mock_saas_entitlements_demo/load_into_cognee.py
+python examples/data/saas_demo/load_into_cognee.py
 
 # Run the multi-agent demo (TICK-1001 then TICK-1002, then user isolation proof)
 python examples/saas_entitlements_agents.py

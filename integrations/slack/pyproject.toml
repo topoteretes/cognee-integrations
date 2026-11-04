@@ -7,6 +7,7 @@ name = "cognee-integration-slack"
 version = "0.1.0"
 description = "Slack bot powered by cognee memory — per-channel memory with cited recall."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Cognee team" }]
 dependencies = [

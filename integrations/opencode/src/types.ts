@@ -19,6 +19,12 @@ export type CogneeDeleteMode = "soft" | "hard";
 export type CogneeMode = "local" | "cloud";
 
 export type CogneePluginConfig = {
+  autoCapture?: boolean;
+  captureTools?: string[];
+  maxCaptureChars?: number;
+  recallTimeoutMs?: number;
+  stateDir?: string;
+  readScopes?: Partial<Record<"agent" | "user" | "company", string>>;
   mode?: CogneeMode;
   baseUrl?: string;
   apiKey?: string;

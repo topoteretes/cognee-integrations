@@ -1,11 +1,15 @@
 {
+  "description": "Cognee memory: the settings hooks run the memory pipeline; the hooks module draws the live activity (desktop band, spinner, answer line).",
+  "modules": [
+    "./register.ts"
+  ],
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py\"",
             "timeout": 120,
             "statusMessage": "Initializing Cognee memory..."
           }
@@ -17,14 +21,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py\"",
             "timeout": 120,
             "statusMessage": "Searching session memory..."
           },
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py\"",
             "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/file-context.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/file-context.py\"",
+            "timeout": 10,
+            "statusMessage": "Cognee: file context..."
           }
         ]
       }
@@ -35,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\"",
             "async": true
           }
         ]
@@ -46,14 +63,24 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py --stop",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" --stop || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
             "async": true
           },
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/clear-transcript-context.py",
-            "timeout": 5,
-            "statusMessage": "Clearing Claude context..."
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
+            "async": true
           }
         ]
       }
@@ -63,7 +90,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py\"",
             "timeout": 120,
             "statusMessage": "Building memory anchor..."
           }
@@ -75,7 +102,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py --session-end"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end"
           }
         ]
       }
