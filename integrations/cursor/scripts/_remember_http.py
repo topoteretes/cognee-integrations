@@ -356,6 +356,11 @@ def main(argv):
         dataset_id=a[6],
         timeout=_remember_timeout(),
     )
+    report(result)
+
+
+def report(result) -> None:
+    """Print a remember's result, and note a server answer on the status line."""
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
     if result != UNREACHABLE:
         # Refresh the status-line credits marker, attributing the spend delta

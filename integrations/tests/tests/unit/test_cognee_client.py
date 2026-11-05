@@ -171,7 +171,8 @@ def test_search_skill_shares_the_hooks_breaker(suite):
     """cognee-search.sh must not redirect COGNEE_PLUGIN_STATE_DIR: that gave the
     skill a private breaker in the per-plugin dir while the hooks, doctor and
     status line used ~/.cognee-plugin/recall-breaker.json."""
-    script = (suite.scripts_dir / "cognee-search.sh").read_text(encoding="utf-8")
+    sources = [suite.scripts_dir / "cognee-search.sh", suite.scripts_dir / "cognee_search.py"]
+    script = "\n".join(p.read_text(encoding="utf-8") for p in sources if p.exists())
     exports = [
         line
         for line in script.splitlines()

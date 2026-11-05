@@ -753,6 +753,39 @@ class TestApiKeyResolution(unittest.TestCase):
         self.assertEqual(backend.api_key, "cloud-key")
         self.assertNotIn("/api/v1/auth/login", opener.paths())
 
+    def test_a_local_target_skips_an_env_key_it_rejects(self):
+        # Switching from Cloud to local mode clears COGNEE_BASE_URL, not the
+        # Cloud key; sent to the local server it turned every call into a 401.
+        opener = self._mint_opener()
+        opener.responses["/api/v1/datasets"] = urllib.error.HTTPError(
+            _URL, 401, "Unauthorized", {}, None
+        )
+        import cognee_integration_hermes.http_backend as hb
+
+        hb._RESOLVED_KEYS.clear()
+        with mock.patch.dict("os.environ", {"COGNEE_API_KEY": "cloud-key"}, clear=False):
+            backend = self._connect(opener)
+        self.assertEqual(backend.api_key, "minted-key")
+        probe = opener.request_for("/api/v1/datasets")
+        self.assertEqual(probe["headers"]["x-api-key"], "cloud-key")
+        self.assertIn("/api/v1/auth/login", opener.paths())
+
+    def test_a_local_target_keeps_an_env_key_it_accepts(self):
+        opener = self._mint_opener()
+        opener.responses["/api/v1/datasets"] = []
+        with mock.patch.dict("os.environ", {"COGNEE_API_KEY": "local-key"}, clear=False):
+            backend = self._connect(opener)
+        self.assertEqual(backend.api_key, "local-key")
+        self.assertNotIn("/api/v1/auth/login", opener.paths())
+
+    def test_a_local_target_keeps_an_env_key_when_the_check_cannot_tell(self):
+        # A slow or erroring server is not a rejected key.
+        opener = self._mint_opener()
+        opener.responses["/api/v1/datasets"] = urllib.error.HTTPError(_URL, 500, "boom", {}, None)
+        with mock.patch.dict("os.environ", {"COGNEE_API_KEY": "local-key"}, clear=False):
+            backend = self._connect(opener)
+        self.assertEqual(backend.api_key, "local-key")
+
     def test_a_remote_target_without_a_configured_key_still_fails(self):
         # A key left behind by another plugin no longer stands in for COGNEE_API_KEY.
         with mock.patch.dict("os.environ", {"COGNEE_API_KEY": ""}, clear=False):

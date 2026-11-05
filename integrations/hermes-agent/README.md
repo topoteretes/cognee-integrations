@@ -55,8 +55,14 @@ Python package with the `hermes_agent.plugins` entry point.
   built in the background, so a slow LLM never turns a stored fact into a
   reported timeout.
 - Mirrors explicit Hermes memory writes through `on_memory_write`, and steers
-  the agent to prefer Cognee over Hermes' built-in memory files.
-- Supports local embedded Cognee and remote Cognee service mode.
+  the agent to Cognee first: Hermes' built-in memory notes (`MEMORY.md`,
+  `USER.md`) are the fallback for when Cognee has nothing on a question, and
+  when the two disagree the agent goes with Cognee and says so. The rule is in
+  the system prompt and again on each prompt's Cognee memory block
+  (`COGNEE_MEMORY_STEER=false` turns both off). While Cognee is unavailable the
+  plugin adds nothing, so the agent simply uses Hermes' memory.
+- Works with Cognee Cloud or another cognee server out of the box, or with a
+  local cognee server run from a private cognee runtime the setup installs.
 - Closes every session out of process, the way the other cognee plugins do: a
   detached worker bridges the session into the graph and only then unregisters
   from the server. Exiting Hermes never waits on a graph build, and the promotion
@@ -67,37 +73,41 @@ Python package with the `hermes_agent.plugins` entry point.
 
 ### Prerequisites
 
-- **Python 3.10 or newer.** This integration imports cognee in-process
-  (`requires-python = ">=3.10"` in `pyproject.toml`), so it inherits cognee's
-  own floor; `pip` refuses to install it on 3.9. Note that macOS's Xcode
-  Command Line Tools ship Python 3.9.6 — use a Homebrew, python.org or
-  [uv](https://docs.astral.sh/uv/)-managed 3.10+ interpreter instead.
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed — see
   the [Hermes installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation).
   (The install one-liner is quoted there rather than here: the catalog's install
   scanner flags a piped shell script even inside a README, and a clean scan is
   one less thing for a catalog reviewer to read past.)
-- **Local mode:** an LLM API key (e.g. OpenAI) — cognee uses it to build the
-  knowledge graph on your machine.
-- **Cloud mode:** a Cognee Cloud tenant URL and API key from your
-  [Cognee Cloud dashboard](https://platform.cognee.ai/). No LLM key needed —
-  the tenant runs the models.
+- **Cognee Cloud (remote mode, the default):** a tenant URL and API key from your
+  [Cognee Cloud dashboard](https://platform.cognee.ai/). Nothing else: no LLM key
+  and no cognee package — the tenant runs the models, and the plugin talks to it
+  over plain HTTP.
+- **Local mode:** about 1 GB of disk for the cognee runtime, which the setup
+  installs for you (step 2b), and optionally an LLM API key (e.g. OpenAI), which
+  cognee uses to build the knowledge graph. Without a key it uses local models
+  instead (about 1.5 GB more, see 2b). It lives in a private environment,
+  `~/.cognee-plugin/hermes/runtime/venv`, because Hermes installs every plugin into
+  one shared environment, where cognee's dependencies conflict with Hermes's pinned
+  ones and would refuse the install for Cloud users too.
+- **Python 3.10 or newer** for a pip install (`requires-python = ">=3.10"`,
+  cognee's own floor, since local mode builds cognee's environment from the
+  interpreter running Hermes). Note that macOS's Xcode Command Line Tools ship
+  Python 3.9.6 — use a Homebrew, python.org or
+  [uv](https://docs.astral.sh/uv/)-managed 3.10+ interpreter instead.
 
 ### 1. Install the plugin
 
-**Hermes catalog — available after catalog acceptance:**
+**Hermes catalog (recommended):**
 
 ```bash
 hermes plugins install cognee
-hermes plugins enable cognee
-hermes memory setup
 ```
 
 Catalog installs use the commit reviewed by Hermes. Update them with
 `hermes plugins update cognee`; a newer PyPI release does not change the
 reviewed catalog version. The pip installer refuses to overwrite a catalog copy.
 
-**Via pip (available now):**
+**Via pip:**
 
 ```bash
 pip install cognee-integration-hermes-agent
@@ -119,53 +129,128 @@ mkdir -p ~/.hermes/plugins/cognee
 cp -R cognee-integrations/integrations/hermes-agent/. ~/.hermes/plugins/cognee/
 ```
 
-### 2a. Connect locally (default)
+### 2. Run the setup
+
+In a terminal:
 
 ```bash
-hermes memory setup
+hermes memory setup cognee
 ```
 
-Select `cognee` in the provider picker, choose **Mode: local**, and paste your
-LLM API key when asked. That's the whole setup — the wizard writes non-secrets
-to `~/.hermes/cognee.json` and secrets to `~/.hermes/.env`.
+Installing alone does not turn memory on: Hermes uses a memory plugin only once
+it is the selected `memory.provider`. This command selects Cognee and asks for a
+mode, **remote** (the default, 2a) or **local** (2b). `hermes plugins enable
+cognee` and the toggle in the Desktop app enable the plugin but do **not**
+select it, so after either one `hermes memory status` still shows
+`Provider: (none)`. The wizard writes non-secrets to `~/.hermes/cognee.json` and
+secrets to `~/.hermes/.env`.
 
-On your next `hermes` session the plugin starts a cognee server on
-`127.0.0.1:8011` — or attaches to one that a sibling cognee plugin (Claude
-Code, Codex, OpenClaw) already runs — with storage in `~/.cognee`. The very
-first boot runs database migrations and can take a couple of minutes; after
-that it's instant.
+#### 2a. Cognee Cloud (default)
 
-Verify it's connected:
+Accept **Mode: remote** and enter your tenant URL
+(`https://tenant-xxx.aws.cognee.ai`) and API key from the
+[Cognee Cloud dashboard](https://platform.cognee.ai/). Nothing runs locally in
+this mode — no server is spawned and no LLM key is used; every request goes to
+the tenant, authenticated with your API key via `X-Api-Key`.
+
+#### 2b. Local
+
+Type **local** at the mode prompt and paste your LLM API key when asked, or leave
+it blank to run without one (below). If the
+cognee runtime is not installed yet, the wizard offers to install it:
+`cognee==1.6.5` and its dependencies, about 1 GB from PyPI, into
+`~/.cognee-plugin/hermes/runtime/venv`. With uv on your PATH that takes under a
+minute; without it, pip takes a few. Choosing local also clears a Cognee Cloud
+URL and key saved by an earlier remote setup.
+
+To install, update or remove the runtime on its own:
 
 ```bash
-hermes cognee status                    # shows mode, dataset, service URL
-curl -s http://127.0.0.1:8011/health    # the server answers
+hermes cognee install-runtime   # install, or move it to the plugin's pinned cognee
+hermes cognee remove-runtime    # delete it (your data in ~/.cognee is kept)
 ```
 
-Then, in a `hermes` chat: *"Remember that my favorite editor is Helix"* — the
-agent should call `cognee_remember`. Start a fresh conversation (`/new`) and
-ask *"What's my favorite editor?"* — it should recall it via `cognee_recall`.
+**Without an LLM key**, cognee builds memory with local models: the GLiNER
+extractor for the graph and the fastembed `BAAI/bge-small-en-v1.5` embedder. The
+first graph build installs CPU PyTorch and `gliner2` into the runtime (about
+800 MB more) and downloads the GLiNER model (about 750 MB); later builds take
+seconds. Recall then returns the stored text that matches rather than a
+generated answer, and the graphs are simpler than with an LLM. For an LLM on your
+machine instead, set `LLM_PROVIDER=ollama` (see
+[Local models via Ollama](#local-models-via-ollama-embedding-settings)).
 
-### 2b. Connect to Cognee Cloud
+> **The embedder sticks to the store.** Keyless mode embeds with fastembed
+> (384 dimensions); adding an LLM key later switches cognee's default embedder
+> to OpenAI, and the existing store then refuses it with
+> `EmbeddingDimensionMismatchError`. To add a key to a keyless store, also set
+> `EMBEDDING_PROVIDER=fastembed` and `EMBEDDING_MODEL=BAAI/bge-small-en-v1.5` in
+> `~/.hermes/.env`, or start a new store (`COGNEE_DATA_ROOT`,
+> `COGNEE_SYSTEM_ROOT`).
 
-Grab your tenant URL (`https://tenant-xxx.aws.cognee.ai`) and an API key from
-the [Cognee Cloud dashboard](https://platform.cognee.ai/), then run the same
-wizard and choose **Mode: remote**:
+At session start the plugin attaches to a cognee server already running on
+`127.0.0.1:8011` — for example one a sibling cognee plugin (Claude Code, Codex,
+OpenClaw) runs — or starts one from the runtime, with storage in `~/.cognee`. The
+very first boot runs database migrations; on a fresh store that takes under a
+minute, and after that it's instant.
 
-```bash
-hermes memory setup     # cognee -> Mode: remote -> tenant URL + API key
-```
+Local mode needs the runtime even when a sibling plugin's server is already up:
+Hermes asks a provider whether it is available before anything connects, and the
+plugin answers from the runtime alone. Without it, Hermes starts the chat with its
+built-in memory only and warns that `cognee` is unavailable, naming
+`hermes cognee install-runtime`. A `cognee` installed into Hermes's own
+environment by hand is also used, but Hermes rebuilds that environment whenever it
+updates or the enabled plugins change, which removes it; the runtime is the
+durable path.
 
-Verify: `hermes cognee status` shows your tenant URL, and the same
-remember-`/new`-recall chat round trip works. Nothing runs locally in this
-mode — no server is spawned and no LLM key is used; every request goes to the
-tenant, authenticated with your API key via `X-Api-Key`.
+> **Upgrading from 1.3.x in local mode:** run `hermes cognee install-runtime`.
+> Earlier versions installed cognee into Hermes's environment as a dependency;
+> from 1.4.0 the plugin declares none, so the first environment Hermes builds after
+> the upgrade no longer has it and local mode reports unavailable until the
+> runtime is installed. Your data in `~/.cognee` is untouched.
+
+> **An existing `~/.cognee` can take much longer the first time.** If another
+> cognee plugin has filled `~/.cognee` with an older cognee version, the first
+> start migrates every stored table to the runtime's format before the server
+> answers, which can take many minutes on a large store (cognee 1.6.5's vector
+> table migration also holds a whole table in memory while it rewrites it). The
+> session does not wait for it: after 90 seconds it starts with Cognee's tools
+> answering "still starting", and Cognee turns on in that session once the
+> server is ready (`~/.cognee-plugin/hermes/server.log` shows progress). Do not
+> stop the server while it migrates. To keep Hermes's local store apart, set
+> `COGNEE_DATA_ROOT` and `COGNEE_SYSTEM_ROOT` to another folder before the first
+> start.
 
 > **Switching modes? Re-run the wizard.** Values in `~/.hermes/cognee.json`
 > take precedence over environment variables, and a local setup records
 > `"service_url": ""` there — so *only* exporting `COGNEE_BASE_URL` will not
-> move an existing local install to the cloud. `hermes memory setup` (or
+> move an existing local install to the cloud. `hermes memory setup cognee` (or
 > `hermes cognee setup`) rewrites both files consistently.
+
+### 3. Start a new chat and check
+
+Start a **new chat** in Hermes Desktop (or a new `hermes` session). Memory is set
+up when a chat starts, so a chat that was already open keeps the memory it
+started with. Then:
+
+```bash
+hermes memory status     # Provider: cognee
+hermes cognee status     # mode, dataset, service URL; "Local runtime: ready" in local mode
+```
+
+In local mode, `curl -s http://127.0.0.1:8011/health` also answers once the
+server is up. Then, in a chat: *"Remember that my favorite editor is Helix"* —
+the agent should call `cognee_remember`. Start another new chat and ask *"What's
+my favorite editor?"* — it should recall it via `cognee_recall`.
+
+If it doesn't work:
+
+- **`Provider: (none)`** — the setup hasn't run (enabling the plugin is not
+  enough): run `hermes memory setup cognee`.
+- **The agent says Cognee is unavailable or saves to its built-in memory
+  instead** — the chat started before Cognee was ready; start a new one.
+- **"still starting"** (local mode) — the server is migrating an existing store;
+  watch `~/.cognee-plugin/hermes/server.log`, and Cognee turns on in that chat
+  once it is ready.
 
 ## How the pip install works
 
@@ -206,11 +291,11 @@ automatically from your config:
 
 | Mode | When it's used | How it talks to cognee |
 | --- | --- | --- |
-| **local-server** (default) | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
-| **remote** | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
+| **remote** (setup's default) | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
+| **local-server** | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
 | **embedded** | `COGNEE_EMBEDDED=true` | runs cognee in-process |
 
-**Why local-server is the default.** cognee's local stores (SQLite, Kuzu/Ladybug,
+**Why local mode runs a server.** cognee's local stores (SQLite, Kuzu/Ladybug,
 LanceDB) are single-writer. Driving them in-process from the agent's background
 threads — or from a second Hermes process sharing the same `data_root` — risks
 `database is locked` errors and corruption. A local cognee server is the single
@@ -242,8 +327,11 @@ plugins do, and because the SDK's `CloudClient` drops fields the server accepts 
 most importantly `session_ids` on `improve()`, which is what promotes a session's
 turns into the permanent graph. Two consequences worth knowing:
 
-- The `cognee` package is still required. It is what the local server runs, and it
-  is the only way to run without a server at all (`COGNEE_EMBEDDED=true`).
+- The `sdk` transport needs the `cognee` package in Hermes's own environment, which
+  the plugin does not install (see embedded mode under
+  [One brain across agents](#one-brain-across-agents)). The
+  default `http` transport needs no cognee in Hermes's environment: remote mode is
+  plain HTTP, and local mode's server runs from the private runtime.
 - Over HTTP, a `cognee_remember` write cannot be linked to the session it came
   from — `/api/v1/remember` has no field for it. Session-to-graph bridging is
   unaffected. The plugin logs this once rather than dropping it silently.
@@ -325,6 +413,17 @@ Embedded (in-process) mode — single-process / offline only:
 COGNEE_EMBEDDED=true
 LLM_API_KEY=sk-...
 ```
+
+Embedded mode, and the `sdk` transport (`COGNEE_TRANSPORT=sdk`), run cognee inside
+the Hermes process, so they need `cognee==1.6.5` in Hermes's own Python environment.
+The plugin cannot declare it (its dependencies conflict with Hermes's, which is
+why local mode uses a private runtime), and the private runtime does not help here.
+You can install it into Hermes's venv yourself
+(`uv pip install --python <hermes venv python> cognee==1.6.5`), but this is
+fragile: Hermes rebuilds its environment from its own lock whenever it updates or
+the enabled plugins change, which removes it, and cognee's pins may not resolve
+against your Hermes build at all. Prefer local mode unless you specifically need
+no server.
 
 > **Embedded mode and the shared store do not mix.** Embedded drives the local
 > single-writer databases from inside the Hermes process; if another plugin's
@@ -487,6 +586,63 @@ session-cache scopes (`session`, `trace`) and the `auto` scope are never
 requested: turns and traces are written to the session cache, which `improve()`
 promotes into the graph at session end, but they are not searched as raw entries.
 
+### Memory credit in the answer
+
+On by default, as in the Cursor and Claude Code plugins. When an answer uses
+recalled memory, the agent ends it with one plain line:
+
+```
+> Cognee: Mika likes Yuji and volleyball, based on dataset agent_sessions.
+```
+
+In Hermes Desktop the plugin replaces `Cognee:` with the Cognee pixel logo in the
+brand purple (`#BC9BFF`), through Hermes' `transform_llm_output` hook. It is drawn
+in KaTeX, which Desktop renders: one coloured `\rule` per run of squares on the
+logo's five-row grid, about a capital letter tall, followed by half an em of space
+(about two spaces) and the sentence. The drawn line is not a blockquote (Desktop draws those with a
+quotation mark). The logo is always exact
+because the agent only writes the plain line. The rewritten answer is what
+Hermes stores, so each credited answer carries about 800 characters of LaTeX in
+the chat history.
+
+In the terminal chats, the terminal UI (`hermes --tui`) and the classic chat
+(`hermes`), the answer streams to the screen before the hook runs, so the line the
+agent wrote stays. There the agent is asked for the line without the `Cognee:` label,
+and the Cognee logo in braille is printed under it as a signature:
+
+```
+> Mika likes Yuji and volleyball, based on dataset agent_sessions.
+
+⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯
+⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
+```
+
+Rewriting the line instead would show the answer twice: the classic chat prints a
+replaced answer again, and the terminal UI keeps the streamed text and adds the new
+answer under it. With streaming off in the classic chat
+(`hermes config set display.streaming false`), the line is replaced by the logo with
+the sentence beside its first row instead. Messaging apps show the plain line for now.
+
+How it works:
+
+- Every recalled item the agent is given is tagged `m1`, `m2`… with where it came
+  from: a Claude Code, Codex, Cursor or Hermes session, a dated session learning,
+  a document, graph entities or facts, code-graph facts, or agent guidance. That
+  covers the per-prompt memory block and the results of the agent's own
+  `cognee_recall` calls. Tags are numbered across the conversation, and a memory
+  recalled again keeps its tag.
+- On turns where memory was given, an instruction above it says how many memories
+  Cognee found and asks the agent to add the credit only when the answer used a
+  tagged item, never for what it knows from instruction files, its own memory
+  files, the code or the conversation. The line names the dataset, not the tags.
+  The first credit in a conversation also says in a few words how it connects to
+  the earlier work.
+- When the turn is stored, the credit is noted (logged as `cognee memory_credit`
+  at INFO) and stripped, so it is never stored back into memory as part of the
+  answer.
+
+Turn it off with `COGNEE_PLUGIN_CITE_MEMORY=off` in `~/.hermes/.env`.
+
 ### Capture policy and redaction
 
 Each completed turn is stored as a `qa` entry and each of its tool calls as a
@@ -529,7 +685,8 @@ straight to the queue.
 ### What this plugin runs, stores and sends
 
 - **Runs**: in local mode, a cognee server (`uvicorn cognee.api.client:app`) on
-  `127.0.0.1:8011` from the installed `cognee` package, in
+  `127.0.0.1:8011` from the plugin's cognee runtime
+  (`~/.cognee-plugin/hermes/runtime/venv`, built only when you ask for it), in
   `~/.cognee-plugin/hermes/`, with its output in
   `~/.cognee-plugin/hermes/server.log`; a detached exit watcher per Hermes
   process that closes the session if Hermes cannot. The server gets its
@@ -556,13 +713,13 @@ directory and lets it override the environment. The server this plugin starts
 therefore runs in `~/.cognee-plugin/hermes/`, so a `.env` in the directory you
 start Hermes from never reaches it.
 
-Keys and settings come through Hermes only: `hermes memory setup` stores
+Keys and settings come through Hermes only: `hermes memory setup cognee` stores
 `COGNEE_API_KEY`, `LLM_API_KEY` and `COGNEE_BASE_URL` in the profile's `.env`
 through Hermes' own writer, and the plugin reads them back with Hermes'
 `get_secret`, which picks the right profile when one gateway serves several.
 The plugin never opens a `.env` file itself. **`~/.cognee/.env`, the file the
 Claude Code, Codex and OpenClaw plugins share, is not read by this plugin:** if
-your keys live only there, run `hermes memory setup` once, or put them in
+your keys live only there, run `hermes memory setup cognee` once, or put them in
 Hermes' `.env`.
 
 ## Code graph: index a repository
@@ -603,6 +760,8 @@ hermes cognee version [--check-updates]
 hermes cognee setup
 hermes cognee config
 hermes cognee install
+hermes cognee install-runtime     # local mode: install or update the private cognee runtime
+hermes cognee remove-runtime      # local mode: delete it (data in ~/.cognee is kept)
 hermes cognee index-repo <path-or-url> [--dataset D] [--index-vectors] [--wait SECONDS]
 hermes cognee keys list [--plugin KEY] [--json]      # per-machine keys of your plugin agents, most recently used first
 hermes cognee keys revoke <key_id> --plugin KEY      # revoke one (frees a slot on a full agent)

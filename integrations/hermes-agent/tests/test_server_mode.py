@@ -68,6 +68,13 @@ def _dead_child(returncode=3):
 
 
 class TestEnsureLocalServer(unittest.TestCase):
+    def setUp(self):
+        # _spawn is faked throughout, so no interpreter with cognee is needed; the
+        # no-runtime path is covered in test_local_mode_requirement.py.
+        patcher = mock.patch.object(sb, "server_python", return_value=sys.executable)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_already_healthy_does_not_spawn(self):
         with (
             mock.patch.object(sb, "health_ok", return_value=True),
@@ -804,3 +811,36 @@ class TestSpawnEnv(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestServerEnvFile(unittest.TestCase):
+    """The server must not pick up ~/.cognee-plugin/.env (the other plugins' keys)."""
+
+    def _spawn_env(self, workdir, env_overrides=None):
+        captured = {}
+
+        def fake_popen(args, env=None, **kwargs):
+            captured.update(env or {})
+            return mock.MagicMock()
+
+        with (
+            mock.patch.dict("os.environ", env_overrides or {}, clear=False),
+            mock.patch.object(sb, "server_workdir", return_value=workdir),
+            mock.patch.object(sb.subprocess, "Popen", side_effect=fake_popen),
+        ):
+            sb._spawn(9999, "", "", "/dev/null")
+        return captured
+
+    def test_the_server_loads_an_empty_env_file_instead_of_searching(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            env = self._spawn_env(workdir, {"COGNEE_ENV_FILE": ""})
+            path = env["COGNEE_ENV_FILE"]
+            self.assertEqual(os.path.dirname(path), workdir)
+            with open(path, encoding="utf-8") as handle:
+                lines = [line for line in handle if line.strip() and not line.startswith("#")]
+            self.assertEqual(lines, [])
+
+    def test_an_explicit_env_file_wins(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            env = self._spawn_env(workdir, {"COGNEE_ENV_FILE": "/etc/my-cognee.env"})
+            self.assertEqual(env["COGNEE_ENV_FILE"], "/etc/my-cognee.env")

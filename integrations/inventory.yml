@@ -34,7 +34,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "1.7.6"
+    current_version: "1.7.7"
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
@@ -110,9 +110,12 @@ integrations:
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: >-
       Standalone Hermes memory provider plugin; replaces closed in-tree PR path.
-      Talks to a cognee server over the REST API (as claude-code/codex/openclaw do);
-      still needs the cognee package installed, both to spawn the local server and
-      for the opt-in in-process mode (COGNEE_EMBEDDED=true, COGNEE_TRANSPORT=sdk).
+      Talks to a cognee server over the REST API (as claude-code/codex/openclaw do).
+      Declares no cognee dependency (its pins conflict with Hermes's shared
+      environment): local mode spawns the server from a private runtime venv the
+      plugin installs on request (hermes cognee install-runtime); only the opt-in
+      in-process mode (COGNEE_EMBEDDED=true, COGNEE_TRANSPORT=sdk) needs cognee in
+      Hermes's own environment.
       Hermes discovers memory providers through pip entry points and by scanning
       $HERMES_HOME/plugins, so the wheel ships a cognee-hermes-install console
       script that copies the plugin into $HERMES_HOME/plugins/cognee for the CLI

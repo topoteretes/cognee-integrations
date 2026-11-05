@@ -52,7 +52,7 @@ jobs:
 
       - name: Run the test suite
         run: |
-          python -m pip install pytest .
+          python -m pip install pytest . -r local-mode-requirements.txt
           python -m pytest tests/ -q
 
       - name: Build sdist and wheel

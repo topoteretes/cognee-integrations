@@ -25,7 +25,7 @@ import os
 import threading
 from typing import Any, Optional
 
-from .config import ollama_embedding_pins, str_to_bool
+from .config import LOCAL_COGNEE_REQUIREMENT, ollama_embedding_pins, str_to_bool
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,30 @@ logger = logging.getLogger(__name__)
 def has_cognee() -> bool:
     """True when the cognee package is importable. Never imports it."""
     return importlib.util.find_spec("cognee") is not None
+
+
+class CogneeNotInstalledError(RuntimeError):
+    """Local or embedded mode needs the cognee package, which is not installed."""
+
+
+def cognee_not_installed_message(mode: str) -> str:
+    remote = (
+        "Or use Cognee Cloud or another cognee server: run `hermes memory setup cognee`, "
+        "choose remote, and enter the service URL and API key."
+    )
+    if mode == "local":
+        return (
+            "cognee local mode needs its runtime, which is not installed yet. Run "
+            "`hermes cognee install-runtime` in a terminal: it installs "
+            f"{LOCAL_COGNEE_REQUIREMENT} into a private environment (about 1 GB from PyPI), "
+            f"kept apart from Hermes's own because their dependencies conflict. {remote}"
+        )
+    return (
+        f"cognee {mode} mode needs the cognee package ({LOCAL_COGNEE_REQUIREMENT}) in "
+        "Hermes's own Python environment, which this plugin does not install: its "
+        "dependencies conflict with Hermes's. Local mode runs cognee in a private "
+        f"environment instead (unset COGNEE_EMBEDDED). {remote}"
+    )
 
 
 class MemoryBackend:
@@ -305,6 +329,10 @@ class SdkBackend(MemoryBackend):
             logger.debug("Cognee model configuration failed: %s", exc)
 
     def configure_local_roots(self, *, data_root: str, system_root: str) -> None:
+        # Only embedded mode gets here, and it runs cognee in this process; fail
+        # with the fix rather than with an ImportError on the first memory call.
+        if not has_cognee():
+            raise CogneeNotInstalledError(cognee_not_installed_message("embedded"))
         # Embedded mode runs cognee's session manager in *this* process, and it is
         # gated on CACHING: without it a session write is silently dropped while
         # still reporting success, so turns never reach the graph. The spawned
