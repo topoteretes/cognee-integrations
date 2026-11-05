@@ -578,8 +578,10 @@ export function redactText(text: string, policy: CapturePolicy): string {
 
 /**
  * Deep-redact a captured value (method_params, a whole entry): strings are
- * scrubbed, a secret-named key (`api_key`, `authorization`, `*_token`, …) has
- * its value masked whatever its type, and anything else is returned as is.
+ * scrubbed, object keys included, a secret-named key (`api_key`,
+ * `authorization`, `*_token`, …) has its value masked whatever its type, and
+ * anything else is returned as is. Keys that redact to the same text collapse
+ * into one, and the last value wins.
  */
 export function redactValue<T>(value: T, policy: CapturePolicy): T {
   if (!policy.redact) return value;
@@ -588,7 +590,8 @@ export function redactValue<T>(value: T, policy: CapturePolicy): T {
   if (isPlainObject(value)) {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      out[key] = SECRET_KEY.test(key) ? "[redacted:credential]" : redactValue(item, policy);
+      const safeKey = redactText(key, policy);
+      out[safeKey] = SECRET_KEY.test(key) ? "[redacted:credential]" : redactValue(item, policy);
     }
     return out as T;
   }
