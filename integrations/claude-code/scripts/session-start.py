@@ -868,6 +868,7 @@ def _ensure_local_server_running(
             server_proc.pid,
             version=_PINNED_COGNEE_VERSION,
             llm_observer=server_env.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1",
+            coding_memory=server_env.get("DISTILLATION_MODE", "").strip().lower() == "coding",
         )
 
         health_deadline = time.monotonic() + health_timeout
@@ -2705,6 +2706,11 @@ async def _start(payload: dict | None = None) -> dict:
             ),
         },
     )
+    # A shared local server keeps the distillation mode it booted with; say so
+    # when it differs from this session's coding memory setting (SDK-1336).
+    coding_note = _coding_server_note(
+        target_url, server_live, local_owned=not cloud and not managed_locked
+    )
     if managed_locked and target_url and not server_live:
         # Managed deployment is down: fail loudly, never fork a fallback brain.
         hook_log("managed_endpoint_down", {"base_url": target_url})
@@ -2815,7 +2821,47 @@ async def _start(payload: dict | None = None) -> dict:
         hook_log("bootstrap_owns_ready", {"session_id": session_id, "ready_now": bool(ready)})
     else:
         phase_end("connecting", session_key=session_key, ok=bool(ready))
-    return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
+    return _with_system_note(
+        _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer),
+        coding_note,
+    )
+
+
+def _coding_server_note(target_url: str, server_live: bool, local_owned: bool) -> str:
+    """The note when an already-running local server's distillation mode differs
+    from this session's coding memory setting (SDK-1336), or ''.
+
+    Local mode only, and only for a server this session did not spawn: a server
+    it spawns gets this session's env. Never restarts the shared server.
+    """
+    if not (server_live and local_owned and target_url and _is_local_url(target_url)):
+        return ""
+    try:
+        from _plugin_common import coding_server_note
+
+        port = urllib.parse.urlparse(target_url).port or 80
+        note = coding_server_note(port, coding_memory_enabled())
+    except Exception as exc:
+        hook_log("coding_server_note_failed", {"error": str(exc)[:200]})
+        return ""
+    if note:
+        hook_log("coding_server_mode_mismatch", {"port": port, "coding": coding_memory_enabled()})
+    return note
+
+
+def _with_system_note(output: dict, note: str) -> dict:
+    """Append ``note`` to the SessionStart systemMessage (nested and top level)."""
+    if not note:
+        return output
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{note}" if existing else note
+    result["hookSpecificOutput"] = hso
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{note}" if top else note
+    return result
 
 
 def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
@@ -2915,14 +2961,17 @@ def main():
         hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
     coding = coding_memory_enabled()
     try:
-        if payload.get("source") != "resume" and not coding:
+        if payload.get("source") != "resume":
             from _session_stats import previous, summary
             from _session_stats import update as update_stats
 
             config = load_config()
             key = get_session_key()
-            last_line = summary(
-                previous(key, get_dataset(config), str(config.get("base_url") or ""))
+            # Coding memory (SDK-1336) records the session too, but shows no recap.
+            last_line = (
+                ""
+                if coding
+                else summary(previous(key, get_dataset(config), str(config.get("base_url") or "")))
             )
             update_stats(
                 key,
@@ -2980,19 +3029,20 @@ class _SkipAutoindex(Exception):
 
 
 def _coding_session_start(output: dict, payload: dict) -> dict:
-    """Coding memory (SDK-1336) at SessionStart: no steer, recap or digest text.
+    """Coding memory (SDK-1336) at SessionStart.
 
-    The model gets nothing here except, after a compaction, the lessons block again
-    (the compaction dropped it). Also checks once that the server takes the event
-    times coding mode needs, and says so when it does not (memory is then off),
-    and starts filling the lesson cache in the background.
+    The steer, recap and digest are skipped where they are added; what else is
+    already in the output (an OFFLINE instruction, the sync notice) is kept.
+    After a compaction the lessons block is appended again (the compaction
+    dropped it). Also checks once that the server takes the event times coding
+    mode needs, and says so when it does not (memory is then off), and starts
+    filling the lesson cache in the background.
     """
     import _coding_memory
 
     result = dict(output or {})
     hso = dict(result.get("hookSpecificOutput") or {})
     hso.setdefault("hookEventName", "SessionStart")
-    hso.pop("additionalContext", None)
     key = get_session_key()
     cwd = str(payload.get("cwd") or "") or os.getcwd()
     try:
@@ -3007,7 +3057,8 @@ def _coding_session_start(output: dict, payload: dict) -> dict:
             with quiet_hook_output("session-start"):
                 block = _coding_memory.deliver(key, _coding_memory.last_request(key), cwd)
             if block:
-                hso["additionalContext"] = block
+                existing = str(hso.get("additionalContext") or "").strip()
+                hso["additionalContext"] = f"{existing}\n\n{block}" if existing else block
         elif key:
             import importlib.util
 

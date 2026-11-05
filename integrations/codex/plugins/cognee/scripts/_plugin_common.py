@@ -3161,20 +3161,89 @@ def _server_pidfile(port: int) -> Path:
     return _SHARED_PLUGIN_ROOT / f"server-{int(port)}.pid"
 
 
-def write_server_pidfile(port: int, pid: int, version: str = "") -> None:
-    """Record the uvicorn server spawned on ``port`` (presence evidence)."""
+def write_server_pidfile(
+    port: int, pid: int, version: str = "", coding_memory: Optional[bool] = None
+) -> None:
+    """Record the uvicorn server spawned on ``port`` (presence evidence).
+
+    ``coding_memory`` records whether the server was spawned with coding
+    distillation (DISTILLATION_MODE=coding): a server keeps the mode it booted
+    with, so a later session joining it must learn which one that was.
+    """
+    record = {
+        "pid": int(pid),
+        "port": int(port),
+        "version": version,
+        "created_at": datetime.now(timezone.utc).timestamp(),
+    }
+    if coding_memory is not None:
+        record["coding_memory"] = bool(coding_memory)
     try:
-        _write_json_file(
-            _server_pidfile(port),
-            {
-                "pid": int(pid),
-                "port": int(port),
-                "version": version,
-                "created_at": datetime.now(timezone.utc).timestamp(),
-            },
-        )
+        _write_json_file(_server_pidfile(port), record)
     except Exception as exc:
         hook_log("server_pidfile_write_failed", {"error": str(exc)[:200]})
+
+
+def live_server_record(port: int) -> dict:
+    """The pidfile record of the live server on ``port``, or {} (none / stale)."""
+    if not _live_server_pid(port):
+        return {}
+    try:
+        record = json.loads(_server_pidfile(port).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+_CODING_RESTART_ADVICE = (
+    "To restart it, close the other Claude Code and Codex sessions using Cognee; the "
+    "server stops on its own, and the next session starts it in {mode}."
+)
+
+
+def coding_server_note(port: int, coding: bool) -> str:
+    """The SessionStart note when the running local server's distillation mode
+    differs from this session's coding memory setting (SDK-1336), or ''.
+
+    The coding env (DISTILLATION_MODE=coding, AUTO_FEEDBACK=false) reaches only a
+    server this plugin spawns, and a shared server keeps the mode it booted
+    with, so a session joining one learns it from the pidfile instead. Never
+    restarts the server: other sessions are using it.
+    """
+    record = live_server_record(port)
+    stamp = record.get("coding_memory") if record else None
+    pid = int(record.get("pid", 0) or 0) if record else 0
+    if not isinstance(stamp, bool) or not pid:
+        if not coding:
+            return ""
+        return (
+            "Cognee coding memory: a Cognee server was already running and it is unknown "
+            "whether it runs coding mode (it was started by another integration, an older "
+            "plugin version or outside the plugin), so it may not make coding lessons "
+            "until it restarts. " + _CODING_RESTART_ADVICE.format(mode="coding mode")
+        )
+    if stamp == coding:
+        return ""
+    kill_now = (
+        f"To restart it now, run `kill {pid}` and start a new session (an improve in "
+        "progress is cut short, and other open sessions have no memory until they restart)."
+    )
+    if coding:
+        return (
+            f"Cognee coding memory: the running Cognee server (pid {pid}) was started "
+            "without coding mode, so it won't make coding lessons until it restarts. "
+            + _CODING_RESTART_ADVICE.format(mode="coding mode")
+            + " "
+            + kill_now
+        )
+    return (
+        f"Cognee Memory: the running Cognee server (pid {pid}) was started in coding "
+        "memory mode, so it runs coding distillation without per-call feedback, and this "
+        "session's normal distillation and feedback won't apply until it restarts. "
+        + _CODING_RESTART_ADVICE.format(mode="normal mode")
+        + " "
+        + kill_now
+    )
 
 
 def clear_server_pidfile(port: int) -> None:

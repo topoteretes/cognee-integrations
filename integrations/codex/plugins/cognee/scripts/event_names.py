@@ -356,6 +356,8 @@ EVENT_NAMES = {
     "hook:coding_permission_check_failed": "coding.permission_check_failed",
     "hook:coding_recall_failed": "coding.recall_failed",
     "hook:coding_session_end_flush_failed": "coding.session_end_flush_failed",
+    "hook:coding_server_mode_mismatch": "coding.server_mode_mismatch",
+    "hook:coding_server_note_failed": "coding.server_note_failed",
     "hook:coding_session_start_failed": "coding.session_start_failed",
     "hook:coding_spawn_failed": "coding.spawn_failed",
     "hook:coding_state_locked": "coding.state_locked",

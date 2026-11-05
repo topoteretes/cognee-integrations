@@ -459,7 +459,8 @@ Recent commits (newest first):
 ```
 
 It holds the newest `test-baseline`, the two newest pitfalls, then the lessons recalled for the
-request: 1,500 characters of whole lessons, newest per state key, without duplicates. Each lesson
+request: 1,500 characters of whole lessons, their git tags included, newest per state key,
+without duplicates. Each lesson
 is tagged with its session's date and commit and the files it names that changed or no longer
 exist since (read-only git; no tag for an unknown commit or outside git). Lessons are read from the
 dataset listing's metadata, so only this repository's lessons are used (`project_node_sets`), and
@@ -471,9 +472,14 @@ fields in `/openapi.json`), memory is off: nothing is captured or injected, and 
 says so. When the plugin starts the local server it sets `DISTILLATION_MODE=coding`,
 `AUTO_FEEDBACK=false` and `COGNEE_PROJECT_NODE_SET=auto` (the repository root), each only when
 not already set; a local server shared with other plugins then runs the coding distillation for
-them too. On a remote server, set `DISTILLATION_MODE=coding` there. The coding distillation deletes
+them too. These reach only a server the plugin starts: a local server that is already running
+keeps the mode it started with. When that mode differs from the session's (a coding session on a
+server started without coding mode, or the reverse), session start says so, with the server's
+pid and how to restart it; the plugin never restarts a shared server itself. On a remote server,
+set `DISTILLATION_MODE=coding` there. The coding distillation deletes
 the lessons a newer one replaces, so the key needs `delete` on the dataset next to `write`;
-`doctor` shows the server support and the permission while coding mode is on.
+`doctor` shows the server support, whether the running local server is in coding mode, and the
+permission while coding mode is on.
 
 **Failures.** Every step fails open: a slow, unreachable or keyless server costs the block or
 delays the send, never the session. Events are logged as `coding.*` (see `EVENTS.md`); state is in

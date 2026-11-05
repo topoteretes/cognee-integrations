@@ -115,7 +115,6 @@ _ENV_MAP = {
     "COGNEE_SHARED_AGENT_MEMORY": "shared_agent_memory",
     # Coding memory mode (SDK-1336): capture once per request, one lesson block
     # per session. Off unless set to true.
-    "COGNEE_CODING_MEMORY": "coding_memory",
     # base_url is an externally managed deployment: never boot a local fallback
     # server on its port; fail loudly when it is unreachable.
     "COGNEE_MANAGED_ENDPOINT": "managed_endpoint",

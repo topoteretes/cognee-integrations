@@ -852,7 +852,12 @@ def _ensure_local_server_running(
             pump.stdin.close()  # the server holds the write end now
         # Presence evidence for future boot points: covers the spawn-to-bind
         # window where neither the health probe nor the TCP listener sees it.
-        write_server_pidfile(port, server_proc.pid, version=_PINNED_COGNEE_VERSION)
+        write_server_pidfile(
+            port,
+            server_proc.pid,
+            version=_PINNED_COGNEE_VERSION,
+            coding_memory=server_env.get("DISTILLATION_MODE", "").strip().lower() == "coding",
+        )
 
         health_deadline = time.monotonic() + health_timeout
         while time.monotonic() < health_deadline:
@@ -2103,6 +2108,9 @@ async def _start(payload: dict | None = None) -> dict:
             ),
         },
     )
+    # A shared local server keeps the distillation mode it booted with; say so
+    # when it differs from this session's coding memory setting (SDK-1336).
+    coding_note = _coding_server_note(target_url, server_live, local_owned=not managed_locked)
     if managed_locked and target_url and not server_live:
         # Managed deployment is down: fail loudly, never fork a fallback brain.
         hook_log("managed_endpoint_down", {"base_url": target_url})
@@ -2196,12 +2204,15 @@ async def _start(payload: dict | None = None) -> dict:
     )
 
     status_line = render_status_for_host(session_key, auto_recall_active(session_key))
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": status_line + _update_nudge_suffix(),
+    return _with_system_note(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": status_line + _update_nudge_suffix(),
+            },
         },
-    }
+        coding_note,
+    )
 
 
 def _update_nudge_suffix() -> str:
@@ -2232,6 +2243,43 @@ def _update_nudge_suffix() -> str:
         f"\n\nCognee update available {installed} → {latest} — run "
         "`codex plugin marketplace upgrade cognee` to update."
     )
+
+
+def _coding_server_note(target_url: str, server_live: bool, local_owned: bool) -> str:
+    """The note when an already-running local server's distillation mode differs
+    from this session's coding memory setting (SDK-1336), or ''.
+
+    Local mode only, and only for a server this session did not spawn: a server
+    it spawns gets this session's env. Never restarts the shared server.
+    """
+    if not (server_live and local_owned and target_url and _is_local_url(target_url)):
+        return ""
+    try:
+        from _plugin_common import coding_server_note
+
+        port = urllib.parse.urlparse(target_url).port or 80
+        note = coding_server_note(port, coding_memory_enabled())
+    except Exception as exc:
+        hook_log("coding_server_note_failed", {"error": str(exc)[:200]})
+        return ""
+    if note:
+        hook_log("coding_server_mode_mismatch", {"port": port, "coding": coding_memory_enabled()})
+    return note
+
+
+def _with_system_note(output: dict, note: str) -> dict:
+    """Append ``note`` to the SessionStart systemMessage (nested and top level)."""
+    if not note:
+        return output
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{note}" if existing else note
+    result["hookSpecificOutput"] = hso
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{note}" if top else note
+    return result
 
 
 def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
@@ -2345,10 +2393,11 @@ class _SkipAutoindex(Exception):
 def _coding_session_start(output: dict, payload: dict) -> dict:
     """Coding memory (SDK-1336) at SessionStart.
 
-    After a compaction the lessons block is given again (the compaction dropped
-    it). Otherwise this checks once that the server takes the event times coding
-    mode needs, says so when it does not (memory is then off), and starts filling
-    the lesson cache in the background.
+    After a compaction the lessons block is appended again (the compaction
+    dropped it); what the output already holds is kept. Otherwise this checks
+    once that the server takes the event times coding mode needs, says so when
+    it does not (memory is then off), and starts filling the lesson cache in the
+    background.
     """
     import _coding_memory
 
@@ -2369,7 +2418,8 @@ def _coding_session_start(output: dict, payload: dict) -> dict:
             if block:
                 hso = dict(result.get("hookSpecificOutput") or {})
                 hso["hookEventName"] = "SessionStart"
-                hso["additionalContext"] = block
+                existing = str(hso.get("additionalContext") or "").strip()
+                hso["additionalContext"] = f"{existing}\n\n{block}" if existing else block
                 result["hookSpecificOutput"] = hso
         elif key:
             import importlib.util

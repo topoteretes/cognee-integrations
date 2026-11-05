@@ -206,9 +206,14 @@ def test_hooks_register_the_stop_capture_and_codex_compaction(suite):
 # -- Capture -------------------------------------------------------------------------
 
 
-def test_capture_sends_every_call_including_failures_and_reads(cm, sent, tmp_path, repo):
+def test_capture_sends_every_call_including_failures_and_reads(
+    cm, sent, tmp_path, repo, monkeypatch
+):
     path = _transcript(cm, tmp_path)
-    cm.begin_turn("host-session-1", "Fix the parser", str(repo))
+    request = "Fix it" if cm.agent() == "codex" else "Fix the parser"
+    # The prompt hook runs a second after the transcript's prompt record.
+    monkeypatch.setattr(cm, "now_iso", lambda: "2026-11-05T10:00:01+00:00")
+    cm.begin_turn("host-session-1", request, str(repo))
     head = _git(repo, "rev-parse", "HEAD")
     (repo / "src" / "app.py").write_text("x = 2\n")
     _git(repo, "commit", "-qam", "second")
@@ -228,7 +233,7 @@ def test_capture_sends_every_call_including_failures_and_reads(cm, sent, tmp_pat
         assert "not found" in traces[2]["error_message"]
     assert all(t["time"].endswith("+00:00") for t in traces)
     assert len(qa) == 1
-    assert qa[0]["question"] == "Fix the parser" and qa[0]["answer"] == "Done."
+    assert qa[0]["question"] == request and qa[0]["answer"] == "Done."
     assert qa[0]["prompt_time"] and qa[0]["time"]
     context = json.loads(qa[0]["context"])
     assert context["start_commit"] == head and context["end_commit"] == end
@@ -240,11 +245,13 @@ def test_second_stop_sends_only_new_calls_as_a_continuation(cm, sent, tmp_path, 
     if cm.agent() == "codex":
         pytest.skip("the Claude transcript fixture grows call by call")
     first = [("t1", "Bash", {"command": "ls"}, "a", False)]
-    path = _claude_transcript(tmp_path / "s.jsonl", first)
+    path = _claude_transcript(tmp_path / "s.jsonl", first, request="Fix it")
     cm.begin_turn("host-session-1", "Fix it", str(repo))
     cm.capture({"transcript_path": str(path), "cwd": str(repo), "last_assistant_message": "One."})
     sent.clear()
-    _claude_transcript(path, first + [("t2", "Bash", {"command": "pwd"}, "/x", False)])
+    _claude_transcript(
+        path, first + [("t2", "Bash", {"command": "pwd"}, "/x", False)], request="Fix it"
+    )
     cm.capture({"transcript_path": str(path), "cwd": str(repo), "last_assistant_message": "Two."})
     traces = [e for e in sent if e["type"] == "trace"]
     assert [t["method_params"]["command"] for t in traces] == ["pwd"]
@@ -282,8 +289,9 @@ def test_secrets_and_private_spans_are_removed(cm, sent, tmp_path, repo):
     if cm.agent() == "codex":
         pytest.skip("one transcript format is enough for the shared sanitizer")
     calls = [("t1", "Bash", {"command": "echo <private>hunter2</private>"}, "ok", False)]
-    path = _claude_transcript(tmp_path / "s.jsonl", calls)
-    cm.begin_turn("host-session-1", "token <private>s3cret</private> please", str(repo))
+    prompt = "token <private>s3cret</private> please"
+    path = _claude_transcript(tmp_path / "s.jsonl", calls, request=prompt)
+    cm.begin_turn("host-session-1", prompt, str(repo))
     cm.capture({"transcript_path": str(path), "cwd": str(repo), "last_assistant_message": "ok"})
     text = json.dumps(sent)
     assert "hunter2" not in text and "s3cret" not in text and "[private]" in text
@@ -320,10 +328,12 @@ def test_cloud_mode_spools_and_local_mode_buffers(cm, suite, isolated_modules, m
     if suite.name != "claude-code":
         return
     worker = isolated_modules(suite, "_cloud_worker")
-    monkeypatch.setattr(worker, "enqueue", lambda d, s, e, kind: spooled.append(kind))
+    monkeypatch.setattr(
+        worker, "enqueue", lambda d, s, e, kind, coding=False: spooled.append((kind, coding))
+    )
     monkeypatch.setattr(cm, "_cloud_spool", lambda: True)
     cm._deliver("agent_sessions", "claude_s1", entries)
-    assert spooled == ["trace", "answer"]
+    assert spooled == [("trace", True), ("answer", True)]
 
 
 def test_server_support_reads_the_entry_schemas(cm, suite, isolated_modules, monkeypatch):
@@ -346,8 +356,10 @@ def test_server_support_reads_the_entry_schemas(cm, suite, isolated_modules, mon
         raise OSError("refused")
 
     monkeypatch.setattr(common, "_json_http_request", down)
-    # The cached verdict survives an outage.
-    assert cm.check_server_support(refresh=True)["ok"] is False
+    # A failed forced check says "could not tell"; the cached verdict stays for
+    # the callers within its hour.
+    assert cm.check_server_support(refresh=True)["ok"] is None
+    assert cm.check_server_support()["ok"] is False
 
 
 # -- Selection -----------------------------------------------------------------------
@@ -409,8 +421,8 @@ def test_recalled_lessons_follow_in_recall_order_and_duplicates_are_skipped(cm):
             _lesson("CLI entry is cli/main.py.", date="2026-11-03"),
         ]
     )
-    answer = json.dumps([{"text": "cli entry is cli/main.py. ... Parser lives in src/parse.py."}])
-    chosen = [item["body"] for item in cm.select_lessons(lessons, answer)]
+    recalled = ["cli entry is cli/main.py.", "Parser lives in src/parse.py."]
+    chosen = [item["body"] for item in cm.select_lessons(lessons, recalled)]
     assert chosen == ["CLI entry is cli/main.py.", "Parser lives in src/parse.py."]
 
 
@@ -419,7 +431,7 @@ def test_an_oversized_lesson_is_skipped_and_a_later_shorter_one_kept(cm):
     bigger = _lesson("C" * 200, kind="pitfall", key="pitfall:b", date="2026-11-02")
     small = _lesson("Short recalled fact.", date="2026-11-01")
     lessons = _newest_first([big, bigger, small])
-    chosen = cm.select_lessons(lessons, "short recalled fact.")
+    chosen = cm.select_lessons(lessons, ["short recalled fact."])
     assert [item["body"][:5] for item in chosen] == ["BBBBB", "Short"]
 
 
@@ -533,7 +545,7 @@ def test_server_down_or_404_recall_gives_no_recalled_lessons(
         raise OSError("connection refused")
 
     monkeypatch.setattr(common, "_json_http_request", down)
-    assert cm.recall_answer("q", "agent_sessions", "ds-1", 10**12) == ""
+    assert cm.recall_passages("q", "agent_sessions", "ds-1", 10**12) == []
 
 
 # -- Git tags ---------------------------------------------------------------------------

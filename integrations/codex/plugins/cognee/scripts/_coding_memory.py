@@ -5,10 +5,12 @@ SDK-1335). With it on, the plugin does nothing while the agent works:
 
 * **Capture at the end of each request.** The ``Stop`` hook reads the host's
   transcript and sends every tool call not sent yet (failed calls included) as a
-  ``trace`` entry, then one ``qa`` entry with the request and the final message.
-  Every entry carries the time of its event (``time``, and ``prompt_time`` on the
-  QA entry), which the server uses to pair calls to requests. Sent calls are
-  remembered by id, so a second ``Stop`` sends only what is new.
+  ``trace`` entry, then one ``qa`` entry per answered request not sent yet, with
+  the request and its final message as the transcript pairs them. Every entry
+  carries the time of its event (``time``, and ``prompt_time`` on the QA entry),
+  which the server uses to pair calls to requests. Sent calls and requests are
+  remembered by id, so a second ``Stop`` sends only what is new and a late or
+  skipped ``Stop`` loses nothing.
 * **Delivery at the first request.** The first prompt of a session (and the first
   one after a compaction) gets one short block of lessons: the newest
   ``test-baseline``, the two newest pitfalls and the lessons recalled for the
@@ -45,12 +47,23 @@ MAX_PROMPT_CHARS = 8000
 MAX_TRACES_PER_CAPTURE = 400
 #: Sent ids kept per session (bounded state file).
 MAX_SENT_IDS = 20000
+#: QA entries sent per capture (requests answered but not sent yet, oldest first).
+MAX_QA_PER_CAPTURE = 50
+#: Requests whose QA was sent, kept per session (bounded state file).
+MAX_QA_SENT_IDS = 2000
+#: Request starts (git context) kept per session.
+MAX_TURNS = 20
+#: How far a recorded request start may be from the transcript's prompt time.
+TURN_MATCH_SECONDS = 10.0
 
-#: Delivery budgets (characters).
+#: Delivery budgets (characters). ``LESSON_BUDGET`` counts each lesson's whole
+#: line (``- `` + statement + git tag + newline) and is applied once, at selection.
 LESSON_BUDGET = 1500
 FRAMING_CAP = 500
-LESSON_LINES_CAP = 1600
 COMMITS_CAP = 300
+#: Candidates measured (each with its git tag) per block inside git; the rest
+#: are not considered, which bounds the git calls on the prompt path.
+MAX_TAGGED_CANDIDATES = 10
 RECALL_MATCH_PREFIX = 120
 SERVER_CALL_TIMEOUT = 4.0
 DELIVERY_BUDGET_SECONDS = 10.0
@@ -164,19 +177,33 @@ def _support_file() -> Path:
     return _root() / "server-support.json"
 
 
-def _schema_props(spec: dict, name: str) -> set:
-    schema = spec.get("components", {}).get("schemas", {}).get(name, {})
-    return set(schema.get("properties", {})) if isinstance(schema, dict) else set()
+def _entry_schemas(spec) -> tuple | None:
+    """``(QAEntry properties, TraceEntry properties)``, or None when ``spec`` is not
+    an OpenAPI document carrying both schemas (every cognee version has them)."""
+    components = spec.get("components") if isinstance(spec, dict) else None
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    if not isinstance(schemas, dict):
+        return None
+    found = []
+    for name in ("QAEntry", "TraceEntry"):
+        schema = schemas.get(name)
+        if not isinstance(schema, dict):
+            return None
+        props = schema.get("properties")
+        found.append(set(props) if isinstance(props, dict) else set())
+    return found[0], found[1]
 
 
 def check_server_support(*, refresh: bool = False, timeout: float = 5.0) -> dict:
     """Whether the server takes the event times coding mode needs (cognee PR #6568).
 
     Reads ``/openapi.json``: ``QAEntry`` must have ``time`` and ``prompt_time`` and
-    ``TraceEntry`` ``time``. The verdict is cached an hour per server. Returns
-    ``{"ok": True|False|None, "reason": str}``; ``None`` means unknown (the server
-    could not be asked), which callers treat as allowed so capture is buffered
-    rather than lost.
+    ``TraceEntry`` ``time``. A definite verdict is cached an hour per server.
+    Returns ``{"ok": True|False|None, "reason": str}``. ``False`` only when the
+    spec has both schemas and they lack the times; ``None`` means unknown (the
+    server could not be asked, or its reply is not a spec with those schemas),
+    which callers treat as allowed so capture is buffered rather than lost. An
+    unknown is never cached, so it does not replace an earlier verdict.
     """
     from _plugin_common import _json_http_request, _local_api_url, _normalize_service_url
 
@@ -188,11 +215,16 @@ def check_server_support(*, refresh: bool = False, timeout: float = 5.0) -> dict
     try:
         spec = _json_http_request("/openapi.json", None, method="GET", timeout=timeout)
     except Exception as exc:
-        if entry:
-            return {"ok": entry.get("ok"), "reason": str(entry.get("reason") or "")}
+        # The cached entry stays for callers within its hour; this check says
+        # only that the server could not be asked now.
         return {"ok": None, "reason": "unreachable: " + str(exc)[:120]}
-    spec = spec if isinstance(spec, dict) else {}
-    qa, trace = _schema_props(spec, "QAEntry"), _schema_props(spec, "TraceEntry")
+    schemas = _entry_schemas(spec)
+    if schemas is None:
+        return {
+            "ok": None,
+            "reason": "could not tell: /openapi.json has no QAEntry/TraceEntry schemas",
+        }
+    qa, trace = schemas
     ok = {"time", "prompt_time"} <= qa and "time" in trace
     reason = (
         "" if ok else "the server's QAEntry/TraceEntry take no event times (needs cognee PR #6568)"
@@ -248,23 +280,57 @@ def delete_permission(dataset: str, *, timeout: float = 5.0):
 
 
 def doctor_line(dataset: str) -> str:
-    """One line for the doctor report."""
+    """One line for the doctor report.
+
+    For a local server it also says whether the running server was started in
+    coding mode: the coding env reaches only a server the plugin spawns, and a
+    shared server keeps the mode it booted with.
+    """
     if not enabled():
         return "off"
+
+    def server_mode() -> str:
+        try:
+            import urllib.parse
+
+            from _plugin_common import _local_api_url, live_server_record, service_url_is_local
+
+            url = _local_api_url()
+            if not service_url_is_local(url):
+                return ""
+            if "://" not in url:
+                url = "http://" + url
+            record = live_server_record(urllib.parse.urlparse(url).port or 80)
+        except Exception:
+            return ""
+        if not record:
+            return ""
+        stamp = record.get("coding_memory")
+        pid = record.get("pid")
+        if stamp is True:
+            return f"; local server (pid {pid}) in coding mode"
+        if stamp is False:
+            return (
+                f"; local server (pid {pid}) not in coding mode: no coding lessons "
+                "until it restarts"
+            )
+        return f"; local server (pid {pid}) coding mode unknown"
+
     support = check_server_support(refresh=True)
     if support.get("ok") is False:
         return "on, but memory is off: " + str(support.get("reason") or "server too old")
     if support.get("ok") is None:
         return "on (server not reachable: could not check it)"
+    mode = server_mode()
     allowed = delete_permission(dataset)
     if allowed is True:
-        return f"on (server supports it; delete permission on {dataset})"
+        return f"on (server supports it{mode}; delete permission on {dataset})"
     if allowed is False:
         return (
-            f"on, but no direct delete permission on {dataset} was found: improve fails "
-            "unless a role or tenant grants it"
+            f"on (server supports it{mode}), but no direct delete permission on {dataset} "
+            "was found: improve fails unless a role or tenant grants it"
         )
-    return "on (server supports it; delete permission not checked)"
+    return f"on (server supports it{mode}; delete permission not checked)"
 
 
 # -- Git -----------------------------------------------------------------------------
@@ -322,31 +388,65 @@ def _session() -> tuple[str, str]:
 
 
 def begin_turn(session_key: str, prompt: str, cwd: str) -> None:
-    """Record the request's start: text, time, start commit and branch.
+    """Record the request's git context: start commit, branch, cwd and time.
 
-    Runs in the synchronous prompt hook, so it is on disk before the agent starts
-    and the Stop of the same request always finds it.
+    Runs in the synchronous prompt hook, so it is on disk before the agent starts.
+    The question and its answer come from the transcript at capture time; the
+    capture pairs each request with the entry whose ``prompt_time`` is closest to
+    the request's transcript time. Entries are kept in a short list (not one
+    slot), so a Stop that runs after the next prompt still finds its own entry.
+    The sanitized prompt is kept for :func:`last_request`.
     """
     from _capture_policy import sanitize
 
     if not session_key:
         return
     turn = {
-        "id": uuid.uuid4().hex,
         "prompt": str(sanitize(prompt or ""))[:MAX_PROMPT_CHARS],
         "prompt_time": now_iso(),
         "start_commit": git_head(cwd),
         "branch": git_branch(cwd),
         "cwd": cwd,
-        "qa_sent": False,
     }
     with _SessionState(session_key) as state:
         if not state.acquired:
             hook_log("coding_state_locked", {"op": "begin_turn"})
             return
-        state.data["turn"] = turn
+        turns = [t for t in state.data.get("turns") or [] if isinstance(t, dict)]
+        turns.append(turn)
+        state.data["turns"] = turns[-MAX_TURNS:]
+        state.data.pop("turn", None)  # the single slot of earlier versions
         state.data.setdefault("started_at", time.time())
         state.save()
+
+
+def _parse_time(stamp: str) -> float | None:
+    stamp = _event_time(stamp)
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except ValueError:
+        return None
+
+
+def match_turn(turns: list, request_time: str) -> dict:
+    """The recorded request start closest to ``request_time``, within
+    ``TURN_MATCH_SECONDS``; ``{}`` when none is that close."""
+    target = _parse_time(request_time)
+    if target is None:
+        return {}
+    best, best_gap = {}, TURN_MATCH_SECONDS
+    for turn in turns or []:
+        if not isinstance(turn, dict):
+            continue
+        at = _parse_time(str(turn.get("prompt_time") or ""))
+        if at is None:
+            continue
+        gap = abs(at - target)
+        if gap <= best_gap:
+            best, best_gap = turn, gap
+    return best
 
 
 # -- Transcripts ---------------------------------------------------------------------
@@ -402,15 +502,55 @@ def _claude_files(transcript: Path) -> list:
     return files
 
 
+def _record_id(record: dict, stamp: str, text: str) -> str:
+    """The record's ``uuid``, else a hash of its time and text (Codex rollouts)."""
+    return str(record.get("uuid") or "") or _digest(stamp + "\n" + text)
+
+
+def _new_unit(record: dict, text: str, stamp: str) -> dict:
+    return {
+        "id": _record_id(record, stamp, text),
+        "request": text,
+        "request_time": stamp,
+        "answer": "",
+        "answer_id": "",
+        "answer_time": "",
+    }
+
+
+def _set_answer(unit: dict | None, record: dict, text: str, stamp: str) -> None:
+    if unit is not None:
+        unit["answer"] = text
+        unit["answer_id"] = _record_id(record, stamp, text)
+        unit["answer_time"] = stamp
+
+
+def _empty_parse() -> dict:
+    return {
+        "calls": [],
+        "answer": "",
+        "answer_time": "",
+        "request": "",
+        "request_time": "",
+        "units": [],
+    }
+
+
 def parse_claude(transcript_path: str) -> dict:
-    """Tool calls (main thread and subagents), the last request and the last answer."""
+    """Tool calls (main thread and subagents), the last request and the last answer.
+
+    ``units`` holds one entry per real user prompt of the main thread, in order:
+    the request and its answer (the last main-thread assistant text before the
+    next prompt), each with an id and a time.
+    """
     transcript = Path(str(transcript_path or "")).expanduser()
     uses: dict = {}
     results: dict = {}
     last_text, last_text_time = "", ""
     last_request, last_request_time = "", ""
+    units: list = []
     if not transcript.is_file():
-        return {"calls": [], "answer": "", "request": "", "request_time": ""}
+        return _empty_parse()
     for index, path in enumerate(_claude_files(transcript)):
         main = index == 0
         for record in _iter_jsonl(path):
@@ -433,6 +573,7 @@ def parse_claude(transcript_path: str) -> dict:
                 text = "\n".join(t for t in texts if t.strip())
                 if main and text.strip() and not record.get("isSidechain"):
                     last_text, last_text_time = text, stamp
+                    _set_answer(units[-1] if units else None, record, text, stamp)
             elif kind == "user":
                 if isinstance(content, list) and any(
                     isinstance(b, dict) and b.get("type") == "tool_result" for b in content
@@ -456,11 +597,14 @@ def parse_claude(transcript_path: str) -> dict:
                 text = _block_text(content).strip()
                 if text and not text.startswith(_NOT_A_REQUEST):
                     last_request, last_request_time = text, stamp
+                    units.append(_new_unit(record, text, stamp))
     calls = []
     for tool_id, result in results.items():
         use = uses.get(tool_id)
         if not use:
             continue
+        # No "error" here: trace_entry derives it from the output after the
+        # capture sanitized the output (a cut <private> span must not leak).
         calls.append(
             {
                 "id": tool_id,
@@ -468,7 +612,6 @@ def parse_claude(transcript_path: str) -> dict:
                 "input": use["input"],
                 "output": result["output"],
                 "is_error": result["is_error"],
-                "error": str(result["output"] or "") if result["is_error"] else "",
                 "time": result["time"],
             }
         )
@@ -479,6 +622,7 @@ def parse_claude(transcript_path: str) -> dict:
         "answer_time": last_text_time,
         "request": last_request,
         "request_time": last_request_time,
+        "units": units,
     }
 
 
@@ -535,14 +679,15 @@ def _codex_call(item: dict, stamp: str) -> dict | None:
     if kind == "CommandExecution":
         exit_code = item.get("exit_code")
         failed = failed or exit_code not in (0, None)
-        output = str(item.get("aggregated_output") or "")
+        # The error is the tail of the output, built by trace_entry after the
+        # capture sanitized the whole output: a tail sliced here could keep
+        # "SECRET</private>" without its opener.
         return {
             "name": "Bash",
             "input": {"command": _codex_command(item.get("command"))},
-            "output": output,
+            "output": str(item.get("aggregated_output") or ""),
             "is_error": failed,
-            "error": (f"exit code {exit_code}: " if exit_code not in (0, None) else "")
-            + (output[-MAX_ERROR_BYTES:] if failed else ""),
+            "exit_code": exit_code,
             "time": stamp,
         }
     if kind == "FileChange":
@@ -587,13 +732,18 @@ def _codex_call(item: dict, stamp: str) -> dict | None:
 
 
 def parse_codex(transcript_path: str) -> dict:
-    """Tool calls, the last request and the last answer from a Codex rollout file."""
+    """Tool calls, the last request and the last answer from a Codex rollout file.
+
+    ``units`` as in :func:`parse_claude`; rollouts carry no record ids, so a
+    unit's id is a hash of the prompt's time and text (and likewise the answer's).
+    """
     path = Path(str(transcript_path or "")).expanduser()
     calls = []
     answer, answer_time = "", ""
     request, request_time = "", ""
+    units: list = []
     if not path.is_file():
-        return {"calls": [], "answer": "", "request": "", "request_time": ""}
+        return _empty_parse()
     for record in _iter_jsonl(path):
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
         if record.get("type") != "event_msg":
@@ -601,6 +751,7 @@ def parse_codex(transcript_path: str) -> dict:
         kind = payload.get("type")
         if kind == "task_complete" and payload.get("last_agent_message"):
             answer, answer_time = str(payload["last_agent_message"]), str(record.get("timestamp"))
+            _set_answer(units[-1] if units else None, {}, answer.strip(), answer_time)
             continue
         if kind != "item_completed":
             continue
@@ -608,13 +759,15 @@ def parse_codex(transcript_path: str) -> dict:
         stamp = _codex_time(record, payload)
         if item.get("type") == "UserMessage":
             text = _block_text(item.get("content")).strip()
-            if text:
+            if text and not text.startswith(_NOT_A_REQUEST):
                 request, request_time = text, stamp
+                units.append(_new_unit({}, text, stamp))
             continue
         if item.get("type") == "AgentMessage":
             text = _block_text(item.get("content")).strip()
             if text:
                 answer, answer_time = text, stamp
+                _set_answer(units[-1] if units else None, {}, text, stamp)
             continue
         call = _codex_call(item, stamp)
         if call and item.get("id"):
@@ -627,6 +780,7 @@ def parse_codex(transcript_path: str) -> dict:
         "answer_time": answer_time,
         "request": request,
         "request_time": request_time,
+        "units": units,
     }
 
 
@@ -661,7 +815,50 @@ def _event_time(stamp: str) -> str:
     return parsed.isoformat()
 
 
+def _as_text(value) -> str:
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
+
+
+def _tail(text: str, cap: int) -> str:
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= cap:
+        return text
+    return encoded[-cap:].decode("utf-8", errors="ignore")
+
+
+def call_error(call: dict) -> str:
+    """The error text of a failed call, from its (already sanitized) fields.
+
+    A command's error is ``exit code N: `` plus the tail of its output; a call
+    with an explicit ``error`` uses it; anything else uses its output.
+    """
+    if not call.get("is_error"):
+        return ""
+    if "exit_code" in call:
+        code = call.get("exit_code")
+        prefix = f"exit code {code}: " if code not in (0, None) else ""
+        room = max(MAX_ERROR_BYTES - len(prefix.encode("utf-8")), 0)
+        return prefix + _tail(_as_text(call.get("output")), room)
+    if call.get("error"):
+        return _as_text(call.get("error"))
+    return _as_text(call.get("output"))
+
+
+def _sanitize_call(call: dict, sanitize) -> dict:
+    """Sanitize every field before trace_entry slices any of them: a ``<private>``
+    span cut by a byte cap would leave an unclosed opener, which is plain text."""
+    clean = dict(call)
+    for field in ("input", "output", "error"):
+        if clean.get(field) is not None:
+            clean[field] = sanitize(clean[field])
+    return clean
+
+
 def trace_entry(call: dict) -> dict:
+    """The trace entry of a call. Pass a sanitized call (:func:`_sanitize_call`):
+    the byte caps here would otherwise cut ``<private>`` spans open."""
     tool_input = call.get("input")
     if isinstance(tool_input, dict):
         params = {str(k): _truncate(v, MAX_PARAMS_BYTES) for k, v in tool_input.items()}
@@ -673,9 +870,7 @@ def trace_entry(call: dict) -> dict:
         "status": "error" if call.get("is_error") else "success",
         "method_params": params,
         "method_return_value": _truncate(call.get("output"), MAX_RETURN_BYTES),
-        "error_message": _truncate(call.get("error"), MAX_ERROR_BYTES)
-        if call.get("is_error")
-        else "",
+        "error_message": _truncate(call_error(call), MAX_ERROR_BYTES),
         "generate_feedback_with_llm": False,
     }
     stamp = _event_time(call.get("time"))
@@ -694,6 +889,124 @@ def _keep_call(call: dict) -> str:
     if call.get("name") == "Bash" and is_plugin_invocation(str(tool_input.get("command") or "")):
         return "plugin_invocation"
     return ""
+
+
+# -- QA entries ---------------------------------------------------------------------------
+
+
+def _same_text(text: str) -> str:
+    """A whitespace-insensitive key, to compare the Stop payload's final message
+    with the transcript's text of the same answer."""
+    return _digest(" ".join(str(text or "").split()))
+
+
+def _stop_answer(payload: dict) -> str:
+    answer = str(payload.get("last_assistant_message") or "").strip()
+    return "" if answer == "null" else answer
+
+
+def _qa_entries(payload: dict, parsed: dict, data: dict, cwd: str, sanitize, final: bool) -> list:
+    """One QA entry per answered request not sent yet, paired by transcript unit.
+
+    Requests are tracked by unit id (``qa_sent_ids``), so a Stop that runs after
+    the next prompt (Claude's Stop hook is async, Codex's is detached) still sends
+    its own question with its own answer, and a Stop that never ran is made up at
+    the next capture. A sent request whose answer changed since (the agent was
+    told to go on) is sent again as a continuation, without ``prompt_time``.
+    Updates ``data`` in place.
+    """
+    units = [dict(u) for u in parsed.get("units") or [] if isinstance(u, dict) and u.get("id")]
+    sent_ids = [str(i) for i in data.get("qa_sent_ids") or []]
+    sent_set = set(sent_ids)
+    answers = data.get("qa_answers") if isinstance(data.get("qa_answers"), dict) else {}
+
+    # The Stop payload's final message is fresher than the transcript (which may
+    # not hold it yet), but only for the last request: an async Stop of request N
+    # can read a transcript that already has request N+1.
+    skip_last = False
+    stop_answer = _stop_answer(payload)
+    if stop_answer and units:
+        last, stop_key = units[-1], _same_text(stop_answer)
+        earlier = {_same_text(u["answer"]) for u in units[:-1] if u.get("answer")}
+        earlier_open = any(u.get("answer") and u["id"] not in sent_set for u in units[:-1])
+        if last.get("answer") and _same_text(last["answer"]) == stop_key:
+            pass
+        elif stop_key in earlier or earlier_open:
+            skip_last = not final  # this Stop is an earlier request's; the last is running
+        else:
+            last["answer"], last["answer_id"], last["answer_time"] = (
+                stop_answer,
+                "stop:" + stop_key,
+                "",
+            )
+
+    turns = [t for t in data.get("turns") or [] if isinstance(t, dict)]
+    matched = [match_turn(turns, str(u.get("request_time") or "")) for u in units]
+    head = None
+    out: list = []
+    for index, unit in enumerate(units):
+        if len(out) >= MAX_QA_PER_CAPTURE:
+            break
+        if skip_last and index == len(units) - 1:
+            break
+        answer = str(unit.get("answer") or "").strip()
+        if not answer:
+            continue
+        unit_id, answer_key = str(unit["id"]), _same_text(answer)
+        continuation = unit_id in sent_set
+        if continuation:
+            previous = answers.get(unit_id) if isinstance(answers.get(unit_id), dict) else {}
+            if not previous or previous.get("answer_id") == unit.get("answer_id"):
+                continue
+            if previous.get("hash") == answer_key:
+                continue
+        turn = matched[index]
+        qa = {
+            "type": "qa",
+            "question": str(sanitize(str(unit.get("request") or "")))[:MAX_PROMPT_CHARS],
+            "answer": _truncate(sanitize(answer), MAX_ANSWER_BYTES),
+            "time": _event_time(str(unit.get("answer_time") or "")) or now_iso(),
+        }
+        prompt_time = ""
+        if not continuation:
+            prompt_time = (
+                _event_time(str(unit.get("request_time") or ""))
+                or str(turn.get("prompt_time") or "")
+                or qa["time"]
+            )
+            qa["prompt_time"] = prompt_time
+        # The request ended where the next one started; the last one ends at HEAD.
+        later = [t for t in matched[index + 1 :] if t.get("start_commit")]
+        if later:
+            end_commit = str(later[0]["start_commit"])
+        else:
+            head = git_head(cwd) if head is None else head
+            end_commit = head
+        started = prompt_time or _event_time(str(unit.get("request_time") or "")) or qa["time"]
+        context = {
+            "cwd": cwd,
+            "transcript_path": str(payload.get("transcript_path") or ""),
+            "date": started[:10],
+            "start_commit": str(turn.get("start_commit") or ""),
+            "end_commit": end_commit,
+            "branch": str(turn.get("branch") or "") or git_branch(cwd),
+        }
+        if continuation:
+            context["continuation"] = True
+        qa["context"] = json.dumps(context, ensure_ascii=False)
+        out.append(qa)
+        if not continuation:
+            sent_ids.append(unit_id)
+            sent_set.add(unit_id)
+        answers[unit_id] = {"answer_id": str(unit.get("answer_id") or ""), "hash": answer_key}
+
+    sent_ids = sent_ids[-MAX_QA_SENT_IDS:]
+    kept = set(sent_ids)
+    data["qa_sent_ids"] = sent_ids
+    data["qa_answers"] = {k: v for k, v in answers.items() if k in kept}
+    data.pop("turn", None)  # the single slot of earlier versions
+    data.pop("last_answer_hash", None)
+    return out
 
 
 # -- Capture (Stop / SessionEnd) ----------------------------------------------------------
@@ -744,53 +1057,20 @@ def capture(payload: dict, *, final: bool = False) -> dict:
                 if reason:
                     summary["dropped"] += 1
                     continue
-                entries.append(sanitize(trace_entry(call)))
+                # Sanitize whole values first, then again after the byte caps.
+                entries.append(sanitize(trace_entry(_sanitize_call(call, sanitize))))
         except CapturePatternError as exc:
             # Fail closed, but say so: a broken COGNEE_CAPTURE_TOOLS pattern.
             hook_log("coding_capture_pattern_invalid", {"error": str(exc)[:200]})
             entries, handled = [], []
         summary["traces"] = len(entries)
 
-        answer = str(payload.get("last_assistant_message") or "").strip()
-        if not answer or answer == "null":
-            answer = str(parsed.get("answer") or "").strip()
-        turn = data.get("turn") if isinstance(data.get("turn"), dict) else {}
-        answer_hash = _digest(answer) if answer else ""
-        if answer and answer_hash != data.get("last_answer_hash"):
-            question = str(turn.get("prompt") or "") or str(parsed.get("request") or "")
-            qa = {
-                "type": "qa",
-                "question": str(sanitize(question))[:MAX_PROMPT_CHARS],
-                "answer": _truncate(sanitize(answer), MAX_ANSWER_BYTES),
-                "time": now_iso(),
-            }
-            prompt_time = ""
-            if turn and not turn.get("qa_sent"):
-                prompt_time = str(turn.get("prompt_time") or "")
-            elif not turn and parsed.get("request_time"):
-                prompt_time = _event_time(parsed["request_time"])
-            if prompt_time:
-                qa["prompt_time"] = prompt_time
-            else:
-                summary["continuation"] = True
-            started = prompt_time or str(turn.get("prompt_time") or "") or qa["time"]
-            context = {
-                "cwd": cwd,
-                "transcript_path": str(payload.get("transcript_path") or ""),
-                "date": started[:10],
-                "start_commit": str(turn.get("start_commit") or ""),
-                "end_commit": git_head(cwd),
-                "branch": str(turn.get("branch") or "") or git_branch(cwd),
-            }
-            if summary["continuation"]:
-                context["continuation"] = True
-            qa["context"] = json.dumps(context, ensure_ascii=False)
-            entries.append(qa)
-            summary["qa"] = True
-            if turn:
-                turn["qa_sent"] = True
-                data["turn"] = turn
-            data["last_answer_hash"] = answer_hash
+        qa_entries = _qa_entries(payload, parsed, data, cwd, sanitize, final)
+        entries.extend(qa_entries)
+        summary["qa"] = len(qa_entries)
+        summary["continuation"] = sum(
+            1 for qa in qa_entries if json.loads(qa["context"]).get("continuation")
+        )
 
         if entries:
             _deliver(dataset, session_id, entries)
@@ -831,13 +1111,15 @@ def _deliver(dataset: str, session_id: str, entries: list) -> None:
         if spool:
             from _cloud_worker import enqueue
 
-            enqueue(dataset, session_id, entry, kind)
+            # The worker counts the entry when it delivers it (one bump per
+            # entry) and, for a coding item, requests no every-N improve.
+            enqueue(dataset, session_id, entry, kind, coding=True)
         else:
             append_warmup_entry(dataset, session_id, entry)
+            # Keeps the improve gate's "no new entries" check truthful; the
+            # every-N improve this counter used to trigger is off in coding mode.
+            bump_turn_counter(session_id)
         bump_save_counter(session_id, kind, buffered=True)
-        # Keeps the improve gate's "no new entries" check truthful; the every-N
-        # improve this counter used to trigger is off in coding mode.
-        bump_turn_counter(session_id)
 
 
 def _drain(dataset: str, session_id: str) -> None:
@@ -1008,6 +1290,35 @@ def _project_ok(metadata: dict, project: list) -> bool:
     return sorted(str(s) for s in scope) == sorted(project)
 
 
+def _fetch_order(missing: list) -> list:
+    """``(row, metadata, data_id)`` items without a cached body, in download order.
+
+    The listing carries each lesson's metadata but not its text, so the bodies
+    the block always shows go first: the newest ``test-baseline``, then the
+    pitfalls (newest of each state key first), then the rest, newest first.
+    """
+
+    def newest(item) -> tuple:
+        row, metadata, _ = item
+        created = str(row.get("createdAt") or row.get("created_at") or "")
+        return (str(metadata.get("session_date") or ""), created)
+
+    ordered = sorted(missing, key=newest, reverse=True)
+    baseline = [i for i in ordered if i[1].get("state_key") == "test-baseline"][:1]
+    pitfalls, later, keys = [], [], set()
+    for item in ordered:
+        if baseline and item is baseline[0]:
+            continue
+        key = str(item[1].get("state_key") or "")
+        if item[1].get("lesson_type") == "pitfall" and not (key and key in keys):
+            if key:
+                keys.add(key)
+            pitfalls.append(item)
+        else:
+            later.append(item)
+    return baseline + pitfalls + later
+
+
 def list_lessons(
     dataset: str, project: list, deadline: float, *, max_fetches: int = MAX_BODY_FETCHES_ON_PROMPT
 ) -> tuple:
@@ -1015,7 +1326,8 @@ def list_lessons(
 
     A row is a lesson when its ``external_metadata`` has ``lesson_type`` (cognee
     #6568). Bodies missing from the cache are fetched until ``max_fetches`` or the
-    deadline; lessons still without a body are left out this time.
+    deadline, those the block always shows first (``_fetch_order``); lessons
+    still without a body are left out this time.
     """
     from _plugin_common import _json_http_request
 
@@ -1038,8 +1350,7 @@ def list_lessons(
         rows.extend(batch)
         if len(batch) < LISTING_PAGE_SIZE:
             break
-    lessons = []
-    fetched = 0
+    candidates = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1048,19 +1359,23 @@ def list_lessons(
         if not metadata.get("lesson_type") or not _project_ok(metadata, project):
             continue
         data_id = str(row.get("id") or "")
-        if not data_id:
-            continue
-        text = _cached_body(data_id)
-        if text is None and fetched < max_fetches and time.monotonic() < deadline:
-            fetched += 1
-            try:
-                text = _raw_text(dataset_id, data_id, _remaining(deadline))
-                _store_body(data_id, text)
-            except Exception as exc:
-                hook_log(
-                    "coding_lesson_fetch_failed", {"data_id": data_id, "error": str(exc)[:200]}
-                )
-                text = None
+        if data_id:
+            candidates.append((row, metadata, data_id))
+    bodies = {data_id: _cached_body(data_id) for _, _, data_id in candidates}
+    missing = [item for item in candidates if bodies[item[2]] is None]
+    fetched = 0
+    for _, _, data_id in _fetch_order(missing):
+        if fetched >= max_fetches or time.monotonic() >= deadline:
+            break
+        fetched += 1
+        try:
+            bodies[data_id] = _raw_text(dataset_id, data_id, _remaining(deadline))
+            _store_body(data_id, bodies[data_id])
+        except Exception as exc:
+            hook_log("coding_lesson_fetch_failed", {"data_id": data_id, "error": str(exc)[:200]})
+    lessons = []
+    for row, metadata, data_id in candidates:
+        text = bodies.get(data_id)
         if text is None:
             continue
         parsed = parse_lesson_text(text)
@@ -1081,8 +1396,34 @@ def list_lessons(
     return dataset_id, lessons
 
 
-def recall_answer(query: str, dataset: str, dataset_id: str, deadline: float) -> str:
-    """The graph recall over the lessons, as one text; "" on any error (404 = empty)."""
+def recalled_passages(rows, query: str = "") -> list:
+    """The ``## Relevant passages`` of the graph items of a recall reply, in the
+    server's order (its relevance order).
+
+    Read as the per-prompt recall reads them (session-context-lookup.py): the
+    item's ``text`` (or ``content``), cut down to the retrieved context when it
+    is the server's full prompt, split into sections and passages. The
+    preamble, entities and facts are left out: an entity line may quote a
+    lesson without the lesson having been recalled.
+    """
+    from _recall_text import split_only_context, split_passages, split_sections
+
+    rows = [rows] if isinstance(rows, dict) else rows if isinstance(rows, list) else []
+    passages = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("source") not in ("graph", "graph_context"):
+            continue
+        text = str(row.get("text") or row.get("content") or "")
+        context = split_only_context(text, query)["context"]
+        block = split_sections(context).get("passages")
+        if block:
+            passages.extend(split_passages(block))
+    return passages
+
+
+def recall_passages(query: str, dataset: str, dataset_id: str, deadline: float) -> list:
+    """The passages the graph recall found over the lessons, most relevant first;
+    [] on any error (404 = empty)."""
     from _plugin_common import _json_http_request
 
     body = {
@@ -1102,17 +1443,52 @@ def recall_answer(query: str, dataset: str, dataset_id: str, deadline: float) ->
         rows = _json_http_request("/api/v1/recall", body, timeout=_remaining(deadline))
     except Exception as exc:
         hook_log("coding_recall_failed", {"error": str(exc)[:200]})
-        return ""
-    return json.dumps(rows, ensure_ascii=False, default=str) if rows else ""
+        return []
+    return recalled_passages(rows, query)
 
 
-def select_lessons(lessons: list, recalled_text: str, budget: int = LESSON_BUDGET) -> list:
+def _match_key(body: str) -> str:
+    return _norm(body)[:RECALL_MATCH_PREFIX]
+
+
+def _passage_body(passage: str) -> str:
+    """The lesson statement of a recalled passage.
+
+    The server may open a passage with a ``source: <document>`` line (and
+    ``key: value`` metadata lines) above the chunk's text; those are skipped
+    when a lesson header or title follows within the first lines.
+    """
+    lines = str(passage or "").splitlines()
+    for index, line in enumerate(lines[:12]):
+        if _HEADER_RE.match(line.strip()) or _TITLE_RE.match(line.strip()):
+            return parse_lesson_text("\n".join(lines[index:]))["body"]
+    return parse_lesson_text(passage)["body"]
+
+
+def select_lessons(
+    lessons: list,
+    recalled: list,
+    budget: int = LESSON_BUDGET,
+    *,
+    line_for=None,
+    max_candidates: int | None = None,
+) -> list:
     """The newest ``test-baseline``, the two newest pitfalls, then recalled lessons.
 
-    ``lessons`` is newest first. Only the newest lesson of a state key counts;
-    duplicates (ignoring case and whitespace) are skipped; a lesson that does not
-    fit the budget is skipped and a later, shorter one may still fit.
+    ``lessons`` is newest first; ``recalled`` the recall's passages, most
+    relevant first. A passage recalls the lesson whose statement starts the
+    same (``RECALL_MATCH_PREFIX`` characters, ignoring case and whitespace).
+    Only the newest lesson of a state key counts; duplicates are skipped. Each
+    candidate is measured as the line it renders to (``line_for``, default
+    without a git tag, plus its newline) against ``budget``: one that does not
+    fit is skipped and a later, shorter one may still fit. At most
+    ``max_candidates`` are measured (each measure may run git).
     """
+    if line_for is None:
+
+        def line_for(lesson):
+            return lesson_line(lesson, "", False)
+
     seen_keys = set()
     current = []
     for lesson in lessons:
@@ -1128,25 +1504,25 @@ def select_lessons(lessons: list, recalled_text: str, budget: int = LESSON_BUDGE
     baseline = [item for item in current if item.get("state_key") == "test-baseline"][:1]
     ordered.extend(baseline)
     ordered.extend([item for item in current if item.get("lesson_type") == "pitfall"][:2])
-    answer = _norm(recalled_text)
-    if answer:
-        hits = []
-        for lesson in current:
-            prefix = _norm(lesson["body"])[:RECALL_MATCH_PREFIX]
-            position = answer.find(prefix) if prefix else -1
-            if position >= 0:
-                hits.append((position, lesson))
-        ordered.extend(item for _, item in sorted(hits, key=lambda pair: pair[0]))
+    by_key: dict = {}
+    for lesson in current:
+        by_key.setdefault(_match_key(lesson["body"]), lesson)
+    for passage in recalled or []:
+        key = _match_key(_passage_body(passage))
+        if key and key in by_key:
+            ordered.append(by_key[key])
 
-    chosen, used, bodies = [], 0, set()
+    chosen, used, seen = [], 0, set()
     for lesson in ordered:
         normalized = _norm(lesson["body"])
-        if normalized in bodies:
+        if normalized in seen:
             continue
-        size = len(lesson["body"])
+        if max_candidates is not None and len(seen) >= max_candidates:
+            break
+        seen.add(normalized)
+        size = len(line_for(lesson)) + 1
         if used + size > budget:
             continue
-        bodies.add(normalized)
         chosen.append(lesson)
         used += size
     return chosen
@@ -1157,7 +1533,9 @@ def select_lessons(lessons: list, recalled_text: str, budget: int = LESSON_BUDGE
 
 def _match(name: str, paths: list) -> list:
     """Paths equal to ``name`` or ending with ``/name``, case-insensitive."""
-    lowered = name.lower().lstrip("./")
+    lowered = name.lower()
+    while lowered.startswith("./"):
+        lowered = lowered.removeprefix("./")
     if not lowered:
         return []
     return [p for p in paths if p.lower() == lowered or p.lower().endswith("/" + lowered)]
@@ -1171,20 +1549,58 @@ def _kind(names: list, label: str) -> str:
     return f"{shown} +{more} more {label}" if more > 0 else f"{shown} {label}"
 
 
-def lesson_tag(lesson: dict, cwd: str) -> str:
+class _GitView:
+    """Git answers for one block build: ``ls-files`` runs once, and each commit's
+    short hash, diff and tree once, however many lessons cite it."""
+
+    def __init__(self, cwd: str):
+        self.cwd = cwd
+        self._now: list | None = None
+        self._commits: dict = {}
+
+    def now_paths(self) -> list:
+        if self._now is None:
+            self._now = [p for p in _git(self.cwd, "ls-files").splitlines() if p]
+        return self._now
+
+    def short(self, commit: str) -> str:
+        """The commit's short hash, or "" when it is unknown here."""
+        key = ("short", commit)
+        if key not in self._commits:
+            cwd = self.cwd
+            known = _git(cwd, "rev-parse", "--verify", "--quiet", commit + "^{commit}").strip()
+            short = _git(cwd, "rev-parse", "--short", commit).strip() if known else ""
+            self._commits[key] = (short or commit[:7]) if known else ""
+        return self._commits[key]
+
+    def changes(self, commit: str) -> tuple:
+        """``(paths changed since commit, paths in commit)``."""
+        key = ("changes", commit)
+        if key not in self._commits:
+            cwd = self.cwd
+            changed = [p for p in _git(cwd, "diff", "--name-only", commit).splitlines() if p]
+            then = [p for p in _git(cwd, "ls-tree", "-r", "--name-only", commit).splitlines() if p]
+            self._commits[key] = (changed, then)
+        return self._commits[key]
+
+
+def lesson_tag(lesson: dict, cwd: str, view: _GitView | None = None) -> str:
     """``(session <date>, commit <short>; <files> changed since; <files> no longer exists)``.
 
     Empty outside git, without a commit, or when the commit is unknown here.
+    ``view`` shares git answers across the lessons of one block.
     """
     commit = str(lesson.get("git_commit") or "").strip()
     if not commit or not re.fullmatch(r"[0-9a-fA-F]{4,64}", commit):
         return ""
-    if not _git(cwd, "rev-parse", "--verify", "--quiet", commit + "^{commit}").strip():
+    view = view or _GitView(cwd)
+    short = view.short(commit)
+    if not short:
         return ""
-    short = _git(cwd, "rev-parse", "--short", commit).strip() or commit[:7]
-    changed_paths = [p for p in _git(cwd, "diff", "--name-only", commit).splitlines() if p]
-    now_paths = [p for p in _git(cwd, "ls-files").splitlines() if p]
-    then_paths = [p for p in _git(cwd, "ls-tree", "-r", "--name-only", commit).splitlines() if p]
+    changed_paths, then_paths, now_paths = [], [], []
+    if lesson.get("files"):
+        changed_paths, then_paths = view.changes(commit)
+        now_paths = view.now_paths()
     changed, gone = [], []
     for name in lesson.get("files") or []:
         in_now = _match(name, now_paths)
@@ -1248,20 +1664,39 @@ def _cap_lines(lines: list, cap: int) -> list:
     return kept
 
 
-def render_block(dataset: str, sessions: int, lessons: list, cwd: str, in_git: bool) -> str:
+def lesson_line(lesson: dict, cwd: str, in_git: bool, view: _GitView | None = None) -> str:
+    """``- <statement> <git tag>``: the statement on one line, the tag only in git."""
+    body = " ".join(str(lesson.get("body") or "").split())
+    tag = lesson_tag(lesson, cwd, view) if in_git else ""
+    return f"- {body} {tag}".rstrip()
+
+
+def _line_maker(cwd: str, in_git: bool):
+    """``lesson_line`` for one block build: each lesson's line made once, git
+    answers shared, so selection measures the line that is rendered."""
+    view = _GitView(cwd) if in_git else None
+    made: dict = {}
+
+    def line_for(lesson: dict) -> str:
+        key = id(lesson)
+        if key not in made:
+            made[key] = lesson_line(lesson, cwd, in_git, view)
+        return made[key]
+
+    return line_for
+
+
+def render_block(
+    dataset: str, sessions: int, lessons: list, cwd: str, in_git: bool, line_for=None
+) -> str:
+    """The block for the lessons ``select_lessons`` chose; it prints them all
+    (the budget was spent at selection) and caps only the commit list."""
     if not lessons:
         return ""
+    line_for = line_for or _line_maker(cwd, in_git)
     noun = "1 earlier session" if sessions == 1 else f"{sessions} earlier sessions"
     framing = FRAMING.format(sessions=noun, dataset=dataset)[:FRAMING_CAP]
-    lesson_lines = []
-    for lesson in lessons:
-        body = " ".join(str(lesson["body"]).split())
-        tag = lesson_tag(lesson, cwd) if in_git else ""
-        lesson_lines.append(f"- {body} {tag}".rstrip())
-    lesson_lines = _cap_lines(lesson_lines, LESSON_LINES_CAP)
-    if not lesson_lines:
-        return ""
-    parts = [framing, "Lessons:", *lesson_lines]
+    parts = [framing, "Lessons:", *(line_for(lesson) for lesson in lessons)]
     if in_git:
         commits = _cap_lines([f"- {c}" for c in recent_commits(cwd)], COMMITS_CAP)
         if commits:
@@ -1298,8 +1733,15 @@ def build_block(query: str, cwd: str) -> str:
     dataset_id, lessons = list_lessons(dataset, project, deadline)
     if not lessons:
         return ""
-    recalled = recall_answer(query, dataset, dataset_id, deadline) if query.strip() else ""
-    chosen = select_lessons(lessons, recalled)
+    recalled = recall_passages(query, dataset, dataset_id, deadline) if query.strip() else []
+    in_git = bool(git_root(cwd))
+    line_for = _line_maker(cwd, in_git)
+    chosen = select_lessons(
+        lessons,
+        recalled,
+        line_for=line_for,
+        max_candidates=MAX_TAGGED_CANDIDATES if in_git else None,
+    )
     sessions = len(
         {
             item["session_id"]
@@ -1307,8 +1749,7 @@ def build_block(query: str, cwd: str) -> str:
             if item["session_id"] and item["session_id"] != session_id
         }
     )
-    in_git = bool(git_root(cwd))
-    return render_block(dataset, max(1, sessions), chosen, cwd, in_git)
+    return render_block(dataset, max(1, sessions), chosen, cwd, in_git, line_for)
 
 
 def deliver(session_key: str, query: str, cwd: str, *, force: bool = False) -> str:
@@ -1345,7 +1786,11 @@ def reset_delivery(session_key: str) -> None:
 
 
 def last_request(session_key: str) -> str:
-    turn = read_state(session_key).get("turn")
+    """The newest request's sanitized prompt, as the prompt hook recorded it
+    (the lessons block is given again for it after a compaction)."""
+    state = read_state(session_key)
+    turns = [t for t in state.get("turns") or [] if isinstance(t, dict)]
+    turn = turns[-1] if turns else state.get("turn")  # "turn": the earlier single slot
     return str(turn.get("prompt") or "") if isinstance(turn, dict) else ""
 
 
