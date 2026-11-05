@@ -50,6 +50,17 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   `key:` and `sid:` entries are always written together, so they cannot disagree after a
   reload. `memory_switch_dataset` waits for the saved overrides to load before it answers.
 
+## [2026.11.2]
+
+### Fixed
+- **A secret used as an object key is redacted too.** `redactValue()` checked a key only
+  to decide whether to mask its value, so a secret that was itself the key (a map keyed
+  by DSN or token in a tool's structured output) was captured as is, while the same
+  string as a value was redacted. Keys now go through the same rules as strings; a
+  secret-named key (`api_key`, `*_token`, …) still masks its value. Keys that redact to
+  the same text collapse into one, and the last value wins. Matches Claude Code, Codex,
+  Antigravity and Cursor (shared conformance table).
+
 ## [2026.10.26]
 
 ### Added

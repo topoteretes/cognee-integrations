@@ -88,6 +88,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   configured pin names where it was set: `COGNEE_PLUGIN_RECALL_MODE=pinned` or
   `recall_mode "pinned" in cognee.json`.
 
+## [1.4.2]
+
+### Fixed
+- **A secret used as a dict key is redacted too.** `redact()` checked a key only to
+  decide whether to mask its value, so a secret that was itself the key (a map keyed by
+  DSN or token in a tool's structured output) was stored as is, while the same string
+  as a value was redacted. Keys now go through the same patterns as strings; a
+  secret-named key (`api_key`, `*_token`, …) still masks its value. Keys that redact to
+  the same text collapse into one, and the last value wins. Matches Claude Code, Codex,
+  Antigravity, Cursor and OpenClaw (shared conformance table).
+
 ## [1.4.1]
 
 ### Added

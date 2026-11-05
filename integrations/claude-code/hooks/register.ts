@@ -26,11 +26,13 @@
 //     thing above it, shown once per machine (the plugin's store remembers)
 //     and again on `/cognee-tour`;
 //   * two tools the model calls directly, `mcp__cognee-memory__search` and
-//     `mcp__cognee-memory__remember`, served by the plugin's own shell
-//     wrappers: no skill file to read, no Bash row, structured arguments.
+//     `mcp__cognee-memory__remember`, served by the plugin's own Python
+//     scripts: no skill file to read, no Bash row, structured arguments.
 //
-// Everything the module runs is one of the plugin's own scripts, as a local
-// process; the only network traffic is theirs, on the person's or the model's
+// Everything the module runs is one of the plugin's own Python scripts, named
+// in full at its call site and started directly under a Python interpreter
+// (never a shell), as a local process; the only network traffic is theirs,
+// on the person's or the model's
 // explicit action, plus the listing of the writable datasets for the picker
 // (once the SessionStart hook has run; a few more tries while a server is
 // still starting). Nothing here runs on a fixed timer while the session is
@@ -587,9 +589,13 @@ function datasetRows(value: unknown): DatasetRow[] {
 }
 
 // ── helpers that reach the engine ───────────────────────────────────────────
+// The plugin's state folder, ~/.cognee-plugin/claude-code: the module reads
+// phase/<session>.json there and writes band/<session>.json (see markBand).
+const STATE_SUBDIR = '.cognee-plugin/claude-code'
+
 async function stateDir($: any): Promise<string> {
   const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
-  return `${home}/.cognee-plugin/claude-code`
+  return `${home}/${STATE_SUBDIR}`
 }
 
 async function bindSession($: any): Promise<void> {
@@ -729,9 +735,12 @@ async function startPoll($: any, windowMs: number): Promise<void> {
 
 type Ran = { exitCode: number; stdout: string; stderr: string }
 
+// The interpreters a script is started under, in this order: python3 on macOS
+// and Linux, python or py on Windows. The same list the settings hooks use.
+const PYTHONS = ['python3', 'python', 'py'] as const
+
 // One of the plugin's Python scripts, under whichever interpreter answers
-// first (python3 on macOS and Linux, python or py on Windows). Null when none
-// could start it.
+// first (see PYTHONS). Null when none could start it.
 // 'timeout' when the script ran and was killed at its time: the next
 // interpreter is NOT tried then, since the script did run (a switch killed
 // mid-sync must not be started over; an append must not land twice). Only a
@@ -739,8 +748,7 @@ type Ran = { exitCode: number; stdout: string; stderr: string }
 async function runPython($: any, args: string[], init: { stdin?: string; timeoutMs: number }): Promise<Ran | 'timeout' | null> {
   // The interpreter that answered last goes first; the others stay as the
   // fallback for when it can no longer be spawned (a venv gone, a PATH change).
-  const defaults = ['python3', 'python', 'py']
-  const candidates = rendererPython ? [rendererPython, ...defaults.filter(c => c !== rendererPython)] : defaults
+  const candidates = rendererPython ? [rendererPython, ...PYTHONS.filter(c => c !== rendererPython)] : [...PYTHONS]
   for (const python of candidates) {
     try {
       const ran = (await $.process.run([python, ...args], init)) as Ran
@@ -756,24 +764,13 @@ async function runPython($: any, args: string[], init: { stdin?: string; timeout
   return null
 }
 
-// One of the plugin's shell wrappers (the same ones the skills run).
-// Null when the wrapper could not run at all; 'timeout' when it ran past its
-// time and was killed, which for a write means the outcome is unknown.
-async function runWrapper($: any, script: string, args: string[], timeoutMs: number): Promise<Ran | 'timeout' | null> {
-  try {
-    return (await $.process.run(['bash', `${$.plugin.root}/scripts/${script}`, ...args], { timeoutMs })) as Ran
-  } catch (err) {
-    return /time|outlast|kill/i.test(String(err)) ? 'timeout' : null
-  }
-}
-
 // A search, trimmed the way the prompt hook trims what it injects: a graph
 // item on cognee >= 1.6.0 carries the whole prompt the server's LLM would
 // have read, and only its retrieved context is worth showing. The trim is the
 // plugin's own Python (recall-trim.py); when it cannot run, the raw answer is
 // shown rather than nothing.
 async function runSearch($: any, query: string, args: string[]): Promise<Ran | null> {
-  const ran = await runWrapper($, 'cognee-search.sh', [query, ...args], SEARCH_TIMEOUT_MS)
+  const ran = await runPython($, [`${$.plugin.root}/scripts/cognee_search.py`, query, ...args], { timeoutMs: SEARCH_TIMEOUT_MS })
   if (ran === 'timeout') return null
   if (!ran || ran.exitCode !== 0 || !ran.stdout.trimStart().startsWith('[')) return ran
   const trimmedRun = await runPython($, [`${$.plugin.root}/scripts/recall-trim.py`, '--query', query], {
@@ -842,9 +839,9 @@ async function runDoctor($: any): Promise<void> {
   doctorRunning = true
   redraw($)
   try {
-    const ran = await runWrapper($, 'cognee-doctor.sh', [], DOCTOR_TIMEOUT_MS)
+    const ran = await runPython($, [`${$.plugin.root}/scripts/doctor.py`], { timeoutMs: DOCTOR_TIMEOUT_MS })
     if (ran === 'timeout') doctorOutput = `the doctor gave no answer within ${DOCTOR_TIMEOUT_MS / 1000} s`
-    else doctorOutput = ran ? (ran.stdout.trim() || ran.stderr.trim() || '(no output)') : 'could not run the doctor: bash not found'
+    else doctorOutput = ran ? (ran.stdout.trim() || ran.stderr.trim() || '(no output)') : 'could not run the doctor: no Python interpreter found'
   } finally {
     doctorRunning = false
     redraw($)
@@ -1140,7 +1137,7 @@ export const register: Register = (on, options) => {
     return { text: `Cognee: ${line.endsWith('.') ? line : `${line}.`}` }
   })
 
-  // The model's direct line to memory: the same wrappers the skills run,
+  // The model's direct line to memory: the same scripts the skills run,
   // without the skill file and the Bash row. A registered tool answers with
   // the text the model reads (the engine takes a string or an array, never an
   // object); a failure is a deny, which the model reads as an error result.
@@ -1204,7 +1201,7 @@ export const register: Register = (on, options) => {
     let shown
     try {
       const args = file ? ['--file', file, '--node-set', nodeSet] : [content, '--node-set', nodeSet]
-      const ran = await runWrapper($, 'cognee-remember.sh', args, REMEMBER_TIMEOUT_MS)
+      const ran = await runPython($, [`${$.plugin.root}/scripts/cognee_remember.py`, ...args], { timeoutMs: REMEMBER_TIMEOUT_MS })
       if (ran === 'timeout') {
         // The POST may have landed; a resubmit would pay for a second cognify.
         shown = {

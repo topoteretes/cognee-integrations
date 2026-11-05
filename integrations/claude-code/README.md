@@ -45,9 +45,14 @@ Memory is kept until you delete it (the `cognee-forget` skill, or deleting the
 dataset). The plugin never expires server-side memory on its own.
 
 **Other network calls.** Local mode installs `cognee==1.6.6` from PyPI into
-`~/.cognee-plugin/venv` once. The background idle watcher fetches this repository's
-`marketplace.json` from `raw.githubusercontent.com` at most hourly to offer updates
-(`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
+`~/.cognee-plugin/venv` once. The install is `scripts/session-start.py`, which runs
+`uv pip install` with that pinned version (a `uv` already on PATH, or the copy an
+earlier plugin version left under `~/.cognee-plugin/uv`), or `python -m pip install`
+in a venv built from a Python 3.10–3.14 already on the machine when there is no
+`uv`. Neither `uv` nor a Python is ever downloaded, and nothing fetched is piped
+into a shell. Cloud mode installs nothing. The background idle watcher fetches this
+repository's `marketplace.json` from `raw.githubusercontent.com` at most hourly to
+offer updates (`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
 Anthropic, Cognee or any third party beyond the calls above.
 
 **Claude settings.** In cloud mode the plugin disables native auto-memory unless
@@ -82,30 +87,72 @@ your transcript or Claude Code's memory files, and writes to neither.
 [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview)) that draws
 the memory status row above the prompt (in a terminal and in the Desktop app),
 shows what memory is doing while it works, makes the dataset name a picker and
-serves two tools Claude can call directly. On its own it reads one file, the
-plugin's own activity marker under `~/.cognee-plugin/claude-code/phase/`, writes
-one, `band/<session>.json`, which tells the settings-file status line to stay
-quiet for that session, and runs one program, the plugin's own status-line
-renderer (`scripts/cognee_statusline_render.py --json`, local, no network), on
-the events the hooks fire. On your explicit action in the fix dialog it also runs
-`cognee-doctor.sh` (read-only diagnostics) and appends a value you typed to
-`~/.cognee/.env`. Everything else it runs is one of this
-folder's scripts, on your action or Claude's: `switch-dataset.py --list` once when
-the band is first drawn and `switch-dataset.py <name>` (`pin` for the dataset in use, `auto`,
-or a dataset's id when it is named `pin`) when you pick a dataset or run `/cognee-dataset`; the `search` tool runs `cognee-search.sh` (and
-`recall-trim.py` on its output); the `remember` tool runs `cognee-remember.sh`.
-Those are the same programs the skills
-run, with the same server traffic. The module itself makes no network requests,
-writes no settings, reads only `HOME` / `USERPROFILE` from the environment, and
-answers only its own two tools. `claude plugin validate` lists exactly that.
+serves two tools Claude can call directly. Everything it does, in full:
+
+- *Files it reads.* One: the plugin's own activity marker,
+  `~/.cognee-plugin/claude-code/phase/<session>.json`, which the settings hooks
+  write. Before the first prompt it reads nothing else of yours: not your
+  transcript, not your files, not Claude Code's memory. The `remember` tool reads
+  the size of a file Claude asks it to store, and the script it runs uploads that
+  file (see below).
+- *Files it writes.* One, `~/.cognee-plugin/claude-code/band/<session>.json`
+  (`{session_id, at, plugin}`), and only while the status row is on. It tells
+  the plugin's own settings-file status line (`cognee-statusline.sh`) to print
+  nothing for that session, so the row is not drawn twice; no other program reads
+  it. The state folder is the fixed path `~/.cognee-plugin/claude-code`; `HOME`
+  (`USERPROFILE` on Windows) is the only part read at runtime. In the fix dialog,
+  on your explicit action, a value you typed is appended to `~/.cognee/.env`
+  (created `0600`) through `scripts/_env_file.py --append <NAME>`, the value on
+  stdin, never on the command line.
+- *Programs it starts.* Only the plugin's own Python scripts, each named in full
+  at its call site and started directly, never through a shell, a
+  `-c` or heredoc script, or a script name built at runtime. The interpreter is
+  the first of `python3`, `python`, `py` that starts (the same order the settings
+  hooks use: `python3` on macOS and Linux, `python` or `py` on Windows); the one
+  that answered last is tried first. The scripts and when they run:
+
+  | Script | When | Network |
+  |---|---|---|
+  | `scripts/cognee_statusline_render.py --json` | on the events the hooks fire, to draw the row | none |
+  | `scripts/switch-dataset.py --list --json` | once when the row is first drawn | lists your datasets on the Cognee server |
+  | `scripts/switch-dataset.py <name> --json` | you pick a dataset or run `/cognee-dataset <name>` (`pin` for the dataset in use, `auto`, or a dataset's id when it is named `pin`) | moves the session to that dataset on the Cognee server; `pin` and `auto` only set the recall mode |
+  | `scripts/cognee_search.py <query> <top_k> --graph\|--code [--dataset-id <id> [--user-picked]]` | Claude calls the `search` tool | `POST /api/v1/recall` on the Cognee server, plus `GET /api/v1/agents/connections/me` first when no session id is on record for this launch |
+  | `scripts/recall-trim.py --query <query>` | on the search result, before Claude sees it | none |
+  | `scripts/cognee_remember.py <text>\|--file <path> --node-set <set>` | Claude calls the `remember` tool | `POST /api/v1/remember` on the Cognee server |
+  | `scripts/doctor.py` | you press **run doctor** in the fix dialog | `GET /health` on the Cognee server. Locally it also asks each candidate Python (the plugin venv's, then the `python3.x` on PATH) for its version with a fixed one-line `-c` probe |
+  | `scripts/_env_file.py --append <NAME>` | you save a value in the fix dialog | none |
+
+  "The Cognee server" is the one you configured: `http://localhost:8011` in local
+  mode, `COGNEE_BASE_URL` in cloud mode. When that server cannot be reached,
+  `cognee_search.py` and `cognee_remember.py` fall back to the local `cognee-cli`,
+  if it is installed. These are the same scripts the skills run
+  (`cognee-search.sh` and `cognee-remember.sh` are one-line wrappers around them),
+  with the same server traffic.
+- *What it sends, and where.* The module itself makes no network requests. What
+  leaves the machine is the traffic of the scripts above: the search query, or the
+  text or file Claude asked to remember, goes to the Cognee server you configured,
+  authenticated with your Cognee key; the dataset listing and switch go to the same
+  server. Nothing goes anywhere else.
+- *Tool calls it answers.* Only its own two tools, which it registers:
+  `mcp__cognee-memory__search` (runs `cognee_search.py`) and
+  `mcp__cognee-memory__remember` (runs `cognee_remember.py`), each when Claude calls
+  it. `tools: false` in the plugin options leaves both unregistered. Its catch-all
+  `tool.call` hook answers nothing: it hands every other call straight on to the
+  real tool (`next(e)`) and only watches the activity marker afterwards.
+- *Environment.* It reads `HOME`, `USERPROFILE` and `COGNEE_STATUSLINE_THEME`, and
+  writes nothing. It writes no settings. `claude plugin validate` lists exactly
+  this.
 
 **Background processes.** Detached helpers that outlive a hook: the idle watcher and
 exit watcher (session sync and status), and in local mode the cognee server and,
 when enabled, the Claude observer shim. All are scripts from this folder.
 
 **Credentials it reads.** `COGNEE_API_KEY`, `COGNEE_BASE_URL` and `LLM_API_KEY` from
-`~/.cognee/.env` or the environment. The API key goes only to the Cognee server you
-configured; the LLM key only to the local server's process.
+`~/.cognee/.env` or the environment, plus the plugin's own key files:
+`~/.cognee-plugin/claude-code/agent_key.json` (the plugin's own identity,
+provisioned on your Cognee server) and `~/.cognee-plugin/api_key.json` (a key cached
+from an earlier mint). The order is under [Auth](#auth). The API key goes only to
+the Cognee server you configured; the LLM key only to the local server's process.
 
 **Your Claude subscription.** In local mode with no `LLM_API_KEY` set and the
 `claude` CLI on PATH, the server's own LLM calls (cognify, improve) run as
@@ -1176,7 +1223,7 @@ reason the row can show:
 | `server_error` | the server answers 5xx; restart locally, retry on cloud |
 | `not_responding` | the server is busy; wait, or raise `COGNEE_READY_PROBE_TIMEOUT` |
 
-Every dialog has a **run doctor** button that runs `cognee-doctor.sh` (read-only)
+Every dialog has a **run doctor** button that runs `scripts/doctor.py` (read-only)
 and shows its report in the dialog. Where one value is the fix (a key, a URL) the
 dialog has a field for it: Enter appends `NAME="value"` to `~/.cognee/.env`,
 where the last value of a key wins, with no shell history involved; a new session
@@ -1254,8 +1301,8 @@ does not load mods and for the judgement the skill text carries.
 
 | Tool | Arguments | Runs | Returns |
 |---|---|---|---|
-| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one), `user_picked` (the person chose that dataset; required for another dataset while recall is restricted) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id> [--user-picked]]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from memory.` (`from the active dataset.` once recall is restricted to it) then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
-| `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
+| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one), `user_picked` (the person chose that dataset; required for another dataset while recall is restricted) | `cognee_search.py "<query>" <top_k> --graph\|--code [--dataset-id <id> [--user-picked]]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from memory.` (`from the active dataset.` once recall is restricted to it) then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
+| `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee_remember.py "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
 
 The credit line the model writes under an answer that used memory
 (`> Cognee memory: …`) is drawn as the mark and the note alone, the

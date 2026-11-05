@@ -33,6 +33,8 @@ from .suites import Suite
 ISOLATED_MODULES = (
     "config",
     "_plugin_common",
+    "_update_check",
+    "_state_sweep",
     "_cognee_client",
     "_env_file",
     "_logfiles",
