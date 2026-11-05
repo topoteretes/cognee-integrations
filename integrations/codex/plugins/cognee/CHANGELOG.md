@@ -20,6 +20,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   recall, the codebase graph and recaps, developer Cognee, category Productivity, privacy
   policy and terms links, and brand colour `#101010`. Listing metadata only; hooks,
   scripts and skills are unchanged.
+- **The `cognee` Git marketplace shows the plugin's own logo and description before
+  install.** The repo-root `.agents/plugins/marketplace.json` pointed at the plugin with a
+  `git-subdir` source back into this same repo, which Codex and the ChatGPT app treat as a
+  cross-repo plugin: a placeholder icon and "Install it to view more detailed information"
+  until installed. It now uses a `local` path inside the cloned marketplace, so the store
+  reads `plugin.json` directly. Updates still arrive per commit on `main` through
+  `codex plugin marketplace upgrade cognee`.
 
 ## [1.7.7]
 
