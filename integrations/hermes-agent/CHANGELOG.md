@@ -42,6 +42,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   dataset (indistinguishable from a reset), which follows the configuration.
 
 ### Changed
+- **The memory credit names the dataset an auto recall came from.** While recall is auto the
+  credit said "based on Cognee memory", because the server picks the datasets. Each recalled
+  memory now carries the dataset the server reports for it (`dataset_name` on the search
+  result) in its tag, `[m1 · Cognee memory · dataset shop_support]`, and the credit names the
+  datasets of the items the answer used ("based on dataset shop_support and dataset returns").
+  The same goes for `cognee_recall` results. When a result names no dataset (an older server),
+  the credit says "based on Cognee memory" as before.
 - **The setup wizard asks about recall once.** `hermes memory setup` no longer asks
   "Auto-route recall" right after the recall mode, where it read as the same question twice.
   The two are different settings: `recall_mode` is which datasets recall reads, `auto_route`

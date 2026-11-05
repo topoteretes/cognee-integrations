@@ -1830,6 +1830,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 outcomes = list(pool.map(_run_lane, [spec for _label, spec in lanes]))
 
         memories: list[str] = []
+        memory_datasets: list[str] = []  # the dataset each memory came from, if named
         code_blocks: list[str] = []
         guidance = ""
         item_guidance = ""
@@ -1855,7 +1856,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 continue
             answered = True
             if label == _MEMORY_LANE:
-                for text in self._memory_lane_texts(results):
+                for text, dataset in self._memory_lane_items(results):
                     context, item_guide, stats = recall_text.trim_recall_text(
                         text,
                         query,
@@ -1869,6 +1870,7 @@ class CogneeMemoryProvider(MemoryProvider):
                         item_guidance = item_guide
                     if context.strip():
                         memories.append(context.strip())
+                        memory_datasets.append(dataset)
             elif label == _GUIDANCE_LANE:
                 guidance = "\n\n".join(self._memory_lane_texts(results)).strip()
             else:
@@ -1898,12 +1900,17 @@ class CogneeMemoryProvider(MemoryProvider):
             lambda index: index > len(memories),
         )
         kept_guidance = capped[0]
-        kept_memories = [text for text in capped[1 : 1 + len(memories)] if text.strip()]
+        kept = [
+            (text, dataset)
+            for text, dataset in zip(capped[1 : 1 + len(memories)], memory_datasets)
+            if text.strip()
+        ]
+        kept_memories = [text for text, _dataset in kept]
         kept_code = [block for block in capped[1 + len(memories) :] if block.strip()]
 
         cite = memory_credit.credit_enabled()
         if cite:
-            kept_memories = [credit.tag_graph(text) for text in kept_memories]
+            kept_memories = [credit.tag_graph(text, dataset) for text, dataset in kept]
             kept_code = [f"{credit.label('code', 'code graph', b)}\n{b}" for b in kept_code]
             if kept_guidance.strip():
                 guide = kept_guidance.strip()
@@ -1929,9 +1936,11 @@ class CogneeMemoryProvider(MemoryProvider):
                             memory_credit.credit_instruction(
                                 not credit.credited,
                                 len(credit.found),
-                                # Routed recall may answer from any dataset.
+                                # Routed recall may answer from any dataset: the
+                                # line names the ones the used items' tags name.
                                 "" if routed else self._dataset,
                                 self._platform,
+                                datasets=credit.credit_datasets() if routed else (),
                             )
                             + "\n\n"
                         )
@@ -1992,15 +2001,24 @@ class CogneeMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
             envelope: dict[str, Any] = {"results": items, "count": len(items)}
             if memory_credit.credit_enabled():
+                named = []
                 for item in items:
                     origin = (
                         memory_credit.passage_origin(item["text"])
                         if recall_text.passage_session_id(item["text"])
                         else "Cognee recall"
                     )
+                    dataset = str(item.get("dataset_name") or "").strip()
+                    named.append(dataset)
+                    origin = memory_credit.with_dataset(origin, dataset)
                     item["tag"] = self._credit.label("recall", origin, item["text"])
+                # Auto recall names the datasets the results came from, when the
+                # server named one for every result.
+                routed_datasets = (
+                    list(dict.fromkeys(named)) if datasets is None and all(named) else []
+                )
                 envelope["credit"] = memory_credit.tool_credit_instruction(
-                    self._dataset if datasets else "", self._platform
+                    self._dataset if datasets else "", self._platform, routed_datasets
                 )
             if overflow:
                 # Non-empty results still warn: mean-pooled vectors match
@@ -2679,7 +2697,12 @@ class CogneeMemoryProvider(MemoryProvider):
         never read. Older servers put the bare context in ``text``, which
         passes through the same way.
         """
-        texts = []
+        return [text for text, _dataset in self._memory_lane_items(results)]
+
+    def _memory_lane_items(self, results: list[Any]) -> list[tuple[str, str]]:
+        """``_memory_lane_texts`` with the dataset the server says each came from
+        (``dataset_name`` on the search result; blank when it names none)."""
+        items = []
         for item in results:
             data = _coerce_result_dict(item)
             # The text slot is used only when it holds real text; otherwise the
@@ -2687,8 +2710,8 @@ class CogneeMemoryProvider(MemoryProvider):
             # dropped instead of stringified into the block (#457).
             text = _readable(data.get("text")).strip() or _result_text(item).strip()
             if text:
-                texts.append(text)
-        return texts
+                items.append((text, str(data.get("dataset_name") or "").strip()))
+        return items
 
     def _format_recall_lines(self, results: list[Any], *, limit: int) -> list[str]:
         lines = []
