@@ -44,6 +44,7 @@ Install these from their public registries — you do **not** need to clone this
 | Framework | Package | Install |
 |---|---|---|
 | Strands | `cognee-integration-strands` | `pip install cognee-integration-strands` |
+| Pydantic AI | `cognee-integration-pydantic-ai` | `pip install ./integrations/pydantic-ai` |
 | CrewAI | `cognee-integration-crewai` | `pip install cognee-integration-crewai` |
 | LangGraph | `cognee-integration-langgraph` | `pip install cognee-integration-langgraph` |
 | Google ADK | `cognee-integration-google-adk` | `pip install cognee-integration-google-adk` |
