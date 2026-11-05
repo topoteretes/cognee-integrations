@@ -177,7 +177,7 @@ CODEX = Suite(
     has_local_sdk_recall=False,
     has_cross_dataset_search=True,
     has_recap_skills=True,
-    cites_memory_by_default=False,
+    cites_memory_by_default=True,
     injects_empty_recall=False,
     has_cloud_worker=False,
 )

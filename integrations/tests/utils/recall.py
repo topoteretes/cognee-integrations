@@ -69,7 +69,7 @@ def load_lookup(
     module = hook_module(suite, "session-context-lookup.py")
     monkeypatch.setattr(module, "get_session_key", lambda: session_key)
     if hasattr(module, "render_status_for_host"):
-        monkeypatch.setattr(module, "render_status_for_host", lambda key: status_line)
+        monkeypatch.setattr(module, "render_status_for_host", lambda key, auto=False: status_line)
     return module
 
 
@@ -129,6 +129,17 @@ class RecallRun:
     kwargs: dict[str, dict] = field(default_factory=dict)
     #: Whatever ``_run`` returned (the injected context, or None).
     output: Any = None
+    #: The status a hook kept for its Stop hook to print under the answer
+    #: (Codex), instead of a ``systemMessage`` above it.
+    status: str = ""
+
+    def message(self) -> str:
+        """What the person sees for this recall: the hook's ``systemMessage``
+        (nested on Claude Code, top-level elsewhere), or the status kept for
+        the Stop hook."""
+        output = self.output or {}
+        nested = (output.get("hookSpecificOutput") or {}).get("systemMessage")
+        return str(nested or output.get("systemMessage") or self.status or "")
 
     def detail(self, event: str) -> dict | None:
         """The detail dict of the first ``event``, or None if it never fired."""
@@ -234,6 +245,11 @@ def drive_recall(
     }
     for name, impl in seams.items():
         monkeypatch.setattr(module, name, impl)
+    if hasattr(module, "stash_turn_status"):
+        monkeypatch.setattr(
+            module, "stash_turn_status", lambda _dir, _key, text: setattr(run, "status", text)
+        )
+        monkeypatch.setattr(module, "pop_turn_status", lambda _dir, _key: "")
     # Auto recall (SDK-1393) reads the launch record and the environment:
     # answered here, so no hook test depends on either.
     monkeypatch.setattr(

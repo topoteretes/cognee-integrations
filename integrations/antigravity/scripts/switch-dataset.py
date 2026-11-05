@@ -455,6 +455,12 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     # 2. Make sure the dataset exists for this principal (idempotent); under
     #    shared memory this also resolves its canonical UUIDs.
     write_id, read_ids = _ensure_dataset(target)
+    if write_id and matches:
+        # Shared memory addresses the dataset by name plus its canonical id:
+        # the record keeps the name, so every later by-name resolution (the
+        # idle watcher's refresh, the status row) finds this dataset and not
+        # one whose name happens to be the id.
+        target = matches[0]["name"]
 
     # 3. Register the new session first (fresh handle) ...
     new_session = mint_switch_session_id(host_key)

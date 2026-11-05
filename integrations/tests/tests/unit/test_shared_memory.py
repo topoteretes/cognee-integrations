@@ -338,6 +338,47 @@ def test_refresh_picks_up_a_sibling_dataset_without_restart(pc, bootstrap, mock_
     assert {"read", "write"} <= ident.acl[sibling_copy["id"]][role["id"]]
 
 
+def test_dataset_picked_by_id_resolves_that_dataset_not_one_named_after_it(
+    pc, bootstrap, mock_server
+):
+    """The switch addresses a parent-owned dataset by its id. Resolved as a
+    name, that id found (or created) a dataset NAMED after it — the switch
+    pinned the session to an empty impostor while reporting the right id."""
+    module, run = bootstrap
+    _uid, _k, _n, ok = run({})
+    assert ok
+    ident = mock_server.identity
+    alice = ident.seed_dataset("alice_in_wonderland")
+    impostor = ident.seed_dataset(alice["id"])  # a dataset whose NAME is alice's id
+    before = set(ident.dataset_rows)
+
+    shared = pc.resolve_shared_dataset(alice["id"])
+    assert shared["mode"] == "shared"
+    assert shared["dataset_id"] == alice["id"]
+    assert impostor["id"] not in shared["dataset_ids"]
+    assert set(ident.dataset_rows) == before  # nothing created
+
+
+def test_ungranted_dataset_picked_by_id_keeps_no_canonical_id(pc, bootstrap, mock_server):
+    """Someone else's dataset the role cannot hold, picked by id, gets no
+    canonical id (the caller addresses it by that id) and no parent copy."""
+    ident = mock_server.identity
+    _, tenant = ident.tenants_create(PRINCIPAL_KEY, "org")
+    stranger_key = ident.seed_owner_key("stranger@example.com")
+    stranger = ident.users["stranger@example.com"]["id"]
+    ident.tenant_add_user(PRINCIPAL_KEY, stranger, tenant["tenant_id"])
+    ident.tenant_select(stranger_key, tenant["tenant_id"])
+    foreign = ident.seed_dataset("their_notes", stranger)
+    module, run = bootstrap
+    _uid, _k, _n, ok = run({})
+    assert ok
+    before = set(ident.dataset_rows)
+
+    shared = pc.resolve_shared_dataset(foreign["id"])
+    assert shared["dataset_id"] == ""
+    assert set(ident.dataset_rows) == before
+
+
 def test_switch_record_carries_the_new_dataset_ids(pc):
     pc.ensure_launch_record("host-x", "/w", dataset="a")
     pc.set_launch_dataset_ids("host-x", "ds-a", ["ds-a", "ds-a2"])

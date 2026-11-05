@@ -318,3 +318,20 @@ def test_statusline_reads_record_dataset(suite, statusline, temp_home, monkeypat
     # another launch, or no host id: env still rules
     assert statusline._active_dataset("unknown-host") == "from-env"
     assert statusline._active_dataset("../evil") == "from-env"  # path-unsafe id ignored
+
+
+def test_codex_status_reads_auto_when_recall_is_routed(suite, statusline, monkeypatch):
+    """Under auto recall the server routes recall across the readable datasets:
+    the status says ``auto (<dataset saves go to>)``, as Claude Code's row does,
+    rather than naming one dataset as if recall read only it."""
+    if suite.name != "codex":
+        pytest.skip("Codex shows the recall mode in its in-context status line")
+    monkeypatch.setattr(statusline, "_active_dataset", lambda host_id="": "agent_sessions")
+    monkeypatch.setattr(statusline, "_status_prefix", lambda host_id="": "● ")
+    monkeypatch.setattr(statusline, "_active_mode", lambda: "local")
+    monkeypatch.setattr(statusline, "_credits_segment", lambda: "")
+    monkeypatch.setattr(statusline, "_update_segment", lambda: "")
+    assert (
+        statusline.render_status_for_host(HOST, True) == "● cognee: auto (agent_sessions) · local"
+    )
+    assert statusline.render_status_for_host(HOST) == "● cognee: agent_sessions · local"

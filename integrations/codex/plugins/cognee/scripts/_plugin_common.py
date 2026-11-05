@@ -48,9 +48,9 @@ _ACTIVITY_FILE = _PLUGIN_DIR / "activity.ts"
 _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
 #: Whether credit tags and the resume notice are on when
-#: ``COGNEE_PLUGIN_CITE_MEMORY`` is unset (SDK-1071). Off on Codex, which shows the
-#: injected instruction in the terminal, until it has been tried live.
-CITE_MEMORY_DEFAULT = False
+#: ``COGNEE_PLUGIN_CITE_MEMORY`` is unset (SDK-1071). On since it was tried live in
+#: Codex (SDK-1393); ``COGNEE_PLUGIN_CITE_MEMORY=off`` turns it off.
+CITE_MEMORY_DEFAULT = True
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 # One state file per session (see record_improve_success / record_improve_failure):
@@ -2775,6 +2775,15 @@ def ensure_shared_memory(
     # write target nor part of the recall set (one unreadable id would fail the
     # whole recall). With no eligible copy the parent creates its own.
     write_id, read_ids = "", []
+    by_id = next((row for row in datasets if row["id"] == dataset), None) if dataset else None
+    if by_id is not None:
+        # A dataset picked by its id (the switch addresses another principal's
+        # dataset that way) resolves as that row, never as a name: matched by
+        # name, the id would create — or land in — a dataset NAMED after it.
+        # A row the shared role cannot hold keeps no canonical id, so the
+        # caller addresses it by that id.
+        eligible_row = by_id["owner_id"] == parent_id or by_id["id"] in role_holds
+        dataset = by_id["name"] if eligible_row else ""
     if dataset:
         same_name = [row for row in datasets if row["name"] == dataset]
         eligible = [

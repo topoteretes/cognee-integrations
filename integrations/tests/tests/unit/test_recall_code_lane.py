@@ -29,14 +29,13 @@ from utils.recall import CODE_SCOPES, SCOPES, drive_recall
 MEMORY = {"graph": [{"source": "graph", "text": "The question is: `q`\n\nContext:\n`a`"}]}
 
 
-def _header(output) -> str:
+def _header(run) -> str:
     """The one-line visibility header, wherever the suite puts it.
 
-    claude-code nests systemMessage inside hookSpecificOutput; codex emits it
-    at the top level alongside it. The header text is identical.
+    claude-code nests systemMessage inside hookSpecificOutput; codex keeps it
+    for the Stop hook to print under the answer. The header text is identical.
     """
-    hook_output = output["hookSpecificOutput"]
-    return str(hook_output.get("systemMessage") or output.get("systemMessage") or "")
+    return run.message()
 
 
 @pytest.fixture
@@ -90,7 +89,7 @@ def test_header_shape_is_unchanged_when_the_lane_is_off(suite, lookup, monkeypat
     reads in plain words (``N memory hits · … turns had hits this session``).
     """
     run = drive_recall(lookup, monkeypatch, prompt="what happened earlier", recall=MEMORY)
-    header = _header(run.output)
+    header = _header(run)
     assert "code" not in header
     if not suite.has_rich_statusline:
         assert "memory hit" in header and "turns had hits this session" in header
@@ -154,7 +153,7 @@ def test_code_facts_are_injected_ahead_of_memory_and_counted(lookup, monkeypatch
 
     counts = run.detail("context_lookup_hit")["counts"]
     assert counts["code"] == 1 and counts["graph_context"] == 1
-    assert "1 code" in _header(run.output)
+    assert "1 code" in _header(run)
 
 
 def test_a_query_facts_payload_renders_one_line_per_symbol(lookup, monkeypatch, indexed_repo):
@@ -196,7 +195,7 @@ def test_an_empty_query_facts_payload_is_a_miss_not_a_hit(lookup, monkeypatch, i
     context = run.output["hookSpecificOutput"]["additionalContext"]
     assert "=== Code graph facts ===" not in context and '"facts": []' not in context
     assert run.detail("context_lookup_hit")["counts"]["code"] == 0
-    assert "0 code" in _header(run.output)
+    assert "0 code" in _header(run)
 
 
 def test_empty_code_lane_is_not_an_error(lookup, monkeypatch, indexed_repo):
@@ -211,7 +210,7 @@ def test_empty_code_lane_is_not_an_error(lookup, monkeypatch, indexed_repo):
     )
     context = run.output["hookSpecificOutput"]["additionalContext"]
     assert "=== Code graph facts ===" not in context
-    assert "0 code" in _header(run.output)
+    assert "0 code" in _header(run)
     assert not run.fired("recall_error")
 
 

@@ -113,13 +113,18 @@ Details worth knowing:
 - `COGNEE_BACKEND` can also live in `~/.cognee/.env` to make a mode the durable default; a shell export still overrides it per terminal.
 - Not sure what a terminal resolved? The status line's mode field shows it live, and `doctor.py` prints the decision with its cause, e.g. `Mode: Local — forced by COGNEE_BACKEND=local`.
 
-On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to confirm the plugin is active.
+On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to confirm the plugin is active. While recall is auto (not pinned), it reads `cognee: auto (<dataset>) · local`: the server picks which readable datasets each recall searches, and `<dataset>` is where saves go.
 
 Every prompt's recalled context opens with a one-line memory header:
 
 ```
 Cognee memory: 5 memory hits · 12/40 turns had hits this session · saved last turn 1 prompt / 3 trace / 1 answer
 ```
+
+You see it, with the status line above it, under the answer and its memory credit: the
+recall hook keeps it and the Stop hook prints it as a `Hook` message once the answer is
+done. A recall that was skipped (server down) still says so above the answer, and a turn
+you interrupt prints nothing for it.
 
 `5 memory hits` is how many memory blocks this turn's lookup found and injected (the memory request, plus code-graph facts when that lane is armed); `12/40 turns had hits this session` is the running total, reading `memory warming up (7 turns)` until the first hit; `saved last turn` is what the previous turn persisted — on the server. The counts are also written to `~/.cognee-plugin/codex/last_recall.json`.
 
@@ -506,31 +511,57 @@ files, or exceed 3000 source files. Explicit indexing has no size cap.
 
 ## Memory credit in the answer
 
-Off by default on Codex for now: Codex shows the injected instruction in the terminal,
-and this hasn't been tried live there yet. Turn it on with
-`COGNEE_PLUGIN_CITE_MEMORY=on`. When on, an answer that uses recalled memory says so in
-one line at the end:
+On by default; turn it off with `COGNEE_PLUGIN_CITE_MEMORY=off`. An answer that uses
+recalled memory ends with a two-line credit led by Cognee's logotype in braille, the one
+Claude Code draws under an answer in a terminal (Codex shows the answer as written, so
+the agent writes it). Each logotype row is inline code: Codex draws a quote in its
+theme's colour and gives a plugin no other way to colour text, so the code style sets the
+logo apart.
 
 ```
-> 🧠 Cognee memory [m2]: on Oct 3 (Codex session) you chose the server over the CLI.
+> `⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  you chose the server over the CLI,
+> `⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉`  from the agent_sessions dataset
 ```
+
+In the ChatGPT app the credit is led by the waveform icon from cognee.ai/brand-resources,
+drawn inline in KaTeX, which the app renders: five Lavender (`#BC9BFF`) `\rule` strokes,
+shortest at the edges, square-ended since KaTeX has no curves. Two em spaces (U+2003) keep
+it apart from the text; Markdown collapses ordinary spaces. The app has no other way to
+put a coloured logo in a line: it shows raw HTML as text, does not load an image into
+KaTeX (`\includegraphics`) or a hosted one into Markdown, does not draw a link as a logo,
+and puts a local image in a tile taller than the text. The credit is one line, which
+the app wraps where it needs to:
+
+```
+> $\color{#BC9BFF}{\rule[0.19em]{0.11em}{0.42em}…}$  you chose the server over the CLI, from the agent_sessions dataset
+```
+
+The icon is about 210 characters the agent copies, and the app shows them as source
+until the closing `$` streams in. The Stop hook's `memory_credit` event reports
+`logo_exact`, false when a copy was mangled.
+The hook tells the two apart by the `originator` Codex writes at the top of the session's
+transcript (`Codex Desktop` for the app), read once per session.
 
 How it works:
 
-- The recall hook tags every injected item with `m1`, `m2`… and where it came from: a
-  Claude Code or Codex session, a dated session learning, a document, graph entities or
-  facts, code-graph facts, or agent guidance. Tags are numbered across the session, and a
-  memory recalled again keeps its tag: an earlier turn or trace by its server id,
-  anything else by its text. So a tag names one memory for the whole session.
+- The recall hook marks every injected item with where it came from: a graph item with
+  its document, when it names one, and the dataset the server says it came from,
+  `[document <name> · dataset <name>]` (under auto recall the server picks the dataset,
+  and the mark is the only place the answer learns which one); anything else with its
+  origin, such as `[agent trace, …]` or `[earlier session turn, <date>]`. Behind the
+  scenes each item is still numbered across the session (`m1`, `m2`…; a memory recalled
+  again keeps its number: an earlier turn or trace by its server id, anything else by its
+  text), so the hook knows which items each turn injected.
 - On turns where memory was injected, an instruction above it says how many memories
-  Cognee found for this prompt and asks the agent to add the credit line only when the
-  answer used a tagged item, and never for what it knows from AGENTS.md, the code, or the
-  conversation. The first credit in a session also says in a few words how it connects
-  to the earlier work.
-- The Stop hook reads only the credit line (`arr[m1]` in code is not a citation),
-  compares its tags with the session's and logs a `memory_credit` event to `hook.log`:
-  cited, valid, invented, `earlier` (valid but not injected on this turn) and `available`
-  (how many this turn injected). Nothing is sent anywhere.
+  Cognee found for this prompt and asks the agent to add the credit only when the answer
+  used a marked item, naming its document and dataset, and never for what it knows from
+  AGENTS.md, the code, or the conversation. The first credit in a session also says in a
+  few words how it connects to the earlier work.
+- The Stop hook reads only the credit at the end of the answer and logs a
+  `memory_credit` event to `hook.log`: `untagged` when the answer ends with the credit,
+  and `available` (how many items this turn injected). An older line that cites `[mN]`
+  tags is still checked against the session's (cited, valid, invented, `earlier`).
+  Nothing is sent anywhere.
 - The tags, the credit state and the final-sync stored count live in the session's
   folder, `~/.cognee-plugin/codex/sessions/<session>/`, which the state sweep removes
   after a week idle.
@@ -550,7 +581,7 @@ chat or `/clear` shows nothing. It says "sent", not "saved": the submit runs in 
 background, and a sync the server skipped because another improve held the dataset lock
 can't be told apart until the server fix for that lands (COG-6828).
 
-Both follow `COGNEE_PLUGIN_CITE_MEMORY` (off by default on Codex).
+Both follow `COGNEE_PLUGIN_CITE_MEMORY` (on by default).
 
 ## Status visibility
 

@@ -86,6 +86,58 @@ def test_list_without_a_canonical_id_matches_by_name(switch):
     assert [row["id"] for row in rows if row["current"]] == ["d2"]
 
 
+def test_switch_to_a_parent_owned_dataset_records_its_name(switch, monkeypatch):
+    """Under shared memory a dataset the agent does not own is resolved by id
+    but recorded by name plus its canonical id: a record holding the bare id
+    re-resolved later as a NAME, onto a dataset named after that id."""
+    alice_id = "ff18654d-0000-5000-8000-000000000001"
+    monkeypatch.setattr(
+        switch,
+        "list_writable_datasets",
+        lambda user_id="": {
+            "datasets": [
+                {
+                    "name": "alice_in_wonderland",
+                    "id": alice_id,
+                    "owner_id": "parent",
+                    "writable": True,
+                },
+                {
+                    "name": alice_id,
+                    "id": "0e3fcec7-impostor",
+                    "owner_id": "parent",
+                    "writable": True,
+                },
+            ],
+            "readonly": [],
+        },
+    )
+    ensured: list = []
+    monkeypatch.setattr(
+        switch, "_ensure_dataset", lambda t: ensured.append(t) or (alice_id, [alice_id])
+    )
+    monkeypatch.setattr(switch, "_sync_current", lambda *a: None)
+    monkeypatch.setattr(switch, "mint_switch_session_id", lambda host: "s2")
+    monkeypatch.setattr(switch, "_register_new", lambda *a: "c2")
+    monkeypatch.setattr(switch, "unregister_agent_via_http", lambda **kw: (True, None))
+    monkeypatch.setattr(switch, "_restart_idle_watcher", lambda *a: None)
+    monkeypatch.setattr(switch, "touch_activity", lambda: None)
+    monkeypatch.setattr(switch, "require_typed_dataset_id_support", lambda: None, raising=False)
+    import _plugin_common
+
+    monkeypatch.setattr(_plugin_common, "require_typed_dataset_id_support", lambda: None)
+    records: list = []
+    monkeypatch.setattr(switch, "switch_launch_record", lambda host, **kw: records.append(kw))
+
+    rec = {"dataset": "agent_sessions", "dataset_id": CANONICAL, "session_id": "s1"}
+    result = switch._switch("host-1", rec, "alice_in_wonderland", force=False)
+
+    assert ensured == [alice_id]  # resolved by id: the impostor's name never matches
+    assert records[0]["dataset"] == "alice_in_wonderland"
+    assert records[0]["dataset_id"] == alice_id
+    assert result["dataset"] == "alice_in_wonderland"
+
+
 # ── cognee-remember.sh --dataset ─────────────────────────────────────────────
 # An explicit --dataset wins over the launch's dataset, and resolves as a
 # dataset switch does: sent by name, the server would find or create an

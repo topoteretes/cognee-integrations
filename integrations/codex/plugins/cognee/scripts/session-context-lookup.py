@@ -65,6 +65,7 @@ from _plugin_common import (
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
+    DESKTOP_ORIGINATOR,
     MemoryTags,
     begin_turn,
     code_facts,
@@ -72,6 +73,9 @@ from _recall_text import (
     credit_instruction,
     format_code_facts,
     has_credited,
+    pop_turn_status,
+    session_originator,
+    stash_turn_status,
     trim_recall_text,
 )
 from cognee_statusline_render import render_status_for_host
@@ -211,19 +215,23 @@ def _memory_summary(
 
 
 def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
-    """``_format_entry`` with the item's credit tag (SDK-1071), when tagging is on.
+    """``_format_entry`` with the item's credit mark (SDK-1071), when tagging is on.
 
-    Graph memory is tagged per passage plus one tag each for its entities and
-    facts; every other item gets one tag naming where it came from. An earlier
-    turn or trace is known by its server id, so it keeps its tag when recalled
-    again.
+    Graph memory is marked per passage plus one mark each for its entities and
+    facts, naming its document (when known) and the dataset the server says it
+    came from (SDK-1393); every other item gets one mark naming where it came
+    from. An earlier turn or trace is known by its server id, so it keeps its
+    tag when recalled again.
     """
     if tags is None:
         return _format_entry(entry)
     source = entry.get("source", "")
     if source == "graph_context":
         entry = dict(entry)
-        entry["text"] = tags.tag_graph(str(entry.get("text", "") or entry.get("content", "")))
+        entry["text"] = tags.tag_graph(
+            str(entry.get("text", "") or entry.get("content", "")),
+            str(entry.get("dataset_name") or "").strip(),
+        )
         return _format_entry(entry)
     body = _format_entry(entry)
     ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
@@ -244,7 +252,8 @@ def _outage_output(state: str) -> dict:
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
     summary = outage_header(state, saves, warmup_backlog(), " · ")
-    header = f"{render_status_for_host(get_session_key())}\n{summary}"
+    key = get_session_key()
+    header = f"{render_status_for_host(key, auto_recall_active(key))}\n{summary}"
     return {
         "systemMessage": header,
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": header},
@@ -274,7 +283,15 @@ def _has_entry_content(entry: dict) -> bool:
     return any(str(entry.get(field, "") or "").strip() for field in fields)
 
 
-async def _run(prompt: str, cwd: str = "") -> dict | None:
+async def _run(prompt: str, cwd: str = "", chatgpt_app: bool = False) -> dict | None:
+    """One prompt's recall. ``chatgpt_app``: the session runs in the ChatGPT app,
+    which renders KaTeX, so the credit opens with the icon drawn in it."""
+    # A turn cut short never reached its Stop hook: drop the status it kept, so
+    # it is not printed under this turn's answer.
+    try:
+        pop_turn_status(_plugin_common._PLUGIN_DIR, get_session_key())
+    except Exception as exc:
+        hook_log("turn_status_write_failed", {"error": str(exc)[:200]})
     if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         # First, so a recall that returns early leaves this turn with no tags
         # and the Stop hook cannot check the answer against the previous
@@ -778,7 +795,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # Build a visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
-    status_line = render_status_for_host(_session_key)
+    # The mode this recall ran under, asked once above: the header says what it did.
+    status_line = render_status_for_host(_session_key, auto_route)
     header = f"{status_line}\n" + _memory_summary(
         total,
         _totals,
@@ -825,7 +843,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         instruction = ""
         if tags is not None and tags.found:
             first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
-            instruction = credit_instruction(first, len(tags.found)) + "\n\n"
+            instruction = credit_instruction(first, len(tags.found), chatgpt_app) + "\n\n"
         full_context = (
             f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
@@ -843,8 +861,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
         # Nothing recalled: the agent gets no memory header (a "0 hits" line on
-        # most turns read as "Cognee does nothing", SDK-1071). The header stays
-        # in systemMessage.
+        # most turns read as "Cognee does nothing", SDK-1071). The person still
+        # sees the status, under the answer.
         full_context = ""
         hook_log(
             "context_lookup_empty",
@@ -898,11 +916,17 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
 
     # additionalContext is the MODEL injection channel and must carry the full
     # recalled content — trimming it to the status line would silently disable
-    # memory for the model. systemMessage carries the short status for the
-    # terminal (mirrors the claude-code integration); hosts that render
-    # additionalContext directly will still show the full block.
+    # memory for the model. The short status for the person is not printed
+    # here, above the answer: the Stop hook prints it under the answer and its
+    # credit. Hosts that render additionalContext directly still show the
+    # full block.
+    try:
+        # The memory summary only: the status line above it is drawn when it is
+        # printed, so a dataset switched during the turn shows as it now is.
+        stash_turn_status(_plugin_common._PLUGIN_DIR, get_session_key(), header.split("\n", 1)[-1])
+    except Exception as exc:
+        hook_log("turn_status_write_failed", {"error": str(exc)[:200]})
     output = {
-        "systemMessage": header,
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": full_context,
@@ -963,11 +987,22 @@ def main():
         hook_log("context_lookup_short_prompt", {"chars": len(prompt.strip()), "min": min_chars})
         return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
+    try:
+        originator = session_originator(
+            _plugin_common._PLUGIN_DIR,
+            get_session_key(),
+            str(payload.get("transcript_path") or ""),
+            str(payload.get("session_id") or ""),
+        )
+    except Exception as exc:
+        originator = ""
+        hook_log("context_lookup_client_unknown", {"error": str(exc)[:200]})
 
     output = None
     try:
         with quiet_hook_output("session-context-lookup"):
-            output = asyncio.run(_run(prompt, cwd))
+            in_app = originator == DESKTOP_ORIGINATOR
+            output = asyncio.run(_run(prompt, cwd, chatgpt_app=in_app))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
     return with_base_url_notice(output, "UserPromptSubmit")

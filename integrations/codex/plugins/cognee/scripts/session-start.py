@@ -43,6 +43,7 @@ from _plugin_common import (
     _https_context,
     _reexec_into_venv,
     apply_cognee_env,
+    auto_recall_active,
     clear_server_pidfile,
     ensure_launch_record,
     get_session_key,
@@ -2188,7 +2189,7 @@ async def _start(payload: dict | None = None) -> dict:
         file=sys.stderr,
     )
 
-    status_line = render_status_for_host(session_key)
+    status_line = render_status_for_host(session_key, auto_recall_active(session_key))
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

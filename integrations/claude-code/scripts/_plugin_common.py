@@ -2997,6 +2997,15 @@ def ensure_shared_memory(
     # write target nor part of the recall set (one unreadable id would fail the
     # whole recall). With no eligible copy the parent creates its own.
     write_id, read_ids = "", []
+    by_id = next((row for row in datasets if row["id"] == dataset), None) if dataset else None
+    if by_id is not None:
+        # A dataset picked by its id (the switch addresses another principal's
+        # dataset that way) resolves as that row, never as a name: matched by
+        # name, the id would create — or land in — a dataset NAMED after it.
+        # A row the shared role cannot hold keeps no canonical id, so the
+        # caller addresses it by that id.
+        eligible_row = by_id["owner_id"] == parent_id or by_id["id"] in role_holds
+        dataset = by_id["name"] if eligible_row else ""
     if dataset:
         same_name = [row for row in datasets if row["name"] == dataset]
         eligible = [

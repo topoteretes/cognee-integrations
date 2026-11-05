@@ -56,6 +56,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `list-datasets.py`) is unchanged.
 
 ### Fixed
+- **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
+  shared agent memory the parent account owns the datasets, so the switch addressed the target
+  by its id, and the shared-memory resolver read that id as a *name*: it pinned the session to
+  an empty dataset named after the id (creating one when none existed) while reporting the right
+  id. A dataset picked by id now resolves as that dataset, the record keeps its name with its
+  canonical id, and a dataset the shared role cannot hold is addressed by its id instead of
+  forking a copy. Present since shared memory became the default. Delete any leftover
+  empty dataset whose name is a UUID.
 - **No empty agent-owned copy of the shared dataset (SDK-1393).** Under shared memory the sync's
   pre-improve dataset ensure posted the launch's dataset by name with the agent key, and the server,
   which matches a name only among the caller's own datasets, created an empty agent-owned

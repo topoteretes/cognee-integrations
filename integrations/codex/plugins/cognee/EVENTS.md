@@ -158,6 +158,9 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:memory_credit` | `memory.credit` |
 | `hook:memory_credit_failed` | `memory.credit_failed` |
 | `hook:memory_tags_write_failed` | `memory.tags_write_failed` |
+| `hook:turn_status_write_failed` | `memory.turn_status_write_failed` |
+| `hook:turn_status_read_failed` | `memory.turn_status_read_failed` |
+| `hook:context_lookup_client_unknown` | `recall.client_unknown` |
 | `hook:missing_payload_session_id` | `missing.payload_session_id` |
 | `hook:mode_decision` | `runtime.decision` |
 | `hook:no_session_id` | `session.session_id` |

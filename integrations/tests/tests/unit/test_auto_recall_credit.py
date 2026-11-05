@@ -119,8 +119,11 @@ def test_what_the_hook_sends_and_injects_follows_the_recall_mode(
         assert "[m1" not in context and "\U0001f9e0" not in context
         return
     if suite.name == "codex":
-        assert "> \U0001f9e0 Cognee memory [mN]:" in context
-        assert DATASET not in context
+        # Marked as on Claude Code (SDK-1393); the agent writes the braille
+        # logotype itself, Codex having no way to draw it under the answer.
+        assert "`⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what you remembered>," in context
+        assert "from <document> in the <dataset> dataset" in context
+        assert "[m1" not in context and "\U0001f9e0" not in context
         return
     # Cursor: the credit line says where the memory came from.
     assert suite.name == "cursor", f"{suite.name}: add its credit wording here"
