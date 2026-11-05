@@ -42,6 +42,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   dataset (indistinguishable from a reset), which follows the configuration.
 
 ### Changed
+- **The setup wizard asks about recall once.** `hermes memory setup` no longer asks
+  "Auto-route recall" right after the recall mode, where it read as the same question twice.
+  The two are different settings: `recall_mode` is which datasets recall reads, `auto_route`
+  is whether Cognee picks the search type for each query. `auto_route` keeps its saved value
+  and is set in `cognee.json` or with `COGNEE_AUTO_ROUTE`.
 - **A configured dataset no longer restricts recall.** Before, recall read only the configured
   `COGNEE_PLUGIN_DATASET` (or setup-wizard dataset); now recall is auto there too and reaches
   every dataset the server routes to. To keep recall on it, set

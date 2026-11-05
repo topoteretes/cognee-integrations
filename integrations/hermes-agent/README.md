@@ -468,7 +468,7 @@ no server.
 | `dataset` | `COGNEE_PLUGIN_DATASET` (canonical; `auto` = default) | `agent_sessions` |
 | `recall_mode` | `COGNEE_PLUGIN_RECALL_MODE` (`auto`: the server picks the dataset; `pinned`: recall stays on the active dataset; anything else = `auto`) | `auto` |
 | `top_k` | `COGNEE_TOP_K` | `5` |
-| `auto_route` | `COGNEE_AUTO_ROUTE` | `true` |
+| `auto_route` | `COGNEE_AUTO_ROUTE` (`true`: Cognee picks the search type for each query; `false`: always graph completion; not asked by `hermes memory setup`) | `true` |
 | `improve_on_end` | `COGNEE_IMPROVE_ON_END` | `true` |
 | `improve_background` | `COGNEE_IMPROVE_BACKGROUND` | auto |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `hermes` |

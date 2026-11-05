@@ -140,6 +140,37 @@ def test_the_setup_wizard_asks_for_the_recall_mode(current, answer, saved):
     assert written["recall_mode"] == saved
 
 
+def test_the_setup_wizard_asks_the_recall_mode_once_and_keeps_auto_route():
+    # Asked right after the recall mode, "Auto-route recall" read as the same
+    # question twice; auto_route (the search type) keeps its saved value.
+    asked, written = [], {}
+
+    def prompt(label, default=""):
+        asked.append(label)
+        return {"Mode": "remote"}.get(label, default)
+
+    def prompt_bool(label, default):
+        asked.append(label)
+        return default
+
+    with (
+        mock.patch.object(provider_mod, "load_config", return_value={"auto_route": False}),
+        mock.patch.object(provider_mod, "_prompt", side_effect=prompt),
+        mock.patch.object(provider_mod, "_prompt_secret", return_value=""),
+        mock.patch.object(provider_mod, "_prompt_bool", side_effect=prompt_bool),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=True),
+        mock.patch.object(
+            provider_mod,
+            "save_plugin_config",
+            side_effect=lambda values, home: written.update(values),
+        ),
+        mock.patch.object(provider_mod, "save_env_vars"),
+    ):
+        provider_mod.CogneeMemoryProvider(backend=FakeBackend()).post_setup("/tmp/hh", {})
+    assert [label for label in asked if "recall" in label.lower()] == ["Recall mode (auto/pinned)"]
+    assert "auto_route" not in written  # the saved False is left as it is
+
+
 # -- the conversation's own choice ---------------------------------------------
 
 

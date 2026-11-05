@@ -494,8 +494,8 @@ class CogneeMemoryProvider(MemoryProvider):
             {
                 "key": "recall_mode",
                 "description": (
-                    "Recall mode: auto lets the server pick the dataset; pinned keeps "
-                    "recall on the active dataset"
+                    "Which datasets recall reads: auto lets Cognee pick them for each "
+                    "question; pinned reads only the active dataset"
                 ),
                 "default": RECALL_MODE_AUTO,
                 "choices": list(RECALL_MODES),
@@ -503,7 +503,10 @@ class CogneeMemoryProvider(MemoryProvider):
             },
             {
                 "key": "auto_route",
-                "description": "Let Cognee choose the recall strategy",
+                "description": (
+                    "Let Cognee pick the search type for each query; false always uses "
+                    "graph completion"
+                ),
                 "default": "true",
                 "choices": ["true", "false"],
             },
@@ -553,7 +556,10 @@ class CogneeMemoryProvider(MemoryProvider):
         file_values: dict[str, Any] = {
             "dataset": _prompt("Dataset", default=str(current.get("dataset") or DEFAULT_DATASET)),
             "recall_mode": _prompt_recall_mode(current.get("recall_mode")),
-            "auto_route": _prompt_bool("Auto-route recall", current.get("auto_route", True)),
+            # auto_route (which search type recall uses) is not asked: next to
+            # the recall mode (which datasets it reads) it read as the same
+            # question twice. It keeps its saved value; set it in cognee.json
+            # or COGNEE_AUTO_ROUTE.
             "improve_on_end": _prompt_bool(
                 "Improve graph on session end",
                 current.get("improve_on_end", True),
@@ -2759,8 +2765,8 @@ def _offer_runtime_install() -> None:
 
 def _prompt_recall_mode(current: Any) -> str:
     """The setup wizard's recall-mode question; an unknown answer is auto."""
-    print("  Recall mode: auto lets the server pick the dataset for recall; pinned")
-    print("  keeps recall on the active dataset.")
+    print("  Recall mode: which datasets recall reads. auto lets Cognee pick the")
+    print("  datasets for each question; pinned reads only the active dataset.")
     answer = _prompt("Recall mode (auto/pinned)", default=configured_recall_mode(current))
     return configured_recall_mode(answer)
 
