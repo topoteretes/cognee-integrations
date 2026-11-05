@@ -58,8 +58,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   an empty dataset named after the id (creating one when none existed) while reporting the right
   id. A dataset picked by id now resolves as that dataset, the record keeps its name with its
   canonical id, and a dataset the shared role cannot hold is addressed by its id instead of
-  forking a copy. Present since shared memory became the default. Delete any leftover
-  empty dataset whose name is a UUID.
+  forking a copy. Picked by id among datasets that share a name, it also stays the write target,
+  including across the periodic refresh, rather than giving way to the parent's same-named copy.
+  Present since shared memory became the default. Delete any leftover empty dataset whose name
+  is a UUID.
 - **The memory credit names its document and dataset and opens with Cognee's logo (SDK-1393).**
   As on Claude Code, every recalled graph item is marked
   `[document <name> · dataset <name>]` instead of `[mN · origin]`, and the credit names them

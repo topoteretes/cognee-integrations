@@ -360,7 +360,10 @@ def _injection_sections(
                             passages = [
                                 (
                                     tagged(
-                                        p, "passage", passage_origin(p), document=_passage_document(p)
+                                        p,
+                                        "passage",
+                                        passage_origin(p),
+                                        document=_passage_document(p),
                                     ),
                                     is_session_transcript(p),
                                 )

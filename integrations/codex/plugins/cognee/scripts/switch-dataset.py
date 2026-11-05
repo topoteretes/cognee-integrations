@@ -149,7 +149,9 @@ def _list(host_key: str, rec: dict) -> dict:
     if current_id and current_id in listed_ids:
         rows = [{**row, "current": row["id"] == current_id} for row in listing["datasets"]]
     else:
-        rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
+        rows = [
+            {**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]
+        ]
     mode, reason = recall_mode(host_key)
     result = {
         "current": current,
@@ -454,7 +456,12 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
 
     # 2. Make sure the dataset exists for this principal (idempotent); under
     #    shared memory this also resolves its canonical UUIDs.
+    # A dataset addressed by id (another principal's, or one picked by its
+    # UUID) is that dataset: remembered so the periodic refresh, which
+    # re-resolves by name, keeps writing to it.
+    picked_id = target if dataset_id(target) else ""
     write_id, read_ids = _ensure_dataset(target)
+    picked_id = picked_id if picked_id and picked_id == write_id else ""
     if write_id and matches:
         # Shared memory addresses the dataset by name plus its canonical id:
         # the record keeps the name, so every later by-name resolution (the
@@ -475,6 +482,7 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
             conn_uuid=new_conn,
             dataset_id=write_id,
             dataset_ids=read_ids,
+            picked_id=picked_id,
         )
     except Exception:
         try:

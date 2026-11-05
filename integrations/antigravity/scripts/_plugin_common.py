@@ -650,6 +650,7 @@ def switch_launch_record(
     conn_uuid: str,
     dataset_id: str = "",
     dataset_ids: list[str] | None = None,
+    picked_id: str = "",
 ) -> dict:
     """Atomically point the launch at a new (session, dataset, connection).
 
@@ -677,6 +678,7 @@ def switch_launch_record(
             conn_uuid=conn_uuid,
             dataset_id=dataset_id,
             dataset_ids=dataset_ids,
+            picked_id=picked_id,
         )
 
 
@@ -688,6 +690,7 @@ def _switch_launch_record_locked(
     conn_uuid: str,
     dataset_id: str,
     dataset_ids: list[str] | None,
+    picked_id: str = "",
 ) -> dict:
     rec = _read_map_record(host_key)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -709,6 +712,10 @@ def _switch_launch_record_locked(
             # write to the new name would otherwise land in the previous dataset.
             "dataset_id": str(dataset_id or "").strip(),
             "dataset_ids": [str(x).strip() for x in (dataset_ids or []) if str(x).strip()],
+            # The dataset the person picked by id, kept as the write target by
+            # the periodic refresh (which re-resolves by name; see
+            # refresh_shared_memory). Empty when picked by name.
+            "dataset_picked_id": str(picked_id or "").strip(),
             "conn_uuid": str(conn_uuid),
             "switched_at": now,
             "touched": touched,
@@ -2910,15 +2917,20 @@ def ensure_shared_memory(
     # write target nor part of the recall set (one unreadable id would fail the
     # whole recall). With no eligible copy the parent creates its own.
     write_id, read_ids = "", []
+    picked_id = ""
     by_id = next((row for row in datasets if row["id"] == dataset), None) if dataset else None
     if by_id is not None:
         # A dataset picked by its id (the switch addresses another principal's
         # dataset that way) resolves as that row, never as a name: matched by
         # name, the id would create — or land in — a dataset NAMED after it.
-        # A row the shared role cannot hold keeps no canonical id, so the
-        # caller addresses it by that id.
+        # It also stays the write target: re-picked among its same-named
+        # datasets, the parent's own copy would win and the saves would land
+        # there instead of in the dataset the person chose. A row the shared
+        # role cannot hold keeps no canonical id, so the caller addresses it by
+        # that id.
         eligible_row = by_id["owner_id"] == parent_id or by_id["id"] in role_holds
         dataset = by_id["name"] if eligible_row else ""
+        picked_id = by_id["id"] if eligible_row else ""
     if dataset:
         same_name = [row for row in datasets if row["name"] == dataset]
         eligible = [
@@ -2944,10 +2956,13 @@ def ensure_shared_memory(
             role_holds |= _grant_role_on_datasets(principal_key, role_id, [created["id"]], marker)
             eligible = [created]
         if eligible:
-            write_id = _pick_canonical(eligible, parent_id)["id"]
+            # The canonical map records what the NAME resolves to: a dataset
+            # picked by id is written to without becoming the name's copy.
+            name_id = _pick_canonical(eligible, parent_id)["id"]
+            write_id = picked_id or name_id
             canonical = marker.setdefault("canonical", {})
             if isinstance(canonical, dict):
-                canonical[dataset] = write_id
+                canonical[dataset] = name_id
             read_ids = [write_id] + [
                 row["id"]
                 for row in same_name
@@ -3014,11 +3029,17 @@ def refresh_shared_memory(host_key: str = "") -> bool:
     shared = resolve_shared_dataset(dataset)
     if shared["mode"] != "shared" or not shared["dataset_id"]:
         return False
+    write_id, read_ids = shared["dataset_id"], list(shared["dataset_ids"])
+    # A dataset the person picked by id stays the write target while it is
+    # still one of the name's readable datasets: resolved by name alone, a
+    # same-named dataset the parent owns would take the saves over.
+    picked = str(_read_map_record(host_key).get("dataset_picked_id") or "").strip()
+    if picked and picked != write_id and picked in read_ids:
+        write_id = picked
+        read_ids = [picked] + [x for x in read_ids if x != picked]
     # ``dataset=`` pins the ids to the dataset they were resolved for: a switch
     # that completed during the resolution above leaves the record untouched.
-    return set_launch_dataset_ids(
-        host_key, shared["dataset_id"], shared["dataset_ids"], dataset=dataset
-    )
+    return set_launch_dataset_ids(host_key, write_id, read_ids, dataset=dataset)
 
 
 def plugin_identity_mode(config: dict | None = None) -> str:
