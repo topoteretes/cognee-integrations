@@ -10,6 +10,17 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **The plugin's store listing matches the Cognee ChatGPT app.** The plugin now shows the
+  Cognee waveform icon (`assets/logo.svg`, the off-white-on-black icon from
+  cognee.ai/brand-resources) as its logo and composer icon, and its listing text follows
+  the hosted Cognee app's: "Long-term memory for Codex", a long description of capture,
+  recall, the codebase graph and recaps, developer Cognee, category Productivity, privacy
+  policy and terms links, and brand colour `#101010`. Listing metadata only; hooks,
+  scripts and skills are unchanged.
+
 ## [1.7.7]
 
 ### Changed
