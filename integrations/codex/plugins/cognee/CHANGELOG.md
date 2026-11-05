@@ -42,6 +42,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
 
 ### Changed
+- **Reopening a chat names the dataset it was saved to, without the brain icon.** The
+  notice now reads "This conversation was sent to the agent_sessions dataset in Cognee's
+  long-term memory when you left at 14:13." A failed save names its dataset, and the earlier
+  save it mentions names its own when that differs. The save record keeps the dataset of the
+  last successful save (`improved_dataset`) beside the one a later failed attempt targeted.
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
 
 ### Removed

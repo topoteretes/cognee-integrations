@@ -151,8 +151,7 @@ def test_codex_chatgpt_app_credit_opens_with_the_katex_icon(suite, rt):
     # One line, which the app wraps where it needs to: the icon, two em spaces,
     # then what and where from.
     one_line = (
-        f"> {rt.KATEX_ICON}  <what you remembered>, "
-        "from <document> in the <dataset> dataset\n"
+        f"> {rt.KATEX_ICON}  <what you remembered>, from <document> in the <dataset> dataset\n"
     )
     assert one_line in text
     assert "\\\n" not in text  # no hard break
@@ -208,8 +207,7 @@ def test_codex_reads_the_client_from_the_transcript(suite, rt, tmp_path, monkeyp
             True,
         ),
         (
-            "> ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯  Alice chased the Rabbit,\n"
-            "> ⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉  from alice in the a dataset",
+            "> ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯  Alice chased the Rabbit,\n> ⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉  from alice in the a dataset",
             True,
         ),
         ("> Cognee memory: Alice chased the Rabbit, from the a dataset", True),
@@ -511,7 +509,9 @@ def test_a_memory_recalled_on_a_later_prompt_keeps_its_tag(lookup, monkeypatch, 
     first = _context(drive_recall(lookup, monkeypatch, recall=HIT))
     codex_tag = _tag_of(first, "Codex session")
     first_tag = next(
-        r["tag"] for r in _saved(rt, lookup).records if r["snippet"].startswith("Session ID: codex_01")
+        r["tag"]
+        for r in _saved(rt, lookup).records
+        if r["snippet"].startswith("Session ID: codex_01")
     )
     new = "Session ID: codex_new\n\nQuestion: tabs?\n\nAnswer: spaces."
     more = {
@@ -522,9 +522,10 @@ def test_a_memory_recalled_on_a_later_prompt_keeps_its_tag(lookup, monkeypatch, 
     second = _context(drive_recall(lookup, monkeypatch, recall=more))
     tags = _saved(rt, lookup)
     assert len(tags.records) == 6  # one new memory, five known ones
-    assert next(
-        r["tag"] for r in tags.records if r["snippet"].startswith("Session ID: codex_01")
-    ) == first_tag
+    assert (
+        next(r["tag"] for r in tags.records if r["snippet"].startswith("Session ID: codex_01"))
+        == first_tag
+    )
     # Shown again it keeps its tag; a host that skips memory already in context
     # does not show it, and then it does not count as this prompt's.
     if codex_tag:
@@ -706,11 +707,25 @@ NOW = 1_791_820_000.0  # a fixed "now"; earlier times below are the same day
 
 
 def test_notice_for_a_final_save(rt):
-    message, ts = rt.sync_notice({"last_improved_at": NOW - 600, "trigger": "final"}, now=NOW)
+    state = {"last_improved_at": NOW - 600, "trigger": "final", "improved_dataset": "notes"}
+    message, ts = rt.sync_notice(state, now=NOW)
     assert message.startswith(
-        "🧠 This conversation was sent to Cognee's long-term memory when you left at "
+        "This conversation was sent to the notes dataset in Cognee's long-term memory "
+        "when you left at "
     )
     assert ts == NOW - 600
+
+
+def test_notice_names_the_dataset_of_an_older_record(rt):
+    # Records written before improved_dataset carry the save's dataset in ``dataset``.
+    state = {"last_improved_at": NOW - 600, "trigger": "final", "dataset": "agent_sessions"}
+    message, _ = rt.sync_notice(state, now=NOW)
+    assert "sent to the agent_sessions dataset in Cognee's long-term memory" in message
+
+
+def test_notice_without_a_dataset_still_reads(rt):
+    message, _ = rt.sync_notice({"last_improved_at": NOW - 600, "trigger": "final"}, now=NOW)
+    assert message.startswith("This conversation was sent to Cognee's long-term memory when ")
 
 
 def test_notice_for_an_idle_save(rt):
@@ -727,10 +742,35 @@ def test_notice_for_a_failed_final_save_mentions_the_earlier_one(rt):
         "last_failure_trigger": "final",
     }
     message, ts = rt.sync_notice(state, now=NOW)
-    assert message.startswith("🧠 This conversation wasn't saved to Cognee when you left at ")
+    assert message.startswith("This conversation wasn't saved to Cognee when you left at ")
     assert "the Cognee server was unreachable" in message
     assert "An earlier save at " in message
     assert ts == NOW - 600
+
+
+def test_failed_save_names_its_dataset_and_the_earlier_one(rt):
+    state = {
+        "dataset": "work",
+        "improved_dataset": "notes",
+        "last_improved_at": NOW - 3600,
+        "trigger": "idle",
+        "last_failed_at": NOW - 600,
+        "last_failure_reason": "unreachable",
+        "last_failure_trigger": "final",
+    }
+    message, _ = rt.sync_notice(state, now=NOW)
+    assert message.startswith("This conversation wasn't saved to the work dataset when you left")
+    assert "An earlier save to the notes dataset at " in message
+
+
+def test_a_failed_save_keeps_the_dataset_the_earlier_save_went_to(suite, isolated_modules):
+    pc = isolated_modules(suite, "_plugin_common")
+    if not hasattr(pc, "record_improve_failure"):
+        pytest.skip(f"{suite.name}: records no failed save")
+    pc.record_improve_success("s-ds", "notes", "idle")
+    pc.record_improve_failure("s-ds", "work", "final", "unreachable")
+    state = pc.read_improve_state("s-ds")
+    assert (state["dataset"], state["improved_dataset"]) == ("work", "notes")
 
 
 def test_no_record_no_notice(rt):
@@ -790,7 +830,10 @@ def test_resume_shows_the_notice_once(start):
         {"hookSpecificOutput": {"hookEventName": "SessionStart"}}, RESUME
     )
     # Top level is what Claude Code shows the user; additionalContext reaches the agent.
-    assert out["systemMessage"].startswith("🧠 This conversation was sent to Cognee")
+    assert out["systemMessage"].startswith(
+        "This conversation was sent to the agent_sessions dataset in Cognee's long-term memory"
+    )
+    assert "🧠" not in out["systemMessage"]
     assert out["hookSpecificOutput"]["additionalContext"] == out["systemMessage"]
     again = start._apply_sync_notice({}, RESUME)
     assert again == {}

@@ -2120,6 +2120,9 @@ def record_improve_success(
             {
                 "session_id": session_id,
                 "dataset": dataset,
+                # The dataset the conversation was saved to: a later failed
+                # attempt overwrites ``dataset`` but keeps this (sync_notice).
+                "improved_dataset": dataset,
                 "last_improved_at": time.time(),
                 "turn_count_at_improve": (
                     read_turn_count(session_id) if turn_count is None else turn_count

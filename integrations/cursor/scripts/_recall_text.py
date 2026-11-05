@@ -838,22 +838,33 @@ def sync_notice(state: dict, now: float | None = None) -> tuple[str, float]:
             f"the save failed ({reason})" if reason else "the save failed"
         )
         left = "when you left at" if state.get("last_failure_trigger") == "final" else "at"
+        where = _notice_dataset(state.get("dataset"))
         message = (
-            f"🧠 This conversation wasn't saved to Cognee {left} {_clock(failed_at, now)}: {why}."
+            f"This conversation wasn't saved to {where or 'Cognee'} {left} "
+            f"{_clock(failed_at, now)}: {why}."
         )
         if ok_at:
-            message += f" An earlier save at {_clock(ok_at, now)} has the conversation up to then."
+            saved_to = _notice_dataset(state.get("improved_dataset"))
+            into = f" to {saved_to}" if saved_to and saved_to != where else ""
+            message += (
+                f" An earlier save{into} at {_clock(ok_at, now)} has the conversation up to then."
+            )
         return message, failed_at
     if ok_at:
         # "Sent", not "saved": the submit runs in the background, and a server
         # whose per-session lock was held skips it without saying so.
         left = "when you left at" if state.get("trigger") == "final" else "at"
-        return (
-            f"🧠 This conversation was sent to Cognee's long-term memory {left} "
-            f"{_clock(ok_at, now)}.",
-            ok_at,
-        )
+        # An older record has only ``dataset``, written by the same save.
+        where = _notice_dataset(state.get("improved_dataset") or state.get("dataset"))
+        into = f"{where} in Cognee's long-term memory" if where else "Cognee's long-term memory"
+        return f"This conversation was sent to {into} {left} {_clock(ok_at, now)}.", ok_at
     return "", 0.0
+
+
+def _notice_dataset(dataset) -> str:
+    """``the <name> dataset`` for the save notice; ``""`` when the record names none."""
+    name = str(dataset or "").strip()
+    return f"the {name} dataset" if name else ""
 
 
 def _notice_path(state_dir, session_id: str):
