@@ -3,7 +3,7 @@
 All notable changes to the **cognee** Codex CLI plugin are documented here.
 
 The version here matches the `version` field in `.codex-plugin/plugin.json`. Note
-the `cognee` marketplace is `git-subdir`-pinned to `main`, so updates are actually
+the `cognee` marketplace tracks `main` (the plugin is a local path inside it), so updates are actually
 delivered per-commit via `codex plugin marketplace upgrade cognee` — this `version`
 is the cache key and semver record, bumped on each release, not the update trigger.
 
