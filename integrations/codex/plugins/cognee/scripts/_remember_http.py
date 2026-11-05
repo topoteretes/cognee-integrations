@@ -225,7 +225,9 @@ def do_remember(
 
     Inline text is sanitized first (``<private>`` spans, then the secret
     patterns), whatever ``COGNEE_CAPTURE`` says: that switch is for automatic
-    capture. File bytes are uploaded unchanged.
+    capture. UTF-8 file bytes get the secret redaction only; non-UTF-8 bytes
+    are uploaded unchanged. ``~/.cognee/.env`` is loaded first so
+    ``COGNEE_CAPTURE_REDACT(_PATTERNS)`` apply.
     """
     url = service_url.rstrip("/") + "/api/v1/remember"
     if file_path:
@@ -234,12 +236,17 @@ def do_remember(
                 content = fh.read()
         except OSError as e:
             return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
-    elif isinstance(content, str):
-        from _capture_policy import sanitize
+    from _capture_policy import redact, sanitize
+    from _env_file import load_env_file
 
-        content = sanitize(content)
+    load_env_file()
+    if isinstance(content, bytes):
+        try:
+            content = content.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
     if isinstance(content, str):
-        content = content.encode("utf-8")
+        content = (redact if file_path else sanitize)(content).encode("utf-8")
     # Hash only when the name needs it: a --file upload keeps its basename.
     filename = os.path.basename(str(file_path).rstrip("/")) if file_path else ""
     filename = filename or text_upload_name(node_set, content)
