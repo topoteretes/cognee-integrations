@@ -126,7 +126,9 @@ def main(argv: list[str]) -> int:
             # "auto" is reserved for auto recall (SDK-1393): no save lands in a
             # dataset that could never be pinned afterwards.
             if " ".join(dataset.split()).lower() == "auto":
-                print("Error: 'auto' is reserved for auto recall, not a dataset name", file=sys.stderr)
+                print(
+                    "Error: 'auto' is reserved for auto recall, not a dataset name", file=sys.stderr
+                )
                 return 2
             # An explicit name wins over the launch's dataset; its canonical
             # UUID is resolved below, after every flag is read.

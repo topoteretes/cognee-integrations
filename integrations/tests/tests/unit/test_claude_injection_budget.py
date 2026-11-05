@@ -340,7 +340,10 @@ def _tagged_sections(lookup):
             "\n---\nsource: text_5370d45d65cafed008ce7494da0490fe (2026-11-04)\nDated note."
             "\n\n## Related facts\nMaya is a customer.",
         },
-        {"dataset_name": "alice_in_wonderland", "text": "## Relevant passages\nAlice follows the White Rabbit."},
+        {
+            "dataset_name": "alice_in_wonderland",
+            "text": "## Relevant passages\nAlice follows the White Rabbit.",
+        },
         # An older server names no dataset: the item says where it came from.
         {"text": "## Relevant passages\nsource: notes-2f1c\nRelease checklist."},
     ]
@@ -354,7 +357,8 @@ def test_tags_name_document_and_dataset_without_a_number(lookup):
     # server says they came from (SDK-1393); no mN.
     out = _tagged_sections(lookup)
     assert (
-        "[document maya-7f3a · dataset live_context_support_agent_demo]\nsource: maya-7f3a" in out.text
+        "[document maya-7f3a · dataset live_context_support_agent_demo]\nsource: maya-7f3a"
+        in out.text
     )
     # Unnamed text, dated or not, and a book chunk name no document.
     assert "[dataset live_context_support_agent_demo]\nsource: text_a345" in out.text
@@ -369,7 +373,9 @@ def test_tags_name_document_and_dataset_without_a_number(lookup):
 
 def test_instruction_asks_for_the_untagged_line(lookup):
     text = lookup.credit_instruction(False, 2)
-    assert "> Cognee memory: <what you remembered>, from <document> in the <dataset> dataset" in text
+    assert (
+        "> Cognee memory: <what you remembered>, from <document> in the <dataset> dataset" in text
+    )
     assert "[mN]" not in text and "🧠" not in text
 
 
