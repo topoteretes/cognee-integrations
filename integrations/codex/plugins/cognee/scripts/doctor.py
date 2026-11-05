@@ -322,6 +322,8 @@ def _resolve_env_file() -> str:
 
 def collect_report() -> dict:
     """Gather all diagnostic fields into an ordered dict."""
+    from config import load_config
+
     mode = _resolve_mode()
     display_url, raw_url = _resolve_server_url()
     api_key_source = _resolve_api_key_source()
@@ -333,7 +335,7 @@ def collect_report() -> dict:
     circuit_breaker = _resolve_circuit_breaker()
     embedding_model, embedding_dimensions = _resolve_embedding()
 
-    return {
+    report = {
         "mode": mode + _mode_annotation(),
         "env_file": _resolve_env_file(),
         "server_url": display_url if display_url != "-" else None,
@@ -348,6 +350,17 @@ def collect_report() -> dict:
         "embedding_dimensions": embedding_dimensions,
         "circuit_breaker": circuit_breaker,
     }
+    from config import coding_memory_enabled, get_dataset
+
+    if coding_memory_enabled():
+        # Shown only while COGNEE_CODING_MEMORY is on (SDK-1336).
+        try:
+            from _coding_memory import doctor_line
+
+            report["coding_memory"] = doctor_line(get_dataset(load_config()))
+        except Exception as exc:
+            report["coding_memory"] = "check failed: " + str(exc)[:120]
+    return report
 
 
 _DISPLAY_ORDER = [
@@ -364,6 +377,7 @@ _DISPLAY_ORDER = [
     ("Embedding Model", "embedding_model"),
     ("Embedding Dims", "embedding_dimensions"),
     ("Circuit Breaker", "circuit_breaker"),
+    ("Coding Memory", "coding_memory"),
 ]
 
 

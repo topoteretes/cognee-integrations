@@ -74,6 +74,7 @@ from _proc import pid_alive as _pid_alive
 from config import (
     _cloud_http_request,
     _user_id_via_api,
+    coding_memory_enabled,
     ensure_cognee_ready,
     ensure_dataset_ready_via_api,
     get_dataset,
@@ -1916,6 +1917,9 @@ async def _run_heavy(
     try:
         from _code_graph import autoindex_on_session_start
 
+        if coding_memory_enabled():
+            # Coding memory (SDK-1336) leaves the code graph alone.
+            raise _SkipAutoindex()
         code_outcome = autoindex_on_session_start(
             cwd,
             service_url,
@@ -1924,6 +1928,8 @@ async def _run_heavy(
         )
         if code_outcome:
             hook_log("code_autoindex", code_outcome)
+    except _SkipAutoindex:
+        pass
     except Exception as exc:
         hook_log("code_autoindex_error", {"error": str(exc)[:200]})
 
@@ -2907,8 +2913,9 @@ def main():
             output["systemMessage"] = hso["systemMessage"]
     except Exception as exc:
         hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
+    coding = coding_memory_enabled()
     try:
-        if payload.get("source") != "resume":
+        if payload.get("source") != "resume" and not coding:
             from _session_stats import previous, summary
             from _session_stats import update as update_stats
 
@@ -2936,8 +2943,9 @@ def main():
     except Exception as exc:
         # The recap is a courtesy; it must never cost the startup output.
         hook_log("session_stats_failed", {"op": "recap", "error": str(exc)[:200]})
-    output = _apply_memory_preference(output)
-    if payload.get("source") != "resume":
+    if not coding:
+        output = _apply_memory_preference(output)
+    if payload.get("source") != "resume" and not coding:
         try:
             from _cloud_worker import enabled as cloud_enabled
             from _context_cache import inject as inject_digest
@@ -2962,7 +2970,57 @@ def main():
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     output = _apply_key_limit_warning(output)
+    if coding:
+        output = _coding_session_start(output, payload)
     print(json.dumps(output or {}))
+
+
+class _SkipAutoindex(Exception):
+    """Raised to skip the code-graph auto-index in coding memory mode."""
+
+
+def _coding_session_start(output: dict, payload: dict) -> dict:
+    """Coding memory (SDK-1336) at SessionStart: no steer, recap or digest text.
+
+    The model gets nothing here except, after a compaction, the lessons block again
+    (the compaction dropped it). Also checks once that the server takes the event
+    times coding mode needs, and says so when it does not (memory is then off),
+    and starts filling the lesson cache in the background.
+    """
+    import _coding_memory
+
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    hso.pop("additionalContext", None)
+    key = get_session_key()
+    cwd = str(payload.get("cwd") or "") or os.getcwd()
+    try:
+        with quiet_hook_output("session-start"):
+            support = _coding_memory.check_server_support(refresh=True, timeout=3.0)
+        if support.get("ok") is False:
+            notice = "Cognee coding memory is off: " + str(support.get("reason") or "")
+            top = str(result.get("systemMessage") or "").strip()
+            result["systemMessage"] = f"{top}\n{notice}".strip()
+        elif payload.get("source") == "compact" and key:
+            _coding_memory.reset_delivery(key)
+            with quiet_hook_output("session-start"):
+                block = _coding_memory.deliver(key, _coding_memory.last_request(key), cwd)
+            if block:
+                hso["additionalContext"] = block
+        elif key:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "send_unit", os.path.join(os.path.dirname(__file__), "send-unit.py")
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            module.spawn_warm(cwd)
+    except Exception as exc:
+        hook_log("coding_session_start_failed", {"error": str(exc)[:200]})
+    result["hookSpecificOutput"] = hso
+    return result
 
 
 if __name__ == "__main__":

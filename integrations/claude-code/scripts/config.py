@@ -132,6 +132,9 @@ _ENV_MAP = {
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",
     "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
     "COGNEE_SHARED_AGENT_MEMORY": "shared_agent_memory",
+    # Coding memory mode (SDK-1336): capture once per request, one lesson block
+    # per session. Off unless set to true.
+    "COGNEE_CODING_MEMORY": "coding_memory",
     # Background remember + cognify polling (read at the call sites via _float_env;
     # registered here for config-file support and discoverability).
     "COGNEE_COGNIFY_POLL_INTERVAL": "cognify_poll_interval",
@@ -202,6 +205,16 @@ def load_config() -> dict:
             config["base_url"] = ""
 
     return config
+
+
+def coding_memory_enabled() -> bool:
+    """True when ``COGNEE_CODING_MEMORY`` is on (see ``_coding_memory``)."""
+    return str(os.environ.get("COGNEE_CODING_MEMORY", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def get_session_id(config: dict, cwd: Optional[str] = None) -> str:

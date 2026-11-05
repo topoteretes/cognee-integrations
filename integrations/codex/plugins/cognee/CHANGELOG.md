@@ -10,6 +10,39 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0]
+
+### Added
+- **Coding memory mode (SDK-1336), opt-in with `COGNEE_CODING_MEMORY=true`.** Built for the
+  server's coding distillation (`DISTILLATION_MODE=coding`, cognee PR #6568). With the setting
+  unset nothing changes. With it on, the plugin does nothing while the agent works (per-call traces, the `Stop` QA entry, the every-150-entries `improve`, the per-prompt recall, the pre-compact anchor and its `improve`, and code-graph indexing are
+  off) and instead:
+  - **sends each request once, at its end.** A new `Stop` hook (`send-unit.py`) reads the
+    transcript and queues every tool call not sent yet, failed calls, reads and `ls` included,
+    then one QA entry with the request, the final message and
+    `{"cwd", "transcript_path", "date", "start_commit", "end_commit", "branch"}`. Every entry
+    carries the time of its event (`time`, and `prompt_time` on the QA entry), which the server
+    uses to pair calls to requests. Sent calls are remembered by id, so a second `Stop` in the
+    same request sends only what is new, as a continuation. Codex commands are sent as `Bash` calls (failed when the exit code is not 0) and file changes as `Edit`, so the server's tool tables apply; Codex subagent threads are not read yet. The `Stop` hook only hands the payload to a detached process, since Codex runs hooks synchronously. Entries go through the
+    existing queue (the replay buffer), so a server
+    outage loses nothing. `SessionEnd` queues anything the last `Stop` missed before the final
+    sync's `improve`.
+  - **runs `improve` at session end and once a day** (`COGNEE_IMPROVE_COOLDOWN`) in long sessions.
+  - **gives one short memory block at the first request of a session**, and again after a
+    compaction: the newest `test-baseline`, the two newest pitfalls and the lessons recalled for
+    the request (1,500 characters of whole lessons), each tagged with its session date and commit
+    and the files it names that changed or were deleted since, plus the last three commits. Lessons
+    are read from the dataset listing's metadata (`lesson_type`, `state_key`, `git_commit`,
+    `files`, `project_node_sets`) and their bodies cached under `coding/lessons/`, filled in the
+    background at session start. Only this repository's lessons are used. `SessionStart` now also matches `compact`; with the setting unset it returns at once, as before.
+  - **sets up the server it starts:** `DISTILLATION_MODE=coding`, `AUTO_FEEDBACK=false` and
+    `COGNEE_PROJECT_NODE_SET=auto` (tagged at the repository root), each only when not set.
+- **Memory is off on a server that is too old.** Without the event-time fields of cognee PR
+  #6568, coding mode neither captures nor injects, and session start says why.
+- **Doctor shows coding memory** while it is on: server support and whether the key holds
+  `delete` on the dataset (the coding distillation deletes replaced lessons).
+- New `coding.*` log events (see `EVENTS.md`).
+
 ## [1.7.9]
 
 ### Added

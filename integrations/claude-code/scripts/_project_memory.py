@@ -50,6 +50,17 @@ def begin(dataset: str, session_id: str, cwd: str) -> None:
     companion = (
         companion and dataset != "agent_sessions" and not dataset.endswith("-agent_sessions")
     )
+    if setting.lower() == "auto":
+        try:
+            from _coding_memory import enabled as coding_enabled
+            from _coding_memory import git_root
+
+            if coding_enabled():
+                # Coding memory scopes lessons per repository: tag the repository
+                # root, not the subdirectory the session happened to open in.
+                cwd = git_root(cwd) or cwd
+        except Exception:
+            pass
     tag = project_tag(cwd, setting)
     if not tag and not companion:
         return

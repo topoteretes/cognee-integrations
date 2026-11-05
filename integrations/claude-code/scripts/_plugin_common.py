@@ -180,6 +180,15 @@ def apply_cognee_env() -> None:
     os.environ.setdefault("DATA_ROOT_DIRECTORY", str(_COGNEE_DATA_DIR))
     os.environ.setdefault("CACHE_ROOT_DIRECTORY", str(_COGNEE_CACHE_DIR))
     os.environ.setdefault("CACHING", "true")
+    if os.environ.get("COGNEE_CODING_MEMORY", "").strip().lower() in ("1", "true", "yes", "on"):
+        # Coding memory (SDK-1336) runs the server's coding distillation, which
+        # learns from whole requests at improve time: no per-trace feedback, one
+        # project node set per repository so state lessons stay per project.
+        # setdefault: an explicit setting still wins, and these only reach a
+        # server this plugin starts.
+        os.environ.setdefault("DISTILLATION_MODE", "coding")
+        os.environ.setdefault("AUTO_FEEDBACK", "false")
+        os.environ.setdefault("COGNEE_PROJECT_NODE_SET", "auto")
     os.environ.setdefault("AUTO_FEEDBACK", "true")
     os.environ.setdefault("LLM_INSTRUCTOR_MODE", "json_schema_mode")
 

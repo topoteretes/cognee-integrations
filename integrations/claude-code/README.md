@@ -493,6 +493,66 @@ session cache is written, never searched. The session id is bound to the active 
 wrapper drops it for any other dataset; the active dataset named by hand keeps it. Datasets are
 addressed by UUID because a name only resolves among the datasets your identity owns.
 
+## Coding memory (opt-in)
+
+`COGNEE_CODING_MEMORY=true` (in the environment or `~/.cognee/.env`) switches the plugin to a
+mode built for the server's coding distillation (`DISTILLATION_MODE=coding`, cognee PR #6568).
+With the setting unset, nothing below applies.
+
+**Nothing happens while the agent works.** No trace per tool call, no recall per prompt,
+no file context on `Read`, no pre-compact anchor, no session-start steer or recap, no
+code-graph indexing and no `improve` every 150 entries.
+
+**Each request is sent once, at its end.** The `Stop` hook (`send-unit.py`) reads the
+transcript and queues:
+
+- every tool call not sent yet, as a `trace` entry: failed calls, reads and `ls` included,
+  with the same byte caps as per-call capture. Only `COGNEE_CAPTURE_TOOLS` and the plugin's own
+  commands are filtered out, and everything is redacted. Subagent calls come from the session's `subagents/` transcripts.
+- one `qa` entry: the request, the final message (at most 8,000 bytes) and the context
+  `{"cwd", "transcript_path", "date", "start_commit", "end_commit", "branch"}`.
+
+Each entry carries the time of its event (`time`; `prompt_time` on the QA entry), and the server
+pairs calls to requests by time. Calls are remembered by id, so when the agent stops twice for
+one request (a background task finished, a stop hook made it continue) the second `Stop` sends
+only the new calls, with a QA entry marked as a continuation. Entries go through the existing
+queue (the cloud spool in cloud mode, the replay buffer otherwise), so nothing is lost while the server is
+down. `improve` runs at session end (after the queue is drained) and once a day in long sessions
+(`COGNEE_IMPROVE_COOLDOWN`).
+
+**One memory block per session.** The first prompt of a session, and the first one after a
+compaction, gets a block of about 2,000 characters:
+
+```
+Project memory (Cognee), learned from 4 earlier sessions in the agent_sessions dataset. Check it before exploring: …
+Lessons:
+- All 212 unit tests pass; run them with `uv run pytest -q`. (session 2026-11-03, commit 1a2b3c4)
+- Edit on an unchanged string fails with "No changes to make" → use: rewrite the file with a script. (seen in 2 sessions) (session 2026-11-02, commit 9f8e7d6; app.py changed since)
+Recent commits (newest first):
+- 5d6e7f8 (2026-11-04): src/app.py, tests/test_app.py (+40/−12 lines)
+```
+
+It holds the newest `test-baseline`, the two newest pitfalls, then the lessons recalled for the
+request: 1,500 characters of whole lessons, newest per state key, without duplicates. Each lesson
+is tagged with its session's date and commit and the files it names that changed or no longer
+exist since (read-only git; no tag for an unknown commit or outside git). Lessons are read from the
+dataset listing's metadata, so only this repository's lessons are used (`project_node_sets`), and
+their bodies are cached in `~/.cognee-plugin/claude-code/coding/lessons/`, filled in the background at
+session start. A session without lessons gets no block.
+
+**Server.** Coding mode needs a cognee server with PR #6568. On an older one (no event-time
+fields in `/openapi.json`), memory is off: nothing is captured or injected, and session start
+says so. When the plugin starts the local server it sets `DISTILLATION_MODE=coding`,
+`AUTO_FEEDBACK=false` and `COGNEE_PROJECT_NODE_SET=auto` (the repository root), each only when
+not already set; a local server shared with other plugins then runs the coding distillation for
+them too. On a remote server, set `DISTILLATION_MODE=coding` there. The coding distillation deletes
+the lessons a newer one replaces, so the key needs `delete` on the dataset next to `write`;
+`doctor` shows the server support and the permission while coding mode is on.
+
+**Failures.** Every step fails open: a slow, unreachable or keyless server costs the block or
+delays the send, never the session. Events are logged as `coding.*` (see `EVENTS.md`); state is in
+`~/.cognee-plugin/claude-code/coding/`.
+
 ## Hooks
 
 | Hook | Behavior |
@@ -501,7 +561,7 @@ addressed by UUID because a name only resolves among the datasets your identity 
 | `UserPromptSubmit` | dataset-scoped context lookup + async prompt staging |
 | `PreToolUse` (`Read`) | [file-scoped context](#file-context-on-read): code-graph facts about the file about to be read, injected as `additionalContext` |
 | `PostToolUse` | async trace write |
-| `Stop` | assistant answer write + credits refresh |
+| `Stop` | assistant answer write + credits refresh; in [coding memory](#coding-memory-opt-in), `send-unit.py` sends the request instead |
 | `PreCompact` | memory anchor build before compaction |
 | `SessionEnd` | trigger detached final sync worker |
 
@@ -621,6 +681,7 @@ A **failed** attempt arms the same window as a **backoff**: if the submit timed 
 |---|---|---|
 | `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
 | `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session; persisted per session |
+| `COGNEE_CODING_MEMORY` | unset (off) | `true` switches to [coding memory](#coding-memory-opt-in): capture once per request, one lesson block per session |
 | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST (agent-context extraction and distillation run inside the request) |
 

@@ -442,10 +442,13 @@ def test_runtime_copy_tracks_the_codex_runtime(plugin_root):
     """Every codex script exists here; only the host-specific ones may differ."""
     if not CODEX_SCRIPTS.is_dir():
         pytest.skip("codex runtime not present")
+    # Coding memory (SDK-1336) ships for Claude Code and Codex only; Cursor's
+    # hooks never call it, so the copy does not carry it.
+    codex_only = {"_coding_memory.py", "send-unit.py"}
     missing = [
         p.name
         for p in CODEX_SCRIPTS.iterdir()
-        if p.is_file() and not (SCRIPTS_DIR / p.name).exists()
+        if p.is_file() and p.name not in codex_only and not (SCRIPTS_DIR / p.name).exists()
     ]
     assert not missing, f"cursor copy lacks codex scripts: {missing}"
     cursor_only = {

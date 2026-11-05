@@ -2,7 +2,7 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume|clear",
+        "matcher": "startup|resume|clear|compact",
         "hooks": [
           {
             "type": "command",
@@ -57,6 +57,12 @@
             "commandWindows": "py -3 \"${PLUGIN_ROOT}/scripts/hook_runner.py\" \"${PLUGIN_ROOT}/scripts/store-to-session.py\" --stop || python \"${PLUGIN_ROOT}/scripts/hook_runner.py\" \"${PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
             "timeout": 120,
             "statusMessage": "Saving assistant response..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/hook_runner.py\" \"${PLUGIN_ROOT}/scripts/send-unit.py\" || python \"${PLUGIN_ROOT}/scripts/hook_runner.py\" \"${PLUGIN_ROOT}/scripts/send-unit.py\"",
+            "commandWindows": "py -3 \"${PLUGIN_ROOT}/scripts/hook_runner.py\" \"${PLUGIN_ROOT}/scripts/send-unit.py\" || python \"${PLUGIN_ROOT}/scripts/hook_runner.py\" \"${PLUGIN_ROOT}/scripts/send-unit.py\"",
+            "timeout": 10
           },
           {
             "type": "command",

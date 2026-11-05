@@ -113,6 +113,9 @@ _ENV_MAP = {
     "COGNEE_API_KEY": "api_key",
     "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
     "COGNEE_SHARED_AGENT_MEMORY": "shared_agent_memory",
+    # Coding memory mode (SDK-1336): capture once per request, one lesson block
+    # per session. Off unless set to true.
+    "COGNEE_CODING_MEMORY": "coding_memory",
     # base_url is an externally managed deployment: never boot a local fallback
     # server on its port; fail loudly when it is unreachable.
     "COGNEE_MANAGED_ENDPOINT": "managed_endpoint",
@@ -190,6 +193,16 @@ def load_config() -> dict:
             config["base_url"] = ""
 
     return config
+
+
+def coding_memory_enabled() -> bool:
+    """True when ``COGNEE_CODING_MEMORY`` is on (see ``_coding_memory``)."""
+    return str(os.environ.get("COGNEE_CODING_MEMORY", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def get_session_id(config: dict, cwd: Optional[str] = None) -> str:

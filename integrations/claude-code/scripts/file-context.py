@@ -61,6 +61,7 @@ from _plugin_common import (  # noqa: E402
     resolve_session_key_from_payload,
     set_session_key,
 )
+from config import coding_memory_enabled
 
 ENV_ENABLED = "COGNEE_FILE_CONTEXT"
 ENV_SCOPES = "COGNEE_FILE_CONTEXT_SCOPES"
@@ -590,6 +591,9 @@ def run(payload: dict) -> str:
 
 def main() -> None:
     if is_observer_child():
+        return
+    if coding_memory_enabled():
+        # Coding memory (SDK-1336): no context is added during the work.
         return
     payload_raw = sys.stdin.read()
     if not payload_raw.strip():

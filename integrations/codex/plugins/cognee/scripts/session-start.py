@@ -66,6 +66,7 @@ from cognee_statusline_render import render_status_for_host
 from config import (
     _cloud_http_request,
     _user_id_via_api,
+    coding_memory_enabled,
     ensure_cognee_ready,
     ensure_dataset_ready_via_api,
     get_dataset,
@@ -1886,6 +1887,9 @@ async def _run_heavy(
     try:
         from _code_graph import autoindex_on_session_start
 
+        if coding_memory_enabled():
+            # Coding memory (SDK-1336) leaves the code graph alone.
+            raise _SkipAutoindex()
         code_outcome = autoindex_on_session_start(
             cwd,
             service_url,
@@ -1894,6 +1898,8 @@ async def _run_heavy(
         )
         if code_outcome:
             hook_log("code_autoindex", code_outcome)
+    except _SkipAutoindex:
+        pass
     except Exception as exc:
         hook_log("code_autoindex_error", {"error": str(exc)[:200]})
 
@@ -2302,6 +2308,20 @@ def main():
     except json.JSONDecodeError:
         payload = {}
 
+    coding = coding_memory_enabled()
+    if payload.get("source") == "compact":
+        # The matcher includes "compact" for coding memory only (SDK-1336): a
+        # compaction keeps the session, so nothing is set up again, and outside
+        # coding mode the hook stays the no-op it was before.
+        output = {}
+        if coding:
+            candidate, _source = resolve_session_key_from_payload(payload)
+            if candidate:
+                set_session_key(candidate)
+            output = _coding_session_start({}, payload)
+        print(json.dumps(output))
+        return
+
     # Keep SessionStart output as a valid empty hook result. Recall context is
     # injected on UserPromptSubmit, matching the original Codex hook contract.
     output = {}
@@ -2313,7 +2333,56 @@ def main():
     output = _apply_sync_notice(output, payload)
     output = _apply_host_python_warning(output)
     output = _apply_key_limit_warning(output)
+    if coding:
+        output = _coding_session_start(output, payload)
     print(json.dumps(output))
+
+
+class _SkipAutoindex(Exception):
+    """Raised to skip the code-graph auto-index in coding memory mode."""
+
+
+def _coding_session_start(output: dict, payload: dict) -> dict:
+    """Coding memory (SDK-1336) at SessionStart.
+
+    After a compaction the lessons block is given again (the compaction dropped
+    it). Otherwise this checks once that the server takes the event times coding
+    mode needs, says so when it does not (memory is then off), and starts filling
+    the lesson cache in the background.
+    """
+    import _coding_memory
+
+    result = dict(output or {})
+    key = get_session_key()
+    cwd = str(payload.get("cwd") or "") or os.getcwd()
+    try:
+        with quiet_hook_output("session-start"):
+            support = _coding_memory.check_server_support(refresh=True, timeout=3.0)
+        if support.get("ok") is False:
+            notice = "Cognee coding memory is off: " + str(support.get("reason") or "")
+            top = str(result.get("systemMessage") or "").strip()
+            result["systemMessage"] = f"{top}\n{notice}".strip()
+        elif payload.get("source") == "compact" and key:
+            _coding_memory.reset_delivery(key)
+            with quiet_hook_output("session-start"):
+                block = _coding_memory.deliver(key, _coding_memory.last_request(key), cwd)
+            if block:
+                hso = dict(result.get("hookSpecificOutput") or {})
+                hso["hookEventName"] = "SessionStart"
+                hso["additionalContext"] = block
+                result["hookSpecificOutput"] = hso
+        elif key:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "send_unit", os.path.join(os.path.dirname(__file__), "send-unit.py")
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            module.spawn_warm(cwd)
+    except Exception as exc:
+        hook_log("coding_session_start_failed", {"error": str(exc)[:200]})
+    return result
 
 
 if __name__ == "__main__":
