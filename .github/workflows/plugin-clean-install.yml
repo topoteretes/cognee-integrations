@@ -163,8 +163,8 @@ jobs:
       - name: "Codex: add the GitHub marketplace"
         run: codex plugin marketplace add "$SOURCE_REPO" --ref "$SOURCE_SHA" --json
 
-      # The root marketplace pins the plugin to git-subdir @ main, so this is
-      # exactly what a user gets today, independent of the PR's plugin tree.
+      # The root marketplace points at the plugin with a local path inside the
+      # cloned repository, so this installs the plugin tree at $SOURCE_SHA.
       - name: "Codex: install cognee@cognee"
         run: |
           out=$(codex plugin add cognee@cognee --json)

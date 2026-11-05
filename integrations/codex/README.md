@@ -616,8 +616,9 @@ local-vs-cloud mode split, and how often an open recall breaker skipped recall.
 
 ## Updating
 
-The `cognee` marketplace tracks the repository's `main` branch (`git-subdir`,
-`ref: main`), so updates arrive as new commits — they are **not** gated by the
+The `cognee` marketplace tracks the repository's `main` branch (the root
+`.agents/plugins/marketplace.json` points at `integrations/codex/plugins/cognee` with a
+local path inside the cloned repository), so updates arrive as new commits — they are **not** gated by the
 plugin `version` field. Pull the latest with:
 
 ```bash
