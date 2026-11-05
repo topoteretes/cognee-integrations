@@ -335,3 +335,44 @@ def test_every_result_carries_the_message_for_its_mode_and_reason():
     assert "own choice" in results["pin"]["message"]
     assert "'other'" in results["switch"]["message"]
     assert "configured recall mode" in results["reset"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("file_mode", "env_mode", "mode", "source"),
+    [
+        # The exported variable wins over cognee.json, which the setup wizard
+        # always writes: otherwise COGNEE_PLUGIN_RECALL_MODE would do nothing
+        # after setup.
+        ("pinned", "auto", "auto", "env"),
+        ("auto", "pinned", "pinned", "env"),
+        ("pinned", None, "pinned", "file"),
+        (None, None, "auto", "default"),
+    ],
+)
+def test_the_exported_recall_mode_wins_over_cognee_json(
+    tmp_path, monkeypatch, file_mode, env_mode, mode, source
+):
+    file_config = {"dataset": "work"}
+    if file_mode is not None:
+        file_config["recall_mode"] = file_mode
+    (tmp_path / "cognee.json").write_text(json.dumps(file_config))
+    if env_mode is not None:
+        monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", env_mode)
+    config = config_mod.load_config(tmp_path)
+    assert config["recall_mode"] == mode
+    assert config["recall_mode_source"] == source
+
+
+@pytest.mark.parametrize(
+    ("source", "named", "not_named"),
+    [
+        ("file", "cognee.json", "COGNEE_PLUGIN_RECALL_MODE"),
+        ("env", "COGNEE_PLUGIN_RECALL_MODE=pinned", "cognee.json"),
+    ],
+)
+def test_a_configured_pin_names_where_it_was_configured(source, named, not_named):
+    message = provider_mod._recall_message(
+        "pinned", provider_mod.RECALL_PIN_CONFIGURED, "work", source
+    )
+    assert named in message
+    assert not_named not in message

@@ -10,7 +10,7 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.5.0]
+## [1.4.3]
 
 ### Added
 - **Recall is auto by default (SDK-1393).** Unless recall is pinned, the per-prompt memory
@@ -64,8 +64,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
   back. Hermes reports Cognee as unavailable with that command, and `hermes cognee status`
   shows the runtime as outdated. `install-runtime` upgrades `runtime/venv` in place; a failed
   or interrupted install leaves no ready marker, so local mode stays off and the next
-  `install-runtime` repairs the venv. Restart a local server still running from the old
-  version, and start a new Hermes session.
+  `install-runtime` repairs the venv. Then start a new Hermes session.
+- **`install-runtime` stops the local server this plugin started before it installs.** A
+  server still running from the venv would load modules of the new version into the old
+  process. The plugin's servers are found by command line (the uvicorn app run by the runtime
+  venv's interpreter or by Hermes's own), stopped with SIGTERM, then SIGKILL after 15 seconds,
+  and their pids printed. Other cognee plugins sharing that server start a new one on their
+  next request; a server another plugin started is never stopped. A session that would start
+  a server while `install-runtime` holds its lock reports Cognee as unavailable instead of
+  starting one on a half-upgraded venv.
+- **A cognee older than the pin in Hermes's own environment is never started.** 1.3.x
+  installed cognee 1.6.5 as a dependency, and `pip install -U` leaves it behind; local mode
+  used to start the server from it, so recall was never routed and nothing said why. It is now
+  used only at the pinned version or newer; otherwise local mode stays off with the
+  `install-runtime` message, and `hermes cognee status` shows it as outdated.
+- **A running local server on an older cognee is not used.** The server on the local port is
+  shared with the other cognee plugins and may be one of them running an older cognee. When
+  its `/health` version is older than the pin, Hermes reports Cognee as unavailable, naming
+  the port, until it is replaced. A server that reports no version is used.
+- **`COGNEE_PLUGIN_RECALL_MODE` overrides `recall_mode` in `cognee.json`.** The setup wizard
+  always writes `recall_mode`, so the exported variable did nothing after setup. It now wins,
+  as in the hook-family plugins (every other setting still lets `cognee.json` win), and a
+  configured pin names where it was set: `COGNEE_PLUGIN_RECALL_MODE=pinned` or
+  `recall_mode "pinned" in cognee.json`.
 
 ## [1.4.1]
 

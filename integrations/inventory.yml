@@ -34,7 +34,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "1.8.0"
+    current_version: "1.7.7"
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
@@ -45,7 +45,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: http-api
-    current_version: "1.7.0"
+    current_version: "1.6.8"
     migration_status: done
     notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
 
@@ -56,7 +56,7 @@ integrations:
     registry: cursor-marketplace
     package_name: null
     cognee_dependency: http-api
-    current_version: "0.2.0"
+    current_version: "0.1.2"
     migration_status: done
     notes: >-
       Cursor plugin (.cursor-plugin/plugin.json + hooks/hooks.json) built on the Codex
@@ -83,7 +83,7 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.8.0"
+    current_version: "1.7.9"
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
 
@@ -105,7 +105,7 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
     cognee_dependency: http-api
-    current_version: "1.5.0"
+    current_version: "1.4.3"
     migration_status: done
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: >-

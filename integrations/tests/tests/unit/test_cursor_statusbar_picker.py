@@ -121,3 +121,52 @@ def test_the_notification_is_the_script_message_with_a_generic_fallback():
         ],
     )
     assert out["messages"] == [said, "this chat now uses b."]
+
+
+def test_only_the_row_marked_current_is_current_among_same_named_datasets():
+    """Under shared memory the listing can carry two rows with the active name
+    (the person's own and another principal's copy). Only the one the script
+    marks is current; picking the other switches to it by id, not ``pin``."""
+    listing = {
+        "current": "agent_sessions",
+        "recall": "pinned",
+        "datasets": [
+            {"name": "agent_sessions", "id": "mine", "current": True, "writable": True},
+            {"name": "agent_sessions", "id": "theirs", "current": False, "writable": True},
+            {"name": "demo", "id": "demo-id", "current": False, "writable": True},
+        ],
+    }
+    items = _run([listing], [])["items"][0]
+    rows = [item for item in items if item["label"] == "agent_sessions"]
+    assert len(rows) == 2
+    mine, theirs = rows
+    assert mine["current"] is True and mine["target"] == "pin"
+    assert mine["description"].startswith("current")
+    assert theirs["current"] is False and theirs["target"] == "theirs"
+    assert theirs["description"] == "" and "detail" not in theirs
+    assert _by_label(items)["demo"]["target"] == "demo"
+
+
+def test_an_older_listing_without_current_marks_the_active_row_by_name():
+    listing = {
+        "current": "a",
+        "recall": "pinned",
+        "datasets": [
+            {"name": "a", "id": "1", "writable": True},
+            {"name": "b", "id": "2", "writable": True},
+        ],
+    }
+    items = _by_label(_run([listing], [])["items"][0])
+    assert items["a"]["current"] is True and items["a"]["target"] == "pin"
+    assert items["b"]["current"] is False and items["b"]["target"] == "b"
+
+
+def test_the_active_dataset_missing_from_the_listing_heads_it():
+    listing = {
+        "current": "read-only",
+        "recall": "pinned",
+        "datasets": [{"name": "b", "id": "2", "current": False, "writable": True}],
+    }
+    items = _run([listing], [])["items"][0]
+    assert items[1]["label"] == "read-only" and items[1]["target"] == "pin"
+    assert items[2]["label"] == "b" and items[2]["current"] is False

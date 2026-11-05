@@ -15,7 +15,9 @@ $(pulse) cognee agent_sessions · cloud · 1 memory hit
   the server picks the dataset for each recall; saves stay where they are). The active
   dataset's row shows the recall mode, with the plugin's sentence saying why under it; picking it
   restricts recall to it without a new session (`switch-dataset.py pin`). Picking another dataset
-  switches the chat and restricts recall to it (a dataset named `pin` is sent by its id). A
+  switches the chat and restricts recall to it (a dataset named `pin`, or one whose name another row
+  shares, such as another principal's copy of the active dataset, is sent by its id). Only the row the
+  switch script marks as current is the active one. A
   dataset named `auto` (the name is reserved) is not offered, and as the active one it is shown
   but cannot be picked. The notification after a pick is the switch script's own `message`.
 - **Which chat:** the most recent prompt across chats. Extensions can't see which Cursor

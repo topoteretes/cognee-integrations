@@ -101,6 +101,12 @@ def hermetic_env(request, monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_env, "RUNTIME_DIR", tmp_path / "runtime")
     monkeypatch.setattr(runtime_env, "VENV_DIR", tmp_path / "runtime" / "venv")
     monkeypatch.setattr(runtime_env, "READY_MARKER", tmp_path / "runtime" / "ready.json")
+    # Nor may a developer's running cognee server: install-runtime would stop it,
+    # and its /health version would decide whether a test's server is current.
+    monkeypatch.setattr(runtime_env, "_plugin_server_pids", lambda interpreters=None: [])
+    from cognee_integration_hermes import server_bootstrap
+
+    monkeypatch.setattr(server_bootstrap, "health_version", lambda url, timeout=2.0: "")
 
 
 @pytest.fixture(autouse=True)

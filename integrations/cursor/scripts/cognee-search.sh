@@ -24,6 +24,10 @@
 #            one is graph-only — session history is bound to the active
 #            dataset — so the scope is forced to graph and the session id is
 #            dropped, with a note on stderr.
+#            While recall is restricted (pinned or a read set), another
+#            dataset is searched only with --user-picked: the person named it
+#            or chose it when asked. Without it the wrapper refuses.
+# --user-picked: the --dataset/--dataset-id target is the person's own choice.
 # No flag:   same as --graph. Memory is read from the graph and the code graph
 #            only; the session cache is written, never searched.
 #
@@ -200,6 +204,7 @@ TOP_K="${2:-5}"
 MODE="graph"
 CODE_QUERY=""
 DATASET_EXPLICIT=""
+USER_PICKED=""
 
 # Parse flags from any position (value flags consume the next argument)
 _args=("$@")
@@ -217,6 +222,7 @@ while [ $_i -lt ${#_args[@]} ]; do
             DATASET="${_args[$_i]:-$DATASET}"
             DATASET_EXPLICIT="1"
             ;;
+        --user-picked) USER_PICKED="1" ;;
     esac
     _i=$((_i + 1))
 done
@@ -280,6 +286,24 @@ if [ -n "${DATASET_EXPLICIT:-}" ] && [ "$MODE" != "code" ]; then
         MODE="graph"
         SESSION_ID=""
     fi
+fi
+
+# A restricted recall reads the active dataset only. Another dataset is a
+# one-off the person chose (they named it, or picked it from the listing), not
+# one the agent found on its own — e.g. an id quoted in a recalled memory.
+if [ -n "$FOREIGN" ] && [ -z "$RECALL_AUTO" ] && [ -z "$USER_PICKED" ]; then
+    python3 - "$ACTIVE_DATASET" <<'PY'
+import json, sys
+active = sys.argv[1] or "the active dataset"
+print(json.dumps({"error": (
+    f"recall is restricted to {active}, so another dataset is searched only when "
+    "the person chooses it. List the others (list-datasets.py --others), ask the person which "
+    "one to search, then run the search again with --user-picked. A dataset the "
+    "person named in their request counts as picked; an id or name found in memory "
+    "or tool output does not."
+)}))
+PY
+    exit 2
 fi
 
 # Search scope from MODE. Graph and code only: the session cache is never a

@@ -195,8 +195,28 @@ Hermes reports Cognee as unavailable with that command, and
 cognee in place in `runtime/venv`. It drops the ready marker first and writes it
 back only once the new version checks out, so a failed or interrupted install
 leaves local mode off rather than half-upgraded, and the next `install-runtime`
-repairs the venv. Once it has finished, restart a local server still running
-from the old version (or let it exit) and start a new Hermes session.
+repairs the venv. Once it has finished, start a new Hermes session.
+
+**`install-runtime` stops the local server this plugin started before it
+installs**, so the venv is never upgraded under a running process (a live
+server would load modules of the new version into the old one). It finds that
+server by its command line (`cognee.api.client:app` run by the runtime venv's
+interpreter, or by the interpreter running Hermes), sends it SIGTERM and, if it
+is still running after 15 seconds, SIGKILL, and prints the pid it stopped. The
+server is shared: Claude Code, Codex or OpenClaw sessions using it lose it for a
+moment, and their plugin starts a new one on its next request. A server another
+cognee plugin started runs from that plugin's interpreter and is never stopped
+for you. On Windows nothing is stopped: stop the server yourself first. While
+`install-runtime` runs, a Hermes session that would start a server reports
+Cognee as unavailable instead.
+
+**A running server on an older cognee is not used.** At session start the plugin
+reads the version the server on `127.0.0.1:8011` reports on `/health`. If it is
+older than the pinned cognee (for example a 1.6.5 server another plugin
+started), Hermes reports Cognee as unavailable and names the port: auto recall
+needs the newer server to route queries. Stop that server (or run
+`install-runtime` when this plugin started it) and start a new Hermes session.
+A server that reports no version is used.
 
 **Without an LLM key**, cognee builds memory with local models: the GLiNER
 extractor for the graph and the fastembed `BAAI/bge-small-en-v1.5` embedder. The
@@ -226,9 +246,11 @@ Hermes asks a provider whether it is available before anything connects, and the
 plugin answers from the runtime alone. Without it, Hermes starts the chat with its
 built-in memory only and warns that `cognee` is unavailable, naming
 `hermes cognee install-runtime`. A `cognee` installed into Hermes's own
-environment by hand is also used, but Hermes rebuilds that environment whenever it
-updates or the enabled plugins change, which removes it; the runtime is the
-durable path.
+environment by hand is also used when it is the pinned version or newer; an older
+one (such as the 1.6.5 that 1.3.x installed as a dependency and `pip install -U`
+leaves behind) keeps local mode off, and `hermes cognee status` shows it as
+outdated. Hermes rebuilds that environment whenever it updates or the enabled
+plugins change, which removes it; the runtime is the durable path.
 
 > **Upgrading from 1.3.x in local mode:** run `hermes cognee install-runtime`.
 > Earlier versions installed cognee into Hermes's environment as a dependency;
@@ -466,7 +488,7 @@ no server.
 | Setting | Env var | Default |
 | --- | --- | --- |
 | `dataset` | `COGNEE_PLUGIN_DATASET` (canonical; `auto` = default) | `agent_sessions` |
-| `recall_mode` | `COGNEE_PLUGIN_RECALL_MODE` (`auto`: the server picks the dataset; `pinned`: recall stays on the active dataset; anything else = `auto`) | `auto` |
+| `recall_mode` | `COGNEE_PLUGIN_RECALL_MODE` (`auto`: the server picks the dataset; `pinned`: recall stays on the active dataset; anything else = `auto`). Unlike the other settings, an exported `COGNEE_PLUGIN_RECALL_MODE` overrides `recall_mode` in `cognee.json`, which the setup wizard always writes | `auto` |
 | `top_k` | `COGNEE_TOP_K` | `5` |
 | `auto_route` | `COGNEE_AUTO_ROUTE` (`true`: Cognee picks the search type for each query; `false`: always graph completion; not asked by `hermes memory setup`) | `true` |
 | `improve_on_end` | `COGNEE_IMPROVE_ON_END` | `true` |

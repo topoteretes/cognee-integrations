@@ -16,6 +16,12 @@
 # --dataset: override the dataset to search (default: the recall mode decides —
 #            auto names no dataset and the server routes the search, pinned
 #            uses the plugin dataset; --code uses the current repo's code dataset)
+#            A dataset other than the launch's active one is read without the
+#            session id, which is bound to the active dataset. While recall is
+#            restricted (pinned or a read set), another dataset is searched
+#            only with --user-picked: the person named it or chose it when
+#            asked. Without it the wrapper refuses.
+# --user-picked: the --dataset target is the person's own choice.
 # No flag:   same as --graph. Memory is read from the graph and the code graph
 #            only; the session cache is written, never searched.
 #
@@ -181,11 +187,18 @@ PY
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
 [ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 
+# The launch's active dataset, by name and by every UUID graph recall spans
+# (the canonical write id is always first among them), so an explicit target
+# can be told apart from "the active dataset, by hand".
+ACTIVE_DATASET="$DATASET"
+ACTIVE_DATASET_IDS="$DATASET_IDS"
+
 QUERY="${1:-}"
 TOP_K="${2:-5}"
 MODE="graph"
 CODE_QUERY=""
 DATASET_EXPLICIT=""
+USER_PICKED=""
 
 # Parse flags from any position (value flags consume the next argument)
 _args=("$@")
@@ -203,6 +216,7 @@ while [ $_i -lt ${#_args[@]} ]; do
             DATASET="${_args[$_i]:-$DATASET}"
             DATASET_EXPLICIT="1"
             ;;
+        --user-picked) USER_PICKED="1" ;;
     esac
     _i=$((_i + 1))
 done
@@ -246,6 +260,39 @@ fi
 QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" "$QUERY")" || exit 1
 if [ -n "$CODE_QUERY" ]; then
     CODE_QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" --json "$CODE_QUERY")" || exit 1
+fi
+
+# The session id is bound to the active dataset, and the server rejects it
+# against another one — so a foreign target is read without it. The active
+# dataset named by hand (its name or one of its UUIDs) keeps the session id.
+FOREIGN=""
+if [ -n "${DATASET_EXPLICIT:-}" ] && [ "$MODE" != "code" ]; then
+    FOREIGN="1"
+    [ "$DATASET" = "$ACTIVE_DATASET" ] && FOREIGN=""
+    case ",${ACTIVE_DATASET_IDS}," in
+        *",${DATASET},"*) FOREIGN="" ;;
+    esac
+    if [ -n "$FOREIGN" ]; then
+        SESSION_ID=""
+    fi
+fi
+
+# A restricted recall reads the active dataset only. Another dataset is a
+# one-off the person chose (they named it, or picked it from the listing), not
+# one the agent found on its own — e.g. an id quoted in a recalled memory.
+if [ -n "$FOREIGN" ] && [ -z "$RECALL_AUTO" ] && [ -z "$USER_PICKED" ]; then
+    python3 - "$ACTIVE_DATASET" <<'PY'
+import json, sys
+active = sys.argv[1] or "the active dataset"
+print(json.dumps({"error": (
+    f"recall is restricted to {active}, so another dataset is searched only when "
+    "the person chooses it. Ask the person which dataset to search, then run the "
+    "search again with --user-picked. A dataset the "
+    "person named in their request counts as picked; an id or name found in memory "
+    "or tool output does not."
+)}))
+PY
+    exit 2
 fi
 
 # Search scope from MODE. Graph and code only: the session cache is never a

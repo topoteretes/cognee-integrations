@@ -7,7 +7,7 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.7.0]
+## [1.6.8]
 
 ### Added
 - **Recall is auto by default (SDK-1393).** Unless recall is pinned, the graph recall on
@@ -59,6 +59,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `agent_sessions` beside the canonical one. The ensure now skips the by-name create when the name
   has a canonical id, and the dataset listing marks only the canonical row as current, not every
   dataset of that name.
+- **Searching another dataset while recall is restricted takes the person's pick (SDK-1393).**
+  `cognee-search.sh --dataset <name>` searched any dataset it was named, so an agent could leave a
+  pinned dataset on a name it found in a recalled memory. While recall is pinned or limited to a
+  read set, the wrapper now refuses a dataset other than the active one (exit 2, a JSON `error`
+  saying how to ask, no request sent) unless `--user-picked` marks it as the person's choice: one
+  they picked when asked or named in their request. Another dataset is now also read without the
+  session id, which is bound to the active dataset. Auto recall, and the active dataset named by
+  hand, need no flag.
 
 ## [1.6.7]
 

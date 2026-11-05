@@ -19,7 +19,7 @@ def installed_root(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {})
     monkeypatch.setattr(cli, "config_path", lambda: None)
     monkeypatch.setattr(cli, "_provider_active", lambda: True)
-    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(cli.runtime_env, "has_cognee", lambda: False)
     return root
 
 

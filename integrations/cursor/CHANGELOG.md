@@ -8,7 +8,7 @@ The version here matches the `version` field in `.cursor-plugin/plugin.json` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.2.0]
+## [0.1.2]
 
 ### Added
 - **Recall is auto by default (SDK-1393).** Unless recall is pinned, the graph recall on
@@ -72,6 +72,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `agent_sessions` beside the canonical one. The ensure now skips the by-name create when the name
   has a canonical id, and the dataset listing marks only the canonical row as current, not every
   dataset of that name.
+- **Searching another dataset while recall is restricted takes the person's pick (SDK-1393).**
+  The skills already said to list the other datasets and ask before a one-off search of one, but
+  `cognee-search.sh --dataset-id` searched any id it was given, so an agent could leave a pinned
+  dataset on an id it found in a recalled memory. While recall is pinned or limited to a read set,
+  the wrapper now refuses a dataset other than the active one (exit 2, a JSON `error` saying how to
+  ask, no request sent) unless `--user-picked` marks it as the person's choice: one they picked
+  when asked or named in their request. The skills carry the flag. Auto recall, and the active
+  dataset named by hand, need no flag.
+- **The status bar picker marks only the active row current.** Under shared memory the listing
+  can hold two datasets with the active name (yours and another principal's copy); both showed as
+  current, and picking the other one ran `switch-dataset.py pin` instead of switching to it. Only
+  the row the switch script marks current is the active one now, and a dataset whose name another
+  row shares is switched to by its id.
 
 ## [0.1.1]
 

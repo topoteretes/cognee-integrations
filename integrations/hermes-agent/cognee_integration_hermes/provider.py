@@ -40,6 +40,7 @@ from .config import (
     LOCAL_COGNEE_REQUIREMENT,
     RECALL_MODE_AUTO,
     RECALL_MODE_PINNED,
+    RECALL_MODE_SOURCE_FILE,
     RECALL_MODES,
     SHARED_PLUGIN_STATE_DIR,
     config_path,
@@ -121,9 +122,17 @@ RECALL_PIN_PICKED = "dataset_picked"  # this conversation pinned recall (pin or 
 RECALL_PIN_CONFIGURED = "configured_pin"  # the configured recall_mode is "pinned"
 
 
-def _recall_message(mode: str, reason: str, dataset: str) -> str:
+def _configured_by(source: str) -> str:
+    """Where a configured pin came from, as the result message names it."""
+    if source == RECALL_MODE_SOURCE_FILE:
+        return 'recall_mode "pinned" in cognee.json'
+    return "COGNEE_PLUGIN_RECALL_MODE=pinned"
+
+
+def _recall_message(mode: str, reason: str, dataset: str, source: str = "") -> str:
     """The one human-readable line of every ``cognee_switch_dataset`` result
-    (current, pin, auto, switch, reset), built from the mode and pin reason."""
+    (current, pin, auto, switch, reset), built from the mode and pin reason.
+    ``source`` is load_config's ``recall_mode_source``, for a configured pin."""
     saves = f"Saves go to dataset {dataset!r}. "
     if mode != RECALL_MODE_PINNED:
         return saves + (
@@ -132,7 +141,7 @@ def _recall_message(mode: str, reason: str, dataset: str) -> str:
             "keep recall on this dataset."
         )
     if reason == RECALL_PIN_CONFIGURED:
-        why = "by the configured recall mode (COGNEE_PLUGIN_RECALL_MODE=pinned)"
+        why = f"by the configured recall mode ({_configured_by(source)})"
         lift = "Use action='auto' to let the server pick for this conversation."
     else:
         why = "by this conversation's own choice"
@@ -400,8 +409,10 @@ class CogneeMemoryProvider(MemoryProvider):
         # This conversation's own recall mode ("auto" / "pinned"), "" when it
         # follows the configured recall_mode. The conversation's choice wins.
         self._recall_choice = ""
-        # Set by initialize: the configured recall_mode is "pinned".
+        # Set by initialize: the configured recall_mode is "pinned", and where
+        # that setting came from (load_config's recall_mode_source).
         self._configured_pins_recall = False
+        self._recall_mode_source = ""
         # Where Hermes was launched; gates the identifier-based code recall lane.
         self._cwd = ""
         # Per-session memory-hit totals for the visibility header (guarded by
@@ -535,10 +546,15 @@ class CogneeMemoryProvider(MemoryProvider):
         local_ready = runtime_env.local_ready()
         if not local_ready:
             outdated = runtime_env.outdated_requirement()
+            stale = runtime_env.hermes_env_outdated()
             if outdated:
                 print(f"  Local mode is off: its runtime holds {outdated}, and this version")
                 print(f"  needs {LOCAL_COGNEE_REQUIREMENT}. Picking local offers to install it")
                 print("  (about 1 GB from PyPI). Remote mode needs nothing installed.")
+            elif stale:
+                print(f"  Local mode is off: Hermes's environment holds {stale}, and this")
+                print(f"  version needs {LOCAL_COGNEE_REQUIREMENT}. Picking local offers to")
+                print("  install it (about 1 GB from PyPI). Remote mode needs nothing installed.")
             else:
                 print("  Local mode needs a cognee runtime, which is not installed yet: picking")
                 print(f"  local offers to install it ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from")
@@ -639,6 +655,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._configured_pins_recall = (
             configured_recall_mode(self._config.get("recall_mode")) == RECALL_MODE_PINNED
         )
+        self._recall_mode_source = str(self._config.get("recall_mode_source") or "")
         self._recall_choice = ""
         self._recall_pin_reason = self._configured_recall_pin()
         self._top_k = int(self._config.get("top_k") or 5)
@@ -2271,7 +2288,9 @@ class CogneeMemoryProvider(MemoryProvider):
                     "recall": mode,
                     **({"reason": reason} if reason else {}),
                     "cognee_session_id": self._session_cognee_id,
-                    "message": _recall_message(mode, reason, self._dataset),
+                    "message": _recall_message(
+                        mode, reason, self._dataset, self._recall_mode_source
+                    ),
                 }
             )
         if action == "auto":
@@ -2334,7 +2353,9 @@ class CogneeMemoryProvider(MemoryProvider):
                 result.pop("recall_reason", None)
                 if reason:
                     result["recall_reason"] = reason
-                result["message"] = _recall_message(mode, reason, self._dataset)
+                result["message"] = _recall_message(
+                    mode, reason, self._dataset, self._recall_mode_source
+                )
             return json.dumps(result)
         return json.dumps({"error": "Specify action: list, current, switch, pin, auto, or reset."})
 
@@ -2417,7 +2438,7 @@ class CogneeMemoryProvider(MemoryProvider):
         if why:
             envelope["recall_reason"] = why
         envelope.update(extra)
-        envelope["message"] = _recall_message(mode, why, self._dataset)
+        envelope["message"] = _recall_message(mode, why, self._dataset, self._recall_mode_source)
         return json.dumps(envelope)
 
     def _set_recall_auto(self) -> str:
@@ -2533,7 +2554,7 @@ class CogneeMemoryProvider(MemoryProvider):
         }
         if bridge_error:
             envelope["previous"]["bridge_error"] = bridge_error
-        envelope["message"] = _recall_message(mode, why, target)
+        envelope["message"] = _recall_message(mode, why, target, self._recall_mode_source)
         return json.dumps(envelope)
 
     def _bridge_retired_sessions(self) -> None:

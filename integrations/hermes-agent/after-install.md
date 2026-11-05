@@ -36,3 +36,9 @@ the latest reviewed commit. Do not overwrite it with a pip or checkout copy.
 For a pip installation, run `pip install -U cognee-integration-hermes-agent`
 followed by `cognee-hermes-install` to refresh the directory copy. The pip
 installer refuses to overwrite a catalog-managed installation.
+
+In local mode, an update that moves the pinned cognee turns local mode off until
+you run `hermes cognee install-runtime`; Hermes says so when it reports Cognee as
+unavailable. The command stops the local cognee server this plugin started (other
+cognee plugins sharing it start a new one on their next request), upgrades the
+runtime in place, and then you start a new Hermes session.

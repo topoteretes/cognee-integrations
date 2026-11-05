@@ -360,8 +360,13 @@ the recall mode as they are:
 
 ```bash
 python3 "${CODEX_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candidates
-"${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid>
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid> --user-picked
 ```
+
+While recall is restricted (a picked or pinned dataset, or a read set), the wrapper searches
+another dataset only with `--user-picked`, which marks it as your choice: a dataset you named
+or picked when the agent asked. Without the flag it refuses and says how to ask. Under auto
+recall the flag is not needed.
 
 Every search reads the knowledge graph (or, with `--code`, a repository's code graph); the
 session cache is written, never searched. The session id is bound to the active dataset, so the

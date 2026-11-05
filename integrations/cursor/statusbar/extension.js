@@ -233,8 +233,19 @@ function pickerItems(data) {
   const rows = (data.datasets || []).filter(
     (dataset) => dataset.current || (dataset.writable !== false && !isReservedName(dataset.name)),
   );
-  if (current && !rows.some((dataset) => dataset.current || dataset.name === current)) {
+  // The row the script marks `current` is the active one. Under shared memory
+  // two rows can share its name (another principal's copy), so the name alone
+  // marks it only for an older script that marks no row.
+  const marked = rows.some((dataset) => dataset.current);
+  const isActive = (dataset) => (marked ? Boolean(dataset.current) : dataset.name === current);
+  if (current && !rows.some(isActive)) {
     rows.unshift({ name: current, current: true });
+  }
+  // A name more than one row carries is ambiguous to switch by; such a row
+  // goes by its id.
+  const named = new Map();
+  for (const dataset of rows) {
+    named.set(dataset.name, (named.get(dataset.name) || 0) + 1);
   }
   // The script's own words for the recall mode in effect, under the entry
   // that is in effect.
@@ -249,7 +260,7 @@ function pickerItems(data) {
     },
   ];
   for (const dataset of rows) {
-    const isCurrent = Boolean(dataset.current || dataset.name === current);
+    const isCurrent = isActive(dataset);
     const inert = isCurrent && isReservedName(dataset.name);
     items.push({
       label: dataset.name,
@@ -262,9 +273,11 @@ function pickerItems(data) {
       // The active dataset, picked, is `pin`: recall restricted to it, no new
       // session (by name it would only pin when the name is what the launch
       // record holds, which is the id for a dataset another principal owns).
+      // Another dataset goes by its id when its name is an action or is shared
+      // with another row (a same-named copy of the active one, say).
       target: isCurrent
         ? "pin"
-        : isActionName(dataset.name) && dataset.id
+        : (isActionName(dataset.name) || named.get(dataset.name) > 1) && dataset.id
           ? String(dataset.id)
           : dataset.name,
       name: dataset.name,

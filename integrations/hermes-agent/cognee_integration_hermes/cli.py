@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 import time
@@ -419,14 +418,18 @@ def _runtime_status() -> str:
     python = runtime_env.runtime_python()
     if python:
         return f"ready ({runtime_env.LOCAL_COGNEE_REQUIREMENT}, {runtime_env.VENV_DIR})"
-    outdated = runtime_env.outdated_requirement()
-    if outdated and not importlib.util.find_spec("cognee"):
+    if runtime_env.server_python():
+        version = runtime_env.hermes_env_cognee_version()
+        return f"cognee {version} installed in Hermes's environment"
+    outdated = runtime_env.outdated_requirement() or runtime_env.hermes_env_outdated()
+    if outdated:
+        where = (
+            runtime_env.VENV_DIR if runtime_env.outdated_requirement() else "Hermes's environment"
+        )
         return (
-            f"outdated ({outdated}, {runtime_env.VENV_DIR}): local mode is off until you "
+            f"outdated ({outdated}, {where}): local mode is off until you "
             f"install {runtime_env.LOCAL_COGNEE_REQUIREMENT} with: hermes cognee install-runtime"
         )
-    if importlib.util.find_spec("cognee"):
-        return "cognee installed in Hermes's environment"
     return "not installed (local mode: hermes cognee install-runtime)"
 
 
@@ -436,7 +439,11 @@ def _install_runtime(args) -> int:
     except runtime_env.RuntimeInstallError as exc:
         print(f"Could not install the cognee runtime: {exc}")
         return 1
-    print("Start a new hermes session to use local mode.")
+    print(
+        "Start a new hermes session to use local mode. A local cognee server another "
+        "cognee plugin started on an older cognee is not stopped for you; until it is "
+        "replaced, Hermes reports Cognee as unavailable."
+    )
     return 0
 
 

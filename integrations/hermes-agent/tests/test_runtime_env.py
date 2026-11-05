@@ -22,6 +22,8 @@ from cognee_integration_hermes.backend import CogneeNotInstalledError  # noqa: E
 from cognee_integration_hermes.config import LOCAL_COGNEE_REQUIREMENT  # noqa: E402
 
 PINNED = LOCAL_COGNEE_REQUIREMENT.split("==", 1)[1]
+# Taken at import, before conftest's hermetic_env stubs it out for every test.
+_REAL_PLUGIN_SERVER_PIDS = runtime_env._plugin_server_pids
 
 
 @pytest.fixture
@@ -241,11 +243,204 @@ def test_status_says_an_outdated_runtime_keeps_local_mode_off(runtime):
     from cognee_integration_hermes import cli
 
     _mark_ready(runtime, requirement="cognee==0.0.1")
-    with mock.patch.object(cli.importlib.util, "find_spec", return_value=None):
+    with mock.patch.object(runtime_env, "has_cognee", return_value=False):
         status = cli._runtime_status()
     assert status.startswith("outdated")
     assert "cognee==0.0.1" in status
     assert "install-runtime" in status
-    # A cognee installed into Hermes's own environment by hand still runs local mode.
-    with mock.patch.object(cli.importlib.util, "find_spec", return_value=object()):
-        assert cli._runtime_status() == "cognee installed in Hermes's environment"
+    # A cognee in Hermes's own environment at the pin (or newer) still runs local mode.
+    with (
+        mock.patch.object(runtime_env, "has_cognee", return_value=True),
+        mock.patch.object(runtime_env.importlib.metadata, "version", return_value=PINNED),
+    ):
+        assert cli._runtime_status() == f"cognee {PINNED} installed in Hermes's environment"
+
+
+# -- the pinned version or newer, and servers on an older cognee ---------------
+
+
+@pytest.mark.parametrize(
+    ("version", "ok"),
+    [
+        (PINNED, True),
+        ("99.0.0", True),
+        (f"{PINNED}.dev1", True),
+        (f"{PINNED}-local", True),
+        ("1.6.5", False),
+        ("0.0.1", False),
+        ("", False),
+        ("unknown", False),
+    ],
+)
+def test_meets_pin(version, ok):
+    assert runtime_env.meets_pin(version) is ok
+
+
+def _hermes_env_cognee(version):
+    return (
+        mock.patch.object(runtime_env, "has_cognee", return_value=True),
+        mock.patch.object(runtime_env.importlib.metadata, "version", return_value=version),
+    )
+
+
+def test_an_older_cognee_in_hermess_environment_is_never_started(runtime):
+    # Releases up to 1.3.x depended on cognee 1.6.5, and `pip install -U` leaves it.
+    has, version = _hermes_env_cognee("1.6.5")
+    with (
+        has,
+        version,
+        mock.patch.object(sb, "health_ok", return_value=False),
+        mock.patch.object(sb.subprocess, "Popen") as popen,
+    ):
+        assert runtime_env.server_python() is None
+        assert runtime_env.local_ready() is False
+        with pytest.raises(CogneeNotInstalledError, match="install-runtime") as raised:
+            sb.ensure_local_server(8011, log_path="/dev/null")
+    assert "Hermes's environment holds cognee==1.6.5" in str(raised.value)
+    popen.assert_not_called()
+
+
+def test_status_says_hermess_older_cognee_keeps_local_mode_off(runtime):
+    from cognee_integration_hermes import cli
+
+    has, version = _hermes_env_cognee("1.6.5")
+    with has, version:
+        status = cli._runtime_status()
+    assert status.startswith("outdated (cognee==1.6.5, Hermes's environment)")
+    assert "install-runtime" in status
+
+
+@pytest.mark.parametrize("version", [PINNED, "99.0.0"])
+def test_the_pinned_or_a_newer_cognee_in_hermess_environment_runs(runtime, version):
+    has, installed = _hermes_env_cognee(version)
+    with has, installed:
+        assert runtime_env.server_python() == sys.executable
+
+
+def test_a_cognee_of_unknown_version_in_hermess_environment_is_not_started(runtime):
+    with (
+        mock.patch.object(runtime_env, "has_cognee", return_value=True),
+        mock.patch.object(
+            runtime_env.importlib.metadata,
+            "version",
+            side_effect=runtime_env.importlib.metadata.PackageNotFoundError("cognee"),
+        ),
+    ):
+        assert runtime_env.server_python() is None
+
+
+@pytest.mark.parametrize(("version", "accepted"), [("1.6.5", False), (PINNED, True), ("", True)])
+def test_a_running_server_on_an_older_cognee_is_not_used(runtime, monkeypatch, version, accepted):
+    # The server is shared by every cognee plugin: one another plugin started on
+    # an older cognee answers /health, but recall against it is never routed.
+    monkeypatch.setattr(sb, "health_version", lambda url, timeout=2.0: version)
+    with (
+        mock.patch.object(sb, "health_ok", return_value=True),
+        mock.patch.object(sb.subprocess, "Popen") as popen,
+    ):
+        if accepted:
+            assert sb.ensure_local_server(8011, log_path="/dev/null") == "http://127.0.0.1:8011"
+        else:
+            with pytest.raises(sb.OutdatedServerError) as raised:
+                sb.ensure_local_server(8011, log_path="/dev/null")
+            assert "port 8011 runs cognee 1.6.5" in str(raised.value)
+            assert "install-runtime" in str(raised.value)
+            assert isinstance(raised.value, CogneeNotInstalledError)
+    popen.assert_not_called()
+
+
+@pytest.mark.skipif(runtime_env.fcntl is None, reason="the install lock is POSIX-only")
+def test_no_server_spawns_while_the_runtime_is_being_installed(runtime):
+    _mark_ready(runtime)
+    with (
+        runtime_env._install_lock(),
+        mock.patch.object(sb, "health_ok", return_value=False),
+        mock.patch.object(sb.subprocess, "Popen") as popen,
+    ):
+        with pytest.raises(CogneeNotInstalledError, match="being installed"):
+            sb.ensure_local_server(8011, log_path="/dev/null")
+    popen.assert_not_called()
+
+
+# -- install-runtime stops the servers this plugin started --------------------
+
+
+def test_only_servers_this_plugin_started_are_found(runtime):
+    venv = str(runtime_env.venv_python())
+    listing = "\n".join(
+        [
+            f"  101 {venv} -m uvicorn cognee.api.client:app --host 127.0.0.1 --port 8011",
+            f"  102 {sys.executable} -m uvicorn cognee.api.client:app --port 8011",
+            "  103 /Users/x/.cognee-plugin/claude-code/venv/bin/python -m uvicorn "
+            "cognee.api.client:app --port 8011",
+            f"  104 {venv} -m http.server",
+            "  105 /bin/zsh",
+        ]
+    )
+    with mock.patch.object(
+        runtime_env.subprocess,
+        "run",
+        return_value=subprocess.CompletedProcess([], 0, stdout=listing, stderr=""),
+    ):
+        assert _REAL_PLUGIN_SERVER_PIDS() == [101, 102]
+        assert _REAL_PLUGIN_SERVER_PIDS({sys.executable}) == [102]
+
+
+def test_install_stops_the_plugins_server_before_touching_the_venv(runtime, monkeypatch):
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    events = []
+    alive = {4242}
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            if pid not in alive:
+                raise ProcessLookupError
+            return
+        events.append(("kill", pid, sig))
+        alive.discard(pid)
+
+    fake = _FakeRun(runtime)
+
+    def run(command, **kwargs):
+        events.append(("run", str(command[0])))
+        return fake(command, **kwargs)
+
+    monkeypatch.setattr(runtime_env, "_plugin_server_pids", lambda interpreters=None: [4242])
+    monkeypatch.setattr(runtime_env.os, "kill", fake_kill)
+    monkeypatch.setattr(runtime_env, "_find_uv", lambda: None)
+    out = []
+    with mock.patch.object(runtime_env.subprocess, "run", side_effect=run):
+        runtime_env.install_runtime(output=out.append)
+    assert events[0] == ("kill", 4242, runtime_env.signal.SIGTERM)
+    assert any(kind == "run" for kind, *_ in events[1:])
+    assert not any(e == ("kill", 4242, runtime_env.signal.SIGKILL) for e in events)
+    assert any("pid 4242" in line for line in out)
+    assert any("start a new server on their next request" in line for line in out)
+
+
+def test_a_server_that_ignores_sigterm_is_killed(runtime, monkeypatch):
+    sent = []
+
+    def fake_kill(pid, sig):
+        if sig != 0:
+            sent.append(sig)
+
+    monkeypatch.setattr(runtime_env, "_plugin_server_pids", lambda interpreters=None: [7])
+    monkeypatch.setattr(runtime_env.os, "kill", fake_kill)
+    assert runtime_env.stop_plugin_servers(output=lambda _l: None, timeout=0.01) == [7]
+    assert sent == [runtime_env.signal.SIGTERM, runtime_env.signal.SIGKILL]
+
+
+def test_a_ready_runtime_still_stops_a_server_on_hermess_older_cognee(runtime, monkeypatch):
+    _mark_ready(runtime)
+    asked = []
+    monkeypatch.setattr(
+        runtime_env,
+        "stop_plugin_servers",
+        lambda output, interpreters=None: asked.append(interpreters),
+    )
+    has, version = _hermes_env_cognee("1.6.5")
+    with has, version, mock.patch.object(runtime_env.subprocess, "run") as run:
+        runtime_env.install_runtime(output=lambda _l: None)
+    assert asked == [{sys.executable}]
+    run.assert_not_called()

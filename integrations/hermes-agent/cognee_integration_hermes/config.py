@@ -18,6 +18,10 @@ DEFAULT_DATASET = "agent_sessions"
 RECALL_MODE_AUTO = "auto"
 RECALL_MODE_PINNED = "pinned"
 RECALL_MODES = (RECALL_MODE_AUTO, RECALL_MODE_PINNED)
+# Where the configured recall mode came from (load_config's recall_mode_source).
+RECALL_MODE_SOURCE_ENV = "env"  # COGNEE_PLUGIN_RECALL_MODE, which wins over cognee.json
+RECALL_MODE_SOURCE_FILE = "file"  # recall_mode in cognee.json
+RECALL_MODE_SOURCE_DEFAULT = "default"
 SHARED_PLUGIN_STATE_DIR = Path.home() / ".cognee-plugin"
 SHARED_COGNEE_HOME = Path.home() / ".cognee"
 # Port for the local cognee server. 8011 matches the other cognee agent plugins
@@ -279,7 +283,8 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         or os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
         # Graph recall mode: "auto" (the server picks the dataset) or "pinned"
         # (recall stays on the active dataset). Same variable as the hook family.
-        "recall_mode": os.environ.get("COGNEE_PLUGIN_RECALL_MODE", RECALL_MODE_AUTO),
+        # Set below, after cognee.json: the exported variable wins over the file.
+        "recall_mode": RECALL_MODE_AUTO,
         "top_k": str_to_int(os.environ.get("COGNEE_TOP_K"), 5),
         "auto_route": str_to_bool(os.environ.get("COGNEE_AUTO_ROUTE"), True),
         "improve_on_end": str_to_bool(os.environ.get("COGNEE_IMPROVE_ON_END"), True),
@@ -333,6 +338,7 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     }
 
     path = config_path(hermes_home)
+    file_recall_mode = None
     if path and path.exists():
         try:
             file_config = json.loads(path.read_text(encoding="utf-8"))
@@ -340,6 +346,7 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
                 config.update(
                     {key: value for key, value in file_config.items() if value is not None}
                 )
+                file_recall_mode = file_config.get("recall_mode")
         except Exception:
             pass
 
@@ -348,6 +355,18 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     # is left as it is (see the tests).
     if str(config.get("dataset") or "").strip().lower() == "auto":
         config["dataset"] = DEFAULT_DATASET
+    # The recall mode is the one setting an exported variable overrides
+    # cognee.json for: COGNEE_PLUGIN_RECALL_MODE is the hook family's setting of
+    # the same name, and the setup wizard always writes recall_mode, so the file
+    # would otherwise silence it. recall_mode_source says which one applied.
+    env_recall_mode = os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "").strip()
+    if env_recall_mode:
+        config["recall_mode"] = env_recall_mode
+        config["recall_mode_source"] = RECALL_MODE_SOURCE_ENV
+    elif file_recall_mode is not None:
+        config["recall_mode_source"] = RECALL_MODE_SOURCE_FILE
+    else:
+        config["recall_mode_source"] = RECALL_MODE_SOURCE_DEFAULT
     config["recall_mode"] = configured_recall_mode(config.get("recall_mode"))
     config["top_k"] = max(1, str_to_int(config.get("top_k"), 5))
     config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 120))
