@@ -32,8 +32,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
     failures are not merged into one pitfall. That line is a Python traceback's last exception
     (never its `Traceback (most recent call last):` header), else the first anchored error line
     (a pytest `E` line, `error:`/`fatal:`, an exception name, a located compiler or linter
-    diagnostic such as ruff's `a.py:3:1: F401`, a `program: message` error), else the last line
-    with an error word that is not a run summary (`Found 1 error.`). Codex file edits go as one
+    diagnostic such as ruff's `a.py:3:1: F401`, npm's `npm error …`, a `program: message`
+    error), else the first line with an error word that is not a run summary (`Found 1 error.`),
+    so a tool's generic closing line (npm's log path) never keys the pitfall. A warning is never
+    the error line outside a traceback. Codex file edits go as one
     `Write`/`Edit` per file with `file_path`, so the capture deny list drops edits to and renames
     into secret files (`.env`, `*.pem`, ...). A request interrupted with Esc (on Codex, any
     aborted turn) is sent once, closed at the interrupt, as

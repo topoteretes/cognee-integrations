@@ -789,6 +789,29 @@ def test_cargo_progress_does_not_hide_the_compile_error(cm):
     assert cm._error_line(output) == "error[E0425]: cannot find value `x`"
 
 
+def test_npm_failures_are_keyed_on_their_first_error_not_the_log_path(cm):
+    log = "npm error A complete log of this run can be found in: /u/.npm/_logs/x-debug-0.log\n"
+    missing = cm._error_line('npm error Missing script: "tset"\nnpm error\n' + log)
+    enoent = cm._error_line("npm error code ENOENT\nnpm error syscall open\n" + log)
+    assert missing == 'npm error Missing script: "tset"'
+    assert enoent == "npm error code ENOENT"
+    assert cm._error_line("npm ERR! code E404\nnpm ERR! 404 Not Found\n") == "npm ERR! code E404"
+
+
+def test_the_loose_fallback_takes_the_first_error_word_not_a_closing_line(cm):
+    output = "lint failed in src/a.js\nsee the log for details\nbuild failed\n"
+    assert cm._error_line(output) == "lint failed in src/a.js"
+
+
+def test_a_warning_printed_before_a_failure_is_not_its_error_line(cm):
+    output = "DeprecationWarning: pkg_resources is deprecated\nfatal: bad revision 'xyz'\n"
+    assert cm._error_line(output) == "fatal: bad revision 'xyz'"
+    # A warning raised as an exception (python -W error) still ends its traceback.
+    assert cm._error_line(_traceback("DeprecationWarning: old api")) == (
+        "DeprecationWarning: old api"
+    )
+
+
 def test_a_pytest_e_line_is_picked_without_an_error_word(cm):
     output = (
         "tests/t.py F\n>       assert f() == 2\nE       assert 1 == 2\n=== 1 failed in 0.1s ===\n"

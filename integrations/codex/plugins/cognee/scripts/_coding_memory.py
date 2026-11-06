@@ -927,10 +927,13 @@ MAX_ERROR_LINE_BYTES = 300
 
 _TRACEBACK_HEADER = "Traceback (most recent call last):"
 #: A Python exception line: ``FileNotFoundError: …``, ``pkg.errors.CustomError``.
+#: Inside a traceback a warning can end it (``python -W error``), so ``Warning``
+#: counts there; outside one a warning is never the error (:data:`_ERROR_NAME_RE`).
 _EXCEPTION_LINE_RE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Warning|Interrupt|Exit)\b")
+_ERROR_NAME_RE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit)\b")
 #: A line that opens with an error word: ``error: …``, ``error[E0425]: …``,
-#: ``fatal: …``, ``ERROR …``, ``npm ERR! …``, ``panic: …``.
-_LEADING_ERROR_RE = re.compile(r"^(?:(?:error|fatal|panic)\b|npm err!)", re.IGNORECASE)
+#: ``fatal: …``, ``ERROR …``, ``npm ERR! …`` (npm < 10), ``npm error …``, ``panic: …``.
+_LEADING_ERROR_RE = re.compile(r"^(?:(?:error|fatal|panic)\b|npm (?:err!|error\b))", re.I)
 #: A compiler or linter diagnostic at a location: ``a.py:3:1: F401 …`` (ruff,
 #: flake8), ``a.py:3: error: …`` (mypy), ``a.c:3:5: error: …`` (gcc, clang).
 _LOCATED_ERROR_RE = re.compile(
@@ -963,9 +966,13 @@ def _error_line(text: str) -> str:
     the same across runs. In order: a Python traceback's last exception; the
     first anchored error line (a pytest ``E`` line, a line opening with an error
     word or an exception name, a located compiler/linter diagnostic, a
-    ``program: …`` message with an error word); the last line with an error word
-    anywhere that is not a run summary (a command's error comes after what it
-    printed); else the first non-empty line.
+    ``program: …`` message with an error word); the first line with an error word
+    anywhere that is not a run summary; else the first non-empty line.
+
+    The loose fallback takes the first match, not the last: tools end a failure
+    with a generic line (npm's log path, make's ``*** Error 1``), so on output
+    no rule here knows, the last error word would key unrelated failures alike,
+    while the first one is where this failure started.
     """
     lines = text.splitlines()
     if any(raw.strip() == _TRACEBACK_HEADER for raw in lines):
@@ -980,14 +987,14 @@ def _error_line(text: str) -> str:
         if (
             raw.startswith("E ")
             or _LEADING_ERROR_RE.match(line)
-            or _EXCEPTION_LINE_RE.match(line)
+            or _ERROR_NAME_RE.match(line)
             or _LOCATED_ERROR_RE.match(line)
         ):
             return line
         if _ERROR_LINE_RE.search(line) and not _SUMMARY_LINE_RE.match(line):
             if _PROGRAM_PREFIX_RE.match(line):
                 return line
-            loose = line
+            loose = loose or line
         first = first or line
     return loose or first
 
