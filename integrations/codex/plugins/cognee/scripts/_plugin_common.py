@@ -162,6 +162,17 @@ def apply_cognee_env() -> None:
     os.environ.setdefault("DATA_ROOT_DIRECTORY", str(_COGNEE_DATA_DIR))
     os.environ.setdefault("CACHE_ROOT_DIRECTORY", str(_COGNEE_CACHE_DIR))
     os.environ.setdefault("CACHING", "true")
+    if os.environ.get("COGNEE_CODING_MEMORY", "").strip().lower() in ("1", "true", "yes", "on"):
+        # Coding memory (SDK-1336) runs the server's coding distillation, which
+        # learns from whole requests at improve time: no per-trace feedback, one
+        # project node set per repository so state lessons stay per project.
+        # setdefault: an explicit setting still wins. DISTILLATION_MODE and
+        # AUTO_FEEDBACK are server settings, so they only reach a server this
+        # plugin starts; COGNEE_PROJECT_NODE_SET is a plugin setting, applied in
+        # every hook (it tags this plugin's own writes).
+        os.environ.setdefault("DISTILLATION_MODE", "coding")
+        os.environ.setdefault("AUTO_FEEDBACK", "false")
+        os.environ.setdefault("COGNEE_PROJECT_NODE_SET", "auto")
     os.environ.setdefault("AUTO_FEEDBACK", "true")
 
 
@@ -3152,20 +3163,131 @@ def _server_pidfile(port: int) -> Path:
     return _SHARED_PLUGIN_ROOT / f"server-{int(port)}.pid"
 
 
-def write_server_pidfile(port: int, pid: int, version: str = "") -> None:
-    """Record the uvicorn server spawned on ``port`` (presence evidence)."""
+def write_server_pidfile(
+    port: int, pid: int, version: str = "", coding_memory: Optional[bool] = None
+) -> None:
+    """Record the uvicorn server spawned on ``port`` (presence evidence).
+
+    ``coding_memory`` records whether the server was spawned with coding
+    distillation (DISTILLATION_MODE=coding): a server keeps the mode it booted
+    with, so a later session joining it must learn which one that was.
+    """
+    record = {
+        "pid": int(pid),
+        "port": int(port),
+        "version": version,
+        "created_at": datetime.now(timezone.utc).timestamp(),
+    }
+    if coding_memory is not None:
+        record["coding_memory"] = bool(coding_memory)
     try:
-        _write_json_file(
-            _server_pidfile(port),
-            {
-                "pid": int(pid),
-                "port": int(port),
-                "version": version,
-                "created_at": datetime.now(timezone.utc).timestamp(),
-            },
-        )
+        _write_json_file(_server_pidfile(port), record)
     except Exception as exc:
         hook_log("server_pidfile_write_failed", {"error": str(exc)[:200]})
+
+
+def live_server_record(port: int) -> dict:
+    """The pidfile record of the live server on ``port``, or {} (none / stale)."""
+    if not _live_server_pid(port):
+        return {}
+    try:
+        record = json.loads(_server_pidfile(port).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+_CODING_RESTART_ADVICE = (
+    "To restart it, close the other Claude Code and Codex sessions using Cognee; the "
+    "server stops on its own, and the next session starts it in {mode}."
+)
+_CODING_UNOWNED_ADVICE = (
+    "Shut it down and restart the plugin (start a new session); the plugin then starts "
+    "its own server in coding mode."
+)
+
+
+def is_cognee_cloud_url(url: str) -> bool:
+    """True for a Cognee Cloud host (``*.cognee.ai``)."""
+    host = (urllib.parse.urlparse(str(url or "").strip()).hostname or "").lower()
+    return host == "cognee.ai" or host.endswith(".cognee.ai")
+
+
+def coding_server_note(port: int, coding: bool) -> str:
+    """The SessionStart note when the running local server's distillation mode
+    differs from this session's coding memory setting (SDK-1336), or ''.
+
+    The coding env (DISTILLATION_MODE=coding, AUTO_FEEDBACK=false) reaches only a
+    server this plugin spawns, and a shared server keeps the mode it booted
+    with, so a session joining one learns it from the pidfile instead. Never
+    restarts the server: other sessions are using it.
+    """
+    record = live_server_record(port)
+    stamp = record.get("coding_memory") if record else None
+    pid = int(record.get("pid", 0) or 0) if record else 0
+    if not pid:
+        # No pidfile record: the plugin did not start this server, so it never
+        # stops on its own when the sessions close.
+        return coding_unowned_server_note() if coding else ""
+    if not isinstance(stamp, bool):
+        if not coding:
+            return ""
+        return (
+            "Cognee coding memory: a Cognee server was already running and it is unknown "
+            "whether it runs coding mode (it was started by another integration or an "
+            "older plugin version), so it may not make coding lessons until it restarts. "
+            + _CODING_RESTART_ADVICE.format(mode="coding mode")
+        )
+    if stamp == coding:
+        return ""
+    kill_now = (
+        f"To restart it now, run `kill {pid}` and start a new session (an improve in "
+        "progress is cut short, and other open sessions have no memory until they restart)."
+    )
+    if coding:
+        return (
+            f"Cognee coding memory: the running Cognee server (pid {pid}) was started "
+            "without coding mode, so it won't make coding lessons until it restarts. "
+            + _CODING_RESTART_ADVICE.format(mode="coding mode")
+            + " "
+            + kill_now
+        )
+    return (
+        f"Cognee Memory: the running Cognee server (pid {pid}) was started in coding "
+        "memory mode, so it runs coding distillation without per-call feedback, and this "
+        "session's normal distillation and feedback won't apply until it restarts. "
+        + _CODING_RESTART_ADVICE.format(mode="normal mode")
+        + " "
+        + kill_now
+    )
+
+
+def coding_unowned_server_note(
+    url: str = "", *, remote: bool = False, managed: bool = False
+) -> str:
+    """The coding-mode SessionStart note for a server the plugin did not start.
+
+    Its mode is unknown: a local server with no pidfile record, a remote URL or a
+    managed endpoint (``COGNEE_MANAGED_ENDPOINT``). Cognee Cloud is not asked
+    here. A remote URL or managed endpoint also has to be unset before the
+    restart, or the plugin connects to the same server again.
+    """
+    where = f"the Cognee server at {url}" if url and (remote or managed) else "this Cognee server"
+    note = (
+        f"Cognee coding memory: {where} wasn't started by the plugin, so it's unknown "
+        "whether it runs coding mode, and it may not make coding lessons. " + _CODING_UNOWNED_ADVICE
+    )
+    settings = [
+        name
+        for name, on in (("COGNEE_BASE_URL", remote), ("COGNEE_MANAGED_ENDPOINT", managed))
+        if on
+    ]
+    if settings:
+        note += (
+            f" Remove {' and '.join(settings)} (from your environment or ~/.cognee/.env) "
+            "before restarting, or the plugin reconnects to the same server."
+        )
+    return note
 
 
 def clear_server_pidfile(port: int) -> None:

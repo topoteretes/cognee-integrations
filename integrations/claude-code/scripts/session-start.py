@@ -74,6 +74,7 @@ from _proc import pid_alive as _pid_alive
 from config import (
     _cloud_http_request,
     _user_id_via_api,
+    coding_memory_enabled,
     ensure_cognee_ready,
     ensure_dataset_ready_via_api,
     get_dataset,
@@ -867,6 +868,7 @@ def _ensure_local_server_running(
             server_proc.pid,
             version=_PINNED_COGNEE_VERSION,
             llm_observer=server_env.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1",
+            coding_memory=server_env.get("DISTILLATION_MODE", "").strip().lower() == "coding",
         )
 
         health_deadline = time.monotonic() + health_timeout
@@ -1916,6 +1918,9 @@ async def _run_heavy(
     try:
         from _code_graph import autoindex_on_session_start
 
+        if coding_memory_enabled():
+            # Coding memory (SDK-1336) leaves the code graph alone.
+            raise _SkipAutoindex()
         code_outcome = autoindex_on_session_start(
             cwd,
             service_url,
@@ -1924,6 +1929,8 @@ async def _run_heavy(
         )
         if code_outcome:
             hook_log("code_autoindex", code_outcome)
+    except _SkipAutoindex:
+        pass
     except Exception as exc:
         hook_log("code_autoindex_error", {"error": str(exc)[:200]})
 
@@ -2002,6 +2009,7 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                     hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
             if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
                 hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
+                _project_memory_gave_up(dataset, session_id)
                 _stop_heartbeat()
                 phase_end("setting_up", session_key=session_key, ok=False)
                 return
@@ -2034,10 +2042,12 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                     # connection state itself. Nothing is registered, so
                     # memory is not ready.
                     hook_log("bootstrap_registration_failed", {"session_id": session_id})
+                    _project_memory_gave_up(dataset, session_id)
                     _stop_heartbeat()
                     phase_end("setting_up", session_key=session_key, ok=False)
         except Exception as exc:
             hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+            _project_memory_gave_up(dataset, session_id)
             _stop_heartbeat()
             phase_end("setting_up", session_key=session_key, ok=False)
     finally:
@@ -2646,13 +2656,27 @@ async def _start(payload: dict | None = None) -> dict:
             if marker_ready
             else "Cognee cloud memory connecting in the background; captures are queued."
         )
-        return {
-            "systemMessage": message,
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "systemMessage": message,
-            },
-        }
+        # A remote URL or managed endpoint the plugin did not start: its coding
+        # mode is unknown (SDK-1336). Cognee Cloud is excluded inside.
+        cloud_coding_note = _coding_server_note(
+            target_url,
+            False,
+            managed=managed_endpoint_enabled(config),
+            cloud_backend=config.get("_forced_backend") == "cloud",
+        )
+        return _with_system_note(
+            _with_system_note(
+                {
+                    "systemMessage": message,
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "systemMessage": message,
+                    },
+                },
+                cloud_coding_note,
+            ),
+            _project_memory_note(dataset, session_id),
+        )
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)
@@ -2698,6 +2722,14 @@ async def _start(payload: dict | None = None) -> dict:
                 else {}
             ),
         },
+    )
+    # A shared local server keeps the distillation mode it booted with; say so
+    # when it differs from this session's coding memory setting (SDK-1336).
+    coding_note = _coding_server_note(
+        target_url,
+        server_live,
+        managed=managed_locked,
+        cloud_backend=config.get("_forced_backend") == "cloud",
     )
     if managed_locked and target_url and not server_live:
         # Managed deployment is down: fail loudly, never fork a fallback brain.
@@ -2763,6 +2795,7 @@ async def _start(payload: dict | None = None) -> dict:
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
                 worker_owns_ready = True
             else:
+                _project_memory_gave_up(dataset, session_id)
                 phase_end("connecting", session_key=session_key, ok=False)
                 return {}
 
@@ -2809,7 +2842,95 @@ async def _start(payload: dict | None = None) -> dict:
         hook_log("bootstrap_owns_ready", {"session_id": session_id, "ready_now": bool(ready)})
     else:
         phase_end("connecting", session_key=session_key, ok=bool(ready))
-    return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
+    return _with_system_note(
+        _with_system_note(
+            _with_observer_note(
+                _session_start_guidance(mode, dataset, session_id, ready), observer
+            ),
+            coding_note,
+        ),
+        _project_memory_note(dataset, session_id),
+    )
+
+
+def _coding_server_note(
+    target_url: str, server_live: bool, *, managed: bool, cloud_backend: bool = False
+) -> str:
+    """The note when the server's distillation mode differs from, or may differ
+    from, this session's coding memory setting (SDK-1336), or ''.
+
+    A live local server the plugin spawned is read from its pidfile; one with no
+    pidfile record, a remote URL or a managed endpoint was not started by the
+    plugin, so a coding session is told to shut it down and restart the plugin.
+    Cognee Cloud (the cloud backend, ``*.cognee.ai``) is never asked. Never
+    restarts the server.
+    """
+    if not target_url:
+        return ""
+    local = _is_local_url(target_url)
+    try:
+        from _plugin_common import (
+            coding_server_note,
+            coding_unowned_server_note,
+            is_cognee_cloud_url,
+        )
+
+        coding = coding_memory_enabled()
+        if local and not managed:
+            if not server_live:
+                return ""
+            port = urllib.parse.urlparse(target_url).port or 80
+            note = coding_server_note(port, coding)
+        elif not coding or cloud_backend or is_cognee_cloud_url(target_url):
+            return ""
+        else:
+            note = coding_unowned_server_note(target_url, remote=not local, managed=managed)
+    except Exception as exc:
+        hook_log("coding_server_note_failed", {"error": str(exc)[:200]})
+        return ""
+    if note:
+        hook_log(
+            "coding_server_mode_mismatch",
+            {"base_url": target_url, "managed": managed, "coding": coding_memory_enabled()},
+        )
+    return note
+
+
+def _project_memory_gave_up(dataset: str, session_id: str) -> None:
+    """Session setup ended before prepare() and nothing retries it: let a later
+    route() prepare the session instead of holding its memory for good."""
+    try:
+        from _project_memory import allow_retry
+
+        allow_retry(dataset, session_id)
+    except Exception as exc:
+        hook_log("project_memory_retry_mark_failed", {"error": str(exc)[:200]})
+
+
+def _project_memory_note(dataset: str, session_id: str) -> str:
+    """The one-time note while this session's memory waits on the project tag check."""
+    try:
+        from _project_memory import pending_notice
+
+        return pending_notice(dataset, session_id)
+    except Exception:
+        # Best effort: the note never blocks startup.
+        return ""
+
+
+def _with_system_note(output: dict, note: str) -> dict:
+    """Append ``note`` to the SessionStart systemMessage (nested and top level)."""
+    if not note:
+        return output
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{note}" if existing else note
+    result["hookSpecificOutput"] = hso
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{note}" if top else note
+    return result
 
 
 def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
@@ -2907,6 +3028,7 @@ def main():
             output["systemMessage"] = hso["systemMessage"]
     except Exception as exc:
         hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
+    coding = coding_memory_enabled()
     try:
         if payload.get("source") != "resume":
             from _session_stats import previous, summary
@@ -2914,8 +3036,11 @@ def main():
 
             config = load_config()
             key = get_session_key()
-            last_line = summary(
-                previous(key, get_dataset(config), str(config.get("base_url") or ""))
+            # Coding memory (SDK-1336) records the session too, but shows no recap.
+            last_line = (
+                ""
+                if coding
+                else summary(previous(key, get_dataset(config), str(config.get("base_url") or "")))
             )
             update_stats(
                 key,
@@ -2936,8 +3061,9 @@ def main():
     except Exception as exc:
         # The recap is a courtesy; it must never cost the startup output.
         hook_log("session_stats_failed", {"op": "recap", "error": str(exc)[:200]})
-    output = _apply_memory_preference(output)
-    if payload.get("source") != "resume":
+    if not coding:
+        output = _apply_memory_preference(output)
+    if payload.get("source") != "resume" and not coding:
         try:
             from _cloud_worker import enabled as cloud_enabled
             from _context_cache import inject as inject_digest
@@ -2962,7 +3088,59 @@ def main():
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     output = _apply_key_limit_warning(output)
+    if coding:
+        output = _coding_session_start(output, payload)
     print(json.dumps(output or {}))
+
+
+class _SkipAutoindex(Exception):
+    """Raised to skip the code-graph auto-index in coding memory mode."""
+
+
+def _coding_session_start(output: dict, payload: dict) -> dict:
+    """Coding memory (SDK-1336) at SessionStart.
+
+    The steer, recap and digest are skipped where they are added; what else is
+    already in the output (an OFFLINE instruction, the sync notice) is kept.
+    After a compaction the lessons block is appended again (the compaction
+    dropped it). Also checks once that the server takes the event times coding
+    mode needs, and says so when it does not (memory is then off), and starts
+    filling the lesson cache in the background.
+    """
+    import _coding_memory
+
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    key = get_session_key()
+    cwd = str(payload.get("cwd") or "") or os.getcwd()
+    try:
+        with quiet_hook_output("session-start"):
+            support = _coding_memory.check_server_support(refresh=True, timeout=3.0)
+        if support.get("ok") is False:
+            notice = "Cognee coding memory is off: " + str(support.get("reason") or "")
+            top = str(result.get("systemMessage") or "").strip()
+            result["systemMessage"] = f"{top}\n{notice}".strip()
+        elif payload.get("source") == "compact" and key:
+            _coding_memory.reset_delivery(key)
+            with quiet_hook_output("session-start"):
+                block = _coding_memory.deliver(key, _coding_memory.last_request(key), cwd)
+            if block:
+                existing = str(hso.get("additionalContext") or "").strip()
+                hso["additionalContext"] = f"{existing}\n\n{block}" if existing else block
+        elif key:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "send_unit", os.path.join(os.path.dirname(__file__), "send-unit.py")
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            module.spawn_warm(cwd)
+    except Exception as exc:
+        hook_log("coding_session_start_failed", {"error": str(exc)[:200]})
+    result["hookSpecificOutput"] = hso
+    return result
 
 
 if __name__ == "__main__":

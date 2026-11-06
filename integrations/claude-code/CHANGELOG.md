@@ -10,6 +10,74 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0]
+
+### Added
+- **Coding memory mode (SDK-1336), opt-in with `COGNEE_CODING_MEMORY=true`.** Built for the
+  server's coding distillation (`DISTILLATION_MODE=coding`, cognee PR #6568). With the setting
+  unset nothing changes. With it on, the plugin does nothing while the agent works (per-call traces, the `Stop` QA entry, the every-150-entries `improve`, the per-prompt recall, file context on `Read`, the pre-compact anchor and its `improve`, the session-start steer, recap and digest, and code-graph indexing are
+  off) and instead:
+  - **sends each request once, at its end.** A new `Stop` hook (`send-unit.py`) reads the
+    transcript and queues every tool call not sent yet, failed calls, reads and `ls` included,
+    then one QA entry with the request, the final message and
+    `{"cwd", "transcript_path", "date", "start_commit", "end_commit", "branch"}`. Every entry
+    carries the time of its event (`time`, and `prompt_time` on the QA entry), which the server
+    uses to pair calls to requests. Sent calls are remembered by id, so a second `Stop` in the
+    same request sends only what is new, as a continuation. Subagent calls are read from the session's `subagents/` transcripts. Entries go through the
+    existing queue (the cloud spool, or the replay buffer), so a server
+    outage loses nothing. `SessionEnd` queues anything the last `Stop` missed before the final
+    sync's `improve`.
+  - **sends what the coding distillation can use:** a failed command's error starts with the
+    line that names it plus `(exit code N)`, then output cut at a line boundary, so unrelated
+    failures are not merged into one pitfall. That line is a Python traceback's last exception
+    (never its `Traceback (most recent call last):` header), else the first anchored error line
+    (a pytest `E` line, `error:`/`fatal:`, an exception name, a located compiler or linter
+    diagnostic such as ruff's `a.py:3:1: F401`, a `program: message` error), else the last line
+    with an error word that is not a run summary (`Found 1 error.`). Codex file edits go as one
+    `Write`/`Edit` per file with `file_path`, so the capture deny list drops edits to and renames
+    into secret files (`.env`, `*.pem`, ...). A request interrupted with Esc (on Codex, any
+    aborted turn) is sent once, closed at the interrupt, as
+    `[Interrupted by the user before finishing.]` plus any partial text and `interrupted: true`. A forked session (`--fork-session`, `/branch`, a Codex legacy-history
+    fork) sends only its own records, not its parent's copied history. The QA `cwd` is the
+    repository root (the session's directory goes as `session_cwd`), and git tags are computed
+    from the root, so sessions started in a subdirectory keep them.
+  - **runs `improve` at session end and once a day** (`COGNEE_IMPROVE_COOLDOWN`) in long sessions.
+  - **gives one short memory block at the first request of a session**, and again after a
+    compaction: the newest `test-baseline`, the two newest pitfalls and the lessons recalled for
+    the request (1,500 characters of whole lessons, their git tags included), each tagged with its session date and commit
+    and the files it names that changed or were deleted since, plus the last three commits. Lessons
+    are read from the dataset listing's metadata (`lesson_type`, `state_key`, `git_commit`,
+    `files`, `project_node_sets`) and their bodies cached under `coding/lessons/`, filled in the
+    background at session start. Only this repository's lessons are used.
+  - **tags its writes per repository:** `COGNEE_PROJECT_NODE_SET=auto` (the repository root),
+    when not set. It is a plugin setting, applied in every hook, on any server.
+  - **sets up the server it starts:** `DISTILLATION_MODE=coding` and `AUTO_FEEDBACK=false`, each
+    only when not set, and records the mode in the server pidfile (`coding_memory`). A local
+    server that is already running keeps the mode it started with; when it differs from the
+    session's, session start says so with the server's pid and how to restart it (it never
+    restarts a shared server).
+  - **says when the server's mode is unknown:** for a local server with no pidfile record, a
+    remote URL or a `COGNEE_MANAGED_ENDPOINT`, session start tells a coding session to shut the
+    server down and restart the plugin, which then starts its own server in coding mode, and to
+    remove the URL or managed-endpoint setting first. Cognee Cloud gives no note.
+- **Memory is off on a server that is too old.** Without the event-time fields of cognee PR
+  #6568, coding mode neither captures nor injects, and session start says why.
+- **Doctor shows coding memory** while it is on: server support, whether the running local
+  server is in coding mode, and whether the key holds `delete` on the dataset (the coding distillation deletes replaced lessons).
+- New `coding.*` log events (see `EVENTS.md`).
+
+### Fixed
+- **Project tags: an unanswered check is retried.** When the session-start check of project-tag
+  support gets no answer (timeout, connection error, a reply that is not JSON, HTTP 408, 429 or
+  5xx), capture stays queued and the check runs again from the next hook that writes, drains or
+  recalls, after 30 s, 2 min, then every 10 min, instead of blocking writes for the rest of the
+  session. A server without `node_set`, or one that refuses the check (any other HTTP status),
+  still keeps capture queued. The check never runs from a hook before session setup has run it,
+  so a session is not bound to a key that isn't minted yet; a setup that gives up (the server
+  never came up, registration failed) lets the next hook run it. A companion-dataset failure
+  still falls back to the primary dataset at once, as before. Session start says once that the
+  session's memory is queued.
+
 ## [1.7.8]
 
 ### Added
