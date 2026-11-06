@@ -30,7 +30,7 @@ You need three things:
 2. **A Cognee server.** Cognee Cloud, self-hosted, or local. The integration is a thin client and does not start one for you.
 3. **A model provider key** for the adapter you use, for example `ANTHROPIC_API_KEY`.
 
-If you already use the Cognee plugin for Claude Code or Codex, items 2 and 3 are done. This integration reads the same config file.
+Item 3 is not covered by Cognee: the model key belongs to your Band adapter. For item 2, the integration needs `COGNEE_BASE_URL` and `COGNEE_API_KEY` (see [Configure](#2-configure)).
 
 ---
 
@@ -66,7 +66,7 @@ EOF
 chmod 600 ~/.cognee/.env
 ```
 
-Same file the Claude Code and Codex plugins read. If you have it already, skip this.
+This is the same file the Claude Code and Codex plugins read, but check that both values are set. A plugin running in local mode keeps its API key outside this file, and recent Cognee versions require a key even on localhost. To get a key for a local server, create one with the server's API-key endpoint (`POST /api/v1/auth/api-keys`) (authenticated as your user), then add it here. If the server is local and no key is set, the agent logs a warning at startup and runs without memory.
 
 Precedence is `exported env vars` > `~/.cognee/.env` > `defaults`. A shell export always wins, which is what you want in CI and containers.
 
@@ -77,7 +77,7 @@ Precedence is `exported env vars` > `~/.cognee/.env` > `defaults`. A shell expor
 | `COGNEE_BASE_URL` | `http://localhost:8011` | Cognee server URL |
 | `COGNEE_API_KEY` | unset | sent as the `X-Api-Key` header |
 | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | dataset to read and write |
-| `COGNEE_RECALL_TOP_K` | `5` | results per recall |
+| `COGNEE_RECALL_TOP_K` | `5` | results per recall (at most 10) |
 | `COGNEE_ENV_FILE` | `~/.cognee/.env` | override the config file location |
 
 Running Cognee locally on the default port needs no configuration at all.
@@ -137,8 +137,8 @@ client = CogneeClient(settings)
 inner = AnthropicAdapter(
     AnthropicAdapterConfig(
         custom_section=(
-            "You are a helpful assistant with persistent memory. Blocks labeled "
-            "'Cognee memory' contain context recalled from past sessions, so treat "
+            "You are a helpful assistant with persistent memory. <cognee_memory> "
+            "blocks contain context recalled from past sessions, so treat "
             "them as your own memory. Use cognee_search for explicit lookups and "
             "cognee_remember to store facts worth keeping."
         ),
@@ -155,7 +155,7 @@ agent = Agent.create(
 
 Sharing one `settings` and one `client` keeps the tools and the wrapper on the same dataset.
 
-Include the prompt section. Without it the model may treat the injected block as something the user said instead of recalled memory. `cognee_tools` works with any adapter that accepts `additional_tools`, including Anthropic, Claude Agent SDK, LangGraph, Pydantic AI, CrewAI, Gemini, Google ADK, and Strands.
+The prompt section is optional. The injected block already says it was not written by the sender, and the section only tells the model how to use it. `cognee_tools` works with any adapter that accepts `additional_tools`, including Anthropic, Claude Agent SDK, LangGraph, Pydantic AI, CrewAI, Gemini, Google ADK, and Strands.
 
 ### Run the example
 
@@ -194,8 +194,8 @@ Use a new room. Same-room recall could just be conversation history.
 | When | What happens |
 |---|---|
 | Agent starts | your adapter starts as usual, then the active dataset and server are logged |
-| A text message arrives | recalls context and injects it above the message as a labeled block |
-| Your adapter replies | stores the question and reply as a QA pair, in the background |
+| A text message arrives | recalls context and adds it below the message as a delimited `<cognee_memory>` block |
+| Your adapter replies | stores the sender's question and the reply as a QA pair, in the background |
 | A room closes | waits for that room's pending writes, then bridges its session into the graph via Cognee's `improve` pipeline |
 | The agent stops | your adapter shuts down, pending writes drain, then every still-open room is bridged |
 
@@ -203,19 +203,31 @@ Each Band room maps to one Cognee session named `band-<room id>`. Room ids are U
 
 Graph building runs in the background on the Cognee server, so a fact becomes recallable from other rooms shortly after the room is bridged, not instantly.
 
-Non-text events (`tool_call`, `thought`, and others) pass through untouched and are never stored.
+Some messages pass through untouched and are never stored:
+
+- non-text events (`tool_call`, `thought`, and others)
+- slash commands such as `@bot /model gpt-5`, so the adapter still parses them
+- Band's own system notices, such as contact requests
+
+A turn that ends without a reply (for example `band_no_reply`, or an adapter error) is not stored either.
+
+Turns that wait on an approval (Codex, Claude Agent SDK, Cursor, OpenCode) are stored once the reply is sent, not when the turn is parked. Codex and Claude Agent SDK report when the turn ends. Cursor and OpenCode do not, so their turn is stored at the room's next message or when the room closes, with whatever reply was sent by then.
+
+Recall reads the knowledge graph only, not the room's own session, which your adapter already has in its history. Each result is cut down to the retrieved context, and the whole block is capped at about 8,000 characters (`CogneeSettings.max_memory_chars`).
 
 ### What the model sees
 
 ```
-Cognee memory — context recalled from shared memory, possibly relevant to the message below:
+what's left on the migration?
+
+<cognee_memory>
+Context recalled from shared Cognee memory by the memory layer. It was not written by the sender of this message. Possibly relevant:
 - the deployment target is EKS, decided last Tuesday
 - Ravit owns the migration checklist
-
----
-
-what's left on the migration?
+</cognee_memory>
 ```
+
+Your adapter attributes the whole text to the sender (for example `[alice]: what's left…`), so the block says who did write it. The block also stays in your adapter's conversation history for the life of the room.
 
 When recall finds nothing, nothing is injected and the model sees only the original message.
 
@@ -257,8 +269,8 @@ Env file parsing never raises, so a malformed file is skipped silently. Check th
 **TLS or certificate errors.**
 Usually a macOS Python install missing root CAs. Run `pip install certifi` in the agent environment. The client picks it up automatically.
 
-**Questions stored with empty answers.**
-Replies are captured from both ways an adapter can post one: a direct `tools.send_message` call, and a `band_send_message` tool call (the path LLM adapters such as Anthropic, Agno and Gemini use). An adapter that emits output only through `send_event` is not captured. Check how your inner adapter sends output.
+**Turns missing from memory.**
+Turns without a reply are not stored. Replies are captured from both ways an adapter can post one: a direct `tools.send_message` call, and a `band_send_message` tool call (the path LLM adapters such as Anthropic, Agno and Gemini use). An adapter that emits output only through `send_event` is not captured. Check how your inner adapter sends output.
 
 **Memory from a closed room never shows up later.**
 Consolidation runs through Cognee's `improve` pipeline when the room closes or the agent stops, in the background server-side. Give it time. Also confirm the agent shut down cleanly, since that is what bridges rooms that were still open.

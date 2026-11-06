@@ -19,6 +19,8 @@ _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 
 DEFAULT_BASE_URL = "http://localhost:8011"
 DEFAULT_DATASET = "agent_sessions"
+# Upper bound for COGNEE_RECALL_TOP_K: every result goes into the prompt.
+MAX_TOP_K = 10
 
 # Vars that could hijack process behavior if injected from a config file.
 _DENYLIST_EXACT = {"PATH", "HOME", "PYTHONPATH", "PYTHONHOME", "SHELL", "USER"}
@@ -103,6 +105,8 @@ class CogneeSettings:
     api_key: str = ""
     dataset: str = DEFAULT_DATASET
     top_k: int = 5
+    # Ceiling for the injected memory block, in characters (~2K tokens).
+    max_memory_chars: int = 8000
     recall_timeout: float = 20.0
     store_timeout: float = 30.0
     improve_timeout: float = 180.0
@@ -121,7 +125,7 @@ class CogneeSettings:
         )
         top_k = os.environ.get("COGNEE_RECALL_TOP_K", "").strip()
         if top_k.isdigit() and int(top_k) > 0:
-            settings.top_k = int(top_k)
+            settings.top_k = min(int(top_k), MAX_TOP_K)
         for key, value in overrides.items():
             if value is not None and hasattr(settings, key):
                 setattr(settings, key, value)

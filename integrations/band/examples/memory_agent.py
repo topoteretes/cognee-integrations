@@ -44,8 +44,8 @@ async def main() -> None:
     inner = AnthropicAdapter(
         AnthropicAdapterConfig(
             custom_section=(
-                "You are a helpful assistant with persistent memory. Blocks labeled "
-                "'Cognee memory' contain context recalled from past sessions — treat "
+                "You are a helpful assistant with persistent memory. <cognee_memory> "
+                "blocks contain context recalled from past sessions — treat "
                 "them as your own memory. Use cognee_search for explicit lookups and "
                 "cognee_remember to store facts worth keeping."
             ),

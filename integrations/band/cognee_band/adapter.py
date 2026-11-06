@@ -4,9 +4,11 @@
 Anthropic, CrewAI, ...) with shared Cognee memory:
 
   * before each room message reaches the inner adapter, relevant memory is
-    recalled from Cognee and injected as a labeled block above the message
-  * after the turn, the incoming message and the reply the adapter sent are
-    stored as one QA pair in the Cognee session cache (fire-and-forget)
+    recalled from the graph and added below the message as a delimited
+    ``<cognee_memory>`` block (commands and system notices pass untouched)
+  * once the turn has replied, the sender's message and the reply are stored
+    as one QA pair in the Cognee session cache (fire-and-forget); a detached
+    (approval-parked) turn is stored when its reply has been sent
   * when a room is removed (``on_cleanup``) or the agent stops
     (``cleanup_all``), that room's pending writes are drained and the session
     cache is bridged into the graph via ``/improve``
@@ -25,17 +27,20 @@ swallowed — memory must never break a turn.
 
 import asyncio
 import dataclasses
-import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from band.core.simple_adapter import SimpleAdapter
+from band.core.types import SYNTHETIC_SENDER_TYPE
+from band.runtime.formatters import strip_leading_mentions
 from band.runtime.startup import accept_adapter, arm_adapter, dispose_adapter, dispose_framework
 from band.runtime.tools.registry import LEGACY_SEND_MESSAGE_TOOL, canonicalize_mcp_tool_name
 from band.runtime.tools.types import BandTool
 
 from .client import UNREACHABLE, CogneeClient
 from .config import CogneeSettings
+from .recall_text import retrieved_context
 
 logger = logging.getLogger("cognee_band")
 
@@ -47,29 +52,69 @@ _MEMORY_MESSAGE_TYPES = {"text"}
 # spelling, and (via canonicalize_mcp_tool_name) the MCP ``band-`` prefixed forms.
 _SEND_MESSAGE_TOOLS = frozenset({BandTool.SEND_MESSAGE.value, LEGACY_SEND_MESSAGE_TOOL})
 
-_CONTEXT_HEADER = (
-    "Cognee memory — context recalled from shared memory, possibly relevant to the message below:"
+_MEMORY_OPEN = "<cognee_memory>"
+_MEMORY_CLOSE = "</cognee_memory>"
+_MEMORY_NOTE = (
+    "Context recalled from shared Cognee memory by the memory layer. It was not "
+    "written by the sender of this message. Possibly relevant:"
 )
+_TRUNCATED = "…[memory truncated]"
 
 
-def _render_result(item) -> str:
+def _render_result(item, query: str) -> str:
     if isinstance(item, str):
-        return item.strip()
-    if isinstance(item, dict):
-        for key in ("text", "context", "content", "search_result", "answer"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return json.dumps(item)[:500]
-    return str(item).strip()
+        return retrieved_context(item, query) if query else item.strip()
+    if not isinstance(item, dict):
+        return ""
+    # A session QA row (only reached if the recall scope includes the session).
+    if "question" in item and "answer" in item:
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        return f"Q: {question}\nA: {answer}" if question and answer else ""
+    for key in ("text", "context", "content", "search_result"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return retrieved_context(value, query) if query else value.strip()
+    return ""
 
 
-def render_memory_block(results: list) -> str:
-    """Format recall results as a labeled context block ('' when nothing usable)."""
-    lines = [f"- {text}" for text in (_render_result(r) for r in results) if text]
+def render_memory_block(results: list, query: str = "", max_chars: int = 8000) -> str:
+    """Format recall results as a delimited memory block ('' when nothing usable).
+
+    ``query`` is the recall query: with it, each graph item is cut down to its
+    retrieved context (see :mod:`cognee_band.recall_text`). ``max_chars`` caps
+    the bullets; the last one that does not fit is truncated and marked.
+    """
+    lines: list[str] = []
+    used = 0
+    for text in (_render_result(r, query) for r in results):
+        if not text:
+            continue
+        line = f"- {text}"
+        if max_chars > 0 and used + len(line) > max_chars:
+            room = max_chars - used
+            if room > len(_TRUNCATED) + 40:
+                lines.append(line[: room - len(_TRUNCATED)].rstrip() + _TRUNCATED)
+            break
+        lines.append(line)
+        used += len(line) + 1
     if not lines:
         return ""
-    return _CONTEXT_HEADER + "\n" + "\n".join(lines)
+    return "\n".join([_MEMORY_OPEN, _MEMORY_NOTE, *lines, _MEMORY_CLOSE])
+
+
+def _is_local_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+def _is_command(content: str) -> bool:
+    """A slash command such as ``@bot /model gpt-5``; adapters parse these from
+    the raw content, so they must reach the inner adapter untouched."""
+    return strip_leading_mentions(content).lstrip().startswith("/")
 
 
 class _CaptureTools:
@@ -85,9 +130,26 @@ class _CaptureTools:
     def __init__(self, inner):
         self._inner = inner
         self.sent: list[str] = []
+        # The task an adapter registered for this turn (band-sdk's
+        # ``bind_turn_task``). Codex and ClaudeSDK register the worker that a
+        # detached (approval-parked) turn keeps running in.
+        self.turn_task: asyncio.Task | None = None
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+    @property
+    def detached(self) -> bool:
+        """The adapter released this turn before it ended (``tools.turn.detach()``)."""
+        return bool(getattr(getattr(self._inner, "turn", None), "detached", False))
+
+    def register_turn_task(self, owner) -> None:
+        register = getattr(self._inner, "register_turn_task", None)
+        if callable(register):
+            register(owner)
+        task = getattr(owner, "task", None)
+        if isinstance(task, asyncio.Task):
+            self.turn_task = task
 
     def _record(self, content) -> None:
         if isinstance(content, str) and content.strip():
@@ -145,6 +207,9 @@ class CogneeMemoryAdapter(SimpleAdapter[Any]):
         self._client = client or CogneeClient(self._settings)
         self._active_rooms: set[str] = set()
         self._pending_tasks: dict[str, set[asyncio.Task]] = {}
+        # Detached turns whose adapter gave no finish signal (Cursor,
+        # OpenCode): stored at the room's next turn or at its cleanup.
+        self._deferred: dict[str, list[tuple[str, _CaptureTools, str]]] = {}
 
     @property
     def inner(self) -> SimpleAdapter[Any]:
@@ -213,45 +278,55 @@ class CogneeMemoryAdapter(SimpleAdapter[Any]):
             self._settings.dataset,
             self._settings.base_url,
         )
+        if not self._settings.api_key and _is_local_url(self._settings.base_url):
+            logger.warning(
+                "cognee memory: no COGNEE_API_KEY set for the local server %s; Cognee "
+                ">= 1.2.2 requires one even on localhost, so memory calls will be "
+                "rejected (401) and the agent will run without memory",
+                self._settings.base_url,
+            )
 
     async def on_event(self, inp) -> None:
-        if inp.msg.message_type not in _MEMORY_MESSAGE_TYPES:
+        msg = inp.msg
+        content = msg.content or ""
+        if (
+            msg.message_type not in _MEMORY_MESSAGE_TYPES
+            # Band's own notices (contact requests), not conversation.
+            or msg.sender_type == SYNTHETIC_SENDER_TYPE
+            # Commands are parsed from the raw content by the inner adapter.
+            or _is_command(content)
+            or not content.strip()
+        ):
             await self._inner.on_event(inp)
             return
 
-        question = inp.msg.content or ""
-        session_id = self._settings.session_id_for_room(inp.room_id)
-        self._active_rooms.add(inp.room_id)
+        room_id = inp.room_id
+        session_id = self._settings.session_id_for_room(room_id)
+        self._active_rooms.add(room_id)
+        self._flush_deferred(room_id)
 
-        block = await self._recall_block(question, session_id)
+        block = await self._recall_block(content, session_id)
         capture = _CaptureTools(inp.tools)
         forwarded = dataclasses.replace(
             inp,
             tools=capture,
-            msg=(
-                dataclasses.replace(inp.msg, content=f"{block}\n\n---\n\n{question}")
-                if block
-                else inp.msg
-            ),
+            # Message first, memory after it in a delimited block, so the
+            # sender-attributed text an adapter renders starts with what the
+            # sender actually wrote.
+            msg=dataclasses.replace(msg, content=f"{content}\n\n{block}") if block else msg,
         )
+        question = f"{msg.sender_name}: {content}" if msg.sender_name else content
         try:
             await self._inner.on_event(forwarded)
         finally:
-            if question.strip():
-                answer = "\n\n".join(capture.sent)
-                self._fire_and_forget(
-                    inp.room_id,
-                    self._client.store_qa,
-                    question,
-                    answer,
-                    session_id=session_id,
-                )
+            self._capture_turn(room_id, question, capture, session_id)
 
     async def on_cleanup(self, room_id: str) -> None:
         try:
             await self._inner.on_cleanup(room_id)
         finally:
             self._active_rooms.discard(room_id)
+            self._flush_deferred(room_id)
             await self._drain_pending(room_id)
             await self._improve(self._settings.session_id_for_room(room_id))
 
@@ -260,6 +335,8 @@ class CogneeMemoryAdapter(SimpleAdapter[Any]):
             if self._inner._disposal.builtin_started:
                 await dispose_framework(self._inner)
         finally:
+            for room_id in list(self._deferred):
+                self._flush_deferred(room_id)
             await self._drain_pending()
             for room_id in sorted(self._active_rooms):
                 await self._improve(self._settings.session_id_for_room(room_id))
@@ -281,7 +358,41 @@ class CogneeMemoryAdapter(SimpleAdapter[Any]):
         if isinstance(results, dict):  # error envelope from a reachable server
             logger.warning("cognee recall error: %s", results.get("error"))
             return ""
-        return render_memory_block(results)
+        return render_memory_block(results, question, self._settings.max_memory_chars)
+
+    def _capture_turn(self, room_id: str, question: str, capture: _CaptureTools, session_id: str):
+        """Store the turn's QA now, or once a detached turn has really ended."""
+        if not capture.detached:
+            self._store_turn(room_id, question, capture, session_id)
+            return
+        task = capture.turn_task
+        if task is not None and not task.done():
+            # Codex / ClaudeSDK: the worker the adapter registered keeps the
+            # capture proxy, so the late reply lands in ``capture.sent``.
+            task.add_done_callback(
+                lambda _t: self._store_turn(room_id, question, capture, session_id)
+            )
+            return
+        if task is not None:
+            self._store_turn(room_id, question, capture, session_id)
+            return
+        # Cursor / OpenCode give no finish signal: store whatever was sent by
+        # the room's next turn or its cleanup.
+        self._deferred.setdefault(room_id, []).append((question, capture, session_id))
+
+    def _flush_deferred(self, room_id: str) -> None:
+        for question, capture, session_id in self._deferred.pop(room_id, ()):
+            self._store_turn(room_id, question, capture, session_id)
+
+    def _store_turn(self, room_id: str, question: str, capture: _CaptureTools, session_id: str):
+        answer = "\n\n".join(capture.sent)
+        if not answer.strip():
+            # No reply (band_no_reply, an adapter error, an unanswered
+            # approval): nothing worth turning into memory.
+            return
+        self._fire_and_forget(
+            room_id, self._client.store_qa, question, answer, session_id=session_id
+        )
 
     async def _improve(self, session_id: str) -> None:
         try:

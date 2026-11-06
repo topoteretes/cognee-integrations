@@ -5,7 +5,7 @@ import json
 import urllib.error
 
 import pytest
-from cognee_band.client import UNREACHABLE, CogneeClient
+from cognee_band.client import UNREACHABLE, CogneeClient, text_upload_name
 from cognee_band.config import CogneeSettings
 
 
@@ -48,6 +48,8 @@ def test_recall_request_shape_and_result():
     assert body["datasets"] == ["ds"]
     assert body["session_id"] == "band-room1"
     assert body["only_context"] is True
+    # Graph only: the session lane would repeat the room's own history.
+    assert body["scope"] == ["graph"]
     assert req.headers["X-api-key"] == "ck_test"
 
 
@@ -127,6 +129,28 @@ def test_remember_multipart():
     assert 'name="datasetName"' in raw and "ds" in raw
     assert "remember me" in raw
     assert 'name="run_in_background"' in raw
+    assert f'filename="{text_upload_name("band_memory", "remember me")}"' in raw
+
+
+def test_remember_upload_name_follows_content():
+    # The server identifies an upload by filename within the dataset: a fixed
+    # name makes every later, different text a refused "update" (409).
+    first = text_upload_name("band_memory", "staging migration is owned by Ravit")
+    second = text_upload_name("band_memory", "deploy target is EKS")
+    assert first != second
+    assert first == text_upload_name("band_memory", "staging migration is owned by Ravit")
+    assert first.startswith("band_memory-") and first.endswith(".txt")
+
+
+def test_two_remembers_upload_under_different_names():
+    captured = []
+    client = make_client([b"{}", b"{}"], captured)
+    client.remember("fact one")
+    client.remember("fact two")
+    names = [
+        req.data.decode("utf-8").split('filename="', 1)[1].split('"', 1)[0] for req, _ in captured
+    ]
+    assert names[0] != names[1]
 
 
 @pytest.mark.parametrize("bad", [b"not json {"])

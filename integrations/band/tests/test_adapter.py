@@ -5,10 +5,12 @@ Runs against the real band-sdk types and runtime startup/disposal functions;
 only the inner adapter and the Cognee client are fakes.
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
 from band.core.simple_adapter import SimpleAdapter
+from band.core.turn_lifecycle import bind_turn_task
 from band.core.types import AgentInput, HistoryProvider, PlatformMessage
 from band.runtime.startup import accept_adapter, dispose_adapter, start_adapter
 from band.runtime.tools.schema import ToolCallOutcome
@@ -16,18 +18,30 @@ from cognee_band.adapter import CogneeMemoryAdapter, render_memory_block
 from cognee_band.config import CogneeSettings
 
 
-def make_msg(content="hello", message_type="text", room_id="room1"):
+def make_msg(
+    content="hello", message_type="text", room_id="room1", sender_type="User", sender_name="alice"
+):
     return PlatformMessage(
         id="m1",
         room_id=room_id,
         content=content,
         sender_id="u1",
-        sender_type="User",
-        sender_name="alice",
+        sender_type=sender_type,
+        sender_name=sender_name,
         message_type=message_type,
         metadata={},
         created_at=datetime.now(timezone.utc),
     )
+
+
+class FakeTurn:
+    """band-sdk's ``Turn``: ``detach()`` marks a turn released early."""
+
+    def __init__(self):
+        self.detached = False
+
+    def detach(self):
+        self.detached = True
 
 
 class FakeTools:
@@ -39,6 +53,11 @@ class FakeTools:
     def __init__(self):
         self.sent = []
         self.attachment_ids = []
+        self.turn = FakeTurn()
+        self.registered = []
+
+    def register_turn_task(self, owner):
+        self.registered.append(owner)
 
     async def send_message(self, content, mentions=None, *, attachment_ids=None):
         if content == "FAIL":
@@ -155,10 +174,12 @@ def make_adapter(inner=None, client=None):
     return CogneeMemoryAdapter(inner, settings=settings, client=client), inner, client
 
 
-async def run_turn(adapter, content="hello", message_type="text", room_id="room1", drain=True):
+async def run_turn(
+    adapter, content="hello", message_type="text", room_id="room1", drain=True, **msg_fields
+):
     tools = FakeTools()
     inp = AgentInput(
-        msg=make_msg(content=content, message_type=message_type, room_id=room_id),
+        msg=make_msg(content=content, message_type=message_type, room_id=room_id, **msg_fields),
         tools=tools,
         history=HistoryProvider(raw=[]),
         participants_msg=None,
@@ -237,9 +258,12 @@ async def test_recall_injected_above_message():
     adapter, inner, client = make_adapter(client=FakeClient([{"text": "milk is oat"}]))
     await run_turn(adapter, content="what milk?")
     forwarded = inner.seen[0]
-    assert "milk is oat" in forwarded.msg.content
-    assert forwarded.msg.content.endswith("what milk?")
-    assert "Cognee memory" in forwarded.msg.content
+    # The sender's own words lead; memory follows in a delimited block that
+    # says it was not written by the sender.
+    assert forwarded.msg.content.startswith("what milk?\n\n<cognee_memory>")
+    assert forwarded.msg.content.endswith("</cognee_memory>")
+    assert "- milk is oat" in forwarded.msg.content
+    assert "not written by the sender" in forwarded.msg.content
     assert client.recalls == [("what milk?", "band-room1")]
 
 
@@ -265,10 +289,10 @@ async def test_error_envelope_recall_is_not_injected():
 async def test_qa_stored_with_original_question_and_captured_answer():
     adapter, _, client = make_adapter(client=FakeClient([{"text": "ctx"}]))
     await run_turn(adapter, content="what milk?")
-    assert client.stored_qa == [("what milk?", "the answer", "band-room1")]
+    assert client.stored_qa == [("alice: what milk?", "the answer", "band-room1")]
 
 
-async def test_qa_stored_even_when_inner_raises():
+async def test_no_qa_stored_when_inner_raises():
     class Exploding(FakeInnerAdapter):
         async def on_event(self, inp):
             self.seen.append(inp)
@@ -278,7 +302,7 @@ async def test_qa_stored_even_when_inner_raises():
     with pytest.raises(RuntimeError):
         await run_turn(adapter, content="q")
     await adapter._drain_pending()
-    assert client.stored_qa == [("q", "", "band-room1")]
+    assert client.stored_qa == []
 
 
 async def test_non_text_messages_pass_through_without_memory():
@@ -323,11 +347,46 @@ async def test_cleanup_all_improves_active_rooms_after_drain():
     assert [kind for kind, _ in client.log] == ["store", "store", "improve", "improve"]
 
 
-def test_render_memory_block_shapes():
+# What cognee >= 1.6 returns for an only_context graph search: the whole prompt
+# its own LLM would have received, with the retrieved context in the middle.
+GRAPH_TEXT = (
+    "alice: earlier turn\n"
+    "The question is: `who owns the migration?` and here is the context provided "
+    "with a set of relationships from a knowledge graph: "
+    "`Ravit -- owns -- migration checklist`\n\n"
+    "## Active session guidance\n- answer briefly"
+)
+
+
+def test_render_keeps_only_the_retrieved_context():
+    item = {"source": "graph", "kind": "context", "text": GRAPH_TEXT, "raw": {}}
+    block = render_memory_block([item], "who owns the migration?")
+    assert "- Ravit -- owns -- migration checklist" in block
+    assert "The question is" not in block
+    assert "Active session guidance" not in block
+    assert "earlier turn" not in block
+
+
+def test_render_unparsed_text_is_kept_whole():
+    block = render_memory_block([{"text": "bare context from an older server"}], "q")
+    assert "- bare context from an older server" in block
+
+
+def test_render_session_qa_and_nothing_raw():
+    qa = {"source": "session", "question": "who owns it?", "answer": "Ravit", "qa_id": "x1"}
+    unanswered = {"source": "session", "question": "hi", "answer": "", "qa_id": "x2"}
+    block = render_memory_block([qa, unanswered, {"irrelevant": None}], "q")
+    assert "- Q: who owns it?\nA: Ravit" in block
+    assert "x2" not in block and "irrelevant" not in block
+    assert render_memory_block([unanswered, {"irrelevant": None}], "q") == ""
     assert render_memory_block([]) == ""
-    assert render_memory_block([{"irrelevant": None}]) != ""  # falls back to json dump
-    block = render_memory_block(["fact one", {"text": "fact two"}])
-    assert "- fact one" in block and "- fact two" in block
+
+
+def test_render_block_is_capped():
+    block = render_memory_block(["a" * 500, "b" * 500, "c" * 500], max_chars=800)
+    assert "a" * 500 in block
+    assert "ccc" not in block
+    assert block.count("…[memory truncated]") == 1
 
 
 # -- reply capture ---------------------------------------------------------------
@@ -338,20 +397,20 @@ async def test_tool_call_reply_is_captured(structured):
     adapter, _, client = make_adapter(inner=ToolCallingInnerAdapter(structured=structured))
     tools = await run_turn(adapter, content="what milk?")
     assert tools.sent == ["the answer"]  # sent exactly once
-    assert client.stored_qa == [("what milk?", "the answer", "band-room1")]
+    assert client.stored_qa == [("alice: what milk?", "the answer", "band-room1")]
 
 
 async def test_mcp_prefixed_send_tool_is_captured():
     inner = ToolCallingInnerAdapter(tool_name="band-band_send_message")
     adapter, _, client = make_adapter(inner=inner)
     await run_turn(adapter, content="q")
-    assert client.stored_qa == [("q", "the answer", "band-room1")]
+    assert client.stored_qa == [("alice: q", "the answer", "band-room1")]
 
 
 async def test_failed_tool_call_send_is_not_captured():
     adapter, _, client = make_adapter(inner=ToolCallingInnerAdapter(reply="FAIL"))
     await run_turn(adapter, content="q")
-    assert client.stored_qa == [("q", "", "band-room1")]
+    assert client.stored_qa == []
 
 
 async def test_send_message_passes_extra_kwargs_through():
@@ -362,4 +421,122 @@ async def test_send_message_passes_extra_kwargs_through():
     adapter, _, client = make_adapter(inner=AttachingInner())
     tools = await run_turn(adapter, content="q")
     assert tools.attachment_ids == [["f1"]]
-    assert client.stored_qa == [("q", "see file", "band-room1")]
+    assert client.stored_qa == [("alice: q", "see file", "band-room1")]
+
+
+# -- what reaches memory ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("content", ["/model gpt-5", "@bot /model gpt-5", "  @bot @other /help"])
+async def test_commands_pass_through_untouched(content):
+    # Codex parses local commands from the raw content in on_message: a memory
+    # block in front of the "/" would turn the command into a prompt.
+    adapter, inner, client = make_adapter(client=FakeClient(["memory that must not appear"]))
+    await run_turn(adapter, content=content)
+    assert inner.seen[0].msg.content == content
+    assert client.recalls == [] and client.stored_qa == []
+
+
+async def test_system_notices_get_no_memory():
+    adapter, inner, client = make_adapter(client=FakeClient(["memory"]))
+    content = "Received contact request from bob"
+    await run_turn(adapter, content=content, sender_type="System", sender_name="Contact Events")
+    assert inner.seen[0].msg.content == content
+    assert client.recalls == [] and client.stored_qa == []
+
+
+async def test_turn_without_reply_is_not_stored():
+    # e.g. the model ends the turn with band_no_reply
+    adapter, _, client = make_adapter(inner=FakeInnerAdapter(reply=""))
+    await run_turn(adapter, content="thanks @bot")
+    assert client.stored_qa == []
+
+
+async def test_question_without_sender_name_is_stored_bare():
+    adapter, _, client = make_adapter()
+    await run_turn(adapter, content="q", sender_name=None)
+    assert client.stored_qa == [("q", "the answer", "band-room1")]
+
+
+# -- detached (approval-parked) turns ----------------------------------------------
+
+
+class DetachingInner(FakeInnerAdapter):
+    """Parks the turn on a human decision the way Codex / ClaudeSDK do: the
+    worker is registered through band-sdk's ``bind_turn_task``, the turn is
+    detached, ``on_event`` returns, and the reply is sent later."""
+
+    def __init__(self, register=True):
+        super().__init__()
+        self.register = register
+        self.approve = asyncio.Event()
+        self.worker = None
+
+    async def on_event(self, inp):
+        self.seen.append(inp)
+        tools = inp.tools
+
+        async def work():
+            await self.approve.wait()
+            await tools.send_message("fixed it after approval")
+
+        self.worker = asyncio.get_running_loop().create_task(work())
+        if self.register:
+            bind_turn_task(tools, self.worker)
+        tools.turn.detach()
+
+
+async def test_detached_turn_stores_the_late_reply():
+    inner = DetachingInner()
+    adapter, _, client = make_adapter(inner=inner)
+    tools = await run_turn(adapter, content="fix the test")
+    assert client.stored_qa == []  # nothing stored while parked
+    assert len(tools.registered) == 1  # registration still reaches the real tools
+    inner.approve.set()
+    await inner.worker
+    await asyncio.sleep(0)
+    await adapter._drain_pending()
+    assert client.stored_qa == [("alice: fix the test", "fixed it after approval", "band-room1")]
+
+
+async def test_unregistered_detached_turn_is_stored_at_the_next_turn():
+    # Cursor / OpenCode: no finish signal, so the room's next turn flushes it.
+    inner = DetachingInner(register=False)
+    adapter, _, client = make_adapter(inner=inner)
+    await run_turn(adapter, content="fix the test")
+    inner.approve.set()
+    await inner.worker
+    assert client.stored_qa == []
+    inner.on_event = FakeInnerAdapter.on_event.__get__(inner)
+    await run_turn(adapter, content="next")
+    assert client.stored_qa[0] == ("alice: fix the test", "fixed it after approval", "band-room1")
+
+
+async def test_unregistered_detached_turn_is_stored_at_cleanup():
+    inner = DetachingInner(register=False)
+    adapter, _, client = make_adapter(inner=inner)
+    await run_turn(adapter, content="fix the test")
+    inner.approve.set()
+    await inner.worker
+    await adapter.on_cleanup("room1")
+    assert client.log == [("store", "band-room1"), ("improve", "band-room1")]
+
+
+# -- startup ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("base_url", "api_key", "warns"),
+    [
+        ("http://localhost:8011", "", True),
+        ("http://127.0.0.1:8000", "", True),
+        ("http://localhost:8011", "ck_x", False),
+        ("https://tenant.cognee.ai", "", False),
+    ],
+)
+async def test_local_server_without_key_warns(caplog, base_url, api_key, warns):
+    settings = CogneeSettings(base_url=base_url, api_key=api_key, dataset="ds")
+    adapter = CogneeMemoryAdapter(FakeInnerAdapter(), settings=settings, client=FakeClient())
+    with caplog.at_level("WARNING", logger="cognee_band"):
+        await start_adapter(adapter, agent_name="bot", agent_description="d", feature_flags={})
+    assert any("COGNEE_API_KEY" in r.getMessage() for r in caplog.records) is warns

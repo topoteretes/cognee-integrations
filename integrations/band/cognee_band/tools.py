@@ -51,7 +51,8 @@ def cognee_tools(client: CogneeClient) -> list:
             return "No relevant memories found."
         from .adapter import render_memory_block
 
-        return render_memory_block(results) or "No relevant memories found."
+        block = render_memory_block(results, inp.query, client.settings.max_memory_chars)
+        return block or "No relevant memories found."
 
     async def remember(inp) -> str:
         result = await asyncio.to_thread(client.remember, inp.content)

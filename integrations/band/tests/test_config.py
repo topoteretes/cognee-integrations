@@ -50,6 +50,12 @@ def test_resolve_defaults(monkeypatch):
     assert s.top_k == 5
 
 
+def test_top_k_is_capped(monkeypatch):
+    monkeypatch.setattr(config, "_loaded", True)
+    monkeypatch.setenv("COGNEE_RECALL_TOP_K", "50")
+    assert CogneeSettings.resolve().top_k == config.MAX_TOP_K
+
+
 def test_overrides_beat_env(monkeypatch):
     monkeypatch.setattr(config, "_loaded", True)
     monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "env-ds")

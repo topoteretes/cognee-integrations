@@ -14,6 +14,7 @@ the adapter wraps them in ``asyncio.to_thread`` so Band's event loop never
 blocks on memory I/O.
 """
 
+import hashlib
 import json
 import ssl
 import sys
@@ -100,7 +101,9 @@ class CogneeClient:
             "query": query,
             "top_k": top_k or self.settings.top_k,
             "only_context": True,
-            "scope": "auto",
+            # Graph only: the session lane would return this room's own earlier
+            # turns, which the adapter already holds in its conversation history.
+            "scope": ["graph"],
             # All plugin writes target one dataset; searching elsewhere only
             # adds noise from unrelated sessions or SDK calls.
             "datasets": [self.settings.dataset],
@@ -158,7 +161,13 @@ class CogneeClient:
 
     def remember(self, content: str, *, node_set: str = "band_memory"):
         """Durably store content via ``/remember`` (server-side ingest + graph
-        build, backgrounded so the call returns as soon as it is enqueued)."""
+        build, backgrounded so the call returns as soon as it is enqueued).
+
+        The upload is named by its content hash (:func:`text_upload_name`): the
+        server identifies an upload by its filename within the dataset, so a
+        fixed name would make every later, different text an "update" that the
+        background ingest refuses (409) after this call has already returned.
+        """
         url = self.settings.base_url.rstrip("/") + "/api/v1/remember"
         body, boundary = _multipart_body(
             {
@@ -166,7 +175,7 @@ class CogneeClient:
                 "node_set": node_set,
                 "run_in_background": "true",
             },
-            [("data", f"{node_set}.txt", content.encode("utf-8"))],
+            [("data", text_upload_name(node_set, content), content.encode("utf-8"))],
         )
         req = urllib.request.Request(
             url,
@@ -208,6 +217,17 @@ class CogneeClient:
         if isinstance(result, dict) and result.get("error"):
             return {"ok": False, **result}
         return {"ok": True, "result": result if isinstance(result, dict) else {}}
+
+
+def text_upload_name(node_set, content):
+    """Upload filename for inline remember text: ``{node_set}-{sha256[:32]}.txt``.
+
+    Same scheme as the Claude Code / Codex plugins: different texts get
+    different names, and the same text gets the same name, so a repeat is
+    deduplicated server-side instead of refused as a changed document.
+    """
+    data = content.encode("utf-8") if isinstance(content, str) else content
+    return f"{node_set or 'content'}-{hashlib.sha256(data).hexdigest()[:32]}.txt"
 
 
 def _multipart_body(fields, files):
