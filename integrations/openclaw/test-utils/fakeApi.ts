@@ -99,7 +99,7 @@ export const DEFAULT_PLUGIN_CONFIG: Record<string, unknown> = {
 export function createPluginApi(
   plugin: { register: (api: never) => unknown },
   pluginConfig: Record<string, unknown> = {},
-  opts: { workspaceDir?: string; runtimeConfig?: Record<string, unknown> } = {},
+  opts: { workspaceDir?: string; runtimeConfig?: Record<string, unknown>; registerCli?: boolean } = {},
 ): FakePluginApi {
   const handlers = new Map<string, HookHandler[]>();
   const actions = new Map<string, CliAction>();
@@ -129,6 +129,8 @@ export function createPluginApi(
   // to test. It also sets the plugin's `autoSyncStarted` flag, which suppresses
   // the startup auto-sync a test never asked for.
   const registerCli = jest.fn((cb: (ctx: unknown) => void) => {
+    // Gateway-start tests must not activate the CLI-only startup-sync fence.
+    if (opts.registerCli === false) return;
     cb({
       program: createFakeProgram(actions),
       workspaceDir: opts.workspaceDir ?? "/tmp/cognee-openclaw-ws",
