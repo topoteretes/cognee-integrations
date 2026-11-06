@@ -332,8 +332,14 @@ def _runs_server_app(pid: int) -> bool:
     if os.name == "nt" or pid == os.getpid() or not _alive(pid):
         return False
     try:
+        # -ww: unlimited width. Linux ps otherwise cuts the line at the width it
+        # takes from the environment (80 under pytest), dropping the app name
+        # that ends a long interpreter path's command line.
         command = subprocess.run(
-            ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=10
+            ["ps", "-ww", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
         ).stdout
     except (OSError, subprocess.TimeoutExpired):
         return False
