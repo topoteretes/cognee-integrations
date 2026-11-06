@@ -12,4 +12,4 @@ _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
-pytest_plugins = ("utils.fixtures",)
+pytest_plugins = ("utils.fixtures", "utils.coding_memory")

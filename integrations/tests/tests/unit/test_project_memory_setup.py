@@ -17,8 +17,7 @@ import json
 import sys
 
 import pytest
-
-SUITES = {"claude-code", "codex"}
+from utils.coding_memory import require_coding
 
 
 class _NoLock:
@@ -31,8 +30,7 @@ class _NoLock:
 
 @pytest.fixture
 def bootstrap(suite, hook_module, monkeypatch, tmp_path):
-    if suite.name not in SUITES:
-        pytest.skip("the project memory retry ships for Claude Code and Codex only")
+    require_coding(suite)
     module = hook_module(suite, "session-start.py")
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
     for name in ("phase_begin", "phase_end", "phase_touch"):
@@ -62,34 +60,37 @@ def bootstrap(suite, hook_module, monkeypatch, tmp_path):
     return run
 
 
-def test_a_server_that_never_came_up_lets_a_later_hook_prepare(bootstrap):
-    state = bootstrap(healthy=False)
-    assert state["pending"] and "retry_at" in state
+async def _refused(*a, **k):
+    return "", "", False
 
 
-def test_a_refused_registration_lets_a_later_hook_prepare(bootstrap):
-    async def refused(*a, **k):
-        return "", "", False
-
-    state = bootstrap(healthy=True, heavy=refused)
-    assert state["pending"] and "retry_at" in state
+async def _raised(*a, **k):
+    raise RuntimeError("registration refused")
 
 
-def test_a_registration_that_raised_lets_a_later_hook_prepare(bootstrap):
-    async def boom(*a, **k):
-        raise RuntimeError("registration refused")
-
-    state = bootstrap(healthy=True, heavy=boom)
-    assert state["pending"] and "retry_at" in state
+async def _registered(*a, on_registered=None, **k):
+    if on_registered:
+        on_registered()
+    return "", "", True
 
 
-def test_a_registered_session_leaves_the_state_to_its_own_prepare(bootstrap):
-    async def registered(*a, on_registered=None, **k):
-        if on_registered:
-            on_registered()
-        return "", "", True
-
-    # _run_heavy is faked, so prepare() did not run: the state stays pending,
-    # and without a retry_at no hook prepares it ahead of setup.
-    state = bootstrap(healthy=True, heavy=registered)
-    assert state["pending"] and "retry_at" not in state
+@pytest.mark.parametrize(
+    "healthy, heavy, expect_retry_at",
+    [
+        # The server never came up, registration was refused or raised: setup
+        # gave up, so a later hook prepares (allow_retry set a retry_at).
+        (False, None, True),
+        (True, _refused, True),
+        (True, _raised, True),
+        # _run_heavy is faked, so prepare() did not run: the state stays pending,
+        # and without a retry_at no hook prepares it ahead of setup.
+        (True, _registered, False),
+    ],
+    ids=["never-came-up", "refused", "raised", "registered"],
+)
+def test_only_a_setup_that_gave_up_lets_a_later_hook_prepare(
+    bootstrap, healthy, heavy, expect_retry_at
+):
+    state = bootstrap(healthy=healthy, heavy=heavy)
+    assert state["pending"]
+    assert ("retry_at" in state) is expect_retry_at

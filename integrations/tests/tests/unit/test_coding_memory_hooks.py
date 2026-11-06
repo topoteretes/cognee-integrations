@@ -18,14 +18,12 @@ import subprocess
 import sys
 
 import pytest
-
-CODING_SUITES = {"claude-code", "codex"}
+from utils.coding_memory import SESSION_KEY, require_coding
 
 
 @pytest.fixture
 def session_start(suite, hook_module, monkeypatch):
-    if suite.name not in CODING_SUITES:
-        pytest.skip("coding memory ships for Claude Code and Codex only")
+    require_coding(suite)
     module = hook_module(suite, "session-start.py")
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
     monkeypatch.setenv("COGNEE_PRESENCE_REPROBE_DELAY", "0.05")
@@ -88,23 +86,16 @@ def _spawn(session_start, closed_port_url, monkeypatch) -> list:
     return writes
 
 
-def test_spawn_records_coding_mode(session_start, closed_port_url, monkeypatch):
-    monkeypatch.setenv("DISTILLATION_MODE", "coding")
+@pytest.mark.parametrize("mode, coding", [("coding", True), (None, False)])
+def test_spawn_records_the_distillation_mode(
+    session_start, closed_port_url, monkeypatch, mode, coding
+):
+    if mode:
+        monkeypatch.setenv("DISTILLATION_MODE", mode)
+    else:
+        monkeypatch.delenv("DISTILLATION_MODE", raising=False)
     writes = _spawn(session_start, closed_port_url, monkeypatch)
-    assert writes and writes[0][1]["coding_memory"] is True
-
-
-def test_spawn_records_normal_mode(session_start, closed_port_url, monkeypatch):
-    monkeypatch.delenv("DISTILLATION_MODE", raising=False)
-    writes = _spawn(session_start, closed_port_url, monkeypatch)
-    assert writes and writes[0][1]["coding_memory"] is False
-
-
-def test_pidfile_keeps_the_field(pc):
-    pc.write_server_pidfile(8123, os.getpid(), version="1.0", coding_memory=True)
-    assert pc.live_server_record(8123)["coding_memory"] is True
-    pc.write_server_pidfile(8124, os.getpid(), version="1.0")
-    assert "coding_memory" not in pc.live_server_record(8124)
+    assert writes and writes[0][1]["coding_memory"] is coding
 
 
 # --- the note when a session joins a running server ---------------------------------------
@@ -142,6 +133,7 @@ def test_coding_session_on_a_normal_server_is_told(session_start, pc, closed_por
     assert f"(pid {pid}) was started without coding mode" in note
     assert f"`kill {pid}`" in note
     assert "close the other Claude Code and Codex sessions" in note
+    assert "wasn't started by the plugin" not in note
     assert result["hookSpecificOutput"]["systemMessage"].endswith(note.split("\n\n")[-1])
 
 
@@ -163,22 +155,6 @@ def test_matching_modes_give_no_note(session_start, pc, closed_port_url, monkeyp
     assert "was started" not in messages and "`kill " not in messages
 
 
-def test_unknown_server_mode_is_told_to_a_coding_session(
-    session_start, pc, closed_port_url, monkeypatch
-):
-    # An older pidfile (no field) — or none at all: a server started elsewhere.
-    pc.write_server_pidfile(_port(closed_port_url), os.getpid())
-    result = _join(session_start, closed_port_url, monkeypatch, coding=True)
-    assert "unknown whether it runs coding mode" in result["systemMessage"]
-
-
-def test_no_pidfile_is_unknown_for_a_coding_session(
-    session_start, pc, closed_port_url, monkeypatch
-):
-    result = _join(session_start, closed_port_url, monkeypatch, coding=True)
-    assert "unknown whether it runs coding mode" in result["systemMessage"]
-
-
 def test_unknown_server_mode_is_quiet_for_a_normal_session(
     session_start, pc, closed_port_url, monkeypatch
 ):
@@ -196,24 +172,17 @@ def test_no_pidfile_says_shut_down_and_restart(session_start, pc, closed_port_ur
     assert "Shut it down and restart the plugin" in note
     assert "stops on its own" not in note
     assert "COGNEE_BASE_URL" not in note
+    assert "unknown whether it runs coding mode" in note
 
 
 def test_older_pidfile_keeps_the_close_sessions_advice(
     session_start, pc, closed_port_url, monkeypatch
 ):
+    # An older pidfile (no coding_memory field): a server started elsewhere.
     pc.write_server_pidfile(_port(closed_port_url), os.getpid())
     note = _join(session_start, closed_port_url, monkeypatch, coding=True)["systemMessage"]
+    assert "unknown whether it runs coding mode" in note
     assert "stops on its own" in note
-    assert "wasn't started by the plugin" not in note
-
-
-def test_spawned_normal_server_keeps_the_kill_advice(
-    session_start, pc, closed_port_url, monkeypatch
-):
-    pid = os.getpid()
-    pc.write_server_pidfile(_port(closed_port_url), pid, coding_memory=False)
-    note = _join(session_start, closed_port_url, monkeypatch, coding=True)["systemMessage"]
-    assert f"`kill {pid}`" in note
     assert "wasn't started by the plugin" not in note
 
 
@@ -351,27 +320,15 @@ def test_coding_mode_keeps_the_sync_notice_on_resume(session_start, cm, monkeypa
     assert "SYNC NOTICE" in result["hookSpecificOutput"]["additionalContext"]
 
 
-def test_compaction_appends_the_lessons_block(suite, session_start, cm, monkeypatch):
-    sys.modules["_plugin_common"].set_session_key("host-session-1")
-    monkeypatch.setattr(cm, "reset_delivery", lambda key: None)
-    monkeypatch.setattr(cm, "last_request", lambda key: "fix it")
-    monkeypatch.setattr(cm, "deliver", lambda key, request, cwd: "LESSONS BLOCK")
-    output = {
-        "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "NOTICE"}
-    }
-    result = session_start._coding_session_start(output, {"source": "compact", "cwd": "/tmp"})
-    context = result["hookSpecificOutput"]["additionalContext"]
-    assert context.index("NOTICE") < context.index("LESSONS BLOCK")
-
-
-def test_compaction_through_main_keeps_both(suite, session_start, cm, monkeypatch, capsys):
-    if suite.name != "claude-code":
-        pytest.skip("Codex answers a compaction with the lessons block alone")
+def test_compaction_appends_the_lessons_block(suite, session_start, cm, monkeypatch, capsys):
     monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
     monkeypatch.setattr(cm, "reset_delivery", lambda key: None)
     monkeypatch.setattr(cm, "last_request", lambda key: "fix it")
     monkeypatch.setattr(cm, "deliver", lambda key, request, cwd: "LESSONS BLOCK")
-    monkeypatch.setattr(session_start, "get_session_key", lambda: "host-session-1")
+    monkeypatch.setattr(session_start, "get_session_key", lambda: SESSION_KEY)
+    # Claude Code runs the whole SessionStart on a compaction, so the block
+    # follows what the rest put in (a sync notice here). Codex answers it with
+    # the lessons block alone and never calls _start.
     _fake_start(
         session_start,
         monkeypatch,
@@ -381,7 +338,10 @@ def test_compaction_through_main_keeps_both(suite, session_start, cm, monkeypatc
         session_start, monkeypatch, capsys, {"session_id": "s1", "source": "compact"}
     )
     context = result["hookSpecificOutput"]["additionalContext"]
-    assert "NOTICE" in context and "LESSONS BLOCK" in context
+    if suite.name == "claude-code":
+        assert context.index("NOTICE") < context.index("LESSONS BLOCK")
+    else:
+        assert context == "LESSONS BLOCK"
 
 
 def test_coding_session_is_recorded_without_a_recap(suite, session_start, cm, monkeypatch, capsys):

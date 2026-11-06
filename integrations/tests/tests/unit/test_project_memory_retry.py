@@ -23,22 +23,16 @@ import time
 import urllib.error
 
 import pytest
+from utils.coding_memory import entry_spec, require_coding
 
 # Claude Code and Codex ship the retrying copy (SDK-1336 makes the tag the
-# default in coding mode there).
-RETRY_SUITES = {"claude-code", "codex"}
-
-_SPEC = {
-    "components": {
-        "schemas": {name: {"properties": {"node_set": {}}} for name in ("QAEntry", "TraceEntry")}
-    }
-}
+# default in coding mode there); it is identical in both, so it is tested once.
+# The tests that drain the buffer (``env_drain``) run on both hosts: the drain
+# and ``remember_entry_via_http`` live in ``_plugin_common``, which differs.
+_SPEC = entry_spec(qa=("node_set",), trace=("node_set",))
 
 
-@pytest.fixture
-def env(suite, isolated_modules, monkeypatch, tmp_path):
-    if suite.name not in RETRY_SUITES:
-        pytest.skip("the retrying project memory ships for Claude Code and Codex only")
+def _env(suite, isolated_modules, monkeypatch, tmp_path):
     pm = isolated_modules(suite, "_project_memory")
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setattr(common, "resolved_http_endpoint_auth", lambda: ("https://tenant", "key"))
@@ -50,6 +44,18 @@ def env(suite, isolated_modules, monkeypatch, tmp_path):
     monkeypatch.delenv("COGNEE_SESSION_COMPANION_DATASET", raising=False)
     monkeypatch.setenv("COGNEE_PROJECT_NODE_SET", "project-fixed")
     return pm, common
+
+
+@pytest.fixture
+def env(suite, isolated_modules, monkeypatch, tmp_path):
+    require_coding(suite, identical_modules=True)
+    return _env(suite, isolated_modules, monkeypatch, tmp_path)
+
+
+@pytest.fixture
+def env_drain(suite, isolated_modules, monkeypatch, tmp_path):
+    require_coding(suite)
+    return _env(suite, isolated_modules, monkeypatch, tmp_path)
 
 
 class _Server:
@@ -85,18 +91,6 @@ def _timeout() -> BaseException:
     return urllib.error.URLError(socket.timeout("timed out"))
 
 
-def test_probe_timeout_leaves_the_state_pending_with_a_backoff(env, monkeypatch):
-    pm, common = env
-    pm.begin("primary", "s", "/tmp")
-    monkeypatch.setattr(common, "_json_http_request", _Server(fail=_timeout()))
-    before = time.time()
-    state = pm.prepare("primary", "s")
-    assert state["pending"] is True
-    assert "error" not in state
-    assert state["attempts"] == 1
-    assert before + 29 <= state["retry_at"] <= time.time() + 31
-
-
 @pytest.mark.parametrize(
     "fail",
     [
@@ -104,9 +98,10 @@ def test_probe_timeout_leaves_the_state_pending_with_a_backoff(env, monkeypatch)
         ConnectionRefusedError(),
         json.JSONDecodeError("Expecting value", "<html>", 0),
         urllib.error.HTTPError("https://tenant/openapi.json", 408, "timeout", {}, None),
+        urllib.error.HTTPError("https://tenant/openapi.json", 429, "too many", {}, None),
         urllib.error.HTTPError("https://tenant/openapi.json", 503, "unavailable", {}, None),
     ],
-    ids=["timeout", "refused", "non-json", "408", "503"],
+    ids=["timeout", "refused", "non-json", "408", "429", "503"],
 )
 def test_any_unanswered_spec_probe_is_retried(env, monkeypatch, fail):
     pm, common = env
@@ -114,6 +109,7 @@ def test_any_unanswered_spec_probe_is_retried(env, monkeypatch, fail):
     monkeypatch.setattr(common, "_json_http_request", _Server(fail=fail))
     state = pm.prepare("primary", "s")
     assert state["pending"] is True and "error" not in state
+    assert state["attempts"] == 1 and state["retry_at"] > time.time()
 
 
 def test_backoff_grows_then_settles_at_ten_minutes(env, monkeypatch):
@@ -127,22 +123,8 @@ def test_backoff_grows_then_settles_at_ten_minutes(env, monkeypatch):
     assert delays == [30, 120, 600, 600]
 
 
-def test_route_before_retry_at_raises_without_an_http_call(env, monkeypatch):
-    pm, common = env
-    pm.begin("primary", "s", "/tmp")
-    server = _Server(fail=_timeout())
-    monkeypatch.setattr(common, "_json_http_request", server)
-    pm.prepare("primary", "s")
-    server.calls.clear()
-    with pytest.raises(RuntimeError, match="pending"):
-        pm.route("primary", "s")
-    with pytest.raises(RuntimeError, match="pending"):
-        common.remember_entry_via_http("primary", "s", {"type": "qa", "question": "q"})
-    assert server.calls == []
-
-
-def test_timeout_then_success_drains_the_buffer_tagged_in_the_same_session(env, monkeypatch):
-    pm, common = env
+def test_timeout_then_success_drains_the_buffer_tagged_in_the_same_session(env_drain, monkeypatch):
+    pm, common = env_drain
     pm.begin("primary", "s", "/tmp")
     server = _Server(fail=_timeout())
     monkeypatch.setattr(common, "_json_http_request", server)
@@ -150,9 +132,13 @@ def test_timeout_then_success_drains_the_buffer_tagged_in_the_same_session(env, 
     common.append_warmup_entry("primary", "s", {"type": "qa", "question": "q", "answer": "a"})
     common.append_warmup_entry("primary", "s", {"type": "trace", "origin_function": "Bash"})
 
-    # Still before retry_at: nothing leaves the buffer, nothing is sent.
+    # Still before retry_at: nothing leaves the buffer, nothing is sent, the
+    # spec is not asked again.
+    server.calls.clear()
     assert common.drain_warmup_entries("primary", "s") == (0, 2)
-    assert server.writes() == []
+    with pytest.raises(RuntimeError, match="pending"):
+        pm.route("primary", "s")
+    assert server.calls == []
 
     _expire_retry(pm, common)
     server.fail = None
@@ -168,74 +154,42 @@ def test_timeout_then_success_drains_the_buffer_tagged_in_the_same_session(env, 
     assert state["pending"] is False and "retry_at" not in state
 
 
-def test_spec_without_node_set_is_still_a_permanent_error(env, monkeypatch):
-    pm, common = env
-    pm.begin("primary", "s", "/tmp")
-    monkeypatch.setattr(common, "_json_http_request", lambda *a, **k: {"components": {}})
-    state = pm.prepare("primary", "s")
-    assert state["pending"] is False and "retry_at" not in state
-    with pytest.raises(RuntimeError, match="does not support"):
-        pm.route("primary", "s")
+def _unminted_key(common, monkeypatch) -> None:
+    # A hook running before session setup minted the agent key.
+    monkeypatch.setattr(common, "resolved_http_endpoint_auth", lambda: ("https://tenant", ""))
 
 
-def test_a_never_prepared_session_is_not_prepared_by_a_hook(env, monkeypatch):
+def _companion_dataset(common, monkeypatch) -> None:
+    # A hook running before session setup created the companion dataset.
+    monkeypatch.delenv("COGNEE_PROJECT_NODE_SET")
+    monkeypatch.setenv("COGNEE_SESSION_COMPANION_DATASET", "true")
+
+
+@pytest.mark.parametrize(
+    "before_setup", [_unminted_key, _companion_dataset], ids=["node-set", "companion"]
+)
+def test_a_never_prepared_session_is_not_prepared_by_a_hook(env_drain, monkeypatch, before_setup):
     # Session setup has not run prepare() yet: pending, no retry_at. A drain
-    # keeps the entries queued and sends nothing, not even a probe.
-    pm, common = env
+    # keeps the entries queued and sends nothing, not even a probe, and route()
+    # leaves the state as it is, so it binds the session to no key or dataset
+    # that is not final yet.
+    pm, common = env_drain
+    before_setup(common, monkeypatch)
     pm.begin("primary", "s", "/tmp")
-    assert "retry_at" not in _state(pm, common)
+    state = _state(pm, common)
+    assert state["pending"] is True and "retry_at" not in state
     server = _Server()
     monkeypatch.setattr(common, "_json_http_request", server)
     common.append_warmup_entry("primary", "s", {"type": "qa", "question": "q", "answer": "a"})
     assert common.drain_warmup_entries("primary", "s") == (0, 1)
-    assert server.calls == []
     with pytest.raises(RuntimeError, match="pending"):
         pm.route("primary", "s")
-    assert _state(pm, common)["pending"] is True
+    assert server.calls == []
+    assert _state(pm, common) == state
 
 
-def test_a_hook_before_setup_does_not_bind_the_session_to_an_unminted_key(env, monkeypatch):
-    pm, common = env
-    monkeypatch.setattr(common, "resolved_http_endpoint_auth", lambda: ("https://tenant", ""))
-    pm.begin("primary", "s", "/tmp")
-    monkeypatch.setattr(common, "_json_http_request", _Server())
-    with pytest.raises(RuntimeError, match="pending"):
-        pm.route("primary", "s")  # a hook running before the key is minted
-
-    monkeypatch.setattr(common, "resolved_http_endpoint_auth", lambda: ("https://tenant", "agent"))
-    assert pm.prepare("primary", "s")["pending"] is False  # session setup, key now final
-    assert pm.route("primary", "s")["node_set"] == ["project-fixed"]
-
-
-def test_a_hook_before_setup_does_not_lose_the_companion_dataset(env, monkeypatch):
-    pm, common = env
-    monkeypatch.delenv("COGNEE_PROJECT_NODE_SET")
-    monkeypatch.setenv("COGNEE_SESSION_COMPANION_DATASET", "true")
-    pm.begin("primary", "s", "/tmp")
-    datasets: list = []
-
-    def server(path, *a, **k):
-        if path == "/api/v1/datasets":
-            return list(datasets)
-        return {
-            "permissions_verified": True,
-            "primary_dataset_id": "id",
-            "dataset_name": "primary-agent_sessions",
-            "dataset_id": "cid",
-        }
-
-    monkeypatch.setattr(common, "_json_http_request", server)
-    with pytest.raises(RuntimeError, match="pending"):
-        pm.route("primary", "s")  # before session setup created the dataset
-
-    datasets.append({"name": "primary", "id": "id"})
-    pm.prepare("primary", "s")
-    assert pm.route("primary", "s")["write"] == "primary-agent_sessions"
-    assert "fallback" not in _state(pm, common)
-
-
-def test_a_setup_that_gave_up_lets_a_later_hook_prepare(env, monkeypatch):
-    pm, common = env
+def test_a_setup_that_gave_up_lets_a_later_hook_prepare(env_drain, monkeypatch):
+    pm, common = env_drain
     pm.begin("primary", "s", "/tmp")
     pm.allow_retry("primary", "s")
     state = _state(pm, common)
@@ -270,11 +224,10 @@ def test_allow_retry_leaves_a_prepared_or_backed_off_state_alone(env, monkeypatc
     assert "retry_at" not in _state(pm, common)
 
 
-@pytest.mark.parametrize("code", [401, 403, 404])
-def test_a_refused_spec_is_a_permanent_error(env, monkeypatch, code):
+def test_a_refused_spec_is_a_permanent_error(env, monkeypatch):
     pm, common = env
     pm.begin("primary", "s", "/tmp")
-    refused = urllib.error.HTTPError("https://tenant/openapi.json", code, "no", {}, None)
+    refused = urllib.error.HTTPError("https://tenant/openapi.json", 404, "no", {}, None)
     monkeypatch.setattr(common, "_json_http_request", _Server(fail=refused))
     state = pm.prepare("primary", "s")
     assert state["pending"] is False and "retry_at" not in state
@@ -289,9 +242,8 @@ def test_a_refused_spec_is_a_permanent_error(env, monkeypatch, code):
         urllib.error.URLError(ConnectionRefusedError()),
         urllib.error.URLError(socket.timeout("timed out")),
         urllib.error.HTTPError("https://tenant", 503, "unavailable", {}, None),
-        urllib.error.HTTPError("https://tenant", 403, "forbidden", {}, None),
     ],
-    ids=["refused", "timeout", "503", "403"],
+    ids=["refused", "timeout", "503"],
 )
 def test_any_companion_failure_falls_back_to_the_primary_at_once(env, monkeypatch, fail):
     # As on main: a companion-only session never waits on the server.

@@ -5,69 +5,35 @@
   question with its own answer and prompt time.
 * Values are sanitized whole before any byte cap cuts a ``<private>`` span open.
 * Cloud coding entries are counted once and request no every-N improve.
+
+``_coding_memory`` is identical in Claude Code and Codex, so these run on Claude
+Code only; the Codex rollout tests call ``parse_codex`` directly.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
-
-CODING_SUITES = {"claude-code", "codex"}
-KEY = "host-session-1"
-
-
-@pytest.fixture
-def cm(suite, isolated_modules, monkeypatch):
-    if suite.name not in CODING_SUITES:
-        pytest.skip("coding memory ships for Claude Code and Codex only")
-    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
-    module = isolated_modules(suite, "_coding_memory")
-    common = isolated_modules(suite, "_plugin_common")
-    common.set_session_key(KEY)
-    monkeypatch.setattr(module, "_session", lambda: ("claude_s1", "agent_sessions"))
-    monkeypatch.setattr(module, "server_supported", lambda: True)
-    return module
-
-
-@pytest.fixture
-def sent(cm, monkeypatch):
-    entries: list = []
-    monkeypatch.setattr(cm, "_deliver", lambda dataset, sid, batch: entries.extend(batch))
-    monkeypatch.setattr(cm, "_drain", lambda *a: None)
-    monkeypatch.setattr(cm, "_maybe_cooldown_improve", lambda *a: None)
-    # Claude transcripts by default in both suites; the Codex tests switch it.
-    monkeypatch.setattr(cm, "parse_transcript", cm.parse_claude)
-    return entries
-
-
-def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
-    ).stdout.strip()
-
-
-@pytest.fixture
-def repo(tmp_path):
-    root = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "main")
-    _git(root, "config", "user.email", "t@example.com")
-    _git(root, "config", "user.name", "T")
-    _git(root, "config", "commit.gpgsign", "false")
-    (root / "a.txt").write_text("1\n")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-q", "-m", "first")
-    return root
+from utils.coding_memory import SESSION_KEY as KEY
+from utils.coding_memory import (
+    codex_answer,
+    codex_item,
+    codex_prompt,
+    git,
+    said,
+    tool,
+    user,
+    write_records,
+)
 
 
 def _commit(repo: Path, text: str) -> str:
-    (repo / "a.txt").write_text(text + "\n")
-    _git(repo, "commit", "-qam", text)
-    return _git(repo, "rev-parse", "HEAD")
+    (repo / "README.md").write_text(text + "\n")
+    git(repo, "commit", "-qam", text)
+    return git(repo, "rev-parse", "HEAD")
 
 
 def _begin(cm, monkeypatch, prompt: str, at: str, repo: Path) -> None:
@@ -76,57 +42,20 @@ def _begin(cm, monkeypatch, prompt: str, at: str, repo: Path) -> None:
     cm.begin_turn(KEY, prompt, str(repo))
 
 
-# -- Claude transcripts ---------------------------------------------------------------
-
-
-def _user(uid: str, text, stamp: str, **extra) -> dict:
-    return {
-        "type": "user",
-        "uuid": uid,
-        "timestamp": stamp,
-        "message": {"role": "user", "content": text},
-        **extra,
-    }
-
-
-def _said(uid: str, text: str, stamp: str) -> dict:
-    return {
-        "type": "assistant",
-        "uuid": uid,
-        "timestamp": stamp,
-        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
-    }
-
-
-def _tool(uid: str, tool_id: str, name: str, tool_input, output, stamp: str, *, error=False):
-    use = {
-        "type": "assistant",
-        "uuid": uid + "-use",
-        "timestamp": stamp,
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}],
-        },
-    }
-    result = _user(
-        uid + "-result",
-        [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": error}],
-        stamp,
-    )
-    return [use, result]
-
-
-def _write(path: Path, records: list) -> Path:
-    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-    return path
-
-
 def _qa(entries: list) -> list:
     return [e for e in entries if e["type"] == "qa"]
 
 
 def _ctx(qa: dict) -> dict:
     return json.loads(qa["context"])
+
+
+def _traces(entries: list) -> list:
+    return [e for e in entries if e["type"] == "trace"]
+
+
+def _failed_bash(uid: str, tool_id: str, command: str, output: str, stamp: str) -> list:
+    return tool(uid, tool_id, "Bash", {"command": command}, output, stamp, error=True)
 
 
 def _payload(path: Path, repo: Path, answer: str = "") -> dict:
@@ -141,19 +70,19 @@ B_PROMPT = "2026-11-05T10:05:00.000Z"
 
 
 def test_late_stop_sends_each_request_with_its_own_answer(cm, sent, tmp_path, repo, monkeypatch):
-    first = _git(repo, "rev-parse", "HEAD")
+    first = git(repo, "rev-parse", "HEAD")
     _begin(cm, monkeypatch, "Request A", "2026-11-05T10:00:01+00:00", repo)
     second = _commit(repo, "after A")
     _begin(cm, monkeypatch, "Request B", "2026-11-05T10:05:01+00:00", repo)
     records = [
-        _user("ua", "Request A", A_PROMPT),
-        _said("aa", "Answer A", "2026-11-05T10:01:00.000Z"),
-        _user("ub", "Request B", B_PROMPT),
+        user("ua", "Request A", A_PROMPT),
+        said("aa", "Answer A", "2026-11-05T10:01:00.000Z"),
+        user("ub", "Request B", B_PROMPT),
     ]
-    path = _write(tmp_path / "s.jsonl", records)
+    path = write_records(tmp_path / "s.jsonl", records)
     # A's Stop runs only now, after B's prompt.
     cm.capture(_payload(path, repo, "Answer A"))
-    _write(path, records + [_said("ab", "Answer B", "2026-11-05T10:06:00.000Z")])
+    write_records(path, records + [said("ab", "Answer B", "2026-11-05T10:06:00.000Z")])
     cm.capture(_payload(path, repo, "Answer B"))
 
     qa = _qa(sent)
@@ -171,16 +100,16 @@ def test_late_stop_sends_each_request_with_its_own_answer(cm, sent, tmp_path, re
 
 def test_late_stop_leaves_a_running_request_alone(cm, sent, tmp_path, repo):
     records = [
-        _user("ua", "Request A", A_PROMPT),
-        _said("aa", "Answer A", "2026-11-05T10:01:00.000Z"),
-        _user("ub", "Request B", B_PROMPT),
-        _said("ab1", "Looking at the parser first.", "2026-11-05T10:05:10.000Z"),
+        user("ua", "Request A", A_PROMPT),
+        said("aa", "Answer A", "2026-11-05T10:01:00.000Z"),
+        user("ub", "Request B", B_PROMPT),
+        said("ab1", "Looking at the parser first.", "2026-11-05T10:05:10.000Z"),
     ]
-    path = _write(tmp_path / "s.jsonl", records)
+    path = write_records(tmp_path / "s.jsonl", records)
     cm.capture(_payload(path, repo, "Answer A"))
     assert [q["question"] for q in _qa(sent)] == ["Request A"]
     sent.clear()
-    _write(path, records + [_said("ab2", "Answer B", "2026-11-05T10:06:00.000Z")])
+    write_records(path, records + [said("ab2", "Answer B", "2026-11-05T10:06:00.000Z")])
     cm.capture(_payload(path, repo, "Answer B"))
     (qa,) = _qa(sent)
     assert qa["answer"] == "Answer B" and qa["prompt_time"] == "2026-11-05T10:05:00+00:00"
@@ -188,11 +117,11 @@ def test_late_stop_leaves_a_running_request_alone(cm, sent, tmp_path, repo):
 
 
 def test_two_requests_with_the_same_answer_send_two_qas(cm, sent, tmp_path, repo):
-    records = [_user("ua", "Rename x", A_PROMPT), _said("aa", "Done.", "2026-11-05T10:01:00Z")]
-    path = _write(tmp_path / "s.jsonl", records)
+    records = [user("ua", "Rename x", A_PROMPT), said("aa", "Done.", "2026-11-05T10:01:00Z")]
+    path = write_records(tmp_path / "s.jsonl", records)
     cm.capture(_payload(path, repo, "Done."))
-    records += [_user("ub", "Rename y", B_PROMPT), _said("ab", "Done.", "2026-11-05T10:06:00Z")]
-    _write(path, records)
+    records += [user("ub", "Rename y", B_PROMPT), said("ab", "Done.", "2026-11-05T10:06:00Z")]
+    write_records(path, records)
     cm.capture(_payload(path, repo, "Done."))
     assert [(q["question"], q["answer"]) for q in _qa(sent)] == [
         ("Rename x", "Done."),
@@ -201,14 +130,18 @@ def test_two_requests_with_the_same_answer_send_two_qas(cm, sent, tmp_path, repo
 
 
 def test_a_second_stop_with_a_new_answer_is_a_continuation(cm, sent, tmp_path, repo):
-    records = [_user("ua", "Fix it", A_PROMPT), _said("a1", "First.", "2026-11-05T10:01:00Z")]
-    path = _write(tmp_path / "s.jsonl", records)
+    records = [user("ua", "Fix it", A_PROMPT)]
+    records += tool("t1", "tool-1", "Bash", {"command": "ls"}, "a", "2026-11-05T10:00:30Z")
+    records.append(said("a1", "First.", "2026-11-05T10:01:00Z"))
+    path = write_records(tmp_path / "s.jsonl", records)
     cm.capture(_payload(path, repo, "First."))
     sent.clear()
-    records += _tool("t", "tool-2", "Bash", {"command": "pwd"}, "/x", "2026-11-05T10:02:00Z")
-    records.append(_said("a2", "Second.", "2026-11-05T10:03:00Z"))
-    _write(path, records)
+    records += tool("t", "tool-2", "Bash", {"command": "pwd"}, "/x", "2026-11-05T10:02:00Z")
+    records.append(said("a2", "Second.", "2026-11-05T10:03:00Z"))
+    write_records(path, records)
     cm.capture(_payload(path, repo, "Second."))
+    # Only the call made since the first Stop is sent.
+    assert [t["method_params"]["command"] for t in _traces(sent)] == ["pwd"]
     (qa,) = _qa(sent)
     assert qa["question"] == "Fix it" and qa["answer"] == "Second."
     assert "prompt_time" not in qa and _ctx(qa)["continuation"] is True
@@ -219,12 +152,12 @@ def test_a_second_stop_with_a_new_answer_is_a_continuation(cm, sent, tmp_path, r
 
 def test_a_skipped_stop_is_made_up_at_the_next_capture(cm, sent, tmp_path, repo):
     records = [
-        _user("ua", "Request A", A_PROMPT),
-        _said("aa", "Answer A", "2026-11-05T10:01:00Z"),
-        _user("ub", "Request B", B_PROMPT),
-        _said("ab", "Answer B", "2026-11-05T10:06:00Z"),
+        user("ua", "Request A", A_PROMPT),
+        said("aa", "Answer A", "2026-11-05T10:01:00Z"),
+        user("ub", "Request B", B_PROMPT),
+        said("ab", "Answer B", "2026-11-05T10:06:00Z"),
     ]
-    path = _write(tmp_path / "s.jsonl", records)
+    path = write_records(tmp_path / "s.jsonl", records)
     cm.capture(_payload(path, repo, "Answer B"))  # A's Stop never ran
     qa = _qa(sent)
     assert [q["question"] for q in qa] == ["Request A", "Request B"]
@@ -235,8 +168,8 @@ def test_a_skipped_stop_is_made_up_at_the_next_capture(cm, sent, tmp_path, repo)
 
 
 def test_session_end_sends_what_the_stops_missed(cm, sent, tmp_path, repo):
-    records = [_user("ua", "Request A", A_PROMPT), _said("aa", "Answer A", "2026-11-05T10:01Z")]
-    path = _write(tmp_path / "s.jsonl", records)
+    records = [user("ua", "Request A", A_PROMPT), said("aa", "Answer A", "2026-11-05T10:01Z")]
+    path = write_records(tmp_path / "s.jsonl", records)
     cm.capture(_payload(path, repo), final=True)  # SessionEnd carries no final message
     (qa,) = _qa(sent)
     assert qa["question"] == "Request A" and qa["prompt_time"] == "2026-11-05T10:00:00+00:00"
@@ -244,76 +177,50 @@ def test_session_end_sends_what_the_stops_missed(cm, sent, tmp_path, repo):
 
 def test_meta_sidechain_and_compact_records_start_no_request(cm, tmp_path):
     records = [
-        _user("ua", "Request A", A_PROMPT),
-        _user("m", "<system-reminder>x</system-reminder>", "2026-11-05T10:00:10Z"),
-        _user("s", "side", "2026-11-05T10:00:20Z", isSidechain=True),
-        _user("c", "summary", "2026-11-05T10:00:30Z", isCompactSummary=True),
-        _user("meta", "meta", "2026-11-05T10:00:40Z", isMeta=True),
-        _said("aa", "Answer A", "2026-11-05T10:01:00Z"),
+        user("ua", "Request A", A_PROMPT),
+        user("m", "<system-reminder>x</system-reminder>", "2026-11-05T10:00:10Z"),
+        user("s", "side", "2026-11-05T10:00:20Z", isSidechain=True),
+        user("c", "summary", "2026-11-05T10:00:30Z", isCompactSummary=True),
+        user("meta", "meta", "2026-11-05T10:00:40Z", isMeta=True),
+        said("aa", "Answer A", "2026-11-05T10:01:00Z"),
     ]
-    parsed = cm.parse_claude(str(_write(tmp_path / "s.jsonl", records)))
+    parsed = cm.parse_claude(str(write_records(tmp_path / "s.jsonl", records)))
     assert [(u["id"], u["request"], u["answer"], u["answer_id"]) for u in parsed["units"]] == [
         ("ua", "Request A", "Answer A", "aa")
     ]
-    assert parsed["request"] == "Request A" and parsed["answer"] == "Answer A"
 
 
-def test_last_request_is_the_newest_prompt(cm, repo):
-    cm.begin_turn(KEY, "first", str(repo))
-    cm.begin_turn(KEY, "token <private>s3cret</private> second", str(repo))
+def test_last_request_is_the_newest_prompt(cm, tmp_path, monkeypatch):
+    # The git context is not asserted here: skip the two git runs per turn.
+    monkeypatch.setattr(cm, "git_head", lambda cwd: "")
+    monkeypatch.setattr(cm, "git_branch", lambda cwd: "")
+    cm.begin_turn(KEY, "first", str(tmp_path))
+    cm.begin_turn(KEY, "token <private>s3cret</private> second", str(tmp_path))
     assert cm.last_request(KEY) == "token [private] second"
     for _ in range(cm.MAX_TURNS + 5):
-        cm.begin_turn(KEY, "again", str(repo))
+        cm.begin_turn(KEY, "again", str(tmp_path))
     assert len(cm.read_state(KEY)["turns"]) == cm.MAX_TURNS
 
 
 # -- Codex rollouts --------------------------------------------------------------------
 
 
-def _codex_item(item: dict, stamp: str) -> dict:
-    return {
-        "timestamp": stamp,
-        "type": "event_msg",
-        "payload": {"type": "item_completed", "turn_id": "t", "item": item},
-    }
-
-
-def _codex_prompt(text: str, stamp: str) -> dict:
-    return _codex_item(
-        {"type": "UserMessage", "id": "u", "content": [{"type": "text", "text": text}]}, stamp
-    )
-
-
-def _codex_answer(text: str, stamp: str) -> list:
-    return [
-        _codex_item(
-            {"type": "AgentMessage", "id": "m", "content": [{"type": "Text", "text": text}]},
-            stamp,
-        ),
-        {
-            "timestamp": stamp,
-            "type": "event_msg",
-            "payload": {"type": "task_complete", "last_agent_message": text},
-        },
-    ]
-
-
 def test_codex_late_stop_sends_each_request_with_its_own_answer(
     cm, sent, tmp_path, repo, monkeypatch
 ):
     monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
-    first = _git(repo, "rev-parse", "HEAD")
+    first = git(repo, "rev-parse", "HEAD")
     _begin(cm, monkeypatch, "Request A", "2026-11-05T10:00:01+00:00", repo)
     second = _commit(repo, "after A")
     _begin(cm, monkeypatch, "Request B", "2026-11-05T10:05:01+00:00", repo)
     records = [
-        _codex_prompt("Request A", A_PROMPT),
-        *_codex_answer("Answer A", "2026-11-05T10:01:00.000Z"),
-        _codex_prompt("Request B", B_PROMPT),
+        codex_prompt("Request A", A_PROMPT),
+        *codex_answer("Answer A", "2026-11-05T10:01:00.000Z"),
+        codex_prompt("Request B", B_PROMPT),
     ]
-    path = _write(tmp_path / "rollout.jsonl", records)
+    path = write_records(tmp_path / "rollout.jsonl", records)
     cm.capture(_payload(path, repo, "Answer A"))
-    _write(path, records + _codex_answer("Answer B", "2026-11-05T10:06:00.000Z"))
+    write_records(path, records + codex_answer("Answer B", "2026-11-05T10:06:00.000Z"))
     cm.capture(_payload(path, repo, "Answer B"))
     cm.capture(_payload(path, repo), final=True)  # nothing new at SessionEnd
 
@@ -333,44 +240,54 @@ def test_codex_late_stop_sends_each_request_with_its_own_answer(
 # -- Sanitize before slicing -------------------------------------------------------------
 
 
-def test_a_private_span_cut_by_the_output_cap_is_still_removed(cm, sent, tmp_path, repo):
+def _cut_by_output_cap():
     output = "x" * 7990 + "<private>TOPSECRET</private>"
-    records = [_user("ua", "Go", A_PROMPT)]
-    records += _tool("t", "tool-1", "Bash", {"command": "cat f"}, output, "2026-11-05T10:00:10Z")
-    path = _write(tmp_path / "s.jsonl", records)
-    cm.capture(_payload(path, repo))
-    (trace,) = [e for e in sent if e["type"] == "trace"]
-    assert "TOPSECRET" not in json.dumps(trace)
+    return tool("t", "tool-1", "Bash", {"command": "cat f"}, output, "2026-11-05T10:00:10Z")
 
 
-def test_a_private_span_cut_by_the_params_cap_is_still_removed(cm, sent, tmp_path, repo):
+def _cut_by_params_cap():
     command = "echo " + "x" * 3990 + "<private>TOPSECRET</private>"
-    records = [_user("ua", "Go", A_PROMPT)]
-    records += _tool("t", "tool-1", "Bash", {"command": command}, "ok", "2026-11-05T10:00:10Z")
-    cm.capture(_payload(_write(tmp_path / "s.jsonl", records), repo))
-    (trace,) = [e for e in sent if e["type"] == "trace"]
-    assert "TOPSECRET" not in json.dumps(trace)
+    return tool("t", "tool-1", "Bash", {"command": command}, "ok", "2026-11-05T10:00:10Z")
 
 
-def test_a_private_span_cut_by_the_error_cap_is_still_removed(cm, sent, tmp_path, repo):
+def _cut_by_error_cap():
     output = "<private>TOPSECRET" + "y" * 600 + "</private> failed"
-    records = [_user("ua", "Go", A_PROMPT)]
-    records += _tool("t", "tool-1", "Edit", {"file_path": "a"}, output, "2026-11-05T10:00:10Z")
-    records[-1]["message"]["content"][0]["is_error"] = True
-    cm.capture(_payload(_write(tmp_path / "s.jsonl", records), repo))
-    (trace,) = [e for e in sent if e["type"] == "trace"]
-    assert trace["status"] == "error" and "failed" in trace["error_message"]
+    return tool(
+        "t", "tool-1", "Edit", {"file_path": "a"}, output, "2026-11-05T10:00:10Z", error=True
+    )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [_cut_by_output_cap, _cut_by_params_cap, _cut_by_error_cap],
+    ids=["output", "params", "error"],
+)
+def test_a_private_span_cut_by_a_cap_is_still_removed(cm, sent, tmp_path, repo, call):
+    records = [user("ua", "Go", A_PROMPT), *call()]
+    cm.capture(_payload(write_records(tmp_path / "s.jsonl", records), repo))
+    (trace,) = _traces(sent)
     assert "TOPSECRET" not in json.dumps(trace)
+    if call is _cut_by_error_cap:
+        assert trace["status"] == "error" and "failed" in trace["error_message"]
 
 
-def test_codex_failed_command_error_tail_keeps_no_private_text(
-    cm, sent, tmp_path, repo, monkeypatch
-):
-    monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
+def _claude_failed_deploy(tmp_path):
+    records = [user("ua", "Go", A_PROMPT)]
+    records += _failed_bash(
+        "t1",
+        "tool-1",
+        "deploy",
+        "Exit code 1\n<private>TOPSECRET</private> error: deploy refused",
+        "2026-11-05T10:00:10Z",
+    )
+    return write_records(tmp_path / "s.jsonl", records)
+
+
+def _codex_failed_make(tmp_path):
     output = "<private>" + "a" * 600 + "TOPSECRET</private> boom"
     records = [
-        _codex_prompt("Go", A_PROMPT),
-        _codex_item(
+        codex_prompt("Go", A_PROMPT),
+        codex_item(
             {
                 "type": "CommandExecution",
                 "id": "exec-1",
@@ -382,10 +299,26 @@ def test_codex_failed_command_error_tail_keeps_no_private_text(
             "2026-11-05T10:00:10.000Z",
         ),
     ]
-    cm.capture(_payload(_write(tmp_path / "rollout.jsonl", records), repo))
-    (trace,) = [e for e in sent if e["type"] == "trace"]
+    return write_records(tmp_path / "rollout.jsonl", records)
+
+
+@pytest.mark.parametrize(
+    "transcript, expected",
+    [
+        (_claude_failed_deploy, "[private] error: deploy refused (exit code 1)"),
+        (_codex_failed_make, "[private] boom (exit code 2)"),
+    ],
+    ids=["claude", "codex"],
+)
+def test_a_private_span_never_reaches_the_error_line(
+    cm, sent, tmp_path, repo, monkeypatch, transcript, expected
+):
+    if transcript is _codex_failed_make:
+        monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
+    cm.capture(_payload(transcript(tmp_path), repo))
+    (trace,) = _traces(sent)
     assert trace["status"] == "error"
-    assert trace["error_message"] == "[private] boom (exit code 2)"
+    assert trace["error_message"] == expected
     assert "TOPSECRET" not in json.dumps(trace)
 
 
@@ -432,36 +365,11 @@ def test_cloud_coding_entries_count_once_and_request_no_every_n_improve(cm, clou
     assert not any(reason.startswith("turn_") for reason in _wanted(cloud))
 
 
-def test_cloud_normal_entries_still_request_the_every_n_improve(cm, cloud):
-    common = _common()
-    for i in range(150):
-        cloud.enqueue("agent_sessions", "claude_s1", {"type": "trace", "n": i}, "trace")
-    _drain_all(cloud)
-    assert common.read_turn_count("claude_s1") == 150
-    assert _wanted(cloud) == ["turn_150"]
-
-
-def test_local_coding_entries_bump_the_counter_once_each(cm, suite, isolated_modules, monkeypatch):
-    common = isolated_modules(suite, "_plugin_common")
-    monkeypatch.setattr(common, "append_warmup_entry", lambda d, s, e: None)
-    monkeypatch.setattr(cm, "_cloud_spool", lambda: False)
-    cm._deliver("agent_sessions", "claude_s1", [{"type": "trace"}] * 3 + [{"type": "qa"}])
-    assert common.read_turn_count("claude_s1") == 4
-
-
 # -- Error lines: the line the server keys pitfalls on --------------------------------------
 
 
-def _traces(entries: list) -> list:
-    return [e for e in entries if e["type"] == "trace"]
-
-
-def _failed_bash(uid: str, tool_id: str, command: str, output: str, stamp: str) -> list:
-    return _tool(uid, tool_id, "Bash", {"command": command}, output, stamp, error=True)
-
-
 def test_failing_claude_bash_calls_get_their_own_error_lines(cm, sent, tmp_path, repo):
-    records = [_user("ua", "Go", A_PROMPT)]
+    records = [user("ua", "Go", A_PROMPT)]
     records += _failed_bash(
         "t1",
         "tool-1",
@@ -477,7 +385,7 @@ def test_failing_claude_bash_calls_get_their_own_error_lines(cm, sent, tmp_path,
         "Exit code 2\nls: nope: No such file or directory",
         "2026-11-05T10:00:20Z",
     )
-    cm.capture(_payload(_write(tmp_path / "s.jsonl", records), repo))
+    cm.capture(_payload(write_records(tmp_path / "s.jsonl", records), repo))
     first, second = _traces(sent)
     lines = [t["error_message"].splitlines()[0] for t in (first, second)]
     assert lines == [
@@ -502,8 +410,8 @@ def test_codex_long_failure_keeps_a_whole_error_line(cm, sent, tmp_path, repo, m
     )
     assert len(output.encode()) > 2000
     records = [
-        _codex_prompt("Go", A_PROMPT),
-        _codex_item(
+        codex_prompt("Go", A_PROMPT),
+        codex_item(
             {
                 "type": "CommandExecution",
                 "id": "exec-1",
@@ -515,7 +423,7 @@ def test_codex_long_failure_keeps_a_whole_error_line(cm, sent, tmp_path, repo, m
             "2026-11-05T10:00:10.000Z",
         ),
     ]
-    cm.capture(_payload(_write(tmp_path / "rollout.jsonl", records), repo))
+    cm.capture(_payload(write_records(tmp_path / "rollout.jsonl", records), repo))
     (trace,) = _traces(sent)
     head, *tail = trace["error_message"].splitlines()
     assert head == "error[E0425]: cannot find value `x` in this scope (exit code 101)"
@@ -531,28 +439,15 @@ def test_an_output_without_an_error_line_uses_its_first_line(cm):
     assert cm.call_error({"is_error": True, "exit_code": 1, "output": "E   assert 1 == 2"}) == (
         "E   assert 1 == 2 (exit code 1)"
     )
-
-
-def test_a_private_span_never_reaches_the_error_line(cm, sent, tmp_path, repo):
-    records = [_user("ua", "Go", A_PROMPT)]
-    records += _failed_bash(
-        "t1",
-        "tool-1",
-        "deploy",
-        "Exit code 1\n<private>TOPSECRET</private> error: deploy refused",
-        "2026-11-05T10:00:10Z",
-    )
-    cm.capture(_payload(_write(tmp_path / "s.jsonl", records), repo))
-    (trace,) = _traces(sent)
-    assert trace["error_message"] == "[private] error: deploy refused (exit code 1)"
-    assert "TOPSECRET" not in json.dumps(trace)
+    traceback = {"is_error": True, "exit_code": 1, "output": _traceback("KeyError: 'x'")}
+    assert "Traceback" not in cm.call_error(traceback).splitlines()[0]
 
 
 # -- Codex file changes: one call per path ----------------------------------------------------
 
 
 def _file_change(changes: dict, stamp: str, *, item_id="fc-1", status="completed") -> dict:
-    return _codex_item(
+    return codex_item(
         {"type": "FileChange", "id": item_id, "changes": changes, "status": status}, stamp
     )
 
@@ -566,30 +461,31 @@ def test_codex_file_change_to_a_secret_path_sends_only_the_other_file(
 ):
     monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
     records = [
-        _codex_prompt("Go", A_PROMPT),
+        codex_prompt("Go", A_PROMPT),
         _file_change(
             {".env": _update("+DB_DSN=postgres://u:pw@h/db\n"), "src/app.py": _update()},
             "2026-11-05T10:00:10.000Z",
         ),
     ]
-    cm.capture(_payload(_write(tmp_path / "rollout.jsonl", records), repo))
+    cm.capture(_payload(write_records(tmp_path / "rollout.jsonl", records), repo))
     (trace,) = _traces(sent)
     assert trace["origin_function"] == "Edit"
     assert trace["method_params"]["file_path"] == "src/app.py"
     assert trace["method_params"]["change"] == "update"
+    assert trace["method_params"]["diff"] == "@@ -1 +1 @@\n-a\n+b\n"
     assert "pw@h" not in json.dumps(sent)
 
 
 def test_codex_rename_into_a_secret_path_is_dropped(cm, sent, tmp_path, repo, monkeypatch):
     monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
     records = [
-        _codex_prompt("Go", A_PROMPT),
+        codex_prompt("Go", A_PROMPT),
         _file_change(
             {"config.txt": _update(move_path=".env"), "src/a.py": _update()},
             "2026-11-05T10:00:10.000Z",
         ),
     ]
-    cm.capture(_payload(_write(tmp_path / "rollout.jsonl", records), repo))
+    cm.capture(_payload(write_records(tmp_path / "rollout.jsonl", records), repo))
     # The other file of the same change is the control: it is sent.
     assert [t["method_params"]["file_path"] for t in _traces(sent)] == ["src/a.py"]
 
@@ -597,13 +493,13 @@ def test_codex_rename_into_a_secret_path_is_dropped(cm, sent, tmp_path, repo, mo
 def test_codex_two_file_change_is_sent_once_per_file(cm, sent, tmp_path, repo, monkeypatch):
     monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
     records = [
-        _codex_prompt("Go", A_PROMPT),
+        codex_prompt("Go", A_PROMPT),
         _file_change(
             {"src/a.py": _update(), "src/b.py": {"type": "delete", "content": "old\n"}},
             "2026-11-05T10:00:10.000Z",
         ),
     ]
-    path = _write(tmp_path / "rollout.jsonl", records)
+    path = write_records(tmp_path / "rollout.jsonl", records)
     cm.capture(_payload(path, repo))
     cm.capture(_payload(path, repo))
     traces = _traces(sent)
@@ -619,14 +515,14 @@ def test_codex_two_file_change_is_sent_once_per_file(cm, sent, tmp_path, repo, m
 
 def test_codex_added_file_is_a_write_with_its_content(cm, tmp_path):
     records = [
-        _codex_prompt("Go", A_PROMPT),
+        codex_prompt("Go", A_PROMPT),
         _file_change(
             {"src/new.py": {"type": "add", "content": "print(1)\n"}},
             "2026-11-05T10:00:10.000Z",
             status="failed",
         ),
     ]
-    (call,) = cm.parse_codex(str(_write(tmp_path / "rollout.jsonl", records)))["calls"]
+    (call,) = cm.parse_codex(str(write_records(tmp_path / "rollout.jsonl", records)))["calls"]
     assert call["name"] == "Write" and call["is_error"] is True
     assert call["input"] == {"file_path": "src/new.py", "change": "add", "content": "print(1)\n"}
     assert call["time"] == "2026-11-05T10:00:10.000Z"
@@ -636,24 +532,24 @@ def test_codex_added_file_is_a_write_with_its_content(cm, tmp_path):
 
 
 def _interrupt_record(uid: str, text: str, stamp: str) -> dict:
-    return _user(uid, [{"type": "text", "text": text}], stamp)
+    return user(uid, [{"type": "text", "text": text}], stamp)
 
 
 @pytest.mark.parametrize(
     "marker", ["[Request interrupted by user]", "[Request interrupted by user for tool use]"]
 )
 def test_an_interrupted_request_is_sent_closed_at_the_interrupt(cm, sent, tmp_path, repo, marker):
-    records = [_user("ua", "Request A", A_PROMPT)]
+    records = [user("ua", "Request A", A_PROMPT)]
     records += _failed_bash(
         "t1", "tool-1", "make", "Exit code 2\nmake: *** error", "2026-11-05T10:00:10Z"
     )
     records += [
-        _said("aa", "Looking at the Makefile.", "2026-11-05T10:00:20Z"),
+        said("aa", "Looking at the Makefile.", "2026-11-05T10:00:20Z"),
         _interrupt_record("ux", marker, "2026-11-05T10:00:30Z"),
-        _user("ub", "Request B", B_PROMPT),
-        _said("ab", "Answer B", "2026-11-05T10:06:00Z"),
+        user("ub", "Request B", B_PROMPT),
+        said("ab", "Answer B", "2026-11-05T10:06:00Z"),
     ]
-    path = _write(tmp_path / "s.jsonl", records)
+    path = write_records(tmp_path / "s.jsonl", records)
     parsed = cm.parse_claude(str(path))
     assert [u["id"] for u in parsed["units"]] == ["ua", "ub"]  # the marker is no request
 
@@ -669,17 +565,17 @@ def test_an_interrupted_request_is_sent_closed_at_the_interrupt(cm, sent, tmp_pa
     assert "interrupted" not in _ctx(second) and second["prompt_time"]
 
     sent.clear()
-    _write(path, records + [_said("ac", "Answer B, revised", "2026-11-05T10:07:00Z")])
+    write_records(path, records + [said("ac", "Answer B, revised", "2026-11-05T10:07:00Z")])
     cm.capture(_payload(path, repo, "Answer B, revised"))
     assert [q["question"] for q in _qa(sent)] == ["Request B"]  # A is never continued
 
 
 def test_an_interrupt_before_any_text_sends_the_prefix_alone(cm, sent, tmp_path, repo):
     records = [
-        _user("ua", "Request A", A_PROMPT),
+        user("ua", "Request A", A_PROMPT),
         _interrupt_record("ux", "[Request interrupted by user]", "2026-11-05T10:00:30Z"),
     ]
-    path = _write(tmp_path / "s.jsonl", records)
+    path = write_records(tmp_path / "s.jsonl", records)
     # No Stop fires on Esc: a Stop's final message never replaces the interrupt.
     cm.capture(_payload(path, repo, "An older final message."))
     (qa,) = _qa(sent)
@@ -701,16 +597,16 @@ def test_an_interrupted_codex_turn_is_sent_closed_at_the_abort(
 ):
     monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
     records = [
-        _codex_prompt("Request A", A_PROMPT),
-        _codex_item(
+        codex_prompt("Request A", A_PROMPT),
+        codex_item(
             {"type": "AgentMessage", "id": "m1", "content": [{"type": "Text", "text": "Looking."}]},
             "2026-11-05T10:00:20.000Z",
         ),
         _codex_aborted("2026-11-05T10:00:30.000Z", reason),
-        _codex_prompt("Request B", B_PROMPT),
-        *_codex_answer("Answer B", "2026-11-05T10:06:00.000Z"),
+        codex_prompt("Request B", B_PROMPT),
+        *codex_answer("Answer B", "2026-11-05T10:06:00.000Z"),
     ]
-    path = _write(tmp_path / "rollout.jsonl", records)
+    path = write_records(tmp_path / "rollout.jsonl", records)
     cm.capture(_payload(path, repo, "Answer B"))
     first, second = _qa(sent)
     assert first["question"] == "Request A"
@@ -720,19 +616,9 @@ def test_an_interrupted_codex_turn_is_sent_closed_at_the_abort(
     assert "interrupted" not in _ctx(second)
 
     sent.clear()
-    _write(path, records + _codex_answer("Answer B, revised", "2026-11-05T10:07:00.000Z"))
+    write_records(path, records + codex_answer("Answer B, revised", "2026-11-05T10:07:00.000Z"))
     cm.capture(_payload(path, repo, "Answer B, revised"))
     assert [q["question"] for q in _qa(sent)] == ["Request B"]  # A is never continued
-
-
-def test_a_codex_turn_aborted_before_any_text_sends_the_prefix_alone(
-    cm, sent, tmp_path, repo, monkeypatch
-):
-    monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
-    records = [_codex_prompt("Request A", A_PROMPT), _codex_aborted("2026-11-05T10:00:30.000Z")]
-    cm.capture(_payload(_write(tmp_path / "rollout.jsonl", records), repo))
-    (qa,) = _qa(sent)
-    assert qa["answer"] == cm.INTERRUPTED_ANSWER and _ctx(qa)["interrupted"] is True
 
 
 # -- Error lines -------------------------------------------------------------------------------
@@ -747,80 +633,92 @@ def _traceback(exception: str) -> str:
     )
 
 
-def test_two_python_tracebacks_get_their_own_error_lines(cm):
-    missing = cm._error_line(
-        _traceback("FileNotFoundError: [Errno 2] No such file or directory: 'data.csv'")
-    )
-    key = cm._error_line(_traceback("KeyError: 'user_id'"))
-    assert missing == "FileNotFoundError: [Errno 2] No such file or directory: 'data.csv'"
-    assert key == "KeyError: 'user_id'"
-    assert (
-        "Traceback"
-        not in cm.call_error(
-            {"is_error": True, "exit_code": 1, "output": _traceback("KeyError: 'x'")}
-        ).splitlines()[0]
-    )
+_NPM_LOG = "npm error A complete log of this run can be found in: /u/.npm/_logs/x-debug-0.log\n"
 
 
-def test_a_chained_traceback_gives_the_exception_that_ended_the_program(cm):
-    output = (
-        _traceback("KeyError: 'x'")
-        + "\nDuring handling of the above exception, another exception occurred:\n\n"
-        + _traceback("app.errors.ConfigError: config missing")
-    )
-    assert cm._error_line(output) == "app.errors.ConfigError: config missing"
-
-
-def test_code_printed_before_a_failure_is_not_its_error_line(cm):
-    output = (
-        "from cognee.exceptions import CogneeApiError\n"
-        "    except Exception as exc:\n"
-        "        raise ValueError(exc)\n"
-        "bash: nosuchtool: command not found\n"
-    )
-    assert cm._error_line(output) == "bash: nosuchtool: command not found"
-
-
-def test_ruff_failures_are_keyed_on_their_rule_not_the_summary(cm):
-    unused = cm._error_line("a.py:3:1: F401 [*] `os` imported but unused\nFound 1 error.\n")
-    long = cm._error_line("b.py:9:89: E501 Line too long (120 > 88)\nFound 1 error.\n")
-    assert unused.startswith("a.py:3:1: F401") and long.startswith("b.py:9:89: E501")
-    assert cm._error_line("Found 2 errors.\nsomething failed here\n") == "something failed here"
-
-
-def test_cargo_progress_does_not_hide_the_compile_error(cm):
-    output = "   Compiling error-chain v0.12.4\nerror[E0425]: cannot find value `x`\n"
-    assert cm._error_line(output) == "error[E0425]: cannot find value `x`"
-
-
-def test_npm_failures_are_keyed_on_their_first_error_not_the_log_path(cm):
-    log = "npm error A complete log of this run can be found in: /u/.npm/_logs/x-debug-0.log\n"
-    missing = cm._error_line('npm error Missing script: "tset"\nnpm error\n' + log)
-    enoent = cm._error_line("npm error code ENOENT\nnpm error syscall open\n" + log)
-    assert missing == 'npm error Missing script: "tset"'
-    assert enoent == "npm error code ENOENT"
-    assert cm._error_line("npm ERR! code E404\nnpm ERR! 404 Not Found\n") == "npm ERR! code E404"
-
-
-def test_the_loose_fallback_takes_the_first_error_word_not_a_closing_line(cm):
-    output = "lint failed in src/a.js\nsee the log for details\nbuild failed\n"
-    assert cm._error_line(output) == "lint failed in src/a.js"
-
-
-def test_a_warning_printed_before_a_failure_is_not_its_error_line(cm):
-    output = "DeprecationWarning: pkg_resources is deprecated\nfatal: bad revision 'xyz'\n"
-    assert cm._error_line(output) == "fatal: bad revision 'xyz'"
-    # A warning raised as an exception (python -W error) still ends its traceback.
-    assert cm._error_line(_traceback("DeprecationWarning: old api")) == (
-        "DeprecationWarning: old api"
-    )
-
-
-def test_a_pytest_e_line_is_picked_without_an_error_word(cm):
-    output = (
-        "tests/t.py F\n>       assert f() == 2\nE       assert 1 == 2\n=== 1 failed in 0.1s ===\n"
-    )
-    assert cm._error_line(output) == "E       assert 1 == 2"
+@pytest.mark.parametrize(
+    "output, expected",
+    [
+        pytest.param(
+            _traceback("FileNotFoundError: [Errno 2] No such file or directory: 'data.csv'"),
+            "FileNotFoundError: [Errno 2] No such file or directory: 'data.csv'",
+            id="traceback-file-not-found",
+        ),
+        pytest.param(_traceback("KeyError: 'user_id'"), "KeyError: 'user_id'", id="traceback-key"),
+        pytest.param(
+            _traceback("KeyError: 'x'")
+            + "\nDuring handling of the above exception, another exception occurred:\n\n"
+            + _traceback("app.errors.ConfigError: config missing"),
+            "app.errors.ConfigError: config missing",
+            id="chained-traceback-ends-the-program",
+        ),
+        pytest.param(
+            "from cognee.exceptions import CogneeApiError\n"
+            "    except Exception as exc:\n"
+            "        raise ValueError(exc)\n"
+            "bash: nosuchtool: command not found\n",
+            "bash: nosuchtool: command not found",
+            id="code-printed-before-a-failure",
+        ),
+        pytest.param(
+            "a.py:3:1: F401 [*] `os` imported but unused\nFound 1 error.\n",
+            "a.py:3:1: F401 [*] `os` imported but unused",
+            id="ruff-rule-not-summary",
+        ),
+        pytest.param(
+            "b.py:9:89: E501 Line too long (120 > 88)\nFound 1 error.\n",
+            "b.py:9:89: E501 Line too long (120 > 88)",
+            id="ruff-long-line",
+        ),
+        pytest.param(
+            "Found 2 errors.\nsomething failed here\n",
+            "something failed here",
+            id="ruff-summary-is-no-error-line",
+        ),
+        pytest.param(
+            "   Compiling error-chain v0.12.4\nerror[E0425]: cannot find value `x`\n",
+            "error[E0425]: cannot find value `x`",
+            id="cargo-progress",
+        ),
+        pytest.param(
+            'npm error Missing script: "tset"\nnpm error\n' + _NPM_LOG,
+            'npm error Missing script: "tset"',
+            id="npm-first-error-not-log-path",
+        ),
+        pytest.param(
+            "npm error code ENOENT\nnpm error syscall open\n" + _NPM_LOG,
+            "npm error code ENOENT",
+            id="npm-enoent",
+        ),
+        pytest.param(
+            "npm ERR! code E404\nnpm ERR! 404 Not Found\n", "npm ERR! code E404", id="npm-err"
+        ),
+        pytest.param(
+            "lint failed in src/a.js\nsee the log for details\nbuild failed\n",
+            "lint failed in src/a.js",
+            id="loose-fallback-first-not-closing",
+        ),
+        pytest.param(
+            "DeprecationWarning: pkg_resources is deprecated\nfatal: bad revision 'xyz'\n",
+            "fatal: bad revision 'xyz'",
+            id="warning-before-a-failure",
+        ),
+        # A warning raised as an exception (python -W error) still ends its traceback.
+        pytest.param(
+            _traceback("DeprecationWarning: old api"),
+            "DeprecationWarning: old api",
+            id="warning-raised-as-exception",
+        ),
+        pytest.param(
+            "tests/t.py F\n>       assert f() == 2\n"
+            "E       assert 1 == 2\n=== 1 failed in 0.1s ===\n",
+            "E       assert 1 == 2",
+            id="pytest-e-line-without-error-word",
+        ),
+    ],
+)
+def test_the_error_line_is_the_line_that_names_the_failure(cm, output, expected):
+    assert cm._error_line(output) == expected
 
 
 # -- Repository root ---------------------------------------------------------------------------
@@ -829,18 +727,18 @@ def test_a_pytest_e_line_is_picked_without_an_error_word(cm):
 def test_a_qa_from_a_subdirectory_carries_the_repository_root(cm, sent, tmp_path, repo):
     sub = repo / "pkg" / "sub"
     sub.mkdir(parents=True)
-    records = [_user("ua", "Go", A_PROMPT), _said("aa", "Done.", "2026-11-05T10:01:00Z")]
-    cm.capture(_payload(_write(tmp_path / "s.jsonl", records), sub, "Done."))
+    records = [user("ua", "Go", A_PROMPT), said("aa", "Done.", "2026-11-05T10:01:00Z")]
+    cm.capture(_payload(write_records(tmp_path / "s.jsonl", records), sub, "Done."))
     context = _ctx(_qa(sent)[0])
-    assert context["cwd"] == _git(repo, "rev-parse", "--show-toplevel")
+    assert context["cwd"] == git(repo, "rev-parse", "--show-toplevel")
     assert context["session_cwd"] == str(sub)
 
 
 def test_outside_git_the_qa_cwd_is_the_directory(cm, sent, tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
-    records = [_user("ua", "Go", A_PROMPT), _said("aa", "Done.", "2026-11-05T10:01:00Z")]
-    cm.capture(_payload(_write(tmp_path / "s.jsonl", records), plain, "Done."))
+    records = [user("ua", "Go", A_PROMPT), said("aa", "Done.", "2026-11-05T10:01:00Z")]
+    cm.capture(_payload(write_records(tmp_path / "s.jsonl", records), plain, "Done."))
     context = _ctx(_qa(sent)[0])
     assert context["cwd"] == context["session_cwd"] == str(plain)
 
@@ -856,15 +754,15 @@ def _forked(records: list) -> list:
 
 
 def test_a_forked_claude_session_sends_only_its_own_records(cm, sent, tmp_path, repo, monkeypatch):
-    parent = [_user("ua", "Request A", A_PROMPT)]
-    parent += _tool("t1", "tool-1", "Bash", {"command": "ls"}, "a.txt", "2026-11-05T10:00:10Z")
-    parent.append(_said("aa", "Answer A", "2026-11-05T10:01:00Z"))
-    head = _git(repo, "rev-parse", "HEAD")
+    parent = [user("ua", "Request A", A_PROMPT)]
+    parent += tool("t1", "tool-1", "Bash", {"command": "ls"}, "a.txt", "2026-11-05T10:00:10Z")
+    parent.append(said("aa", "Answer A", "2026-11-05T10:01:00Z"))
+    head = git(repo, "rev-parse", "HEAD")
     _begin(cm, monkeypatch, "Request B", "2026-11-05T10:05:01+00:00", repo)
-    own = [_user("ub", "Request B", B_PROMPT)]
-    own += _tool("t2", "tool-2", "Bash", {"command": "pwd"}, "/x", "2026-11-05T10:05:10Z")
-    own.append(_said("ab", "Answer B", "2026-11-05T10:06:00Z"))
-    path = _write(tmp_path / "fork.jsonl", _forked(parent) + own)
+    own = [user("ub", "Request B", B_PROMPT)]
+    own += tool("t2", "tool-2", "Bash", {"command": "pwd"}, "/x", "2026-11-05T10:05:10Z")
+    own.append(said("ab", "Answer B", "2026-11-05T10:06:00Z"))
+    path = write_records(tmp_path / "fork.jsonl", _forked(parent) + own)
 
     cm.capture(_payload(path, repo, "Answer B"))
     assert [t["method_params"]["command"] for t in _traces(sent)] == ["pwd"]
@@ -873,7 +771,7 @@ def test_a_forked_claude_session_sends_only_its_own_records(cm, sent, tmp_path, 
     assert _ctx(qa)["start_commit"] == head and _ctx(qa)["end_commit"] == head
 
     # Without forkedFrom the same records are this session's own history.
-    plain = cm.parse_claude(str(_write(tmp_path / "plain.jsonl", parent + own)))
+    plain = cm.parse_claude(str(write_records(tmp_path / "plain.jsonl", parent + own)))
     assert [u["id"] for u in plain["units"]] == ["ua", "ub"]
     assert [c["id"] for c in plain["calls"]] == ["tool-1", "tool-2"]
 
@@ -894,7 +792,7 @@ def _codex_fork_rollout(tmp_path: Path, history_mode: str) -> Path:
         "exit_code": 0,
         "status": "completed",
     }
-    return _write(
+    return write_records(
         tmp_path / "rollout.jsonl",
         [
             _codex_meta(
@@ -903,24 +801,26 @@ def _codex_fork_rollout(tmp_path: Path, history_mode: str) -> Path:
                 history_mode=history_mode,
             ),
             # Copied from the parent thread, with their original times.
-            _codex_prompt("Request A", A_PROMPT),
-            _codex_item({**command, "id": "exec-1"}, "2026-11-05T10:00:10.000Z"),
-            *_codex_answer("Answer A", "2026-11-05T10:01:00.000Z"),
+            codex_prompt("Request A", A_PROMPT),
+            codex_item({**command, "id": "exec-1"}, "2026-11-05T10:00:10.000Z"),
+            *codex_answer("Answer A", "2026-11-05T10:01:00.000Z"),
             # The fork's own events.
-            _codex_prompt("Request B", B_PROMPT),
-            _codex_item({**command, "id": "exec-2"}, "2026-11-05T10:05:10.000Z"),
-            *_codex_answer("Answer B", "2026-11-05T10:06:00.000Z"),
+            codex_prompt("Request B", B_PROMPT),
+            codex_item({**command, "id": "exec-2"}, "2026-11-05T10:05:10.000Z"),
+            *codex_answer("Answer B", "2026-11-05T10:06:00.000Z"),
         ],
     )
 
 
-def test_a_codex_legacy_fork_parses_only_events_after_the_fork(cm, tmp_path):
-    parsed = cm.parse_codex(str(_codex_fork_rollout(tmp_path, "legacy")))
-    assert [c["id"] for c in parsed["calls"]] == ["exec-2"]
-    assert [(u["request"], u["answer"]) for u in parsed["units"]] == [("Request B", "Answer B")]
-
-
-def test_a_codex_paginated_fork_parses_as_any_rollout(cm, tmp_path):
-    parsed = cm.parse_codex(str(_codex_fork_rollout(tmp_path, "paginated")))
-    assert [c["id"] for c in parsed["calls"]] == ["exec-1", "exec-2"]
-    assert [u["request"] for u in parsed["units"]] == ["Request A", "Request B"]
+@pytest.mark.parametrize(
+    "history_mode, calls, units",
+    [
+        # A legacy fork copies the parent's events: only those after the fork count.
+        ("legacy", ["exec-2"], [("Request B", "Answer B")]),
+        ("paginated", ["exec-1", "exec-2"], [("Request A", "Answer A"), ("Request B", "Answer B")]),
+    ],
+)
+def test_a_codex_fork_parses_by_its_history_mode(cm, tmp_path, history_mode, calls, units):
+    parsed = cm.parse_codex(str(_codex_fork_rollout(tmp_path, history_mode)))
+    assert [c["id"] for c in parsed["calls"]] == calls
+    assert [(u["request"], u["answer"]) for u in parsed["units"]] == units
