@@ -1666,7 +1666,7 @@ def _spawn_bootstrap(
     agent_session_name: str,
     session_key: str,
     dataset: str,
-) -> None:
+) -> bool:
     """Launch the detached server-bootstrap worker (this script, --bootstrap)."""
     bootstrap = {
         "cwd": cwd,
@@ -1698,8 +1698,10 @@ def _spawn_bootstrap(
             close_fds=True,
         )
         hook_log("bootstrap_spawned", {"session_id": session_id})
+        return True
     except Exception as exc:
         hook_log("bootstrap_spawn_failed", {"error": str(exc)[:300]})
+        return False
 
 
 def _status_from_error(message: str) -> int:
@@ -1912,6 +1914,23 @@ async def _run_heavy(
 
 
 async def _run_bootstrap(bootstrap: dict) -> None:
+    """Detached worker: set the session up (:func:`_bootstrap_session`).
+
+    The worker is the last owner of the session's setup, so however it ends
+    (refused, unhealthy server, an exception), a session ``prepare()`` never
+    ran for is handed to a later ``route()``. A prepared or backed-off state
+    is left alone (:func:`_project_memory_gave_up`).
+    """
+    try:
+        await _bootstrap_session(bootstrap)
+    finally:
+        _project_memory_gave_up(
+            str(bootstrap.get("dataset", "") or get_dataset(load_config())),
+            str(bootstrap.get("session_id", "") or ""),
+        )
+
+
+async def _bootstrap_session(bootstrap: dict) -> None:
     """Detached worker body.
 
     Two distinct concerns, deliberately decoupled:
@@ -1952,7 +1971,6 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                 hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
         if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
             hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
-            _project_memory_gave_up(dataset, session_id)
             return
 
     # 2. Register this agent/session. Runs for every agent — NOT gated by the
@@ -1970,14 +1988,28 @@ async def _run_bootstrap(bootstrap: dict) -> None:
             boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
         )
         hook_log("bootstrap_complete", {"session_id": session_id, "registered": bool(registered)})
-        if not registered:
-            _project_memory_gave_up(dataset, session_id)
     except Exception as exc:
         hook_log("bootstrap_failed", {"error": str(exc)[:300]})
-        _project_memory_gave_up(dataset, session_id)
 
 
 async def _start(payload: dict | None = None) -> dict:
+    """Session start (:func:`_start_session`).
+
+    Once project memory began, the session is this hook's to prepare until a
+    worker takes it over (the cloud worker, or a bootstrap that did spawn).
+    However the hook ends without that (memory offline, a failed registration,
+    an exception), a session ``prepare()`` never ran for is handed to a later
+    ``route()``; a prepared or backed-off state is left alone.
+    """
+    setup: dict = {}
+    try:
+        return await _start_session(payload, setup)
+    finally:
+        if setup.get("project_memory"):
+            _project_memory_gave_up(*setup["project_memory"])
+
+
+async def _start_session(payload: dict | None, setup: dict) -> dict:
     config = load_config()
     payload = payload or {}
     cwd = str(payload.get("cwd") or os.environ.get("CODEX_CWD") or os.getcwd())
@@ -2051,6 +2083,7 @@ async def _start(payload: dict | None = None) -> dict:
     from _project_memory import begin as begin_project_memory
 
     begin_project_memory(get_dataset(config), session_id, cwd)
+    setup["project_memory"] = (get_dataset(config), session_id)
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
     dataset = get_dataset(config)
@@ -2154,7 +2187,8 @@ async def _start(payload: dict | None = None) -> dict:
             },
         }
     if will_boot and _LAZY_BOOTSTRAP:
-        _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+        if _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset):
+            setup.pop("project_memory", None)
         user_id = os.environ.get("COGNEE_USER_ID", "")
     else:
         user_id, agent_api_key, ok = await _run_heavy(
@@ -2170,9 +2204,11 @@ async def _start(payload: dict | None = None) -> dict:
         if not ok:
             if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url) and not managed_locked:
                 # Inline attempt failed; retry the heavy path out of band.
-                _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+                if _spawn_bootstrap(
+                    config, cwd, session_id, agent_session_name, session_key, dataset
+                ):
+                    setup.pop("project_memory", None)
             else:
-                _project_memory_gave_up(dataset, session_id)
                 return {}
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.

@@ -75,8 +75,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   recalls, after 30 s, 2 min, then every 10 min, instead of blocking writes for the rest of the
   session. A server without `node_set`, or one that refuses the check (any other HTTP status),
   still keeps capture queued. The check never runs from a hook before session setup has run it,
-  so a session is not bound to a key that isn't minted yet; a setup that gives up (the server
-  never came up, registration failed) lets the next hook run it. A companion-dataset failure
+  so a session is not bound to a key that isn't minted yet; a setup that ends without running
+  it lets the next hook run it, however it ends (the server never came up, registration failed,
+  a managed endpoint was down, the bootstrap worker could not start, an error), unless a worker
+  took the session over. A companion-dataset failure
   still falls back to the primary dataset at once, as before. Session start says once that the
   session's memory is queued.
 

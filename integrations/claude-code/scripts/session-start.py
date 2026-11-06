@@ -1680,7 +1680,7 @@ def _spawn_bootstrap(
     agent_session_name: str,
     session_key: str,
     dataset: str,
-) -> None:
+) -> bool:
     """Launch the detached server-bootstrap worker (this script, --bootstrap)."""
     bootstrap = {
         "cwd": cwd,
@@ -1712,8 +1712,10 @@ def _spawn_bootstrap(
             close_fds=True,
         )
         hook_log("bootstrap_spawned", {"session_id": session_id})
+        return True
     except Exception as exc:
         hook_log("bootstrap_spawn_failed", {"error": str(exc)[:300]})
+        return False
 
 
 def _status_from_error(message: str) -> int:
@@ -1938,6 +1940,23 @@ async def _run_heavy(
 
 
 async def _run_bootstrap(bootstrap: dict) -> None:
+    """Detached worker: set the session up (:func:`_bootstrap_session`).
+
+    The worker is the last owner of the session's setup, so however it ends
+    (refused, unhealthy server, an exception), a session ``prepare()`` never
+    ran for is handed to a later ``route()``. A prepared or backed-off state
+    is left alone (:func:`_project_memory_gave_up`).
+    """
+    try:
+        await _bootstrap_session(bootstrap)
+    finally:
+        _project_memory_gave_up(
+            str(bootstrap.get("dataset", "") or get_dataset(load_config())),
+            str(bootstrap.get("session_id", "") or ""),
+        )
+
+
+async def _bootstrap_session(bootstrap: dict) -> None:
     """Detached worker body.
 
     Two distinct concerns, deliberately decoupled:
@@ -2009,7 +2028,6 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                     hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
             if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
                 hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
-                _project_memory_gave_up(dataset, session_id)
                 _stop_heartbeat()
                 phase_end("setting_up", session_key=session_key, ok=False)
                 return
@@ -2042,12 +2060,10 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                     # connection state itself. Nothing is registered, so
                     # memory is not ready.
                     hook_log("bootstrap_registration_failed", {"session_id": session_id})
-                    _project_memory_gave_up(dataset, session_id)
                     _stop_heartbeat()
                     phase_end("setting_up", session_key=session_key, ok=False)
         except Exception as exc:
             hook_log("bootstrap_failed", {"error": str(exc)[:300]})
-            _project_memory_gave_up(dataset, session_id)
             _stop_heartbeat()
             phase_end("setting_up", session_key=session_key, ok=False)
     finally:
@@ -2510,6 +2526,23 @@ def _apply_update_nudge(output: dict) -> dict:
 
 
 async def _start(payload: dict | None = None) -> dict:
+    """Session start (:func:`_start_session`).
+
+    Once project memory began, the session is this hook's to prepare until a
+    worker takes it over (the cloud worker, or a bootstrap that did spawn).
+    However the hook ends without that (memory offline, a failed registration,
+    an exception), a session ``prepare()`` never ran for is handed to a later
+    ``route()``; a prepared or backed-off state is left alone.
+    """
+    setup: dict = {}
+    try:
+        return await _start_session(payload, setup)
+    finally:
+        if setup.get("project_memory"):
+            _project_memory_gave_up(*setup["project_memory"])
+
+
+async def _start_session(payload: dict | None, setup: dict) -> dict:
     config = load_config()
     payload = payload or {}
     _ensure_statusline_configured(str(payload.get("session_id") or ""))
@@ -2619,6 +2652,7 @@ async def _start(payload: dict | None = None) -> dict:
     from _project_memory import begin as begin_project_memory
 
     begin_project_memory(get_dataset(config), session_id, cwd)
+    setup["project_memory"] = (get_dataset(config), session_id)
     os.environ["COGNEE_SESSION_ID"] = session_id
     agent_session_name = conn_uuid
     dataset = get_dataset(config)
@@ -2649,6 +2683,8 @@ async def _start(payload: dict | None = None) -> dict:
                 "base_url": target_url,
             }
         )
+        # The cloud worker retries registration and prepares on success.
+        setup.pop("project_memory", None)
         touch_activity()
         marker_ready = server_ready_hint(target_url)
         message = (
@@ -2774,7 +2810,8 @@ async def _start(payload: dict | None = None) -> dict:
     if will_boot and _LAZY_BOOTSTRAP:
         # The status surfaces show the phase meanwhile.
         phase_begin("setting_up", "starting memory server", session_key=session_key)
-        _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+        if _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset):
+            setup.pop("project_memory", None)
         worker_owns_ready = True
         user_id = os.environ.get("COGNEE_USER_ID", "")
     else:
@@ -2792,10 +2829,12 @@ async def _start(payload: dict | None = None) -> dict:
             if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url) and not managed_locked:
                 # Inline attempt failed; retry the heavy path out of band.
                 phase_begin("setting_up", "starting memory server", session_key=session_key)
-                _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+                if _spawn_bootstrap(
+                    config, cwd, session_id, agent_session_name, session_key, dataset
+                ):
+                    setup.pop("project_memory", None)
                 worker_owns_ready = True
             else:
-                _project_memory_gave_up(dataset, session_id)
                 phase_end("connecting", session_key=session_key, ok=False)
                 return {}
 
