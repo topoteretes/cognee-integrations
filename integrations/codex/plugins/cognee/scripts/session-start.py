@@ -2110,7 +2110,12 @@ async def _start(payload: dict | None = None) -> dict:
     )
     # A shared local server keeps the distillation mode it booted with; say so
     # when it differs from this session's coding memory setting (SDK-1336).
-    coding_note = _coding_server_note(target_url, server_live, local_owned=not managed_locked)
+    coding_note = _coding_server_note(
+        target_url,
+        server_live,
+        managed=managed_locked,
+        cloud_backend=config.get("_forced_backend") == "cloud",
+    )
     if managed_locked and target_url and not server_live:
         # Managed deployment is down: fail loudly, never fork a fallback brain.
         hook_log("managed_endpoint_down", {"base_url": target_url})
@@ -2205,13 +2210,16 @@ async def _start(payload: dict | None = None) -> dict:
 
     status_line = render_status_for_host(session_key, auto_recall_active(session_key))
     return _with_system_note(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": status_line + _update_nudge_suffix(),
+        _with_system_note(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": status_line + _update_nudge_suffix(),
+                },
             },
-        },
-        coding_note,
+            coding_note,
+        ),
+        _project_memory_note(dataset, session_id),
     )
 
 
@@ -2245,26 +2253,58 @@ def _update_nudge_suffix() -> str:
     )
 
 
-def _coding_server_note(target_url: str, server_live: bool, local_owned: bool) -> str:
-    """The note when an already-running local server's distillation mode differs
-    from this session's coding memory setting (SDK-1336), or ''.
+def _coding_server_note(
+    target_url: str, server_live: bool, *, managed: bool, cloud_backend: bool = False
+) -> str:
+    """The note when the server's distillation mode differs from, or may differ
+    from, this session's coding memory setting (SDK-1336), or ''.
 
-    Local mode only, and only for a server this session did not spawn: a server
-    it spawns gets this session's env. Never restarts the shared server.
+    A live local server the plugin spawned is read from its pidfile; one with no
+    pidfile record, a remote URL or a managed endpoint was not started by the
+    plugin, so a coding session is told to shut it down and restart the plugin.
+    Cognee Cloud (the cloud backend, ``*.cognee.ai``) is never asked. Never
+    restarts the server.
     """
-    if not (server_live and local_owned and target_url and _is_local_url(target_url)):
+    if not target_url:
         return ""
+    local = _is_local_url(target_url)
     try:
-        from _plugin_common import coding_server_note
+        from _plugin_common import (
+            coding_server_note,
+            coding_unowned_server_note,
+            is_cognee_cloud_url,
+        )
 
-        port = urllib.parse.urlparse(target_url).port or 80
-        note = coding_server_note(port, coding_memory_enabled())
+        coding = coding_memory_enabled()
+        if local and not managed:
+            if not server_live:
+                return ""
+            port = urllib.parse.urlparse(target_url).port or 80
+            note = coding_server_note(port, coding)
+        elif not coding or cloud_backend or is_cognee_cloud_url(target_url):
+            return ""
+        else:
+            note = coding_unowned_server_note(target_url, remote=not local, managed=managed)
     except Exception as exc:
         hook_log("coding_server_note_failed", {"error": str(exc)[:200]})
         return ""
     if note:
-        hook_log("coding_server_mode_mismatch", {"port": port, "coding": coding_memory_enabled()})
+        hook_log(
+            "coding_server_mode_mismatch",
+            {"base_url": target_url, "managed": managed, "coding": coding_memory_enabled()},
+        )
     return note
+
+
+def _project_memory_note(dataset: str, session_id: str) -> str:
+    """The one-time note while this session's memory waits on the project tag check."""
+    try:
+        from _project_memory import pending_notice
+
+        return pending_notice(dataset, session_id)
+    except Exception:
+        # Best effort: the note never blocks startup.
+        return ""
 
 
 def _with_system_note(output: dict, note: str) -> dict:

@@ -544,14 +544,20 @@ session start. A session without lessons gets no block.
 
 **Server.** Coding mode needs a cognee server with PR #6568. On an older one (no event-time
 fields in `/openapi.json`), memory is off: nothing is captured or injected, and session start
-says so. When the plugin starts the local server it sets `DISTILLATION_MODE=coding`,
-`AUTO_FEEDBACK=false` and `COGNEE_PROJECT_NODE_SET=auto` (the repository root), each only when
-not already set; a local server shared with other plugins then runs the coding distillation for
-them too. These reach only a server the plugin starts: a local server that is already running
-keeps the mode it started with. When that mode differs from the session's (a coding session on a
-server started without coding mode, or the reverse), session start says so, with the server's
-pid and how to restart it; the plugin never restarts a shared server itself. On a remote server,
-set `DISTILLATION_MODE=coding` there. The coding distillation deletes
+says so. Coding mode sets `COGNEE_PROJECT_NODE_SET=auto` (the repository root) when it is not
+already set: a plugin setting, applied in every hook, that tags the plugin's own writes on any
+server. When the plugin starts the local server it also sets `DISTILLATION_MODE=coding` and
+`AUTO_FEEDBACK=false`, each only when not already set; a local server shared with other plugins
+then runs the coding distillation for them too. These two are server settings, so they reach only
+a server the plugin starts: a local server that is already running keeps the mode it started with.
+When that mode differs from the session's (a coding session on a server started without coding
+mode, or the reverse), session start says so, with the server's pid and how to restart it; the
+plugin never restarts a shared server itself. The mode of a server the plugin did not start (a
+local one with no pidfile record, a remote URL or a `COGNEE_MANAGED_ENDPOINT`) is unknown, so a
+coding session is told to shut it down and restart the plugin, which then starts its own server in
+coding mode; for a remote URL or managed endpoint, remove that setting first, or the plugin
+reconnects to the same server. Cognee Cloud gives no such note. To keep a remote server, set
+`DISTILLATION_MODE=coding` there. The coding distillation deletes
 the lessons a newer one replaces, so the key needs `delete` on the dataset next to `write`;
 `doctor` shows the server support, whether the running local server is in coding mode, and the
 permission while coding mode is on.
@@ -1726,7 +1732,11 @@ name plus a hash of the canonical path; a fixed value provides an explicit tag.
 The setting is pinned for the session, including buffered writes and detached
 improve workers. The backend must expose `node_set` on typed QA/trace entries and
 preserve it through improve. Older backends leave capture queued with an explicit
-`project_memory_prepared` error instead of silently losing the tags.
+`project_memory_prepared` error instead of silently losing the tags. When the check
+gets no answer (a timeout, a connection error, a reply that is not JSON), capture
+stays queued and the next write or drain checks again after 30 s, 2 min, then
+every 10 min; nothing is sent untagged, and session start says once that the
+session's memory is queued.
 
 When a session names a project, **graph recall is scoped to it**: every prompt's
 graph lookup sends `node_name=[<project>, <shared sets>]` (OR-joined), so other

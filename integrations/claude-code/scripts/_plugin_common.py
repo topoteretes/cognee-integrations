@@ -184,8 +184,10 @@ def apply_cognee_env() -> None:
         # Coding memory (SDK-1336) runs the server's coding distillation, which
         # learns from whole requests at improve time: no per-trace feedback, one
         # project node set per repository so state lessons stay per project.
-        # setdefault: an explicit setting still wins, and these only reach a
-        # server this plugin starts.
+        # setdefault: an explicit setting still wins. DISTILLATION_MODE and
+        # AUTO_FEEDBACK are server settings, so they only reach a server this
+        # plugin starts; COGNEE_PROJECT_NODE_SET is a plugin setting, applied in
+        # every hook (it tags this plugin's own writes).
         os.environ.setdefault("DISTILLATION_MODE", "coding")
         os.environ.setdefault("AUTO_FEEDBACK", "false")
         os.environ.setdefault("COGNEE_PROJECT_NODE_SET", "auto")
@@ -3428,6 +3430,16 @@ _CODING_RESTART_ADVICE = (
     "To restart it, close the other Claude Code and Codex sessions using Cognee; the "
     "server stops on its own, and the next session starts it in {mode}."
 )
+_CODING_UNOWNED_ADVICE = (
+    "Shut it down and restart the plugin (start a new session); the plugin then starts "
+    "its own server in coding mode."
+)
+
+
+def is_cognee_cloud_url(url: str) -> bool:
+    """True for a Cognee Cloud host (``*.cognee.ai``)."""
+    host = (urllib.parse.urlparse(str(url or "").strip()).hostname or "").lower()
+    return host == "cognee.ai" or host.endswith(".cognee.ai")
 
 
 def coding_server_note(port: int, coding: bool) -> str:
@@ -3442,14 +3454,18 @@ def coding_server_note(port: int, coding: bool) -> str:
     record = live_server_record(port)
     stamp = record.get("coding_memory") if record else None
     pid = int(record.get("pid", 0) or 0) if record else 0
-    if not isinstance(stamp, bool) or not pid:
+    if not pid:
+        # No pidfile record: the plugin did not start this server, so it never
+        # stops on its own when the sessions close.
+        return coding_unowned_server_note() if coding else ""
+    if not isinstance(stamp, bool):
         if not coding:
             return ""
         return (
             "Cognee coding memory: a Cognee server was already running and it is unknown "
-            "whether it runs coding mode (it was started by another integration, an older "
-            "plugin version or outside the plugin), so it may not make coding lessons "
-            "until it restarts. " + _CODING_RESTART_ADVICE.format(mode="coding mode")
+            "whether it runs coding mode (it was started by another integration or an "
+            "older plugin version), so it may not make coding lessons until it restarts. "
+            + _CODING_RESTART_ADVICE.format(mode="coding mode")
         )
     if stamp == coding:
         return ""
@@ -3473,6 +3489,34 @@ def coding_server_note(port: int, coding: bool) -> str:
         + " "
         + kill_now
     )
+
+
+def coding_unowned_server_note(
+    url: str = "", *, remote: bool = False, managed: bool = False
+) -> str:
+    """The coding-mode SessionStart note for a server the plugin did not start.
+
+    Its mode is unknown: a local server with no pidfile record, a remote URL or a
+    managed endpoint (``COGNEE_MANAGED_ENDPOINT``). Cognee Cloud is not asked
+    here. A remote URL or managed endpoint also has to be unset before the
+    restart, or the plugin connects to the same server again.
+    """
+    where = f"the Cognee server at {url}" if url and (remote or managed) else "this Cognee server"
+    note = (
+        f"Cognee coding memory: {where} wasn't started by the plugin, so it's unknown "
+        "whether it runs coding mode, and it may not make coding lessons. " + _CODING_UNOWNED_ADVICE
+    )
+    settings = [
+        name
+        for name, on in (("COGNEE_BASE_URL", remote), ("COGNEE_MANAGED_ENDPOINT", managed))
+        if on
+    ]
+    if settings:
+        note += (
+            f" Remove {' and '.join(settings)} (from your environment or ~/.cognee/.env) "
+            "before restarting, or the plugin reconnects to the same server."
+        )
+    return note
 
 
 def clear_server_pidfile(port: int) -> None:

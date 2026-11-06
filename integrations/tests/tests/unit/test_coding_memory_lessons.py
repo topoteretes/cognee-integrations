@@ -379,3 +379,33 @@ def test_a_failed_forced_check_is_unknown_and_keeps_the_cached_verdict(cm, commo
     assert result["ok"] is None and "refused" in result["reason"]
     # Non-forced callers within the hour still get the cached verdict.
     assert cm.check_server_support()["ok"] is False
+
+
+# -- The repository root, not the hook's directory ---------------------------------------------
+
+
+def test_a_block_built_in_a_subdirectory_tags_lessons_as_from_the_root(cm, repo, monkeypatch):
+    sub = repo / "pkg" / "sub"
+    sub.mkdir(parents=True)
+    (sub / "a.py").write_text("a = 1\n")
+    (repo / "top.py").write_text("t = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add files")
+    commit = _git(repo, "rev-parse", "HEAD")
+    (sub / "a.py").write_text("a = 2\n")
+    (repo / "top.py").unlink()
+    _git(repo, "commit", "-qam", "change a, drop top")
+    files = ["pkg/sub/a.py", "top.py"]
+    lessons = [
+        _lesson(
+            "Run the suite first.", kind="state", key="test-baseline", commit=commit, files=files
+        )
+    ]
+    monkeypatch.setattr(cm, "project_scope", lambda *a: [])
+    monkeypatch.setattr(cm, "list_lessons", lambda *a, **k: ("ds-1", [dict(x) for x in lessons]))
+    monkeypatch.setattr(cm, "recall_passages", lambda *a, **k: [])
+
+    from_root = cm.build_block("q", str(repo))
+    from_sub = cm.build_block("q", str(sub))
+    assert "pkg/sub/a.py changed since" in from_root and "top.py no longer exists" in from_root
+    assert from_sub == from_root

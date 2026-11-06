@@ -483,13 +483,20 @@ def _block_text(content) -> str:
     return ""
 
 
+#: Claude's marker after Esc: ``[Request interrupted by user]``, or ``... for tool use]``.
+_INTERRUPTED = "[Request interrupted by user"
+INTERRUPTED_ANSWER = "[Interrupted by the user before finishing.]"
+
 _NOT_A_REQUEST = (
     "<command-",
     "<local-command",
     "<task-notification",
     "<system-reminder",
     "Caveat:",
+    _INTERRUPTED,
 )
+#: A Claude Bash error result's first line: ``Exit code N``.
+_EXIT_CODE_RE = re.compile(r"\AExit code (-?\d+)[ \t]*(?:\r?\n|\Z)")
 
 
 def _claude_files(transcript: Path) -> list:
@@ -519,10 +526,23 @@ def _new_unit(record: dict, text: str, stamp: str) -> dict:
 
 
 def _set_answer(unit: dict | None, record: dict, text: str, stamp: str) -> None:
-    if unit is not None:
+    # An interrupted request's turn closed at the interrupt.
+    if unit is not None and not unit.get("interrupted"):
         unit["answer"] = text
         unit["answer_id"] = _record_id(record, stamp, text)
         unit["answer_time"] = stamp
+
+
+def _interrupt(unit: dict | None, record: dict, stamp: str) -> None:
+    """Close ``unit`` at the user's interrupt: its answer is the interrupted
+    prefix plus the last text the agent wrote before it, its time the marker's."""
+    if unit is None or unit.get("interrupted"):
+        return
+    partial = str(unit.get("answer") or "").strip()
+    unit["answer"] = INTERRUPTED_ANSWER + ("\n" + partial if partial else "")
+    unit["answer_id"] = _record_id(record, stamp, _INTERRUPTED)
+    unit["answer_time"] = stamp
+    unit["interrupted"] = True
 
 
 def _empty_parse() -> dict:
@@ -541,7 +561,11 @@ def parse_claude(transcript_path: str) -> dict:
 
     ``units`` holds one entry per real user prompt of the main thread, in order:
     the request and its answer (the last main-thread assistant text before the
-    next prompt), each with an id and a time.
+    next prompt), each with an id and a time. A request the user interrupted
+    (Esc) is closed at the interrupt marker and flagged ``interrupted``.
+
+    Records carrying ``forkedFrom`` are skipped: a forked session copies its
+    parent's history (same ids and times), which belongs to the parent session.
     """
     transcript = Path(str(transcript_path or "")).expanduser()
     uses: dict = {}
@@ -554,6 +578,8 @@ def parse_claude(transcript_path: str) -> dict:
     for index, path in enumerate(_claude_files(transcript)):
         main = index == 0
         for record in _iter_jsonl(path):
+            if record.get("forkedFrom") is not None:
+                continue
             kind = record.get("type")
             message = record.get("message") if isinstance(record.get("message"), dict) else {}
             content = message.get("content")
@@ -575,6 +601,12 @@ def parse_claude(transcript_path: str) -> dict:
                     last_text, last_text_time = text, stamp
                     _set_answer(units[-1] if units else None, record, text, stamp)
             elif kind == "user":
+                if (
+                    main
+                    and not record.get("isSidechain")
+                    and _block_text(content).strip().startswith(_INTERRUPTED)
+                ):
+                    _interrupt(units[-1] if units else None, record, stamp)
                 if isinstance(content, list) and any(
                     isinstance(b, dict) and b.get("type") == "tool_result" for b in content
                 ):
@@ -605,16 +637,23 @@ def parse_claude(transcript_path: str) -> dict:
             continue
         # No "error" here: trace_entry derives it from the output after the
         # capture sanitized the output (a cut <private> span must not leak).
-        calls.append(
-            {
-                "id": tool_id,
-                "name": use["name"],
-                "input": use["input"],
-                "output": result["output"],
-                "is_error": result["is_error"],
-                "time": result["time"],
-            }
-        )
+        call = {
+            "id": tool_id,
+            "name": use["name"],
+            "input": use["input"],
+            "output": result["output"],
+            "is_error": result["is_error"],
+            "time": result["time"],
+        }
+        # A failed Bash result starts with "Exit code N": move it to exit_code,
+        # so call_error treats Claude and Codex commands alike.
+        output = call["output"]
+        if call["is_error"] and call["name"] == "Bash" and isinstance(output, str):
+            match = _EXIT_CODE_RE.match(output)
+            if match:
+                call["exit_code"] = int(match.group(1))
+                call["output"] = output[match.end() :]
+        calls.append(call)
     calls.sort(key=lambda c: c["time"])
     return {
         "calls": calls,
@@ -670,7 +709,46 @@ def _codex_command(command) -> str:
     return str(command or "")
 
 
-def _codex_call(item: dict, stamp: str) -> dict | None:
+def _codex_file_changes(item: dict, status: str, failed: bool, stamp: str):
+    """One call per changed path of a ``FileChange`` item, as Claude's tools
+    name them: ``Write`` for an add, ``Edit`` for an update or a delete.
+
+    ``changes`` maps each path to ``{type, content | unified_diff, move_path}``
+    (openai/codex protocol). Each call carries ``file_path`` (and ``move_path``),
+    so the capture policy drops secret paths, and its own id
+    (``<item id>:<path>``), so each file is sent once.
+    """
+    changes = item.get("changes")
+    common = {
+        "output": status or "completed",
+        "is_error": failed,
+        "error": status if failed else "",
+        "time": stamp,
+    }
+    if not isinstance(changes, dict):
+        return {"name": "Edit", "input": {"changes": changes}, **common}
+    item_id = str(item.get("id") or "")
+    calls = []
+    for path, change in changes.items():
+        change = change if isinstance(change, dict) else {}
+        change_type = str(change.get("type") or "update").lower()
+        tool_input = {"file_path": str(path), "change": change_type}
+        if change_type == "update":
+            tool_input["diff"] = change.get("unified_diff")
+        else:
+            tool_input["content"] = change.get("content")
+        if change.get("move_path"):
+            tool_input["move_path"] = str(change["move_path"])
+        call = {"name": "Write" if change_type == "add" else "Edit", "input": tool_input}
+        if item_id:
+            call["id"] = f"{item_id}:{path}"
+        calls.append({**call, **common})
+    return calls
+
+
+def _codex_call(item: dict, stamp: str):
+    """The Claude-shaped call of a Codex item: one dict, a list (a ``FileChange``
+    touching several files), or None for an item that is not a tool call."""
     kind = str(item.get("type") or "")
     if not kind or kind in _CODEX_SKIP:
         return None
@@ -691,15 +769,7 @@ def _codex_call(item: dict, stamp: str) -> dict | None:
             "time": stamp,
         }
     if kind == "FileChange":
-        changes = item.get("changes")
-        return {
-            "name": "Edit",
-            "input": {"changes": changes},
-            "output": status or "completed",
-            "is_error": failed,
-            "error": status if failed else "",
-            "time": stamp,
-        }
+        return _codex_file_changes(item, status, failed, stamp)
     if kind == "McpToolCall":
         name = "mcp__{}__{}".format(item.get("server") or "mcp", item.get("tool") or "tool")
         error = item.get("error")
@@ -736,18 +806,38 @@ def parse_codex(transcript_path: str) -> dict:
 
     ``units`` as in :func:`parse_claude`; rollouts carry no record ids, so a
     unit's id is a hash of the prompt's time and text (and likewise the answer's).
+
+    A fork of a legacy-history thread copies its parent's events (with their
+    original times) into the new rollout; those events, timed before the fork's
+    ``session_meta``, are skipped. A paginated fork references its parent
+    instead of copying it and parses as any rollout.
     """
     path = Path(str(transcript_path or "")).expanduser()
     calls = []
     answer, answer_time = "", ""
     request, request_time = "", ""
     units: list = []
+    fork_point: float | None = None
     if not path.is_file():
         return _empty_parse()
     for record in _iter_jsonl(path):
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        if record.get("type") == "session_meta":
+            if (
+                fork_point is None
+                and payload.get("forked_from_id")
+                and str(payload.get("history_mode") or "").lower() != "paginated"
+            ):
+                fork_point = _parse_time(
+                    str(payload.get("timestamp") or record.get("timestamp") or "")
+                )
+            continue
         if record.get("type") != "event_msg":
             continue
+        if fork_point is not None:
+            at = _parse_time(_codex_time(record, payload))
+            if at is not None and at < fork_point:
+                continue  # copied from the parent thread
         kind = payload.get("type")
         if kind == "task_complete" and payload.get("last_agent_message"):
             answer, answer_time = str(payload["last_agent_message"]), str(record.get("timestamp"))
@@ -769,9 +859,11 @@ def parse_codex(transcript_path: str) -> dict:
                 answer, answer_time = text, stamp
                 _set_answer(units[-1] if units else None, {}, text, stamp)
             continue
-        call = _codex_call(item, stamp)
-        if call and item.get("id"):
-            call["id"] = str(item["id"])
+        found = _codex_call(item, stamp)
+        if not found or not item.get("id"):
+            continue
+        for call in found if isinstance(found, list) else [found]:
+            call.setdefault("id", str(item["id"]))
             calls.append(call)
     calls.sort(key=lambda c: c["time"])
     return {
@@ -821,26 +913,63 @@ def _as_text(value) -> str:
     return value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
 
 
-def _tail(text: str, cap: int) -> str:
-    encoded = text.encode("utf-8", errors="replace")
-    if len(encoded) <= cap:
-        return text
-    return encoded[-cap:].decode("utf-8", errors="ignore")
+_ERROR_LINE_RE = re.compile(
+    r"error|failed|fatal|exception|traceback|not found|no such|denied|cannot", re.IGNORECASE
+)
+#: Bytes of the error line kept at the head of a command's error.
+MAX_ERROR_LINE_BYTES = 300
+
+
+def _error_line(text: str) -> str:
+    """The first line that looks like an error, else the first non-empty line."""
+    first = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if raw.startswith("E ") or _ERROR_LINE_RE.search(line):
+            return line
+        first = first or line
+    return first
+
+
+def _tail_lines(text: str, cap: int) -> list:
+    """The last whole non-empty lines of ``text`` that fit in ``cap`` bytes."""
+    kept, used = [], 0
+    for line in reversed(text.splitlines()):
+        if not line.strip():
+            continue
+        size = len(line.encode("utf-8", errors="replace")) + 1
+        if used + size > cap:
+            break
+        kept.append(line)
+        used += size
+    return kept[::-1]
 
 
 def call_error(call: dict) -> str:
     """The error text of a failed call, from its (already sanitized) fields.
 
-    A command's error is ``exit code N: `` plus the tail of its output; a call
-    with an explicit ``error`` uses it; anything else uses its output.
+    A command's error is its error line (the first output line that looks like
+    an error, else the first non-empty one) with `` (exit code N)``, then the
+    tail of its output cut at a line boundary; the server keys pitfalls on that
+    first line, so it is never a byte-cut fragment. A call with an explicit
+    ``error`` uses it; anything else uses its output.
     """
     if not call.get("is_error"):
         return ""
     if "exit_code" in call:
         code = call.get("exit_code")
-        prefix = f"exit code {code}: " if code not in (0, None) else ""
-        room = max(MAX_ERROR_BYTES - len(prefix.encode("utf-8")), 0)
-        return prefix + _tail(_as_text(call.get("output")), room)
+        output = _as_text(call.get("output"))
+        found = _error_line(output)
+        line = _truncate(found, MAX_ERROR_LINE_BYTES)
+        if code not in (0, None):
+            line = f"{line} (exit code {code})" if line else f"exit code {code}"
+        room = MAX_ERROR_BYTES - len(line.encode("utf-8")) - 1
+        tail = _tail_lines(output, room) if room > 0 else []
+        if [t.strip() for t in tail] == [found]:
+            tail = []  # the output is the error line alone
+        return "\n".join([line, *tail]) if tail else line
     if call.get("error"):
         return _as_text(call.get("error"))
     return _as_text(call.get("output"))
@@ -912,9 +1041,12 @@ def _qa_entries(payload: dict, parsed: dict, data: dict, cwd: str, sanitize, fin
     the next prompt (Claude's Stop hook is async, Codex's is detached) still sends
     its own question with its own answer, and a Stop that never ran is made up at
     the next capture. A sent request whose answer changed since (the agent was
-    told to go on) is sent again as a continuation, without ``prompt_time``.
-    Updates ``data`` in place.
+    told to go on) is sent again as a continuation, without ``prompt_time``; an
+    interrupted request is sent once, flagged ``interrupted``, never continued.
+    The context's ``cwd`` is the repository root (the server's repo root) and
+    ``session_cwd`` the hook's directory. Updates ``data`` in place.
     """
+    root = git_root(cwd) or cwd
     units = [dict(u) for u in parsed.get("units") or [] if isinstance(u, dict) and u.get("id")]
     sent_ids = [str(i) for i in data.get("qa_sent_ids") or []]
     sent_set = set(sent_ids)
@@ -928,8 +1060,14 @@ def _qa_entries(payload: dict, parsed: dict, data: dict, cwd: str, sanitize, fin
     if stop_answer and units:
         last, stop_key = units[-1], _same_text(stop_answer)
         earlier = {_same_text(u["answer"]) for u in units[:-1] if u.get("answer")}
-        earlier_open = any(u.get("answer") and u["id"] not in sent_set for u in units[:-1])
-        if last.get("answer") and _same_text(last["answer"]) == stop_key:
+        # No Stop fires for an interrupted request: it is never the Stop's request.
+        earlier_open = any(
+            u.get("answer") and u["id"] not in sent_set and not u.get("interrupted")
+            for u in units[:-1]
+        )
+        if last.get("interrupted") or (
+            last.get("answer") and _same_text(last["answer"]) == stop_key
+        ):
             pass
         elif stop_key in earlier or earlier_open:
             skip_last = not final  # this Stop is an earlier request's; the last is running
@@ -954,6 +1092,8 @@ def _qa_entries(payload: dict, parsed: dict, data: dict, cwd: str, sanitize, fin
             continue
         unit_id, answer_key = str(unit["id"]), _same_text(answer)
         continuation = unit_id in sent_set
+        if continuation and unit.get("interrupted"):
+            continue
         if continuation:
             previous = answers.get(unit_id) if isinstance(answers.get(unit_id), dict) else {}
             if not previous or previous.get("answer_id") == unit.get("answer_id"):
@@ -984,7 +1124,8 @@ def _qa_entries(payload: dict, parsed: dict, data: dict, cwd: str, sanitize, fin
             end_commit = head
         started = prompt_time or _event_time(str(unit.get("request_time") or "")) or qa["time"]
         context = {
-            "cwd": cwd,
+            "cwd": root,
+            "session_cwd": cwd,
             "transcript_path": str(payload.get("transcript_path") or ""),
             "date": started[:10],
             "start_commit": str(turn.get("start_commit") or ""),
@@ -993,6 +1134,8 @@ def _qa_entries(payload: dict, parsed: dict, data: dict, cwd: str, sanitize, fin
         }
         if continuation:
             context["continuation"] = True
+        if unit.get("interrupted"):
+            context["interrupted"] = True
         qa["context"] = json.dumps(context, ensure_ascii=False)
         out.append(qa)
         if not continuation:
@@ -1734,8 +1877,12 @@ def build_block(query: str, cwd: str) -> str:
     if not lessons:
         return ""
     recalled = recall_passages(query, dataset, dataset_id, deadline) if query.strip() else []
-    in_git = bool(git_root(cwd))
-    line_for = _line_maker(cwd, in_git)
+    # The repository root, from this call's cwd: git prints root-relative paths
+    # from there, as lessons name them (cwd can change mid-session: no cache).
+    root = git_root(cwd)
+    in_git = bool(root)
+    root = root or cwd
+    line_for = _line_maker(root, in_git)
     chosen = select_lessons(
         lessons,
         recalled,
@@ -1749,7 +1896,7 @@ def build_block(query: str, cwd: str) -> str:
             if item["session_id"] and item["session_id"] != session_id
         }
     )
-    return render_block(dataset, max(1, sessions), chosen, cwd, in_git, line_for)
+    return render_block(dataset, max(1, sessions), chosen, root, in_git, line_for)
 
 
 def deliver(session_key: str, query: str, cwd: str, *, force: bool = False) -> str:

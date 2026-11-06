@@ -27,6 +27,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
     existing queue (the replay buffer), so a server
     outage loses nothing. `SessionEnd` queues anything the last `Stop` missed before the final
     sync's `improve`.
+  - **sends what the coding distillation can use:** a failed command's error starts with its
+    first error-looking output line plus `(exit code N)`, then output cut at a line boundary, so
+    unrelated failures are not merged into one pitfall. Codex file edits go as one `Write`/`Edit`
+    per file with `file_path`, so the capture deny list drops edits to and renames into secret
+    files (`.env`, `*.pem`, ...). A request interrupted with Esc is sent once, closed at the
+    interrupt, as `[Interrupted by the user before finishing.]` plus any partial text and
+    `interrupted: true`. A forked session (`--fork-session`, `/branch`, a Codex legacy-history
+    fork) sends only its own records, not its parent's copied history. The QA `cwd` is the
+    repository root (the session's directory goes as `session_cwd`), and git tags are computed
+    from the root, so sessions started in a subdirectory keep them.
   - **runs `improve` at session end and once a day** (`COGNEE_IMPROVE_COOLDOWN`) in long sessions.
   - **gives one short memory block at the first request of a session**, and again after a
     compaction: the newest `test-baseline`, the two newest pitfalls and the lessons recalled for
@@ -35,16 +45,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
     are read from the dataset listing's metadata (`lesson_type`, `state_key`, `git_commit`,
     `files`, `project_node_sets`) and their bodies cached under `coding/lessons/`, filled in the
     background at session start. Only this repository's lessons are used. `SessionStart` now also matches `compact`; with the setting unset it returns at once, as before.
-  - **sets up the server it starts:** `DISTILLATION_MODE=coding`, `AUTO_FEEDBACK=false` and
-    `COGNEE_PROJECT_NODE_SET=auto` (tagged at the repository root), each only when not set,
-    and records the mode in the server pidfile (`coding_memory`). A local server that is already
-    running keeps the mode it started with; when it differs from the session's, session start
-    says so with the server's pid and how to restart it (it never restarts a shared server).
+  - **tags its writes per repository:** `COGNEE_PROJECT_NODE_SET=auto` (the repository root),
+    when not set. It is a plugin setting, applied in every hook, on any server.
+  - **sets up the server it starts:** `DISTILLATION_MODE=coding` and `AUTO_FEEDBACK=false`, each
+    only when not set, and records the mode in the server pidfile (`coding_memory`). A local
+    server that is already running keeps the mode it started with; when it differs from the
+    session's, session start says so with the server's pid and how to restart it (it never
+    restarts a shared server).
+  - **says when the server's mode is unknown:** for a local server with no pidfile record, a
+    remote URL or a `COGNEE_MANAGED_ENDPOINT`, session start tells a coding session to shut the
+    server down and restart the plugin, which then starts its own server in coding mode, and to
+    remove the URL or managed-endpoint setting first. Cognee Cloud gives no note.
 - **Memory is off on a server that is too old.** Without the event-time fields of cognee PR
   #6568, coding mode neither captures nor injects, and session start says why.
 - **Doctor shows coding memory** while it is on: server support, whether the running local
   server is in coding mode, and whether the key holds `delete` on the dataset (the coding distillation deletes replaced lessons).
 - New `coding.*` log events (see `EVENTS.md`).
+
+### Fixed
+- **Project tags: an unanswered check is retried.** When the session-start check of project-tag
+  support gets no answer (timeout, connection error, a reply that is not JSON), capture stays
+  queued and the check runs again from the next write or drain after 30 s, 2 min, then every
+  10 min, instead of blocking writes for the rest of the session. A server without `node_set`
+  still keeps capture queued; a cloud session whose registration failed is checked by its first
+  drain. Session start says once that the session's memory is queued.
 
 ## [1.7.9]
 

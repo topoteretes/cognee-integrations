@@ -185,6 +185,108 @@ def test_unknown_server_mode_is_quiet_for_a_normal_session(
     assert "coding mode" not in _messages(result)
 
 
+def test_no_pidfile_says_shut_down_and_restart(session_start, pc, closed_port_url, monkeypatch):
+    # A live local server with no pidfile record was not started by the plugin:
+    # it never stops on its own when the sessions close.
+    result = _join(session_start, closed_port_url, monkeypatch, coding=True)
+    note = result["systemMessage"]
+    assert "wasn't started by the plugin" in note
+    assert "Shut it down and restart the plugin" in note
+    assert "stops on its own" not in note
+    assert "COGNEE_BASE_URL" not in note
+
+
+def test_older_pidfile_keeps_the_close_sessions_advice(
+    session_start, pc, closed_port_url, monkeypatch
+):
+    pc.write_server_pidfile(_port(closed_port_url), os.getpid())
+    note = _join(session_start, closed_port_url, monkeypatch, coding=True)["systemMessage"]
+    assert "stops on its own" in note
+    assert "wasn't started by the plugin" not in note
+
+
+def test_spawned_normal_server_keeps_the_kill_advice(
+    session_start, pc, closed_port_url, monkeypatch
+):
+    pid = os.getpid()
+    pc.write_server_pidfile(_port(closed_port_url), pid, coding_memory=False)
+    note = _join(session_start, closed_port_url, monkeypatch, coding=True)["systemMessage"]
+    assert f"`kill {pid}`" in note
+    assert "wasn't started by the plugin" not in note
+
+
+def _join_remote(session_start, monkeypatch, url: str, *, coding: bool = True) -> dict:
+    """Run ``_start`` against a live remote URL (heavy path and cloud worker faked)."""
+    if coding:
+        monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    else:
+        monkeypatch.delenv("COGNEE_CODING_MEMORY", raising=False)
+    monkeypatch.setenv("COGNEE_BASE_URL", url)
+    monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: True)
+
+    async def fake_heavy(*a, **k):
+        return "", "", True
+
+    monkeypatch.setattr(session_start, "_run_heavy", fake_heavy)
+    monkeypatch.setattr(session_start, "_spawn_idle_watcher", lambda *a, **k: None)
+    monkeypatch.setattr(session_start, "_spawn_exit_watcher", lambda *a, **k: None)
+    if hasattr(session_start, "server_ready_hint"):
+        monkeypatch.setattr(session_start, "server_ready_hint", lambda *a, **k: True)
+    try:
+        cloud_worker = importlib.import_module("_cloud_worker")
+        monkeypatch.setattr(cloud_worker, "register_session", lambda *a, **k: None)
+    except ImportError:
+        pass
+    return asyncio.run(session_start._start({"session_id": "s1", "source": "startup"}))
+
+
+def test_remote_url_in_coding_mode_names_the_server(session_start, pc, monkeypatch):
+    url = "https://memory.example.com"
+    note = _join_remote(session_start, monkeypatch, url)["systemMessage"]
+    assert f"the Cognee server at {url} wasn't started by the plugin" in note
+    assert "Shut it down and restart the plugin" in note
+    assert "Remove COGNEE_BASE_URL" in note
+    assert "reconnects to the same server" in note
+
+
+def test_remote_url_in_normal_mode_gives_no_note(session_start, pc, monkeypatch):
+    result = _join_remote(session_start, monkeypatch, "https://memory.example.com", coding=False)
+    assert "coding mode" not in _messages(result)
+
+
+def test_cognee_cloud_gives_no_note(session_start, pc, monkeypatch):
+    result = _join_remote(session_start, monkeypatch, "https://tenant-abc.aws.cognee.ai")
+    assert "coding mode" not in _messages(result)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    assert (
+        session_start._coding_server_note(
+            "https://memory.example.com", True, managed=False, cloud_backend=True
+        )
+        == ""
+    )
+
+
+def test_managed_endpoint_names_the_setting(session_start, pc, closed_port_url, monkeypatch):
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    note = session_start._coding_server_note(closed_port_url, True, managed=True)
+    assert f"the Cognee server at {closed_port_url} wasn't started by the plugin" in note
+    assert "Remove COGNEE_MANAGED_ENDPOINT" in note
+    assert "COGNEE_BASE_URL" not in note
+    remote = session_start._coding_server_note("https://memory.example.com", True, managed=True)
+    assert "Remove COGNEE_BASE_URL and COGNEE_MANAGED_ENDPOINT" in remote
+
+
+def test_queued_project_memory_is_told_once(session_start, pc, closed_port_url, monkeypatch):
+    pm = importlib.import_module("_project_memory")
+    shown = iter([pm.PENDING_NOTICE, ""])
+    monkeypatch.setattr(pm, "pending_notice", lambda dataset, session_id: next(shown))
+    first = _join(session_start, closed_port_url, monkeypatch, coding=False)
+    assert pm.PENDING_NOTICE in first["systemMessage"]
+    assert pm.PENDING_NOTICE in first["hookSpecificOutput"]["systemMessage"]
+    second = _join(session_start, closed_port_url, monkeypatch, coding=False)
+    assert pm.PENDING_NOTICE not in _messages(second)
+
+
 def test_doctor_line_shows_the_server_mode(suite, session_start, pc, monkeypatch):
     monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
     monkeypatch.setenv("COGNEE_LOCAL_API_URL", "http://localhost:8125")

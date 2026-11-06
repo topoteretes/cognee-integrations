@@ -148,7 +148,13 @@ def _codex_transcript(path: Path) -> Path:
             {
                 "type": "FileChange",
                 "id": "fc-1",
-                "changes": [{"path": "src/app.py"}],
+                "changes": {
+                    "src/app.py": {
+                        "type": "update",
+                        "unified_diff": "@@ -1 +1 @@\n-x = 1\n+x = 2\n",
+                        "move_path": None,
+                    }
+                },
                 "status": "completed",
             },
             "2026-11-05T10:00:12.000Z",
@@ -623,3 +629,7 @@ def test_codex_rollout_maps_items_to_tool_calls(cm, tmp_path):
         ("Bash", True),
         ("Edit", False),
     ]
+    edit = parsed["calls"][2]
+    assert edit["id"] == "fc-1:src/app.py"
+    assert edit["input"]["file_path"] == "src/app.py" and edit["input"]["change"] == "update"
+    assert edit["input"]["diff"].startswith("@@")
