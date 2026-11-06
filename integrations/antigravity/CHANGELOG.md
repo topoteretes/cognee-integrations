@@ -34,13 +34,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
   in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
   a switch) wins over it for that session. **Behaviour change:** a configured non-default
   `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
-  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it.
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it. Session start says so once per machine
+  and dataset, in the message the user sees, when a non-default dataset is configured,
+  `COGNEE_PLUGIN_RECALL_MODE` was never set and the session has not pinned recall itself.
 - **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
   `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
   In local-SDK mode recall stays on the active dataset.
 
 ### Changed
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+- **The status says when recall is auto.** The status at the top of the injected context and
+  `cognee-statusline.sh` read `cognee: auto (<dataset>) · cloud` while recall is not pinned, as
+  Claude Code's row does, and the bare name once it is.
 
 ### Fixed
 - **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under

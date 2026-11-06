@@ -37,7 +37,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
   a switch) wins over it for that session. **Behaviour change:** a configured non-default
   `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
-  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it.
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it. Session start says so once per machine
+  and dataset, in the message the user sees, when a non-default dataset is configured,
+  `COGNEE_PLUGIN_RECALL_MODE` was never set and the session has not pinned recall itself.
 - **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
   `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
 - **The status-row picker and `/cognee-dataset` know about auto recall.** The picker starts with
@@ -54,13 +56,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   save it mentions names its own when that differs. The save record keeps the dataset of the
   last successful save (`improved_dataset`) beside the one a later failed attempt targeted.
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
-- **The memory credit names the document and dataset (SDK-1393).** Every graph item the recall
-  hook injects is marked `[document <name> · dataset <name>]` (the document only when the item
-  names one), since under auto recall the server picks the dataset and the mark is the only place
-  the answer learns which one. The credit line is now `> Cognee memory: <what>, from <document> in
-  the <dataset> dataset`, with no `[mN]` tags or brain; items are still numbered behind the scenes.
-  The Stop hook counts a turn whose answer ends with that line (`untagged: true` in the
-  `memory_credit` event); an older line citing `[mN]` is still checked against the session's tags.
+- **The memory credit names the dataset (SDK-1393).** Every graph item the recall hook injects
+  is marked `[dataset <name>]`, since under auto recall the server picks the dataset and the mark
+  is the only place the answer learns which one; an item from a server that names no dataset, and
+  every other item, keeps its origin mark (`[agent trace, …]`, `[code graph]`). The credit line is
+  now `> Cognee memory: <what>, from the <dataset> dataset`, with no `[mN]` tags or brain, and the
+  hidden per-session tags (`tags.json`) are gone. "Cognee found N memories" counts the items that
+  survive the size budget and the dedupe (two results from one dataset no longer count as one),
+  and the instruction is left out when none does. The recall hook records the turn it injected
+  memory on (`injected_turn` in `credit.json`); the Stop hook counts a credit when the answer on
+  that turn ends with the credit line. The `memory_credit` event now carries `{injected,
+  credited}`, and `memory_tags_write_failed` is now `memory_credit_write_failed`.
+- **The settings-file status line says when recall is auto.** It shows the dataset as
+  `auto (<dataset>)` while recall is not pinned, as the row above the prompt does.
 - **The terminal dataset picker is drawn from the start.** It shows the selected name and lights
   under the pointer; a click or `ctrl+x tab` gives it the focus, which opens the list and lists the
   datasets afresh. The `▾` button that opened it is gone.

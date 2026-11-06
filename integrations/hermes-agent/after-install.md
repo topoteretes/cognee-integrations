@@ -39,6 +39,15 @@ installer refuses to overwrite a catalog-managed installation.
 
 In local mode, an update that moves the pinned cognee turns local mode off until
 you run `hermes cognee install-runtime`; Hermes says so when it reports Cognee as
-unavailable. The command stops the local cognee server this plugin started (other
-cognee plugins sharing it start a new one on their next request), upgrades the
-runtime in place, and then you start a new Hermes session.
+unavailable. The command says which local cognee server this plugin started it
+will stop and asks first (`--yes` without a terminal; other cognee plugins
+sharing it start a new one on their next request), upgrades the runtime in
+place, and then you start a new Hermes session. If a cognee server older than
+the pinned cognee (or reporting no version) that it cannot stop still answers on
+the local port, it changes nothing and names the server to stop before you
+re-run it.
+
+A dataset other than the default that you configured keeps recall on that
+dataset while no recall mode is set, as before; the first reply of a session
+says once that Cognee can also pick the dataset for each prompt
+(`recall_mode: auto` in cognee.json or `COGNEE_PLUGIN_RECALL_MODE=auto`).

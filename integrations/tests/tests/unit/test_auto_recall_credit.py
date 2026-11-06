@@ -16,8 +16,9 @@ Contract, for every hook-family suite:
   * pinned (COGNEE_PLUGIN_RECALL_MODE=pinned): the graph request names the
     active dataset's ids; a configured COGNEE_PLUGIN_DATASET alone stays auto;
   * the memory header (``Cognee memory: …``) never names a dataset;
-  * claude-code and codex credit with ``🧠 Cognee memory [mN]`` and never name
-    a dataset; Antigravity tags nothing;
+  * claude-code and codex mark each item with the dataset the server names
+    (none here, so its origin) and ask for a credit naming the dataset, with no
+    ``[mN]`` tag; Antigravity marks nothing;
   * Cursor's credit line names its source: ``based on the <dataset> dataset``
     when pinned, ``based on Cognee memory`` when routed, matching what
     ``cognee-search.sh`` prints on its auto path.
@@ -115,14 +116,14 @@ def test_what_the_hook_sends_and_injects_follows_the_recall_mode(
     if suite.name == "claude-code":
         # Items are marked with where they came from, not numbered (SDK-1393),
         # and the braille mark stands in for the brain under the answer.
-        assert "> Cognee memory: <what you remembered>, from <document>" in context
+        assert "> Cognee memory: <what you remembered>, from the <dataset> dataset" in context
         assert "[m1" not in context and "\U0001f9e0" not in context
         return
     if suite.name == "codex":
         # Marked as on Claude Code (SDK-1393); the agent writes the braille
         # logotype itself, Codex having no way to draw it under the answer.
         assert "`⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what you remembered>," in context
-        assert "from <document> in the <dataset> dataset" in context
+        assert "from the <dataset> dataset" in context and "<document>" not in context
         assert "[m1" not in context and "\U0001f9e0" not in context
         return
     # Cursor: the credit line says where the memory came from.

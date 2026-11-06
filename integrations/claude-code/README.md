@@ -459,7 +459,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # let the 
 in: `auto` (the default) or `pinned` (recall restricted to the session's dataset, reason
 `configured_pin`). Any other value means `auto`. `COGNEE_PLUGIN_DATASET` only names the dataset:
 it no longer restricts recall, so set `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on a
-configured dataset.
+configured dataset. Session start says so once per machine and dataset, in the message you see,
+when a non-default `COGNEE_PLUGIN_DATASET` is configured, `COGNEE_PLUGIN_RECALL_MODE` was never
+set and the session has not pinned recall itself.
 
 The choice made in a session is stored in the launch record (`recall_pinned`) and wins over the
 configured mode for that session: `auto` gives auto recall even under `pinned`, and `pin` or a
@@ -562,33 +564,30 @@ See [Claude Code's auto-memory settings](https://code.claude.com/docs/en/memory#
 When an answer uses recalled memory, the agent says so in one line at the end:
 
 ```
-> Cognee memory: Maya's orders and support chat, from maya-7f3a in the live_context_support_agent_demo dataset
+> Cognee memory: Maya's orders and support chat, from the live_context_support_agent_demo dataset
 ```
 
 Claude Code draws that line under the answer with the Cognee mark in place of the label.
 
 How it works:
 
-- The recall hook marks every injected graph item with the dataset it came from, plus
-  the document when the item names one:
-  `[document maya-7f3a · dataset live_context_support_agent_demo]`. With recall set to
-  auto the server picks the dataset, and this mark is the only place the answer can
-  learn which one. Other items say where they came from, e.g. `[agent trace, …]`.
-  Behind the scenes every item is still numbered across the session (`m1`, `m2`…; a
-  memory recalled again keeps its number) before the 9,000-char budget and the
-  injection ledger trim the context; only the ones that survive count as this prompt's.
+- The recall hook marks every injected graph item with the dataset it came from:
+  `[dataset live_context_support_agent_demo]`. With recall set to auto the server
+  picks the dataset, and this mark is the only place the answer can learn which one.
+  An item from a server that names no dataset, and every other item, says where it
+  came from instead, e.g. `[agent trace, …]` or `[code graph]`.
 - On turns where memory was injected, an instruction above it says how many memories
   Cognee found for this prompt and asks the agent to add the credit line only when the
   answer used a tagged item, and never for what it knows from CLAUDE.md, MEMORY.md, the
-  code, or the conversation. The first credit in a session also says in a few words how
-  it connects to the earlier work.
-- The Stop hook reads only the answer's last line and logs a `memory_credit` event to
-  `hook.log`: `available` (how many this turn injected) and `untagged: true` when the
-  answer ends with the credit line. It cannot tell which items the answer used. A line
-  that still cites `[mN]` (an older answer) is checked against the session's tags:
-  cited, valid, invented and `earlier` (valid but not injected on this turn). Nothing
-  is sent anywhere.
-- The tags, the credit state and the final-sync stored count live in the session's
+  code, or the conversation. The count is the items that survive the 9,000-char budget
+  and the injection ledger; when none does, there is no instruction. The first credit
+  in a session also says in a few words how it connects to the earlier work.
+- The recall hook records the turn it injected memory on (`injected_turn` in the
+  session's `credit.json`). The Stop hook reads only the answer's last line and logs a
+  `memory_credit` event to `hook.log`: `injected` (this turn injected memory) and
+  `credited` (the answer ends with the credit line). Only a credit on an injected turn
+  is counted. It cannot tell which items the answer used. Nothing is sent anywhere.
+- The credit state and the final-sync stored count live in the session's
   folder, `~/.cognee-plugin/claude-code/sessions/<session>/`, which the state sweep
   removes after a week idle.
 

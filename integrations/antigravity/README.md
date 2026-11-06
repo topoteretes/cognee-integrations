@@ -159,6 +159,11 @@ restricts recall to the dataset in use, `switch-dataset.py auto` lifts it, and
 `switch-dataset.py --list` shows the mode in effect. `COGNEE_PLUGIN_READ_DATASET_IDS`
 always restricts recall to its datasets. The recall mode applies to recall over
 HTTP; local mode's in-process recall names no dataset either way.
+The status at the top of the injected context reads `cognee: auto (<dataset>) · cloud`
+while recall is auto and `cognee: <dataset> · cloud` once it is pinned. A configured
+non-default `COGNEE_PLUGIN_DATASET` with no recall mode set gets a one-time notice at
+session start (once per machine and dataset) that recall now searches every dataset
+you can read.
 
 ## Verify
 

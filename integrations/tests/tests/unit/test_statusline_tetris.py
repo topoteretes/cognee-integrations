@@ -23,6 +23,8 @@ def sl(suite, statusline, monkeypatch):
     # The developer's terminal may advertise truecolor; tests opt in explicitly.
     monkeypatch.delenv("COLORTERM", raising=False)
     monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "manual")
+    # Pinned, so the dataset reads bare (auto recall shows "auto (manual)").
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
     monkeypatch.setenv("COGNEE_BASE_URL", "https://memory.example.test")
     monkeypatch.setenv("COLUMNS", "80")
     monkeypatch.setattr(statusline, "_unicode_output", lambda: True)
@@ -213,6 +215,8 @@ def test_classic_byte_identical_to_1_6_21(sl, suite, temp_home, counts, url):
         "COGNEE_STATUSLINE_STYLE": "classic",
         "COGNEE_STATUSLINE_COUNTS": counts,
         "COGNEE_BASE_URL": url,
+        # The 1.6.21 line predates auto recall: identical while recall is pinned.
+        "COGNEE_PLUGIN_RECALL_MODE": "pinned",
     }
     payload = json.dumps({"session_id": SESSION})
     old = run_renderer(suite, temp_home, baseline, payload, **env)
@@ -252,3 +256,10 @@ def test_home_without_markers(sl, suite, tmp_path):
     assert result.returncode == 0 and result.stderr == b""
     assert "cognee" in result.stdout.decode()
     assert len(result.stdout.splitlines()) == 1
+
+
+def test_auto_recall_reads_auto_in_both_styles(sl, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "auto")
+    assert "cognee\033[0m auto (manual)" in sl._tetris_line(SESSION)
+    monkeypatch.setenv("COGNEE_STATUSLINE_STYLE", "classic")
+    assert "cognee: auto (manual) · " in plain(sl, sl._classic_line(SESSION))

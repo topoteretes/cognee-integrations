@@ -22,8 +22,9 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   the conversation's dataset. Multi-scope mode, the guidance lane and the code lane keep their
   explicit datasets, and an install with no indexed data still skips prompt recall and
   `memory_search`. `recall()` omits `dataset_ids` when given none.
-- **`recallMode` config option (SDK-1393):** `"auto"` (default) or `"pinned"`, also
-  `COGNEE_PLUGIN_RECALL_MODE`; unknown values mean `auto`. It sets the recall mode for a
+- **`recallMode` config option (SDK-1393):** `"auto"` or `"pinned"`, also
+  `COGNEE_PLUGIN_RECALL_MODE`; unknown values count as not set. The default is `auto` for the
+  default dataset and `pinned` for a configured non-default `datasetName`. It sets the recall mode for a
   conversation that has not chosen one. A conversation's choice wins: `memory_switch_dataset`
   `action: "auto"` lifts `recallMode: "pinned"` for that conversation, and `pin` or a switch
   pins; `reset` returns to the config. Multi-scope mode always recalls from its scopes.
@@ -39,11 +40,15 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 ### Changed
 - **The bundled server runs cognee 1.6.6** (was 1.6.5), and `cognee-docker-compose.yaml` uses
   `cognee/cognee:1.6.6`.
-- **Behaviour change: a configured non-default `datasetName` no longer restricts recall.**
-  With the default `recallMode: "auto"`, an agent configured with its own `datasetName` (or
-  `COGNEE_PLUGIN_DATASET`) still saves there, but recall is routed across every readable
-  dataset. Set `recallMode: "pinned"` to keep recall on that dataset. `datasetName: "auto"`
-  still means the default dataset and says nothing about the recall mode.
+- **A configured non-default `datasetName` keeps recall pinned to it.** With no recall mode
+  set (no `recallMode`, no `COGNEE_PLUGIN_RECALL_MODE`), an agent configured with its own
+  `datasetName` (or `COGNEE_PLUGIN_DATASET`) keeps recalling from that dataset only
+  (`current` reports `reason: "configured_pin"`), as before; the default dataset is `auto`.
+  An explicit recall mode wins, and a conversation's own `pin` / `auto` choice wins over
+  that. Those users get a one-time notice, once per dataset (a trailer on the first reply and
+  a log line, remembered in `~/.openclaw/memory/cognee/recall-notices.json`), that
+  `recallMode: "auto"` lets Cognee pick the best-matching dataset for each prompt.
+  `datasetName: "auto"` still means the default dataset.
 
 ### Fixed
 - **Dataset overrides keep their recall mode across gateway restarts**, and a conversation's

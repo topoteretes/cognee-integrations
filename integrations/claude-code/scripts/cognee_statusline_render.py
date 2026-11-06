@@ -7,6 +7,7 @@ only env vars (``~/.cognee/.env`` included) and the plugin's own state files —
 no network calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+(``auto (<dataset-name>)`` in place of the name while recall is auto)
 """
 
 from __future__ import annotations
@@ -174,6 +175,32 @@ def _active_dataset(session_id: str = "") -> str:
         return v
     # 3. default
     return _DEFAULT_DATASET
+
+
+def _recall_auto(host_id: str = "") -> bool:
+    """Whether graph recall is auto for this launch, from local state only.
+
+    Mirrors ``_plugin_common.recall_mode`` (this renderer does not import it): an
+    explicit read set pins; the launch record's own ``recall_pinned`` wins either
+    way, and a switch on a record written before recall modes existed pins;
+    otherwise ``COGNEE_PLUGIN_RECALL_MODE=pinned`` pins. Anything else is auto.
+    """
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
+        return False
+    rec = _launch_record(str(host_id or ""))
+    if "recall_pinned" in rec:
+        return rec.get("recall_pinned") is not True
+    if rec.get("switched_at"):
+        return False
+    return os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "").strip().lower() != "pinned"
+
+
+def _dataset_label(host_id: str = "", recall_auto: bool = False) -> str:
+    """The dataset as the status shows it: ``auto (<dataset>)`` while recall is
+    auto (the server picks the readable datasets each recall searches, and saves
+    go to ``<dataset>``), else the name, as Claude Code's row does."""
+    dataset = _active_dataset(str(host_id or ""))
+    return f"auto ({dataset})" if recall_auto else dataset
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
@@ -1081,7 +1108,7 @@ def _classic_line(session_id: str) -> str:
     )
     return (
         f"{_status_prefix(session_id)}{items}{_icon()}"
-        f"cognee: {_active_dataset(session_id)} · {_mode_label()}"
+        f"cognee: {_dataset_label(session_id, _recall_auto(session_id))} · {_mode_label()}"
         f"{_credits_segment()}{_recall_segment(session_id)}{_activity_segment(session_id)}"
         f"{_update_segment()}"
     )
@@ -1186,7 +1213,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
         lead, health = health.rstrip() + " ", ""
     else:
         lead = f"{_DIM}○{_RESET} "
-    dataset = _clean_label(_active_dataset(session_id))
+    dataset = _clean_label(_dataset_label(session_id, _recall_auto(session_id)))
     badge = f"{lead}{purple}\033[1mcognee{_RESET}"
     brand = f"{badge} {dataset} · {purple}\033[1m{_active_mode()}{_RESET}"
     core = health + brand

@@ -11,8 +11,12 @@ from . import catalog, code_graph, recap, runtime_env, update_check
 from .config import (
     DEFAULT_LOCAL_PORT,
     LOCAL_COGNEE_REQUIREMENT,
+    RECALL_MODE_PINNED,
     config_path,
+    configured_dataset_name,
+    effective_recall_mode,
     load_config,
+    recall_mode_is_set,
     resolve_local_roots,
 )
 
@@ -83,6 +87,7 @@ def _print_status(args) -> None:
     print(f"  Plugin version:  {plugin_version or '(unknown)'}")
     print(f"  Mode:            {'remote' if cfg.get('service_url') else 'local'}")
     print(f"  Dataset:         {cfg.get('dataset')}")
+    print(f"  Recall:          {_recall_status(cfg)}")
     print(f"  Config:          {path or '(unknown)'}")
     print(f"  Service URL:     {cfg.get('service_url') or '(none)'}")
     print(f"  LLM key:         {'set' if cfg.get('llm_api_key') else 'missing'}")
@@ -105,6 +110,17 @@ def _print_status(args) -> None:
         if hint:
             print(f"  Update:          {hint}")
     print()
+
+
+def _recall_status(cfg) -> str:
+    """The configured recall mode in effect, and why when no mode is set."""
+    mode = effective_recall_mode(cfg)
+    if recall_mode_is_set(cfg) or mode != RECALL_MODE_PINNED:
+        return mode
+    return (
+        f"pinned to {configured_dataset_name(cfg.get('dataset'))} (the configured dataset, no "
+        "recall mode set; `recall_mode: auto` in cognee.json lets Cognee pick)"
+    )
 
 
 def _print_version(args) -> None:
@@ -433,7 +449,29 @@ def _runtime_status() -> str:
     return "not installed (local mode: hermes cognee install-runtime)"
 
 
+def _confirm(question: str) -> bool:
+    """A yes/no question answered at the terminal; blank is yes, no answer is no."""
+    try:
+        answer = input(f"{question} (y/n) [y]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in {"", "y", "yes"}
+
+
 def _install_runtime(args) -> int:
+    # Say what will be stopped before stopping it: the server is shared, and
+    # another cognee plugin may be using it right now.
+    servers = runtime_env.servers_to_stop()
+    if servers and not getattr(args, "yes", False):
+        print(runtime_env.stop_notice(servers))
+        if not sys.stdin.isatty():
+            print("Nothing was stopped or installed. Re-run with --yes to go ahead.")
+            return 1
+        if not _confirm("Continue?"):
+            print("Nothing was stopped or installed.")
+            return 1
+    elif servers:
+        print(runtime_env.stop_notice(servers))
     try:
         runtime_env.install_runtime()
     except runtime_env.RuntimeInstallError as exc:
@@ -493,9 +531,22 @@ def register_cli(subparser) -> None:
     subs.add_parser("setup", help="Run Hermes memory setup for Cognee")
     subs.add_parser("config", help="Print Cognee plugin config with secrets redacted")
     subs.add_parser("install", help="Print installation commands")
-    subs.add_parser(
+    install_runtime = subs.add_parser(
         "install-runtime",
         help="Install the private cognee environment local mode runs its server from",
+        description=(
+            "Install or upgrade the private cognee environment local mode runs its server "
+            "from. A local cognee server this plugin started is stopped first (SIGTERM, "
+            "never SIGKILL), after asking; other cognee plugins using it restart it on their "
+            "next request. If a cognee server still answers on the local port, nothing is "
+            "changed and the command says which process to stop."
+        ),
+    )
+    install_runtime.add_argument(
+        "--yes",
+        action="store_true",
+        help="Stop a running local server this plugin started without asking (needed "
+        "without a terminal)",
     )
     subs.add_parser("remove-runtime", help="Delete the private cognee environment")
     version = subs.add_parser("version", help="Show plugin version and update availability")

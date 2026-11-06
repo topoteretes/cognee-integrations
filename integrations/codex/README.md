@@ -337,7 +337,9 @@ python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # let the s
 in: `auto` (the default) or `pinned` (recall restricted to the session's dataset, reason
 `configured_pin`). Any other value means `auto`. `COGNEE_PLUGIN_DATASET` only names the dataset:
 it no longer restricts recall, so set `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on a
-configured dataset.
+configured dataset. Session start says so once per machine and dataset, in the message you see,
+when a non-default `COGNEE_PLUGIN_DATASET` is configured, `COGNEE_PLUGIN_RECALL_MODE` was never
+set and the session has not pinned recall itself.
 
 The choice made in a session is stored in the launch record (`recall_pinned`) and wins over the
 configured mode for that session: `auto` gives auto recall even under `pinned`, and `pin` or a
@@ -550,24 +552,21 @@ transcript (`Codex Desktop` for the app), read once per session.
 How it works:
 
 - The recall hook marks every injected item with where it came from: a graph item with
-  its document, when it names one, and the dataset the server says it came from,
-  `[document <name> · dataset <name>]` (under auto recall the server picks the dataset,
-  and the mark is the only place the answer learns which one); anything else with its
-  origin, such as `[agent trace, …]` or `[earlier session turn, <date>]`. Behind the
-  scenes each item is still numbered across the session (`m1`, `m2`…; a memory recalled
-  again keeps its number: an earlier turn or trace by its server id, anything else by its
-  text), so the hook knows which items each turn injected.
+  the dataset the server says it came from, `[dataset <name>]` (under auto recall the
+  server picks the dataset, and the mark is the only place the answer learns which one);
+  a graph item from a server that names no dataset, and anything else, with its origin,
+  such as `[agent trace, …]` or `[earlier session turn, <date>]`.
 - On turns where memory was injected, an instruction above it says how many memories
-  Cognee found for this prompt and asks the agent to add the credit only when the answer
-  used a marked item, naming its document and dataset, and never for what it knows from
-  AGENTS.md, the code, or the conversation. The first credit in a session also says in a
-  few words how it connects to the earlier work.
-- The Stop hook reads only the credit at the end of the answer and logs a
-  `memory_credit` event to `hook.log`: `untagged` when the answer ends with the credit,
-  and `available` (how many items this turn injected). An older line that cites `[mN]`
-  tags is still checked against the session's (cited, valid, invented, `earlier`).
-  Nothing is sent anywhere.
-- The tags, the credit state and the final-sync stored count live in the session's
+  Cognee found for this prompt (the marked items in the context) and asks the agent to
+  add the credit only when the answer used a marked item, naming its dataset, and never
+  for what it knows from AGENTS.md, the code, or the conversation. The first credit in a
+  session also says in a few words how it connects to the earlier work.
+- The recall hook records the turn it injected memory on (`injected_turn` in the
+  session's `credit.json`). The Stop hook reads only the credit at the end of the answer
+  and logs a `memory_credit` event to `hook.log`: `injected` (this turn injected memory)
+  and `credited` (the answer ends with the credit). Only a credit on an injected turn is
+  counted. Nothing is sent anywhere.
+- The credit state and the final-sync stored count live in the session's
   folder, `~/.cognee-plugin/codex/sessions/<session>/`, which the state sweep removes
   after a week idle.
 - A turn where recall found nothing injects no memory header into the agent's context;

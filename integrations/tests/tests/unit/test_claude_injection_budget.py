@@ -327,70 +327,59 @@ def test_graph_sections_render_shared_headings_once(lookup):
     assert text.index("Global retrieval context") < text.index("## Relevant passages")
 
 
-def _tagged_sections(lookup):
+def _marked_sections(lookup, budget_chars=9000):
     from types import SimpleNamespace
 
-    tags = lookup.MemoryTags()
-    labels = {}
+    keys = []
     entries = [
         {
             "dataset_name": "live_context_support_agent_demo",
             "text": "## Relevant passages\nsource: maya-7f3a-f50bfe3707aae01a3d822a46fb5e87ad\n"
             "Maya ordered EU 39.\n---\nsource: text_a345aa1f23888b8ad9d6408014c1ac04\nUnnamed note."
-            "\n---\nsource: text_5370d45d65cafed008ce7494da0490fe (2026-11-04)\nDated note."
             "\n\n## Related facts\nMaya is a customer.",
         },
         {
-            "dataset_name": "alice_in_wonderland",
-            "text": "## Relevant passages\nAlice follows the White Rabbit.",
+            "dataset_name": "live_context_support_agent_demo",
+            "text": "## Related facts\nThe order shipped.",
         },
         # An older server names no dataset: the item says where it came from.
         {"text": "## Relevant passages\nsource: notes-2f1c\nRelease checklist."},
     ]
-    sections = lookup._injection_sections({"graph_context": entries}, tags, labels)
-    text, _ = budget.fit_sections(sections, 9000)
-    return SimpleNamespace(text=text, tags=tags, labels=labels)
+    sections = lookup._injection_sections({"graph_context": entries}, True, keys)
+    text, _ = budget.fit_sections(sections, budget_chars)
+    return SimpleNamespace(text=text, keys=keys)
 
 
-def test_tags_name_document_and_dataset_without_a_number(lookup):
-    # Items are marked with their document, when named, and the dataset the
-    # server says they came from (SDK-1393); no mN.
-    out = _tagged_sections(lookup)
-    assert (
-        "[document maya-7f3a · dataset live_context_support_agent_demo]\nsource: maya-7f3a"
-        in out.text
-    )
-    # Unnamed text, dated or not, and a book chunk name no document.
-    assert "[dataset live_context_support_agent_demo]\nsource: text_a345" in out.text
-    assert "[dataset live_context_support_agent_demo]\nsource: text_5370" in out.text
-    assert "[dataset alice_in_wonderland]\nAlice follows" in out.text
-    assert "## Related facts [dataset live_context_support_agent_demo]" in out.text
-    assert "[document notes-2f1c]\nsource: notes-2f1c" in out.text
+def test_marks_name_the_dataset_only(lookup):
+    # Items are marked with the dataset the server says they came from (SDK-1393),
+    # never with a document, and carry no mN.
+    out = _marked_sections(lookup)
+    ds = "[dataset live_context_support_agent_demo]"
+    assert f"{ds}\nsource: maya-7f3a" in out.text
+    assert f"{ds}\nsource: text_a345" in out.text
+    assert f"## Related facts {ds}\nMaya is a customer." in out.text
+    # A later block from the same dataset carries the mark on its first entry.
+    assert f"{ds}\nThe order shipped." in out.text
+    assert "[document]\nsource: notes-2f1c" in out.text
+    assert "document maya" not in out.text and "· dataset" not in out.text
     assert "[m" not in out.text
-    # Every item is still numbered behind the scenes, each known apart.
-    assert sorted(set(out.labels.values())) == ["m1", "m2", "m3", "m4", "m5", "m6"]
+    # One key per item, each the exact text the item opens with.
+    assert len(out.keys) == 5
+    assert all(key in out.text for key in out.keys)
 
 
-def test_instruction_asks_for_the_untagged_line(lookup):
-    text = lookup.credit_instruction(False, 2)
-    assert (
-        "> Cognee memory: <what you remembered>, from <document> in the <dataset> dataset" in text
+def test_without_marks_nothing_is_collected(lookup):
+    keys = []
+    sections = lookup._injection_sections(
+        {"graph_context": [{"dataset_name": "d", "text": "## Related facts\n- x"}]}, False, keys
     )
-    assert "[mN]" not in text and "🧠" not in text
+    text, _ = budget.fit_sections(sections, 9000)
+    assert keys == [] and "[dataset" not in text
 
 
-def test_an_untagged_credit_line_counts_as_a_credit(lookup, tmp_path):
-    import sys
-
-    rt = sys.modules[lookup.MemoryTags.__module__]
-    tags = rt.MemoryTags()
-    tags.add("passage", "document, dataset d", "Maya ordered EU 39.")
-    answer = "Maya kept EU 40.\n\n> Cognee memory: her orders, in the d dataset"
-    result = rt.check_credits(answer, tags)
-    assert result["untagged"] and not result["invented"]
-    # An older answer's brain still counts; a mention mid-answer does not.
-    assert rt.check_credits("ok\n> 🧠 Cognee memory: her orders", tags)["untagged"]
-    assert "untagged" not in rt.check_credits("> Cognee memory: x\n\nMore text.", tags)
-    rt.record_credit(tmp_path, "s1", result)
-    assert rt.has_credited(tmp_path, "s1")
-    assert "untagged" not in rt.check_credits("No memory here.", tags)
+def test_instruction_asks_for_the_dataset_line(lookup):
+    text = lookup.credit_instruction(False, 2)
+    assert "Cognee found 2 memories for this prompt" in text
+    assert "as [dataset <name>]" in text
+    assert "> Cognee memory: <what you remembered>, from the <dataset> dataset" in text
+    assert "<document>" not in text and "[mN]" not in text and "🧠" not in text

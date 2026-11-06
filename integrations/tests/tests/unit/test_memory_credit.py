@@ -1,32 +1,25 @@
 """Crediting Cognee memory in the answer (SDK-1071).
 
-The recall hook tags every injected item (``m1``, ``m2``…) with where it came
-from and asks the agent to end an answer that used memory with one
-``🧠 Cognee memory [mN]: …`` line. Tags are numbered across the session and a
-memory recalled again keeps its tag, and the Stop hook checks the answer's
-credit line against the session's tags: valid credits and invented ones are
-both logged, which is how we measure whether agents credit memory reliably.
+The recall hook marks every injected item with where it came from and asks the
+agent to end an answer that used memory with one credit line (its form differs
+per host). The recall hook records the turn it injected memory on, and the Stop
+hook counts a credit when the answer on that turn ends with the credit line.
 
 Contract:
-  * graph memory is tagged per passage, plus one tag each for entities and
-    facts; a passage's label names the agent session or document it came from;
-  * a memory recalled again in the session keeps its tag: an evidence item by
-    its citation, an earlier turn or trace by its server id, anything else by
-    its text;
-  * where the host trims memory to a size budget or skips what is already in
-    context, only the tags that reach the context count as this prompt's;
-  * the instruction rides only on turns that injected something, says how many
-    memories this prompt found, and keeps the longer first-credit wording until
-    an answer has credited memory once;
-  * only the credit line counts: ``arr[m1]`` in code is not a citation;
-  * every prompt starts a new turn before recall can return early, so a cited
-    tag from an earlier turn is logged as ``earlier``, never as this turn's;
-  * an empty recall carries no instruction and no tags;
+  * a graph item is marked with the dataset the server says it came from,
+    ``[dataset <name>]``, and never with a document (SDK-1393); an item with no
+    dataset (an older server, or another source) keeps its origin mark;
+  * graph memory is marked per passage, plus one mark each for its entities
+    and facts blocks;
+  * the instruction says how many memories this prompt found: the items whose
+    opening text reaches the context, after any budget and dedupe; with none,
+    there is no instruction;
+  * it keeps the longer first-credit wording until an answer has credited
+    memory once;
+  * every prompt starts a new turn before recall can return early, so a credit
+    on a turn that injected nothing is logged, never counted;
   * ``COGNEE_PLUGIN_CITE_MEMORY=off`` turns all of it off, and Codex starts
     with it off.
-
-``_recall_text``'s credit section is the same in every suite; the hook tests run
-for the suites whose recall hook uses it (claude-code and codex).
 """
 
 from __future__ import annotations
@@ -53,6 +46,29 @@ CONTEXT = (
     + "\n## Related facts\n- the plugin prefers the server."
 )
 HIT = {"graph": [{"source": "graph", "text": CONTEXT}]}
+NAMED = "source: maya-7f3a-f50bfe3707aae01a3d822a46fb5e87ad\nMaya ordered EU 39."
+
+
+def _graph(dataset: str, text: str) -> dict:
+    return {"source": "graph", "dataset_name": dataset, "text": text}
+
+
+#: Two results from one dataset: a passage, entities and facts, then entities
+#: and facts again. Five items, four of them blocks with the same mark.
+TWO_RESULTS = {
+    "graph": [
+        _graph(
+            "ds1",
+            f"## Relevant passages\n{NAMED}\n\n## Relevant entities\n### maya\n- Maya is a "
+            "customer.\n\n## Related facts\n- Maya ordered shoes.",
+        ),
+        _graph(
+            "ds1",
+            "## Relevant entities\n### order\n- the order shipped.\n\n"
+            "## Related facts\n- the order was returned.",
+        ),
+    ]
+}
 
 
 @pytest.fixture
@@ -60,75 +76,53 @@ def rt(suite, isolated_modules):
     return isolated_modules(suite, "_recall_text")
 
 
-# ── tagging ────────────────────────────────────────────────────────────────
+def _noun(n: int) -> str:
+    return "1 memory" if n == 1 else f"{n} memories"
 
 
-def _mark(suite, tag: str, origin: str) -> str:
-    """How ``_recall_text`` marks an item: Codex names where it came from only
-    (SDK-1393), the tag staying bookkeeping; the other suites show the tag."""
-    return f"[{origin}]" if suite.name == "codex" else f"[{tag} · {origin}]"
+# ── marks ──────────────────────────────────────────────────────────────────
 
 
-def test_graph_memory_is_tagged_per_passage_with_its_origin(suite, rt):
-    tags = rt.MemoryTags()
-    text = tags.tag_graph(CONTEXT)
-    assert f"{_mark(suite, 'm1', 'Codex session')}\n{PASSAGE_CODEX}" in text
-    learning = _mark(suite, "m2", "Claude Code session learning, 2026-10-03")
-    assert f"{learning}\n{PASSAGE_LEARNING}" in text
-    assert f"{_mark(suite, 'm3', 'document')}\n{PASSAGE_DOC}" in text
-    entities = _mark(suite, "m4", "knowledge graph entities")
-    assert f"## Relevant entities {entities}\n### server" in text
-    facts = _mark(suite, "m5", "knowledge graph facts")
-    assert f"## Related facts {facts}\n- the plugin prefers" in text
-    assert [r["tag"] for r in tags.records] == ["m1", "m2", "m3", "m4", "m5"]
-    assert tags.records[0]["snippet"].startswith("Session ID: codex_")
+def test_item_mark_names_the_dataset_or_the_origin(rt):
+    assert rt.item_mark("document", "ds1") == "[dataset ds1]"
+    assert rt.item_mark("agent trace, recall") == "[agent trace, recall]"
+    assert rt.item_mark("") == ""
 
 
-def test_a_memory_recalled_again_keeps_its_tag(suite, rt, tmp_path):
-    first = rt.MemoryTags()
-    first.tag_graph(CONTEXT)
-    first.save(tmp_path, SESSION_KEY)
-    rt.begin_turn(tmp_path, SESSION_KEY)
-
-    again = rt.MemoryTags.load(tmp_path, SESSION_KEY)
-    new = "Session ID: codex_new\n\nQuestion: tabs?\n\nAnswer: spaces."
-    text = again.tag_graph("## Relevant passages\n" + "\n---\n".join([PASSAGE_DOC, new]))
-    assert _mark(suite, "m3", "document") in text  # seen last turn
-    assert _mark(suite, "m6", "Codex session") in text  # new: the next number
-    assert again.found == ["m3", "m6"]
+@pytest.fixture
+def marker(suite, rt):
+    if not hasattr(rt, "mark_graph"):
+        pytest.skip(f"{suite.name}: graph memory is marked in the recall hook")
+    return rt
 
 
-def test_a_server_id_identifies_a_memory_whatever_its_text(suite, rt):
-    tags = rt.MemoryTags()
-    assert tags.label("session", "earlier session turn", "Q: a\nA: b", "qa-1") == (
-        _mark(suite, "m1", "earlier session turn")
-    )
-    assert tags.add("session", "earlier session turn", "Q: a\nA: b, edited", "qa-1") == "m1"
-    assert tags.add("session", "earlier session turn", "Q: a\nA: b, edited") == "m2"
+def test_graph_memory_is_marked_with_its_dataset(marker):
+    keys: list = []
+    named = "## Relevant passages\n" + "\n---\n".join([NAMED, PASSAGE_CODEX])
+    text = marker.mark_graph(named + "\n\n## Related facts\n- x", "alice", keys)
+    assert f"[dataset alice]\n{NAMED}" in text
+    assert f"[dataset alice]\n{PASSAGE_CODEX}" in text
+    assert "## Related facts [dataset alice]\n- x" in text
+    assert "document" not in text and "[m1" not in text
+    assert len(keys) == 3 and all(key in text for key in keys)
 
 
-def test_unsectioned_context_is_one_item(suite, rt):
-    tags = rt.MemoryTags()
-    assert tags.tag_graph("bare context") == f"{_mark(suite, 'm1', 'Cognee memory')}\nbare context"
-    assert tags.tag_graph("  ") == "  "
-    assert len(tags.records) == 1
+def test_graph_memory_without_a_dataset_keeps_its_origin(marker):
+    keys: list = []
+    text = marker.mark_graph(CONTEXT, "", keys)
+    assert f"[Codex session]\n{PASSAGE_CODEX}" in text
+    assert f"[Claude Code session learning, 2026-10-03]\n{PASSAGE_LEARNING}" in text
+    assert f"[document]\n{PASSAGE_DOC}" in text
+    assert "## Relevant entities [knowledge graph entities]\n### server" in text
+    assert "## Related facts [knowledge graph facts]\n- the plugin prefers" in text
+    assert len(keys) == 5
 
 
-def test_codex_marks_graph_memory_with_its_document_and_dataset(suite, rt):
-    if suite.name != "codex":
-        pytest.skip("Codex marks graph memory with its document and dataset in _recall_text")
-    named = "source: alice-" + "a" * 32 + "\nAlice followed the White Rabbit."
-    unnamed = "source: text_" + "b" * 32 + " (2026-11-04)\nThe Rabbit was late."
-    tags = rt.MemoryTags()
-    text = tags.tag_graph(
-        "## Relevant passages\n" + "\n---\n".join([named, unnamed]) + "\n\n## Related facts\n- x",
-        "alice_in_wonderland",
-    )
-    assert f"[document alice · dataset alice_in_wonderland]\n{named}" in text
-    assert f"[dataset alice_in_wonderland]\n{unnamed}" in text
-    assert "## Related facts [dataset alice_in_wonderland]\n- x" in text
-    assert "[m1" not in text
-    assert tags.records[0]["origin"] == "document, dataset alice_in_wonderland"
+def test_unsectioned_context_is_one_item(marker):
+    keys: list = []
+    assert marker.mark_graph("bare context", "", keys) == "[Cognee memory]\nbare context"
+    assert marker.mark_graph("  ", "", keys) == "  "
+    assert keys == ["[Cognee memory]\nbare context"]
 
 
 def test_codex_instruction_asks_for_the_braille_credit(suite, rt):
@@ -136,12 +130,11 @@ def test_codex_instruction_asks_for_the_braille_credit(suite, rt):
         pytest.skip("only Codex asks the agent to write the braille logotype")
     text = rt.credit_instruction(first_in_session=False, found=2)
     upper, lower = rt.CREDIT_LOGOTYPE
-    credit = (
-        f"> `{upper}`  <what you remembered>,\n"
-        f"> `{lower}`  from <document> in the <dataset> dataset"
-    )
+    credit = f"> `{upper}`  <what you remembered>,\n> `{lower}`  from the <dataset> dataset"
     assert credit in text
-    assert "[mN]" not in text and "\U0001f9e0" not in text
+    assert "Cognee found 2 memories for this prompt" in text
+    assert "as [dataset <name>]" in text
+    assert "<document>" not in text and "[mN]" not in text and "\U0001f9e0" not in text
 
 
 def test_codex_chatgpt_app_credit_opens_with_the_katex_icon(suite, rt):
@@ -150,9 +143,8 @@ def test_codex_chatgpt_app_credit_opens_with_the_katex_icon(suite, rt):
     text = rt.credit_instruction(first_in_session=False, found=2, chatgpt_app=True)
     # One line, which the app wraps where it needs to: the icon, two em spaces,
     # then what and where from.
-    one_line = (
-        f"> {rt.KATEX_ICON}  <what you remembered>, from <document> in the <dataset> dataset\n"
-    )
+    icon = f"> {rt.KATEX_ICON}{rt.ICON_PADDING}"
+    one_line = f"{icon}<what you remembered>, from the <dataset> dataset\n"
     assert one_line in text
     assert "\\\n" not in text  # no hard break
     assert rt.CREDIT_LOGOTYPE[0] not in text and "\U0001f9e0" not in text
@@ -199,15 +191,14 @@ def test_codex_reads_the_client_from_the_transcript(suite, rt, tmp_path, monkeyp
 
 
 @pytest.mark.parametrize(
-    ("ending", "untagged"),
+    ("ending", "credited"),
     [
         (
-            "> `⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  Alice chased the Rabbit,\n"
-            "> `⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉`  from alice in the a dataset",
+            "> `⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  Alice chased the Rabbit,\n> `⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉`  from the a dataset",
             True,
         ),
         (
-            "> ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯  Alice chased the Rabbit,\n> ⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉  from alice in the a dataset",
+            "> ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯  Alice chased the Rabbit,\n> ⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉  from the a dataset",
             True,
         ),
         ("> Cognee memory: Alice chased the Rabbit, from the a dataset", True),
@@ -218,69 +209,68 @@ def test_codex_reads_the_client_from_the_transcript(suite, rt, tmp_path, monkeyp
         ("The logo ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯ in passing.\nNothing else.", False),
     ],
 )
-def test_codex_counts_the_untagged_credit(suite, rt, ending, untagged):
+def test_codex_counts_the_credit(suite, rt, ending, credited):
     if suite.name != "codex":
-        pytest.skip("Codex counts the untagged credit")
-    result = rt.check_credits(f"Alice is curious.\n\n{ending}", _session_tags(rt))
-    assert bool(result.get("untagged")) is untagged
-    assert result["cited"] == []
-
-
-def _session_tags(rt, this_turn=("m1", "m2"), earlier=("m3",)):
-    """Tags of a session on turn 2: ``this_turn`` injected now, ``earlier`` on turn 1."""
-    records = [{"tag": t, "id": t, "turn": 2} for t in this_turn]
-    records += [{"tag": t, "id": t, "turn": 1} for t in earlier]
-    return rt.MemoryTags({"turn": 2, "tags": records})
-
-
-@pytest.mark.parametrize(
-    ("answer", "valid", "invented", "earlier"),
-    [
-        ("done.\n> 🧠 Cognee memory [m2]: you chose the server.", ["m2"], [], []),
-        ("> 🧠 Cognee memory [m1, m3]: …", ["m1", "m3"], [], ["m3"]),
-        ("> 🧠 Cognee memory [m9]: made up", [], ["m9"], []),
-        ("Cognee memory [m1] and again Cognee memory [m1]", ["m1"], [], []),
-        ("no credit here [x1] [m]", [], [], []),
-        # Not a credit line: code, and the instruction's own example quoted back.
-        ("use `arr[m1]`; cite several tags as [m1, m3]", [], [], []),
-    ],
-)
-def test_check_credits(suite, rt, answer, valid, invented, earlier):
-    if suite.name == "cursor":
-        pytest.skip("cursor: the credit line carries the logo, not tags")
-    result = rt.check_credits(answer, _session_tags(rt))
-    assert (result["valid"], result["invented"], result["earlier"]) == (valid, invented, earlier)
-    assert result["available"] == 2
-
-
-def test_credit_state_round_trip(suite, rt, tmp_path):
-    if suite.name == "cursor":
-        pytest.skip("cursor: covered by test_cursor_credit_state_round_trip")
-    assert not rt.has_credited(tmp_path, SESSION_KEY)
-    rt.record_credit(tmp_path, SESSION_KEY, {"valid": []})
-    assert not rt.has_credited(tmp_path, SESSION_KEY)  # an invented-only turn doesn't count
-    rt.record_credit(tmp_path, SESSION_KEY, {"valid": ["m1"]})
-    assert rt.has_credited(tmp_path, SESSION_KEY)
-    assert (tmp_path / "sessions" / SESSION_KEY / "credit.json").is_file()
+        pytest.skip("Codex credits with the braille logotype")
+    result = rt.check_credits(f"Alice is curious.\n\n{ending}", True)
+    assert result["credited"] is credited and result["injected"] is True
 
 
 @pytest.mark.parametrize(
     ("answer", "credited"),
     [
-        ("done.\n> [\u200b](https://www.cognee.ai) On Oct 3 you chose the server.", True),
+        ("done.\n> Cognee memory: you chose the server, from the ds1 dataset", True),
+        ("ok\n> \U0001f9e0 Cognee memory: her orders", True),  # an older answer's brain
+        ("> Cognee memory: x\n\nMore text.", False),  # not the last line
+        ("No memory here.", False),
+        ("use `arr[m1]`; cite several tags as [m1, m3]", False),
+    ],
+)
+def test_check_credits(suite, rt, answer, credited):
+    if suite.name == "cursor":
+        pytest.skip("cursor: the credit line carries the logo")
+    assert rt.check_credits(answer, True) == {"injected": True, "credited": credited}
+    assert rt.check_credits(answer, False) == {"injected": False, "credited": credited}
+
+
+def test_credit_state_round_trip(rt, tmp_path):
+    assert not rt.has_credited(tmp_path, SESSION_KEY)
+    rt.record_credit(tmp_path, SESSION_KEY, {"injected": True, "credited": False})
+    assert not rt.has_credited(tmp_path, SESSION_KEY)
+    # A credit on a turn that injected nothing is not counted.
+    rt.record_credit(tmp_path, SESSION_KEY, {"injected": False, "credited": True})
+    assert not rt.has_credited(tmp_path, SESSION_KEY)
+    rt.record_credit(tmp_path, SESSION_KEY, {"injected": True, "credited": True})
+    assert rt.has_credited(tmp_path, SESSION_KEY)
+    assert (tmp_path / "sessions" / SESSION_KEY / "credit.json").is_file()
+
+
+def test_an_injected_turn_lasts_until_the_next_prompt(rt, tmp_path):
+    assert not rt.injected_this_turn(tmp_path, SESSION_KEY)
+    rt.begin_turn(tmp_path, SESSION_KEY)
+    assert not rt.injected_this_turn(tmp_path, SESSION_KEY)
+    rt.mark_injected(tmp_path, SESSION_KEY)
+    assert rt.injected_this_turn(tmp_path, SESSION_KEY)
+    rt.begin_turn(tmp_path, SESSION_KEY)
+    assert not rt.injected_this_turn(tmp_path, SESSION_KEY)
+
+
+@pytest.mark.parametrize(
+    ("answer", "credited"),
+    [
+        ("done.\n> [​](https://www.cognee.ai) On Oct 3 you chose the server.", True),
         ("> [](https://cognee.ai/) you chose the server.", True),  # zero-width space dropped
-        ("  >  [\u200b](https://www.cognee.ai) indented quote", True),
+        ("  >  [​](https://www.cognee.ai) indented quote", True),
         ("a plain answer", False),
-        ("> [\u200b](https://www.cognee.ai)", False),  # the logo with nothing after it
-        ("see [\u200b](https://www.cognee.ai) inline", False),  # not a quoted credit line
+        ("> [​](https://www.cognee.ai)", False),  # the logo with nothing after it
+        ("see [​](https://www.cognee.ai) inline", False),  # not a quoted credit line
         ("> [Cognee](https://www.cognee.ai) docs", False),
     ],
 )
 def test_cursor_check_credits(suite, rt, answer, credited):
     if suite.name != "cursor":
         pytest.skip("only cursor credits with the logo alone")
-    result = rt.check_credits(answer, _session_tags(rt))
-    assert result == {"credited": credited, "available": 2, "known": 3}
+    assert rt.check_credits(answer, True) == {"injected": True, "credited": credited}
 
 
 def test_cursor_instruction_asks_for_the_logo_alone(suite, rt):
@@ -288,7 +278,8 @@ def test_cursor_instruction_asks_for_the_logo_alone(suite, rt):
         pytest.skip("only cursor credits with the logo alone")
     text = rt.credit_instruction(first_in_session=False, found=2, dataset="agent_sessions")
     assert f"> {rt.LOGOTYPE} <what you remembered>, based on the agent_sessions dataset." in text
-    assert "Cognee memory [mN]" not in text and "[m1, m3]" not in text
+    assert "as [dataset <name>]" in text
+    assert "[mN" not in text and "[m1, m3]" not in text
 
 
 @pytest.mark.parametrize(
@@ -306,17 +297,6 @@ def test_cursor_credit_names_the_dataset(suite, rt, dataset, source):
     assert rt.credit_source(dataset) == source
     assert f"based on {source}." in rt.search_credit_header(True, dataset)
     assert f"Saved to {source}:" in rt.save_receipt_header(True, dataset)
-
-
-def test_cursor_credit_state_round_trip(suite, rt, tmp_path):
-    if suite.name != "cursor":
-        pytest.skip("only cursor credits with the logo alone")
-    rt.record_credit(tmp_path, SESSION_KEY, {"credited": True, "known": 0})
-    assert not rt.has_credited(tmp_path, SESSION_KEY)  # nothing was ever handed out
-    rt.record_credit(tmp_path, SESSION_KEY, {"credited": False, "known": 3})
-    assert not rt.has_credited(tmp_path, SESSION_KEY)
-    rt.record_credit(tmp_path, SESSION_KEY, {"credited": True, "known": 3})
-    assert rt.has_credited(tmp_path, SESSION_KEY)
 
 
 CURSOR_INSTRUCTION_KW = {"first_in_session": True, "found": 7}
@@ -377,7 +357,7 @@ def test_cursor_save_receipt_is_not_a_memory_credit(suite, rt):
     if suite.name != "cursor":
         pytest.skip("only cursor ends a save with a receipt")
     receipt = f"Saved.\n> {rt.LOGOTYPE} Saved to the agent_sessions dataset: Yuna likes Yukki."
-    assert rt.check_credits(receipt, _session_tags(rt))["credited"] is False
+    assert rt.check_credits(receipt, True)["credited"] is False
 
 
 def test_cursor_strip_credit_cuts_receipts_headers_and_the_off_note(suite, rt):
@@ -427,12 +407,10 @@ def test_cursor_strip_credit_deep(suite, rt):
 @pytest.mark.parametrize("key", ["../escape", "..", "", "a/b"])
 def test_unsafe_session_keys_write_nothing(rt, tmp_path, key):
     state = tmp_path / "state"
-    tags = rt.MemoryTags()
-    tags.add("memory", "Cognee memory", "x")
-    tags.save(state, key)
     rt.begin_turn(state, key)
-    # Both shapes: tags (claude-code, codex) and the logo alone (cursor).
-    rt.record_credit(state, key, {"valid": ["m1"], "credited": True, "known": 1})
+    rt.mark_injected(state, key)
+    rt.record_credit(state, key, {"injected": True, "credited": True})
+    assert not rt.injected_this_turn(state, key)
     assert not any(tmp_path.rglob("*.json"))
 
 
@@ -458,128 +436,116 @@ def _state_dir(lookup):
     return lookup._plugin_common._PLUGIN_DIR
 
 
-def _saved(rt, lookup):
-    return rt.MemoryTags.load(_state_dir(lookup), SESSION_KEY)
+def _injected(rt, lookup) -> bool:
+    return rt.injected_this_turn(_state_dir(lookup), SESSION_KEY)
 
 
-#: The credit line the instruction asks for: Claude Code's names no tag and no
-#: brain (SDK-1393), Codex's cites ``[mN]``.
-CREDIT_LINE_RE = (
-    r"> (?:(?:\U0001f9e0 )?Cognee memory(?: \[mN\])?:|`⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what you remembered>,)"
-)
+#: The credit line the instruction asks for: Claude Code's "> Cognee memory:",
+#: Codex's braille rows.
+CREDIT_LINE_RE = r"> (?:Cognee memory:|`⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what you remembered>,)"
 
 
-def _tag_of(ctx: str, origin: str) -> str:
-    """The tag ``ctx`` shows for the item labelled ``origin``; ``""`` on a host
-    that marks items with where they came from only (Claude Code)."""
-    match = re.search(rf"\[(?:(m\d+) · )?{re.escape(origin)}\]", ctx)
-    assert match, f"no [{origin}] in context"
-    return match.group(1) or ""
-
-
-def _assert_counted_as_shown(ctx: str, tags) -> None:
-    """Exactly the tags visible in the context count as this turn's, and the
-    instruction states that number. Unnumbered marks (Claude Code) are not
-    matched up one by one; the count still is."""
-    shown = {r["tag"] for r in tags.records if r.get("turn") == tags.turn}
-    visible = {t for t in re.findall(r"\[(m\d+) · ", ctx)}
-    if visible or "[m" not in ctx and not shown:
-        assert shown == visible
-    else:
-        assert shown
-    if "Crediting Cognee memory" in ctx:  # a tiny size budget can leave it out
-        noun = "1 memory" if len(shown) == 1 else f"{len(shown)} memories"
-        assert f"Cognee found {noun} for this prompt" in ctx
-
-
-def test_hit_is_tagged_and_carries_the_first_credit_instruction(lookup, monkeypatch, rt):
+def test_hit_is_marked_and_carries_the_first_credit_instruction(lookup, monkeypatch, rt):
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    _tag_of(ctx, "Codex session")
-    _tag_of(ctx, "Claude Code session learning, 2026-10-03")
-    _tag_of(ctx, "knowledge graph entities")
+    # No dataset from the server: every item keeps its origin.
+    assert f"[Codex session]\n{PASSAGE_CODEX}" in ctx
+    assert f"[Claude Code session learning, 2026-10-03]\n{PASSAGE_LEARNING}" in ctx
+    assert "## Relevant entities [knowledge graph entities]" in ctx
     assert "Cognee found 5 memories for this prompt" in ctx
     assert re.search(CREDIT_LINE_RE, ctx)
     assert "first Cognee credit in this session" in ctx
-    tags = _saved(rt, lookup)
-    assert len(tags.records) == 5
-    _assert_counted_as_shown(ctx, tags)
+    assert "[m1" not in ctx
+    assert _injected(rt, lookup)
 
 
-def test_a_memory_recalled_on_a_later_prompt_keeps_its_tag(lookup, monkeypatch, rt):
-    first = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    codex_tag = _tag_of(first, "Codex session")
-    first_tag = next(
-        r["tag"]
-        for r in _saved(rt, lookup).records
-        if r["snippet"].startswith("Session ID: codex_01")
-    )
-    new = "Session ID: codex_new\n\nQuestion: tabs?\n\nAnswer: spaces."
-    more = {
+def test_same_dataset_results_count_every_item(lookup, monkeypatch):
+    """Two results from one dataset share one mark; each passage and block still
+    counts once, a later block appended to a section as well."""
+    ctx = _context(drive_recall(lookup, monkeypatch, recall=TWO_RESULTS))
+    assert "Cognee found 5 memories for this prompt" in ctx
+    assert "[dataset ds1]\n### order" in ctx  # the later entities block
+    assert f"[dataset ds1]\n{NAMED}" in ctx
+
+
+def test_marks_name_the_dataset_and_no_document(lookup, monkeypatch):
+    ctx = _context(drive_recall(lookup, monkeypatch, recall=TWO_RESULTS))
+    assert "[dataset ds1]" in ctx
+    assert "document" not in ctx.replace("<document>", "")
+
+
+def test_a_block_dropped_by_the_budget_is_not_counted(suite, lookup, monkeypatch):
+    """A block whose only entry cannot fit is dropped; the passage from the same
+    dataset, whose mark is the same, survives and does not make it count."""
+    if suite.name != "claude-code":
+        pytest.skip("only Claude Code fits memory to a size budget")
+    huge = "- " + "the order was returned " * 600
+    recall = {
         "graph": [
-            {"source": "graph", "text": CONTEXT.replace(PASSAGE_DOC, f"{PASSAGE_DOC}\n---\n{new}")}
+            TWO_RESULTS["graph"][0],
+            _graph(
+                "ds1",
+                f"## Relevant entities\n### order\n- the order shipped.\n\n"
+                f"## Related facts\n{huge}",
+            ),
         ]
     }
-    second = _context(drive_recall(lookup, monkeypatch, recall=more))
-    tags = _saved(rt, lookup)
-    assert len(tags.records) == 6  # one new memory, five known ones
-    assert (
-        next(r["tag"] for r in tags.records if r["snippet"].startswith("Session ID: codex_01"))
-        == first_tag
-    )
-    # Shown again it keeps its tag; a host that skips memory already in context
-    # does not show it, and then it does not count as this prompt's.
-    if codex_tag:
-        if PASSAGE_CODEX in second:
-            assert f"[{codex_tag} · Codex session]" in second
-        assert "[m6 · Codex session]" in second
-    else:
-        assert "[Codex session]\nSession ID: codex_new" in second
-    _assert_counted_as_shown(second, tags)
+    ctx = _context(drive_recall(lookup, monkeypatch, recall=recall))
+    assert huge not in ctx and f"[dataset ds1]\n{NAMED}" in ctx
+    assert "[dataset ds1]\n### order" in ctx  # the later entities block is counted
+    assert "Cognee found 4 memories for this prompt" in ctx
 
 
-def test_an_earlier_turn_keeps_its_tag_by_server_id(lookup, monkeypatch, rt):
+def test_nothing_injected_has_no_instruction(suite, lookup, monkeypatch, rt):
+    if suite.name != "claude-code":
+        pytest.skip("only Claude Code fits memory to a size budget")
+    huge = "Cognee doc: " + "detail " * 2000
+    recall = {"graph": [_graph("ds1", f"## Relevant passages\n{huge}")]}
+    ctx = _context(drive_recall(lookup, monkeypatch, recall=recall))
+    assert "Crediting Cognee memory" not in ctx and huge not in ctx
+    assert not _injected(rt, lookup)
+
+
+def test_an_earlier_session_turn_is_marked_with_its_origin(lookup, monkeypatch):
     turn = {"source": "session", "qa_id": "qa-7", "question": "q", "answer": "a"}
-    edited = dict(turn, answer="a, with feedback")
-    first = _context(drive_recall(lookup, monkeypatch, recall={"session_context": [turn]}))
-    second = _context(drive_recall(lookup, monkeypatch, recall={"session_context": [edited]}))
-    assert re.search(r"\[(?:m1 · )?earlier session turn\]", first)
-    assert re.search(r"\[(?:m1 · )?earlier session turn\]", second)
-    assert [r["tag"] for r in _saved(rt, lookup).records] == ["m1"]
+    ctx = _context(drive_recall(lookup, monkeypatch, recall={"session_context": [turn]}))
+    assert "[earlier session turn]" in ctx
+    assert "Cognee found 1 memory for this prompt" in ctx
 
 
 def test_after_a_credit_the_short_instruction(lookup, monkeypatch, rt):
-    rt.record_credit(_state_dir(lookup), SESSION_KEY, {"valid": ["m1"]})
+    rt.record_credit(_state_dir(lookup), SESSION_KEY, {"injected": True, "credited": True})
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
     assert re.search(CREDIT_LINE_RE, ctx)
     assert "first Cognee credit" not in ctx
 
 
-def test_empty_recall_has_no_instruction_and_no_tags_for_the_turn(lookup, monkeypatch, rt):
+def test_empty_recall_has_no_instruction_and_is_no_injected_turn(lookup, monkeypatch, rt):
     drive_recall(lookup, monkeypatch, recall=HIT)
     run = drive_recall(lookup, monkeypatch, recall={})
     ctx = _context(run)
-    assert "Crediting Cognee memory" not in ctx and "[m" not in ctx
+    assert "Crediting Cognee memory" not in ctx
     assert run.message()
-    assert rt.check_credits("", _saved(rt, lookup))["available"] == 0
+    assert not _injected(rt, lookup)
 
 
 def test_a_recall_that_returns_early_still_starts_a_new_turn(lookup, monkeypatch, rt):
-    """Server down, no session or a timeout: the hook returns before tagging, and
-    the previous turn's tags must not pass for this turn's."""
+    """Server down, no session or a timeout: the hook returns before marking, and
+    the previous turn's memory must not pass for this turn's."""
     import asyncio
 
     drive_recall(lookup, monkeypatch, recall=HIT)
+    assert _injected(rt, lookup)
     monkeypatch.setattr(lookup, "_load_session_id", lambda: "")
     assert asyncio.run(lookup._run("next prompt")) is None
-    result = rt.check_credits("> 🧠 Cognee memory [m2]: …", _saved(rt, lookup))
-    assert (result["valid"], result["earlier"], result["available"]) == (["m2"], ["m2"], 0)
+    assert not _injected(rt, lookup)
 
 
 def test_opt_out(lookup, monkeypatch, rt):
     monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "off")
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert not re.search(r"\[m\d+ · ", ctx) and "Crediting Cognee memory" not in ctx
+    assert "[Codex session]" not in ctx and "Crediting Cognee memory" not in ctx
     assert PASSAGE_CODEX in ctx  # memory itself is unchanged
+    assert not _injected(rt, lookup)
 
 
 def test_default_per_host(suite, lookup, monkeypatch):
@@ -595,7 +561,7 @@ def test_default_per_host(suite, lookup, monkeypatch):
 
 @pytest.fixture
 def stop(suite, hook_module, monkeypatch, rt):
-    if suite.name not in ("claude-code", "codex"):
+    if suite.name not in ("claude-code", "codex", "cursor"):
         pytest.skip(f"{suite.name}: no memory credit check")
     module = hook_module(suite, "store-to-session.py")
     events: list = []
@@ -631,52 +597,44 @@ def test_codex_stop_prints_the_turn_status_under_the_answer(suite, stop, rt, cap
     assert capsys.readouterr().out == ""
 
 
-def _turn(rt, stop, answer, this_turn=("m1", "m2"), earlier=()):
+def _credit_line(suite) -> str:
+    if suite.name == "cursor":
+        return "> [​](https://www.cognee.ai) you chose the server."
+    return "> Cognee memory: you chose the server, from the ds1 dataset"
+
+
+def _turn(rt, stop, answer, injected=True):
     import _plugin_common
 
     state = _plugin_common._PLUGIN_DIR
-    _session_tags(rt, this_turn, earlier).save(state, SESSION_KEY)
+    rt.begin_turn(state, SESSION_KEY)
+    if injected:
+        rt.mark_injected(state, SESSION_KEY)
     stop._check_memory_credit({"last_assistant_message": answer})
     return state
 
 
-def test_stop_logs_valid_and_invented_credits(stop, rt):
-    state = _turn(rt, stop, "ok\n> 🧠 Cognee memory [m2, m7]: you chose the server.")
-    assert stop.events == [
-        (
-            "memory_credit",
-            {
-                "cited": ["m2", "m7"],
-                "valid": ["m2"],
-                "invented": ["m7"],
-                "earlier": [],
-                "available": 2,
-            },
-        )
-    ]
+def test_stop_records_a_credit_on_an_injected_turn(suite, stop, rt):
+    state = _turn(rt, stop, f"ok\n{_credit_line(suite)}")
+    assert stop.events == [("memory_credit", {"injected": True, "credited": True})]
     assert rt.has_credited(state, SESSION_KEY)
 
 
-def test_stop_checks_an_earlier_turns_tag_against_its_own_memory(stop, rt):
-    _turn(rt, stop, "> 🧠 Cognee memory [m3]: …", this_turn=(), earlier=("m3",))
-    assert stop.events[0][1]["valid"] == ["m3"]
-    assert stop.events[0][1]["earlier"] == ["m3"]
+def test_stop_does_not_count_a_credit_on_a_turn_without_memory(suite, stop, rt):
+    state = _turn(rt, stop, f"ok\n{_credit_line(suite)}", injected=False)
+    assert stop.events == [("memory_credit", {"injected": False, "credited": True})]
+    assert not rt.has_credited(state, SESSION_KEY)
 
 
 def test_stop_without_credit_logs_an_uncredited_turn(stop, rt):
     state = _turn(rt, stop, "a plain answer")
-    assert stop.events[0][1]["cited"] == []
+    assert stop.events == [("memory_credit", {"injected": True, "credited": False})]
     assert not rt.has_credited(state, SESSION_KEY)
 
 
-def test_stop_is_silent_when_nothing_was_injected_or_cited(stop, rt):
-    _turn(rt, stop, "a plain answer", this_turn=())
+def test_stop_is_silent_when_nothing_was_injected_or_credited(stop, rt):
+    _turn(rt, stop, "a plain answer", injected=False)
     assert stop.events == []
-
-
-def test_stop_logs_a_citation_on_a_turn_without_memory_as_invented(stop, rt):
-    _turn(rt, stop, "> 🧠 Cognee memory [m1]: …", this_turn=())
-    assert stop.events[0][1]["invented"] == ["m1"]
 
 
 def test_instruction_comes_before_the_memory(lookup, monkeypatch):
@@ -689,16 +647,16 @@ def test_instruction_comes_before_the_memory(lookup, monkeypatch):
     assert ctx.index("first Cognee credit") < 2_000
 
 
-def test_memory_trimmed_to_fit_is_not_counted(lookup, monkeypatch, rt):
-    """A host that trims memory to a size budget tags before trimming: only the
-    tags that made it into the context count as this prompt's."""
+def test_memory_trimmed_to_fit_is_not_counted(lookup, monkeypatch):
+    """A host that trims memory to a size budget marks before trimming: only the
+    items that made it into the context count as this prompt's."""
     monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", "1024")
     passages = [f"Cognee doc {i}: " + "detail " * 40 for i in range(12)]
     text = "## Relevant passages\n" + "\n---\n".join(passages)
-    ctx = _context(
-        drive_recall(lookup, monkeypatch, recall={"graph": [{"source": "graph", "text": text}]})
-    )
-    _assert_counted_as_shown(ctx, _saved(rt, lookup))
+    ctx = _context(drive_recall(lookup, monkeypatch, recall={"graph": [_graph("ds1", text)]}))
+    shown = sum(f"[dataset ds1]\n{p}" in ctx for p in passages)
+    if "Crediting Cognee memory" in ctx:  # a tiny size budget can leave it out
+        assert f"Cognee found {_noun(shown)} for this prompt" in ctx
 
 
 # ── "this conversation was saved" on resume ────────────────────────────────
@@ -890,12 +848,13 @@ def test_cursor_trace_is_stored_without_credit_text(suite, hook_module, monkeypa
 def test_codex_reports_whether_the_icon_was_copied_exactly(suite, rt):
     if suite.name != "codex":
         pytest.skip("only Codex draws the icon in KaTeX")
-    exact = f"Alice is curious.\n\n> {rt.KATEX_ICON}  Alice's journey,\\\n> from a dataset"
-    result = rt.check_credits(exact, _session_tags(rt))
-    assert result["untagged"] and result["logo_exact"] is True
+    icon = f"> {rt.KATEX_ICON}{rt.ICON_PADDING}"
+    exact = f"Alice is curious.\n\n{icon}Alice's journey,\\\n> from a dataset"
+    result = rt.check_credits(exact, True)
+    assert result["credited"] and result["logo_exact"] is True
     mangled = exact.replace(r"\kern{0.1em}", r"\kern{0.12em}", 1)
-    result = rt.check_credits(mangled, _session_tags(rt))
-    assert result["untagged"] and result["logo_exact"] is False
+    result = rt.check_credits(mangled, True)
+    assert result["credited"] and result["logo_exact"] is False
     braille_credit = "ok\n> `⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  x,\n> `⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉`  from a"
-    braille = rt.check_credits(braille_credit, _session_tags(rt))
+    braille = rt.check_credits(braille_credit, True)
     assert "logo_exact" not in braille

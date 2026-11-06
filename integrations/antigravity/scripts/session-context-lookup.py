@@ -213,7 +213,8 @@ def _outage_output(state: str) -> dict:
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
     summary = outage_header(state, saves, warmup_backlog(), " · ")
-    header = f"{render_status_for_host(get_session_key())}\n{summary}"
+    key = get_session_key()
+    header = f"{render_status_for_host(key, auto_recall_active(key))}\n{summary}"
     return {
         "systemMessage": header,
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": header},
@@ -808,7 +809,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # Build a visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
-    status_line = render_status_for_host(_session_key)
+    # The mode this recall ran under, asked once above: the header says what it did.
+    status_line = render_status_for_host(_session_key, auto_route)
     header = f"{status_line}\n" + _memory_summary(
         total,
         _totals,
@@ -968,7 +970,7 @@ def main():
     try:
         from _capture_policy import sanitize
 
-        # Every recall lane, the audit line and the tags see only this copy.
+        # Every recall lane and the audit line see only this copy.
         prompt = sanitize(prompt) if isinstance(prompt, str) else ""
     except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
         hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})

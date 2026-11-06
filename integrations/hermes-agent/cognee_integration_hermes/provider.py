@@ -18,6 +18,7 @@ from . import (
     dataset_overrides,
     exit_watcher,
     memory_credit,
+    recall_notice,
     recall_text,
     recap,
     runtime_env,
@@ -40,13 +41,16 @@ from .config import (
     LOCAL_COGNEE_REQUIREMENT,
     RECALL_MODE_AUTO,
     RECALL_MODE_PINNED,
+    RECALL_MODE_SOURCE_ENV,
     RECALL_MODE_SOURCE_FILE,
     RECALL_MODES,
     SHARED_PLUGIN_STATE_DIR,
     config_path,
     configured_dataset_name,
     configured_recall_mode,
+    effective_recall_mode,
     load_config,
+    recall_mode_is_set,
     resolve_hermes_home,
     resolve_local_roots,
     save_env_vars,
@@ -119,7 +123,9 @@ _BREAKER_COOLDOWN_SECS = 120
 # _plugin_common.RECALL_PIN_*). Hermes has no explicit read-dataset scope, so
 # ``read_dataset_ids`` never applies here.
 RECALL_PIN_PICKED = "dataset_picked"  # this conversation pinned recall (pin or switch)
-RECALL_PIN_CONFIGURED = "configured_pin"  # the configured recall_mode is "pinned"
+# The configured recall_mode is "pinned", or none is set and the configured
+# dataset is not the default (config.effective_recall_mode).
+RECALL_PIN_CONFIGURED = "configured_pin"
 
 
 def _configured_by(source: str) -> str:
@@ -140,7 +146,17 @@ def _recall_message(mode: str, reason: str, dataset: str, source: str = "") -> s
             "an older server searches every readable dataset). Use action='pin' to "
             "keep recall on this dataset."
         )
-    if reason == RECALL_PIN_CONFIGURED:
+    if reason == RECALL_PIN_CONFIGURED and source not in (
+        RECALL_MODE_SOURCE_ENV,
+        RECALL_MODE_SOURCE_FILE,
+    ):
+        why = (
+            "because it is the configured dataset and no recall mode is set "
+            "(`recall_mode: auto` in cognee.json or COGNEE_PLUGIN_RECALL_MODE=auto lets "
+            "Cognee pick)"
+        )
+        lift = "Use action='auto' to let the server pick for this conversation."
+    elif reason == RECALL_PIN_CONFIGURED:
         why = f"by the configured recall mode ({_configured_by(source)})"
         lift = "Use action='auto' to let the server pick for this conversation."
     else:
@@ -448,6 +464,10 @@ class CogneeMemoryProvider(MemoryProvider):
         # Remote mode is plain HTTP; only local and embedded mode run cognee here.
         if cfg.get("service_url"):
             return True
+        if str_to_bool(cfg.get("embedded"), False):
+            # Embedded mode runs cognee in this process, from Hermes's own
+            # environment; the runtime venv is never used, so it never counts.
+            return has_cognee() and not runtime_env.hermes_env_outdated()
         # No LLM-key check: a keyless provider (Ollama) needs none, and a key
         # written by `hermes memory setup` after a long-running gateway started
         # is not in that process yet — "unavailable" would hide both, while the
@@ -462,8 +482,12 @@ class CogneeMemoryProvider(MemoryProvider):
         cfg = load_config()
         if cfg.get("service_url"):
             return ""
-        if str_to_bool(cfg.get("embedded"), False) and not has_cognee():
-            return cognee_not_installed_message("embedded")
+        if str_to_bool(cfg.get("embedded"), False):
+            if not has_cognee():
+                return cognee_not_installed_message("embedded")
+            if runtime_env.hermes_env_outdated():
+                return runtime_env.embedded_outdated_message()
+            return ""
         if runtime_env.local_ready():
             return ""
         return runtime_env.local_not_ready_message()
@@ -569,9 +593,16 @@ class CogneeMemoryProvider(MemoryProvider):
         remote = mode in {"remote", "cloud", "service"}
 
         env_values: dict[str, str] = {}
+        dataset = _prompt("Dataset", default=str(current.get("dataset") or DEFAULT_DATASET))
         file_values: dict[str, Any] = {
-            "dataset": _prompt("Dataset", default=str(current.get("dataset") or DEFAULT_DATASET)),
-            "recall_mode": _prompt_recall_mode(current.get("recall_mode")),
+            "dataset": dataset,
+            # With no recall mode set yet, a non-default dataset offers
+            # "pinned": recall stays on it, as it did before (SDK-1393).
+            "recall_mode": _prompt_recall_mode(
+                current.get("recall_mode")
+                if recall_mode_is_set(current)
+                else effective_recall_mode({}, dataset)
+            ),
             # auto_route (which search type recall uses) is not asked: next to
             # the recall mode (which datasets it reads) it read as the same
             # question twice. It keeps its saved value; set it in cognee.json
@@ -649,11 +680,12 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._default_dataset,
             )
         self._dataset = self._default_dataset
-        # The configured recall_mode, as in the hook-family plugins: "pinned"
-        # keeps recall on the active dataset, anything else is auto. The
-        # configured dataset alone never pins.
+        # The configured recall_mode: "pinned" keeps recall on the active
+        # dataset, anything else is auto. With none set, a configured dataset
+        # other than the default pins (reason configured_pin), as before
+        # SDK-1393; the default dataset is auto.
         self._configured_pins_recall = (
-            configured_recall_mode(self._config.get("recall_mode")) == RECALL_MODE_PINNED
+            effective_recall_mode(self._config, self._default_dataset) == RECALL_MODE_PINNED
         )
         self._recall_mode_source = str(self._config.get("recall_mode_source") or "")
         self._recall_choice = ""
@@ -774,6 +806,22 @@ class CogneeMemoryProvider(MemoryProvider):
         if self._can_buffer() and self._writes_enabled:
             # Writes an earlier run could not deliver; replayed off the startup path.
             self._replay_in_background()
+        self._queue_recall_notice()
+
+    def _queue_recall_notice(self) -> None:
+        """Hold the once-per-dataset note for this session's first reply: recall
+        stays on the configured dataset only because no recall mode is set, and
+        auto exists (recall_notice). Not for a conversation with its own mode, or
+        a subagent."""
+        if (
+            not self._writes_enabled
+            or self._recall_choice
+            or recall_mode_is_set(self._config)
+            or self._recall_pin_reason != RECALL_PIN_CONFIGURED
+            or not recall_notice.due(self._default_dataset)
+        ):
+            return
+        recall_notice.queue(self._session_id, self._default_dataset)
 
     def _finish_starting(self, starting: ServerStillStartingError) -> None:
         """Wait out a local server that was still starting, then connect."""
@@ -957,7 +1005,9 @@ class CogneeMemoryProvider(MemoryProvider):
         if memory_credit.has_credit(assistant_content or ""):
             result = self._credit.check(assistant_content)
             logger.info("cognee memory_credit %s", json.dumps(result, ensure_ascii=False))
-        assistant_content = memory_credit.strip_credit_lines(assistant_content or "")
+        assistant_content = memory_credit.strip_credit_lines(
+            recall_notice.strip_notice(assistant_content or "")
+        )
         if not self._is_usable() or not self._writes_enabled:
             return
         settings = capture_policy.policy_from_config(self._config)
@@ -2793,11 +2843,16 @@ def _chose_local(hermes_home: str) -> bool:
 
 
 def _offer_runtime_install() -> None:
-    """Local branch of setup: build the runtime venv now, with the user's yes."""
-    if not _prompt_bool(
-        f"Install the local runtime now ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from PyPI)",
-        True,
-    ):
+    """Local branch of setup: build the runtime venv now, with the user's yes.
+
+    When a local server this plugin started is running, the question says the
+    install stops it (``install-runtime`` asks the same on its own)."""
+    label = f"Install the local runtime now ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from PyPI)"
+    servers = runtime_env.servers_to_stop()
+    if servers:
+        pids = ", ".join(str(pid) for pid, _port in servers)
+        label += f"? This stops the running local server (pid {pids})."
+    if not _prompt_bool(label, True):
         print("  Skipped. Install it later with: hermes cognee install-runtime")
         return
     try:
@@ -2808,7 +2863,8 @@ def _offer_runtime_install() -> None:
 
 
 def _prompt_recall_mode(current: Any) -> str:
-    """The setup wizard's recall-mode question; an unknown answer is auto."""
+    """The setup wizard's recall-mode question; an unknown answer is auto.
+    ``current`` is the default offered."""
     print("  Recall mode: which datasets recall reads. auto lets Cognee pick the")
     print("  datasets for each question; pinned reads only the active dataset.")
     answer = _prompt("Recall mode (auto/pinned)", default=configured_recall_mode(current))

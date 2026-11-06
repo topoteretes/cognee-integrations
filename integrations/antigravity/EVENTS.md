@@ -109,6 +109,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_mode_set` | `recall.mode_set` |
 | `hook:recall_mode_invalid` | `recall.mode_invalid` |
 | `hook:recall_auto_route_error` | `recall.auto_route_error` |
+| `hook:recall_mode_notice_failed` | `recall.mode_notice_failed` |
+| `hook:recall_mode_notice_shown` | `recall.mode_notice_shown` |
 | `hook:launch_dataset_ids_skipped` | `launch.dataset_ids_skipped` |
 | `hook:dim_check_error` | `dim.check_error` |
 | `hook:drain_backoff_write_failed` | `drain.backoff_write_failed` |

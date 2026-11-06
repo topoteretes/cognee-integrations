@@ -29,7 +29,8 @@
 // searches every readable dataset) — or "pinned" to the dataset the
 // conversation saves to. The conversation's own choice wins (action=auto,
 // action=pin, or a switch, which pins); otherwise the configured `recallMode`
-// applies (default auto). The dataset name never implies a mode. A choice
+// applies. With no recall mode set, a configured non-default dataset keeps
+// recall pinned to it and the default dataset is auto. A choice
 // without a switch is stored as a mode only (a RecallChoice record, no
 // dataset), so saves keep following the configured dataset. An override saved
 // before the mode existed stays pinned. Multi-scope mode does not route, so
@@ -67,9 +68,9 @@ export function isValidDatasetName(name: string): boolean {
 }
 
 /**
- * True when the config pins recall (SDK-1393): `recallMode: "pinned"`. The
- * dataset name plays no part — a configured `datasetName`, default or not,
- * leaves recall on auto unless recallMode says otherwise.
+ * True when the config pins recall (SDK-1393): the resolved `recallMode` is
+ * "pinned" — set explicitly, or implied by a non-default `datasetName` with no
+ * recall mode set (see resolveConfig / datasetPinsRecall).
  */
 export function configPinsRecall(cfg: Pick<CogneePluginConfig, "recallMode">): boolean {
   return resolveRecallMode(cfg.recallMode) === "pinned";
@@ -320,7 +321,7 @@ export type RecallState = { recall: "auto" | "pinned"; reason?: RecallReason };
  */
 export function recallNote(
   state: RecallState,
-  opts: { dataset: string; scopes?: readonly string[]; lead?: string; extra?: string[] },
+  opts: { dataset: string; scopes?: readonly string[]; lead?: string; extra?: string[]; pinnedByDataset?: boolean },
 ): string {
   const d = `"${opts.dataset}"`;
   let mode: string;
@@ -329,7 +330,8 @@ export function recallNote(
   } else if (state.reason === "multi_scope") {
     mode = `Recall is pinned to the configured scopes (${(opts.scopes ?? []).join(", ")}): multi-scope mode does not route; saves go to ${d}.`;
   } else if (state.reason === "configured_pin") {
-    mode = `Recall is pinned to ${d}, where this conversation saves, by the plugin config (recallMode "pinned"); action=auto unpins it for this conversation.`;
+    const why = opts.pinnedByDataset ? "datasetName set and no recallMode" : 'recallMode "pinned"';
+    mode = `Recall is pinned to ${d}, where this conversation saves, by the plugin config (${why}); action=auto unpins it for this conversation.`;
   } else {
     mode = `Recall is pinned to ${d}, where this conversation saves, by this conversation's choice; action=auto unpins it.`;
   }
@@ -372,6 +374,8 @@ export type DatasetSwitchDeps = {
   /** Cache a dataset name → id so recall can find it without a server round trip. */
   rememberDatasetId?: (name: string, id: string) => Promise<void>;
   logger?: { debug?: (m: string) => void; warn?: (m: string) => void };
+  /** The config pin comes from a non-default datasetName with no recallMode set (see datasetPinsRecall). */
+  pinnedByDataset?: boolean;
 };
 
 export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryToolContext): MemoryTool<MemorySwitchDatasetParams, MemorySwitchDatasetResult> {
@@ -414,7 +418,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     return {
       recall: state.recall,
       ...(state.reason ? { reason: state.reason } : {}),
-      note: recallNote(state, { dataset, scopes: deps.cfg.recallScopes, lead, extra }),
+      note: recallNote(state, { dataset, scopes: deps.cfg.recallScopes, lead, extra, pinnedByDataset: deps.pinnedByDataset }),
     };
   }
 
@@ -575,7 +579,7 @@ export function createDatasetSwitchTool(deps: DatasetSwitchDeps, ctx: MemoryTool
     name: "memory_switch_dataset",
     label: "Memory Switch Dataset",
     description:
-      "Move this conversation to another Cognee dataset, choose how it recalls, or inspect both. Auto recall is routed by the server (cognee >= 1.6.6), best effort: it picks the best-matching dataset when it can, and otherwise searches every readable dataset (as an older server always does); pinned recall reads only the dataset this conversation saves to; multi-scope mode keeps recall on its configured scopes. The conversation's choice wins; otherwise the plugin config's recallMode applies (default auto). action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and pins recall to it; action=pin pins recall to the dataset in use; action=auto unpins recall; action=current reports the active dataset and the recall mode in effect; action=reset drops this conversation's switch and recall choice. " +
+      "Move this conversation to another Cognee dataset, choose how it recalls, or inspect both. Auto recall is routed by the server (cognee >= 1.6.6), best effort: it picks the best-matching dataset when it can, and otherwise searches every readable dataset (as an older server always does); pinned recall reads only the dataset this conversation saves to; multi-scope mode keeps recall on its configured scopes. The conversation's choice wins; otherwise the plugin config's recallMode applies (default auto; pinned when a non-default datasetName is set without a recallMode). action=list shows available datasets (present them and let the user pick; unknown names are created); action=switch syncs the current session, then binds this conversation to `dataset` for all later saves and pins recall to it; action=pin pins recall to the dataset in use; action=auto unpins recall; action=current reports the active dataset and the recall mode in effect; action=reset drops this conversation's switch and recall choice. " +
       "Switching is per conversation and does not move memory files or shared company/user memory.",
     parameters: MemorySwitchDatasetSchema as unknown as Record<string, unknown>,
     async execute(_id, params) {

@@ -232,6 +232,30 @@ def configured_recall_mode(value: Any) -> str:
     return RECALL_MODE_PINNED if mode == RECALL_MODE_PINNED else RECALL_MODE_AUTO
 
 
+def recall_mode_is_set(config: dict[str, Any]) -> bool:
+    """True when the user set a recall mode: ``COGNEE_PLUGIN_RECALL_MODE`` or
+    ``recall_mode`` in cognee.json (load_config's ``recall_mode_source``)."""
+    source = config.get("recall_mode_source")
+    if source is None:  # a config dict not built by load_config
+        return "recall_mode" in config
+    return source in (RECALL_MODE_SOURCE_ENV, RECALL_MODE_SOURCE_FILE)
+
+
+def effective_recall_mode(config: dict[str, Any], dataset: Any = None) -> str:
+    """The configured recall mode in effect.
+
+    A set recall mode decides. With none set, a configured dataset other than
+    the default keeps recall pinned to it, as before SDK-1393 (a user who picked
+    a dataset to keep agents or projects apart keeps that); the default dataset
+    is auto. ``dataset`` overrides ``config["dataset"]`` (the provider passes the
+    name it actually uses).
+    """
+    if recall_mode_is_set(config):
+        return configured_recall_mode(config.get("recall_mode"))
+    name = configured_dataset_name(config.get("dataset") if dataset is None else dataset)
+    return RECALL_MODE_PINNED if name != DEFAULT_DATASET else RECALL_MODE_AUTO
+
+
 def config_path(hermes_home: str | Path | None = None) -> Path | None:
     home = resolve_hermes_home(hermes_home)
     return home / "cognee.json" if home else None

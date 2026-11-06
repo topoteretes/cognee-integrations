@@ -46,9 +46,10 @@ export type CogneePluginConfig = {
   datasetName?: string;
   /**
    * Graph recall mode when a conversation has not chosen one (SDK-1393):
-   * "auto" (default) names no dataset so a cognee >= 1.6.6 server routes each
-   * query; "pinned" restricts recall to the dataset the conversation saves to.
-   * Unknown values mean "auto". Also settable via COGNEE_PLUGIN_RECALL_MODE.
+   * "auto" names no dataset so a cognee >= 1.6.6 server routes each query;
+   * "pinned" restricts recall to the dataset the conversation saves to.
+   * Unset (or unknown): "pinned" for a non-default datasetName, else "auto".
+   * Also settable via COGNEE_PLUGIN_RECALL_MODE.
    * Multi-scope mode always recalls from its configured scopes.
    */
   recallMode?: "auto" | "pinned";

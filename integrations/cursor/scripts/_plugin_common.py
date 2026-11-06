@@ -47,10 +47,10 @@ _COUNTER_FILE = _PLUGIN_DIR / "counter.json"
 _ACTIVITY_FILE = _PLUGIN_DIR / "activity.ts"
 _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
-#: Whether credit tags and the resume notice are on when
+#: Whether credit marks and the resume notice are on when
 #: ``COGNEE_PLUGIN_CITE_MEMORY`` is unset (SDK-1071). On, as on Claude Code: the
 #: memory block reaches the model on the turn's first tool call, so a turn with
-#: no tool call gets no tags and writes no credit line.
+#: no tool call gets no marks and writes no credit line.
 CITE_MEMORY_DEFAULT = True
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30

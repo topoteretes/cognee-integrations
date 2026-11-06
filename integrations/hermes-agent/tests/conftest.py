@@ -101,9 +101,16 @@ def hermetic_env(request, monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_env, "RUNTIME_DIR", tmp_path / "runtime")
     monkeypatch.setattr(runtime_env, "VENV_DIR", tmp_path / "runtime" / "venv")
     monkeypatch.setattr(runtime_env, "READY_MARKER", tmp_path / "runtime" / "ready.json")
-    # Nor may a developer's running cognee server: install-runtime would stop it,
-    # and its /health version would decide whether a test's server is current.
-    monkeypatch.setattr(runtime_env, "_plugin_server_pids", lambda interpreters=None: [])
+    # Nor may a developer's running cognee server: install-runtime would stop it
+    # (or refuse to install while it answers), and its /health version would
+    # decide whether a test's server is current.
+    monkeypatch.setattr(runtime_env, "plugin_servers", lambda interpreters=None: [])
+    monkeypatch.setattr(runtime_env, "_server_answering", lambda port: False)
+    # The once-per-dataset recall note: its markers, and one waiting from another test.
+    from cognee_integration_hermes import recall_notice
+
+    monkeypatch.setattr(recall_notice, "NOTICE_DIR", tmp_path / "notices")
+    monkeypatch.setattr(recall_notice, "_pending", {})
     from cognee_integration_hermes import server_bootstrap
 
     monkeypatch.setattr(server_bootstrap, "health_version", lambda url, timeout=2.0: "")

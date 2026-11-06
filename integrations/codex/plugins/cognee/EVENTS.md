@@ -109,6 +109,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_mode_set` | `recall.mode_set` |
 | `hook:recall_mode_invalid` | `recall.mode_invalid` |
 | `hook:recall_auto_route_error` | `recall.auto_route_error` |
+| `hook:recall_mode_notice_failed` | `recall.mode_notice_failed` |
+| `hook:recall_mode_notice_shown` | `recall.mode_notice_shown` |
 | `hook:drain_backoff_write_failed` | `drain.backoff_write_failed` |
 | `hook:drain_lock_error` | `drain.lock_error` |
 | `hook:drain_lock_release_failed` | `drain.lock_release_failed` |
@@ -157,7 +159,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:map_create_failed` | `map.create_failed` |
 | `hook:memory_credit` | `memory.credit` |
 | `hook:memory_credit_failed` | `memory.credit_failed` |
-| `hook:memory_tags_write_failed` | `memory.tags_write_failed` |
+| `hook:memory_credit_write_failed` | `memory.credit_write_failed` |
 | `hook:turn_status_write_failed` | `memory.turn_status_write_failed` |
 | `hook:turn_status_read_failed` | `memory.turn_status_read_failed` |
 | `hook:context_lookup_client_unknown` | `recall.client_unknown` |
@@ -342,3 +344,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
+
+`memory.credit`: the Stop hook's credit check, `{injected, credited}`. `injected` is whether the turn injected memory with the credit instruction (`injected_turn` in the session's `credit.json` is the current turn); `credited` whether the answer ends with the credit line (`logo_exact` is added for the ChatGPT app's credit: whether its icon was copied exactly). Only a credit on an injected turn is counted. Logged when either is true.

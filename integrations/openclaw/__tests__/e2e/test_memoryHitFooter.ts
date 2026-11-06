@@ -76,6 +76,8 @@ function createApi(extraConfig: Record<string, unknown> = {}) {
       enableSessions: true,
       captureSession: false,
       datasetName: "testds",
+      // Explicit mode: no one-time recall notice on these replies (see test_recallNotice).
+      recallMode: "auto",
       minScore: 0,
       ...extraConfig,
     },

@@ -41,12 +41,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
   in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
   a switch) wins over it for that session. **Behaviour change:** a configured non-default
   `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
-  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it.
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it. Session start says so once per machine
+  and dataset, in the message the user sees, when a non-default dataset is configured,
+  `COGNEE_PLUGIN_RECALL_MODE` was never set and the session has not pinned recall itself.
 - **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
   `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
 
 ### Changed
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+- **The status says when recall is auto.** The status at the top of the injected context, the
+  CLI status line and the IDE status bar read `cognee: auto (<dataset>) · local` while recall is
+  not pinned, as Claude Code's row does, and the bare name once it is.
+- **Recalled memory is marked with its dataset (SDK-1393).** Every graph item is marked
+  `[dataset <name>]` instead of `[mN · origin]` (an item from a server that names no dataset,
+  and every other item, keeps its origin mark); the logo-led credit line is unchanged. The
+  per-session tags (`tags.json`) are gone: "Cognee found N memories" counts the marked items in
+  the context, the recall hook records the turn it injected memory on (`injected_turn` in
+  `credit.json`), and the answer check counts a credit only on that turn. The `memory_credit`
+  event now carries `{injected, credited}`, and `memory_tags_write_failed` is now
+  `memory_credit_write_failed`.
 
 ### Removed
 - **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can

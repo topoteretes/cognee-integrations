@@ -438,8 +438,8 @@ function activity(phase: Phase): Activity {
 // engine's own band is often an empty element, which still takes a row in a
 // terminal when stacked under ours, so an empty one is left out.
 // The credit line at the end of an answer, as the recall hook's instruction
-// has the model write it: "> Cognee memory: what it remembered, from <document>
-// in the <dataset> dataset". Older answers cite tags, "> 🧠 Cognee memory
+// has the model write it: "> Cognee memory: what it remembered, from the
+// <dataset> dataset". Older answers cite tags, "> 🧠 Cognee memory
 // [m4, m5]: …"; the tags and the brain are taken off those too.
 // Returns the text without it, the tags ('' when untagged) and the note; null
 // when the text does not end with one.

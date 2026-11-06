@@ -4,7 +4,7 @@
  * configured and per-conversation recall modes decide the dataset ids sent.
  * The harness runs on the default dataset (auto recall); the config's
  * recallMode "pinned" pins recall unless the conversation picks auto, and a
- * datasetName alone never pins.
+ * non-default datasetName with no recall mode set pins too.
  */
 
 import plugin from "../../src/plugin";
@@ -85,6 +85,7 @@ describe("prompt recall", () => {
 
 describe("configured recallMode", () => {
   const NAMED = { datasetName: "testds" };
+  const ROUTED = { datasetName: "testds", recallMode: "auto" };
   const PINNED = { datasetName: "testds", recallMode: "pinned" };
 
   beforeEach(() => {
@@ -109,11 +110,51 @@ describe("configured recallMode", () => {
     return mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!;
   }
 
-  it("a non-default datasetName alone routes: no dataset ids", async () => {
+  it("a non-default datasetName with no recall mode keeps recall pinned to it (configured_pin)", async () => {
     const h = harness(NAMED);
+    expect((await promptGraph(h)).datasetIds).toEqual(["ds-2"]);
+    for (const c of await search(h)) expect(c.datasetIds).toEqual(["ds-2"]);
+    const cur = await run(h, { action: "current" });
+    expect(cur).toMatchObject({ dataset: "testds", recall: "pinned", reason: "configured_pin", switched: false });
+    expect(cur.note).toMatch(/datasetName set and no recallMode/);
+  });
+
+  it("the default dataset with no recall mode stays auto", async () => {
+    const h = harness();
+    expect((await promptGraph(h)).datasetIds).toEqual([]);
+    expect(await run(h, { action: "current" })).toMatchObject({ dataset: "agent_sessions", recall: "auto" });
+  });
+
+  it("an explicit recallMode auto wins over the dataset pin", async () => {
+    const h = harness(ROUTED);
     expect((await promptGraph(h)).datasetIds).toEqual([]);
     expect((await search(h)).map((c) => c.datasetIds)).toEqual([[]]);
     expect(await run(h, { action: "current" })).toMatchObject({ dataset: "testds", recall: "auto" });
+  });
+
+  it("COGNEE_PLUGIN_RECALL_MODE=auto wins over the dataset pin", async () => {
+    const prev = process.env.COGNEE_PLUGIN_RECALL_MODE;
+    process.env.COGNEE_PLUGIN_RECALL_MODE = "auto";
+    try {
+      const h = harness(NAMED);
+      expect((await promptGraph(h)).datasetIds).toEqual([]);
+      expect(await run(h, { action: "current" })).toMatchObject({ dataset: "testds", recall: "auto" });
+    } finally {
+      if (prev === undefined) delete process.env.COGNEE_PLUGIN_RECALL_MODE;
+      else process.env.COGNEE_PLUGIN_RECALL_MODE = prev;
+    }
+  });
+
+  it("a conversation's action=auto wins over the dataset pin", async () => {
+    const h = harness(NAMED);
+    expect(await run(h, { action: "auto" })).toMatchObject({ changed: true, recall: "auto", dataset: "testds" });
+    expect((await promptGraph(h)).datasetIds).toEqual([]);
+    const other = await (async () => {
+      mockRecall.mockClear();
+      await h.emit("before_prompt_build", PROMPT, { ...CONVO, sessionId: "s2", sessionKey: "agent:will:tg-2" });
+      return mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!;
+    })();
+    expect(other.datasetIds).toEqual(["ds-2"]);
   });
 
   it("recallMode pinned: prompt recall and memory_search send the configured dataset's id", async () => {
@@ -145,7 +186,7 @@ describe("configured recallMode", () => {
 
   // Picking the dataset in use is the same as action=pin.
   it.each([{ action: "pin" }, { action: "switch", dataset: "testds" }])("%o keeps recall pinned, but saves and recall follow a later datasetName change", async (pick) => {
-    const h = harness(NAMED);
+    const h = harness(ROUTED);
     expect(await run(h, pick)).toMatchObject({ action: pick.action, changed: true, recall: "pinned", reason: "dataset_picked", dataset: "testds" });
     expect((await promptGraph(h)).datasetIds).toEqual(["ds-2"]);
 
