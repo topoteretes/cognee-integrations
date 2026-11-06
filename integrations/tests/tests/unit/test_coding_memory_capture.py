@@ -584,10 +584,14 @@ def test_codex_rename_into_a_secret_path_is_dropped(cm, sent, tmp_path, repo, mo
     monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
     records = [
         _codex_prompt("Go", A_PROMPT),
-        _file_change({"config.txt": _update(move_path=".env")}, "2026-11-05T10:00:10.000Z"),
+        _file_change(
+            {"config.txt": _update(move_path=".env"), "src/a.py": _update()},
+            "2026-11-05T10:00:10.000Z",
+        ),
     ]
     cm.capture(_payload(_write(tmp_path / "rollout.jsonl", records), repo))
-    assert _traces(sent) == []
+    # The other file of the same change is the control: it is sent.
+    assert [t["method_params"]["file_path"] for t in _traces(sent)] == ["src/a.py"]
 
 
 def test_codex_two_file_change_is_sent_once_per_file(cm, sent, tmp_path, repo, monkeypatch):

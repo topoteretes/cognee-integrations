@@ -24,13 +24,6 @@ def test_unverified_companion_falls_back(suite, isolated_modules, monkeypatch, t
     pm, common = prepare_env(suite, isolated_modules, monkeypatch, tmp_path)
     monkeypatch.setenv("COGNEE_SESSION_COMPANION_DATASET", "true")
     pm.begin("primary", "s", str(tmp_path))
-
-    # The server can't be reached yet: route() may retry provisioning itself, and
-    # a transport failure keeps the session pending (never a real HTTP call here).
-    def unreachable(*args, **kwargs):
-        raise urllib.error.URLError("connection refused")
-
-    monkeypatch.setattr(common, "_json_http_request", unreachable)
     with pytest.raises(RuntimeError, match="pending"):
         pm.route("primary", "s")
 

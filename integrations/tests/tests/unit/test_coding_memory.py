@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -194,9 +195,17 @@ def test_setting_unset_keeps_every_hook_as_before(
     config = isolated_modules(suite, "config")
     assert config.coding_memory_enabled() is False
     send_unit = hook_module(suite, "send-unit.py")
-    monkeypatch.setattr(send_unit, "_capture", lambda payload: pytest.fail("captured while off"))
-    monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"session_id": "x"}'))
-    send_unit.main()  # exits before reading anything
+    # Codex hands the payload to a detached child (_handoff -> _spawn), Claude
+    # captures inline: every way out must stay unused while the setting is off.
+    for name in ("_capture", "_handoff", "_spawn", "_run_detached"):
+        monkeypatch.setattr(send_unit, name, lambda *a, _n=name: pytest.fail(f"{_n} while off"))
+    monkeypatch.setattr(
+        send_unit._coding_memory, "warm_lessons", lambda *a: pytest.fail("warmed while off")
+    )
+    for argv in (["send-unit.py"], ["send-unit.py", "--run", "x"], ["send-unit.py", "--warm"]):
+        monkeypatch.setattr("sys.argv", argv)
+        monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"session_id": "x"}'))
+        send_unit.main()  # exits before reading anything
 
 
 def test_hooks_register_the_stop_capture_and_codex_compaction(suite):
@@ -308,10 +317,15 @@ def test_plugin_invocations_are_never_sent(cm, sent, tmp_path, repo):
         pytest.skip("one transcript format is enough for the shared filter")
     command = "bash ~/.claude/plugins/cognee/scripts/cognee-search.sh foo"
     path = _claude_transcript(
-        tmp_path / "s.jsonl", [("t1", "Bash", {"command": command}, "x", False)]
+        tmp_path / "s.jsonl",
+        [
+            ("t1", "Bash", {"command": command}, "x", False),
+            ("t2", "Bash", {"command": "pwd"}, "/x", False),  # control: is sent
+        ],
     )
     cm.capture({"transcript_path": str(path), "cwd": str(repo), "last_assistant_message": "ok"})
-    assert [e for e in sent if e["type"] == "trace"] == []
+    traces = [e for e in sent if e["type"] == "trace"]
+    assert [t["method_params"]["command"] for t in traces] == ["pwd"]
 
 
 def test_capture_is_off_when_the_server_is_too_old(cm, sent, tmp_path, repo, monkeypatch):
@@ -531,7 +545,11 @@ def test_build_block_lists_lessons_of_this_project_and_renders(
     assert "- All 12 tests pass. (session 2026-11-03, commit " in block
     assert "src/app.py changed since)" in block
     assert "Other repo" not in block
-    assert "Recent commits (newest first):" in block and "change app" not in block
+    # The newest commit is listed by hash, date and files; subjects are never shown.
+    newest = _git(repo, "rev-parse", "--short", "HEAD")
+    assert "Recent commits (newest first):" in block
+    assert f"{newest} (" in block.split("Recent commits (newest first):", 1)[1]
+    assert "change app" not in block
     assert len(block) < 2300
 
 
@@ -542,13 +560,21 @@ def test_no_lessons_means_no_block(cm, suite, isolated_modules, monkeypatch, rep
     assert cm.build_block("anything", str(repo)) == ""
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("connection refused"),
+        urllib.error.HTTPError("/api/v1/recall", 404, "Not Found", None, None),
+    ],
+    ids=["down", "404"],
+)
 def test_server_down_or_404_recall_gives_no_recalled_lessons(
-    cm, suite, isolated_modules, monkeypatch
+    cm, suite, isolated_modules, monkeypatch, error
 ):
     common = isolated_modules(suite, "_plugin_common")
 
     def down(*a, **k):
-        raise OSError("connection refused")
+        raise error
 
     monkeypatch.setattr(common, "_json_http_request", down)
     assert cm.recall_passages("q", "agent_sessions", "ds-1", 10**12) == []

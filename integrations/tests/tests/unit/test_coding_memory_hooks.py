@@ -158,7 +158,9 @@ def test_normal_session_on_a_coding_server_is_told(session_start, pc, closed_por
 def test_matching_modes_give_no_note(session_start, pc, closed_port_url, monkeypatch, coding):
     pc.write_server_pidfile(_port(closed_port_url), os.getpid(), coding_memory=coding)
     result = _join(session_start, closed_port_url, monkeypatch, coding=coding)
-    assert "coding mode" not in _messages(result)
+    messages = _messages(result)
+    # Every mode note names how the server was started and how to restart it.
+    assert "was started" not in messages and "`kill " not in messages
 
 
 def test_unknown_server_mode_is_told_to_a_coding_session(
@@ -276,15 +278,16 @@ def test_managed_endpoint_names_the_setting(session_start, pc, closed_port_url, 
     assert "Remove COGNEE_BASE_URL and COGNEE_MANAGED_ENDPOINT" in remote
 
 
-def test_queued_project_memory_is_told_once(session_start, pc, closed_port_url, monkeypatch):
+def test_queued_project_memory_note_reaches_both_messages(
+    session_start, pc, closed_port_url, monkeypatch
+):
+    # Showing it once is pending_notice's job (test_project_memory_retry); this
+    # pins that session start puts its note in both output copies.
     pm = importlib.import_module("_project_memory")
-    shown = iter([pm.PENDING_NOTICE, ""])
-    monkeypatch.setattr(pm, "pending_notice", lambda dataset, session_id: next(shown))
-    first = _join(session_start, closed_port_url, monkeypatch, coding=False)
-    assert pm.PENDING_NOTICE in first["systemMessage"]
-    assert pm.PENDING_NOTICE in first["hookSpecificOutput"]["systemMessage"]
-    second = _join(session_start, closed_port_url, monkeypatch, coding=False)
-    assert pm.PENDING_NOTICE not in _messages(second)
+    monkeypatch.setattr(pm, "pending_notice", lambda dataset, session_id: pm.PENDING_NOTICE)
+    result = _join(session_start, closed_port_url, monkeypatch, coding=False)
+    assert pm.PENDING_NOTICE in result["systemMessage"]
+    assert pm.PENDING_NOTICE in result["hookSpecificOutput"]["systemMessage"]
 
 
 def test_doctor_line_shows_the_server_mode(suite, session_start, pc, monkeypatch):
