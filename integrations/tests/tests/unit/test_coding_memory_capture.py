@@ -683,6 +683,119 @@ def test_an_interrupt_before_any_text_sends_the_prefix_alone(cm, sent, tmp_path,
     assert _ctx(qa)["interrupted"] is True
 
 
+def _codex_aborted(stamp: str, reason: str = "interrupted") -> dict:
+    return {
+        "timestamp": stamp,
+        "type": "event_msg",
+        "payload": {"type": "turn_aborted", "turn_id": "t", "reason": reason},
+    }
+
+
+@pytest.mark.parametrize("reason", ["interrupted", "replaced"])
+def test_an_interrupted_codex_turn_is_sent_closed_at_the_abort(
+    cm, sent, tmp_path, repo, monkeypatch, reason
+):
+    monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
+    records = [
+        _codex_prompt("Request A", A_PROMPT),
+        _codex_item(
+            {"type": "AgentMessage", "id": "m1", "content": [{"type": "Text", "text": "Looking."}]},
+            "2026-11-05T10:00:20.000Z",
+        ),
+        _codex_aborted("2026-11-05T10:00:30.000Z", reason),
+        _codex_prompt("Request B", B_PROMPT),
+        *_codex_answer("Answer B", "2026-11-05T10:06:00.000Z"),
+    ]
+    path = _write(tmp_path / "rollout.jsonl", records)
+    cm.capture(_payload(path, repo, "Answer B"))
+    first, second = _qa(sent)
+    assert first["question"] == "Request A"
+    assert first["answer"] == cm.INTERRUPTED_ANSWER + "\nLooking."
+    assert _ctx(first)["interrupted"] is True
+    assert (second["question"], second["answer"]) == ("Request B", "Answer B")
+    assert "interrupted" not in _ctx(second)
+
+    sent.clear()
+    _write(path, records + _codex_answer("Answer B, revised", "2026-11-05T10:07:00.000Z"))
+    cm.capture(_payload(path, repo, "Answer B, revised"))
+    assert [q["question"] for q in _qa(sent)] == ["Request B"]  # A is never continued
+
+
+def test_a_codex_turn_aborted_before_any_text_sends_the_prefix_alone(
+    cm, sent, tmp_path, repo, monkeypatch
+):
+    monkeypatch.setattr(cm, "parse_transcript", cm.parse_codex)
+    records = [_codex_prompt("Request A", A_PROMPT), _codex_aborted("2026-11-05T10:00:30.000Z")]
+    cm.capture(_payload(_write(tmp_path / "rollout.jsonl", records), repo))
+    (qa,) = _qa(sent)
+    assert qa["answer"] == cm.INTERRUPTED_ANSWER and _ctx(qa)["interrupted"] is True
+
+
+# -- Error lines -------------------------------------------------------------------------------
+
+
+def _traceback(exception: str) -> str:
+    return (
+        "Traceback (most recent call last):\n"
+        '  File "job.py", line 3, in <module>\n'
+        "    main()\n"
+        f"{exception}\n"
+    )
+
+
+def test_two_python_tracebacks_get_their_own_error_lines(cm):
+    missing = cm._error_line(
+        _traceback("FileNotFoundError: [Errno 2] No such file or directory: 'data.csv'")
+    )
+    key = cm._error_line(_traceback("KeyError: 'user_id'"))
+    assert missing == "FileNotFoundError: [Errno 2] No such file or directory: 'data.csv'"
+    assert key == "KeyError: 'user_id'"
+    assert (
+        "Traceback"
+        not in cm.call_error(
+            {"is_error": True, "exit_code": 1, "output": _traceback("KeyError: 'x'")}
+        ).splitlines()[0]
+    )
+
+
+def test_a_chained_traceback_gives_the_exception_that_ended_the_program(cm):
+    output = (
+        _traceback("KeyError: 'x'")
+        + "\nDuring handling of the above exception, another exception occurred:\n\n"
+        + _traceback("app.errors.ConfigError: config missing")
+    )
+    assert cm._error_line(output) == "app.errors.ConfigError: config missing"
+
+
+def test_code_printed_before_a_failure_is_not_its_error_line(cm):
+    output = (
+        "from cognee.exceptions import CogneeApiError\n"
+        "    except Exception as exc:\n"
+        "        raise ValueError(exc)\n"
+        "bash: nosuchtool: command not found\n"
+    )
+    assert cm._error_line(output) == "bash: nosuchtool: command not found"
+
+
+def test_ruff_failures_are_keyed_on_their_rule_not_the_summary(cm):
+    unused = cm._error_line("a.py:3:1: F401 [*] `os` imported but unused\nFound 1 error.\n")
+    long = cm._error_line("b.py:9:89: E501 Line too long (120 > 88)\nFound 1 error.\n")
+    assert unused.startswith("a.py:3:1: F401") and long.startswith("b.py:9:89: E501")
+    assert cm._error_line("Found 2 errors.\nsomething failed here\n") == "something failed here"
+
+
+def test_cargo_progress_does_not_hide_the_compile_error(cm):
+    output = "   Compiling error-chain v0.12.4\nerror[E0425]: cannot find value `x`\n"
+    assert cm._error_line(output) == "error[E0425]: cannot find value `x`"
+
+
+def test_a_pytest_e_line_is_picked_without_an_error_word(cm):
+    output = (
+        "tests/t.py F\n>       assert f() == 2\nE       assert 1 == 2\n=== 1 failed in 0.1s ===\n"
+    )
+    assert cm._error_line(output) == "E       assert 1 == 2"
+
+
 # -- Repository root ---------------------------------------------------------------------------
 
 

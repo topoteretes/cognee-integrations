@@ -2009,6 +2009,7 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                     hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
             if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
                 hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
+                _project_memory_gave_up(dataset, session_id)
                 _stop_heartbeat()
                 phase_end("setting_up", session_key=session_key, ok=False)
                 return
@@ -2041,10 +2042,12 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                     # connection state itself. Nothing is registered, so
                     # memory is not ready.
                     hook_log("bootstrap_registration_failed", {"session_id": session_id})
+                    _project_memory_gave_up(dataset, session_id)
                     _stop_heartbeat()
                     phase_end("setting_up", session_key=session_key, ok=False)
         except Exception as exc:
             hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+            _project_memory_gave_up(dataset, session_id)
             _stop_heartbeat()
             phase_end("setting_up", session_key=session_key, ok=False)
     finally:
@@ -2792,6 +2795,7 @@ async def _start(payload: dict | None = None) -> dict:
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
                 worker_owns_ready = True
             else:
+                _project_memory_gave_up(dataset, session_id)
                 phase_end("connecting", session_key=session_key, ok=False)
                 return {}
 
@@ -2890,6 +2894,17 @@ def _coding_server_note(
             {"base_url": target_url, "managed": managed, "coding": coding_memory_enabled()},
         )
     return note
+
+
+def _project_memory_gave_up(dataset: str, session_id: str) -> None:
+    """Session setup ended before prepare() and nothing retries it: let a later
+    route() prepare the session instead of holding its memory for good."""
+    try:
+        from _project_memory import allow_retry
+
+        allow_retry(dataset, session_id)
+    except Exception as exc:
+        hook_log("project_memory_retry_mark_failed", {"error": str(exc)[:200]})
 
 
 def _project_memory_note(dataset: str, session_id: str) -> str:

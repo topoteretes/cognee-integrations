@@ -843,6 +843,11 @@ def parse_codex(transcript_path: str) -> dict:
             answer, answer_time = str(payload["last_agent_message"]), str(record.get("timestamp"))
             _set_answer(units[-1] if units else None, {}, answer.strip(), answer_time)
             continue
+        if kind == "turn_aborted":
+            # Any reason (an Esc interrupt or otherwise): the turn did not finish,
+            # so its request must not read as answered by a progress note.
+            _interrupt(units[-1] if units else None, {}, _codex_time(record, payload))
+            continue
         if kind != "item_completed":
             continue
         item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
@@ -920,17 +925,71 @@ _ERROR_LINE_RE = re.compile(
 MAX_ERROR_LINE_BYTES = 300
 
 
+_TRACEBACK_HEADER = "Traceback (most recent call last):"
+#: A Python exception line: ``FileNotFoundError: …``, ``pkg.errors.CustomError``.
+_EXCEPTION_LINE_RE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Warning|Interrupt|Exit)\b")
+#: A line that opens with an error word: ``error: …``, ``error[E0425]: …``,
+#: ``fatal: …``, ``ERROR …``, ``npm ERR! …``, ``panic: …``.
+_LEADING_ERROR_RE = re.compile(r"^(?:(?:error|fatal|panic)\b|npm err!)", re.IGNORECASE)
+#: A compiler or linter diagnostic at a location: ``a.py:3:1: F401 …`` (ruff,
+#: flake8), ``a.py:3: error: …`` (mypy), ``a.c:3:5: error: …`` (gcc, clang).
+_LOCATED_ERROR_RE = re.compile(
+    r"^\S+:\d+(?::\d+)?:\s*(?:(?:error|fatal)\b|[A-Z]{1,4}\d{2,5}\b)", re.IGNORECASE
+)
+#: A program's own error message: ``bash: foo: command not found``,
+#: ``cat: x: No such file or directory``, ``ls: cannot access 'x'``.
+_PROGRAM_PREFIX_RE = re.compile(r"^[\w./-]+: \S")
+#: A run's summary, which names a count, not the error: ``Found 1 error.``,
+#: ``2 failed, 3 passed``, ``=== 1 failed in 0.1s ===``.
+_SUMMARY_LINE_RE = re.compile(r"^(?:found \d+ errors?\b|\d+ (?:failed|errors?)\b|=+ .* =+$)", re.I)
+
+
+def _last_exception(lines: list) -> str:
+    """The exception that ended a Python traceback: with chained exceptions
+    ("During handling of the above exception…") the last one, never a header."""
+    found, seen_header = "", False
+    for raw in lines:
+        if raw.strip() == _TRACEBACK_HEADER:
+            seen_header = True
+        elif seen_header and raw[:1] not in (" ", "\t") and _EXCEPTION_LINE_RE.match(raw):
+            found = raw.strip()
+    return found
+
+
 def _error_line(text: str) -> str:
-    """The first line that looks like an error, else the first non-empty line."""
-    first = ""
-    for raw in text.splitlines():
+    """The line of a command's output that names its error.
+
+    The server keys pitfalls on this line, so it must name the failure and stay
+    the same across runs. In order: a Python traceback's last exception; the
+    first anchored error line (a pytest ``E`` line, a line opening with an error
+    word or an exception name, a located compiler/linter diagnostic, a
+    ``program: …`` message with an error word); the last line with an error word
+    anywhere that is not a run summary (a command's error comes after what it
+    printed); else the first non-empty line.
+    """
+    lines = text.splitlines()
+    if any(raw.strip() == _TRACEBACK_HEADER for raw in lines):
+        found = _last_exception(lines)
+        if found:
+            return found
+    first = loose = ""
+    for raw in lines:
         line = raw.strip()
-        if not line:
+        if not line or line == _TRACEBACK_HEADER:
             continue
-        if raw.startswith("E ") or _ERROR_LINE_RE.search(line):
+        if (
+            raw.startswith("E ")
+            or _LEADING_ERROR_RE.match(line)
+            or _EXCEPTION_LINE_RE.match(line)
+            or _LOCATED_ERROR_RE.match(line)
+        ):
             return line
+        if _ERROR_LINE_RE.search(line) and not _SUMMARY_LINE_RE.match(line):
+            if _PROGRAM_PREFIX_RE.match(line):
+                return line
+            loose = line
         first = first or line
-    return first
+    return loose or first
 
 
 def _tail_lines(text: str, cap: int) -> list:
@@ -950,8 +1009,8 @@ def _tail_lines(text: str, cap: int) -> list:
 def call_error(call: dict) -> str:
     """The error text of a failed call, from its (already sanitized) fields.
 
-    A command's error is its error line (the first output line that looks like
-    an error, else the first non-empty one) with `` (exit code N)``, then the
+    A command's error is its error line (see :func:`_error_line`) with
+    `` (exit code N)``, then the
     tail of its output cut at a line boundary; the server keys pitfalls on that
     first line, so it is never a byte-cut fragment. A call with an explicit
     ``error`` uses it; anything else uses its output.

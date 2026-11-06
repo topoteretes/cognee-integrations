@@ -1952,13 +1952,14 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                 hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
         if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
             hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
+            _project_memory_gave_up(dataset, session_id)
             return
 
     # 2. Register this agent/session. Runs for every agent — NOT gated by the
     #    boot single-flight. _run_heavy's _ensure_local_server_running is a
     #    no-op now that the server is healthy.
     try:
-        await _run_heavy(
+        _, _, registered = await _run_heavy(
             config,
             cwd,
             session_id,
@@ -1968,9 +1969,12 @@ async def _run_bootstrap(bootstrap: dict) -> None:
             managed_endpoint=False,
             boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
         )
-        hook_log("bootstrap_complete", {"session_id": session_id})
+        hook_log("bootstrap_complete", {"session_id": session_id, "registered": bool(registered)})
+        if not registered:
+            _project_memory_gave_up(dataset, session_id)
     except Exception as exc:
         hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+        _project_memory_gave_up(dataset, session_id)
 
 
 async def _start(payload: dict | None = None) -> dict:
@@ -2168,6 +2172,7 @@ async def _start(payload: dict | None = None) -> dict:
                 # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:
+                _project_memory_gave_up(dataset, session_id)
                 return {}
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
@@ -2294,6 +2299,17 @@ def _coding_server_note(
             {"base_url": target_url, "managed": managed, "coding": coding_memory_enabled()},
         )
     return note
+
+
+def _project_memory_gave_up(dataset: str, session_id: str) -> None:
+    """Session setup ended before prepare() and nothing retries it: let a later
+    route() prepare the session instead of holding its memory for good."""
+    try:
+        from _project_memory import allow_retry
+
+        allow_retry(dataset, session_id)
+    except Exception as exc:
+        hook_log("project_memory_retry_mark_failed", {"error": str(exc)[:200]})
 
 
 def _project_memory_note(dataset: str, session_id: str) -> str:

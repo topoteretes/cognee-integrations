@@ -972,10 +972,14 @@ The setting is pinned for the session, including buffered writes and detached
 improve workers. The backend must expose `node_set` on typed QA/trace entries and
 preserve it through improve. Older backends leave capture queued with an explicit
 `project_memory_prepared` error instead of silently losing the tags. When the check
-gets no answer (a timeout, a connection error, a reply that is not JSON), capture
-stays queued and the next write or drain checks again after 30 s, 2 min, then
-every 10 min; nothing is sent untagged, and session start says once that the
-session's memory is queued.
+gets no answer (a timeout, a connection error, a reply that is not JSON, HTTP 408,
+429 or 5xx), capture stays queued and the next hook that writes, drains or
+recalls checks again after 30 s, 2 min, then every 10 min; nothing is sent
+untagged, and session start says once that the session's memory is queued. Any
+other HTTP status on the check (a server that hides `/openapi.json`, say) is an
+answer: capture stays queued with an explicit `project_memory_prepared` error.
+The check only ever runs after session setup has: a hook never runs it first,
+so a session is never bound to a key or dataset that is not final yet.
 
 When a session names a project, **graph recall is scoped to it**: every prompt's
 graph lookup sends `node_name=[<project>, <shared sets>]` (OR-joined), so other
