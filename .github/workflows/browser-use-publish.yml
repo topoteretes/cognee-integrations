@@ -1,0 +1,76 @@
+# Publishes the Browser Use memory adapter (integrations/browser-use) to PyPI on
+# tag push, using PyPI Trusted Publishing (OIDC) — no long-lived token secrets.
+#
+# Release flow:
+#   1. Bump the version in pyproject.toml and
+#      cognee_integration_browser_use/__init__.py, update CHANGELOG.md and
+#      integrations/inventory.yml.
+#   2. Tag: git tag browser-use-v<version> && git push --tags
+#
+# ─── ONE-TIME SETUP ────────────────────────────────────────────────────────────
+#
+# On pypi.org, for the `cognee-integration-browser-use` project (or as a
+# "pending publisher" before the first release), add a Trusted Publisher:
+#   Repository owner: topoteretes
+#   Repository name:  cognee-integrations
+#   Workflow name:    browser-use-publish.yml
+#   Environment:      (leave blank)
+
+name: Publish browser-use adapter to PyPI
+
+on:
+  push:
+    tags:
+      - "browser-use-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC for PyPI Trusted Publishing
+    defaults:
+      run:
+        working-directory: integrations/browser-use
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Check the tag matches the package version
+        run: |
+          tag_version="${GITHUB_REF_NAME#browser-use-v}"
+          pkg_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          init_version="$(python -c 'import re; print(re.search(r"__version__ = \"([^\"]+)\"", open("cognee_integration_browser_use/__init__.py").read()).group(1))')"
+          if [ "$tag_version" != "$pkg_version" ] || [ "$tag_version" != "$init_version" ]; then
+            echo "Tag says $tag_version but pyproject.toml says $pkg_version and __init__.py says $init_version" >&2
+            exit 1
+          fi
+
+      - name: Run the offline test suite
+        run: |
+          uv sync --locked --dev
+          uv run pytest tests/unit tests/contract -q
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Smoke-install the wheel outside the monorepo
+        run: |
+          python -m venv /tmp/wheel-smoke
+          /tmp/wheel-smoke/bin/pip install dist/*.whl
+          cd /tmp && /tmp/wheel-smoke/bin/python -c "import cognee_integration_browser_use as m; print(m.__version__)"
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: integrations/browser-use/dist

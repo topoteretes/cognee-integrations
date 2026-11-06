@@ -222,6 +222,26 @@ integrations:
       cognee_remember tools. Talks to a cognee server over the HTTP API
       (/recall, /remember, /datasets, /forget); no cognee SDK dependency.
 
+  - slug: browser-use
+    name: "Cognee Memory Adapter for Browser Use"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-browser-use"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: >-
+      Async adapter composed around browser_use.Agent: one bounded graph recall
+      before a run (injected via extend_system_message), cognee_recall / opt-in
+      cognee_remember actions registered into the caller's Tools, cheap step
+      observation, and a provenance-stamped outcome record written after the run
+      with receipts (accepted/indexing/ready/failed/unknown) and verified targeted
+      deletion. Trusted MemoryScope -> opaque dataset; the model never picks a
+      dataset. Talks to a cognee server over the HTTP API (verified on 1.6.5); no
+      cognee SDK dependency; browser-use >=0.13.11,<0.14, Python 3.11+. Published
+      to PyPI from CI on browser-use-v* tags (browser-use-publish.yml).
+
   - slug: tapes-cassette
     name: "Cognee Cassette for Paper's Tapes"
     owner: cognee
