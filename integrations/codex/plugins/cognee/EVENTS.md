@@ -106,6 +106,11 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:dataset_ensure_redirect_failed` | `dataset.ensure_redirect_failed` |
 | `hook:dataset_ensured` | `dataset.ensured` |
 | `hook:dataset_switched` | `dataset.switched` |
+| `hook:recall_mode_set` | `recall.mode_set` |
+| `hook:recall_mode_invalid` | `recall.mode_invalid` |
+| `hook:recall_auto_route_error` | `recall.auto_route_error` |
+| `hook:recall_mode_notice_failed` | `recall.mode_notice_failed` |
+| `hook:recall_mode_notice_shown` | `recall.mode_notice_shown` |
 | `hook:drain_backoff_write_failed` | `drain.backoff_write_failed` |
 | `hook:drain_lock_error` | `drain.lock_error` |
 | `hook:drain_lock_release_failed` | `drain.lock_release_failed` |
@@ -154,7 +159,10 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:map_create_failed` | `map.create_failed` |
 | `hook:memory_credit` | `memory.credit` |
 | `hook:memory_credit_failed` | `memory.credit_failed` |
-| `hook:memory_tags_write_failed` | `memory.tags_write_failed` |
+| `hook:memory_credit_write_failed` | `memory.credit_write_failed` |
+| `hook:turn_status_write_failed` | `memory.turn_status_write_failed` |
+| `hook:turn_status_read_failed` | `memory.turn_status_read_failed` |
+| `hook:context_lookup_client_unknown` | `recall.client_unknown` |
 | `hook:missing_payload_session_id` | `missing.payload_session_id` |
 | `hook:mode_decision` | `runtime.decision` |
 | `hook:no_session_id` | `session.session_id` |
@@ -192,15 +200,12 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_auth_rejected` | `recall.auth_rejected` |
 | `hook:recall_breaker_open` | `recall.breaker_open` |
 | `hook:recall_budget_exceeded` | `recall.budget_exceeded` |
-| `hook:recall_dataset_hint` | `recall.dataset_hint` |
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
 | `hook:recall_error` | `recall.error` |
 | `hook:recall_graph_not_built` | `recall.graph_not_built` |
 | `hook:recall_guidance_absent` | `recall.guidance_absent` |
 | `hook:recall_health_accounting_failed` | `recall.health_accounting_failed` |
-| `hook:readable_datasets_refresh_failed` | `datasets.readable_refresh_failed` |
-| `hook:readable_datasets_refresh_deferred` | `datasets.readable_refresh_deferred` |
 | `hook:recall_server_down` | `recall.server_down` |
 | `hook:recall_skipped_not_ready` | `recall.skipped_not_ready` |
 | `hook:run_exception` | `run.exception` |
@@ -339,3 +344,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
+
+`memory.credit`: the Stop hook's credit check, `{injected, credited}`. `injected` is whether the turn injected memory with the credit instruction (`injected_turn` in the session's `credit.json` is the current turn); `credited` whether the answer ends with the credit line (`logo_exact` is added for the ChatGPT app's credit: whether its icon was copied exactly). Only a credit on an injected turn is counted. Logged when either is true.

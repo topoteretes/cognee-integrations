@@ -65,6 +65,5 @@ already exists.
 | `COGNEE_IDLE_DISABLED=true` | No idle watcher or cloud worker keeps running after the run. |
 
 Claude still sees the plugin's normal SessionStart guidance, plus "recall
-skipped (server unreachable)" on each prompt. It sees no recalled memory and no
-dataset hint, so the suite measures routing from the skill descriptions and
-`when_to_use` text alone.
+skipped (server unreachable)" on each prompt. It sees no recalled memory, so the
+suite measures routing from the skill descriptions and `when_to_use` text alone.

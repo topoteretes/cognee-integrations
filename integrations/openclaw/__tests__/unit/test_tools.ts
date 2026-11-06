@@ -171,7 +171,13 @@ describe("memory_search", () => {
   });
 
   it("explains an empty dataset set and an unsupported wiki corpus without erroring", async () => {
-    expect((await search(deps({ resolveDatasets: async () => [] }), { query: "q" })).note).toMatch(/No Cognee dataset/);
+    // With none of the agent's datasets resolved it does not route either: the
+    // server would search other agents' datasets and label their hits as this agent's.
+    const recall = jest.fn(async () => [r("x", "someone else's", 0.9)]);
+    const autoRoute = jest.fn(async () => true);
+    expect((await search(deps({ resolveDatasets: async () => [], autoRoute, recall }), { query: "q" })).note).toMatch(/No Cognee dataset/);
+    expect(autoRoute).not.toHaveBeenCalled();
+    expect(recall).not.toHaveBeenCalled();
     const wiki = await search(deps(), { query: "q", corpus: "wiki" });
     expect(wiki.results).toEqual([]);
     expect(wiki.note).toMatch(/wiki/);

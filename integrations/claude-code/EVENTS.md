@@ -117,6 +117,11 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:dataset_ensure_redirect_failed` | `dataset.ensure_redirect_failed` |
 | `hook:dataset_ensured` | `dataset.ensured` |
 | `hook:dataset_switched` | `dataset.switched` |
+| `hook:recall_mode_set` | `recall.mode_set` |
+| `hook:recall_mode_invalid` | `recall.mode_invalid` |
+| `hook:recall_auto_route_error` | `recall.auto_route_error` |
+| `hook:recall_mode_notice_failed` | `recall.mode_notice_failed` |
+| `hook:recall_mode_notice_shown` | `recall.mode_notice_shown` |
 | `hook:drain_backoff_write_failed` | `drain.backoff_write_failed` |
 | `hook:drain_lock_error` | `drain.lock_error` |
 | `hook:drain_lock_release_failed` | `drain.lock_release_failed` |
@@ -171,7 +176,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:map_create_failed` | `map.create_failed` |
 | `hook:memory_credit` | `memory.credit` |
 | `hook:memory_credit_failed` | `memory.credit_failed` |
-| `hook:memory_tags_write_failed` | `memory.tags_write_failed` |
+| `hook:memory_credit_write_failed` | `memory.credit_write_failed` |
 | `hook:missing_payload_session_id` | `missing.payload_session_id` |
 | `hook:mode_decision` | `runtime.decision` |
 | `hook:no_session_id` | `session.session_id` |
@@ -212,14 +217,11 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:prompt_watcher_alive_check_failed` | `prompt.watcher_alive_check_failed` |
 | `hook:prompt_watcher_log_open_failed` | `prompt.watcher_log_open_failed` |
 | `hook:prompt_watcher_stop_unlink_failed` | `prompt.watcher_stop_unlink_failed` |
-| `hook:readable_datasets_refresh_failed` | `datasets.readable_refresh_failed` |
-| `hook:readable_datasets_refresh_deferred` | `datasets.readable_refresh_deferred` |
 | `hook:recall_audit_write_failed` | `recall.audit_write_failed` |
 | `hook:recall_auth_rejected` | `recall.auth_rejected` |
 | `hook:recall_breaker_open` | `recall.breaker_open` |
 | `hook:recall_budget_exceeded` | `recall.budget_exceeded` |
 | `hook:recall_budget_reduced` | `recall.budget_reduced` |
-| `hook:recall_dataset_hint` | `recall.dataset_hint` |
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
 | `hook:recall_error` | `recall.error` |
@@ -391,3 +393,5 @@ Bash capture decisions contain only host session identity and `captured`,
 not server acknowledgement. Self skips log an allowlisted `first_token` and
 `plugin_path`, `plugin_script` or `cognee_cli` reason. Low-signal skips log the tool
 and allowlisted first token; neither event includes command text.
+
+`memory.credit`: the Stop hook's credit check, `{injected, credited}`. `injected` is whether the turn injected memory with the credit instruction (`injected_turn` in the session's `credit.json` is the current turn); `credited` whether the answer ends with the credit line. Only a credit on an injected turn is counted. Logged when either is true.

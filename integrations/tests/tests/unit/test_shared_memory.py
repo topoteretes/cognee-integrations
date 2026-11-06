@@ -338,6 +338,110 @@ def test_refresh_picks_up_a_sibling_dataset_without_restart(pc, bootstrap, mock_
     assert {"read", "write"} <= ident.acl[sibling_copy["id"]][role["id"]]
 
 
+def test_dataset_picked_by_id_resolves_that_dataset_not_one_named_after_it(
+    pc, bootstrap, mock_server
+):
+    """The switch addresses a parent-owned dataset by its id. Resolved as a
+    name, that id found (or created) a dataset NAMED after it — the switch
+    pinned the session to an empty impostor while reporting the right id."""
+    module, run = bootstrap
+    _uid, _k, _n, ok = run({})
+    assert ok
+    ident = mock_server.identity
+    alice = ident.seed_dataset("alice_in_wonderland")
+    impostor = ident.seed_dataset(alice["id"])  # a dataset whose NAME is alice's id
+    before = set(ident.dataset_rows)
+
+    shared = pc.resolve_shared_dataset(alice["id"])
+    assert shared["mode"] == "shared"
+    assert shared["dataset_id"] == alice["id"]
+    assert impostor["id"] not in shared["dataset_ids"]
+    assert set(ident.dataset_rows) == before  # nothing created
+
+
+def test_ungranted_dataset_picked_by_id_keeps_no_canonical_id(pc, bootstrap, mock_server):
+    """Someone else's dataset the role cannot hold, picked by id, gets no
+    canonical id (the caller addresses it by that id) and no parent copy."""
+    ident = mock_server.identity
+    _, tenant = ident.tenants_create(PRINCIPAL_KEY, "org")
+    stranger_key = ident.seed_owner_key("stranger@example.com")
+    stranger = ident.users["stranger@example.com"]["id"]
+    ident.tenant_add_user(PRINCIPAL_KEY, stranger, tenant["tenant_id"])
+    ident.tenant_select(stranger_key, tenant["tenant_id"])
+    foreign = ident.seed_dataset("their_notes", stranger)
+    module, run = bootstrap
+    _uid, _k, _n, ok = run({})
+    assert ok
+    before = set(ident.dataset_rows)
+
+    shared = pc.resolve_shared_dataset(foreign["id"])
+    assert shared["dataset_id"] == ""
+    assert set(ident.dataset_rows) == before
+
+
+def _parent_and_sibling_copies(pc, bootstrap, mock_server) -> tuple[str, str]:
+    """Two same-named datasets the shared role holds: the parent's canonical
+    ``agent_sessions`` and a sibling agent's copy (granted by the refresh).
+    Picking by name is ambiguous there, so the person picks by id."""
+    module, run = bootstrap
+    _uid, _k, _n, ok = run({})
+    assert ok
+    ident = mock_server.identity
+    parent_copy, _ = pc.resolve_active_dataset_ids("host-shared-1")
+    _, body = ident.plugins_provision("codex", PRINCIPAL_KEY)
+    sibling_copy = ident.seed_dataset("agent_sessions", body["agentId"])
+    assert pc.refresh_shared_memory("host-shared-1") is True
+    return parent_copy, sibling_copy["id"]
+
+
+def test_same_named_dataset_picked_by_id_is_the_write_target(pc, bootstrap, mock_server):
+    """Picked by id among same-named datasets, the picked one takes the saves.
+    Turned back into its name and re-picked, the parent's own copy won and the
+    saves landed in a dataset the person did not choose."""
+    parent_copy, sibling_copy = _parent_and_sibling_copies(pc, bootstrap, mock_server)
+
+    shared = pc.resolve_shared_dataset(sibling_copy)
+    assert shared["mode"] == "shared"
+    assert shared["dataset_id"] == sibling_copy
+    assert parent_copy in shared["dataset_ids"]  # the name's other copy stays readable
+    # The name itself still resolves to the parent's copy.
+    marker = pc.load_shared_memory_marker(mock_server.url)
+    assert marker["canonical"]["agent_sessions"] == parent_copy
+    assert pc.resolve_shared_dataset("agent_sessions")["dataset_id"] == parent_copy
+
+
+def test_refresh_keeps_a_dataset_picked_by_id(pc, bootstrap, mock_server):
+    """The idle watcher's refresh re-resolves by name; a dataset the person
+    picked by id stays the write target instead of the name's canonical copy."""
+    parent_copy, sibling_copy = _parent_and_sibling_copies(pc, bootstrap, mock_server)
+    host = "host-shared-1"
+    pc.switch_launch_record(
+        host,
+        session_id="s2",
+        dataset="agent_sessions",
+        conn_uuid="c2",
+        dataset_id=sibling_copy,
+        dataset_ids=[sibling_copy, parent_copy],
+        picked_id=sibling_copy,
+    )
+    pc.refresh_shared_memory(host)
+    write_id, read_ids = pc.resolve_active_dataset_ids(host)
+    assert write_id == sibling_copy
+    assert parent_copy in read_ids
+
+    # Switched to by name, the refresh moves the saves back to the canonical copy.
+    pc.switch_launch_record(
+        host,
+        session_id="s3",
+        dataset="agent_sessions",
+        conn_uuid="c3",
+        dataset_id=sibling_copy,
+        dataset_ids=[sibling_copy, parent_copy],
+    )
+    assert pc.refresh_shared_memory(host) is True
+    assert pc.resolve_active_dataset_ids(host)[0] == parent_copy
+
+
 def test_switch_record_carries_the_new_dataset_ids(pc):
     pc.ensure_launch_record("host-x", "/w", dataset="a")
     pc.set_launch_dataset_ids("host-x", "ds-a", ["ds-a", "ds-a2"])

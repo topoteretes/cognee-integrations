@@ -6,6 +6,8 @@ in `additionalContext`, but the copied inner cores place the **status header**
 differently:
 
   * the Codex-derived cores put `systemMessage` at the TOP level (and must NOT nest it);
+  * Codex itself sends none: it keeps the header for its Stop hook, which
+    prints it under the answer and its memory credit;
   * Claude Code puts `systemMessage` INSIDE `hookSpecificOutput`.
 
 Codex consumes that envelope directly. Antigravity's outer ``agy_hook`` instead
@@ -41,7 +43,9 @@ def lookup(suite, hook_module, monkeypatch):
     )
     monkeypatch.setattr(module, "recall_via_http", lambda *a, **k: [])
     if hasattr(module, "render_status_for_host"):
-        monkeypatch.setattr(module, "render_status_for_host", lambda _session: "Cognee")
+        monkeypatch.setattr(
+            module, "render_status_for_host", lambda _session, _auto=False: "Cognee"
+        )
     return module
 
 
@@ -50,11 +54,17 @@ def test_event_name_is_always_declared(lookup):
     assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
 
 
-def test_status_header_sits_where_this_host_reads_it(suite, lookup):
+def test_status_header_sits_where_this_host_reads_it(suite, lookup, monkeypatch):
+    kept: list = []
+    if hasattr(lookup, "stash_turn_status"):
+        monkeypatch.setattr(lookup, "stash_turn_status", lambda _d, _k, text: kept.append(text))
     output = asyncio.run(lookup._run("remember this"))
     hook_specific = output["hookSpecificOutput"]
 
-    if hasattr(lookup, "render_status_for_host"):  # codex: top level
+    if hasattr(lookup, "stash_turn_status"):  # codex: kept for the Stop hook
+        assert kept and kept[0].startswith("Cognee")
+        assert "systemMessage" not in output and "systemMessage" not in hook_specific
+    elif hasattr(lookup, "render_status_for_host"):  # codex-derived: top level
         assert output["systemMessage"].startswith("Cognee")
         assert "systemMessage" not in hook_specific
     else:  # claude-code: nested

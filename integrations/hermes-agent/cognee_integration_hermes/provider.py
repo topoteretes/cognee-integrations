@@ -18,6 +18,7 @@ from . import (
     dataset_overrides,
     exit_watcher,
     memory_credit,
+    recall_notice,
     recall_text,
     recap,
     runtime_env,
@@ -38,9 +39,18 @@ from .config import (
     DEFAULT_LOCAL_PORT,
     DEFAULT_SERVER_BOOT_TIMEOUT,
     LOCAL_COGNEE_REQUIREMENT,
+    RECALL_MODE_AUTO,
+    RECALL_MODE_PINNED,
+    RECALL_MODE_SOURCE_ENV,
+    RECALL_MODE_SOURCE_FILE,
+    RECALL_MODES,
     SHARED_PLUGIN_STATE_DIR,
     config_path,
+    configured_dataset_name,
+    configured_recall_mode,
+    effective_recall_mode,
     load_config,
+    recall_mode_is_set,
     resolve_hermes_home,
     resolve_local_roots,
     save_env_vars,
@@ -108,6 +118,51 @@ _BLOCK_STEER = (
 # finishes connecting in the background (up to the full boot timeout).
 _SESSION_START_WAIT_SECS = 90.0
 _BREAKER_COOLDOWN_SECS = 120
+
+# Why recall is pinned, the hook-family plugins' ``reason`` values (claude-code
+# _plugin_common.RECALL_PIN_*). Hermes has no explicit read-dataset scope, so
+# ``read_dataset_ids`` never applies here.
+RECALL_PIN_PICKED = "dataset_picked"  # this conversation pinned recall (pin or switch)
+# The configured recall_mode is "pinned", or none is set and the configured
+# dataset is not the default (config.effective_recall_mode).
+RECALL_PIN_CONFIGURED = "configured_pin"
+
+
+def _configured_by(source: str) -> str:
+    """Where a configured pin came from, as the result message names it."""
+    if source == RECALL_MODE_SOURCE_FILE:
+        return 'recall_mode "pinned" in cognee.json'
+    return "COGNEE_PLUGIN_RECALL_MODE=pinned"
+
+
+def _recall_message(mode: str, reason: str, dataset: str, source: str = "") -> str:
+    """The one human-readable line of every ``cognee_switch_dataset`` result
+    (current, pin, auto, switch, reset), built from the mode and pin reason.
+    ``source`` is load_config's ``recall_mode_source``, for a configured pin."""
+    saves = f"Saves go to dataset {dataset!r}. "
+    if mode != RECALL_MODE_PINNED:
+        return saves + (
+            "Recall is auto: the server picks the best-matching dataset (cognee 1.6.6; "
+            "an older server searches every readable dataset). Use action='pin' to "
+            "keep recall on this dataset."
+        )
+    if reason == RECALL_PIN_CONFIGURED and source not in (
+        RECALL_MODE_SOURCE_ENV,
+        RECALL_MODE_SOURCE_FILE,
+    ):
+        why = (
+            "because it is the configured dataset and no recall mode is set "
+            "(`recall_mode: auto` in cognee.json or COGNEE_PLUGIN_RECALL_MODE=auto lets "
+            "Cognee pick)"
+        )
+        lift = "Use action='auto' to let the server pick for this conversation."
+    elif reason == RECALL_PIN_CONFIGURED:
+        why = f"by the configured recall mode ({_configured_by(source)})"
+        lift = "Use action='auto' to let the server pick for this conversation."
+    else:
+        why = "by this conversation's own choice"
+        lift = "Use action='auto' to let the server pick, or 'reset' to follow the config."
+    return saves + f"Recall is pinned to {dataset!r} {why}. {lift}"
 
 
 # cognee rejects a dataset name containing a space or a dot (check_dataset_name,
@@ -359,6 +414,21 @@ class CogneeMemoryProvider(MemoryProvider):
         self._default_dataset = DEFAULT_DATASET
         self._switch_counter = 0
         self._retired_sessions: list[tuple[str, str]] = []
+        # Why graph recall is restricted to self._dataset, "" when it is not
+        # (see _recall_pinned): RECALL_PIN_PICKED for this conversation's own
+        # pin (action='pin' or a switch), RECALL_PIN_CONFIGURED when the
+        # configured recall_mode is "pinned". Unpinned, recall is auto
+        # (SDK-1393): it names no dataset and a cognee 1.6.6 server routes it to
+        # the best-matching dataset(s); an older one searches every readable
+        # dataset.
+        self._recall_pin_reason = ""
+        # This conversation's own recall mode ("auto" / "pinned"), "" when it
+        # follows the configured recall_mode. The conversation's choice wins.
+        self._recall_choice = ""
+        # Set by initialize: the configured recall_mode is "pinned", and where
+        # that setting came from (load_config's recall_mode_source).
+        self._configured_pins_recall = False
+        self._recall_mode_source = ""
         # Where Hermes was launched; gates the identifier-based code recall lane.
         self._cwd = ""
         # Per-session memory-hit totals for the visibility header (guarded by
@@ -394,6 +464,10 @@ class CogneeMemoryProvider(MemoryProvider):
         # Remote mode is plain HTTP; only local and embedded mode run cognee here.
         if cfg.get("service_url"):
             return True
+        if str_to_bool(cfg.get("embedded"), False):
+            # Embedded mode runs cognee in this process, from Hermes's own
+            # environment; the runtime venv is never used, so it never counts.
+            return has_cognee() and not runtime_env.hermes_env_outdated()
         # No LLM-key check: a keyless provider (Ollama) needs none, and a key
         # written by `hermes memory setup` after a long-running gateway started
         # is not in that process yet — "unavailable" would hide both, while the
@@ -408,11 +482,15 @@ class CogneeMemoryProvider(MemoryProvider):
         cfg = load_config()
         if cfg.get("service_url"):
             return ""
-        if str_to_bool(cfg.get("embedded"), False) and not has_cognee():
-            return cognee_not_installed_message("embedded")
+        if str_to_bool(cfg.get("embedded"), False):
+            if not has_cognee():
+                return cognee_not_installed_message("embedded")
+            if runtime_env.hermes_env_outdated():
+                return runtime_env.embedded_outdated_message()
+            return ""
         if runtime_env.local_ready():
             return ""
-        return cognee_not_installed_message("local")
+        return runtime_env.local_not_ready_message()
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
@@ -449,8 +527,21 @@ class CogneeMemoryProvider(MemoryProvider):
                 "env_var": "COGNEE_PLUGIN_DATASET",
             },
             {
+                "key": "recall_mode",
+                "description": (
+                    "Which datasets recall reads: auto lets Cognee pick them for each "
+                    "question; pinned reads only the active dataset"
+                ),
+                "default": RECALL_MODE_AUTO,
+                "choices": list(RECALL_MODES),
+                "env_var": "COGNEE_PLUGIN_RECALL_MODE",
+            },
+            {
                 "key": "auto_route",
-                "description": "Let Cognee choose the recall strategy",
+                "description": (
+                    "Let Cognee pick the search type for each query; false always uses "
+                    "graph completion"
+                ),
                 "default": "true",
                 "choices": ["true", "false"],
             },
@@ -478,9 +569,20 @@ class CogneeMemoryProvider(MemoryProvider):
         print("    local  - a cognee server on this machine")
         local_ready = runtime_env.local_ready()
         if not local_ready:
-            print("  Local mode needs a cognee runtime, which is not installed yet: picking")
-            print(f"  local offers to install it ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from")
-            print("  PyPI). Remote mode needs nothing installed.")
+            outdated = runtime_env.outdated_requirement()
+            stale = runtime_env.hermes_env_outdated()
+            if outdated:
+                print(f"  Local mode is off: its runtime holds {outdated}, and this version")
+                print(f"  needs {LOCAL_COGNEE_REQUIREMENT}. Picking local offers to install it")
+                print("  (about 1 GB from PyPI). Remote mode needs nothing installed.")
+            elif stale:
+                print(f"  Local mode is off: Hermes's environment holds {stale}, and this")
+                print(f"  version needs {LOCAL_COGNEE_REQUIREMENT}. Picking local offers to")
+                print("  install it (about 1 GB from PyPI). Remote mode needs nothing installed.")
+            else:
+                print("  Local mode needs a cognee runtime, which is not installed yet: picking")
+                print(f"  local offers to install it ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from")
+                print("  PyPI). Remote mode needs nothing installed.")
 
         current = load_config(hermes_home)
         if _chose_local(hermes_home):
@@ -491,9 +593,20 @@ class CogneeMemoryProvider(MemoryProvider):
         remote = mode in {"remote", "cloud", "service"}
 
         env_values: dict[str, str] = {}
+        dataset = _prompt("Dataset", default=str(current.get("dataset") or DEFAULT_DATASET))
         file_values: dict[str, Any] = {
-            "dataset": _prompt("Dataset", default=str(current.get("dataset") or DEFAULT_DATASET)),
-            "auto_route": _prompt_bool("Auto-route recall", current.get("auto_route", True)),
+            "dataset": dataset,
+            # With no recall mode set yet, a non-default dataset offers
+            # "pinned": recall stays on it, as it did before (SDK-1393).
+            "recall_mode": _prompt_recall_mode(
+                current.get("recall_mode")
+                if recall_mode_is_set(current)
+                else effective_recall_mode({}, dataset)
+            ),
+            # auto_route (which search type recall uses) is not asked: next to
+            # the recall mode (which datasets it reads) it read as the same
+            # question twice. It keeps its saved value; set it in cognee.json
+            # or COGNEE_AUTO_ROUTE.
             "improve_on_end": _prompt_bool(
                 "Improve graph on session end",
                 current.get("improve_on_end", True),
@@ -558,7 +671,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._hermes_home = kwargs.get("hermes_home")
         self._config = load_config(self._hermes_home)
         self._session_id = session_id
-        configured = str(self._config.get("dataset") or DEFAULT_DATASET)
+        configured = configured_dataset_name(self._config.get("dataset"))
         self._default_dataset = _safe_dataset_name(configured)
         if self._default_dataset != configured.strip():
             logger.warning(
@@ -567,6 +680,16 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._default_dataset,
             )
         self._dataset = self._default_dataset
+        # The configured recall_mode: "pinned" keeps recall on the active
+        # dataset, anything else is auto. With none set, a configured dataset
+        # other than the default pins (reason configured_pin), as before
+        # SDK-1393; the default dataset is auto.
+        self._configured_pins_recall = (
+            effective_recall_mode(self._config, self._default_dataset) == RECALL_MODE_PINNED
+        )
+        self._recall_mode_source = str(self._config.get("recall_mode_source") or "")
+        self._recall_choice = ""
+        self._recall_pin_reason = self._configured_recall_pin()
         self._top_k = int(self._config.get("top_k") or 5)
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
         self._improve_on_end = str_to_bool(self._config.get("improve_on_end"), True)
@@ -683,6 +806,22 @@ class CogneeMemoryProvider(MemoryProvider):
         if self._can_buffer() and self._writes_enabled:
             # Writes an earlier run could not deliver; replayed off the startup path.
             self._replay_in_background()
+        self._queue_recall_notice()
+
+    def _queue_recall_notice(self) -> None:
+        """Hold the once-per-dataset note for this session's first reply: recall
+        stays on the configured dataset only because no recall mode is set, and
+        auto exists (recall_notice). Not for a conversation with its own mode, or
+        a subagent."""
+        if (
+            not self._writes_enabled
+            or self._recall_choice
+            or recall_mode_is_set(self._config)
+            or self._recall_pin_reason != RECALL_PIN_CONFIGURED
+            or not recall_notice.due(self._default_dataset)
+        ):
+            return
+        recall_notice.queue(self._session_id, self._default_dataset)
 
     def _finish_starting(self, starting: ServerStillStartingError) -> None:
         """Wait out a local server that was still starting, then connect."""
@@ -866,7 +1005,9 @@ class CogneeMemoryProvider(MemoryProvider):
         if memory_credit.has_credit(assistant_content or ""):
             result = self._credit.check(assistant_content)
             logger.info("cognee memory_credit %s", json.dumps(result, ensure_ascii=False))
-        assistant_content = memory_credit.strip_credit_lines(assistant_content or "")
+        assistant_content = memory_credit.strip_credit_lines(
+            recall_notice.strip_notice(assistant_content or "")
+        )
         if not self._is_usable() or not self._writes_enabled:
             return
         settings = capture_policy.policy_from_config(self._config)
@@ -1382,6 +1523,8 @@ class CogneeMemoryProvider(MemoryProvider):
         # its own switch counter — never the previous conversation's.
         self._dataset = self._default_dataset
         self._switch_counter = 0
+        self._recall_choice = ""
+        self._recall_pin_reason = self._configured_recall_pin()
         self._session_cognee_id = self._build_cognee_session_id(new_session_id, **kwargs)
         self._reset_stored()
         self._apply_dataset_override()
@@ -1535,6 +1678,7 @@ class CogneeMemoryProvider(MemoryProvider):
         search_type: Any,
         top_k: int,
         session_id: str,
+        datasets: Optional[list[str]] = None,
     ) -> list[Any]:
         """The explicit ``cognee_recall`` search: the knowledge graph, stated outright.
 
@@ -1551,7 +1695,7 @@ class CogneeMemoryProvider(MemoryProvider):
         return self._backend.recall(
             query=query,
             session_id=None,
-            datasets=[self._dataset],
+            datasets=datasets if datasets is not None else self._graph_datasets(),
             top_k=top_k,
             auto_route=self._auto_route,
             query_type=search_type or None,
@@ -1688,13 +1832,19 @@ class CogneeMemoryProvider(MemoryProvider):
                     },
                 )
             )
+        routed = self._graph_datasets() is None
         # HYBRID_COMPLETION combines BM25 + vector + graph retrieval; with
         # only_context the LLM completion is skipped server-side and the item's
         # text is the prompt that completion would have read.
         lanes.append(
             (
                 _MEMORY_LANE,
-                {"scope": ["graph"], "query_type": "HYBRID_COMPLETION", "session_id": None},
+                {
+                    "scope": ["graph"],
+                    "query_type": "HYBRID_COMPLETION",
+                    "session_id": None,
+                    "routed": routed,
+                },
             )
         )
         if session_id:
@@ -1719,7 +1869,10 @@ class CogneeMemoryProvider(MemoryProvider):
                 results = self._backend.recall(
                     query=query,
                     session_id=spec.get("session_id"),
-                    datasets=spec.get("datasets") or [self._dataset],
+                    # A routed lane names no dataset: the server picks (auto recall).
+                    datasets=(
+                        None if spec.get("routed") else spec.get("datasets") or [self._dataset]
+                    ),
                     top_k=top_k,
                     auto_route=True,
                     query_type=spec.get("query_type"),
@@ -1744,6 +1897,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 outcomes = list(pool.map(_run_lane, [spec for _label, spec in lanes]))
 
         memories: list[str] = []
+        memory_datasets: list[str] = []  # the dataset each memory came from, if named
         code_blocks: list[str] = []
         guidance = ""
         item_guidance = ""
@@ -1769,7 +1923,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 continue
             answered = True
             if label == _MEMORY_LANE:
-                for text in self._memory_lane_texts(results):
+                for text, dataset in self._memory_lane_items(results):
                     context, item_guide, stats = recall_text.trim_recall_text(
                         text,
                         query,
@@ -1783,6 +1937,7 @@ class CogneeMemoryProvider(MemoryProvider):
                         item_guidance = item_guide
                     if context.strip():
                         memories.append(context.strip())
+                        memory_datasets.append(dataset)
             elif label == _GUIDANCE_LANE:
                 guidance = "\n\n".join(self._memory_lane_texts(results)).strip()
             else:
@@ -1812,12 +1967,17 @@ class CogneeMemoryProvider(MemoryProvider):
             lambda index: index > len(memories),
         )
         kept_guidance = capped[0]
-        kept_memories = [text for text in capped[1 : 1 + len(memories)] if text.strip()]
+        kept = [
+            (text, dataset)
+            for text, dataset in zip(capped[1 : 1 + len(memories)], memory_datasets)
+            if text.strip()
+        ]
+        kept_memories = [text for text, _dataset in kept]
         kept_code = [block for block in capped[1 + len(memories) :] if block.strip()]
 
         cite = memory_credit.credit_enabled()
         if cite:
-            kept_memories = [credit.tag_graph(text) for text in kept_memories]
+            kept_memories = [credit.tag_graph(text, dataset) for text, dataset in kept]
             kept_code = [f"{credit.label('code', 'code graph', b)}\n{b}" for b in kept_code]
             if kept_guidance.strip():
                 guide = kept_guidance.strip()
@@ -1843,8 +2003,11 @@ class CogneeMemoryProvider(MemoryProvider):
                             memory_credit.credit_instruction(
                                 not credit.credited,
                                 len(credit.found),
-                                self._dataset,
+                                # Routed recall may answer from any dataset: the
+                                # line names the ones the used items' tags name.
+                                "" if routed else self._dataset,
                                 self._platform,
+                                datasets=credit.credit_datasets() if routed else (),
                             )
                             + "\n\n"
                         )
@@ -1874,11 +2037,14 @@ class CogneeMemoryProvider(MemoryProvider):
         search_type = args.get("search_type")
 
         try:
+            # None: auto recall, routed server-side, so the credit names no dataset.
+            datasets = self._graph_datasets()
             results = self._recall(
                 query,
                 search_type=search_type,
                 top_k=top_k,
                 session_id=self._session_cognee_id,
+                datasets=datasets,
             )
             self._record_success()
             # Items with no readable text are not memories: dropping them keeps
@@ -1902,15 +2068,24 @@ class CogneeMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
             envelope: dict[str, Any] = {"results": items, "count": len(items)}
             if memory_credit.credit_enabled():
+                named = []
                 for item in items:
                     origin = (
                         memory_credit.passage_origin(item["text"])
                         if recall_text.passage_session_id(item["text"])
                         else "Cognee recall"
                     )
+                    dataset = str(item.get("dataset_name") or "").strip()
+                    named.append(dataset)
+                    origin = memory_credit.with_dataset(origin, dataset)
                     item["tag"] = self._credit.label("recall", origin, item["text"])
+                # Auto recall names the datasets the results came from, when the
+                # server named one for every result.
+                routed_datasets = (
+                    list(dict.fromkeys(named)) if datasets is None and all(named) else []
+                )
                 envelope["credit"] = memory_credit.tool_credit_instruction(
-                    self._dataset, self._platform
+                    self._dataset if datasets else "", self._platform, routed_datasets
                 )
             if overflow:
                 # Non-empty results still warn: mean-pooled vectors match
@@ -2116,16 +2291,34 @@ class CogneeMemoryProvider(MemoryProvider):
     # -- dataset switching -----------------------------------------------------
 
     def _apply_dataset_override(self) -> None:
-        """Re-apply a persisted per-conversation dataset switch, if any."""
+        """Re-apply this conversation's persisted recall mode and dataset switch.
+
+        The mode comes from ``recall``; the dataset only from a real switch
+        entry (a dataset and a counter above 0). A mode stored alone applies to
+        the active dataset, which follows the configuration.
+        """
         override = dataset_overrides.load_override(self._session_id)
         if not override:
             return
+        dataset = str(override.get("dataset") or "")
         try:
-            dataset = str(override.get("dataset") or "")
             counter = int(override.get("counter") or 0)
         except (TypeError, ValueError):
-            return
-        if not dataset or counter <= 0:
+            counter = 0
+        switched = bool(dataset) and counter > 0
+        recall = override.get("recall")
+        if recall in RECALL_MODES:
+            self._recall_choice = str(recall)
+        elif recall is None and switched and dataset != self._default_dataset:
+            # Entries written before SDK-1393 carry no mode: a switch pinned recall.
+            self._recall_choice = RECALL_MODE_PINNED
+        else:
+            # A reset (RECALL_FOLLOWS_CONFIG), or a pre-SDK-1393 entry on the
+            # configured dataset, which an old file cannot tell from a reset:
+            # recall follows the configuration.
+            self._recall_choice = ""
+        self._recall_pin_reason = self._recall_reason_for(self._recall_choice)
+        if not switched:
             return
         self._dataset = dataset
         self._switch_counter = counter
@@ -2136,14 +2329,24 @@ class CogneeMemoryProvider(MemoryProvider):
         action = str(args.get("action") or "").strip().lower()
         force = bool(args.get("force", False))
         if action == "current":
+            mode, reason = self._recall_mode_and_reason()
             return json.dumps(
                 {
                     "dataset": self._dataset,
                     "default": self._default_dataset,
                     "switched": self._dataset != self._default_dataset,
+                    "recall": mode,
+                    **({"reason": reason} if reason else {}),
                     "cognee_session_id": self._session_cognee_id,
+                    "message": _recall_message(
+                        mode, reason, self._dataset, self._recall_mode_source
+                    ),
                 }
             )
+        if action == "auto":
+            return self._set_recall_auto()
+        if action == "pin":
+            return self._pin_recall()
         if action == "list":
             try:
                 rows = self._backend.list_datasets(timeout=30.0)
@@ -2170,6 +2373,15 @@ class CogneeMemoryProvider(MemoryProvider):
             target = str(args.get("dataset") or "").strip()
             if not target:
                 return json.dumps({"error": "action='switch' requires a dataset name."})
+            if target.lower() == "auto":
+                return json.dumps(
+                    {
+                        "error": (
+                            "'auto' is reserved for the recall mode, not a dataset name: use "
+                            "action='auto' to let the server pick the dataset for recall."
+                        )
+                    }
+                )
             # Refused rather than rewritten, so a switch never lands in a dataset
             # the user did not name.
             suggestion = _safe_dataset_name(target, fallback="")
@@ -2179,12 +2391,146 @@ class CogneeMemoryProvider(MemoryProvider):
                 return json.dumps({"error": error + hint})
             return self._switch_dataset(target, force=force)
         if action == "reset":
-            return self._switch_dataset(self._default_dataset, force=force)
-        return json.dumps({"error": "Specify action: list, current, switch, or reset."})
+            if self._dataset == self._default_dataset:
+                return self._reset_recall()
+            result = json.loads(self._switch_dataset(self._default_dataset, force=force))
+            if result.get("switched"):
+                # Back to the configured dataset means back to the configured
+                # recall mode.
+                self._follow_configured_recall()
+                mode, reason = self._recall_mode_and_reason()
+                result["recall"] = mode
+                result.pop("recall_reason", None)
+                if reason:
+                    result["recall_reason"] = reason
+                result["message"] = _recall_message(
+                    mode, reason, self._dataset, self._recall_mode_source
+                )
+            return json.dumps(result)
+        return json.dumps({"error": "Specify action: list, current, switch, pin, auto, or reset."})
+
+    # -- recall mode (SDK-1393) -------------------------------------------------
+
+    def _graph_datasets(self) -> Optional[list[str]]:
+        """The datasets graph recall names: none (auto, routed server-side)
+        unless recall is pinned. A server before cognee 1.6.6 does not route:
+        there an unpinned recall searches every dataset the user can read."""
+        return [self._dataset] if self._recall_pinned else None
+
+    @property
+    def _recall_pinned(self) -> bool:
+        """True when graph recall is restricted to self._dataset, for any reason."""
+        return bool(self._recall_pin_reason)
+
+    @_recall_pinned.setter
+    def _recall_pinned(self, pinned: bool) -> None:
+        # In memory only (tests): this conversation's own pin, or its own auto.
+        self._recall_choice = RECALL_MODE_PINNED if pinned else RECALL_MODE_AUTO
+        self._recall_pin_reason = self._recall_reason_for(self._recall_choice)
+
+    def _configured_recall_pin(self) -> str:
+        """The pin the configured recall_mode alone gives, "" for auto."""
+        return RECALL_PIN_CONFIGURED if self._configured_pins_recall else ""
+
+    def _recall_reason_for(self, choice: str) -> str:
+        """The pin reason for a conversation choice ("" follows the config)."""
+        if choice == RECALL_MODE_PINNED:
+            return RECALL_PIN_PICKED
+        if choice == RECALL_MODE_AUTO:
+            return ""
+        return self._configured_recall_pin()
+
+    def _recall_mode_and_reason(self) -> tuple[str, str]:
+        """The mode in effect and, when pinned, why (the hook family's reasons)."""
+        if self._recall_pin_reason:
+            return RECALL_MODE_PINNED, self._recall_pin_reason
+        return RECALL_MODE_AUTO, ""
+
+    def _invalidate_prefetch(self) -> None:
+        with self._prefetch_lock:
+            self._prefetch_result = ""
+            self._prefetch_generation += 1
+
+    def _choose_recall(self, choice: str) -> None:
+        """Make ``choice`` ("auto", "pinned", or "" to follow the config) this
+        conversation's recall mode and persist it.
+
+        After a switch the entry keeps the switch (dataset and counter); without
+        one it stores the mode only, so recall applies to the active dataset,
+        which follows the configuration. Following the config with no switch
+        leaves nothing to store.
+        """
+        self._recall_choice = choice
+        self._recall_pin_reason = self._recall_reason_for(choice)
+        if self._switch_counter > 0:
+            dataset_overrides.save_override(
+                self._session_id,
+                self._dataset,
+                self._switch_counter,
+                recall=choice or dataset_overrides.RECALL_FOLLOWS_CONFIG,
+            )
+        elif choice:
+            dataset_overrides.save_override(self._session_id, None, 0, recall=choice)
+        else:
+            dataset_overrides.clear_override(self._session_id)
+        self._invalidate_prefetch()
+
+    def _recall_envelope(self, reason: str, **extra: Any) -> str:
+        """A no-switch reply (pin, auto, reset on the configured dataset): the
+        mode in effect, why, and the one message built from them."""
+        mode, why = self._recall_mode_and_reason()
+        envelope: dict[str, Any] = {
+            "switched": False,
+            "reason": reason,
+            "dataset": self._dataset,
+            "recall": mode,
+        }
+        if why:
+            envelope["recall_reason"] = why
+        envelope.update(extra)
+        envelope["message"] = _recall_message(mode, why, self._dataset, self._recall_mode_source)
+        return json.dumps(envelope)
+
+    def _set_recall_auto(self) -> str:
+        """``auto``: save auto as this conversation's choice, so it also wins
+        over a later configured ``pinned``; the reply reports the mode in effect."""
+        lifted = self._recall_pin_reason
+        if self._recall_choice != RECALL_MODE_AUTO:
+            self._choose_recall(RECALL_MODE_AUTO)
+        extra = {}
+        if lifted == RECALL_PIN_CONFIGURED:
+            # Named so the agent can say the lift lasts this conversation only.
+            extra["lifted"] = lifted
+        return self._recall_envelope("recall_auto" if lifted else "already_auto", **extra)
+
+    def _pin_recall(self) -> str:
+        """``pin`` (or a switch to the dataset in use): pin recall to the active
+        dataset, no bridge and no new session. Saved as this conversation's own
+        mode even when the configured recall_mode already pins: it then wins
+        over a later configured ``auto``. The mode is stored without the
+        dataset, so recall stays on whatever dataset is active (after a config
+        change, the new configured one unless this conversation switched)."""
+        already = self._recall_pinned
+        if self._recall_choice != RECALL_MODE_PINNED:
+            self._choose_recall(RECALL_MODE_PINNED)
+        return self._recall_envelope("already_active" if already else "recall_restricted")
+
+    def _follow_configured_recall(self) -> None:
+        """Drop this conversation's own recall choice: recall follows the config."""
+        self._choose_recall("")
+
+    def _reset_recall(self) -> str:
+        """``reset`` on the configured dataset: recall goes back to the
+        configured recall_mode."""
+        before = self._recall_pin_reason
+        self._follow_configured_recall()
+        changed = before != self._recall_pin_reason
+        return self._recall_envelope("recall_reset" if changed else "already_default")
 
     def _switch_dataset(self, target: str, *, force: bool) -> str:
         if target == self._dataset:
-            return json.dumps({"switched": False, "reason": "already_active", "dataset": target})
+            # The dataset in use: a switch to it is a pin.
+            return self._pin_recall()
         old_dataset, old_session = self._dataset, self._session_cognee_id
 
         # 1. Flush the turn currently being written, then bridge the session we
@@ -2237,10 +2583,8 @@ class CogneeMemoryProvider(MemoryProvider):
         self._session_cognee_id = f"{base}__{self._switch_counter}"
         self._reset_stored()
         self._dataset = target
-        dataset_overrides.save_override(self._session_id, target, self._switch_counter)
-        with self._prefetch_lock:
-            self._prefetch_result = ""
-            self._prefetch_generation += 1
+        # A switch pins recall to the target.
+        self._choose_recall(RECALL_MODE_PINNED)
         if self._watcher_state_path is not None and not self._close_handed_off:
             exit_watcher.update(
                 self._watcher_state_path,
@@ -2249,14 +2593,18 @@ class CogneeMemoryProvider(MemoryProvider):
                 improve=bool(self._writes_enabled and self._improve_on_end),
             )
         self._record_success()
+        mode, why = self._recall_mode_and_reason()
         envelope: dict[str, Any] = {
             "switched": True,
             "dataset": target,
+            "recall": mode,
+            "recall_reason": why,
             "cognee_session_id": self._session_cognee_id,
             "previous": {"dataset": old_dataset, "session_id": old_session, "bridged": bridged},
         }
         if bridge_error:
             envelope["previous"]["bridge_error"] = bridge_error
+        envelope["message"] = _recall_message(mode, why, target, self._recall_mode_source)
         return json.dumps(envelope)
 
     def _bridge_retired_sessions(self) -> None:
@@ -2420,7 +2768,12 @@ class CogneeMemoryProvider(MemoryProvider):
         never read. Older servers put the bare context in ``text``, which
         passes through the same way.
         """
-        texts = []
+        return [text for text, _dataset in self._memory_lane_items(results)]
+
+    def _memory_lane_items(self, results: list[Any]) -> list[tuple[str, str]]:
+        """``_memory_lane_texts`` with the dataset the server says each came from
+        (``dataset_name`` on the search result; blank when it names none)."""
+        items = []
         for item in results:
             data = _coerce_result_dict(item)
             # The text slot is used only when it holds real text; otherwise the
@@ -2428,8 +2781,8 @@ class CogneeMemoryProvider(MemoryProvider):
             # dropped instead of stringified into the block (#457).
             text = _readable(data.get("text")).strip() or _result_text(item).strip()
             if text:
-                texts.append(text)
-        return texts
+                items.append((text, str(data.get("dataset_name") or "").strip()))
+        return items
 
     def _format_recall_lines(self, results: list[Any], *, limit: int) -> list[str]:
         lines = []
@@ -2490,11 +2843,16 @@ def _chose_local(hermes_home: str) -> bool:
 
 
 def _offer_runtime_install() -> None:
-    """Local branch of setup: build the runtime venv now, with the user's yes."""
-    if not _prompt_bool(
-        f"Install the local runtime now ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from PyPI)",
-        True,
-    ):
+    """Local branch of setup: build the runtime venv now, with the user's yes.
+
+    When a local server this plugin started is running, the question says the
+    install stops it (``install-runtime`` asks the same on its own)."""
+    label = f"Install the local runtime now ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from PyPI)"
+    servers = runtime_env.servers_to_stop()
+    if servers:
+        pids = ", ".join(str(pid) for pid, _port in servers)
+        label += f"? This stops the running local server (pid {pids})."
+    if not _prompt_bool(label, True):
         print("  Skipped. Install it later with: hermes cognee install-runtime")
         return
     try:
@@ -2502,6 +2860,15 @@ def _offer_runtime_install() -> None:
     except runtime_env.RuntimeInstallError as exc:
         print(f"  Could not install the local runtime: {exc}")
         print("  Retry with: hermes cognee install-runtime")
+
+
+def _prompt_recall_mode(current: Any) -> str:
+    """The setup wizard's recall-mode question; an unknown answer is auto.
+    ``current`` is the default offered."""
+    print("  Recall mode: which datasets recall reads. auto lets Cognee pick the")
+    print("  datasets for each question; pinned reads only the active dataset.")
+    answer = _prompt("Recall mode (auto/pinned)", default=configured_recall_mode(current))
+    return configured_recall_mode(answer)
 
 
 def _prompt_bool(label: str, default: bool) -> bool:

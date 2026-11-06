@@ -225,6 +225,67 @@ def test_recall_tool_results_are_tagged(cite_on):
     assert '"> Cognee:"' in out["credit"]
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_the_credit_names_the_dataset_only_when_recall_read_it(cite_on, pinned):
+    # Auto recall may answer from any readable dataset, so naming the active
+    # one would credit the wrong source.
+    expected = "based on dataset hermes" if pinned else "based on Cognee memory"
+    with fake_backend() as fake:
+        fake.results["recall"] = [{"text": "Mika likes tennis.", "source": "graph"}]
+        provider = make_provider()
+        provider._recall_pinned = pinned
+        provider.queue_prefetch("what does mika like")
+        prompt = provider.prefetch("what does mika like")
+        tool = json.loads(provider.handle_tool_call("cognee_recall", {"query": "mika"}))
+    assert expected in prompt
+    assert expected in tool["credit"]
+    if not pinned:
+        assert "based on dataset" not in prompt + tool["credit"]
+
+
+def test_auto_recall_tags_and_credits_the_dataset_the_server_named(cite_on):
+    # A routed result carries the dataset it came from (SearchResult.dataset_name):
+    # each tag names it, and the credit asks for the datasets the used items' tags
+    # name, not "Cognee memory" and not the conversation's own dataset.
+    with fake_backend() as fake:
+        fake.results["recall"] = [
+            {"text": "Maya ordered boots.", "source": "graph", "dataset_name": "shop_support"},
+            {"text": "Leo swapped sizes.", "source": "graph", "dataset_name": "returns"},
+        ]
+        provider = make_provider()
+        provider.queue_prefetch("what did maya order")
+        prompt = provider.prefetch("what did maya order")
+        tool = json.loads(provider.handle_tool_call("cognee_recall", {"query": "maya"}))
+    assert "· dataset shop_support]" in prompt
+    assert "· dataset returns]" in prompt
+    assert "dataset named in the tag of each item you used" in prompt
+    assert "based on dataset shop_support" in prompt  # the example
+    assert "dataset hermes" not in prompt  # the conversation's dataset is not credited
+    assert [item["tag"].endswith("· dataset shop_support]") for item in tool["results"]] == [
+        True,
+        False,
+    ]
+    assert "dataset named in the tag of each item you used" in tool["credit"]
+    # A credit line naming the datasets is still the answer's credit.
+    answer = (
+        "Maya ordered boots.\n\n> Maya's boots, based on dataset shop_support and dataset returns."
+    )
+    assert memory_credit.has_credit(answer)
+
+
+def test_auto_recall_falls_back_to_cognee_memory_when_a_result_names_no_dataset(cite_on):
+    with fake_backend() as fake:
+        fake.results["recall"] = [
+            {"text": "Maya ordered boots.", "source": "graph", "dataset_name": "shop_support"},
+            {"text": "Leo swapped sizes.", "source": "graph"},
+        ]
+        provider = make_provider()
+        provider.queue_prefetch("what did maya order")
+        prompt = provider.prefetch("what did maya order")
+    assert "based on Cognee memory" in prompt
+    assert "dataset named in the tag" not in prompt
+
+
 def test_the_stored_answer_has_no_credit_line(cite_on):
     with fake_backend() as fake:
         provider = make_provider()

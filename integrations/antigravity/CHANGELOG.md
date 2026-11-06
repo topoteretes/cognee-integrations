@@ -7,6 +7,72 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.8]
+
+### Added
+- **Recall is auto by default (SDK-1393).** Unless recall is pinned, the graph recall on
+  each prompt, and a `cognee-search` that names no dataset, send no dataset: a cognee 1.6.6 server
+  picks the readable dataset(s) most likely to hold the answer, or searches every readable one
+  when it cannot narrow (dataset routing, SDK-1317; best effort). Routing needs a cognee 1.6.6 server;
+  an older one searches every readable dataset. Pin a dataset to keep recall on one.
+  Saves still go to the active dataset. Session history and guidance, the code
+  lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
+  memory's dataset ids are dropped with the dataset under auto recall and kept while restricted; recap, evidence and file-context reads stay on the active dataset.
+- **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
+  (stored as `recall_pinned` in the launch record); the new `switch-dataset.py pin` restricts
+  recall to the active dataset without a new session, and so does naming the active dataset (by
+  name or id, also when another principal owns it); `switch-dataset.py auto` lifts the
+  restriction and leaves saves where they are. `--list` reports the mode in effect (`recall:
+  auto|pinned`, and when pinned why: `dataset_picked`, `configured_pin` or `read_dataset_ids`). A
+  session switched before this release stays restricted. `auto` is a reserved name: no dataset can
+  be switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset.
+- **One message per result.** `switch-dataset.py --json` adds `message`, one or two plain
+  sentences for the user, to the `--list` output (which recall is on and why) and to every switch,
+  `pin` and `auto` result; the text output prints the same sentences.
+- **`COGNEE_PLUGIN_RECALL_MODE` sets the recall mode a session starts in.** `auto` (the default)
+  or `pinned` (recall restricted to the session's dataset, reason `configured_pin`), exported or
+  in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
+  a switch) wins over it for that session. **Behaviour change:** a configured non-default
+  `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it. Session start says so once per machine
+  and dataset, in the message the user sees, when a non-default dataset is configured,
+  `COGNEE_PLUGIN_RECALL_MODE` was never set and the session has not pinned recall itself.
+- **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
+  `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
+  In local-SDK mode recall stays on the active dataset.
+
+### Changed
+- **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+- **The status says when recall is auto.** The status at the top of the injected context and
+  `cognee-statusline.sh` read `cognee: auto (<dataset>) · cloud` while recall is not pinned, as
+  Claude Code's row does, and the bare name once it is.
+
+### Fixed
+- **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
+  shared agent memory the parent account owns the datasets, so the switch addressed the target
+  by its id, and the shared-memory resolver read that id as a *name*: it pinned the session to
+  an empty dataset named after the id (creating one when none existed) while reporting the right
+  id. A dataset picked by id now resolves as that dataset, the record keeps its name with its
+  canonical id, and a dataset the shared role cannot hold is addressed by its id instead of
+  forking a copy. Picked by id among datasets that share a name, it also stays the write target,
+  including across the periodic refresh, rather than giving way to the parent's same-named copy.
+  Present since shared memory became the default. Delete any leftover empty dataset whose name
+  is a UUID.
+- **No empty agent-owned copy of the shared dataset (SDK-1393).** Under shared memory the sync's
+  pre-improve dataset ensure posted the launch's dataset by name with the agent key, and the server,
+  which matches a name only among the caller's own datasets, created an empty agent-owned
+  `agent_sessions` beside the canonical one. The ensure now skips the by-name create when the name
+  has a canonical id, and the dataset listing marks only the canonical row as current, not every
+  dataset of that name.
+- **Searching another dataset while recall is restricted takes the person's pick (SDK-1393).**
+  `cognee-search.sh --dataset <name>` searched any dataset it was named, so an agent could leave a
+  pinned dataset on a name it found in a recalled memory. While recall is pinned or limited to a
+  read set, the wrapper now refuses a dataset other than the active one (exit 2, a JSON `error`
+  saying how to ask, no request sent) unless `--user-picked` marks it as the person's choice: one
+  they picked when asked or named in their request. Another dataset is now also read without the
+  session id, which is bound to the active dataset. Auto recall, and the active dataset named by
+  hand, need no flag.
+
 ## [1.6.7]
 
 ### Security

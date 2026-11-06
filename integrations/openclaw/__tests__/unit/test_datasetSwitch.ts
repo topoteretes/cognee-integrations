@@ -8,21 +8,26 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveConfig } from "../../src/config";
+import { datasetPinsRecall, resolveConfig } from "../../src/config";
 import {
   DatasetSwitchStore,
   MAX_SYNCED_RETIRED,
+  configPinsRecall,
   conversationKeys,
   createDatasetSwitchTool,
   isValidDatasetName,
   loadDatasetOverrides,
   pruneRetired,
   withSessionSuffix,
+  type DatasetOverride,
   type DatasetSwitchDeps,
   type MemorySwitchDatasetResult,
 } from "../../src/dataset-switch";
 
-const cfg = resolveConfig({ datasetName: "testds" });
+// The default config: recall is auto unless a conversation pins it (or the
+// config pins it: recallMode "pinned", or a non-default datasetName with no
+// recall mode — see "configured recallMode").
+const cfg = resolveConfig({});
 
 describe("helpers", () => {
   it("conversationKeys prefers sessionKey and falls back to sessionId", () => {
@@ -62,7 +67,7 @@ describe("DatasetSwitchStore", () => {
     const store = new DatasetSwitchStore({ path, now: () => now });
     await store.ready();
     const first = store.set({ sessionKey: "k1", sessionId: "s1" }, "proj-a", "testds");
-    expect(first).toEqual({ dataset: "proj-a", sessionSuffix: 2, switchedAt: "2026-08-27T10:00:00.000Z", previous: ["testds"], retired: [] });
+    expect(first).toEqual({ dataset: "proj-a", sessionSuffix: 2, switchedAt: "2026-08-27T10:00:00.000Z", previous: ["testds"], retired: [], recall: "pinned" });
     expect(store.get({ sessionKey: "k1" })?.dataset).toBe("proj-a");
     expect(store.get({ sessionId: "s1" })?.dataset).toBe("proj-a");
     expect(store.get({ sessionId: "other" })).toBeUndefined();
@@ -97,6 +102,9 @@ describe("DatasetSwitchStore", () => {
     const { writeFile } = await import("node:fs/promises");
     await writeFile(path, JSON.stringify({ "key:a": { dataset: "x" }, "key:b": { nope: 1 }, "key:c": "str" }));
     expect(await loadDatasetOverrides(path)).toEqual({ "key:a": { dataset: "x", sessionSuffix: 2, switchedAt: "", previous: [], retired: [] } });
+    // A recall-mode choice (no dataset) is kept; a bad mode or an empty dataset is not.
+    await writeFile(path, JSON.stringify({ "key:m": { recall: "auto", chosenAt: "t" }, "key:n": { recall: "bogus" }, "key:o": { dataset: "", recall: "auto" } }));
+    expect(await loadDatasetOverrides(path)).toEqual({ "key:m": { recall: "auto", chosenAt: "t" } });
   });
 
   it("tracks retired sessions across switches and flips synced only on request", async () => {
@@ -113,7 +121,7 @@ describe("DatasetSwitchStore", () => {
     store.markRetiredSynced(ctx, "open_claw_s1");
     expect(store.unsyncedRetired(ctx)).toEqual([]);
     await store.flush();
-    expect((await loadDatasetOverrides(path))["key:k1"].retired.every((r) => r.synced)).toBe(true);
+    expect(((await loadDatasetOverrides(path))["key:k1"] as DatasetOverride).retired.every((r) => r.synced)).toBe(true);
   });
 
   it("prunes only the oldest synced retired sessions beyond the cap; unsynced ones are never dropped", async () => {
@@ -139,7 +147,7 @@ describe("DatasetSwitchStore", () => {
     const retired = Array.from({ length: MAX_SYNCED_RETIRED + 5 }, (_, i) => ({ dataset: "d", sessionId: `s-${i}`, synced: i !== 1, retiredAt: "" }));
     const { writeFile } = await import("node:fs/promises");
     await writeFile(path, JSON.stringify({ "key:k": { dataset: "x", sessionSuffix: 2, switchedAt: "", previous: [], retired } }));
-    const loaded = (await loadDatasetOverrides(path))["key:k"].retired;
+    const loaded = ((await loadDatasetOverrides(path))["key:k"] as DatasetOverride).retired;
     expect(loaded.filter((r) => r.synced)).toHaveLength(MAX_SYNCED_RETIRED);
     expect(loaded.some((r) => r.sessionId === "s-1" && !r.synced)).toBe(true);
   });
@@ -168,9 +176,9 @@ describe("memory_switch_dataset tool", () => {
     return {
       cfg,
       store,
-      currentDataset: (c) => store.get(c)?.dataset ?? cfg.datasetName,
+      currentDataset: (c) => store.get(c)?.dataset ?? (overrides.cfg ?? cfg).datasetName,
       currentSessionId: (c) => (c.sessionId ? withSessionSuffix(`open_claw_${c.sessionId}`, store.get(c)) : undefined),
-      listDatasets: async () => [{ id: "ds-1", name: "testds" }, { id: "ds-2", name: "proj-a" }],
+      listDatasets: async () => [{ id: "ds-1", name: "agent_sessions" }, { id: "ds-2", name: "proj-a" }],
       ensureDataset: async (name) => { ensured.push(name); return `id-${name}`; },
       syncSession: async (ds, sid) => { synced.push([ds, sid]); },
       rememberDatasetId: async (name, id) => { remembered.push([name, id]); },
@@ -197,9 +205,9 @@ describe("memory_switch_dataset tool", () => {
 
   it("lists datasets with the current one first and flagged", async () => {
     const out = await run(deps(), { action: "list" });
-    expect(out).toMatchObject({ action: "list", current: "testds" });
+    expect(out).toMatchObject({ action: "list", current: "agent_sessions" });
     expect((out as { datasets: Array<{ name: string; current: boolean }> }).datasets).toEqual([
-      { name: "testds", id: "ds-1", current: true },
+      { name: "agent_sessions", id: "ds-1", current: true },
       { name: "proj-a", id: "ds-2", current: false },
     ]);
   });
@@ -212,30 +220,30 @@ describe("memory_switch_dataset tool", () => {
       switched: true,
       dataset: "proj-a",
       sessionId: "open_claw_s1__2",
-      previous: { dataset: "testds", sessionId: "open_claw_s1", synced: true },
+      previous: { dataset: "agent_sessions", sessionId: "open_claw_s1", synced: true },
     });
-    expect(d.synced).toEqual([["testds", "open_claw_s1"]]);
+    expect(d.synced).toEqual([["agent_sessions", "open_claw_s1"]]);
     expect(d.ensured).toEqual(["proj-a"]);
     expect(d.remembered).toEqual([["proj-a", "id-proj-a"]]);
     expect(store.get(ctx)?.dataset).toBe("proj-a");
 
     const cur = await run(d, { action: "current" });
-    expect(cur).toMatchObject({ action: "current", dataset: "proj-a", sessionId: "open_claw_s1__2", switched: true, previous: ["testds"] });
+    expect(cur).toMatchObject({ action: "current", dataset: "proj-a", sessionId: "open_claw_s1__2", switched: true, previous: ["agent_sessions"] });
   });
 
   it("aborts and changes nothing when the sync fails, unless force=true", async () => {
     const d = deps({ syncSession: async () => { throw new Error("improve 503"); } });
     const out = await run(d, { action: "switch", dataset: "proj-a" });
-    expect(out).toMatchObject({ action: "switch", switched: false, dataset: "testds" });
-    expect((out as { error: string }).error).toMatch(/syncing the current session into "testds" failed.*Nothing was changed/);
+    expect(out).toMatchObject({ action: "switch", switched: false, dataset: "agent_sessions" });
+    expect((out as { error: string }).error).toMatch(/syncing the current session into "agent_sessions" failed.*Nothing was changed/);
     expect(d.ensured).toEqual([]);
     expect(store.get(ctx)).toBeUndefined();
 
     const forced = await run(d, { action: "switch", dataset: "proj-a", force: true });
-    expect(forced).toMatchObject({ switched: true, dataset: "proj-a", previous: { dataset: "testds", synced: false } });
+    expect(forced).toMatchObject({ switched: true, dataset: "proj-a", previous: { dataset: "agent_sessions", synced: false } });
     expect((forced as { note: string }).note).toMatch(/NOT synced \(force\); it is re-synced automatically at session end/);
     // The unsynced session is remembered so session end / reset can bridge it.
-    expect(store.unsyncedRetired(ctx)).toEqual([expect.objectContaining({ dataset: "testds", sessionId: "open_claw_s1", synced: false })]);
+    expect(store.unsyncedRetired(ctx)).toEqual([expect.objectContaining({ dataset: "agent_sessions", sessionId: "open_claw_s1", synced: false })]);
   });
 
   it("reset re-syncs unsynced retired sessions first, and refuses without force when that fails", async () => {
@@ -251,8 +259,9 @@ describe("memory_switch_dataset tool", () => {
 
     failSync = false;
     const ok = await run(d, { action: "reset" });
-    expect(ok).toEqual({ action: "reset", reset: true, dataset: "testds", resynced: ["open_claw_s1"] });
-    expect(synced).toEqual([["testds", "open_claw_s1"]]);
+    expect(ok).toMatchObject({ action: "reset", reset: true, dataset: "agent_sessions", resynced: ["open_claw_s1"], recall: "auto" });
+    expect(ok).not.toHaveProperty("unsynced");
+    expect(synced).toEqual([["agent_sessions", "open_claw_s1"]]);
     expect(store.get(ctx)).toBeUndefined();
   });
 
@@ -260,19 +269,116 @@ describe("memory_switch_dataset tool", () => {
     const d = deps({ syncSession: async () => { throw new Error("down"); } });
     await run(d, { action: "switch", dataset: "proj-a", force: true });
     const out = await run(d, { action: "reset", force: true });
-    expect(out).toMatchObject({ reset: true, dataset: "testds", unsynced: ["open_claw_s1"] });
+    expect(out).toMatchObject({ reset: true, dataset: "agent_sessions", unsynced: ["open_claw_s1"] });
     expect((out as { note: string }).note).toMatch(/not bridged/);
     expect(store.get(ctx)).toBeUndefined();
   });
 
-  it("rejects bad input and reports already_active without side effects", async () => {
+  it("rejects bad input, and switching to the dataset in use is the same as pin", async () => {
     const d = deps();
     expect((await run(d, { action: "switch" })) as { error: string }).toMatchObject({ switched: false, error: "dataset is required" });
     expect(((await run(d, { action: "switch", dataset: "bad name!" })) as { error: string }).error).toMatch(/invalid dataset name/);
-    expect(await run(d, { action: "switch", dataset: "testds" })).toMatchObject({ switched: false, reason: "already_active" });
+    const picked = await run(d, { action: "switch", dataset: "agent_sessions" });
+    expect(picked).toMatchObject({ action: "switch", switched: false, changed: true, recall: "pinned", reason: "dataset_picked" });
+    expect(store.recallPinned(ctx)).toBe(true);
+    // A pin is a mode, not a switch: no dataset override, same session id.
+    expect(store.get(ctx)).toBeUndefined();
+    expect(withSessionSuffix("open_claw_s1", store.get(ctx))).toBe("open_claw_s1");
+    expect(await run(d, { action: "switch", dataset: "agent_sessions" })).toMatchObject({ switched: false, changed: false, reason: "dataset_picked" });
     expect(((await run(d, { action: "switch", dataset: "proj-a" }, { agentId: "will" })) as { error: string }).error).toMatch(/no conversation\/session/);
     expect(d.synced).toEqual([]);
     expect(d.ensured).toEqual([]);
+  });
+
+  it("reserves \"auto\": a switch to it is an error and changes nothing", async () => {
+    const d = deps();
+    for (const name of ["auto", " Auto "]) {
+      const out = await run(d, { action: "switch", dataset: name });
+      expect(out).toMatchObject({ action: "switch", switched: false, dataset: "agent_sessions" });
+      expect((out as { error: string }).error).toMatch(/"auto" is reserved.*action="auto"/);
+    }
+    expect(store.get(ctx)).toBeUndefined();
+    expect(d.synced).toEqual([]);
+    expect(d.ensured).toEqual([]);
+  });
+
+
+  it("in multi-scope mode reports recall as restricted to the configured scopes", async () => {
+    const multi = resolveConfig({ datasetName: "agent_sessions", companyDataset: "acme", recallScopes: ["company", "agent"] });
+    const d = deps({ cfg: multi });
+    const cur = await run(d, { action: "current" });
+    expect(cur).toMatchObject({ recall: "pinned", reason: "multi_scope", scopes: ["company", "agent"] });
+    expect((cur as { note: string }).note).toMatch(/configured scopes \(company, agent\)/);
+    expect(await run(d, { action: "auto" })).toMatchObject({ changed: false, recall: "pinned", reason: "multi_scope" });
+    expect(await run(d, { action: "pin" })).toMatchObject({ changed: false, recall: "pinned", reason: "multi_scope" });
+    expect(store.has(ctx)).toBe(false);
+  });
+
+  it("recall is auto until a switch, and action=auto lifts the restriction without moving saves (SDK-1393)", async () => {
+    const d = deps();
+    expect(await run(d, { action: "current" })).toMatchObject({ recall: "auto", switched: false });
+    expect(await run(d, { action: "auto" })).toMatchObject({ action: "auto", changed: false, recall: "auto" });
+
+    const sw = await run(d, { action: "switch", dataset: "proj-a" });
+    expect(sw).toMatchObject({ switched: true, recall: "pinned", reason: "dataset_picked" });
+    expect(store.recallPinned(ctx)).toBe(true);
+    expect(await run(d, { action: "current" })).toMatchObject({ dataset: "proj-a", recall: "pinned", reason: "dataset_picked", switched: true });
+
+    expect(await run(d, { action: "auto" })).toMatchObject({ action: "auto", dataset: "proj-a", changed: true, recall: "auto" });
+    expect(store.recallPinned(ctx)).toBe(false);
+    // Saves still go to the switched dataset.
+    expect(store.get(ctx)?.dataset).toBe("proj-a");
+    // pin re-pins the switched dataset without another session.
+    expect(await run(d, { action: "pin" })).toMatchObject({ action: "pin", dataset: "proj-a", changed: true, recall: "pinned" });
+    expect(store.get(ctx)?.sessionSuffix).toBe(2);
+  });
+
+  it("pin records a mode only: no dataset override on disk", async () => {
+    await run(deps(), { action: "pin" });
+    await store.flush();
+    const onDisk = JSON.parse(await readFile(join(dir, "o.json"), "utf-8"));
+    for (const k of conversationKeys(ctx)) {
+      expect(onDisk[k]).toEqual({ recall: "pinned", chosenAt: expect.any(String) });
+      expect(onDisk[k]).not.toHaveProperty("dataset");
+    }
+  });
+
+  it("a real switch after a pin works: new suffixed session, recall pinned to the new dataset", async () => {
+    const d = deps();
+    await run(d, { action: "pin" });
+    const sw = await run(d, { action: "switch", dataset: "proj-a" });
+    expect(sw).toMatchObject({ switched: true, dataset: "proj-a", sessionId: "open_claw_s1__2", previous: { dataset: "agent_sessions", sessionId: "open_claw_s1" }, recall: "pinned" });
+    expect(store.get(ctx)).toMatchObject({ dataset: "proj-a", sessionSuffix: 2, recall: "pinned" });
+    expect(await run(d, { action: "auto" })).toMatchObject({ changed: true, recall: "auto", dataset: "proj-a" });
+    expect(store.get(ctx)).toMatchObject({ dataset: "proj-a", sessionSuffix: 2, recall: "auto" });
+  });
+
+  it("aliases agree after a reload: change the mode through one key, both keys report it", async () => {
+    const path = join(dir, "o.json");
+    const both = { sessionKey: ctx.sessionKey, sessionId: ctx.sessionId };
+    for (const seed of ["pin", "switch"] as const) {
+      store.clear(both);
+      if (seed === "pin") await run(deps(), { action: "pin" });
+      else await run(deps(), { action: "switch", dataset: "proj-a" });
+      await store.flush();
+
+      const reloaded = new DatasetSwitchStore({ path });
+      await reloaded.ready();
+      // After a reload the two keys hold separate objects; a change must reach both.
+      expect(reloaded.setRecall(both, "auto")).toBe(true);
+      expect(reloaded.recallMode({ sessionKey: ctx.sessionKey })).toBe("auto");
+      expect(reloaded.recallMode({ sessionId: ctx.sessionId })).toBe("auto");
+      if (seed === "switch") {
+        expect(reloaded.get({ sessionId: ctx.sessionId })).toEqual(reloaded.get({ sessionKey: ctx.sessionKey }));
+        // markRetiredSynced through one key also reaches the other.
+        reloaded.set(both, "proj-b", "proj-a", { sessionId: "old", synced: false });
+        reloaded.markRetiredSynced({ sessionKey: ctx.sessionKey }, "old");
+        expect(reloaded.unsyncedRetired({ sessionId: ctx.sessionId })).toEqual([]);
+      }
+      reloaded.clear({ sessionKey: ctx.sessionKey });
+      expect(reloaded.has({ sessionId: ctx.sessionId })).toBe(false);
+      await reloaded.flush();
+    }
   });
 
   it("surfaces a failed ensureDataset without recording the override", async () => {
@@ -282,10 +388,85 @@ describe("memory_switch_dataset tool", () => {
     expect(store.get(ctx)).toBeUndefined();
   });
 
+
+  describe("configured recallMode", () => {
+    const pinnedCfg = resolveConfig({ datasetName: "testds", recallMode: "pinned" });
+
+    it("defaults to auto for the default dataset and to pinned for a non-default one; unknown values count as unset", () => {
+      expect(resolveConfig({}).recallMode).toBe("auto");
+      expect(resolveConfig({ datasetName: "agent_sessions" }).recallMode).toBe("auto");
+      expect(resolveConfig({ datasetName: "testds" }).recallMode).toBe("pinned");
+      expect(configPinsRecall(resolveConfig({ datasetName: "testds" }))).toBe(true);
+      expect(datasetPinsRecall({ datasetName: "testds" }, resolveConfig({ datasetName: "testds" }))).toBe(true);
+      expect(datasetPinsRecall({}, resolveConfig({}))).toBe(false);
+      expect(datasetPinsRecall({ datasetName: "testds", recallMode: "pinned" }, pinnedCfg)).toBe(false);
+      expect(resolveConfig({ datasetName: "testds", recallMode: "auto" }).recallMode).toBe("auto");
+      expect(resolveConfig({ datasetName: "testds", recallMode: "bogus" } as never).recallMode).toBe("pinned");
+      expect(resolveConfig({ recallMode: "bogus" } as never).recallMode).toBe("auto");
+      expect(resolveConfig({ recallMode: " Pinned " } as never).recallMode).toBe("pinned");
+      expect(configPinsRecall(pinnedCfg)).toBe(true);
+      for (const name of ["auto", "AUTO", " Auto "]) {
+        const auto = resolveConfig({ datasetName: name });
+        expect(auto.datasetName).toBe("agent_sessions");
+        expect(auto.recallMode).toBe("auto");
+      }
+    });
+
+    it("COGNEE_PLUGIN_RECALL_MODE applies when the config sets none", () => {
+      const prev = process.env.COGNEE_PLUGIN_RECALL_MODE;
+      const prevDataset = process.env.COGNEE_PLUGIN_DATASET;
+      process.env.COGNEE_PLUGIN_RECALL_MODE = "pinned";
+      try {
+        expect(resolveConfig({}).recallMode).toBe("pinned");
+        expect(resolveConfig({ recallMode: "auto" }).recallMode).toBe("auto");
+        process.env.COGNEE_PLUGIN_RECALL_MODE = "auto";
+        expect(resolveConfig({ datasetName: "testds" }).recallMode).toBe("auto");
+        expect(datasetPinsRecall({ datasetName: "testds" }, resolveConfig({ datasetName: "testds" }))).toBe(false);
+        delete process.env.COGNEE_PLUGIN_RECALL_MODE;
+        process.env.COGNEE_PLUGIN_DATASET = "proj_x";
+        expect(resolveConfig({}).recallMode).toBe("pinned");
+        expect(datasetPinsRecall({}, resolveConfig({}))).toBe(true);
+      } finally {
+        if (prev === undefined) delete process.env.COGNEE_PLUGIN_RECALL_MODE;
+        else process.env.COGNEE_PLUGIN_RECALL_MODE = prev;
+        if (prevDataset === undefined) delete process.env.COGNEE_PLUGIN_DATASET;
+        else process.env.COGNEE_PLUGIN_DATASET = prevDataset;
+      }
+    });
+
+    it("a conversation's auto lifts the config pin for that conversation only", async () => {
+      await run(deps({ cfg: pinnedCfg }), { action: "auto" });
+      expect(store.recallPinned(ctx, true)).toBe(false);
+      expect(store.recallPinned({ sessionKey: "agent:will:other" }, true)).toBe(true);
+    });
+
+    it("pin over the config pin is the conversation's own choice, and reset returns to the config", async () => {
+      const d = deps({ cfg: pinnedCfg });
+      expect(await run(d, { action: "pin" })).toMatchObject({ changed: false, recall: "pinned", reason: "dataset_picked" });
+      expect(store.recallMode(ctx)).toBe("pinned");
+      await run(d, { action: "auto" });
+      const out = await run(d, { action: "reset" });
+      expect(out).toMatchObject({ action: "reset", reset: true, dataset: "testds", recall: "pinned", reason: "configured_pin" });
+      expect(store.has(ctx)).toBe(false);
+      expect(await run(d, { action: "reset" })).toMatchObject({ reset: false, recall: "pinned", reason: "configured_pin" });
+    });
+
+    it("a legacy override (no recall field) stays pinned whatever the config", async () => {
+      const { writeFile } = await import("node:fs/promises");
+      const legacyPath = join(dir, "legacy.json");
+      await writeFile(legacyPath, JSON.stringify({ "key:a": { dataset: "proj-a", sessionSuffix: 2, switchedAt: "", previous: ["agent_sessions"], retired: [] } }));
+      const legacy = new DatasetSwitchStore({ path: legacyPath });
+      await legacy.ready();
+      expect((await loadDatasetOverrides(legacyPath))["key:a"]).not.toHaveProperty("recall");
+      expect(legacy.recallPinned({ sessionKey: "a" }, false)).toBe(true);
+      expect(legacy.get({ sessionKey: "a" })?.dataset).toBe("proj-a");
+    });
+  });
+
   it("reset returns to the configured dataset", async () => {
     const d = deps();
     await run(d, { action: "switch", dataset: "proj-a" });
-    expect(await run(d, { action: "reset" })).toEqual({ action: "reset", reset: true, dataset: "testds" });
-    expect(await run(d, { action: "reset" })).toMatchObject({ reset: false, dataset: "testds" });
+    expect(await run(d, { action: "reset" })).toMatchObject({ action: "reset", reset: true, dataset: "agent_sessions", recall: "auto" });
+    expect(await run(d, { action: "reset" })).toMatchObject({ reset: false, dataset: "agent_sessions" });
   });
 });

@@ -30,6 +30,9 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_ID", raising=False)
+    monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
+    monkeypatch.delenv("COGNEE_PLUGIN_READ_DATASET_IDS", raising=False)
+    monkeypatch.delenv("COGNEE_PLUGIN_RECALL_MODE", raising=False)
     monkeypatch.setattr(pc, "hook_log", lambda *a, **k: None)
     monkeypatch.setattr(switch, "hook_log", lambda *a, **k: None)
     monkeypatch.setattr(switch, "_restart_idle_watcher", lambda *a, **k: None)
@@ -121,15 +124,190 @@ def test_switch_order_register_new_then_unregister_old(env):
     assert set(env.server.identity.registered_agents) == {result["conn_uuid"]}
 
 
-def test_switch_to_current_dataset_is_a_noop(env):
+def test_switch_to_current_dataset_restricts_recall_without_a_new_session(env):
+    """SDK-1393: picking the active dataset pins recall to it; picking it again
+    is a no-op. Neither syncs nor registers a session."""
     result = env.switch._switch(env.host, env.rec(), "a", force=False)
-    assert result == {
-        "switched": False,
-        "reason": "already_active",
-        "dataset": "a",
-        "session_id": env.session_id,
-    }
+    assert result["switched"] is False and result["reason"] == "recall_restricted"
+    assert (result["recall"], result["session_id"]) == ("pinned", env.session_id)
+    assert result["message"]
+    assert env.rec()["recall_pinned"] is True
+    again = env.switch._switch(env.host, env.rec(), "a", force=False)
+    assert again["reason"] == "already_active" and again["message"]
     assert env.synced == [] and not _calls(env.server, REGISTER)
+
+
+def test_auto_lifts_the_restriction_and_keeps_the_session(env):
+    env.switch._switch(env.host, env.rec(), "a", force=False)
+    result = env.switch._auto(env.host, env.rec())
+    assert result["switched"] is False and result["reason"] == "recall_auto"
+    assert (result["recall"], result["session_id"]) == ("auto", env.session_id)
+    assert result["message"]
+    assert env.rec()["recall_pinned"] is False
+    again = env.switch._auto(env.host, env.rec())
+    assert again["reason"] == "already_auto" and again["message"]
+    assert env.synced == [] and not _calls(env.server, REGISTER)
+
+
+def test_auto_under_a_read_set_is_saved_but_recall_stays_scoped(env, capsys, monkeypatch):
+    """COGNEE_PLUGIN_READ_DATASET_IDS is an explicit scope ``auto`` cannot lift:
+    the choice is saved, and every surface reports what is in effect."""
+    monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", "11111111-1111-4111-8111-111111111111")
+    env.switch._switch(env.host, env.rec(), "a", force=False)
+    result = env.switch._auto(env.host, env.rec())
+    assert result["reason"] == "recall_auto" and result["recall"] == "pinned"
+    assert result["recall_reason"] == "read_dataset_ids"
+    assert "COGNEE_PLUGIN_READ_DATASET_IDS still restricts it" in result["message"]
+    assert env.rec()["recall_pinned"] is False
+    env.switch._print_switch(result, as_json=False)
+    assert capsys.readouterr().out == result["message"] + "\n"
+    listing = env.switch._list(env.host, env.rec())
+    assert listing["recall"] == "pinned" and listing["reason"] == "read_dataset_ids"
+    env.switch._print_listing(listing, as_json=False)
+    out = capsys.readouterr().out
+    assert "restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS" in out
+    assert listing["message"] in out
+
+
+# ── the pin action ─────────────────────────────────────────────────────────
+
+
+def test_pin_pins_recall_to_the_active_dataset_without_a_new_session(env, capsys):
+    import json
+
+    before = env.rec()
+    assert env.switch.main([" Pin ", "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["switched"] is False and out["reason"] == "recall_restricted"
+    assert (out["recall"], out["dataset"]) == ("pinned", "a")
+    rec = env.rec()
+    assert rec["recall_pinned"] is True
+    assert (rec["session_id"], rec["dataset"], rec["conn_uuid"]) == (
+        before["session_id"],
+        "a",
+        before["conn_uuid"],
+    )
+    assert "switched_at" not in rec
+    assert env.synced == [] and not _calls(env.server, REGISTER)
+    assert not _calls(env.server, DATASETS)
+    listing = env.switch._list(env.host, env.rec())
+    assert listing["recall"] == "pinned" and listing["reason"] == "dataset_picked"
+    assert "as picked in this session" in listing["message"]
+
+
+def test_repicking_a_foreign_owned_active_dataset_by_name_only_pins(env, monkeypatch):
+    """A dataset another principal owns is held in the record by its id, so a
+    re-pick by name compared the name with the id and did a full switch. The
+    resolved target is compared now: it only pins."""
+    ident = env.server.identity
+    row = ident.seed_dataset("team", owner_id="someone-else")
+    ident._grant(ident.principal_id, row["id"], "write")
+    monkeypatch.setattr(env.pc, "require_typed_dataset_id_support", lambda **kw: None)
+    first = env.switch._switch(env.host, env.rec(), "team", force=False)
+    assert first["switched"] is True and env.rec()["dataset"] == row["id"]
+    env.switch._auto(env.host, env.rec())
+    registered = len(_calls(env.server, REGISTER))
+    session = env.rec()["session_id"]
+
+    again = env.switch._switch(env.host, env.rec(), "team", force=False)
+    assert again["switched"] is False and again["reason"] == "recall_restricted"
+    assert again["recall"] == "pinned" and again["dataset"] == row["id"]
+    assert env.rec()["recall_pinned"] is True and env.rec()["session_id"] == session
+    assert len(_calls(env.server, REGISTER)) == registered
+    assert len(env.synced) == 1  # only the first switch synced
+    by_id = env.switch._switch(env.host, env.rec(), row["id"], force=False)
+    assert by_id["switched"] is False and by_id["reason"] == "already_active"
+
+
+# ── COGNEE_PLUGIN_RECALL_MODE ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("dataset", ["", "research"])
+def test_recall_is_auto_by_default_whatever_the_configured_dataset(env, monkeypatch, dataset):
+    """COGNEE_PLUGIN_DATASET names where saves go; it no longer pins recall."""
+    monkeypatch.delenv("COGNEE_PLUGIN_RECALL_MODE", raising=False)
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", dataset)
+    listing = env.switch._list(env.host, env.rec())
+    assert listing["recall"] == "auto" and "reason" not in listing
+    assert listing["message"].startswith("Recall is auto:")
+    result = env.switch._auto(env.host, env.rec())
+    assert result["reason"] == "already_auto" and "lifted" not in result
+    # Saved explicitly anyway, so a later configuration cannot pin this launch.
+    assert env.rec()["recall_pinned"] is False
+
+
+def test_a_configured_pin_holds_until_auto_lifts_it(env, capsys, monkeypatch):
+    """COGNEE_PLUGIN_RECALL_MODE=pinned pins recall; ``auto`` writes an explicit
+    unpin that beats it for this launch, and the listing reports the mode in
+    effect and why, in the same words as the text output."""
+    import json
+
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
+    assert env.switch.main(["--list", "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+    listing = json.loads(capsys.readouterr().out)
+    assert listing["recall"] == "pinned" and listing["reason"] == "configured_pin"
+    assert "COGNEE_PLUGIN_RECALL_MODE=pinned" in listing["message"]
+    assert env.switch.main(["--list", "--session-key", env.host]) == env.switch.EXIT_OK
+    assert listing["message"] in capsys.readouterr().out
+
+    assert env.switch.main(["auto", "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+    lifted = json.loads(capsys.readouterr().out)
+    assert lifted["reason"] == "recall_auto" and lifted["recall"] == "auto"
+    assert lifted["lifted"] == "configured_pin"
+    assert "COGNEE_PLUGIN_RECALL_MODE=pinned no longer applies" in lifted["message"]
+    assert env.rec()["recall_pinned"] is False
+
+    listing = env.switch._list(env.host, env.rec())
+    assert listing["recall"] == "auto" and "reason" not in listing
+    assert env.switch._auto(env.host, env.rec())["reason"] == "already_auto"
+    assert env.synced == [] and not _calls(env.server, REGISTER)
+
+
+def test_picking_the_active_dataset_under_a_configured_pin_records_the_pick(env, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
+    result = env.switch._switch(env.host, env.rec(), "a", force=False)
+    assert result["reason"] == "already_active" and result["recall"] == "pinned"
+    assert env.rec()["recall_pinned"] is True
+    assert env.switch._list(env.host, env.rec())["reason"] == "dataset_picked"
+    # The pick outlives the configuration going back to auto.
+    monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "auto")
+    assert env.switch._list(env.host, env.rec())["recall"] == "pinned"
+
+
+# ── one message per result ─────────────────────────────────────────────────
+
+
+def test_every_result_carries_the_message_the_text_output_prints(env, capsys):
+    """--json and the text output say the same thing: listing, pin, auto and a
+    switch each carry a ``message``, printed as is without --json."""
+    import json
+
+    runs = [["--list"], ["pin"], ["pin"], ["auto"], ["auto"], ["b"], ["b"]]
+    for argv in runs:
+        assert env.switch.main([*argv, "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+        out = json.loads(capsys.readouterr().out)
+        assert isinstance(out["message"], str) and out["message"].strip()
+    # The text output of a listing prints the message under the current line.
+    assert env.switch.main(["--list", "--session-key", env.host]) == env.switch.EXIT_OK
+    text = capsys.readouterr().out.splitlines()
+    listing = env.switch._list(env.host, env.rec())
+    assert text[1] == listing["message"]
+
+
+def test_auto_is_reserved_and_never_switches(env, capsys):
+    import json
+
+    env.switch._switch(env.host, env.rec(), "a", force=False)
+    assert env.switch.main([" Auto ", "--json", "--session-key", env.host]) == env.switch.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["switched"] is False and out["reason"] == "recall_auto"
+    assert env.rec()["dataset"] == "a" and not _calls(env.server, REGISTER)
+
+
+def test_a_switch_pins_recall_to_the_new_dataset(env):
+    result = env.switch._switch(env.host, env.rec(), "b", force=False)
+    assert result["switched"] is True and result["recall"] == "pinned"
+    assert env.rec()["recall_pinned"] is True
 
 
 def test_switch_refuses_readonly_dataset_before_touching_anything(env):
@@ -171,6 +349,7 @@ def test_force_switches_past_sync_failure_and_reports_it(env, monkeypatch):
     assert result["switched"] is True
     assert result["previous"]["synced"] is False
     assert "improve failed" in result["previous"]["sync_error"]
+    assert "NOT synced" in result["message"]
     # the retired pair is still in `touched`, so the final sync retries it
     assert (env.session_id, "a") in {
         (p["session_id"], p["dataset"]) for p in env.pc.touched_pairs(env.host)

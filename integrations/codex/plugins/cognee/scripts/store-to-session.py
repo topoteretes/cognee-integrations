@@ -294,18 +294,17 @@ async def _store_tool_call(payload: dict) -> None:
 
 
 def _check_memory_credit(payload: dict) -> None:
-    """Check the answer's Cognee credits against the session's tags (SDK-1071).
+    """Check whether the answer credits the memory this turn injected (SDK-1071).
 
-    The recall hook tags each injected item ``m1``, ``m2``… and keeps a
-    memory's tag for the whole session. A cited tag the session handed out is
-    a valid credit (``earlier`` when it was not injected on this turn); one it
-    never handed out is invented. Both go to the log, which measures how
-    reliably agents credit memory, and the first valid credit switches off the
-    longer first-credit wording for the rest of the session. Local only:
-    nothing is sent anywhere.
+    The recall hook records the turn it injected memory on with the credit
+    instruction; an answer on that turn that ends with the credit line is a
+    credit. The result goes to the log, which measures how reliably agents
+    credit memory (a credit on a turn that injected nothing is logged too, and
+    not counted), and the first credit switches off the longer first-credit
+    wording for the rest of the session. Local only: nothing is sent anywhere.
     """
     import _plugin_common
-    from _recall_text import MemoryTags, check_credits, credit_enabled, record_credit
+    from _recall_text import check_credits, credit_enabled, injected_this_turn, record_credit
 
     if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         return
@@ -313,9 +312,9 @@ def _check_memory_credit(payload: dict) -> None:
     if not msg or msg == "null":
         return
     key = get_session_key()
-    result = check_credits(msg, MemoryTags.load(_plugin_common._PLUGIN_DIR, key))
-    if not result["cited"] and not result["available"]:
-        return  # nothing injected, nothing cited: not a turn that could credit
+    result = check_credits(msg, injected_this_turn(_plugin_common._PLUGIN_DIR, key))
+    if not result["credited"] and not result["injected"]:
+        return  # nothing injected, nothing credited: not a turn that could credit
     record_credit(_plugin_common._PLUGIN_DIR, key, result, ts=str(int(time.time())))
     hook_log("memory_credit", result)
 
@@ -490,6 +489,34 @@ def main():
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:
         hook_log("run_exception", {"stop": is_stop, "error": str(exc)[:200]})
+    if is_stop:
+        _print_turn_status()
+
+
+def _print_turn_status() -> None:
+    """Print this turn's status under the answer.
+
+    Codex shows a Stop hook's systemMessage after the reply, so the person
+    reads the answer, its memory credit, then what Cognee did on the turn: the
+    status line, drawn now (a dataset switched during the turn shows as it is
+    after it), over the memory summary the recall hook kept. Printed after
+    ``quiet_hook_output`` has given stdout back.
+    """
+    try:
+        import _plugin_common
+        from _plugin_common import auto_recall_active
+        from _recall_text import pop_turn_status
+        from cognee_statusline_render import render_status_for_host
+
+        summary = pop_turn_status(_plugin_common._PLUGIN_DIR, get_session_key())
+        if not summary:
+            return
+        key = get_session_key()
+        text = f"{render_status_for_host(key, auto_recall_active(key))}\n{summary}"
+    except Exception as exc:
+        hook_log("turn_status_read_failed", {"error": str(exc)[:200]})
+        return
+    print(json.dumps({"systemMessage": text}))
 
 
 if __name__ == "__main__":

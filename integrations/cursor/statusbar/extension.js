@@ -197,6 +197,110 @@ class Status {
 }
 
 const LOADING_ITEM = { label: "$(loading~spin) Loading datasets…", alwaysShow: true, loading: true };
+// The picker's first entry: recall from the best-matching dataset (dataset
+// routing, a cognee 1.6.6 server) instead of only the one saves go to. Same label as
+// the Claude Code plugin's picker; the spaces keep it apart from any dataset name.
+const AUTO_RECALL = "auto (best-matching dataset)";
+
+// "auto" is reserved for auto recall: `switch-dataset.py auto` lifts the
+// restriction instead of switching, so a dataset so named is never a target.
+function isReservedName(name) {
+  return String(name || "").trim().toLowerCase() === "auto";
+}
+
+// `pin` is switch-dataset.py's action (restrict recall to the active dataset),
+// so another dataset so named is picked by its id.
+function isActionName(name) {
+  return String(name || "").trim().toLowerCase() === "pin";
+}
+
+// How the active dataset's row reads, from `--list --json`'s recall. Why recall
+// is what it is comes from the script's own `message` (the row's detail).
+function currentDescription(data) {
+  if (data.recall === "auto") {
+    return "active · saves go here; pick it to restrict recall to it";
+  }
+  return "current · recall restricted";
+}
+
+// The picker's rows from `switch-dataset.py --list --json`: the auto entry, then
+// the writable datasets, the active one first-class even when the listing left it
+// out (read-only, or created since). A dataset named "auto" is not offered; when it
+// is the active one it is shown but cannot be picked (`inert`).
+function pickerItems(data) {
+  const current = String(data.current || "");
+  const auto = data.recall === "auto";
+  const rows = (data.datasets || []).filter(
+    (dataset) => dataset.current || (dataset.writable !== false && !isReservedName(dataset.name)),
+  );
+  // The row the script marks `current` is the active one. Under shared memory
+  // two rows can share its name (another principal's copy), so the name alone
+  // marks it only for an older script that marks no row.
+  const marked = rows.some((dataset) => dataset.current);
+  const isActive = (dataset) => (marked ? Boolean(dataset.current) : dataset.name === current);
+  if (current && !rows.some(isActive)) {
+    rows.unshift({ name: current, current: true });
+  }
+  // A name more than one row carries is ambiguous to switch by; such a row
+  // goes by its id.
+  const named = new Map();
+  for (const dataset of rows) {
+    named.set(dataset.name, (named.get(dataset.name) || 0) + 1);
+  }
+  // The script's own words for the recall mode in effect, under the entry
+  // that is in effect.
+  const message = String(data.message || "");
+  const items = [
+    {
+      label: AUTO_RECALL,
+      description: auto ? `current · saves go to ${current || "the active dataset"}` : "",
+      ...(auto && message ? { detail: message } : {}),
+      target: "auto",
+      current: auto,
+    },
+  ];
+  for (const dataset of rows) {
+    const isCurrent = isActive(dataset);
+    const inert = isCurrent && isReservedName(dataset.name);
+    items.push({
+      label: dataset.name,
+      description: inert
+        ? "current · \"auto\" is reserved, pick another dataset to restrict recall"
+        : isCurrent
+          ? currentDescription(data)
+          : "",
+      ...(isCurrent && !auto && message ? { detail: message } : {}),
+      // The active dataset, picked, is `pin`: recall restricted to it, no new
+      // session (by name it would only pin when the name is what the launch
+      // record holds, which is the id for a dataset another principal owns).
+      // Another dataset goes by its id when its name is an action or is shared
+      // with another row (a same-named copy of the active one, say).
+      target: isCurrent
+        ? "pin"
+        : (isActionName(dataset.name) || named.get(dataset.name) > 1) && dataset.id
+          ? String(dataset.id)
+          : dataset.name,
+      name: dataset.name,
+      current: isCurrent && !auto,
+      inert,
+    });
+  }
+  return items;
+}
+
+// The notification for `switch-dataset.py <target> --json`'s answer: the
+// script's own `message` (the same words as the Claude Code plugin's toasts and
+// the script's text output). The generic line is for an older script.
+function switchMessage(result, name) {
+  if (result.message) {
+    return String(result.message);
+  }
+  const where = String(result.dataset || name);
+  if (result.switched === true) {
+    return `this chat now uses ${where}.`;
+  }
+  return `recall is ${result.recall || "unchanged"} (saves go to ${where}).`;
+}
 
 // The picker opens before anything else runs, with a spinning "Loading datasets…"
 // row, and fills in when the server answers: listing asks the server and takes a
@@ -212,7 +316,7 @@ async function switchDataset(status) {
   const choice = new Promise((resolve) => {
     picker.onDidAccept(() => {
       const item = picker.selectedItems[0];
-      if (item && !item.loading) {
+      if (item && !item.loading && !item.inert) {
         resolve(item);
         picker.hide();
       }
@@ -248,21 +352,30 @@ async function switchDataset(status) {
     );
     return;
   }
-  const items = (data.datasets || [])
-    .filter((dataset) => dataset.writable !== false)
-    .map((dataset) => ({ label: dataset.name, description: dataset.current ? "current" : "" }));
+  const auto = data.recall === "auto";
+  const items = pickerItems(data);
   picker.items = items;
-  picker.activeItems = items.filter((item) => item.description === "current");
-  picker.placeholder = `Current: ${data.current || "unknown"}`;
+  picker.activeItems = items.filter((item) => item.current);
+  picker.placeholder = `Current: ${data.current || "unknown"} · recall ${auto ? "auto" : "restricted"}`;
 
   const picked = await choice;
   picker.dispose();
-  if (!picked || picked.label === data.current) {
+  // Picking the active dataset pins recall to it (the script answers when it
+  // already is); only "auto" while recall is already auto has nothing to do.
+  if (!picked || (picked.target === "auto" && auto)) {
     return;
   }
+  const target = picked.target;
+  const label = picked.name || target;
+  const title =
+    target === "auto"
+      ? "Cognee: setting recall to auto…"
+      : target === "pin"
+        ? `Cognee: restricting recall to ${label}…`
+        : `Cognee: switching to ${label}…`;
   const switched = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Cognee: switching to ${picked.label}…` },
-    () => run(switcher, [picked.label, "--json", "--session-key", sessionKey]),
+    { location: vscode.ProgressLocation.Notification, title },
+    () => run(switcher, [target, "--json", "--session-key", sessionKey]),
   );
   let result = {};
   try {
@@ -270,11 +383,17 @@ async function switchDataset(status) {
   } catch {
     // fall through to the error below
   }
-  if (switched.error || result.ok === false || result.error) {
+  if (switched.error || result.ok === false || result.error || typeof result.switched !== "boolean") {
     const detail = result.error || stripAnsi(switched.stderr || switched.stdout).trim();
-    vscode.window.showErrorMessage(`Cognee: could not switch to ${picked.label}. ${detail}`);
+    const what =
+      target === "auto"
+        ? "set recall to auto"
+        : target === "pin"
+          ? `restrict recall to ${label}`
+          : `switch to ${label}`;
+    vscode.window.showErrorMessage(`Cognee: could not ${what}. ${detail}`);
   } else {
-    vscode.window.showInformationMessage(`Cognee: this chat now uses ${picked.label}.`);
+    vscode.window.showInformationMessage(`Cognee: ${switchMessage(result, label)}`);
   }
   status.refresh();
 }
@@ -295,4 +414,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, compact, stripAnsi };
+module.exports = { activate, deactivate, compact, stripAnsi, pickerItems, switchMessage, AUTO_RECALL };

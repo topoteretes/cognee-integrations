@@ -23,8 +23,8 @@ describe("ensure_and_boot.py", () => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { ENSURE_SCRIPT_CONTENT: script } = require("../../src/server") as { ENSURE_SCRIPT_CONTENT: string };
 
-  it("pins cognee 1.6.5", () => {
-    expect(script).toContain("COGNEE_VERSION = '1.6.5'");
+  it("pins cognee 1.6.6", () => {
+    expect(script).toContain("COGNEE_VERSION = '1.6.6'");
   });
 
   it("never lets uv download an interpreter, and asks for cognee's Python range instead of one minor", () => {
@@ -124,7 +124,7 @@ describe("ensure_and_boot.py", () => {
       expect(out.has_pip).toBe(true); // ensurepip ran on the uv-built venv
       expect(out.error).not.toMatch(/No module named pip/);
       expect(out.error).toMatch(/^uv failed first: .*Failed to fetch/);
-      expect(out.error).toMatch(/installing cognee with pip failed \(exit 1\): .*cognee==1\.6\.5/);
+      expect(out.error).toMatch(/installing cognee with pip failed \(exit 1\): .*cognee==1\.6\.6/);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

@@ -925,7 +925,8 @@ class TestProviderOverHttp(unittest.TestCase):
         provider.handle_tool_call("cognee_recall", {"query": "q", "scope": "session"})
         body = opener.json_body("/api/v1/recall")
         self.assertEqual(body["scope"], ["graph"])
-        self.assertEqual(body["datasets"], ["hermes"])
+        # Auto recall (SDK-1393): unpinned, the body names no dataset.
+        self.assertNotIn("datasets", body)
         self.assertNotIn("session_id", body)
 
     def test_remember_reports_the_server_status(self):

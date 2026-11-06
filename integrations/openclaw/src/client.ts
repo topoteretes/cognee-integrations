@@ -744,6 +744,9 @@ export class CogneeHttpClient {
     /** Always set for graph and code recall: unset, cognee >= 1.6.3 auto-routes
      *  date-scoped questions to TEMPORAL. The session_context scope takes none. */
     searchType?: CogneeSearchType;
+    /** Empty = name no dataset: a cognee >= 1.6.6 server routes the query to the
+     *  best-matching readable dataset(s) (auto recall); an older one searches
+     *  every readable dataset. */
     datasetIds: string[];
     topK?: number;
     sessionId?: string;
@@ -768,7 +771,7 @@ export class CogneeHttpClient {
         body: JSON.stringify({
           query: params.queryText,
           ...(params.searchType ? { search_type: params.searchType } : {}),
-          dataset_ids: params.datasetIds,
+          ...(params.datasetIds.length > 0 ? { dataset_ids: params.datasetIds } : {}),
           only_context: params.onlyContext ?? true,
           ...(typeof params.topK === "number" ? { top_k: params.topK } : {}),
           ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),

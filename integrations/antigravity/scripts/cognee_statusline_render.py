@@ -7,6 +7,7 @@ Deliberately standalone and pure-local: reads only env vars
 calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+(``auto (<dataset-name>)`` in place of the name while recall is auto)
 """
 
 from __future__ import annotations
@@ -135,10 +136,36 @@ def _active_dataset(host_id: str = "") -> str:
         return recorded
     # 2. env var (inherited from the shell that launched Antigravity)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
-    if v:
+    if v and v.lower() != "auto":  # reserved: "auto" means the default dataset
         return v
     # 3. default
     return _DEFAULT_DATASET
+
+
+def _recall_auto(host_id: str = "") -> bool:
+    """Whether graph recall is auto for this launch, from local state only.
+
+    Mirrors ``_plugin_common.recall_mode`` (this renderer does not import it): an
+    explicit read set pins; the launch record's own ``recall_pinned`` wins either
+    way, and a switch on a record written before recall modes existed pins;
+    otherwise ``COGNEE_PLUGIN_RECALL_MODE=pinned`` pins. Anything else is auto.
+    """
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
+        return False
+    rec = _launch_record(str(host_id or ""))
+    if "recall_pinned" in rec:
+        return rec.get("recall_pinned") is not True
+    if rec.get("switched_at"):
+        return False
+    return os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "").strip().lower() != "pinned"
+
+
+def _dataset_label(host_id: str = "", recall_auto: bool = False) -> str:
+    """The dataset as the status shows it: ``auto (<dataset>)`` while recall is
+    auto (the server picks the readable datasets each recall searches, and saves
+    go to ``<dataset>``), else the name, as Claude Code's row does."""
+    dataset = _active_dataset(str(host_id or ""))
+    return f"auto ({dataset})" if recall_auto else dataset
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
@@ -554,12 +581,18 @@ def _top_up_hint() -> str:
     return f" · top up: {_billing_url()}"
 
 
-def render_status_for_host(host_id: str) -> str:
+def render_status_for_host(host_id: str, recall_auto: bool = False) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
-    LLM-key verdicts written by this session (the marker is machine-wide)."""
+    LLM-key verdicts written by this session (the marker is machine-wide).
+
+    ``recall_auto`` (the hooks pass ``_plugin_common.auto_recall_active``) shows
+    the dataset as ``auto (<dataset>)``, as Claude Code's row does: recall is
+    routed by the server across the readable datasets, and saves go to
+    ``<dataset>``.
+    """
     return (
         f"{_status_prefix(str(host_id or ''))}"
-        f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
+        f"cognee: {_dataset_label(host_id, recall_auto)} · {_active_mode()}"
         f"{_credits_segment()}{_update_segment()}"
     )
 
@@ -591,7 +624,7 @@ def main() -> None:
     host_id = str(ctx.get("session_id") or ctx.get("thread_id") or "")
     sys.stdout.write(
         f"{_status_prefix()}"
-        f"cognee: {_active_dataset(host_id)} · {_active_mode()}"
+        f"cognee: {_dataset_label(host_id, _recall_auto(host_id))} · {_active_mode()}"
         f"{_credits_segment()}{_update_segment()}"
     )
 

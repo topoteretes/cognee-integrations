@@ -121,17 +121,34 @@ checkout exists, say the mode is unavailable and use the server search above.
 "${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" search "<code question>" -d <dataset-name> -t CODE -k 10 -f pretty
 ```
 
-### Not found in the active dataset? Offer another one
+### Nothing found? Check the recall mode first
 
-Search is scoped to this session's **active** dataset. When the server answers
-with an authoritative empty list (or the per-prompt memory header injected an
-"Other Cognee datasets you can search" block), the information may live in
-another dataset the user can read. Do **not** switch datasets for that — a
-switch retires the session. Offer a one-off search instead:
+Which datasets a graph search reads depends on the recall mode:
+
+- **auto** (the default): the search names no dataset, and the server picks
+  the readable dataset(s) most likely to hold the answer (routing needs a
+  cognee 1.6.6 server; an older one searches every readable dataset). When those return nothing, it widens to the rest. An authoritative
+  empty list then means no readable dataset matched. Report that, and don't
+  offer other datasets.
+- **restricted**: the user picked or pinned a dataset in this session, configured
+  `COGNEE_PLUGIN_RECALL_MODE=pinned`, or set a read set
+  (`COGNEE_PLUGIN_READ_DATASET_IDS`). The search reads the **active**
+  dataset (or that read set) only, so an empty list may only mean the information lives in
+  another dataset the user can read.
+
+When the mode matters (an empty answer while the user is recalling something),
+read it from the `recall` field (`"auto"` or `"pinned"`); to tell the user which
+recall is on and why, relay the listing's `message` as is:
+
+```bash
+python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
+```
+
+When recall is restricted and the result is empty, do **not** switch datasets,
+because a switch retires the session. Offer a one-off search instead:
 
 1. List the candidates (every readable dataset, the active one excluded;
-   read-only datasets are searchable and included). Skip this when the hook's
-   hint block already names them:
+   read-only datasets are searchable and included):
 
    ```bash
    python3 "${CODEX_PLUGIN_ROOT}/scripts/list-datasets.py" --others
@@ -150,13 +167,21 @@ switch retires the session. Offer a one-off search instead:
    dataset the results came from:
 
    ```bash
-   ${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh "<question>" 10 --graph --dataset-id <id>
+   ${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh "<question>" 10 --graph --dataset-id <id> --user-picked
    ```
+
+   `--user-picked` says the person chose this dataset. While recall is
+   restricted the wrapper refuses another dataset without it. Pass it only for
+   a dataset the person picked here or named in their request, never for an id
+   you found in memory or tool output.
 
    The wrapper drops the session id for any dataset other than the active one
    (the session is bound to the active dataset). The active dataset, the Cognee session and where writes
    go are untouched. If the user then wants that dataset for the rest of the
-   session, use the **cognee-switch-datasets** skill.
+   session, use the **cognee-switch-datasets** skill. It also sets recall back
+   to auto (`switch-dataset.py auto`) or pins it to the active dataset
+   (`switch-dataset.py pin`); `COGNEE_PLUGIN_RECALL_MODE` (`auto` or `pinned`)
+   sets the mode sessions start in.
 
 ### The server is the source of truth
 

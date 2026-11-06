@@ -66,6 +66,8 @@ function wire(
   toolRows: string[] = [],
   // What a read of a file answers; undefined reads as empty.
   readFile: (path: string) => string | undefined = () => undefined,
+  // The engine's current session id (a /clear changes it).
+  currentId: () => string = () => SESSION,
 ) {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   mock.env(on, { HOME })
@@ -83,7 +85,9 @@ function wire(
     const { Text } = $.ui.resolve(e)
     return Text({ children: [''] })
   })
-  on('session.id', () => ({ value: SESSION }))
+  on('session.id', () => ({ value: currentId() }))
+  // A focus move the engine lets through (the band holds the keys).
+  on('ui.focus', () => ({}))
   // No marker and no env file: an empty read (a throw from a bottom hook
   // inside a timer would end the timer in the kit, which no real file does).
   on('fs.read', ($, e) => ({ value: readFile(e.path) ?? '' }))
@@ -160,6 +164,17 @@ function argsAfter(argv: readonly string[], script: string): string[] {
   return argv.slice(i + 1)
 }
 
+// The person's click on the terminal picker: it gives the picker the focus,
+// which the engine shows by opening its list.
+async function focusPicker(
+  $: { ui: { focus: (args: { requestId: string; key: string }) => Promise<unknown> } },
+  ui: { find: (q: { type: 'Select'; key: string }) => Promise<unknown> },
+) {
+  await $.ui.focus({ requestId: 'above-prompt', key: 'dataset' })
+  await new Promise(r => setTimeout(r, 20))
+  await ui.find({ type: 'Select', key: 'dataset' })
+}
+
 // A registered tool answers with the text the model reads; a failure is a
 // deny, which reaches the model as an error result.
 function resultText(ran: { result?: unknown; deny?: string; text?: string; isError?: unknown }): { text: string; isError: boolean } {
@@ -198,7 +213,9 @@ test('the search tool runs the search script and hands the model the hits as tex
 
   const shown = resultText(ran)
   expect(shown.isError).toBe(false)
-  expect(shown.text).toContain('2 results from the active dataset.')
+  // No recall mode listed: an unknown mode does not claim the active dataset,
+  // since the server may have routed the search.
+  expect(shown.text).toContain('2 results from memory.')
   // Trimmed the way the prompt hook trims, by the plugin's own script, with the query.
   expect(shown.text).toContain('Project tempo replicates with raft. [trimmed]')
   const trim = argvOf(calls, 'recall-trim.py')
@@ -214,9 +231,26 @@ test('the search tool reads another dataset by id and the code graph by scope', 
   expect(argsAfter(argvOf(calls, 'cognee_search.py')!, 'cognee_search.py')).toEqual(['raft', '10', '--graph', '--dataset-id', 'd2'])
 
   calls.length = 0
+  await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft', dataset_id: 'd2', user_picked: true })
+  expect(argsAfter(argvOf(calls, 'cognee_search.py')!, 'cognee_search.py')).toEqual(['raft', '10', '--graph', '--dataset-id', 'd2', '--user-picked'])
+
+  calls.length = 0
   const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'process_payment', scope: 'code' })
   expect(argsAfter(argvOf(calls, 'cognee_search.py')!, 'cognee_search.py')).toEqual(['process_payment', '10', '--code'])
   expect(resultText(ran).text).toContain('from the code graph')
+})
+
+test('a restricted recall refuses another dataset the person did not pick, as an error result', async ($, on) => {
+  const calls: Call[] = []
+  const refusal = 'recall is restricted to agent_sessions, so another dataset is searched only when the person chooses it.'
+  wire(on, calls, {
+    'cognee_search.py': () => ({ value: { exitCode: 2, stdout: JSON.stringify({ error: refusal }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft', dataset_id: 'd2' }))
+  expect(shown.isError).toBe(true)
+  expect(shown.text).toContain(refusal)
 })
 
 test('an unreachable server is an error result, never an empty answer', async ($, on) => {
@@ -255,6 +289,18 @@ test('the remember tool maps the category to its node set and reports the write'
   expect(shown.isError).toBe(false)
   expect(shown.text).toContain('Stored in agent_sessions')
   expect(shown.text).toContain('recall will find it')
+})
+
+test('the remember tool reports the dataset the wrapper wrote to, not a stale band', async ($, on) => {
+  const calls: Call[] = []
+  // The band still shows agent_sessions; the launch record already moved on.
+  wire(on, calls, {
+    'cognee_remember.py': () => ok(JSON.stringify({ ok: true, dataset: 'demo', dataset_id: 'a1', queryable: true })),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'note' }))
+  expect(shown.text).toContain('Stored in demo')
 })
 
 test('the remember tool stores a file under its real name', async ($, on) => {
@@ -312,6 +358,34 @@ test('the remember tool has a per-session allowance, with the skill as the way p
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   const again = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'after clear' }))
   expect(again.isError).toBe(false)
+})
+
+test('after a /clear the band binds the new session without waiting for a prompt', async ($, on) => {
+  const calls: Call[] = []
+  const writes: Write[] = []
+  let id = SESSION
+  // The ended session's marker holds its SessionEnd sync; the new one has none.
+  const synced = JSON.stringify({ results: { synced: { ok: true, at: 1_700_000_000 } } })
+  const clock = wire(
+    on,
+    calls,
+    {},
+    writes,
+    undefined,
+    [],
+    path => (path.endsWith(`/phase/${SESSION}.json`) ? synced : undefined),
+    () => id,
+  )
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+
+  id = 's2'
+  await $.session.end({ sessionId: SESSION, reason: 'clear' })
+  await clock.advance(1100)
+  expect(writes.some(w => w.path === `${HOME}/.cognee-plugin/claude-code/band/s2.json`)).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /session saved/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('the remember allowance counts bytes too', async ($, on) => {
@@ -424,7 +498,7 @@ test('on the desktop band the dataset name is a picker that switches on pick', a
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker).toBeDefined()
   expect(picker!.props.value).toBe('agent_sessions')
-  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['agent_sessions', 'demo', '+ new dataset…'])
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', 'demo', '+ new dataset…'])
   // The name is drawn once, as the picker, not again as text.
   expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeUndefined()
 
@@ -432,6 +506,324 @@ test('on the desktop band the dataset name is a picker that switches on pick', a
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'demo' })
   expect(argsAfter(argvOf(calls, 'switch-dataset.py')!, 'switch-dataset.py')).toEqual(['demo', '--json', '--session-key', SESSION])
   expect(toasts.some(t => t.includes('switched to demo'))).toBe(true)
+  await ui.unmount()
+})
+
+// The active dataset, picked, is `pin`: recall pinned, no new session. A
+// COGNEE_PLUGIN_RECALL_MODE pin reads "pinned" with nothing in the launch
+// record; the pick must still reach the switch script, or it would not
+// outlive a later change to that configuration.
+for (const [initial, closed, autoEntry] of [
+  ['auto', 'auto (best-matching dataset)', 'auto (agent_sessions)'],
+  ['pinned', 'agent_sessions', 'auto (best-matching dataset)'],
+]) {
+  test(`with recall ${initial} the picker reads "${closed}", picking the active dataset sends \`pin\`, and auto lifts it`, async ($, on) => {
+    const calls: Call[] = []
+    let recall = initial
+    wire(on, calls, {
+      'switch-dataset.py': argv => {
+        if (argv.includes('--list')) return ok(JSON.stringify({ ...SWITCH_LIST, recall }))
+        if (argv.includes('auto')) {
+          recall = 'auto'
+          return ok(JSON.stringify({ switched: false, reason: 'recall_auto', dataset: 'agent_sessions', session_id: 'cognee-1', recall, message: 'MSG auto again.' }))
+        }
+        recall = 'pinned'
+        return ok(JSON.stringify({ switched: false, reason: 'recall_restricted', dataset: 'agent_sessions', session_id: 'cognee-1', recall, message: 'MSG pinned.' }))
+      },
+    })
+    const toasts: string[] = []
+    on('ui.toast', ($, e) => {
+      toasts.push(e.text)
+      return { value: undefined }
+    })
+    await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+    let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+    let picker = await ui.find({ type: 'Select', key: 'dataset' })
+    expect(picker!.props.value).toBe(closed)
+    // While recall is auto the open picker shows where saves go, like the terminal's closed form.
+    const autoLabel = (pick: typeof picker) =>
+      (pick!.props.options as { value: string; label: string }[]).find(o => o.value === 'auto (best-matching dataset)')!.label
+    expect(autoLabel(picker)).toBe(autoEntry)
+
+    calls.length = 0
+    await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'agent_sessions' })
+    expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['pin', '--json', '--session-key', SESSION])
+    // The toast is the script's own message.
+    expect(toasts).toContain('MSG pinned.')
+    await ui.unmount()
+
+    ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+    picker = await ui.find({ type: 'Select', key: 'dataset' })
+    expect(picker!.props.value).toBe('agent_sessions')
+    expect(autoLabel(picker)).toBe('auto (best-matching dataset)')
+    calls.length = 0
+    await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'auto (best-matching dataset)' })
+    expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['auto', '--json', '--session-key', SESSION])
+    expect(toasts).toContain('MSG auto again.')
+    await ui.unmount()
+  })
+}
+
+test('the active dataset owned by someone else is picked as `pin`, another named "pin" by its id', async ($, on) => {
+  // The record holds a foreign-owned dataset by its id; picking it by name
+  // used to start a full switch. `pin` never names it.
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(
+            JSON.stringify({
+              ...SWITCH_LIST,
+              current: 'team-id',
+              recall: 'auto',
+              datasets: [
+                { name: 'team', id: 'team-id', writable: true, current: true },
+                { name: 'pin', id: 'pin-id', writable: true, current: false },
+              ],
+            }),
+          )
+        : ok(JSON.stringify({ switched: false, reason: 'recall_restricted', dataset: 'team-id', session_id: 'cognee-1', recall: 'pinned', message: 'MSG pinned.' })),
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  calls.length = 0
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'team' })
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['pin', '--json', '--session-key', SESSION])
+  calls.length = 0
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'pin' })
+  expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual(['pin-id', '--json', '--session-key', SESSION])
+  await ui.unmount()
+})
+
+for (const [action, reason, recall, message] of [
+  ['pin', 'recall_restricted', 'pinned', "Recall is now pinned to 'agent_sessions', the active dataset; saves go there too."],
+  ['auto', 'recall_auto', 'auto', "Recall is auto; saves go to 'agent_sessions'."],
+]) {
+  test(`/cognee-dataset ${action} runs the script's ${action} action and relays its message`, async ($, on) => {
+    const calls: Call[] = []
+    wire(on, calls, {
+      'switch-dataset.py': argv =>
+        argv.includes('--list')
+          ? ok(JSON.stringify(SWITCH_LIST))
+          : ok(JSON.stringify({ switched: false, reason, dataset: 'agent_sessions', session_id: 'cognee-1', recall, message })),
+    })
+    await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+    const answer = await $.command.run({ command: 'cognee-dataset', args: action })
+    expect(answer.text).toBe(`Cognee: ${message}`)
+    expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual([action, '--json', '--session-key', SESSION])
+  })
+}
+test('the search tool names the active dataset only when recall is restricted', async ($, on) => {
+  const calls: Call[] = []
+  let recall = 'auto'
+  wire(on, calls, {
+    'switch-dataset.py': argv => {
+      if (argv.includes('--list')) return ok(JSON.stringify({ ...SWITCH_LIST, recall }))
+      recall = 'pinned'
+      return ok(JSON.stringify({ switched: false, reason: 'recall_restricted', dataset: 'agent_sessions', session_id: 'cognee-1', recall }))
+    },
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'cognee-dataset', args: '' })
+
+  // Auto recall: the server may have read another dataset.
+  let shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
+  expect(shown.text).toContain('2 results from memory.')
+
+  await $.command.run({ command: 'cognee-dataset', args: 'agent_sessions' })
+  shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
+  expect(shown.text).toContain('2 results from the active dataset.')
+})
+
+for (const [listed, said] of [
+  [{ recall: 'auto' }, 'Recall is auto.'],
+  [
+    { recall: 'pinned', reason: 'configured_pin', message: "Recall is pinned to 'agent_sessions', where saves go, because COGNEE_PLUGIN_RECALL_MODE=pinned." },
+    "Recall is pinned to 'agent_sessions', where saves go, because COGNEE_PLUGIN_RECALL_MODE=pinned.",
+  ],
+] as const) {
+  test(`/cognee-dataset alone says which recall is on: "${said}"`, async ($, on) => {
+    const calls: Call[] = []
+    wire(on, calls, {
+      'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, ...listed })) : ok('{}')),
+    })
+    await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+    const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
+    expect(listing.text).toContain(`\n\n${said}\n`)
+    expect(listing.text).not.toContain('Recall is restricted to agent_sessions.')
+  })
+}
+test('in a terminal the picker reads "auto (<dataset>)" while recall is auto', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'auto' })) : ok('{}')),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  // The first draw starts the listing; the next one has the mode.
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await ui.unmount()
+
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  // Drawn compact, the engine shows the selected entry: auto, named after the
+  // dataset saves go to.
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker!.props.value).toBe('auto (best-matching dataset)')
+  expect((picker!.props.options as { label?: string }[])[0]!.label).toBe('auto (agent_sessions)')
+  await ui.unmount()
+})
+
+test('same-named datasets are offered once, so the open terminal picker still draws', async ($, on) => {
+  const calls: Call[] = []
+  // Another principal's copy of the active dataset's name, listed beside it.
+  const list = {
+    ...SWITCH_LIST,
+    recall: 'auto',
+    datasets: [
+      { name: 'agent_sessions', id: 'a2', writable: true, current: false },
+      { name: 'agent_sessions', id: 'a1', writable: true, current: true },
+      { name: 'demo', id: 'd2', writable: true, current: false },
+    ],
+  }
+  wire(on, calls, { 'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify(list)) : ok('{}')) })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await ui.unmount()
+
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker).toBeDefined()
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', 'demo', '+ new dataset…'])
+  await ui.unmount()
+})
+
+test('a click that focuses the terminal picker lists the datasets afresh', async ($, on) => {
+  const calls: Call[] = []
+  let datasets = SWITCH_LIST.datasets
+  wire(on, calls, {
+    'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, datasets })) : ok('{}')),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await ui.unmount()
+
+  // 'demo' is deleted on the server after the session listed it.
+  datasets = SWITCH_LIST.datasets.filter(d => d.name !== 'demo')
+  const before = listCalls(calls).length
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await focusPicker($, ui)
+  expect(listCalls(calls).length).toBe(before + 1)
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', '+ new dataset…'])
+  await ui.unmount()
+})
+
+test('an auto that leaves recall restricted keeps the search tool on the active dataset', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned', reason: 'read_dataset_ids' }))
+        : ok(
+            JSON.stringify({
+              switched: false,
+              reason: 'recall_auto',
+              dataset: 'agent_sessions',
+              session_id: 'cognee-1',
+              recall: 'pinned',
+              recall_reason: 'read_dataset_ids',
+              message: "Recall is set to auto for this session, but COGNEE_PLUGIN_READ_DATASET_IDS still restricts it to its datasets; saves go to 'agent_sessions'.",
+            }),
+          ),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  await $.command.run({ command: 'cognee-dataset', args: 'auto' })
+  // The mode follows the answer, not the action: still restricted.
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
+  expect(shown.text).toContain('2 results from the active dataset.')
+})
+test('a switch made outside the picker relists, so the row shows the new dataset', async ($, on) => {
+  const calls: Call[] = []
+  // The skill's shell switch moved the launch record; the renderer reads it.
+  let dataset = 'agent_sessions'
+  let listings = 0
+  const clock = wire(on, calls, {
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset })),
+    'switch-dataset.py': () => {
+      listings += 1
+      const current = dataset
+      return ok(JSON.stringify({ ...SWITCH_LIST, datasets: [{ name: 'agent_sessions', id: 'a1', writable: true, current: current === 'agent_sessions' }, { name: 'demo', id: 'd2', writable: true, current: current === 'demo' }] }))
+    },
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'cognee-dataset', args: '' })
+  const first = listings
+
+  dataset = 'demo'
+  await $.prompt.submit({ text: 'next' })
+  await clock.advance(1100)
+  expect(listings).toBeGreaterThan(first)
+  const answer = await $.command.run({ command: 'cognee-dataset', args: '' })
+  expect(answer.text).toContain('* demo (current)')
+})
+
+test('a switch answered with an error leaves the recall mode as it was', async ($, on) => {
+  const calls: Call[] = []
+  // Only the first listing answers, so the relisting after the switch cannot
+  // set the mode back.
+  let listings = 0
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify(listings++ === 0 ? { ...SWITCH_LIST, recall: 'pinned' } : { error: 'no launch record' }))
+        : ok(JSON.stringify({ error: 'Selected dataset is not writable', code: 5 })),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'cognee-dataset', args: '' })
+
+  const answer = await $.command.run({ command: 'cognee-dataset', args: 'demo' })
+  expect(answer.text).toBe('Cognee: Selected dataset is not writable.')
+  // Still restricted: an error carries no mode, and an unknown one would read "memory".
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
+  expect(shown.text).toContain('2 results from the active dataset.')
+})
+
+test('"auto" is reserved: a dataset so named is not offered, and the namer refuses it', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify({ ...SWITCH_LIST, datasets: [...SWITCH_LIST.datasets, { name: 'Auto', id: 'x3', writable: true, current: false }] }))
+        : ok(JSON.stringify({ switched: true, dataset: argv[argv.indexOf('--json') - 1], session_id: 'cognee-2', previous: { synced: true } })),
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', 'demo', '+ new dataset…'])
+
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
+  calls.length = 0
+  await $.ui.input({ plugin: PLUGIN, key: 'newDataset', text: ' AUTO ' })
+  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
+  expect(toasts.some(t => t.includes('"auto" is reserved'))).toBe(true)
+  // The field stays open for another name.
+  expect(await ui.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
+  // "pin" is the script's pin action: as a new name it would pin, not create.
+  await $.ui.input({ plugin: PLUGIN, key: 'newDataset', text: 'Pin' })
+  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
+  expect(toasts.some(t => t.includes('"pin" restricts recall'))).toBe(true)
+  expect(await ui.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -448,7 +840,7 @@ test('the picker ends with a "new dataset" entry that turns it into a text field
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   const values = (picker!.props.options as { value: string }[]).map(o => o.value)
-  expect(values).toEqual(['agent_sessions', 'demo', '+ new dataset…'])
+  expect(values).toEqual(['auto (best-matching dataset)', 'agent_sessions', 'demo', '+ new dataset…'])
   expect(await ui.find({ type: 'Input', key: 'newDataset' })).toBeUndefined()
 
   // Picking it switches nothing: it asks for a name.
@@ -475,20 +867,18 @@ test('an empty name, or the cancel mark, brings the picker back without a switch
   await ui.unmount()
   const again = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
 
-  // In a terminal the picker opens from its name button and closes again after.
-  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
+  // In a terminal the picker is drawn from the start, and again after.
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
   calls.length = 0
   await $.ui.input({ plugin: PLUGIN, key: 'newDataset', text: '   ' })
-  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
-  expect(await again.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(switchArgv(calls)).toBeUndefined()
+  expect(await again.find({ type: 'Select', key: 'dataset' })).toBeDefined()
 
-  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
   expect(await again.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
   await $.ui.press({ plugin: PLUGIN, key: 'cancelNew' })
-  expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
-  expect(await again.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(switchArgv(calls)).toBeUndefined()
+  expect(await again.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await again.unmount()
 })
 
@@ -889,15 +1279,13 @@ test('in a terminal the band is the whole status row, the dataset name a picker'
   expect(argvOf(calls, 'switch-dataset.py')).toContain('--list')
 
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  // Closed until asked for: a focused picker shows its list, and the band
-  // focuses its first control on a click. The name is a button.
-  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
-  const closed = await ui.find({ type: 'Button', key: 'dataset' })
-  expect(closed).toBeDefined()
-  expect(closed!.text).toContain('agent_sessions ▾')
+  // The picker from the start: the engine shows it compact until a click
+  // gives it the focus. It sits in a keyed Box, the scope of its hover
+  // highlight (a Select has none of its own).
+  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeUndefined()
+  expect((await ui.find({ type: 'Box', key: 'datasetHover' }))?.children[0]?.props.key).toBe('dataset')
   expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
 
-  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker).toBeDefined()
   expect(picker!.props.value).toBe('agent_sessions')
@@ -967,13 +1355,13 @@ test('a listing that finds no launch record yet is tried again, and the picker a
   expect(listCalls(calls).length).toBe(1)
 
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeUndefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
   await ui.unmount()
   // The first retry comes five seconds after the failure, on the poll.
   for (let i = 0; i < 7; i += 1) await clock.advance(1000)
   expect(listCalls(calls).length).toBe(2)
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
   // Listed: no more tries.
   for (let i = 0; i < 30; i += 1) await clock.advance(1000)
@@ -1041,7 +1429,7 @@ test('a listing waits for a boot the hook handed to its worker instead of spendi
   await clock.advance(1000)
   expect(listCalls(calls).length).toBe(1)
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -1082,7 +1470,7 @@ test('the active dataset heads the picker when the writable list lacks it', asyn
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker).toBeDefined()
   expect(picker!.props.value).toBe('agent_sessions')
-  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['agent_sessions', 'demo', '+ new dataset…'])
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', 'demo', '+ new dataset…'])
   await ui.unmount()
 })
 
@@ -1105,14 +1493,14 @@ test('a narrow band drops the last cost, then the balance, then the activity, an
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 60 } })
   expect(await ui.find({ type: 'Text', text: /credits: \$9.76/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /last improve/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
 
   // 45 cells: the balance goes too; the badge, the dataset and the mode stay.
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 45 } })
   expect(await ui.find({ type: 'Text', text: /credits/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
   await ui.unmount()
 

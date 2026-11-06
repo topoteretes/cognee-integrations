@@ -113,13 +113,18 @@ Details worth knowing:
 - `COGNEE_BACKEND` can also live in `~/.cognee/.env` to make a mode the durable default; a shell export still overrides it per terminal.
 - Not sure what a terminal resolved? The status line's mode field shows it live, and `doctor.py` prints the decision with its cause, e.g. `Mode: Local — forced by COGNEE_BACKEND=local`.
 
-On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to confirm the plugin is active.
+On startup the statusline shows `cognee: <dataset> · local` (or `· cloud`) to confirm the plugin is active. While recall is auto (not pinned), it reads `cognee: auto (<dataset>) · local`: the server picks which readable datasets each recall searches, and `<dataset>` is where saves go.
 
 Every prompt's recalled context opens with a one-line memory header:
 
 ```
 Cognee memory: 5 memory hits · 12/40 turns had hits this session · saved last turn 1 prompt / 3 trace / 1 answer
 ```
+
+You see it, with the status line above it, under the answer and its memory credit: the
+recall hook keeps it and the Stop hook prints it as a `Hook` message once the answer is
+done. A recall that was skipped (server down) still says so above the answer, and a turn
+you interrupt prints nothing for it.
 
 `5 memory hits` is how many memory blocks this turn's lookup found and injected (the memory request, plus code-graph facts when that lane is armed); `12/40 turns had hits this session` is the running total, reading `memory warming up (7 turns)` until the first hit; `saved last turn` is what the previous turn persisted — on the server. The counts are also written to `~/.cognee-plugin/codex/last_recall.json`.
 
@@ -264,7 +269,7 @@ Two terminals can deliberately share a session by setting the same `COGNEE_SESSI
 
 ## Dataset
 
-All writes and recall are scoped to a single dataset. By default both the Claude Code and Codex plugins use `agent_sessions`, so memory is shared across both integrations automatically.
+All writes go to a single dataset, the active one. By default both the Claude Code and Codex plugins use `agent_sessions`, so memory is shared across both integrations automatically.
 
 Set a custom dataset at launch:
 
@@ -273,8 +278,11 @@ export COGNEE_PLUGIN_DATASET="my-project-memory"
 codex
 ```
 
-`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset (but see
-[Searching another dataset without switching](#searching-another-dataset-without-switching)).
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch, and saves go to the active dataset. It does
+not restrict recall: recall is auto (the server picks the dataset when it can) unless
+`COGNEE_PLUGIN_RECALL_MODE=pinned` or a choice made in the session says otherwise (see
+[Auto recall and restricting it to one dataset](#auto-recall-and-restricting-it-to-one-dataset)).
+`auto` is reserved: `COGNEE_PLUGIN_DATASET=auto` means the default dataset.
 Data added outside of Codex to the dataset (via SDK or the server for example) is visible in Codex via the Cognee plugin.
 
 ### Switching datasets mid-session
@@ -297,45 +305,75 @@ The choice lives in the launch record (`~/.cognee-plugin/codex/sessions/<host id
 survives a resume and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
 `COGNEE_SESSION_ID`) for the rest of the launch. Retired sessions stay in the record's `touched`
 list and the session-end sync covers them again as a safety net. The script behind the skill is
-`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`,
-`--session-key <host id>` when several launches share a directory).
+`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`, `pin [--json]`,
+`auto [--json]`, `--session-key <host id>` when several launches share a directory). Every
+`--json` result carries `message`, one or two sentences for the user; the text output prints the
+same sentences.
 
-### Searching another dataset without switching
+### Auto recall and restricting it to one dataset
 
-Recall only ever reads the active dataset. On every prompt the server answers, the hook also
-appends a block to the injected context naming **every other dataset you can read** (with their
-UUIDs — nothing ranks them, so you choose; read-only ones included, since a search needs no write
-access) and the command to search one of them. Whether the recalled context actually answers you
-is a call only the model can make — graph retrieval returns its nearest matches from any populated
-dataset, relevant or not — so the block is worded for it to act on only when memory did not answer.
-If you are asking Codex to recall something and the active dataset did not have it, it offers those datasets as a numbered list; pick one and Codex runs a **one-off, graph-only search** on
-it and tells you which dataset the answer came from. Nothing else moves: the active dataset,
-the Cognee session and where writes go stay as they were — this is for looking something up
-elsewhere, not for working there (that is what the switch above is for).
+Saves always go to the active dataset, but **recall is auto by default**: the graph recall on each
+prompt (and a `cognee-search` that names no dataset) sends no dataset, and the server picks the
+readable dataset(s) most likely to hold the answer (dataset routing). Routing needs a cognee 1.6.6
+server; an older one searches every readable dataset. Routing is best effort: when the server
+cannot narrow the query it searches every
+readable dataset instead. That happens with backend access control off, fewer than two readable
+datasets, nothing close enough to the query, or a vector database without routing support; a
+dataset that has not been through `improve` on 1.6.6 yet has no routing index and is always
+searched, and when the picked dataset returns nothing the server widens to the rest. Pin a dataset
+to keep recall on one.
 
-The same flow is available on demand through the `memory` skill when an explicit search comes
-back empty. Under the hood:
+Switching to a dataset **restricts recall to it**, `pin` restricts it to the active dataset, and
+`auto` lifts the restriction. `pin` and `auto` leave saves where they are and start no new
+session:
 
 ```bash
-python3 ${CODEX_PLUGIN_ROOT}/scripts/list-datasets.py --others   # the candidates
-${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh "<query>" 10 --graph --dataset-id <uuid>
+python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" <dataset>   # saves go there, recall restricted to it
+python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" pin         # recall restricted to the active dataset
+python3 "${CODEX_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # let the server pick the dataset for recall again
 ```
 
-A dataset other than the active one has none of this session's history, so the wrapper forces
-graph scope and drops the session id for it (noted on stderr); the active dataset named by hand
-keeps the full scope. Datasets are addressed by UUID because a name only resolves among the
-datasets your identity owns. The listing behind the hint is cached per plugin
-(`~/.cognee-plugin/codex/readable-datasets.json`) and refreshed at most every
-`COGNEE_DATASETS_CACHE_TTL` seconds (default `300`), inside what is left of the recall budget,
-so the prompt path never waits on it. A refresh that fails (timeout, unreachable) is not
-retried for `COGNEE_DATASETS_CACHE_RETRY` seconds (default `120`): the stale rows serve the
-hint meanwhile, so a loaded server costs one listing timeout per window, not one per prompt.
+`COGNEE_PLUGIN_RECALL_MODE` (exported or in `~/.cognee/.env`) sets the mode every session starts
+in: `auto` (the default) or `pinned` (recall restricted to the session's dataset, reason
+`configured_pin`). Any other value means `auto`. `COGNEE_PLUGIN_DATASET` only names the dataset:
+it no longer restricts recall, so set `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on a
+configured dataset. Session start says so once per machine and dataset, in the message you see,
+when a non-default `COGNEE_PLUGIN_DATASET` is configured, `COGNEE_PLUGIN_RECALL_MODE` was never
+set and the session has not pinned recall itself.
 
-| Env var | Default | Effect |
-|---|---|---|
-| `COGNEE_RECALL_DATASET_HINT` | `on` | Set `off` to stop the prompt hook from naming the other datasets. On, the block is injected once per session (the first prompt the server answered) and again on any prompt memory answered with nothing. The explicit skill flow is unaffected. |
-| `COGNEE_DATASETS_CACHE_TTL` | `300` | Seconds the cached readable-datasets listing is served before one bounded refresh. |
-| `COGNEE_DATASETS_CACHE_RETRY` | `120` | Seconds after a failed refresh before the listing is fetched again; the stale rows are served meanwhile. |
+The choice made in a session is stored in the launch record (`recall_pinned`) and wins over the
+configured mode for that session: `auto` gives auto recall even under `pinned`, and `pin` or a
+switch restricts recall even under `auto`. A session switched before this release stays
+restricted. `auto` is reserved: no dataset can be named so. `pin` names the action, so a dataset
+called `pin` is switched to by its id. A `COGNEE_PLUGIN_READ_DATASET_IDS`
+read set restricts recall too, and `auto` cannot lift it. `switch-dataset.py --list` prints the
+mode in effect and why (its `--json` form says `"recall": "auto"` or `"pinned"`, with the `reason`
+when pinned and that sentence as `message`); the status line does not show it. These always keep their explicit dataset: session history and
+guidance (bound to the active dataset), the code lane (this repository's code dataset) and a
+`COGNEE_PLUGIN_READ_DATASET_IDS` read set. Shared agent memory's dataset ids are dropped with the
+dataset under auto recall and kept when it is restricted. When the server is unreachable,
+`cognee-search` falls back to the local `cognee-cli`, which sends no dataset under auto recall and
+the active dataset when recall is restricted.
+
+### Searching one dataset without switching
+
+A one-off, graph-only search of one named dataset leaves the active dataset, the Cognee session and
+the recall mode as they are:
+
+```bash
+python3 "${CODEX_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candidates
+"${CODEX_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid> --user-picked
+```
+
+While recall is restricted (a picked or pinned dataset, or a read set), the wrapper searches
+another dataset only with `--user-picked`, which marks it as your choice: a dataset you named
+or picked when the agent asked. Without the flag it refuses and says how to ask. Under auto
+recall the flag is not needed.
+
+Every search reads the knowledge graph (or, with `--code`, a repository's code graph); the
+session cache is written, never searched. The session id is bound to the active dataset, so the
+wrapper drops it for any other dataset; the active dataset named by hand keeps it. Datasets are
+addressed by UUID because a name only resolves among the datasets your identity owns.
 
 ## Recaps: standup, digest, timeline
 
@@ -480,32 +518,55 @@ files, or exceed 3000 source files. Explicit indexing has no size cap.
 
 ## Memory credit in the answer
 
-Off by default on Codex for now: Codex shows the injected instruction in the terminal,
-and this hasn't been tried live there yet. Turn it on with
-`COGNEE_PLUGIN_CITE_MEMORY=on`. When on, an answer that uses recalled memory says so in
-one line at the end:
+On by default; turn it off with `COGNEE_PLUGIN_CITE_MEMORY=off`. An answer that uses
+recalled memory ends with a two-line credit led by Cognee's logotype in braille, the one
+Claude Code draws under an answer in a terminal (Codex shows the answer as written, so
+the agent writes it). Each logotype row is inline code: Codex draws a quote in its
+theme's colour and gives a plugin no other way to colour text, so the code style sets the
+logo apart.
 
 ```
-> 🧠 Cognee memory [m2]: on Oct 3 (Codex session) you chose the server over the CLI.
+> `⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  you chose the server over the CLI,
+> `⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉`  from the agent_sessions dataset
 ```
+
+In the ChatGPT app the credit is led by the waveform icon from cognee.ai/brand-resources,
+drawn inline in KaTeX, which the app renders: five Lavender (`#BC9BFF`) `\rule` strokes,
+shortest at the edges, square-ended since KaTeX has no curves. Two em spaces (U+2003) keep
+it apart from the text; Markdown collapses ordinary spaces. The app has no other way to
+put a coloured logo in a line: it shows raw HTML as text, does not load an image into
+KaTeX (`\includegraphics`) or a hosted one into Markdown, does not draw a link as a logo,
+and puts a local image in a tile taller than the text. The credit is one line, which
+the app wraps where it needs to:
+
+```
+> $\color{#BC9BFF}{\rule[0.19em]{0.11em}{0.42em}…}$  you chose the server over the CLI, from the agent_sessions dataset
+```
+
+The icon is about 210 characters the agent copies, and the app shows them as source
+until the closing `$` streams in. The Stop hook's `memory_credit` event reports
+`logo_exact`, false when a copy was mangled.
+The hook tells the two apart by the `originator` Codex writes at the top of the session's
+transcript (`Codex Desktop` for the app), read once per session.
 
 How it works:
 
-- The recall hook tags every injected item with `m1`, `m2`… and where it came from: a
-  Claude Code or Codex session, a dated session learning, a document, graph entities or
-  facts, code-graph facts, or agent guidance. Tags are numbered across the session, and a
-  memory recalled again keeps its tag: an earlier turn or trace by its server id,
-  anything else by its text. So a tag names one memory for the whole session.
+- The recall hook marks every injected item with where it came from: a graph item with
+  the dataset the server says it came from, `[dataset <name>]` (under auto recall the
+  server picks the dataset, and the mark is the only place the answer learns which one);
+  a graph item from a server that names no dataset, and anything else, with its origin,
+  such as `[agent trace, …]` or `[earlier session turn, <date>]`.
 - On turns where memory was injected, an instruction above it says how many memories
-  Cognee found for this prompt and asks the agent to add the credit line only when the
-  answer used a tagged item, and never for what it knows from AGENTS.md, the code, or the
-  conversation. The first credit in a session also says in a few words how it connects
-  to the earlier work.
-- The Stop hook reads only the credit line (`arr[m1]` in code is not a citation),
-  compares its tags with the session's and logs a `memory_credit` event to `hook.log`:
-  cited, valid, invented, `earlier` (valid but not injected on this turn) and `available`
-  (how many this turn injected). Nothing is sent anywhere.
-- The tags, the credit state and the final-sync stored count live in the session's
+  Cognee found for this prompt (the marked items in the context) and asks the agent to
+  add the credit only when the answer used a marked item, naming its dataset, and never
+  for what it knows from AGENTS.md, the code, or the conversation. The first credit in a
+  session also says in a few words how it connects to the earlier work.
+- The recall hook records the turn it injected memory on (`injected_turn` in the
+  session's `credit.json`). The Stop hook reads only the credit at the end of the answer
+  and logs a `memory_credit` event to `hook.log`: `injected` (this turn injected memory)
+  and `credited` (the answer ends with the credit). Only a credit on an injected turn is
+  counted. Nothing is sent anywhere.
+- The credit state and the final-sync stored count live in the session's
   folder, `~/.cognee-plugin/codex/sessions/<session>/`, which the state sweep removes
   after a week idle.
 - A turn where recall found nothing injects no memory header into the agent's context;
@@ -524,7 +585,7 @@ chat or `/clear` shows nothing. It says "sent", not "saved": the submit runs in 
 background, and a sync the server skipped because another improve held the dataset lock
 can't be told apart until the server fix for that lands (COG-6828).
 
-Both follow `COGNEE_PLUGIN_CITE_MEMORY` (off by default on Codex).
+Both follow `COGNEE_PLUGIN_CITE_MEMORY` (on by default).
 
 ## Status visibility
 
@@ -727,7 +788,8 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
-| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall at launch; the `cognee-switch-datasets` skill changes it mid-session (config value is informational-only) |
+| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes at launch. It does not restrict recall (see `COGNEE_PLUGIN_RECALL_MODE`). `auto` is reserved: the default dataset. The `cognee-switch-datasets` skill changes it mid-session (config value is informational-only) |
+| — | `COGNEE_PLUGIN_RECALL_MODE` | `auto` | The recall mode a session starts in: `auto` (the server picks the dataset) or `pinned` (recall restricted to the session's dataset). Any other value is `auto`. `switch-dataset.py pin` / `auto` or a switch overrides it for the session |
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `codex` | Prefix for auto-generated session IDs |
@@ -767,7 +829,7 @@ Each operation has its own client timeout, tunable independently (all in seconds
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (the one in the status line — `COGNEE_PLUGIN_DATASET` / `agent_sessions` at launch, or whatever you switched to).
+- Recall is auto (the server picks the best-matching dataset, or searches every readable one when it cannot narrow; routing needs a cognee 1.6.6 server, and an older one always searches every readable dataset) unless you restricted it to one by picking or pinning a dataset or by setting `COGNEE_PLUGIN_RECALL_MODE=pinned`; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 
