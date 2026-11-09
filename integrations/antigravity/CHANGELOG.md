@@ -47,6 +47,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `cognee-statusline.sh` read `cognee: auto (<dataset>) · cloud` while recall is not pinned, as
   Claude Code's row does, and the bare name once it is.
 
+### Removed
+- **The status line no longer shows the last operation's cost** (`last turn ~$0.06`). It was
+  an approximate, often stale reading; the credit balance and the top-up hint stay. The
+  credits marker still records `last_op`. Claude Code dropped it the same way.
+
 ### Fixed
 - **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
   shared agent memory the parent account owns the datasets, so the switch addressed the target

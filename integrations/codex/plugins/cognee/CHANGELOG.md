@@ -52,6 +52,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
 
 ### Removed
+- **The status line no longer shows the last operation's cost** (`last turn ~$0.06`). It was
+  an approximate, often stale reading; the credit balance and the top-up hint stay. The
+  credits marker still records `last_op`. Claude Code dropped it the same way.
 - **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
   search" block or asks the user to pick a dataset. `COGNEE_RECALL_DATASET_HINT`,
   `COGNEE_DATASETS_CACHE_TTL`, `COGNEE_DATASETS_CACHE_RETRY` and the `readable-datasets.json`

@@ -506,7 +506,7 @@ def _status_prefix(session_id: str = "") -> str:
 
 
 def _credits_segment() -> str:
-    """Cloud credits balance + approximate cost of the last memory operation.
+    """Cloud credits balance.
 
     Pure-local like everything here: reads only ``credits.json`` — a MAP keyed
     by tenant id (several terminals can be on different tenants at once), each
@@ -515,7 +515,9 @@ def _credits_segment() -> str:
     styling). Renders nothing unless ALL of: cloud mode, matching entry with a
     numeric balance younger than ``_CREDITS_MAX_AGE_SECONDS``, not opted out
     (``COGNEE_STATUSLINE_CREDITS=off``). A reading older than
-    ``_CREDITS_AGE_HINT_SECONDS`` renders with an ``(Nm ago)`` age hint.
+    ``_CREDITS_AGE_HINT_SECONDS`` renders with an ``(Nm ago)`` age hint. The
+    marker's ``last_op`` (the approximate cost of the last memory operation)
+    is not shown: in cloud mode it was mostly a stale, sub-cent reading.
     """
     if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
         "0",
@@ -562,12 +564,6 @@ def _credits_segment() -> str:
     seg = f" · credits: {sign}${abs(remaining):,.2f}"
     if refused_op and not exhausted:
         seg += f" (not enough for {refused_op})"
-    last_op = entry.get("last_op")
-    if isinstance(last_op, dict):
-        label = str(last_op.get("label") or "").strip()
-        cost = last_op.get("cost_usd")
-        if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            seg += f" · last {label} ~${cost:,.2f}"
     hint = _credits_age_hint(age)
     if hint:
         seg += f" ({hint})"
