@@ -286,8 +286,10 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
 #: followed by the next one ("based on dataset a, dataset b and dataset c."), so
 #: "a dataset is a set of…" in the sentence is left alone. Trailing punctuation stays
 #: outside the code, and a name already in backticks is not wrapped again.
+#: The backtick is written as ``\x60``: Hermes' install scanner reads a literal one
+#: next to a parenthesis as shell command substitution and refuses the update.
 _DATASET_NAME_RE = re.compile(
-    r"\bdataset (?!`)([^\s`]+?)"
+    r"\bdataset (?!\x60)([^\s\x60]+?)"
     r"(?=[.,;:!?)]*[ \t]*$|,?[ \t]+(?:and[ \t]+)?dataset[ \t])",
     re.M,
 )
@@ -299,7 +301,8 @@ def highlight_datasets(sentence: str) -> str:
     Desktop renders markdown, so ``dataset `live_context_support_agent` `` stands out
     from the sentence around it instead of reading as plain words.
     """
-    return _DATASET_NAME_RE.sub(lambda m: f"dataset `{m.group(1)}`", sentence)
+    tick = "\x60"
+    return _DATASET_NAME_RE.sub(lambda m: f"dataset {tick}{m.group(1)}{tick}", sentence)
 
 
 def signs_with_logo(platform: str) -> bool:
