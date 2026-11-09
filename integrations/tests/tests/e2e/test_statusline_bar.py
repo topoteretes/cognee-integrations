@@ -36,14 +36,14 @@ def _enable_plugin(suite, temp_home):
     )
 
 
-def _render(suite, run_hook, base_url, stdin="{}"):
+def _render(suite, run_hook, base_url, stdin="{}", **env):
     return run_hook(
         suite,
         "cognee_statusline_render.py",
         stdin=stdin,
         service_url=base_url,
         api_key=None,
-        env={"COGNEE_STATUSLINE_STYLE": "classic"},
+        env={"COGNEE_STATUSLINE_STYLE": "classic", **env},
     )
 
 
@@ -53,6 +53,23 @@ def test_bar_shows_dataset_and_mode(suite, run_hook, statusline, temp_home):
     result = _render(suite, run_hook, _CLOUD_URL, stdin=json.dumps({"session_id": "s1"}))
     assert result.returncode == 0, result.stderr
 
+    expected_mode = mode_label(statusline, "cloud")
+    # Recall is auto unless pinned: the dataset reads ``auto (<dataset>)``.
+    assert result.stdout == f"cognee: auto ({suite.default_dataset}) · {expected_mode}", repr(
+        result.stdout
+    )
+
+
+def test_bar_shows_the_bare_dataset_when_recall_is_pinned(suite, run_hook, statusline, temp_home):
+    _enable_plugin(suite, temp_home)
+    result = _render(
+        suite,
+        run_hook,
+        _CLOUD_URL,
+        stdin=json.dumps({"session_id": "s1"}),
+        COGNEE_PLUGIN_RECALL_MODE="pinned",
+    )
+    assert result.returncode == 0, result.stderr
     expected_mode = mode_label(statusline, "cloud")
     assert result.stdout == f"cognee: {suite.default_dataset} · {expected_mode}", repr(
         result.stdout
@@ -78,8 +95,8 @@ def test_llm_failure_glyph_renders_left_of_the_label(suite, run_hook, statusline
         else f"✕ ({statusline._LLM_KEY_REASON}) "
     )
     expected_mode = mode_label(statusline, "local")
-    assert result.stdout == f"{glyph}cognee: {suite.default_dataset} · {expected_mode}", repr(
-        result.stdout
+    assert result.stdout == (f"{glyph}cognee: auto ({suite.default_dataset}) · {expected_mode}"), (
+        repr(result.stdout)
     )
 
 

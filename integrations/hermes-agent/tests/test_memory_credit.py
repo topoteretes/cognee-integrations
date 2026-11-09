@@ -113,6 +113,41 @@ def test_desktop_gets_the_pixel_logo(cite_on):
     assert memory_credit.render_credit(PLAIN, "desktop") == RENDERED
 
 
+def test_desktop_sets_the_named_datasets_as_code(cite_on):
+    answer = (
+        "Maya wears EU 39.\n\n> Cognee: Maya's orders, based on dataset "
+        "live_context_support_agent and dataset agent_sessions."
+    )
+    line = memory_credit.render_credit(answer, "desktop").splitlines()[-1]
+    assert line.endswith(
+        " Maya's orders, based on dataset `live_context_support_agent`"
+        " and dataset `agent_sessions`."
+    )
+    assert memory_credit.has_credit(memory_credit.render_credit(answer, "desktop"))
+    assert memory_credit.strip_credit_lines(memory_credit.render_credit(answer, "desktop")) == (
+        "Maya wears EU 39."
+    )
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "based on Cognee memory.",
+        "based on dataset `x`.",
+        "a dataset is a set of documents, based on Cognee memory.",
+    ],
+)
+def test_only_a_named_dataset_is_set_as_code(sentence):
+    assert memory_credit.highlight_datasets(sentence) == sentence
+
+
+def test_three_datasets_are_each_set_as_code():
+    sentence = "based on dataset a, dataset b and dataset c."
+    assert memory_credit.highlight_datasets(sentence) == (
+        "based on dataset `a`, dataset `b` and dataset `c`."
+    )
+
+
 def test_the_pixel_logo_follows_the_grid():
     # One rule per vertical run of squares; a single-letter check keeps it readable.
     # E: a full left column, then squares in rows 0, 2 and 4 (raised 0.8, 0.4, 0).
@@ -333,6 +368,7 @@ def test_the_terminal_ui_gets_the_logo_appended(cite_on):
     # with it, so a replaced credit line would show the answer twice.
     out = memory_credit.render_credit(PLAIN, "tui")
     top, bottom = memory_credit.LOGOTYPE
+    # PLAIN names no "dataset <name>", so the logo signs alone.
     assert out == f"{PLAIN}\n\n{top}\n{bottom}"
     assert out.startswith(PLAIN)
 
@@ -341,7 +377,9 @@ def test_the_streaming_classic_cli_gets_the_logo_appended(cite_on, monkeypatch):
     # A streamed answer is already on screen; Hermes shows only an appended suffix
     # cleanly (a replaced answer would be printed a second time).
     monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
-    assert memory_credit.render_credit(PLAIN, "cli") == memory_credit.render_credit(PLAIN, "tui")
+    top, bottom = memory_credit.LOGOTYPE
+    # The CLI prints the suffix as is under the answer's closing line: one newline.
+    assert memory_credit.render_credit(PLAIN, "cli") == f"{PLAIN}\n{top}\n{bottom}"
 
 
 def test_the_non_streaming_classic_cli_gets_the_line_replaced(cite_on, monkeypatch):
@@ -386,9 +424,9 @@ def test_the_terminal_instruction_asks_for_an_unlabelled_line(platform):
 def test_the_terminal_signs_an_unlabelled_line_with_the_logo(cite_on, monkeypatch):
     monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
     top, bottom = memory_credit.LOGOTYPE
-    for platform in ("tui", "cli"):
+    for platform, gap in (("tui", "\n\n"), ("cli", "\n")):
         out = memory_credit.render_credit(SIGNED, platform)
-        assert out == f"{SIGNED}\n\n{top}\n{bottom}"
+        assert out == f"{SIGNED}{gap}{top}  based on agent_sessions dataset\n{bottom}"
         assert memory_credit.has_credit(out)
         assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
     monkeypatch.setattr(memory_credit, "_cli_streams", lambda: False)
@@ -426,7 +464,8 @@ def test_the_signed_line_is_recognised_however_it_is_worded(cite_on, line):
     answer = f"Mika likes Yuji.\n\n{line}"
     top, bottom = memory_credit.LOGOTYPE
     out = memory_credit.render_credit(answer, "tui")
-    assert out == f"{answer}\n\n{top}\n{bottom}"
+    assert out.startswith(f"{answer}\n\n{top}")
+    assert out.endswith(f"\n{bottom}")
     assert memory_credit.has_credit(out)
     assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
 
@@ -436,3 +475,28 @@ def test_a_quote_naming_a_dataset_mid_answer_is_left_alone(cite_on):
     assert memory_credit.render_credit(answer, "tui") is None
     assert not memory_credit.has_credit(answer)
     assert memory_credit.strip_credit_lines(answer) == answer
+
+
+@pytest.mark.parametrize(
+    ("line", "signed"),
+    [
+        (
+            "> Alice's story, based on dataset alice_in_wonderland.",
+            "  based on alice_in_wonderland dataset",
+        ),
+        (
+            "> Maya's orders, based on dataset shop and dataset returns.",
+            "  based on shop and returns datasets",
+        ),
+        ("> Notes, based on dataset a, dataset b and dataset c.", "  based on a, b and c datasets"),
+        ("> Mika likes Yuji, as remembered in Cognee memory.", ""),
+    ],
+)
+def test_the_terminal_logo_names_the_credited_datasets(cite_on, monkeypatch, line, signed):
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
+    top, bottom = memory_credit.LOGOTYPE
+    answer = f"Answer.\n\n{line}"
+    out = memory_credit.render_credit(answer, "cli")
+    assert out == f"{answer}\n{top}{signed}\n{bottom}"
+    assert memory_credit.has_credit(out)
+    assert memory_credit.strip_credit_lines(out) == "Answer."

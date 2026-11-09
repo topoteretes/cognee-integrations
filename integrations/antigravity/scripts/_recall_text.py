@@ -376,40 +376,39 @@ def format_code_facts(facts: list) -> str:
 # Crediting memory in the answer (SDK-1071)
 # ---------------------------------------------------------------------------
 #
-# Every recalled item the hook injects gets a short tag (``m1``, ``m2``…) and a
-# label saying where it came from. An instruction above the memory asks the
-# agent to end an answer that used memory with one ``🧠 Cognee memory [mN]: …``
-# line. Tags are numbered across the session and a memory recalled again keeps
-# its tag, so a tag always names one memory however many turns later it is
-# cited. The Stop hook checks the answer's credit line against the session's
-# tags: a cited tag that was never handed out is logged as invented. That log
-# is the measure of how reliably agents credit memory.
+# Every recalled item the hook injects is marked with where it came from: a
+# graph item with the dataset the server says it came from, ``[dataset
+# <name>]`` (SDK-1393), any other item (or a graph item from a server that
+# names no dataset) with its origin, ``[agent trace, …]``. An instruction above
+# the memory asks the agent to end an answer that used memory with one
+# ``> Cognee memory: …`` line. The recall hook records the turn it injected
+# memory on; the Stop hook counts a credit when the answer on that turn ends
+# with the credit line.
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
 #: Directory (under the suite's state dir) with one folder per session, shared
-#: with the rest of the plugin's per-session state: its tags (``tags.json``),
-#: credit state (``credit.json``) and running stored-item count
-#: (``stored.log``). The state sweep removes folders idle for a week.
+#: with the rest of the plugin's per-session state: its credit state
+#: (``credit.json``) and running stored-item count (``stored.log``). The state
+#: sweep removes folders idle for a week.
 SESSION_STATE_DIRNAME = "sessions"
-TAGS_FILE = "tags.json"
 CREDIT_FILE = "credit.json"
 
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
-#: Only the credit line counts: ``arr[m1]`` in code, or the instruction's own
-#: example quoted back, is not a citation.
-_CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
+#: The credit line, "> Cognee memory: …", as the answer's last line (the 🧠
+#: older answers put before the label still counts).
+_UNTAGGED_CREDIT_RE = re.compile(r"^\s*(?:>\s*)?(?:🧠\s*)?Cognee memory:\s*\S")
 _AGENTS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity"}
 
+#: Every graph item is marked with its dataset (SDK-1393); the credit line
+#: names the datasets used.
 CREDIT_INSTRUCTION = (
     "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "
-    "as [mN · where it came from]. A memory recalled again in this session keeps its "
-    "tag. If your answer uses information from a tagged item, end the answer with one "
-    "line:\n"
-    "> 🧠 Cognee memory [mN]: <what you remembered, and where or when it came from, "
-    "as the tag says>\n"
-    "Cite several tags as [m1, m3]. Cite only tags Cognee gave you, and only items your "
-    "answer actually used. Never credit Cognee for what you know from project "
+    "with the dataset it came from, as [dataset <name>]. If your answer uses "
+    "information from a tagged item, end the answer with one line:\n"
+    "> Cognee memory: <what you remembered>, from the <dataset> dataset\n"
+    "Name each dataset you used once, and for an item tagged with no dataset say where "
+    "it came from as its tag says. Never credit Cognee for what you know from project "
     "instruction files, your own memory files, the code, or this conversation. If no "
     "tagged item was used, do not mention memory."
 )
@@ -420,7 +419,7 @@ FIRST_CREDIT_ADDENDUM = (
 
 
 def credit_enabled(default: bool = True) -> bool:
-    """Whether credit tags and the resume notice are on.
+    """Whether credit marks and the resume notice are on.
 
     ``COGNEE_PLUGIN_CITE_MEMORY`` decides when set; otherwise ``default``, which
     each host passes (Codex starts with it off).
@@ -437,7 +436,7 @@ def _agent_name(session_id: str) -> str:
 
 
 def passage_origin(passage: str) -> str:
-    """Where a recalled passage came from, in a few words for its tag."""
+    """Where a recalled passage came from, in a few words for its mark."""
     session_id = passage_session_id(passage)
     if not session_id:
         return "document"
@@ -446,6 +445,14 @@ def passage_origin(passage: str) -> str:
     if date:
         return f"{agent} session learning, {date.group(1)}"
     return f"{agent} session"
+
+
+def item_mark(origin: str, dataset: str = "") -> str:
+    """``[dataset <name>]`` for a graph item whose dataset the server named,
+    ``[<origin>]`` for anything else (SDK-1393)."""
+    if dataset:
+        return f"[dataset {dataset}]"
+    return f"[{origin}]" if origin else ""
 
 
 def _safe_key(session_key: str) -> bool:
@@ -481,127 +488,44 @@ def _write_json(path, data: dict) -> None:
         pass
 
 
-def _memory_id(kind: str, text: str, ident: str = "") -> str:
-    """What makes two recalled items the same memory: the server's id, else the text."""
-    if ident:
-        return f"id:{ident}"
-    import hashlib
+def _update_credit_state(state_dir, session_key: str, change) -> None:
+    folder = session_state_dir(state_dir, session_key)
+    if folder:
+        path = folder / CREDIT_FILE
+        state = _read_json(path)
+        change(state)
+        _write_json(path, state)
 
-    normal = " ".join(str(text or "").split())
-    return f"{kind}:{hashlib.sha1(normal.encode('utf-8')).hexdigest()[:16]}"
 
-
-class MemoryTags:
-    """Hands out ``m1``, ``m2``… across a session and remembers what each one tagged.
-
-    Load the session's tags with :meth:`load`, label this turn's items, then
-    :meth:`save`. A memory seen earlier in the session gets its old tag back;
-    a new one gets the next number. When the context is trimmed after tagging,
-    :meth:`assign` the tags first and :meth:`show` only the ones that made it.
-    """
-
-    SNIPPET_CHARS = 200
-
-    def __init__(self, state: dict | None = None) -> None:
-        state = state or {}
-        self.turn = int(state.get("turn", 0) or 0)
-        records = state.get("tags")
-        self.records: list[dict] = [r for r in records or [] if isinstance(r, dict)]
-        self._by_id = {str(r.get("id")): r for r in self.records if r.get("id")}
-        self.found: list[str] = []  # this turn's tags, in the order first injected
-
-    @classmethod
-    def load(cls, state_dir, session_key: str) -> MemoryTags:
-        folder = session_state_dir(state_dir, session_key)
-        return cls(_read_json(folder / TAGS_FILE) if folder else None)
-
-    def save(self, state_dir, session_key: str) -> None:
-        folder = session_state_dir(state_dir, session_key)
-        if folder:
-            _write_json(folder / TAGS_FILE, {"turn": self.turn, "tags": self.records})
-
-    def assign(self, kind: str, origin: str, text: str, ident: str = "") -> str:
-        """The item's tag, without counting it as injected on this turn."""
-        key = _memory_id(kind, text, ident)
-        record = self._by_id.get(key)
-        if record is None:
-            record = {
-                "tag": f"m{len(self.records) + 1}",
-                "id": key,
-                "kind": kind,
-                "origin": origin,
-                "snippet": " ".join(str(text or "").split())[: self.SNIPPET_CHARS],
-            }
-            self.records.append(record)
-            self._by_id[key] = record
-        return record["tag"]
-
-    def show(self, tag: str) -> None:
-        """Count ``tag`` as injected on this turn."""
-        for record in self.records:
-            if record.get("tag") == tag:
-                record["turn"] = self.turn
-                if tag not in self.found:
-                    self.found.append(tag)
-                return
-
-    def add(self, kind: str, origin: str, text: str, ident: str = "") -> str:
-        tag = self.assign(kind, origin, text, ident)
-        self.show(tag)
-        return tag
-
-    def label(self, kind: str, origin: str, text: str, ident: str = "") -> str:
-        """``[mN · origin]`` for an item, registering it."""
-        tag = self.add(kind, origin, text, ident)
-        return f"[{tag} · {origin}]" if origin else f"[{tag}]"
-
-    def tag_graph(self, context: str) -> str:
-        """Tag a graph-memory context: each passage, the entities and the facts.
-
-        An unsectioned context (an older server, another retriever) is tagged
-        as one item.
-        """
-        sections = split_sections(context)
-        if (
-            sections["passages"] is None
-            and sections["entities"] is None
-            and sections["facts"] is None
-        ):
-            if not (context or "").strip():
-                return context
-            return f"{self.label('memory', 'Cognee memory', context)}\n{context}"
-        blocks: list[str] = []
-        preamble = (sections["preamble"] or "").strip()
-        if preamble:
-            blocks.append(f"{self.label('memory', 'Cognee memory', preamble)}\n{preamble}")
-        if sections["passages"] is not None:
-            tagged = []
-            for passage in split_passages(sections["passages"]):
-                tagged.append(
-                    f"{self.label('passage', passage_origin(passage), passage)}\n{passage}"
-                )
-            if tagged:
-                blocks.append(PASSAGES_HEADING + "\n" + PASSAGE_SEPARATOR.join(tagged))
-        for key, heading, kind, origin in (
-            ("entities", ENTITIES_HEADING, "entities", "knowledge graph entities"),
-            ("facts", FACTS_HEADING, "facts", "knowledge graph facts"),
-        ):
-            body = (sections[key] or "").strip("\n")
-            if body.strip():
-                blocks.append(f"{heading} {self.label(kind, origin, body)}\n{body}")
-        return "\n\n".join(blocks).strip()
+def _turn(state: dict) -> int:
+    try:
+        return int(state.get("turn", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def begin_turn(state_dir, session_key: str) -> None:
-    """Start a new turn before anything can fail: no tag counts as this turn's yet.
+    """Start a new turn before anything can fail: nothing is injected on it yet.
 
     The recall hook calls this first, so a prompt whose recall returned early
-    (server down, no session, a timeout) has no tags of its own, and the Stop
-    hook cannot mistake the previous turn's for them.
+    (server down, no session, a timeout) is not an injected turn, and the Stop
+    hook cannot take the previous turn's memory for this one's.
     """
-    tags = MemoryTags.load(state_dir, session_key)
-    tags.turn += 1
-    tags.save(state_dir, session_key)
+    _update_credit_state(state_dir, session_key, lambda s: s.update(turn=_turn(s) + 1))
+
+
+def mark_injected(state_dir, session_key: str) -> None:
+    """Record that this turn injected memory with the credit instruction."""
+    _update_credit_state(state_dir, session_key, lambda s: s.update(injected_turn=_turn(s)))
+
+
+def injected_this_turn(state_dir, session_key: str) -> bool:
+    """Whether the current turn injected memory (``mark_injected``)."""
+    folder = session_state_dir(state_dir, session_key)
+    if not folder:
+        return False
+    state = _read_json(folder / CREDIT_FILE)
+    return "injected_turn" in state and state.get("injected_turn") == _turn(state)
 
 
 def credit_instruction(first_in_session: bool, found: int = 0) -> str:
@@ -618,35 +542,21 @@ def has_credited(state_dir, session_key: str) -> bool:
     return bool(folder and _read_json(folder / CREDIT_FILE).get("credited_turns"))
 
 
-def check_credits(answer: str, tags: MemoryTags) -> dict:
-    """Compare the tags an answer's credit line cites with the session's tags.
+def check_credits(answer: str, injected: bool) -> dict:
+    """Whether the answer ends with the credit line.
 
-    Returns ``{"cited", "valid", "invented", "earlier", "available"}``: tag
-    lists in the order first cited. ``valid`` tags were handed out this
-    session; ``earlier`` are the valid ones not injected on this turn;
-    ``available`` is how many this turn injected.
+    Returns ``{"injected", "credited"}``: ``injected`` is whether this turn
+    injected memory, ``credited`` whether the answer's last line is the credit
+    line. A credit on a turn that injected nothing is reported but not counted.
     """
-    cited: list[str] = []
-    for group in _CITATION_RE.findall(answer or ""):
-        for tag in re.split(r"\s*,\s*", group):
-            if tag not in cited:
-                cited.append(tag)
-    known = {str(r.get("tag")): r for r in tags.records}
-    this_turn = {t for t, r in known.items() if r.get("turn") == tags.turn}
-    valid = [t for t in cited if t in known]
-    return {
-        "cited": cited,
-        "valid": valid,
-        "invented": [t for t in cited if t not in known],
-        "earlier": [t for t in valid if t not in this_turn],
-        "available": len(this_turn),
-    }
+    last = (answer or "").rstrip().rsplit("\n", 1)[-1]
+    return {"injected": bool(injected), "credited": bool(_UNTAGGED_CREDIT_RE.match(last))}
 
 
 def record_credit(state_dir, session_key: str, result: dict, ts: str = "") -> None:
-    """Count a turn that credited memory with at least one valid tag."""
+    """Count a turn whose answer credited the memory it was given."""
     folder = session_state_dir(state_dir, session_key)
-    if not (folder and result.get("valid")):
+    if not (folder and result.get("injected") and result.get("credited")):
         return
     path = folder / CREDIT_FILE
     state = _read_json(path)

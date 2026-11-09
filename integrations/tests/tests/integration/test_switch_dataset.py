@@ -14,6 +14,7 @@ test_sync_strict.py), and the idle-watcher restart is a no-op.
 from __future__ import annotations
 
 import pytest
+from utils.switch import run_switch, waits_for_sync
 
 HOST = "host-switch-1"
 REGISTER, UNREGISTER, DATASETS = (
@@ -40,7 +41,7 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
 
     synced: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        switch, "_sync_current", lambda hk, sid, ds: synced.append((sid, ds)) or None
+        switch, "_sync_current", lambda hk, sid, ds: synced.append((sid, ds)) and ""
     )
 
     ident = mock_server.identity
@@ -73,6 +74,14 @@ def _calls(server, path):
 # ── listing ────────────────────────────────────────────────────────────────
 
 
+def _waits_for_sync(env) -> bool:
+    return waits_for_sync(env.switch)
+
+
+def _switch(env, host, rec, target, **kwargs):
+    return run_switch(env.switch, host, rec, target, **kwargs)
+
+
 def test_list_hides_foreign_datasets_and_marks_current(env):
     out = env.switch._list(env.host, env.rec())
     assert out["current"] == "a" and out["session_id"] == env.session_id
@@ -86,7 +95,7 @@ def test_list_hides_foreign_datasets_and_marks_current(env):
 
 
 def test_switch_order_register_new_then_unregister_old(env):
-    result = env.switch._switch(env.host, env.rec(), "b", force=False)
+    result = _switch(env, env.host, env.rec(), "b")
     assert result["switched"] is True and result["dataset"] == "b"
 
     # 1. the retiring session was synced into ITS dataset
@@ -114,12 +123,15 @@ def test_switch_order_register_new_then_unregister_old(env):
         (env.session_id, "a"),
         (result["session_id"], "b"),
     ]
+    synced = {"synced": True} if _waits_for_sync(env) else {"sync": "queued"}
     assert result["previous"] == {
         "dataset": "a",
         "session_id": env.session_id,
-        "synced": True,
+        **synced,
         "unregistered": True,
     }
+    if not _waits_for_sync(env):
+        assert "syncing in the background" in result["message"]
     # the server's view: only the new handle is active
     assert set(env.server.identity.registered_agents) == {result["conn_uuid"]}
 
@@ -127,18 +139,18 @@ def test_switch_order_register_new_then_unregister_old(env):
 def test_switch_to_current_dataset_restricts_recall_without_a_new_session(env):
     """SDK-1393: picking the active dataset pins recall to it; picking it again
     is a no-op. Neither syncs nor registers a session."""
-    result = env.switch._switch(env.host, env.rec(), "a", force=False)
+    result = _switch(env, env.host, env.rec(), "a")
     assert result["switched"] is False and result["reason"] == "recall_restricted"
     assert (result["recall"], result["session_id"]) == ("pinned", env.session_id)
     assert result["message"]
     assert env.rec()["recall_pinned"] is True
-    again = env.switch._switch(env.host, env.rec(), "a", force=False)
+    again = _switch(env, env.host, env.rec(), "a")
     assert again["reason"] == "already_active" and again["message"]
     assert env.synced == [] and not _calls(env.server, REGISTER)
 
 
 def test_auto_lifts_the_restriction_and_keeps_the_session(env):
-    env.switch._switch(env.host, env.rec(), "a", force=False)
+    _switch(env, env.host, env.rec(), "a")
     result = env.switch._auto(env.host, env.rec())
     assert result["switched"] is False and result["reason"] == "recall_auto"
     assert (result["recall"], result["session_id"]) == ("auto", env.session_id)
@@ -153,7 +165,7 @@ def test_auto_under_a_read_set_is_saved_but_recall_stays_scoped(env, capsys, mon
     """COGNEE_PLUGIN_READ_DATASET_IDS is an explicit scope ``auto`` cannot lift:
     the choice is saved, and every surface reports what is in effect."""
     monkeypatch.setenv("COGNEE_PLUGIN_READ_DATASET_IDS", "11111111-1111-4111-8111-111111111111")
-    env.switch._switch(env.host, env.rec(), "a", force=False)
+    _switch(env, env.host, env.rec(), "a")
     result = env.switch._auto(env.host, env.rec())
     assert result["reason"] == "recall_auto" and result["recall"] == "pinned"
     assert result["recall_reason"] == "read_dataset_ids"
@@ -203,19 +215,19 @@ def test_repicking_a_foreign_owned_active_dataset_by_name_only_pins(env, monkeyp
     row = ident.seed_dataset("team", owner_id="someone-else")
     ident._grant(ident.principal_id, row["id"], "write")
     monkeypatch.setattr(env.pc, "require_typed_dataset_id_support", lambda **kw: None)
-    first = env.switch._switch(env.host, env.rec(), "team", force=False)
+    first = _switch(env, env.host, env.rec(), "team")
     assert first["switched"] is True and env.rec()["dataset"] == row["id"]
     env.switch._auto(env.host, env.rec())
     registered = len(_calls(env.server, REGISTER))
     session = env.rec()["session_id"]
 
-    again = env.switch._switch(env.host, env.rec(), "team", force=False)
+    again = _switch(env, env.host, env.rec(), "team")
     assert again["switched"] is False and again["reason"] == "recall_restricted"
     assert again["recall"] == "pinned" and again["dataset"] == row["id"]
     assert env.rec()["recall_pinned"] is True and env.rec()["session_id"] == session
     assert len(_calls(env.server, REGISTER)) == registered
     assert len(env.synced) == 1  # only the first switch synced
-    by_id = env.switch._switch(env.host, env.rec(), row["id"], force=False)
+    by_id = _switch(env, env.host, env.rec(), row["id"])
     assert by_id["switched"] is False and by_id["reason"] == "already_active"
 
 
@@ -265,7 +277,7 @@ def test_a_configured_pin_holds_until_auto_lifts_it(env, capsys, monkeypatch):
 
 def test_picking_the_active_dataset_under_a_configured_pin_records_the_pick(env, monkeypatch):
     monkeypatch.setenv("COGNEE_PLUGIN_RECALL_MODE", "pinned")
-    result = env.switch._switch(env.host, env.rec(), "a", force=False)
+    result = _switch(env, env.host, env.rec(), "a")
     assert result["reason"] == "already_active" and result["recall"] == "pinned"
     assert env.rec()["recall_pinned"] is True
     assert env.switch._list(env.host, env.rec())["reason"] == "dataset_picked"
@@ -297,7 +309,7 @@ def test_every_result_carries_the_message_the_text_output_prints(env, capsys):
 def test_auto_is_reserved_and_never_switches(env, capsys):
     import json
 
-    env.switch._switch(env.host, env.rec(), "a", force=False)
+    _switch(env, env.host, env.rec(), "a")
     assert env.switch.main([" Auto ", "--json", "--session-key", env.host]) == env.switch.EXIT_OK
     out = json.loads(capsys.readouterr().out)
     assert out["switched"] is False and out["reason"] == "recall_auto"
@@ -305,7 +317,7 @@ def test_auto_is_reserved_and_never_switches(env, capsys):
 
 
 def test_a_switch_pins_recall_to_the_new_dataset(env):
-    result = env.switch._switch(env.host, env.rec(), "b", force=False)
+    result = _switch(env, env.host, env.rec(), "b")
     assert result["switched"] is True and result["recall"] == "pinned"
     assert env.rec()["recall_pinned"] is True
 
@@ -313,39 +325,62 @@ def test_a_switch_pins_recall_to_the_new_dataset(env):
 def test_switch_refuses_readonly_dataset_before_touching_anything(env):
     before = env.rec()
     with pytest.raises(env.switch.SwitchError) as exc:
-        env.switch._switch(env.host, env.rec(), "shared-ro", force=False)
+        _switch(env, env.host, env.rec(), "shared-ro")
     assert exc.value.code == env.switch.EXIT_NOT_WRITABLE
     assert env.synced == [] and not _calls(env.server, REGISTER)
     assert env.rec() == before
 
 
 def test_switch_creates_an_unlisted_dataset_for_the_principal(env):
-    result = env.switch._switch(env.host, env.rec(), "brand-new", force=False)
+    result = _switch(env, env.host, env.rec(), "brand-new")
     assert result["switched"] is True
     created = [c for c in env.server.calls if c["path"] == DATASETS and c["method"] == "POST"]
     assert created and created[0]["json"]["name"] == "brand-new"
     assert env.server.identity.datasets["brand-new"]["ownerId"] == env.server.identity.principal_id
 
 
+def test_switch_goes_ahead_when_the_sync_cannot_be_started(env, monkeypatch):
+    """The switch never waits on, or aborts for, the sync of the session it
+    leaves: a sync that cannot even be queued is reported, and the retired pair
+    stays in `touched` for the final sync."""
+    if _waits_for_sync(env):
+        pytest.skip("this switch still waits for its sync")
+    monkeypatch.setattr(env.switch, "_sync_current", lambda hk, sid, ds: "improve request busy")
+    result = _switch(env, env.host, env.rec(), "b")
+    assert result["switched"] is True and env.rec()["dataset"] == "b"
+    assert result["previous"]["sync"] == "not_started"
+    assert result["previous"]["sync_error"] == "improve request busy"
+    assert "could not be queued for sync (improve request busy)" in result["message"]
+    assert (env.session_id, "a") in {
+        (p["session_id"], p["dataset"]) for p in env.pc.touched_pairs(env.host)
+    }
+
+
 def test_sync_failure_aborts_with_record_untouched(env, monkeypatch):
+    if not _waits_for_sync(env):
+        pytest.skip("this switch never waits for its sync")
+
     def boom(hk, sid, ds):
         raise env.switch.SwitchError(env.switch.EXIT_SYNC_FAILED, "improve failed")
 
     monkeypatch.setattr(env.switch, "_sync_current", boom)
     before = env.rec()
     with pytest.raises(env.switch.SwitchError) as exc:
-        env.switch._switch(env.host, env.rec(), "b", force=False)
+        _switch(env, env.host, env.rec(), "b")
     assert exc.value.code == env.switch.EXIT_SYNC_FAILED
     assert env.rec() == before
     assert not _calls(env.server, REGISTER) and not _calls(env.server, UNREGISTER)
 
 
 def test_force_switches_past_sync_failure_and_reports_it(env, monkeypatch):
+    if not _waits_for_sync(env):
+        pytest.skip("this switch never waits for its sync")
+
     def boom(hk, sid, ds):
         raise env.switch.SwitchError(env.switch.EXIT_SYNC_FAILED, "improve failed")
 
     monkeypatch.setattr(env.switch, "_sync_current", boom)
-    result = env.switch._switch(env.host, env.rec(), "b", force=True)
+    result = _switch(env, env.host, env.rec(), "b", force=True)
     assert result["switched"] is True
     assert result["previous"]["synced"] is False
     assert "improve failed" in result["previous"]["sync_error"]
@@ -360,7 +395,7 @@ def test_register_failure_changes_nothing(env):
     env.server.force_response("POST", REGISTER, 500, {"detail": "boom"})
     before = env.rec()
     with pytest.raises(env.switch.SwitchError) as exc:
-        env.switch._switch(env.host, env.rec(), "b", force=False)
+        _switch(env, env.host, env.rec(), "b")
     assert exc.value.code == env.switch.EXIT_REGISTER_FAILED
     assert env.synced == [(env.session_id, "a")]  # sync ran first, by design
     assert env.rec() == before
@@ -391,7 +426,7 @@ def test_main_list_json_and_missing_record(env, capsys, monkeypatch):
 
 
 def test_final_sync_targets_include_touched_pairs(suite, hook_module, env, monkeypatch):
-    env.switch._switch(env.host, env.rec(), "b", force=False)
+    _switch(env, env.host, env.rec(), "b")
     sync = hook_module(suite, "sync-session-to-graph.py")
     rec = env.rec()
     targets = sync._sync_targets(rec["session_id"], "b", env.host, include_touched=True)

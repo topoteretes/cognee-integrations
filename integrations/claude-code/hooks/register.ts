@@ -157,8 +157,9 @@ const LIST_TIMEOUT_MS = 45_000
 // is not an attempt: the listing waits for the `setting_up` phase to end.
 const LIST_RETRY_MS = 5_000
 const LIST_MAX_ATTEMPTS = 5
-// A switch syncs the session it leaves first; that can take minutes.
-const SWITCH_TIMEOUT_MS = 600_000
+// A switch only starts the sync of the session it leaves (it never waits for
+// it), so what remains is a few HTTP calls of up to 15 s each.
+const SWITCH_TIMEOUT_MS = 120_000
 const NODE_SETS: Record<string, string> = {
   user: 'user_context',
   project: 'project_docs',
@@ -173,6 +174,9 @@ let sessionId = ''
 let endedSessionId = ''
 let adopting = false
 let adoptWatch: { cancel: () => void } | null = null
+// Until when the row reads "connecting…" after a /clear or /resume while the
+// new conversation is not bound yet (the adopt watch's own window).
+let adoptUntil = 0
 let phasePath = ''
 let bandPath = ''
 let rendererPython: string | null = null
@@ -212,6 +216,9 @@ let toolsOn = true
 type DatasetRow = { name: string; id: string; current: boolean }
 let switchTargets: DatasetRow[] = []
 let switching = false
+// Where a running switch is going: the row reads "<current> → <target>" until
+// it lands, instead of a picker already showing the pick.
+let switchingTo = ''
 // The picker's last entry: picking it turns the picker into a text field for
 // a dataset that does not exist yet (the switch script creates it). Spaces
 // make the value one no dataset can be named, so it never collides.
@@ -438,8 +445,8 @@ function activity(phase: Phase): Activity {
 // engine's own band is often an empty element, which still takes a row in a
 // terminal when stacked under ours, so an empty one is left out.
 // The credit line at the end of an answer, as the recall hook's instruction
-// has the model write it: "> Cognee memory: what it remembered, from <document>
-// in the <dataset> dataset". Older answers cite tags, "> 🧠 Cognee memory
+// has the model write it: "> Cognee memory: what it remembered, from the
+// <dataset> dataset". Older answers cite tags, "> 🧠 Cognee memory
 // [m4, m5]: …"; the tags and the brain are taken off those too.
 // Returns the text without it, the tags ('' when untagged) and the note; null
 // when the text does not end with one.
@@ -629,9 +636,11 @@ async function adoptSession($: any): Promise<void> {
     if (!id || id === endedSessionId || sessionId) return
     stopAdoptWatch()
     await bindSession($)
+    // The warm-up starts before the first snapshot: its redraw must already
+    // read as connecting, not drop to the dim ○ for a frame.
+    warmupUntil = (await $.clock.now()) + WARMUP_MS
     await readPhase($)
     await refreshSnapshot($)
-    warmupUntil = (await $.clock.now()) + WARMUP_MS
     await startPoll($, WARMUP_MS)
     if (bandOn) void loadDatasets($)
     redraw($)
@@ -653,14 +662,38 @@ function redraw($: any): void {
   $.ui.invalidate('ui.render')
 }
 
+// Nothing confirmed yet about the connection while the session is still
+// coming up: the row shows the spinner and "connecting…" instead of a bare
+// dim ○, which reads as nothing happening. Bounded by the warm-up (and, before
+// the first snapshot, by the renderer still being tried), so a server that
+// never answers settles on the ○ instead of spinning for the session. After a
+// /clear or /resume the row is connecting too while the new conversation is
+// being bound (at most ADOPT_MS, the adopt watch's window): the snapshot was
+// dropped with the ended session and the new one's warm-up has not started.
+function awaitingConnection(now: number): boolean {
+  if (active) return false
+  if (snapshot?.state === 'ok' || snapshot?.state === 'fail') return false
+  if (now < warmupUntil) return true
+  if (!sessionId && now < adoptUntil) return true
+  return snapshot === null && !!sessionId && rendererFailures < 3
+}
+
+function startSpin($: any): void {
+  if (spin) return
+  spin = $.clock.every(FRAME_MS, async () => {
+    frame = (frame + 1) % FRAMES.length
+    // The connection wait has no hook to end it: the frame stops itself.
+    if (!active && !awaitingConnection(await $.clock.now()) && spin) {
+      spin.cancel()
+      spin = null
+    }
+    $.ui.invalidate('ui.render')
+  })
+}
+
 function setActive($: any, next: Activity): void {
   active = next
-  if (!spin) {
-    spin = $.clock.every(FRAME_MS, () => {
-      frame = (frame + 1) % FRAMES.length
-      $.ui.invalidate('ui.render')
-    })
-  }
+  startSpin($)
   redraw($)
 }
 
@@ -684,8 +717,13 @@ async function readPhase($: any): Promise<void> {
   }
   const now = await $.clock.now()
   const shown = pickActivity(marker, now)
+  // The module's own work (a switch, a search, a remember) keeps the row until
+  // it ends and clears it itself; a hook finishing meanwhile must not tick
+  // "memory saved" over a switch that is still running.
+  const own = !!active && (OWN_PHASES as readonly string[]).includes(active.phase)
   if (shown?.kind === 'active') {
     markerActive = true
+    if (own) return
     if (!active || active.phase !== shown.phase) {
       setActive($, shown)
       activeSince = now
@@ -693,7 +731,7 @@ async function readPhase($: any): Promise<void> {
     return
   }
   result = shown
-  if (active) clearActive($)
+  if (active && !own) clearActive($)
   else redraw($)
 }
 
@@ -965,12 +1003,16 @@ async function relistDatasets($: any): Promise<void> {
 }
 
 // Move the session to another dataset: the plugin's switch script, which
-// syncs the session it leaves and starts a new one. No model turn.
+// starts the sync of the session it leaves (without waiting) and a new one.
+// No model turn.
 async function switchDataset($: any, target: string): Promise<string> {
   const name = target.trim()
   if (!name) return 'name a dataset'
   if (switching) return 'a switch is already running'
   switching = true
+  // `pin` and `auto` stay on the active dataset; an id reads as its name.
+  const action = name.toLowerCase()
+  switchingTo = action === 'pin' || action === 'auto' ? '' : switchTargets.find(r => r.id === name)?.name ?? name
   setActive($, activity('switching'))
   let line = ''
   try {
@@ -994,9 +1036,14 @@ async function switchDataset($: any, target: string): Promise<string> {
     const failed = !parsed.switched && parsed.switched !== false
     const mode = recallModeOf(parsed)
     if (mode) recallMode = mode
+    // The switch landed: the rows say so now, so a relist that times out
+    // below cannot put the old name back on the row.
+    const landed = asText(parsed.dataset)
+    if (parsed.switched === true && landed) switchTargets = switchTargets.map(r => ({ ...r, current: r.name === landed }))
     $.ui.toast(failed ? `✕ ${line}` : `${line}`)
   } finally {
     switching = false
+    switchingTo = ''
     clearActive($)
   }
   await refreshSnapshot($)
@@ -1226,7 +1273,12 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     const id = await $.session.id()
     stopAdoptWatch()
-    if (id !== sessionId) await bindSession($)
+    if (id !== sessionId) {
+      // Bound here only when the adopt watch missed it (after a /clear): the
+      // new conversation gets the warm-up a session start gives.
+      if (!sessionId) warmupUntil = (await $.clock.now()) + WARMUP_MS
+      await bindSession($)
+    }
     setActive($, activity('recalling'))
     let ran
     try {
@@ -1299,10 +1351,13 @@ export const register: Register = (on, options) => {
       // Bind the new conversation once its id is out, for up to ADOPT_MS.
       stopAdoptWatch()
       const until = (await $.clock.now()) + ADOPT_MS
+      adoptUntil = until
       adoptWatch = $.clock.every(POLL_MS, async () => {
         if (sessionId || (await $.clock.now()) > until) stopAdoptWatch()
         else await adoptSession($)
       })
+      // The row reads "connecting…" while the new conversation binds.
+      redraw($)
       void adoptSession($)
       return ran
     }
@@ -1399,13 +1454,23 @@ export const register: Register = (on, options) => {
     if (!sessionId) void adoptSession($)
     if (!datasetsListed && !datasetsListing && datasetsAttempts < LIST_MAX_ATTEMPTS && datasetsRetryAt === 0) void loadDatasets($)
     void startTourIfFirstRun($)
-    const current = switchTargets.find(r => r.current)?.name ?? snap?.dataset ?? ''
+    // The snapshot names the active dataset from local state, retaken every
+    // prompt; the listing needs the server and is retaken only on a switch,
+    // and a listing that fails keeps the rows it had. When the two disagree
+    // (a switch whose relist timed out, a switch from a shell) the snapshot
+    // wins, and the rows are marked by it. The launch record, and so the
+    // snapshot, may hold a dataset by its id rather than its name.
+    const listedRow = switchTargets.find(r => r.current)
+    const recorded = snap?.dataset ?? ''
+    const agrees = !recorded || (!!listedRow && (listedRow.name === recorded || listedRow.id === recorded))
+    const targets = agrees ? switchTargets : switchTargets.map(r => ({ ...r, current: r.name === recorded || r.id === recorded }))
+    const current = targets.find(r => r.current)?.name ?? recorded
     // A picker whenever the server listed anything. The active dataset may be
     // missing from the writable list (read-only, or created since the
     // listing); it heads the options anyway, so the row still reads and the
     // other datasets stay reachable.
-    const canPick = switchTargets.length > 0
-    const listed = current && !switchTargets.some(r => r.name === current) ? [{ name: current, id: '', current: true }, ...switchTargets] : switchTargets
+    const canPick = targets.length > 0
+    const listed = current && !targets.some(r => r.name === current) ? [{ name: current, id: '', current: true }, ...targets] : targets
     // One option per name: the engine refuses a Select whose values repeat and
     // drops the whole row, and a switch goes by name anyway. Same-named
     // datasets (another principal's copy) collapse onto the current row, or
@@ -1500,15 +1565,18 @@ export const register: Register = (on, options) => {
 
     // The health slot, as the text line draws it: the spinner while something
     // runs, a green ● once the server is confirmed up and authenticated, the
-    // red verdict with its button on a failure, and a dim ○ while nothing is
-    // known yet (warming up, no marker). One segment with the mark and the
+    // red verdict with its button on a failure, the spinner and "connecting…"
+    // while the session warms up with nothing confirmed, and a dim ○ once
+    // the warm-up is over and still nothing is known. One segment with the mark and the
     // wordmark after it: the official waveform as an inline SVG where the
     // surface draws one (the desktop; the terminal's table lists an Svg too,
     // but draws it as an empty box, so a terminal gets the wordmark alone),
     // then "cognee" bold in the brand lavender.
     const badge: RenderElement[] = []
     let badgeWidth = 2
-    if (active) {
+    const connecting = awaitingConnection(await $.clock.now())
+    if (connecting) startSpin($)
+    if (active || connecting) {
       badge.push(Text({ color: 'yellow', children: [`${FRAMES[frame % FRAMES.length] ?? '⠋'} `] }))
     } else if (snap?.state === 'ok') {
       badge.push(Text({ color: 'green', bold: true, children: ['● '] }))
@@ -1532,7 +1600,12 @@ export const register: Register = (on, options) => {
     badge.push(Text({ bold: true, color: purple, children: ['cognee '] }))
     segment(badgeWidth + 7, 0, ...badge)
     // The dataset: a control when there is a list, the name otherwise.
-    if (canPick) {
+    if (switching) {
+      // No picker while a switch runs: it would show the pick as if it had
+      // already landed.
+      const name = switchingTo ? `${current || 'memory'} → ${switchingTo}` : current || 'memory'
+      segment(name.length, 0, Text({ children: [name] }))
+    } else if (canPick) {
       const drawn = namingDataset ? namer() : e.surface === 'terminal' ? hoverable(picker()) : picker()
       segment(namingDataset ? 26 : pickerLabel.length + 2, 0, drawn)
     } else {
@@ -1543,20 +1616,15 @@ export const register: Register = (on, options) => {
     segment(3 + mode.length, 0, Text({ children: [' · '] }), Text({ bold: true, color: purple, children: [mode] }))
     if (snap?.credits) {
       // As on the text line: the balance green, red once exhausted or a
-      // request was refused; the last-operation cost after it at normal
-      // weight. The text line's "top up: <url>" becomes a link here, the way
-      // out one click away (an anchor on the desktop, OSC 8 in a terminal).
-      // A balance that is out, or a refusal, is something to act on: it is
-      // never dropped for width; a healthy balance goes before the activity,
-      // the last-operation cost before both.
+      // request was refused. The text line's "top up: <url>" becomes a link
+      // here, the way out one click away (an anchor on the desktop, OSC 8 in
+      // a terminal). A balance that is out, or a refusal, is something to act
+      // on: it is never dropped for width; a healthy balance goes before the
+      // activity.
       const [balance = '', ...rest] = snap.credits.split(' · ')
       segment(3 + balance.length, snap.credits_exhausted ? 0 : 2, Text({ color: snap.credits_exhausted ? 'red' : 'green', children: [` · ${balance}`] }))
-      for (const part of rest) {
-        if (part.startsWith('top up:') && snap.billing_url && Link) {
-          segment(9, 0, Text({ children: [' · '] }), Link({ href: snap.billing_url, label: 'top up' }))
-        } else {
-          segment(3 + part.length, 3, Text({ children: [` · ${part}`] }))
-        }
+      if (snap.billing_url && Link && rest.some(part => part.startsWith('top up:'))) {
+        segment(9, 0, Text({ children: [' · '] }), Link({ href: snap.billing_url, label: 'top up' }))
       }
     }
     // What memory is doing, or did last. A failed `ready` result is not
@@ -1566,6 +1634,8 @@ export const register: Register = (on, options) => {
       result && result.age * 1000 < HIDE_AFTER_MS && !(result.phase === 'ready' && !result.ok && snap?.state === 'ok') ? result : null
     if (active) {
       segment(3 + active.text.length, 1, Text({ color: 'yellow', children: [` · ${active.text}`] }))
+    } else if (connecting) {
+      segment(3 + ACTIVE_LABELS.connecting.length, 1, Text({ color: 'yellow', children: [` · ${ACTIVE_LABELS.connecting}`] }))
     } else if (shownResult) {
       // At rest the result reads in the brand colour and bold.
       segment(

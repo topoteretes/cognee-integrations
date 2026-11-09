@@ -13,8 +13,12 @@ def register(ctx) -> None:
         register_hook("transform_llm_output", transform_llm_output)
 
 
-def transform_llm_output(response_text="", platform="", **_kwargs):
-    """Draw the answer's ``> Cognee:`` credit for the chat's platform (None: unchanged)."""
+def transform_llm_output(response_text="", platform="", session_id="", **_kwargs):
+    """Draw the answer's ``> Cognee:`` credit for the chat's platform, and append a
+    waiting one-time recall note (recall_notice). None: unchanged."""
     from .memory_credit import render_credit
+    from .recall_notice import append_pending
 
-    return render_credit(response_text, platform)
+    rendered = render_credit(response_text, platform)
+    noted = append_pending(response_text if rendered is None else rendered, session_id)
+    return rendered if noted is None else noted

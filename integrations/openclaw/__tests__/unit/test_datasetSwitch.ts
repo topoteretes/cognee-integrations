@@ -8,7 +8,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveConfig } from "../../src/config";
+import { datasetPinsRecall, resolveConfig } from "../../src/config";
 import {
   DatasetSwitchStore,
   MAX_SYNCED_RETIRED,
@@ -25,7 +25,8 @@ import {
 } from "../../src/dataset-switch";
 
 // The default config: recall is auto unless a conversation pins it (or the
-// config sets recallMode "pinned" — see "configured recallMode").
+// config pins it: recallMode "pinned", or a non-default datasetName with no
+// recall mode — see "configured recallMode").
 const cfg = resolveConfig({});
 
 describe("helpers", () => {
@@ -391,10 +392,16 @@ describe("memory_switch_dataset tool", () => {
   describe("configured recallMode", () => {
     const pinnedCfg = resolveConfig({ datasetName: "testds", recallMode: "pinned" });
 
-    it("defaults to auto, also with a non-default datasetName; unknown values mean auto", () => {
+    it("defaults to auto for the default dataset and to pinned for a non-default one; unknown values count as unset", () => {
       expect(resolveConfig({}).recallMode).toBe("auto");
-      expect(resolveConfig({ datasetName: "testds" }).recallMode).toBe("auto");
-      expect(configPinsRecall(resolveConfig({ datasetName: "testds" }))).toBe(false);
+      expect(resolveConfig({ datasetName: "agent_sessions" }).recallMode).toBe("auto");
+      expect(resolveConfig({ datasetName: "testds" }).recallMode).toBe("pinned");
+      expect(configPinsRecall(resolveConfig({ datasetName: "testds" }))).toBe(true);
+      expect(datasetPinsRecall({ datasetName: "testds" }, resolveConfig({ datasetName: "testds" }))).toBe(true);
+      expect(datasetPinsRecall({}, resolveConfig({}))).toBe(false);
+      expect(datasetPinsRecall({ datasetName: "testds", recallMode: "pinned" }, pinnedCfg)).toBe(false);
+      expect(resolveConfig({ datasetName: "testds", recallMode: "auto" }).recallMode).toBe("auto");
+      expect(resolveConfig({ datasetName: "testds", recallMode: "bogus" } as never).recallMode).toBe("pinned");
       expect(resolveConfig({ recallMode: "bogus" } as never).recallMode).toBe("auto");
       expect(resolveConfig({ recallMode: " Pinned " } as never).recallMode).toBe("pinned");
       expect(configPinsRecall(pinnedCfg)).toBe(true);
@@ -407,13 +414,23 @@ describe("memory_switch_dataset tool", () => {
 
     it("COGNEE_PLUGIN_RECALL_MODE applies when the config sets none", () => {
       const prev = process.env.COGNEE_PLUGIN_RECALL_MODE;
+      const prevDataset = process.env.COGNEE_PLUGIN_DATASET;
       process.env.COGNEE_PLUGIN_RECALL_MODE = "pinned";
       try {
         expect(resolveConfig({}).recallMode).toBe("pinned");
         expect(resolveConfig({ recallMode: "auto" }).recallMode).toBe("auto");
+        process.env.COGNEE_PLUGIN_RECALL_MODE = "auto";
+        expect(resolveConfig({ datasetName: "testds" }).recallMode).toBe("auto");
+        expect(datasetPinsRecall({ datasetName: "testds" }, resolveConfig({ datasetName: "testds" }))).toBe(false);
+        delete process.env.COGNEE_PLUGIN_RECALL_MODE;
+        process.env.COGNEE_PLUGIN_DATASET = "proj_x";
+        expect(resolveConfig({}).recallMode).toBe("pinned");
+        expect(datasetPinsRecall({}, resolveConfig({}))).toBe(true);
       } finally {
         if (prev === undefined) delete process.env.COGNEE_PLUGIN_RECALL_MODE;
         else process.env.COGNEE_PLUGIN_RECALL_MODE = prev;
+        if (prevDataset === undefined) delete process.env.COGNEE_PLUGIN_DATASET;
+        else process.env.COGNEE_PLUGIN_DATASET = prevDataset;
       }
     });
 

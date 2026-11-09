@@ -66,13 +66,15 @@ from _plugin_common import (
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
     DESKTOP_ORIGINATOR,
-    MemoryTags,
     begin_turn,
     code_facts,
     credit_enabled,
     credit_instruction,
     format_code_facts,
     has_credited,
+    item_mark,
+    mark_graph,
+    mark_injected,
     pop_turn_status,
     session_originator,
     stash_turn_status,
@@ -214,27 +216,27 @@ def _memory_summary(
     return "Cognee memory: " + " · ".join(parts)
 
 
-def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
-    """``_format_entry`` with the item's credit mark (SDK-1071), when tagging is on.
+def _marked_entry(entry: dict, keys: list | None) -> str:
+    """``_format_entry`` with the item's credit mark (SDK-1071), when crediting is on.
 
     Graph memory is marked per passage plus one mark each for its entities and
-    facts, naming its document (when known) and the dataset the server says it
-    came from (SDK-1393); every other item gets one mark naming where it came
-    from. An earlier turn or trace is known by its server id, so it keeps its
-    tag when recalled again.
+    facts, naming the dataset the server says it came from (SDK-1393); every
+    other item, or graph memory from a server that names no dataset, gets one
+    mark naming where it came from. ``keys`` collects the text each marked item
+    opens with, so the caller can count the ones injected.
     """
-    if tags is None:
+    if keys is None:
         return _format_entry(entry)
     source = entry.get("source", "")
     if source == "graph_context":
         entry = dict(entry)
-        entry["text"] = tags.tag_graph(
+        entry["text"] = mark_graph(
             str(entry.get("text", "") or entry.get("content", "")),
             str(entry.get("dataset_name") or "").strip(),
+            keys,
         )
         return _format_entry(entry)
     body = _format_entry(entry)
-    ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
     if source == "code":
         origin = "code graph"
     elif source == "session_context":
@@ -244,7 +246,21 @@ def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
     else:
         day = str(entry.get("time", "") or "")[:10]
         origin = f"earlier session turn, {day}" if day else "earlier session turn"
-    return f"{tags.label(source or 'session', origin, body, ident)}\n{body}"
+    marked = f"{item_mark(origin)}\n{body}"
+    keys.append(marked)
+    return marked
+
+
+def _count_injected(marked: list | None, text: str) -> int:
+    """How many marked items reach ``text``; records an injected turn for the
+    Stop hook's credit check when any do (SDK-1071)."""
+    found = len({opening for opening in marked or [] if opening in text})
+    if found:
+        try:
+            mark_injected(_plugin_common._PLUGIN_DIR, get_session_key())
+        except Exception as exc:
+            hook_log("memory_credit_write_failed", {"error": str(exc)[:200]})
+    return found
 
 
 def _outage_output(state: str) -> dict:
@@ -293,13 +309,12 @@ async def _run(prompt: str, cwd: str = "", chatgpt_app: bool = False) -> dict | 
     except Exception as exc:
         hook_log("turn_status_write_failed", {"error": str(exc)[:200]})
     if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
-        # First, so a recall that returns early leaves this turn with no tags
-        # and the Stop hook cannot check the answer against the previous
-        # turn's (SDK-1071).
+        # First, so a recall that returns early is not an injected turn and
+        # the Stop hook cannot credit the previous turn's memory to it (SDK-1071).
         try:
             begin_turn(_plugin_common._PLUGIN_DIR, get_session_key())
         except Exception as exc:
-            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
+            hook_log("memory_credit_write_failed", {"error": str(exc)[:200]})
     config = load_config()
     runtime = resolve_runtime_mode()
     # Readiness gate, redesigned (SDK-356): the recall attempt itself is the
@@ -805,22 +820,19 @@ async def _run(prompt: str, cwd: str = "", chatgpt_app: bool = False) -> dict | 
         backlog=warmup_backlog(),
     )
 
-    # Tag each recalled item so the answer can credit it (SDK-1071).
-    tags = (
-        MemoryTags.load(_plugin_common._PLUGIN_DIR, get_session_key())
-        if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
-        else None
-    )
+    # Mark each recalled item so the answer can credit it (SDK-1071); ``marked``
+    # holds the text each one opens with, to count the ones injected.
+    marked = [] if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT) else None
     section_lines = []
     if by_source.get("code"):
         section_lines.append("=== Code graph facts ===")
         for e in by_source["code"]:
-            section_lines.append(_tagged_entry(e, tags))
+            section_lines.append(_marked_entry(e, marked))
             section_lines.append("")
     if by_source.get("graph_context"):
         section_lines.append("=== Cognee memory ===")
         for e in by_source["graph_context"]:
-            section_lines.append(_tagged_entry(e, tags))
+            section_lines.append(_marked_entry(e, marked))
             section_lines.append("")
     # A server older than 1.6.0 answers the graph scope with the bare context
     # and nothing else arrives on this request; whatever a server does tag with
@@ -833,20 +845,22 @@ async def _run(prompt: str, cwd: str = "", chatgpt_app: bool = False) -> dict | 
         if by_source.get(src):
             section_lines.append(title)
             for e in by_source[src]:
-                section_lines.append(_tagged_entry(e, tags))
+                section_lines.append(_marked_entry(e, marked))
                 section_lines.append("")
     if total > 0:
         # The credit instruction goes right under the header, not after the
         # memory: Claude Code replaces hook context over 10,000 characters with
         # a file and a 2 KB preview, so a large recall would cut off anything
         # at the end (SDK-1071).
+        memory_text = "\n".join(section_lines).strip()
         instruction = ""
-        if tags is not None and tags.found:
+        found = _count_injected(marked, memory_text)
+        if found:
             first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
-            instruction = credit_instruction(first, len(tags.found), chatgpt_app) + "\n\n"
+            instruction = credit_instruction(first, found, chatgpt_app) + "\n\n"
         full_context = (
             f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
-            + "\n".join(section_lines).strip()
+            + memory_text
         )
         hook_log(
             "context_lookup_hit",
@@ -906,13 +920,6 @@ async def _run(prompt: str, cwd: str = "", chatgpt_app: bool = False) -> dict | 
         )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
-
-    # The Stop hook checks the answer's citations against these (SDK-1071).
-    if tags is not None:
-        try:
-            tags.save(_plugin_common._PLUGIN_DIR, get_session_key())
-        except Exception as exc:
-            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
 
     # additionalContext is the MODEL injection channel and must carry the full
     # recalled content — trimming it to the status line would silently disable
@@ -1008,7 +1015,7 @@ def main():
     try:
         from _capture_policy import sanitize
 
-        # Every recall lane, the audit line and the tags see only this copy.
+        # Every recall lane and the audit line see only this copy.
         prompt = sanitize(prompt) if isinstance(prompt, str) else ""
     except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
         hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})

@@ -9,7 +9,8 @@ import type { AgentSyncIndexes, CogneeSearchResult, MemoryScope, ScopedSyncIndex
 import { MEMORY_SCOPES } from "./types.js";
 import { CogneeHttpClient, requestErrorStatus } from "./client.js";
 import { sortPluginKeysByLastUse } from "./plugin-keys.js";
-import { resolveConfig } from "./config.js";
+import { datasetPinsRecall, resolveConfig } from "./config.js";
+import { loadRecallNotices, markRecallNoticeShown, recallPinNotice } from "./recall-notice.js";
 import { collectMemoryFiles } from "./files.js";
 import { buildMemoryFlushPlan } from "./flush-plan.js";
 import {
@@ -100,6 +101,8 @@ const memoryCogneePlugin = {
 
     const client = new CogneeHttpClient(cfg.baseUrl, cfg.apiKey, cfg.username, cfg.password, cfg.requestTimeoutMs, cfg.ingestionTimeoutMs, cfg.mode);
     const multiScope = isMultiScopeEnabled(cfg);
+    // A non-default datasetName with no recall mode set pins recall (SDK-1393).
+    const pinnedByDataset = datasetPinsRecall(api.pluginConfig, cfg);
 
     (api as MemoryFlushPlanRegistrant).registerMemoryFlushPlan?.(buildMemoryFlushPlan);
     api.logger.debug?.("cognee-openclaw: registered memory flush plan");
@@ -510,6 +513,7 @@ const memoryCogneePlugin = {
                       if (state[name] !== id) await saveDatasetState({ ...state, [name]: id });
                     },
                     logger: toolLogger,
+                    pinnedByDataset,
                   },
                   memoryCtx,
                 ),
@@ -619,7 +623,8 @@ const memoryCogneePlugin = {
 
     // Auto recall (SDK-1393): unless recall is pinned — by this conversation's
     // own choice (action=pin, or a switch), else by the config's
-    // `recallMode: "pinned"` — graph recall names no dataset and a cognee >=
+    // `recallMode: "pinned"` (also implied by a non-default datasetName with no
+    // recall mode set) — graph recall names no dataset and a cognee >=
     // 1.6.6 server routes it (best effort: the best-matching dataset when it
     // can, otherwise every readable one; an older server searches every
     // readable dataset). Pinned recall reads the dataset the conversation saves
@@ -2107,6 +2112,34 @@ const memoryCogneePlugin = {
     }
 
     // ------------------------------------------------------------------
+    // One-time recall notice (SDK-1393): a configured non-default dataset with
+    // no recall mode set keeps recall pinned to it. Tell those users once per
+    // dataset (marker persisted, so it survives restarts) that auto recall
+    // exists: a trailer on the first final reply of a conversation that has
+    // not chosen its own recall mode, plus one log line.
+    // ------------------------------------------------------------------
+
+    let recallNoticeDue = false;
+    const recallNoticeReady: Promise<void> = pinnedByDataset
+      ? loadRecallNotices()
+          .then((shown) => { recallNoticeDue = !shown[cfg.datasetName]; })
+          .catch((e) => api.logger.warn?.(`cognee-openclaw: failed to read recall notice marker: ${String(e)}`))
+      : Promise.resolve();
+
+    async function takeRecallPinNotice(ctx: ConvoCtx): Promise<string | undefined> {
+      if (!pinnedByDataset) return undefined;
+      await Promise.all([recallNoticeReady, switchStore.ready()]);
+      // A conversation that picked its own mode or dataset is not on the config pin.
+      if (!recallNoticeDue || switchStore.recallMode(ctx) !== undefined) return undefined;
+      recallNoticeDue = false;
+      const notice = recallPinNotice(cfg.datasetName);
+      api.logger.info?.(`cognee-openclaw: ${notice}`);
+      markRecallNoticeShown(cfg.datasetName).catch((e) =>
+        api.logger.warn?.(`cognee-openclaw: failed to save recall notice marker: ${String(e)}`));
+      return notice;
+    }
+
+    // ------------------------------------------------------------------
     // Memory-hit footer + weekly digest: appended to the FINAL reply payload
     // only (tool/block chunks pass through untouched so a streamed reply
     // gets one footer, not one per chunk). reply_payload_sending is an
@@ -2116,8 +2149,8 @@ const memoryCogneePlugin = {
     // text payload of the same turn.
     // ------------------------------------------------------------------
 
-    if (digest) {
-      api.on("reply_payload_sending", (event, ctx) => {
+    if (digest || pinnedByDataset) {
+      api.on("reply_payload_sending", async (event, ctx) => {
         if (event.kind !== "final") return;
         const text = event.payload?.text;
         if (typeof text !== "string" || text.trim().length === 0) return;
@@ -2125,14 +2158,14 @@ const memoryCogneePlugin = {
         const turnCtx = { runId: event.runId ?? ctx.runId, sessionKey: event.sessionKey ?? ctx.sessionKey };
         const trailers: string[] = [];
 
-        if (cfg.memoryHitFooter) {
+        if (digest && cfg.memoryHitFooter) {
           const hits = takeHits(turnCtx);
           if (hits && hits.count > 0) {
             trailers.push(formatFooter(cfg.memoryHitFooterFormat, hits.count, [...new Set(hits.sources)]));
           }
         }
 
-        if (cfg.weeklyDigest) {
+        if (digest && cfg.weeklyDigest) {
           // Digest is per agent; the outbound ctx doesn't carry agentId, so
           // read it off the run context when the host provides one, else the
           // configured agent.
@@ -2140,6 +2173,9 @@ const memoryCogneePlugin = {
           const due = digest.takeDueDigest(agentId);
           if (due) trailers.push(due);
         }
+
+        const notice = await takeRecallPinNotice(turnCtx);
+        if (notice) trailers.push(notice);
 
         if (trailers.length === 0) return;
         return { payload: { ...event.payload, text: `${text.trimEnd()}\n\n${trailers.join("\n")}` } };

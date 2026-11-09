@@ -568,14 +568,21 @@ def test_statusline_renders_from_cursor_state_without_network(plugin_root, tmp_p
     result = _render(home, ctx)
     assert result.returncode == 0, result.stderr
     line = _plain(result.stdout)
-    assert "cognee: team_memory · local" in line
+    # Recall is auto (nothing pinned): the bar says so, as the IDE status bar does.
+    assert "cognee: auto (team_memory) · local" in line
     assert "4 memory hits" in line
     assert "4/5 turns had hits this session" in line
 
     # Another terminal's counts never appear on this bar.
     other = _render(home, {"session_id": "someone-else", "cwd": str(tmp_path)})
     assert "memory hit" not in _plain(other.stdout)
-    assert "cognee: agent_sessions · local" in _plain(other.stdout)
+    assert "cognee: auto (agent_sessions) · local" in _plain(other.stdout)
+
+    # Pinned recall shows the bare name.
+    (state / "sessions" / f"{CONVERSATION}.json").write_text(
+        json.dumps({"dataset": "team_memory", "recall_pinned": True}), encoding="utf-8"
+    )
+    assert "cognee: team_memory · local" in _plain(_render(home, ctx).stdout)
 
     # Garbage on stdin is not fatal: the CLI keeps the bar.
     broken = subprocess.run(

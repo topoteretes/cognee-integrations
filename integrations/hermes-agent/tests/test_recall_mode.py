@@ -1,10 +1,12 @@
 """The recall mode: configured, chosen by a conversation, and stored (SDK-1393).
 
 ``recall_mode`` (``COGNEE_PLUGIN_RECALL_MODE``, or the setup wizard's
-``recall_mode`` in cognee.json) is "auto" by default for everyone: graph recall
-names no dataset and the server picks. "pinned" keeps recall on the active
-dataset (reason ``configured_pin``). The configured dataset alone never pins,
-and ``COGNEE_PLUGIN_DATASET=auto`` only means the default dataset. The
+``recall_mode`` in cognee.json) decides: "auto" names no dataset in graph recall
+and the server picks; "pinned" keeps recall on the active dataset (reason
+``configured_pin``). With no mode set, the default dataset is auto and a
+configured non-default dataset keeps recall pinned to it (reason
+``configured_pin``), as before SDK-1393; such a user is told once that auto
+exists. ``COGNEE_PLUGIN_DATASET=auto`` only means the default dataset. The
 conversation's own choice wins: ``action='auto'``, ``action='pin'`` or a switch;
 ``reset`` goes back to the configured dataset and mode. A mode chosen without a
 switch is stored as the mode only, so it applies to whatever dataset is active.
@@ -55,14 +57,44 @@ def _graph_datasets(provider, fake):
 # -- the configured mode -------------------------------------------------------
 
 
-@pytest.mark.parametrize("dataset", [None, "work"])
-def test_recall_is_auto_by_default_whatever_the_dataset(dataset):
+@pytest.mark.parametrize(("dataset", "mode"), [(None, None), (None, "auto"), ("work", "auto")])
+def test_recall_is_auto_for_the_default_dataset_or_a_configured_auto(dataset, mode):
     with fake_backend() as fake:
-        provider = _initialize(fake, dataset)
+        provider = _initialize(fake, dataset, recall_mode=mode)
         assert _graph_datasets(provider, fake) is None
         current = _call(provider, {"action": "current"})
     assert current["recall"] == "auto"
     assert "reason" not in current
+
+
+@pytest.mark.parametrize("dataset", ["work", config_mod.DEFAULT_DATASET])
+def test_a_configured_dataset_with_no_mode_keeps_recall_pinned(dataset):
+    with fake_backend() as fake:
+        provider = _initialize(fake, dataset)
+        datasets = _graph_datasets(provider, fake)
+        current = _call(provider, {"action": "current"})
+    if dataset == config_mod.DEFAULT_DATASET:
+        assert datasets is None and current["recall"] == "auto"
+        return
+    assert datasets == ["work"]
+    assert (current["recall"], current["reason"]) == ("pinned", "configured_pin")
+    assert "no recall mode is set" in current["message"]
+
+
+def test_a_configured_dataset_with_no_mode_in_cognee_json_keeps_recall_pinned(tmp_path):
+    (tmp_path / "cognee.json").write_text(json.dumps({"dataset": "work"}))
+    assert config_mod.effective_recall_mode(config_mod.load_config(tmp_path)) == "pinned"
+    (tmp_path / "cognee.json").write_text(json.dumps({"dataset": "work", "recall_mode": "auto"}))
+    assert config_mod.effective_recall_mode(config_mod.load_config(tmp_path)) == "auto"
+
+
+def test_the_conversations_own_auto_wins_over_the_dataset_pin():
+    with fake_backend() as fake:
+        provider = _initialize(fake, "work")
+        out = _call(provider, {"action": "auto"})
+        assert (out["recall"], out["lifted"]) == ("auto", "configured_pin")
+        resumed = _initialize(fake, "work")
+        assert _graph_datasets(resumed, fake) is None
 
 
 @pytest.mark.parametrize(("dataset", "mode"), [("work", "pinned"), (None, " Pinned ")])
@@ -140,6 +172,37 @@ def test_the_setup_wizard_asks_for_the_recall_mode(current, answer, saved):
     assert written["recall_mode"] == saved
 
 
+@pytest.mark.parametrize(
+    ("current", "dataset", "offered"),
+    [
+        ({"recall_mode_source": "default"}, "work", "pinned"),
+        ({"recall_mode_source": "default"}, config_mod.DEFAULT_DATASET, "auto"),
+        ({"recall_mode": "auto", "recall_mode_source": "file"}, "work", "auto"),
+        ({"recall_mode": "auto", "recall_mode_source": "env"}, "work", "auto"),
+    ],
+)
+def test_the_setup_wizard_offers_pinned_for_a_non_default_dataset(current, dataset, offered):
+    defaults = {}
+
+    def prompt(label, default=""):
+        if label.startswith("Recall mode"):
+            defaults["recall"] = default
+            return default
+        return {"Mode": "remote", "Dataset": dataset}.get(label, default)
+
+    with (
+        mock.patch.object(provider_mod, "load_config", return_value=current),
+        mock.patch.object(provider_mod, "_prompt", side_effect=prompt),
+        mock.patch.object(provider_mod, "_prompt_secret", return_value=""),
+        mock.patch.object(provider_mod, "_prompt_bool", side_effect=lambda label, default: default),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=True),
+        mock.patch.object(provider_mod, "save_plugin_config"),
+        mock.patch.object(provider_mod, "save_env_vars"),
+    ):
+        provider_mod.CogneeMemoryProvider(backend=FakeBackend()).post_setup("/tmp/hh", {})
+    assert defaults["recall"] == offered
+
+
 def test_the_setup_wizard_asks_the_recall_mode_once_and_keeps_auto_route():
     # Asked right after the recall mode, "Auto-route recall" read as the same
     # question twice; auto_route (the search type) keeps its saved value.
@@ -193,7 +256,7 @@ def test_conversation_auto_lifts_a_configured_pin_and_survives_a_resume():
 
 def test_conversation_auto_wins_over_a_later_configured_pin():
     with fake_backend() as fake:
-        provider = _initialize(fake, "work")
+        provider = _initialize(fake, "work", recall_mode="auto")
         out = _call(provider, {"action": "auto"})
         assert out["reason"] == "already_auto"
         resumed = _initialize(fake, "work", recall_mode="pinned")
@@ -230,7 +293,7 @@ def test_reset_goes_back_to_the_configured_mode():
 
 @pytest.mark.parametrize(
     ("recall_mode", "recall", "reason"),
-    [("pinned", "pinned", "configured_pin"), (None, "auto", None)],
+    [("pinned", "pinned", "configured_pin"), ("auto", "auto", None)],
 )
 def test_reset_after_a_switch_reports_the_configured_mode(recall_mode, recall, reason):
     with fake_backend() as fake:
@@ -249,7 +312,7 @@ def test_reset_after_a_switch_reports_the_configured_mode(recall_mode, recall, r
 
 def test_pin_pins_the_active_dataset_without_a_new_session():
     with fake_backend() as fake:
-        provider = _initialize(fake, "work")
+        provider = _initialize(fake, "work", recall_mode="auto")
         fake.calls.clear()
         out = _call(provider, {"action": "pin"})
         assert fake.calls == []
@@ -273,7 +336,7 @@ def test_pin_wins_over_a_configured_pin_and_a_later_configured_auto():
         provider = _initialize(fake, "work", recall_mode="pinned")
         out = _call(provider, {"action": "pin"})
         assert (out["reason"], out["recall_reason"]) == ("already_active", "dataset_picked")
-        resumed = _initialize(fake, "work")
+        resumed = _initialize(fake, "work", recall_mode="auto")
         assert _graph_datasets(resumed, fake) == ["work"]
         assert _call(resumed, {"action": "current"})["reason"] == "dataset_picked"
 
@@ -303,7 +366,7 @@ def test_a_pre_sdk_1393_entry_on_the_configured_dataset_follows_the_config():
     assert provider._recall_pin_reason == "configured_pin"
     assert provider._session_cognee_id.endswith("__2")
     with fake_backend() as fake:
-        provider = _initialize(fake, "work")
+        provider = _initialize(fake, "work", recall_mode="auto")
     assert provider._recall_pinned is False
 
 
@@ -376,3 +439,70 @@ def test_a_configured_pin_names_where_it_was_configured(source, named, not_named
     )
     assert named in message
     assert not_named not in message
+
+
+# -- the one-time note that auto exists ----------------------------------------
+
+
+def _reply(text="Here you go.", session_id="s-1"):
+    from cognee_integration_hermes import transform_llm_output
+
+    return transform_llm_output(response_text=text, platform="cli", session_id=session_id)
+
+
+def test_the_dataset_pin_note_is_appended_once_per_dataset(caplog):
+    from cognee_integration_hermes import recall_notice
+
+    caplog.set_level("INFO", logger=recall_notice.__name__)
+    with fake_backend() as fake:
+        _initialize(fake, "work")
+        first = _reply()
+        assert _reply() is None  # appended to the first reply only
+        _initialize(fake, "work", session_id="s-2")
+        assert _reply(session_id="s-2") is None  # once per machine and dataset
+        _initialize(fake, "research", session_id="s-3")
+        other = _reply(session_id="s-3")
+    assert first == "Here you go.\n\n" + recall_notice.notice_text("work")
+    assert first.endswith(
+        "Cognee: recall stays on `work`. Cognee can also pick the best-matching dataset for "
+        "each prompt from all you can read: set `recall_mode: auto` in cognee.json (or "
+        "`COGNEE_PLUGIN_RECALL_MODE=auto`, or rerun `hermes memory setup cognee`), or ask to "
+        "set recall to auto for this conversation."
+    )
+    assert "`research`" in other
+    logged = [r.getMessage() for r in caplog.records if "recall stays on" in r.getMessage()]
+    assert len(logged) == 2
+
+
+@pytest.mark.parametrize(
+    ("dataset", "mode"),
+    [(None, None), ("work", "pinned"), ("work", "auto")],
+)
+def test_no_note_for_the_default_dataset_or_a_set_mode(dataset, mode):
+    with fake_backend() as fake:
+        _initialize(fake, dataset, recall_mode=mode)
+        assert _reply() is None
+
+
+@pytest.mark.parametrize("choice", ["pinned", "auto"])
+def test_no_note_for_a_conversation_with_its_own_mode(choice):
+    dataset_overrides.save_override("s-1", None, 0, recall=choice)
+    with fake_backend() as fake:
+        provider = _initialize(fake, "work")
+        assert provider._recall_choice == choice
+        assert _reply() is None
+
+
+def test_the_note_is_not_stored_with_the_answer():
+    from cognee_integration_hermes import recall_notice
+
+    with fake_backend() as fake:
+        provider = _initialize(fake, "work")
+        answer = _reply("We ship on Fridays.")
+        assert recall_notice.notice_text("work") in answer
+        fake.calls.clear()
+        provider.sync_turn("when do we ship?", answer, session_id="s-1")
+        assert fake.wait("remember_session")
+    stored = json.dumps(fake.calls, default=str)
+    assert "recall stays on" not in stored
+    assert "We ship on Fridays." in stored

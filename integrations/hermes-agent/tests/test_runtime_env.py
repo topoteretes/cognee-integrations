@@ -5,8 +5,10 @@ that the ready marker is written only once the pinned version is really there.
 """
 
 import json
+import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest import mock
 
@@ -22,8 +24,9 @@ from cognee_integration_hermes.backend import CogneeNotInstalledError  # noqa: E
 from cognee_integration_hermes.config import LOCAL_COGNEE_REQUIREMENT  # noqa: E402
 
 PINNED = LOCAL_COGNEE_REQUIREMENT.split("==", 1)[1]
-# Taken at import, before conftest's hermetic_env stubs it out for every test.
-_REAL_PLUGIN_SERVER_PIDS = runtime_env._plugin_server_pids
+# Taken at import, before conftest's hermetic_env stubs them out for every test.
+_REAL_PLUGIN_SERVERS = runtime_env.plugin_servers
+_REAL_STOP = runtime_env.stop_plugin_servers
 
 
 @pytest.fixture
@@ -364,71 +367,180 @@ def test_no_server_spawns_while_the_runtime_is_being_installed(runtime):
 
 # -- install-runtime stops the servers this plugin started --------------------
 
-
-def test_only_servers_this_plugin_started_are_found(runtime):
-    venv = str(runtime_env.venv_python())
-    listing = "\n".join(
-        [
-            f"  101 {venv} -m uvicorn cognee.api.client:app --host 127.0.0.1 --port 8011",
-            f"  102 {sys.executable} -m uvicorn cognee.api.client:app --port 8011",
-            "  103 /Users/x/.cognee-plugin/claude-code/venv/bin/python -m uvicorn "
-            "cognee.api.client:app --port 8011",
-            f"  104 {venv} -m http.server",
-            "  105 /bin/zsh",
-        ]
-    )
-    with mock.patch.object(
-        runtime_env.subprocess,
-        "run",
-        return_value=subprocess.CompletedProcess([], 0, stdout=listing, stderr=""),
-    ):
-        assert _REAL_PLUGIN_SERVER_PIDS() == [101, 102]
-        assert _REAL_PLUGIN_SERVER_PIDS({sys.executable}) == [102]
+_posix_only = pytest.mark.skipif(os.name == "nt", reason="servers are found with ps")
 
 
-def test_install_stops_the_plugins_server_before_touching_the_venv(runtime, monkeypatch):
+def _child(*, ignore_sigterm=False, app=True):
+    """A real process whose command line carries the server app (or not).
+
+    Reaped in a thread, as a detached server would be by init: a zombie still
+    answers ``kill(pid, 0)``.
+    """
+    code = "import signal, sys, time\n"
+    if ignore_sigterm:
+        code += "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    code += "print('ready', flush=True)\ntime.sleep(60)\n"
+    argv = [sys.executable, "-c", code] + (["cognee.api.client:app"] if app else [])
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True)
+    assert proc.stdout.readline().strip() == "ready"
+    threading.Thread(target=proc.wait, daemon=True).start()
+    return proc
+
+
+@pytest.fixture
+def real_servers(monkeypatch):
+    monkeypatch.setattr(runtime_env, "plugin_servers", _REAL_PLUGIN_SERVERS)
+
+
+@_posix_only
+def test_a_spawned_server_is_found_by_its_pidfile(runtime, real_servers):
+    proc = _child()
+    try:
+        runtime_env.write_server_pidfile(proc.pid, 8011, sys.executable)
+        assert runtime_env.plugin_servers() == [(proc.pid, 8011)]
+        assert runtime_env.plugin_servers({sys.executable}) == [(proc.pid, 8011)]
+        assert runtime_env.plugin_servers({"/other/python"}) == []
+    finally:
+        proc.kill()
+
+
+@_posix_only
+def test_a_stale_pidfile_naming_another_process_is_not_killed(runtime, real_servers, monkeypatch):
+    # The server exited and its pid now belongs to something else.
+    other = _child(app=False)
+    try:
+        runtime_env.write_server_pidfile(other.pid, 8011, sys.executable)
+        sent = []
+        monkeypatch.setattr(runtime_env.os, "kill", lambda pid, sig: sent.append(sig))
+        assert runtime_env.stop_plugin_servers(output=lambda _l: None, timeout=0.1) == []
+        assert sent == [0]  # only probed, never signalled
+        assert not runtime_env._pidfile(8011).exists()
+    finally:
+        other.kill()
+
+
+@_posix_only
+def test_a_server_that_exits_on_sigterm_lets_the_install_proceed(runtime, real_servers):
     _mark_ready(runtime, requirement="cognee==0.0.1")
-    events = []
-    alive = {4242}
-
-    def fake_kill(pid, sig):
-        if sig == 0:
-            if pid not in alive:
-                raise ProcessLookupError
-            return
-        events.append(("kill", pid, sig))
-        alive.discard(pid)
-
-    fake = _FakeRun(runtime)
-
-    def run(command, **kwargs):
-        events.append(("run", str(command[0])))
-        return fake(command, **kwargs)
-
-    monkeypatch.setattr(runtime_env, "_plugin_server_pids", lambda interpreters=None: [4242])
-    monkeypatch.setattr(runtime_env.os, "kill", fake_kill)
-    monkeypatch.setattr(runtime_env, "_find_uv", lambda: None)
+    proc = _child()
+    runtime_env.write_server_pidfile(proc.pid, 8011, str(_python(runtime)))
     out = []
-    with mock.patch.object(runtime_env.subprocess, "run", side_effect=run):
-        runtime_env.install_runtime(output=out.append)
-    assert events[0] == ("kill", 4242, runtime_env.signal.SIGTERM)
-    assert any(kind == "run" for kind, *_ in events[1:])
-    assert not any(e == ("kill", 4242, runtime_env.signal.SIGKILL) for e in events)
-    assert any("pid 4242" in line for line in out)
+    try:
+        with (
+            mock.patch.object(runtime_env, "_find_uv", return_value=None),
+            mock.patch.object(runtime_env.subprocess, "run", side_effect=_FakeRun(runtime)),
+            # subprocess.run is faked for the installers, so `ps` is too.
+            mock.patch.object(runtime_env, "_runs_server_app", return_value=True),
+        ):
+            runtime_env.install_runtime(output=out.append, port=8011)
+    finally:
+        proc.kill()
+    assert proc.poll() is not None or not runtime_env._alive(proc.pid)
+    assert runtime_env.runtime_python() == str(_python(runtime))
+    assert not runtime_env._pidfile(8011).exists()
+    assert any(f"pid {proc.pid}" in line for line in out)
     assert any("start a new server on their next request" in line for line in out)
 
 
-def test_a_server_that_ignores_sigterm_is_killed(runtime, monkeypatch):
+@_posix_only
+def test_a_server_that_ignores_sigterm_aborts_the_install_untouched(
+    runtime, real_servers, monkeypatch
+):
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    marker = (runtime / "ready.json").read_text()
+    proc = _child(ignore_sigterm=True)
+    runtime_env.write_server_pidfile(proc.pid, 8011, str(_python(runtime)))
+    monkeypatch.setattr(
+        runtime_env,
+        "stop_plugin_servers",
+        lambda output, interpreters=None: _REAL_STOP(output, timeout=0.5),
+    )
+    try:
+        with mock.patch.object(runtime_env, "_run") as install_step:
+            with pytest.raises(runtime_env.ServerStillRunningError, match=f"pid {proc.pid}"):
+                runtime_env.install_runtime(output=lambda _l: None, port=8011)
+        assert proc.poll() is None  # still running: never SIGKILLed
+        install_step.assert_not_called()
+    finally:
+        proc.kill()
+    assert (runtime / "ready.json").read_text() == marker
+    assert _python(runtime).exists()
+    assert runtime_env._pidfile(8011).exists()
+
+
+@pytest.mark.parametrize("version", ["1.6.5", ""])
+def test_an_outdated_or_versionless_server_answering_aborts_the_install_untouched(
+    runtime, monkeypatch, version
+):
+    # One this plugin did not start (no pidfile): another plugin's, or 1.4.2's,
+    # which may report no version.
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    marker = (runtime / "ready.json").read_text()
+    monkeypatch.setattr(runtime_env, "_server_answering", lambda port: port == 8011)
+    monkeypatch.setattr(sb, "health_version", lambda url, timeout=2.0: version)
+    monkeypatch.setattr(runtime_env, "_listening_pid", lambda port: 555)
+    with mock.patch.object(runtime_env.subprocess, "run") as run:
+        with pytest.raises(runtime_env.ServerStillRunningError) as raised:
+            runtime_env.install_runtime(output=lambda _l: None, port=8011)
+    run.assert_not_called()
+    message = str(raised.value)
+    assert "127.0.0.1:8011 (pid 555)" in message
+    assert (f"cognee {version}" if version else "reports no version") in message
+    assert "re-run `hermes cognee install-runtime`" in message
+    assert (runtime / "ready.json").read_text() == marker
+    assert _python(runtime).exists()
+
+
+@pytest.mark.parametrize("version", [PINNED, "99.0.0"])
+def test_a_current_server_answering_lets_the_install_proceed(runtime, monkeypatch, version):
+    # Another plugin's server on the pinned cognee (or newer) runs from its own
+    # interpreter: upgrading this plugin's venv does not touch it.
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    monkeypatch.setattr(runtime_env, "_server_answering", lambda port: True)
+    monkeypatch.setattr(sb, "health_version", lambda url, timeout=2.0: version)
+    run = _FakeRun(runtime)
+    with (
+        mock.patch.object(runtime_env, "_find_uv", return_value=None),
+        mock.patch.object(runtime_env.subprocess, "run", side_effect=run),
+    ):
+        runtime_env.install_runtime(output=lambda _l: None, port=8011)
+    assert runtime_env.runtime_python() == str(_python(runtime))
+
+
+def test_without_lsof_the_message_says_how_to_find_the_server(monkeypatch):
+    monkeypatch.setattr(runtime_env, "_listening_pid", lambda port: None)
+    message = runtime_env.still_running_message(8011)
+    assert ("netstat -ano" if os.name == "nt" else "lsof -t -iTCP:8011 -sTCP:LISTEN") in message
+
+
+def test_stopping_never_sends_sigkill(runtime, monkeypatch):
     sent = []
 
     def fake_kill(pid, sig):
         if sig != 0:
             sent.append(sig)
 
-    monkeypatch.setattr(runtime_env, "_plugin_server_pids", lambda interpreters=None: [7])
+    monkeypatch.setattr(runtime_env, "plugin_servers", lambda interpreters=None: [(7, 8011)])
     monkeypatch.setattr(runtime_env.os, "kill", fake_kill)
-    assert runtime_env.stop_plugin_servers(output=lambda _l: None, timeout=0.01) == [7]
-    assert sent == [runtime_env.signal.SIGTERM, runtime_env.signal.SIGKILL]
+    with pytest.raises(runtime_env.ServerStillRunningError, match="pid 7"):
+        runtime_env.stop_plugin_servers(output=lambda _l: None, timeout=0.01)
+    assert sent == [runtime_env.signal.SIGTERM]
+
+
+def test_windows_never_signals_a_pidfile_pid(runtime, real_servers, monkeypatch):
+    runtime_env.write_server_pidfile(4242, 8011, sys.executable)
+    monkeypatch.setattr(runtime_env.os, "name", "nt")
+    with mock.patch.object(runtime_env.os, "kill") as kill:
+        assert runtime_env.plugin_servers() == []
+    kill.assert_not_called()
+
+
+def test_the_spawn_writes_the_pidfile(runtime, tmp_path):
+    with mock.patch.object(sb.subprocess, "Popen") as popen:
+        popen.return_value.pid = 4321
+        sb._spawn(8011, "", "", str(tmp_path / "server.log"), python="/runtime/bin/python")
+    record = json.loads(runtime_env._pidfile(8011).read_text())
+    assert record == {"pid": 4321, "port": 8011, "python": "/runtime/bin/python"}
 
 
 def test_a_ready_runtime_still_stops_a_server_on_hermess_older_cognee(runtime, monkeypatch):
@@ -444,3 +556,89 @@ def test_a_ready_runtime_still_stops_a_server_on_hermess_older_cognee(runtime, m
         runtime_env.install_runtime(output=lambda _l: None)
     assert asked == [{sys.executable}]
     run.assert_not_called()
+
+
+def test_the_outdated_server_message_promises_no_stop():
+    message = sb.outdated_server_message(8011, "1.6.5")
+    assert "when this plugin started it" in message
+    assert "stop the process listening on port 8011" in message
+
+
+# -- install-runtime says what it stops, and asks -----------------------------
+
+
+def _cli_install(monkeypatch, *, servers, tty, answer="", yes=False):
+    from cognee_integration_hermes import cli
+
+    monkeypatch.setattr(runtime_env, "servers_to_stop", lambda: servers)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: tty, raising=False)
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or answer)
+    with mock.patch.object(runtime_env, "install_runtime") as install:
+        code = cli._install_runtime(mock.Mock(yes=yes))
+    return code, install.called, asked
+
+
+def test_no_tty_without_yes_stops_nothing(monkeypatch, capsys):
+    code, installed, asked = _cli_install(monkeypatch, servers=[(42, 8011)], tty=False)
+    assert (code, installed, asked) == (1, False, [])
+    out = capsys.readouterr().out
+    assert "This stops the local cognee server (pid 42) on port 8011" in out
+    assert "--yes" in out
+
+
+def test_yes_proceeds_without_asking(monkeypatch):
+    code, installed, asked = _cli_install(monkeypatch, servers=[(42, 8011)], tty=False, yes=True)
+    assert (code, installed, asked) == (0, True, [])
+
+
+@pytest.mark.parametrize(("answer", "installed"), [("", True), ("y", True), ("n", False)])
+def test_a_terminal_asks_before_stopping(monkeypatch, answer, installed):
+    code, did, asked = _cli_install(monkeypatch, servers=[(42, 8011)], tty=True, answer=answer)
+    assert did is installed and code == (0 if installed else 1)
+    assert asked == ["Continue? (y/n) [y]: "]
+
+
+def test_nothing_running_asks_nothing(monkeypatch):
+    code, installed, asked = _cli_install(monkeypatch, servers=[], tty=False)
+    assert (code, installed, asked) == (0, True, [])
+
+
+def test_the_cli_reports_a_server_that_did_not_stop(monkeypatch, capsys):
+    from cognee_integration_hermes import cli
+
+    monkeypatch.setattr(runtime_env, "servers_to_stop", lambda: [])
+    with mock.patch.object(
+        runtime_env,
+        "install_runtime",
+        side_effect=runtime_env.ServerStillRunningError("the local cognee server (pid 9)"),
+    ):
+        assert cli._install_runtime(mock.Mock(yes=False)) == 1
+    assert "pid 9" in capsys.readouterr().out
+
+
+def test_install_runtime_help_mentions_the_stop_and_yes():
+    import argparse
+
+    from cognee_integration_hermes import cli
+
+    parser = argparse.ArgumentParser()
+    cli.register_cli(parser)
+    sub = parser._subparsers._group_actions[0].choices["install-runtime"]
+    text = sub.format_help()
+    assert "--yes" in text and "SIGTERM" in text
+
+
+@pytest.mark.parametrize("servers", [[], [(42, 8011)]])
+def test_the_setup_wizard_names_the_pid_only_when_a_server_runs(monkeypatch, servers):
+    from cognee_integration_hermes import provider as provider_mod
+
+    labels = []
+    monkeypatch.setattr(runtime_env, "servers_to_stop", lambda: servers)
+    monkeypatch.setattr(
+        provider_mod, "_prompt_bool", lambda label, default: labels.append(label) or False
+    )
+    provider_mod._offer_runtime_install()
+    (label,) = labels
+    assert ("This stops the running local server (pid 42)." in label) is bool(servers)
+    assert "about 1 GB from PyPI" in label

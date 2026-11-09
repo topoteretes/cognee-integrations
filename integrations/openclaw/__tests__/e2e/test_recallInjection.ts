@@ -156,12 +156,12 @@ beforeEach(() => {
 
 describe("prompt-time recall: one graph request plus the guidance request", () => {
   it("sends the graph recall without the session id and the guidance recall with it", async () => {
-    await runPrompt();
+    await runPrompt({ recallMode: "auto" });
 
     expect(mockRecall).toHaveBeenCalledTimes(2);
     expect(graphCalls()).toHaveLength(1);
     const graph = graphCalls()[0];
-    // Auto recall (the default recallMode): no dataset ids, the server routes.
+    // Auto recall: no dataset ids, the server routes.
     expect(graph).toMatchObject({ queryText: PROMPT, searchType: "HYBRID_COMPLETION", scope: ["graph"], onlyContext: true, datasetIds: [] });
     expect(graph.sessionId).toBeUndefined();
     expect(graph.contextProfile).toBeUndefined();
@@ -317,7 +317,7 @@ describe("memory_search searches the knowledge graph only", () => {
 
   it("issues graph-scope requests only, even with a live session and corpus=all", async () => {
     respond([OLD_SERVER_ITEM]);
-    const harness = createPluginApi(plugin, { autoRecall: false, enableSessions: true });
+    const harness = createPluginApi(plugin, { autoRecall: false, enableSessions: true, recallMode: "auto" });
     const [searchTool, getTool] = harness.tools({ agentId: "will", sessionId: "s1" });
     const res = (await searchTool.execute("c", { query: "theme?", corpus: "all" })) as { details: { results: Array<{ reference: string; scope: string }> } };
 

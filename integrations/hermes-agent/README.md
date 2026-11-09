@@ -40,13 +40,17 @@ Python package with the `hermes_agent.plugins` entry point.
 - Exposes `cognee_forget` for user-directed, per-document deletion ("forget
   what we said about tennis"): find candidates with previews, then delete only
   what the user confirms.
-- Recall is auto by default: the graph recall names no dataset, and the server
-  picks the best-matching one. Routing needs a cognee 1.6.6 server; an older one
-  searches every dataset you can read. Saves still go to the conversation's
-  dataset. The configured dataset does not pin recall: set the recall mode to
-  `pinned` (`COGNEE_PLUGIN_RECALL_MODE=pinned`, or `recall_mode` in the setup
-  wizard) to keep recall on the active dataset. `COGNEE_PLUGIN_DATASET=auto`
-  means the default dataset and says nothing about the recall mode.
+- Recall is auto on the default dataset: the graph recall names no dataset, and
+  the server picks the best-matching one. Routing needs a cognee 1.6.6 server; an
+  older one searches every dataset you can read. Saves still go to the
+  conversation's dataset. A configured dataset other than the default
+  (`COGNEE_PLUGIN_DATASET`, or the setup wizard's dataset) keeps recall pinned to
+  it while no recall mode is set (reason `configured_pin`), as before; the first
+  reply of such a session says once (per machine and dataset) that auto exists.
+  A set recall mode decides either way: `COGNEE_PLUGIN_RECALL_MODE=auto|pinned`,
+  or `recall_mode` in `cognee.json` (the setup wizard asks, offering `pinned` for
+  a non-default dataset). `COGNEE_PLUGIN_DATASET=auto` means the default dataset
+  and says nothing about the recall mode.
 - Exposes `cognee_switch_dataset` to move a conversation to another dataset
   mid-session, bridging the session it leaves behind, or to set its recall mode.
   The conversation's own choice wins over the configured mode: `action='pin'`
@@ -55,7 +59,8 @@ Python package with the `hermes_agent.plugins` entry point.
   lets the server pick, a configured pin lifted too, for that conversation.
   `reset` goes back to the configured dataset and recall mode. `current` reports
   the mode in effect and, when pinned, why (`dataset_picked` for the
-  conversation's own pin, `configured_pin` for the configured mode). Every result
+  conversation's own pin, `configured_pin` for the configured mode or a
+  configured non-default dataset with no mode set). Every result
   carries a `message` line to relay to the user. A pin without a switch is stored
   as the mode only, so it stays on the active dataset: after a change of the
   configured dataset, recall is pinned to the new one.
@@ -184,6 +189,7 @@ To install, update or remove the runtime on its own:
 
 ```bash
 hermes cognee install-runtime   # install, or move it to the plugin's pinned cognee
+hermes cognee install-runtime --yes   # the same, stopping this plugin's server without asking
 hermes cognee remove-runtime    # delete it (your data in ~/.cognee is kept)
 ```
 
@@ -200,22 +206,43 @@ repairs the venv. Once it has finished, start a new Hermes session.
 **`install-runtime` stops the local server this plugin started before it
 installs**, so the venv is never upgraded under a running process (a live
 server would load modules of the new version into the old one). It finds that
-server by its command line (`cognee.api.client:app` run by the runtime venv's
-interpreter, or by the interpreter running Hermes), sends it SIGTERM and, if it
-is still running after 15 seconds, SIGKILL, and prints the pid it stopped. The
-server is shared: Claude Code, Codex or OpenClaw sessions using it lose it for a
-moment, and their plugin starts a new one on its next request. A server another
-cognee plugin started runs from that plugin's interpreter and is never stopped
-for you. On Windows nothing is stopped: stop the server yourself first. While
-`install-runtime` runs, a Hermes session that would start a server reports
-Cognee as unavailable instead.
+server by the pidfile the plugin writes when it starts one (checked to still run
+`cognee.api.client:app`, so a reused pid is left alone) and says so first:
+"This stops the local cognee server (pid N) on port 8011; other cognee plugins
+using it will restart it on their next request." In a terminal it asks
+`Continue? (y/n)` (default yes); without one it goes ahead only with `--yes`. The
+setup wizard asks the same in its install question. The server gets SIGTERM only,
+never SIGKILL, and up to 60 seconds to finish the work in flight; one still
+running after that is left running and the install stops without changing
+anything: try again in a minute, or stop it yourself. The server is shared:
+Claude Code, Codex or OpenClaw sessions using it lose it for a moment, and their
+plugin starts a new one on its next request.
+
+**An outdated server the plugin cannot stop stops the install.** If a cognee
+server still answers on the local port after that and reports a cognee older
+than the pinned one, or no version at all (for example one 1.4.2 or earlier
+started without a pidfile, or one another cognee plugin started on an older
+cognee; on Windows the plugin stops nothing), `install-runtime` leaves the ready
+marker and the venv as they were and names the port, the version and, when
+`lsof` is installed, the pid: stop that server and re-run
+`hermes cognee install-runtime`. A server on the pinned cognee or newer (another
+plugin's current one) does not block the install. While `install-runtime` runs,
+a Hermes session that would start a server reports Cognee as unavailable
+instead.
+
+**Troubleshooting an interrupted install.** If the server log
+(`~/.cognee-plugin/hermes/server.log`) shows an import error after an install
+was cut short (a hard kill mid-download), rebuild the runtime from scratch:
+`hermes cognee remove-runtime`, then `hermes cognee install-runtime`. Your data
+in `~/.cognee` is kept.
 
 **A running server on an older cognee is not used.** At session start the plugin
 reads the version the server on `127.0.0.1:8011` reports on `/health`. If it is
 older than the pinned cognee (for example a 1.6.5 server another plugin
 started), Hermes reports Cognee as unavailable and names the port: auto recall
-needs the newer server to route queries. Stop that server (or run
-`install-runtime` when this plugin started it) and start a new Hermes session.
+needs the newer server to route queries. Stop that server (`install-runtime`
+stops it for you only when this plugin started it) and start a new Hermes
+session.
 A server that reports no version is used.
 
 **Without an LLM key**, cognee builds memory with local models: the GLiNER
@@ -406,9 +433,10 @@ which this plugin looks up on the local server at each session start rather than
 reading the others' key file. Whichever plugin boots the server first,
 the rest attach to it — and a fact remembered in Claude Code is recallable in
 Hermes, and vice versa. A separate `COGNEE_PLUGIN_DATASET` keeps Hermes's saves
-apart; recall still reaches the other plugins' datasets unless
-`COGNEE_PLUGIN_RECALL_MODE=pinned` keeps it on that dataset (a conversation can
-lift the pin with `cognee_switch_dataset action='auto'`); for full isolation give it its own
+apart, and recall stays on it while no recall mode is set (`recall_mode: auto` in
+`cognee.json` or `COGNEE_PLUGIN_RECALL_MODE=auto` lets it reach the other
+plugins' datasets; a conversation can lift the pin with
+`cognee_switch_dataset action='auto'`); for full isolation give it its own
 `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` *and* `COGNEE_LOCAL_PORT` — a server
 belongs to whoever reaches its port first, so a private store needs a private
 port. The same goes for its LLM key: a server shared by several profiles keeps
@@ -475,7 +503,11 @@ You can install it into Hermes's venv yourself
 fragile: Hermes rebuilds its environment from its own lock whenever it updates or
 the enabled plugins change, which removes it, and cognee's pins may not resolve
 against your Hermes build at all. Prefer local mode unless you specifically need
-no server.
+no server. With an older cognee there (such as the 1.6.5 that 1.3.x installed),
+embedded mode is unavailable, and Hermes's warning names the found version and
+the command that upgrades it (`<Hermes's python> -m pip install cognee==1.6.6`);
+`install-runtime` does not help embedded mode. Unset `COGNEE_EMBEDDED` to use
+local mode instead.
 
 > **Embedded mode and the shared store do not mix.** Embedded drives the local
 > single-writer databases from inside the Hermes process; if another plugin's
@@ -488,7 +520,7 @@ no server.
 | Setting | Env var | Default |
 | --- | --- | --- |
 | `dataset` | `COGNEE_PLUGIN_DATASET` (canonical; `auto` = default) | `agent_sessions` |
-| `recall_mode` | `COGNEE_PLUGIN_RECALL_MODE` (`auto`: the server picks the dataset; `pinned`: recall stays on the active dataset; anything else = `auto`). Unlike the other settings, an exported `COGNEE_PLUGIN_RECALL_MODE` overrides `recall_mode` in `cognee.json`, which the setup wizard always writes | `auto` |
+| `recall_mode` | `COGNEE_PLUGIN_RECALL_MODE` (`auto`: the server picks the dataset; `pinned`: recall stays on the active dataset; anything else = `auto`). Unlike the other settings, an exported `COGNEE_PLUGIN_RECALL_MODE` overrides `recall_mode` in `cognee.json`, which the setup wizard always writes | unset: `auto` for the default dataset, `pinned` for any other configured dataset |
 | `top_k` | `COGNEE_TOP_K` | `5` |
 | `auto_route` | `COGNEE_AUTO_ROUTE` (`true`: Cognee picks the search type for each query; `false`: always graph completion; not asked by `hermes memory setup`) | `true` |
 | `improve_on_end` | `COGNEE_IMPROVE_ON_END` | `true` |
@@ -813,7 +845,7 @@ hermes cognee version [--check-updates]
 hermes cognee setup
 hermes cognee config
 hermes cognee install
-hermes cognee install-runtime     # local mode: install or update the private cognee runtime
+hermes cognee install-runtime [--yes]  # local mode: install or update the private cognee runtime (stops this plugin's server, asking first)
 hermes cognee remove-runtime      # local mode: delete it (data in ~/.cognee is kept)
 hermes cognee index-repo <path-or-url> [--dataset D] [--index-vectors] [--wait SECONDS]
 hermes cognee keys list [--plugin KEY] [--json]      # per-machine keys of your plugin agents, most recently used first

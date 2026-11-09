@@ -509,6 +509,55 @@ test('on the desktop band the dataset name is a picker that switches on pick', a
   await ui.unmount()
 })
 
+// While a switch runs the row says where it is going, not a picker already
+// showing the pick, and a hook that finishes meanwhile (the turn's save) does
+// not tick "memory saved" over it.
+test('a running switch reads "<current> → <target>" and keeps its activity until it lands', async ($, on) => {
+  const calls: Call[] = []
+  let markerText = ''
+  let land: () => void = () => {}
+  const clock = wire(
+    on,
+    calls,
+    {
+      'switch-dataset.py': argv => {
+        if (argv.includes('--list')) return ok(JSON.stringify(SWITCH_LIST))
+        return new Promise(resolve => {
+          land = () => resolve(ok(JSON.stringify({ switched: true, dataset: 'demo', session_id: 'cognee-2', previous: { dataset: 'agent_sessions', sync: 'queued' } })))
+        }) as unknown as { value: unknown }
+      },
+    },
+    [],
+    undefined,
+    undefined,
+    path => (path.endsWith(`/phase/${SESSION}.json`) ? markerText : undefined),
+  )
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
+
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'demo' })
+  await new Promise(r => setTimeout(r, 20))
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'agent_sessions → demo' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /switching dataset/ })).toBeDefined()
+
+  // The turn's save lands while the switch still runs.
+  markerText = JSON.stringify({ session_key: SESSION, active: null, results: { saved: { at: clock.now() / 1000, ok: true, count: 1 } } })
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: /switching dataset/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /memory saved/ })).toBeUndefined()
+
+  land()
+  await new Promise(r => setTimeout(r, 20))
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker).toBeDefined()
+  expect(picker!.props.value).toBe('agent_sessions')
+  expect(await ui.find({ type: 'Text', text: /switching dataset/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 // The active dataset, picked, is `pin`: recall pinned, no new session. A
 // COGNEE_PLUGIN_RECALL_MODE pin reads "pinned" with nothing in the launch
 // record; the pick must still reach the switch script, or it would not
@@ -570,6 +619,8 @@ test('the active dataset owned by someone else is picked as `pin`, another named
   // used to start a full switch. `pin` never names it.
   const calls: Call[] = []
   wire(on, calls, {
+    // The renderer reads the record, which holds the dataset by its id.
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset: 'team-id' })),
     'switch-dataset.py': argv =>
       argv.includes('--list')
         ? ok(
@@ -1188,8 +1239,9 @@ test('the row keeps checking after start until the connection marker lands', asy
   })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
+  // Not confirmed yet: the row says it is connecting rather than sitting blank.
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /connecting…/ })).toBeDefined()
   await ui.unmount()
 
   // Ten seconds on, the snapshot was retaken and the marker is there.
@@ -1201,12 +1253,12 @@ test('the row keeps checking after start until the connection marker lands', asy
   expect(renders).toBeGreaterThanOrEqual(3)
 })
 
-test('credits read green on the row, red once exhausted, the last cost plain', async ($, on) => {
+test('credits read green on the row, red once exhausted', async ($, on) => {
   const calls: Call[] = []
   let exhausted = false
   wire(on, calls, {
     'cognee_statusline_render.py': () =>
-      ok(JSON.stringify({ ...SNAPSHOT, mode: 'cloud', credits: exhausted ? 'credits: -$0.40 · last improve ~$0.03' : 'credits: $4,990.93 · last improve ~$0.03', credits_exhausted: exhausted })),
+      ok(JSON.stringify({ ...SNAPSHOT, mode: 'cloud', credits: exhausted ? 'credits: -$0.40' : 'credits: $4,990.93', credits_exhausted: exhausted })),
   })
   on('prompt.submit', ($, e) => ({ text: e.text }))
   await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
@@ -1214,8 +1266,6 @@ test('credits read green on the row, red once exhausted, the last cost plain', a
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   const balance = await ui.find({ type: 'Text', text: /credits: \$4,990.93/ })
   expect(balance!.props.color).toBe('green')
-  const last = await ui.find({ type: 'Text', text: /last improve ~\$0.03/ })
-  expect(last!.props.color).toBeUndefined()
   await ui.unmount()
 
   exhausted = true
@@ -1436,9 +1486,14 @@ test('a listing waits for a boot the hook handed to its worker instead of spendi
 test('a listing that times out keeps the list the row had', async ($, on) => {
   const calls: Call[] = []
   let slow = false
+  let dataset = 'agent_sessions'
   wire(on, calls, {
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset })),
     'switch-dataset.py': argv => {
-      if (!argv.includes('--list')) return ok(JSON.stringify({ switched: true, dataset: 'demo', session_id: 'c2', previous: { dataset: 'agent_sessions', synced: true } }))
+      if (!argv.includes('--list')) {
+        dataset = 'demo'
+        return ok(JSON.stringify({ switched: true, dataset: 'demo', session_id: 'c2', previous: { dataset: 'agent_sessions', synced: true } }))
+      }
       if (slow) throw new Error('process timed out after 45000ms')
       return ok(JSON.stringify(SWITCH_LIST))
     },
@@ -1449,13 +1504,43 @@ test('a listing that times out keeps the list the row had', async ($, on) => {
   expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
 
-  // The listing after the switch runs past its time: the picker stays.
+  // The listing after the switch runs past its time: the picker stays, and
+  // it names the dataset the switch landed on, not the one the stale rows
+  // still mark current.
   slow = true
   await $.command.run({ command: 'cognee-dataset', args: 'demo' })
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker).toBeDefined()
   expect((picker!.props.options as { value: string }[]).map(o => o.value)).toContain('demo')
+  expect(picker!.props.value).toBe('demo')
+  await ui.unmount()
+})
+
+test('a switch from a shell whose relist fails still shows the new dataset on the row', async ($, on) => {
+  const calls: Call[] = []
+  // The skill's shell switch moved the launch record; the renderer reads it,
+  // but the server's listing times out from then on.
+  let dataset = 'agent_sessions'
+  let slow = false
+  wire(on, calls, {
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset })),
+    'switch-dataset.py': () => {
+      if (slow) throw new Error('process timed out after 45000ms')
+      return ok(JSON.stringify(SWITCH_LIST))
+    },
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'cognee-dataset', args: '' })
+
+  dataset = 'demo'
+  slow = true
+  await $.prompt.submit({ text: 'next' })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker).toBeDefined()
+  expect(picker!.props.value).toBe('demo')
   await ui.unmount()
 })
 
@@ -1474,26 +1559,18 @@ test('the active dataset heads the picker when the writable list lacks it', asyn
   await ui.unmount()
 })
 
-test('a narrow band drops the last cost, then the balance, then the activity, and never splits a segment', async ($, on) => {
+test('a narrow band drops the balance, then the activity, and never splits a segment', async ($, on) => {
   const calls: Call[] = []
   let exhausted = false
   wire(on, calls, {
     'cognee_statusline_render.py': () =>
-      ok(JSON.stringify({ ...SNAPSHOT, credits: 'credits: $9.76 · last improve ~$0.00', credits_exhausted: exhausted, update: '' })),
+      ok(JSON.stringify({ ...SNAPSHOT, credits: 'credits: $9.76', credits_exhausted: exhausted, update: '' })),
   })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   // Wide: everything. "● cognee " + "agent_sessions ▾" + " · local" is 33 cells.
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
   expect(await ui.find({ type: 'Text', text: /credits: \$9.76/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /last improve/ })).toBeDefined()
-  await ui.unmount()
-
-  // 60 cells: the last cost (22 cells) goes first.
-  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: 60 } })
-  expect(await ui.find({ type: 'Text', text: /credits: \$9.76/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /last improve/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
 
   // 45 cells: the balance goes too; the badge, the dataset and the mode stay.
@@ -1512,7 +1589,6 @@ test('a narrow band drops the last cost, then the balance, then the activity, an
   const balance = await ui.find({ type: 'Text', text: /credits: \$9.76/ })
   expect(balance).toBeDefined()
   expect(balance!.props.color).toBe('red')
-  expect(await ui.find({ type: 'Text', text: /last improve/ })).toBeUndefined()
   await ui.unmount()
 })
 

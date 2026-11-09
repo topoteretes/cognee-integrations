@@ -35,11 +35,13 @@ from .config import (
 )
 from .runtime_env import (
     RuntimeInstallInProgressError,
+    find_listener_hint,
     local_not_ready_message,
     meets_pin,
     pinned_version,
     server_python,
     spawn_lock,
+    write_server_pidfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,9 +91,10 @@ def outdated_server_message(port, version):
     return (
         f"Cognee memory is off: the local cognee server on port {port} runs cognee "
         f"{version}, and this plugin needs cognee {pinned_version()} or newer. Run "
-        "`hermes cognee install-runtime`: it stops a server this plugin started and installs "
-        "the pinned version. A server another cognee plugin started is not stopped for you: "
-        f"stop the process listening on port {port}, then start a new Hermes session."
+        "`hermes cognee install-runtime`: it installs the pinned version, and stops that "
+        "server first when this plugin started it. It cannot stop one another cognee plugin "
+        f"or an earlier release started: stop the process listening on port {port} "
+        f"({find_listener_hint(port)}), then start a new Hermes session."
     )
 
 
@@ -292,10 +295,11 @@ def _spawn(port, data_root, system_root, log_path, python=None):
         log = open(log_path, "ab", buffering=0)  # noqa: SIM115 — handed to the child
     except Exception:
         log = subprocess.DEVNULL
+    python = python or sys.executable
     try:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [
-                python or sys.executable,
+                python,
                 "-m",
                 "uvicorn",
                 "cognee.api.client:app",
@@ -310,6 +314,9 @@ def _spawn(port, data_root, system_root, log_path, python=None):
             stderr=log,
             start_new_session=True,  # detach: outlive the spawning call
         )
+        # What `install-runtime` stops this server by (runtime_env.plugin_servers).
+        write_server_pidfile(proc.pid, port, python)
+        return proc
     finally:
         # The child inherited its own dup of the fd; close the parent's copy so we
         # don't leak a descriptor on every initialize().

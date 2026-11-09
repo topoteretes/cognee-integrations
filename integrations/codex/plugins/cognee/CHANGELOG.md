@@ -109,7 +109,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
   a switch) wins over it for that session. **Behaviour change:** a configured non-default
   `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
-  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it.
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it. Session start says so once per machine
+  and dataset, in the message the user sees, when a non-default dataset is configured,
+  `COGNEE_PLUGIN_RECALL_MODE` was never set and the session has not pinned recall itself.
 - **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
   `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
 
@@ -122,6 +124,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
 
 ### Removed
+- **The status line no longer shows the last operation's cost** (`last turn ~$0.06`). It was
+  an approximate, often stale reading; the credit balance and the top-up hint stay. The
+  credits marker still records `last_op`. Claude Code dropped it the same way.
 - **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
   search" block or asks the user to pick a dataset. `COGNEE_RECALL_DATASET_HINT`,
   `COGNEE_DATASETS_CACHE_TTL`, `COGNEE_DATASETS_CACHE_RETRY` and the `readable-datasets.json`
@@ -139,21 +144,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
   including across the periodic refresh, rather than giving way to the parent's same-named copy.
   Present since shared memory became the default. Delete any leftover empty dataset whose name
   is a UUID.
-- **The memory credit names its document and dataset and opens with Cognee's logo (SDK-1393).**
-  As on Claude Code, every recalled graph item is marked
-  `[document <name> · dataset <name>]` instead of `[mN · origin]`, and the credit names them
-  with no tag and no 🧠. Codex shows the answer as written, so the agent writes the braille
-  logotype Claude Code draws in a terminal, one row on each of the credit's two lines, each row
-  as inline code so it stands apart from the quote's colour:
-  ``> `⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what>,`` / ``> `⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉`  from <document> in the <dataset> dataset``.
-  The Stop hook counts that credit (and an older `[mN]` line as before).
+- **The memory credit names its dataset and opens with Cognee's logo (SDK-1393).**
+  As on Claude Code, every recalled graph item is marked `[dataset <name>]` instead of
+  `[mN · origin]` (an item from a server that names no dataset, and every other item, keeps its
+  origin mark), and the credit names the dataset with no tag and no 🧠. Codex shows the answer
+  as written, so the agent writes the braille logotype Claude Code draws in a terminal, one row
+  on each of the credit's two lines, each row as inline code so it stands apart from the quote's
+  colour: ``> `⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what>,`` / ``> `⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉`  from the <dataset> dataset``.
+  The per-session tags (`tags.json`) are gone: "Cognee found N memories" counts the marked items
+  in the context, the recall hook records the turn it injected memory on (`injected_turn` in
+  `credit.json`), and the Stop hook counts a credit when the answer on that turn ends with it.
+  The `memory_credit` event now carries `{injected, credited}` (plus `logo_exact`), and
+  `memory_tags_write_failed` is now `memory_credit_write_failed`.
 - **The status line says when recall is auto.** While recall is not pinned it reads
   `cognee: auto (<dataset>) · local`, as Claude Code's row does, instead of naming the dataset
-  saves go to as if recall read only that one.
+  saves go to as if recall read only that one; `cognee-statusline.sh` reads the mode from the
+  launch record and the environment the same way.
 - **In the ChatGPT app the credit opens with the Cognee icon.** A session started there
   (`originator: Codex Desktop` in its transcript) is asked for the waveform icon drawn in
   KaTeX, five strokes in brand Lavender (`#BC9BFF`), then two em spaces and
-  `<what>, from <document> in the <dataset> dataset`, one line the app wraps as it needs. The Stop hook's `memory_credit` event reports `logo_exact`. The terminal
+  `<what>, from the <dataset> dataset`, one line the app wraps as it needs. The Stop hook's `memory_credit` event reports `logo_exact`. The terminal
   keeps the braille rows.
 - **Memory credits are on by default.** Tried live in Codex, the credit and the resume notice
   are now on unless `COGNEE_PLUGIN_CITE_MEMORY=off`.

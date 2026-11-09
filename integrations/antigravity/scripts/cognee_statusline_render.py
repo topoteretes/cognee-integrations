@@ -7,6 +7,7 @@ Deliberately standalone and pure-local: reads only env vars
 calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+(``auto (<dataset-name>)`` in place of the name while recall is auto)
 """
 
 from __future__ import annotations
@@ -139,6 +140,32 @@ def _active_dataset(host_id: str = "") -> str:
         return v
     # 3. default
     return _DEFAULT_DATASET
+
+
+def _recall_auto(host_id: str = "") -> bool:
+    """Whether graph recall is auto for this launch, from local state only.
+
+    Mirrors ``_plugin_common.recall_mode`` (this renderer does not import it): an
+    explicit read set pins; the launch record's own ``recall_pinned`` wins either
+    way, and a switch on a record written before recall modes existed pins;
+    otherwise ``COGNEE_PLUGIN_RECALL_MODE=pinned`` pins. Anything else is auto.
+    """
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
+        return False
+    rec = _launch_record(str(host_id or ""))
+    if "recall_pinned" in rec:
+        return rec.get("recall_pinned") is not True
+    if rec.get("switched_at"):
+        return False
+    return os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "").strip().lower() != "pinned"
+
+
+def _dataset_label(host_id: str = "", recall_auto: bool = False) -> str:
+    """The dataset as the status shows it: ``auto (<dataset>)`` while recall is
+    auto (the server picks the readable datasets each recall searches, and saves
+    go to ``<dataset>``), else the name, as Claude Code's row does."""
+    dataset = _active_dataset(str(host_id or ""))
+    return f"auto ({dataset})" if recall_auto else dataset
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
@@ -479,7 +506,7 @@ def _status_prefix(session_id: str = "") -> str:
 
 
 def _credits_segment() -> str:
-    """Cloud credits balance + approximate cost of the last memory operation.
+    """Cloud credits balance.
 
     Pure-local like everything here: reads only ``credits.json`` — a MAP keyed
     by tenant id (several terminals can be on different tenants at once), each
@@ -488,7 +515,9 @@ def _credits_segment() -> str:
     styling). Renders nothing unless ALL of: cloud mode, matching entry with a
     numeric balance younger than ``_CREDITS_MAX_AGE_SECONDS``, not opted out
     (``COGNEE_STATUSLINE_CREDITS=off``). A reading older than
-    ``_CREDITS_AGE_HINT_SECONDS`` renders with an ``(Nm ago)`` age hint.
+    ``_CREDITS_AGE_HINT_SECONDS`` renders with an ``(Nm ago)`` age hint. The
+    marker's ``last_op`` (the approximate cost of the last memory operation)
+    is not shown: in cloud mode it was mostly a stale, sub-cent reading.
     """
     if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
         "0",
@@ -535,12 +564,6 @@ def _credits_segment() -> str:
     seg = f" · credits: {sign}${abs(remaining):,.2f}"
     if refused_op and not exhausted:
         seg += f" (not enough for {refused_op})"
-    last_op = entry.get("last_op")
-    if isinstance(last_op, dict):
-        label = str(last_op.get("label") or "").strip()
-        cost = last_op.get("cost_usd")
-        if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            seg += f" · last {label} ~${cost:,.2f}"
     hint = _credits_age_hint(age)
     if hint:
         seg += f" ({hint})"
@@ -554,12 +577,18 @@ def _top_up_hint() -> str:
     return f" · top up: {_billing_url()}"
 
 
-def render_status_for_host(host_id: str) -> str:
+def render_status_for_host(host_id: str, recall_auto: bool = False) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
-    LLM-key verdicts written by this session (the marker is machine-wide)."""
+    LLM-key verdicts written by this session (the marker is machine-wide).
+
+    ``recall_auto`` (the hooks pass ``_plugin_common.auto_recall_active``) shows
+    the dataset as ``auto (<dataset>)``, as Claude Code's row does: recall is
+    routed by the server across the readable datasets, and saves go to
+    ``<dataset>``.
+    """
     return (
         f"{_status_prefix(str(host_id or ''))}"
-        f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
+        f"cognee: {_dataset_label(host_id, recall_auto)} · {_active_mode()}"
         f"{_credits_segment()}{_update_segment()}"
     )
 
@@ -591,7 +620,7 @@ def main() -> None:
     host_id = str(ctx.get("session_id") or ctx.get("thread_id") or "")
     sys.stdout.write(
         f"{_status_prefix()}"
-        f"cognee: {_active_dataset(host_id)} · {_active_mode()}"
+        f"cognee: {_dataset_label(host_id, _recall_auto(host_id))} · {_active_mode()}"
         f"{_credits_segment()}{_update_segment()}"
     )
 

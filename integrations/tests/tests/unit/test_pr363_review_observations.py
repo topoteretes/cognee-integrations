@@ -1,6 +1,7 @@
 """Regression tests for the identity and dataset-access review findings."""
 
 import pytest
+from utils.switch import run_switch
 
 
 def test_cached_identity_rejects_new_principal_on_same_server(suite, isolated_modules, monkeypatch):
@@ -266,7 +267,7 @@ def test_unsupported_shared_switch_aborts_before_sync(suite, hook_module, monkey
     calls = []
     monkeypatch.setattr(switch, "_sync_current", lambda *args: calls.append("sync"))
     with pytest.raises(RuntimeError, match="cannot safely store"):
-        switch._switch("host", {"session_id": "old", "dataset": "owned"}, ident, force=False)
+        run_switch(switch, "host", {"session_id": "old", "dataset": "owned"}, ident)
     assert calls == []
 
 
@@ -293,7 +294,7 @@ def test_owned_uuid_selection_uses_compatible_owned_name(suite, hook_module, mon
 
     monkeypatch.setattr(switch, "_ensure_dataset", inspect)
     with pytest.raises(RuntimeError, match="inspection complete"):
-        switch._switch("host", {"session_id": "old", "dataset": "previous"}, ident, force=False)
+        run_switch(switch, "host", {"session_id": "old", "dataset": "previous"}, ident)
     assert chosen == ["owned"]
 
 
@@ -334,7 +335,7 @@ def test_switch_takes_the_principal_from_the_lister_when_the_record_has_none(
 
     monkeypatch.setattr(switch, "_ensure_dataset", inspect)
     with pytest.raises(RuntimeError, match="inspection complete"):
-        switch._switch("host", {"session_id": "old", "dataset": "previous"}, ident, force=False)
+        run_switch(switch, "host", {"session_id": "old", "dataset": "previous"}, ident)
     assert chosen == ["owned"]
 
 

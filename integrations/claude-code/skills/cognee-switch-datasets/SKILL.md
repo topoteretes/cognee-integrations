@@ -106,7 +106,10 @@ as is**; do not reword it from `reason`. The status line updates within a
 couple of seconds.
 
 A switch is `{"switched": true, "dataset", "session_id", "previous": {"dataset",
-"session_id", "synced": true|false}, "message"}`. `"switched": false` (`pin`,
+"session_id", "sync": "queued"|"not_started"}, "message"}`. `"queued"` means the previous
+session's sync started in the background; the switch never waits for it. `"not_started"` (with
+`sync_error`) means it could not even be started; the switch still happened, and the session-end
+sync covers the previous session. `"switched": false` (`pin`,
 `auto`, or the current dataset named) carries a `reason` for logic only:
 `recall_restricted`, `already_active`, `recall_auto` or `already_auto`, and
 `recall`, the mode now in effect (`"pinned"` after `auto` means
@@ -117,13 +120,12 @@ On failure the JSON is `{"error", "code"}`:
 | code | meaning | what to do |
 |------|---------|------------|
 | 2 | launch record not found | the plugin did not initialise this session; run `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"`. If several Claude Code sessions share this directory, rerun with `--session-key <host session id>` |
-| 3 | syncing the current session failed | nothing was changed; show the error. Re-run with `--force` **only if the user explicitly accepts** that unsynced entries of the current session are retried at session end instead |
 | 4 | registering the new session failed | nothing was changed; the server rejected the registration — check the connection |
 | 5 | dataset not writable | the name is readable but owned by another principal; pick from `--list` |
 
 ## What the switch does
 
-1. Syncs the current session into its dataset (`sync-session-to-graph.py --strict`) — aborts if this fails.
+1. Starts syncing the current session into its dataset in the background and does not wait for it: in cloud mode, an improve request the cloud worker submits; locally, a detached `sync-session-to-graph.py`.
 2. Ensures the target dataset exists for this principal.
 3. Registers a **new** Cognee session on the target dataset under a fresh connection handle, then releases the old handle (register-then-unregister, so a local agent-mode server never sees zero connections).
 4. Repoints this launch's record: every hook, the shell wrappers, the idle/exit watchers and the status line follow it.

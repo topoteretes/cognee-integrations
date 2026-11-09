@@ -76,7 +76,6 @@ from _plugin_common import (
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
     PASSAGE_SEPARATOR,
-    MemoryTags,
     begin_turn,
     code_facts,
     credit_enabled,
@@ -84,6 +83,8 @@ from _recall_text import (
     format_code_facts,
     has_credited,
     is_session_transcript,
+    item_mark,
+    mark_injected,
     passage_origin,
     split_passages,
     split_sections,
@@ -221,69 +222,55 @@ def _entry_origin(source: str, entry: dict) -> str:
     return f"earlier session turn, {day}" if day else "earlier session turn"
 
 
-def _passage_document(passage: str) -> str:
-    """The named document a passage came from (its ``source:`` line), or ``""``.
-
-    Unnamed text is stored as ``text_<hash>`` and says nothing, so it gives none;
-    a name's trailing content hash is dropped.
-    """
-    first = passage.lstrip().split("\n", 1)[0].strip()
-    if not first.lower().startswith("source:"):
-        return ""
-    # A remembered text may carry its date: "text_<hash> (2026-11-04)".
-    name = re.sub(r"\s*\(\d{4}-\d{2}-\d{2}\)$", "", first.split(":", 1)[1].strip())
-    if re.fullmatch(r"text_[0-9a-f]{32}", name):
-        return ""
-    return re.sub(r"-[0-9a-f]{32}$", "", name)
-
-
 def _injection_sections(
     by_source: dict,
-    tags: MemoryTags | None = None,
-    labels: dict | None = None,
+    marks: bool = False,
+    keys: list | None = None,
 ) -> list[dict]:
     """Expose bare records; shared labels belong to one section heading.
 
-    With ``tags``, every item carries a mark saying where it came from
+    With ``marks``, every item carries a mark saying where it came from
     (SDK-1071): an evidence item, passage, session turn or trace on its own
     first line, a block of entities, facts or other lines on its heading. A
-    graph item names its document, when it has one, and its dataset:
-    ``[document <name> · dataset <name>]`` (SDK-1393); any other item its
-    origin, ``[agent trace, …]``. Items are still numbered in the session's
-    tags, only not shown; ``labels`` maps the text each mark is on to its tag,
-    so the caller can count the ones that survive the budget and dedupe as
-    shown.
+    graph item names the dataset the server says it came from, ``[dataset
+    <name>]`` (SDK-1393); any other item, or a graph item from a server that
+    names no dataset, its origin, ``[agent trace, …]``. ``keys`` collects the
+    exact text each marked item opens with, so the caller can count the ones
+    that survive the budget and dedupe.
     """
     grouped = {}
     # The dataset the server says the current graph result came from.
     result_dataset = [""]
 
-    def label(kind, origin, text, ident="", document="", whole=False):
-        if tags is None:
+    def label(origin):
+        if not marks:
             return ""
-        dataset = result_dataset[0]
-        tag = tags.assign(kind, f"{origin}, dataset {dataset}" if dataset else origin, text, ident)
-        parts = [f"document {document}"] if document else []
-        if dataset:
-            parts.append(f"dataset {dataset}")
-        mark = "[" + " · ".join(parts or [origin]) + "]"
-        if labels is not None:
-            # Marks repeat, so an item is known by its whole text where it has one.
-            labels[f"{mark}\n{text}" if whole else mark] = tag
-        return mark
+        return item_mark(origin, result_dataset[0])
 
-    def tagged(text, kind, origin, ident="", document=""):
-        mark = label(kind, origin, text, ident, document, whole=True)
-        return f"{mark}\n{text}" if mark else text
+    def remember(key):
+        if keys is not None and key not in keys:
+            keys.append(key)
+
+    def tagged(text, origin):
+        mark = label(origin)
+        if not mark:
+            return text
+        marked = f"{mark}\n{text}"
+        remember(marked)
+        return marked
 
     def add_block(source, kind, title, priority, entries, result_id, mark):
-        """One tag for a block of entries: on the heading, or on the block's first
+        """One mark for a block of entries: on the heading, or on the block's first
         entry when an earlier result already gave the section its heading."""
         if mark and entries:
             if (source, kind) in grouped:
                 entries = [f"{mark}\n{entries[0]}"] + entries[1:]
+                remember(entries[0])
             else:
                 title = f"{title} {mark}"
+                # ``fit_sections`` renders a section as its title, a newline and
+                # its entries: the block opens the section.
+                remember(f"{title}\n{entries[0]}")
         add(source, kind, title, priority, entries, result_id)
 
     def add(source, kind, title, priority, entries, result_id, separator="\n\n"):
@@ -322,14 +309,7 @@ def _injection_sections(
                 for text, item in available:
                     derived = (item.get("source") or {}).get("derived")
                     origin = "derived graph evidence" if derived else "source evidence"
-                    # Keyed by its citation: the same evidence keeps its tag.
-                    text = tagged(
-                        text,
-                        "evidence",
-                        origin,
-                        str(item.get("citation") or ""),
-                        str(item.get("title") or "").strip(),
-                    )
+                    text = tagged(text, origin)
                     add(source, "evidence", title, priority, [text], result_id)
                     grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
                 continue
@@ -354,19 +334,11 @@ def _injection_sections(
                                     "entities": "knowledge graph entities",
                                     "facts": "knowledge graph facts",
                                 }[kind]
-                                mark = label(kind, origin, parts[kind])
+                                mark = label(origin)
                                 add_block(source, kind, label_, rank, entries, result_id, mark)
                                 continue
                             passages = [
-                                (
-                                    tagged(
-                                        p,
-                                        "passage",
-                                        passage_origin(p),
-                                        document=_passage_document(p),
-                                    ),
-                                    is_session_transcript(p),
-                                )
+                                (tagged(p, passage_origin(p)), is_session_transcript(p))
                                 for p in split_passages(parts[kind])
                             ]
                             # Raw turns bridged from other sessions are the bulk and
@@ -396,21 +368,11 @@ def _injection_sections(
             origin = _entry_origin(source, entry)
             if source in {"graph_context", "code", "session_context"}:
                 prefix, _, body = formatted.partition("\n")
-                mark = label(source, origin, formatted)
+                mark = label(origin)
                 block = _line_entries(body)
                 add_block(source, "body", title + "\n" + prefix, priority, block, result_id, mark)
             else:
-                # An earlier turn or trace is known by its server id, so it keeps
-                # its tag when recalled again.
-                ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
-                add(
-                    source,
-                    "body",
-                    title,
-                    priority,
-                    [tagged(formatted, source, origin, ident)],
-                    result_id,
-                )
+                add(source, "body", title, priority, [tagged(formatted, origin)], result_id)
     return list(grouped.values())
 
 
@@ -506,13 +468,12 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
 
 async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | None, int | None]:
     if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
-        # First, so a recall that returns early leaves this turn with no tags
-        # and the Stop hook cannot check the answer against the previous
-        # turn's (SDK-1071).
+        # First, so a recall that returns early is not an injected turn and
+        # the Stop hook cannot credit the previous turn's memory to it (SDK-1071).
         try:
             begin_turn(_plugin_common._PLUGIN_DIR, get_session_key())
         except Exception as exc:
-            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
+            hook_log("memory_credit_write_failed", {"error": str(exc)[:200]})
     config = load_config()
     runtime = resolve_runtime_mode()
     hook_log(
@@ -1019,14 +980,11 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
 
     if scope_timeouts:
         header += "; memory recall timed out"
-    # Tag each recalled item so the answer can credit it (SDK-1071).
-    tags = (
-        MemoryTags.load(_plugin_common._PLUGIN_DIR, get_session_key())
-        if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
-        else None
-    )
-    labels: dict = {}
-    memory_sections = _injection_sections(by_source, tags, labels)
+    # Mark each recalled item so the answer can credit it (SDK-1071); ``marked``
+    # holds the text each one opens with, to count the ones that are injected.
+    cite = credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
+    marked: list = []
+    memory_sections = _injection_sections(by_source, cite, marked)
     # Reserve the largest possible drop notice before fitting. Replacing it
     # with the actual smaller count (or removing it) can only shrink output.
     entry_count = sum(len(section["entries"]) for section in memory_sections)
@@ -1041,10 +999,8 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # deduplicated, since the count changes the meaning. It outranks every memory
     # entry but is not required: at the smallest budget it gives way rather than
     # fail the whole recall (SDK-1071).
-    first_credit = bool(labels) and not has_credited(_plugin_common._PLUGIN_DIR, _key)
-    reserved_instruction = (
-        credit_instruction(first_credit, len(set(labels.values()))) if labels else ""
-    )
+    first_credit = bool(marked) and not has_credited(_plugin_common._PLUGIN_DIR, _key)
+    reserved_instruction = credit_instruction(first_credit, len(marked)) if marked else ""
     instruction_sections = (
         [{"entries": [reserved_instruction], "priority": 100, "counted": False, "dedupe": False}]
         if reserved_instruction
@@ -1115,15 +1071,16 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             reserved_drop, f"; {dropped} dropped to fit" if dropped else "", 1
         )
     full_context = actual_header + full_context[len(full_context.split("\n", 1)[0]) :]
-    if tags is not None:
-        # Only what survived the budget and the dedupe was injected on this turn.
-        for mark, tag in labels.items():
-            if mark in full_context:
-                tags.show(tag)
     if reserved_instruction and reserved_instruction in full_context:
-        if tags.found:
-            instruction = credit_instruction(first_credit, len(tags.found))
+        # Only what survived the budget and the dedupe was injected on this turn.
+        found = sum(1 for opening in marked if opening in full_context)
+        if found:
+            instruction = credit_instruction(first_credit, found)
             full_context = full_context.replace(reserved_instruction, instruction, 1)
+            try:
+                mark_injected(_plugin_common._PLUGIN_DIR, _key)
+            except Exception as exc:
+                hook_log("memory_credit_write_failed", {"error": str(exc)[:200]})
         else:
             full_context = full_context.replace("\n\n" + reserved_instruction, "", 1)
     injection_stats["context_chars"] = len(full_context)
@@ -1248,13 +1205,6 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 
-    # The Stop hook checks the answer's citations against these (SDK-1071).
-    if tags is not None:
-        try:
-            tags.save(_plugin_common._PLUGIN_DIR, get_session_key())
-        except Exception as exc:
-            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
-
     return _recall_output(full_context, notice), total
 
 
@@ -1333,7 +1283,7 @@ def main():
     try:
         from _capture_policy import sanitize
 
-        # Every recall lane, the audit line and the tags see only this copy.
+        # Every recall lane and the audit line see only this copy.
         prompt = sanitize(prompt) if isinstance(prompt, str) else ""
     except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
         hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})

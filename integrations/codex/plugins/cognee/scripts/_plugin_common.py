@@ -47,7 +47,7 @@ _COUNTER_FILE = _PLUGIN_DIR / "counter.json"
 _ACTIVITY_FILE = _PLUGIN_DIR / "activity.ts"
 _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
-#: Whether credit tags and the resume notice are on when
+#: Whether credit marks and the resume notice are on when
 #: ``COGNEE_PLUGIN_CITE_MEMORY`` is unset (SDK-1071). On since it was tried live in
 #: Codex (SDK-1393); ``COGNEE_PLUGIN_CITE_MEMORY=off`` turns it off.
 CITE_MEMORY_DEFAULT = True

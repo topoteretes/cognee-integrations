@@ -109,7 +109,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
   a switch) wins over it for that session. **Behaviour change:** a configured non-default
   `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
-  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it.
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it. Session start says so once per machine
+  and dataset, in the message the user sees, when a non-default dataset is configured,
+  `COGNEE_PLUGIN_RECALL_MODE` was never set and the session has not pinned recall itself.
 - **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
   `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
 - **The status-row picker and `/cognee-dataset` know about auto recall.** The picker starts with
@@ -120,24 +122,46 @@ project adheres to [Semantic Versioning](https://semver.org/).
   reports results "from memory" unless recall is restricted.
 
 ### Changed
+- **A dataset switch no longer waits for the session it leaves to sync.** It used to run
+  `sync-session-to-graph.py --strict` and block until the sync finished. In cloud mode that meant
+  waiting for the cloud worker to reach the request behind other sessions' queued syncs (each up
+  to 7 minutes), so the row read "switching dataset…" for 10 minutes until the band gave up. The
+  switch now only starts that sync: in cloud mode it files an improve request (`switch`) for the
+  cloud worker, and locally it starts a detached sync. The switch takes seconds. The retired session
+  stays in `touched`, so the session-end sync retries it if this sync never lands. A sync that
+  cannot even be started no longer stops the switch; the result reports it. `previous.synced` is
+  replaced by `previous.sync` (`"queued"` or `"not_started"`, with `sync_error`), and the message
+  says the previous session "is syncing in the background". `--strict` is gone from
+  `sync-session-to-graph.py` (a cloud `/cognee-sync` also returns once queued), `--force` from
+  `switch-dataset.py`, and exit code 3 is retired. The band's switch timeout drops from 10 min to 2.
 - **Reopening a chat names the dataset it was saved to, without the brain icon.** The
   notice now reads "This conversation was sent to the agent_sessions dataset in Cognee's
   long-term memory when you left at 14:13." A failed save names its dataset, and the earlier
   save it mentions names its own when that differs. The save record keeps the dataset of the
   last successful save (`improved_dataset`) beside the one a later failed attempt targeted.
 - **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
-- **The memory credit names the document and dataset (SDK-1393).** Every graph item the recall
-  hook injects is marked `[document <name> · dataset <name>]` (the document only when the item
-  names one), since under auto recall the server picks the dataset and the mark is the only place
-  the answer learns which one. The credit line is now `> Cognee memory: <what>, from <document> in
-  the <dataset> dataset`, with no `[mN]` tags or brain; items are still numbered behind the scenes.
-  The Stop hook counts a turn whose answer ends with that line (`untagged: true` in the
-  `memory_credit` event); an older line citing `[mN]` is still checked against the session's tags.
+- **The memory credit names the dataset (SDK-1393).** Every graph item the recall hook injects
+  is marked `[dataset <name>]`, since under auto recall the server picks the dataset and the mark
+  is the only place the answer learns which one; an item from a server that names no dataset, and
+  every other item, keeps its origin mark (`[agent trace, …]`, `[code graph]`). The credit line is
+  now `> Cognee memory: <what>, from the <dataset> dataset`, with no `[mN]` tags or brain, and the
+  hidden per-session tags (`tags.json`) are gone. "Cognee found N memories" counts the items that
+  survive the size budget and the dedupe (two results from one dataset no longer count as one),
+  and the instruction is left out when none does. The recall hook records the turn it injected
+  memory on (`injected_turn` in `credit.json`); the Stop hook counts a credit when the answer on
+  that turn ends with the credit line. The `memory_credit` event now carries `{injected,
+  credited}`, and `memory_tags_write_failed` is now `memory_credit_write_failed`.
+- **The settings-file status line says when recall is auto.** It shows the dataset as
+  `auto (<dataset>)` while recall is not pinned, as the row above the prompt does.
 - **The terminal dataset picker is drawn from the start.** It shows the selected name and lights
   under the pointer; a click or `ctrl+x tab` gives it the focus, which opens the list and lists the
   datasets afresh. The `▾` button that opened it is gone.
 
 ### Removed
+- **The status line no longer shows the last operation's cost** (`last remember ~$0.00`). In
+  cloud mode only a remember ever recorded one, so it was usually a stale, sub-cent reading from
+  days earlier. The credit balance and the **top up** link stay. The credits marker still records
+  `last_op`.
 - **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
   search" block or asks the user to pick a dataset. `COGNEE_RECALL_DATASET_HINT`,
   `COGNEE_DATASETS_CACHE_TTL`, `COGNEE_DATASETS_CACHE_RETRY` and the `readable-datasets.json`
@@ -145,6 +169,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `list-datasets.py`) is unchanged.
 
 ### Fixed
+- **The status row no longer shows a switch as done before it lands.** Picking a dataset left the
+  picker showing the pick while the switch was still running (or after it failed), and a turn's
+  save finishing meanwhile replaced "switching dataset…" with "✓ memory saved". While a switch
+  runs, the row now reads `<current> → <target>` with no picker, and the hooks' marker no longer
+  replaces or clears the module's own activity (a switch, a search, a remember).
 - **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
   shared agent memory the parent account owns the datasets, so the switch addressed the target
   by its id, and the shared-memory resolver read that id as a *name*: it pinned the session to
