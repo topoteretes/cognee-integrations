@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from utils.suites import ANTIGRAVITY, CLAUDE, CODEX
+from utils.switch import run_switch
 
 _PLUGINS = [CLAUDE, CODEX, ANTIGRAVITY]
 
@@ -65,9 +66,9 @@ def test_switch_refuses_an_invalid_name_with_a_suggestion(plugin_suite, hook_mod
     with pytest.raises(
         switch.SwitchError, match=r"cognee rejects spaces and dots \(try 'my_data'\)"
     ):
-        switch._switch("host-1", {}, "my.data", force=False)
+        run_switch(switch, "host-1", {}, "my.data")
     with pytest.raises(switch.SwitchError, match="cognee rejects spaces and dots$"):
-        switch._switch("host-1", {}, "...", force=False)
+        run_switch(switch, "host-1", {}, "...")
 
 
 @pytest.mark.parametrize("plugin_suite", _PLUGINS, ids=lambda s: s.name)

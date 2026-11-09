@@ -149,15 +149,25 @@ def test_thousands_separator(sl):
     assert "credits: $1,234.50" in strip_ansi(sl._credits_segment())
 
 
-def test_last_op_appended(sl):
+def _cost(suite, text: str) -> str:
+    """The last-operation cost a suite's bar appends after the balance; the
+    claude-code bar no longer shows it."""
+    return "" if suite.name == "claude-code" else text
+
+
+def test_last_op_appended(suite, sl):
     _marker(sl, last_op={"label": "improve", "cost_usd": 0.14, "at": time.time()})
-    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 · last improve ~$0.14"
+    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23" + _cost(
+        suite, " · last improve ~$0.14"
+    )
 
 
-def test_turn_label_renders(sl):
+def test_turn_label_renders(suite, sl):
     # The turn-end hook attributes the finished turn's spend as "turn".
     _marker(sl, last_op={"label": "turn", "cost_usd": 0.04, "at": time.time()})
-    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 · last turn ~$0.04"
+    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23" + _cost(
+        suite, " · last turn ~$0.04"
+    )
 
 
 def test_last_op_without_cost_shows_balance_only(sl):
@@ -207,14 +217,15 @@ def test_idle_reading_shows_days(sl):
     assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 (2d ago)"
 
 
-def test_age_hint_follows_last_op(sl):
+def test_age_hint_follows_last_op(suite, sl):
     """Balance and cost come from the same fetch, so the hint qualifies both."""
     _marker(
         sl,
         checked_at=time.time() - 45 * 60,
         last_op={"label": "turn", "cost_usd": 0.04, "at": time.time() - 45 * 60},
     )
-    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 · last turn ~$0.04 (45m ago)"
+    cost = _cost(suite, " · last turn ~$0.04")
+    assert strip_ansi(sl._credits_segment()) == f" · credits: $14.23{cost} (45m ago)"
 
 
 def test_age_hint_matches_writer_prune_horizon(suite, sl, isolated_modules):
@@ -256,11 +267,11 @@ def test_age_hint_is_faint(styled):
     assert styled._credits_segment() == expected
 
 
-def test_last_op_is_not_faint(styled):
+def test_last_op_is_not_faint(suite, styled):
     """The cost is a first-class signal, unlike the recall/saved diagnostics."""
     _marker(styled, last_op={"label": "improve", "cost_usd": 0.14, "at": time.time()})
     seg = styled._credits_segment()
-    assert seg == f" · {_GREEN}credits: $14.23{_RESET} · last improve ~$0.14"
+    assert seg == f" · {_GREEN}credits: $14.23{_RESET}" + _cost(suite, " · last improve ~$0.14")
     assert _FAINT not in seg, "last-op cost must not be faint"
 
 
@@ -409,7 +420,7 @@ def test_malformed_refusal_is_ignored(sl):
     assert strip_ansi(sl._credits_segment()) == " · credits: $2.04"
 
 
-def test_top_up_link_comes_last(sl):
+def test_top_up_link_comes_last(suite, sl):
     """After the cost and the age hint: the link is the way out, read last."""
     _marker(
         sl,
@@ -417,7 +428,8 @@ def test_top_up_link_comes_last(sl):
         checked_at=time.time() - 20 * 60,
         last_op={"label": "turn", "cost_usd": 0.02, "at": time.time()},
     )
-    expected = f" · credits: $0.61 · last turn ~$0.02 (20m ago) · top up: {_BILLING}"
+    cost = _cost(suite, " · last turn ~$0.02")
+    expected = f" · credits: $0.61{cost} (20m ago) · top up: {_BILLING}"
     assert strip_ansi(sl._credits_segment()) == expected
 
 

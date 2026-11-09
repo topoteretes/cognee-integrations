@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Move this launch to another Cognee dataset (``/cognee-memory:cognee-switch-datasets``).
 
-A Cognee session never spans two datasets, so a switch is: sync the current
-session into its dataset, register a NEW session bound to the new dataset,
-retire the old one, and repoint every hook at the new triple.
+A Cognee session never spans two datasets, so a switch is: hand the current
+session to a background sync into its dataset, register a NEW session bound to
+the new dataset, retire the old one, and repoint every hook at the new triple.
+The switch never waits for that sync: in cloud mode it is an improve request the
+cloud worker submits in its own time, locally a detached sync process. The
+retired session stays in the launch record's ``touched`` list, so the final sync
+at session end bridges it again if this one never lands.
 
 Usage:
     switch-dataset.py --list [--json]          # datasets you can switch to
-    switch-dataset.py <dataset-name> [--force] [--json]
+    switch-dataset.py <dataset-name> [--json]
     switch-dataset.py auto [--json]            # let routing pick the dataset for recall
     switch-dataset.py pin [--json]             # pin recall to the active dataset
 
@@ -32,7 +36,7 @@ record via ``resolve_host_key_outside_hook``; pass ``--session-key <host id>``
 to pin one when several launches share a directory.
 
 Exit codes:
-    0  switched / listed            3  sync of the current session failed (use --force)
+    0  switched / listed            3  (retired: the switch no longer waits for its sync)
     1  unexpected error              4  registering the new session failed (nothing changed)
     2  launch record not found       5  dataset not writable / not found for this principal
 """
@@ -60,7 +64,6 @@ from _plugin_common import (  # noqa: E402
     list_writable_datasets,
     load_resolved,
     mint_switch_session_id,
-    positive_float_env,
     recall_is_pinned,
     recall_mode,
     recall_pin_reason,
@@ -204,10 +207,16 @@ def _message(kind: str, result: dict) -> str:
             f"Switched to dataset {dataset!r} (new session {result.get('session_id', '')}); "
             "saves go there and recall is pinned to it."
         )
-        if not prev.get("synced", True):
+        if prev.get("sync") == "queued":
             text += (
-                f" The previous session on {prev.get('dataset', '')!r} was NOT synced "
-                f"({prev.get('sync_error', 'no detail')})."
+                f" The previous session on {prev.get('dataset', '')!r} is syncing "
+                "in the background."
+            )
+        elif prev.get("sync") == "not_started":
+            text += (
+                f" The previous session on {prev.get('dataset', '')!r} could not be "
+                f"queued for sync ({prev.get('sync_error', 'no detail')}); it is synced "
+                "when this Claude Code session ends."
             )
         return text
     if kind == "pin":
@@ -238,51 +247,52 @@ def _message(kind: str, result: dict) -> str:
 # ── the switch ─────────────────────────────────────────────────────────────
 
 
-def _sync_current(host_key: str, session_id: str, dataset: str) -> None:
-    """Bridge the session we are about to retire, strictly (non-zero = failure)."""
-    env = os.environ.copy()
-    env["COGNEE_SESSION_KEY"] = host_key
-    env["COGNEE_SYNC_SESSION_ID"] = session_id
-    env["COGNEE_SYNC_DATASET"] = dataset
-    started = time.monotonic()
-    timeout = positive_float_env("COGNEE_SWITCH_SYNC_TIMEOUT", 900.0)
+def _sync_current(host_key: str, session_id: str, dataset: str) -> str:
+    """Start the sync of the session we are about to retire; never waits for it.
+
+    Cloud: an improve request for the cloud worker, filed as ``switch``. Local:
+    a detached ``sync-session-to-graph.py`` aimed at the retiring pair. Returns
+    "" once the sync is queued or started, else why it could not be; the switch
+    goes ahead either way, since the final sync retries every ``touched`` pair.
+    """
     try:
-        proc = subprocess.run(
-            [sys.executable, str(_SYNC_SCRIPT), "--strict"],
+        from _cloud_worker import enabled as cloud_enabled
+
+        if cloud_enabled():
+            from _cloud_worker import request_improve
+
+            set_session_key(host_key)
+            request_improve(dataset, session_id, "switch")
+            hook_log(
+                "switch_sync_queued",
+                {"session": session_id, "dataset": dataset, "via": "cloud_worker"},
+            )
+            return ""
+        env = os.environ.copy()
+        env["COGNEE_SESSION_KEY"] = host_key
+        env["COGNEE_SYNC_SESSION_ID"] = session_id
+        env["COGNEE_SYNC_DATASET"] = dataset
+        proc = subprocess.Popen(
+            [sys.executable, str(_SYNC_SCRIPT)],
             stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             env=env,
-            timeout=timeout,
+            start_new_session=True,
+            close_fds=True,
         )
-    except subprocess.TimeoutExpired:
-        # run() has already killed the sync. Nothing has changed yet: the old
-        # session is still the registered one. Raised as a sync failure so the
-        # exit code says so and --force can continue past it.
         hook_log(
-            "switch_sync_timeout",
-            {"session": session_id, "dataset": dataset, "timeout_s": timeout},
+            "switch_sync_started",
+            {"session": session_id, "dataset": dataset, "via": "detached", "pid": proc.pid},
         )
-        raise SwitchError(
-            EXIT_SYNC_FAILED,
-            f"sync of session {session_id} (dataset {dataset}) timed out after {timeout:g}s",
-        ) from None
-    hook_log(
-        "switch_sync_result",
-        {
-            "session": session_id,
-            "dataset": dataset,
-            "returncode": proc.returncode,
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
-            "stderr": (proc.stderr or "")[-400:],
-        },
-    )
-    if proc.returncode != 0:
-        tail = (proc.stderr or "").strip().splitlines()[-1:] or ["no detail"]
-        raise SwitchError(
-            EXIT_SYNC_FAILED,
-            f"sync of session {session_id} (dataset {dataset}) failed: {tail[0]}",
+        return ""
+    except Exception as exc:
+        error = str(exc)[:200] or type(exc).__name__
+        hook_log(
+            "switch_sync_not_started",
+            {"session": session_id, "dataset": dataset, "error": error},
         )
+        return error
 
 
 def _register_new(session_id: str, dataset: str, dataset_id: str = "") -> str:
@@ -385,7 +395,7 @@ def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id:
         hook_log("switch_watcher_restart_failed", {"error": str(exc)[:200]})
 
 
-def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
+def _switch(host_key: str, rec: dict, target: str) -> dict:
     target = target.strip()
     if not target:
         raise SwitchError(EXIT_ERROR, "dataset name is empty")
@@ -442,17 +452,10 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
 
         require_typed_dataset_id_support()
 
-    # 1. Sync the session we are leaving. Abort on failure unless forced — the
-    #    retired triple stays in `touched`, so the final sync retries it.
-    sync_ok = True
-    sync_error = ""
-    try:
-        _sync_current(host_key, old_session, old_dataset)
-    except SwitchError as exc:
-        if not force:
-            raise
-        sync_ok, sync_error = False, str(exc)
-        hook_log("switch_sync_forced_past_failure", {"error": sync_error[:300]})
+    # 1. Start syncing the session we are leaving, without waiting for it. If
+    #    it cannot even be started, the switch still goes ahead: the retired
+    #    triple stays in `touched`, so the final sync retries it.
+    sync_error = _sync_current(host_key, old_session, old_dataset) or ""
 
     # 2. Make sure the dataset exists for this principal (idempotent); under
     #    shared memory this also resolves its canonical UUIDs.
@@ -512,7 +515,7 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
         "previous": {
             "dataset": old_dataset,
             "session_id": old_session,
-            "synced": sync_ok,
+            "sync": "not_started" if sync_error else "queued",
             **({"sync_error": sync_error} if sync_error else {}),
             "unregistered": old_released,
         },
@@ -598,7 +601,6 @@ def _print_switch(result: dict, as_json: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
-    force = "--force" in args
     do_list = "--list" in args
     explicit_key = ""
     if "--session-key" in args:
@@ -618,7 +620,7 @@ def main(argv: list[str] | None = None) -> int:
         if do_list or not positional:
             _print_listing(_list(host_key, rec), as_json)
             return EXIT_OK
-        result = _switch(host_key, rec, positional[0], force=force)
+        result = _switch(host_key, rec, positional[0])
         _print_switch(result, as_json)
         return EXIT_OK
     except SwitchError as exc:

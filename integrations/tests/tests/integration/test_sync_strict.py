@@ -128,30 +128,28 @@ def test_missing_unregister_name_does_not_swallow_strict_error(sync_mod, mock_se
     mock_server.assert_not_called("POST", UNREGISTER)
 
 
-def test_cloud_strict_timeout_explains_the_pending_retry(
-    sync_mod, suite, monkeypatch, tmp_path, capsys
-):
+def test_cloud_sync_queues_without_waiting(sync_mod, suite, monkeypatch):
+    """A cloud /cognee-sync (and the sync a dataset switch starts) files the
+    improve for the cloud worker and returns; it never polls for the result."""
     if suite.name != "claude-code":
         pytest.skip("Claude cloud worker")
     import importlib
     import io
-    import json
     import sys
 
     worker = importlib.import_module("_cloud_worker")
     common = importlib.import_module("_plugin_common")
-    path = tmp_path / "wanted.json"
-    path.write_text(json.dumps({"last_error": "busy", "next_attempt": 1005}))
+    filed: list = []
     monkeypatch.setattr(worker, "enabled", lambda *_: True)
-    monkeypatch.setattr(worker, "request_improve", lambda *_: path)
+    monkeypatch.setattr(worker, "request_improve", lambda *a: filed.append(a))
     monkeypatch.setattr(common, "load_resolved", lambda **_: {"session_id": "sid", "dataset": "ds"})
     monkeypatch.setattr(common, "get_session_key", lambda: "host")
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
-    monkeypatch.setattr(sys, "argv", ["sync-session-to-graph.py", "--strict"])
-    ticks = iter([0, 841])
-    monkeypatch.setattr(sync_mod.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(sync_mod.time, "time", lambda: 1000)
-    with pytest.raises(SystemExit) as exc:
-        sync_mod.main()
-    assert exc.value.code == 1
-    assert "Last result: busy; next retry in 5s." in capsys.readouterr().err
+    monkeypatch.setattr(sys, "argv", ["sync-session-to-graph.py"])
+
+    def no_sleep(_):
+        raise AssertionError("a cloud sync must not wait for the worker")
+
+    monkeypatch.setattr(sync_mod.time, "sleep", no_sleep)
+    sync_mod.main()
+    assert filed == [("ds", "sid", "manual")]

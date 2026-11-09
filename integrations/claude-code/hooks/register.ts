@@ -157,8 +157,9 @@ const LIST_TIMEOUT_MS = 45_000
 // is not an attempt: the listing waits for the `setting_up` phase to end.
 const LIST_RETRY_MS = 5_000
 const LIST_MAX_ATTEMPTS = 5
-// A switch syncs the session it leaves first; that can take minutes.
-const SWITCH_TIMEOUT_MS = 600_000
+// A switch only starts the sync of the session it leaves (it never waits for
+// it), so what remains is a few HTTP calls of up to 15 s each.
+const SWITCH_TIMEOUT_MS = 120_000
 const NODE_SETS: Record<string, string> = {
   user: 'user_context',
   project: 'project_docs',
@@ -212,6 +213,9 @@ let toolsOn = true
 type DatasetRow = { name: string; id: string; current: boolean }
 let switchTargets: DatasetRow[] = []
 let switching = false
+// Where a running switch is going: the row reads "<current> → <target>" until
+// it lands, instead of a picker already showing the pick.
+let switchingTo = ''
 // The picker's last entry: picking it turns the picker into a text field for
 // a dataset that does not exist yet (the switch script creates it). Spaces
 // make the value one no dataset can be named, so it never collides.
@@ -684,8 +688,13 @@ async function readPhase($: any): Promise<void> {
   }
   const now = await $.clock.now()
   const shown = pickActivity(marker, now)
+  // The module's own work (a switch, a search, a remember) keeps the row until
+  // it ends and clears it itself; a hook finishing meanwhile must not tick
+  // "memory saved" over a switch that is still running.
+  const own = !!active && (OWN_PHASES as readonly string[]).includes(active.phase)
   if (shown?.kind === 'active') {
     markerActive = true
+    if (own) return
     if (!active || active.phase !== shown.phase) {
       setActive($, shown)
       activeSince = now
@@ -693,7 +702,7 @@ async function readPhase($: any): Promise<void> {
     return
   }
   result = shown
-  if (active) clearActive($)
+  if (active && !own) clearActive($)
   else redraw($)
 }
 
@@ -965,12 +974,16 @@ async function relistDatasets($: any): Promise<void> {
 }
 
 // Move the session to another dataset: the plugin's switch script, which
-// syncs the session it leaves and starts a new one. No model turn.
+// starts the sync of the session it leaves (without waiting) and a new one.
+// No model turn.
 async function switchDataset($: any, target: string): Promise<string> {
   const name = target.trim()
   if (!name) return 'name a dataset'
   if (switching) return 'a switch is already running'
   switching = true
+  // `pin` and `auto` stay on the active dataset; an id reads as its name.
+  const action = name.toLowerCase()
+  switchingTo = action === 'pin' || action === 'auto' ? '' : switchTargets.find(r => r.id === name)?.name ?? name
   setActive($, activity('switching'))
   let line = ''
   try {
@@ -997,6 +1010,7 @@ async function switchDataset($: any, target: string): Promise<string> {
     $.ui.toast(failed ? `✕ ${line}` : `${line}`)
   } finally {
     switching = false
+    switchingTo = ''
     clearActive($)
   }
   await refreshSnapshot($)
@@ -1532,7 +1546,12 @@ export const register: Register = (on, options) => {
     badge.push(Text({ bold: true, color: purple, children: ['cognee '] }))
     segment(badgeWidth + 7, 0, ...badge)
     // The dataset: a control when there is a list, the name otherwise.
-    if (canPick) {
+    if (switching) {
+      // No picker while a switch runs: it would show the pick as if it had
+      // already landed.
+      const name = switchingTo ? `${current || 'memory'} → ${switchingTo}` : current || 'memory'
+      segment(name.length, 0, Text({ children: [name] }))
+    } else if (canPick) {
       const drawn = namingDataset ? namer() : e.surface === 'terminal' ? hoverable(picker()) : picker()
       segment(namingDataset ? 26 : pickerLabel.length + 2, 0, drawn)
     } else {
@@ -1543,20 +1562,15 @@ export const register: Register = (on, options) => {
     segment(3 + mode.length, 0, Text({ children: [' · '] }), Text({ bold: true, color: purple, children: [mode] }))
     if (snap?.credits) {
       // As on the text line: the balance green, red once exhausted or a
-      // request was refused; the last-operation cost after it at normal
-      // weight. The text line's "top up: <url>" becomes a link here, the way
-      // out one click away (an anchor on the desktop, OSC 8 in a terminal).
-      // A balance that is out, or a refusal, is something to act on: it is
-      // never dropped for width; a healthy balance goes before the activity,
-      // the last-operation cost before both.
+      // request was refused. The text line's "top up: <url>" becomes a link
+      // here, the way out one click away (an anchor on the desktop, OSC 8 in
+      // a terminal). A balance that is out, or a refusal, is something to act
+      // on: it is never dropped for width; a healthy balance goes before the
+      // activity.
       const [balance = '', ...rest] = snap.credits.split(' · ')
       segment(3 + balance.length, snap.credits_exhausted ? 0 : 2, Text({ color: snap.credits_exhausted ? 'red' : 'green', children: [` · ${balance}`] }))
-      for (const part of rest) {
-        if (part.startsWith('top up:') && snap.billing_url && Link) {
-          segment(9, 0, Text({ children: [' · '] }), Link({ href: snap.billing_url, label: 'top up' }))
-        } else {
-          segment(3 + part.length, 3, Text({ children: [` · ${part}`] }))
-        }
+      if (snap.billing_url && Link && rest.some(part => part.startsWith('top up:'))) {
+        segment(9, 0, Text({ children: [' · '] }), Link({ href: snap.billing_url, label: 'top up' }))
       }
     }
     // What memory is doing, or did last. A failed `ready` result is not

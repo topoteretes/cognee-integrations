@@ -50,6 +50,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
   reports results "from memory" unless recall is restricted.
 
 ### Changed
+- **A dataset switch no longer waits for the session it leaves to sync.** It used to run
+  `sync-session-to-graph.py --strict` and block until the sync finished. In cloud mode that meant
+  waiting for the cloud worker to reach the request behind other sessions' queued syncs (each up
+  to 7 minutes), so the row read "switching dataset…" for 10 minutes until the band gave up. The
+  switch now only starts that sync: in cloud mode it files an improve request (`switch`) for the
+  cloud worker, and locally it starts a detached sync. The switch takes seconds. The retired session
+  stays in `touched`, so the session-end sync retries it if this sync never lands. A sync that
+  cannot even be started no longer stops the switch; the result reports it. `previous.synced` is
+  replaced by `previous.sync` (`"queued"` or `"not_started"`, with `sync_error`), and the message
+  says the previous session "is syncing in the background". `--strict` is gone from
+  `sync-session-to-graph.py` (a cloud `/cognee-sync` also returns once queued), `--force` from
+  `switch-dataset.py`, and exit code 3 is retired. The band's switch timeout drops from 10 min to 2.
 - **Reopening a chat names the dataset it was saved to, without the brain icon.** The
   notice now reads "This conversation was sent to the agent_sessions dataset in Cognee's
   long-term memory when you left at 14:13." A failed save names its dataset, and the earlier
@@ -74,6 +86,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   datasets afresh. The `▾` button that opened it is gone.
 
 ### Removed
+- **The status line no longer shows the last operation's cost** (`last remember ~$0.00`). In
+  cloud mode only a remember ever recorded one, so it was usually a stale, sub-cent reading from
+  days earlier. The credit balance and the **top up** link stay. The credits marker still records
+  `last_op`.
 - **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
   search" block or asks the user to pick a dataset. `COGNEE_RECALL_DATASET_HINT`,
   `COGNEE_DATASETS_CACHE_TTL`, `COGNEE_DATASETS_CACHE_RETRY` and the `readable-datasets.json`
@@ -81,6 +97,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `list-datasets.py`) is unchanged.
 
 ### Fixed
+- **The status row no longer shows a switch as done before it lands.** Picking a dataset left the
+  picker showing the pick while the switch was still running (or after it failed), and a turn's
+  save finishing meanwhile replaced "switching dataset…" with "✓ memory saved". While a switch
+  runs, the row now reads `<current> → <target>` with no picker, and the hooks' marker no longer
+  replaces or clears the module's own activity (a switch, a search, a remember).
 - **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
   shared agent memory the parent account owns the datasets, so the switch addressed the target
   by its id, and the shared-memory resolver read that id as a *name*: it pinned the session to

@@ -18,6 +18,7 @@ Covers, for every suite:
 from __future__ import annotations
 
 import pytest
+from utils.switch import run_switch
 
 CANONICAL = "5708f668-e272-5475-9341-caac1f6ce9f9"
 AGENT_COPY = "6eff268f-a66d-5d1c-a79d-fb4a1c44254e"
@@ -130,7 +131,7 @@ def test_switch_to_a_parent_owned_dataset_records_its_name(switch, monkeypatch):
     monkeypatch.setattr(switch, "switch_launch_record", lambda host, **kw: records.append(kw))
 
     rec = {"dataset": "agent_sessions", "dataset_id": CANONICAL, "session_id": "s1"}
-    result = switch._switch("host-1", rec, "alice_in_wonderland", force=False)
+    result = run_switch(switch, "host-1", rec, "alice_in_wonderland")
 
     assert ensured == [alice_id]  # resolved by id: the impostor's name never matches
     assert records[0]["dataset"] == "alice_in_wonderland"

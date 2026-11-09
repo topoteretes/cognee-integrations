@@ -426,8 +426,10 @@ reports the outcome. See [Dataset picker and tools](#dataset-picker-and-tools).
 The choice lives in the launch record (`~/.cognee-plugin/claude-code/sessions/<host id>.json`),
 so it survives `--resume` and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
 `COGNEE_SESSION_ID`) for the rest of the launch. Retired sessions stay in the record's `touched`
-list and the session-end sync covers them again as a safety net. The script behind the skill is
-`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`, `pin [--json]`,
+list and the session-end sync covers them again as a safety net. A switch never waits for the
+session it leaves to sync: it starts that sync in the background (in cloud mode, a request the
+cloud worker submits in its own time) and moves on. The script behind the skill is
+`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--json]`, `pin [--json]`,
 `auto [--json]`, `--session-key <host id>` when several launches share a directory). Every
 `--json` result carries `message`, one or two sentences for the user; the text output prints the
 same sentences.
@@ -1155,8 +1157,8 @@ renderer, run as a settings-file status line, prints nothing for a marked sessio
 so the row is never shown twice.
 
 The row is laid out in segments that are never split: in a terminal too narrow
-for all of them, the least useful go first (the last operation's cost, then a
-healthy credit balance, then what memory did last), and what must stay (the
+for all of them, the least useful go first (a healthy credit balance, then what
+memory did last), and what must stay (the
 badge, the dataset, the mode, an exhausted balance, an update notice) wraps
 onto a second line as whole segments rather than breaking a word in two. The
 dataset name is a picker whenever the server listed any writable datasets;
