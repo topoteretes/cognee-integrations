@@ -209,7 +209,7 @@ _PLAIN_CREDIT_LINE_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(\S[^\n]*)$", 
 #: rest freely ("based on", "stored in", "come from"), so only the name is required.
 #: The logo rows may already follow it (an answer the hook drew, when it is stored).
 _NAMES_SOURCE = r"\b(?:dataset \S+|Cognee memory)"
-_ANSWER_END = rf"(?:\s*(?:{LOGOTYPE[0]}|{LOGOTYPE[1]})[ \t]*)*\s*\Z"
+_ANSWER_END = rf"(?:\s*(?:{LOGOTYPE[0]}[^\n]*|{LOGOTYPE[1]})[ \t]*)*\s*\Z"
 _SIGNED_LINE_RE = re.compile(
     rf"^([ \t]*)>[ \t]*(\S[^\n]*{_NAMES_SOURCE}[^\n]*?)[ \t]*$(?={_ANSWER_END})", re.M
 )
@@ -271,8 +271,12 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
         return None
     if platform != CLI_PLATFORM or _cli_streams():
         # Append-only: the streamed text stays, the logo goes underneath it as a
-        # signature, after a blank line so it is not drawn inside the quote.
-        return f"{response_text.rstrip()}\n\n{LOGOTYPE[0]}\n{LOGOTYPE[1]}"
+        # signature naming the datasets the line credits. The classic CLI prints the
+        # suffix as is, under the answer's closing line, so one newline is enough; the
+        # TUI renders markdown, where a blank line keeps the logo out of the quote.
+        line = line_re.search(response_text).group(2)
+        gap = "\n" if platform == CLI_PLATFORM else "\n\n"
+        return f"{response_text.rstrip()}{gap}{LOGOTYPE[0]}{signature(line)}\n{LOGOTYPE[1]}"
     # Two trailing spaces: a markdown hard break, so a renderer that joins the lines
     # of a paragraph (the classic CLI's ``final_response_markdown: render``) keeps
     # the rows stacked; invisible where lines are shown as written.
@@ -303,6 +307,21 @@ def highlight_datasets(sentence: str) -> str:
     """
     tick = "\x60"
     return _DATASET_NAME_RE.sub(lambda m: f"dataset {tick}{m.group(1)}{tick}", sentence)
+
+
+#: A dataset named anywhere in a credit line, set as code or not.
+_CREDITED_DATASET_RE = re.compile(r"\bdataset \x60?([\w\-]+(?:\.[\w\-]+)*)")
+
+
+def signature(line: str) -> str:
+    """What follows the logo's first row: ``based on <name> dataset`` for the datasets
+    the credit line names, or nothing when it names none ("Cognee memory")."""
+    names = list(dict.fromkeys(_CREDITED_DATASET_RE.findall(line or "")))
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"  based on {names[0]} dataset"
+    return f"  based on {', '.join(names[:-1])} and {names[-1]} datasets"
 
 
 def signs_with_logo(platform: str) -> bool:

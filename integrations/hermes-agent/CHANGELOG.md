@@ -55,6 +55,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   dataset (indistinguishable from a reset), which follows the configuration.
 
 ### Changed
+- **The terminal logo names the dataset.** In `hermes` and `hermes --tui` the braille
+  logo the plugin adds under a streamed answer now reads `COGNEE  based on alice_in_wonderland
+  dataset` ("a and b datasets" for several), taken from the datasets the credit line names; a
+  line crediting only "Cognee memory" keeps the logo alone. In the classic CLI it follows the
+  answer's closing line with no blank lines in between.
 - **Hermes Desktop sets the credited dataset as code.** The drawn credit line shows
   "based on dataset `live_context_support_agent`" with the name in inline code, so it stands
   out from the sentence. Only a name that ends the line or leads to the next named dataset
