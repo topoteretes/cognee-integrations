@@ -1027,6 +1027,10 @@ async function switchDataset($: any, target: string): Promise<string> {
     const failed = !parsed.switched && parsed.switched !== false
     const mode = recallModeOf(parsed)
     if (mode) recallMode = mode
+    // The switch landed: the rows say so now, so a relist that times out
+    // below cannot put the old name back on the row.
+    const landed = asText(parsed.dataset)
+    if (parsed.switched === true && landed) switchTargets = switchTargets.map(r => ({ ...r, current: r.name === landed }))
     $.ui.toast(failed ? `✕ ${line}` : `${line}`)
   } finally {
     switching = false
@@ -1433,13 +1437,23 @@ export const register: Register = (on, options) => {
     if (!sessionId) void adoptSession($)
     if (!datasetsListed && !datasetsListing && datasetsAttempts < LIST_MAX_ATTEMPTS && datasetsRetryAt === 0) void loadDatasets($)
     void startTourIfFirstRun($)
-    const current = switchTargets.find(r => r.current)?.name ?? snap?.dataset ?? ''
+    // The snapshot names the active dataset from local state, retaken every
+    // prompt; the listing needs the server and is retaken only on a switch,
+    // and a listing that fails keeps the rows it had. When the two disagree
+    // (a switch whose relist timed out, a switch from a shell) the snapshot
+    // wins, and the rows are marked by it. The launch record, and so the
+    // snapshot, may hold a dataset by its id rather than its name.
+    const listedRow = switchTargets.find(r => r.current)
+    const recorded = snap?.dataset ?? ''
+    const agrees = !recorded || (!!listedRow && (listedRow.name === recorded || listedRow.id === recorded))
+    const targets = agrees ? switchTargets : switchTargets.map(r => ({ ...r, current: r.name === recorded || r.id === recorded }))
+    const current = targets.find(r => r.current)?.name ?? recorded
     // A picker whenever the server listed anything. The active dataset may be
     // missing from the writable list (read-only, or created since the
     // listing); it heads the options anyway, so the row still reads and the
     // other datasets stay reachable.
-    const canPick = switchTargets.length > 0
-    const listed = current && !switchTargets.some(r => r.name === current) ? [{ name: current, id: '', current: true }, ...switchTargets] : switchTargets
+    const canPick = targets.length > 0
+    const listed = current && !targets.some(r => r.name === current) ? [{ name: current, id: '', current: true }, ...targets] : targets
     // One option per name: the engine refuses a Select whose values repeat and
     // drops the whole row, and a switch goes by name anyway. Same-named
     // datasets (another principal's copy) collapse onto the current row, or

@@ -619,6 +619,8 @@ test('the active dataset owned by someone else is picked as `pin`, another named
   // used to start a full switch. `pin` never names it.
   const calls: Call[] = []
   wire(on, calls, {
+    // The renderer reads the record, which holds the dataset by its id.
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset: 'team-id' })),
     'switch-dataset.py': argv =>
       argv.includes('--list')
         ? ok(
@@ -1484,9 +1486,14 @@ test('a listing waits for a boot the hook handed to its worker instead of spendi
 test('a listing that times out keeps the list the row had', async ($, on) => {
   const calls: Call[] = []
   let slow = false
+  let dataset = 'agent_sessions'
   wire(on, calls, {
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset })),
     'switch-dataset.py': argv => {
-      if (!argv.includes('--list')) return ok(JSON.stringify({ switched: true, dataset: 'demo', session_id: 'c2', previous: { dataset: 'agent_sessions', synced: true } }))
+      if (!argv.includes('--list')) {
+        dataset = 'demo'
+        return ok(JSON.stringify({ switched: true, dataset: 'demo', session_id: 'c2', previous: { dataset: 'agent_sessions', synced: true } }))
+      }
       if (slow) throw new Error('process timed out after 45000ms')
       return ok(JSON.stringify(SWITCH_LIST))
     },
@@ -1497,13 +1504,43 @@ test('a listing that times out keeps the list the row had', async ($, on) => {
   expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
   await ui.unmount()
 
-  // The listing after the switch runs past its time: the picker stays.
+  // The listing after the switch runs past its time: the picker stays, and
+  // it names the dataset the switch landed on, not the one the stale rows
+  // still mark current.
   slow = true
   await $.command.run({ command: 'cognee-dataset', args: 'demo' })
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker).toBeDefined()
   expect((picker!.props.options as { value: string }[]).map(o => o.value)).toContain('demo')
+  expect(picker!.props.value).toBe('demo')
+  await ui.unmount()
+})
+
+test('a switch from a shell whose relist fails still shows the new dataset on the row', async ($, on) => {
+  const calls: Call[] = []
+  // The skill's shell switch moved the launch record; the renderer reads it,
+  // but the server's listing times out from then on.
+  let dataset = 'agent_sessions'
+  let slow = false
+  wire(on, calls, {
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset })),
+    'switch-dataset.py': () => {
+      if (slow) throw new Error('process timed out after 45000ms')
+      return ok(JSON.stringify(SWITCH_LIST))
+    },
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'cognee-dataset', args: '' })
+
+  dataset = 'demo'
+  slow = true
+  await $.prompt.submit({ text: 'next' })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker).toBeDefined()
+  expect(picker!.props.value).toBe('demo')
   await ui.unmount()
 })
 
