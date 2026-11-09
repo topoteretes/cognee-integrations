@@ -174,6 +174,9 @@ let sessionId = ''
 let endedSessionId = ''
 let adopting = false
 let adoptWatch: { cancel: () => void } | null = null
+// Until when the row reads "connecting…" after a /clear or /resume while the
+// new conversation is not bound yet (the adopt watch's own window).
+let adoptUntil = 0
 let phasePath = ''
 let bandPath = ''
 let rendererPython: string | null = null
@@ -633,9 +636,11 @@ async function adoptSession($: any): Promise<void> {
     if (!id || id === endedSessionId || sessionId) return
     stopAdoptWatch()
     await bindSession($)
+    // The warm-up starts before the first snapshot: its redraw must already
+    // read as connecting, not drop to the dim ○ for a frame.
+    warmupUntil = (await $.clock.now()) + WARMUP_MS
     await readPhase($)
     await refreshSnapshot($)
-    warmupUntil = (await $.clock.now()) + WARMUP_MS
     await startPoll($, WARMUP_MS)
     if (bandOn) void loadDatasets($)
     redraw($)
@@ -661,11 +666,15 @@ function redraw($: any): void {
 // coming up: the row shows the spinner and "connecting…" instead of a bare
 // dim ○, which reads as nothing happening. Bounded by the warm-up (and, before
 // the first snapshot, by the renderer still being tried), so a server that
-// never answers settles on the ○ instead of spinning for the session.
+// never answers settles on the ○ instead of spinning for the session. After a
+// /clear or /resume the row is connecting too while the new conversation is
+// being bound (at most ADOPT_MS, the adopt watch's window): the snapshot was
+// dropped with the ended session and the new one's warm-up has not started.
 function awaitingConnection(now: number): boolean {
   if (active) return false
   if (snapshot?.state === 'ok' || snapshot?.state === 'fail') return false
   if (now < warmupUntil) return true
+  if (!sessionId && now < adoptUntil) return true
   return snapshot === null && !!sessionId && rendererFailures < 3
 }
 
@@ -1264,7 +1273,12 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     const id = await $.session.id()
     stopAdoptWatch()
-    if (id !== sessionId) await bindSession($)
+    if (id !== sessionId) {
+      // Bound here only when the adopt watch missed it (after a /clear): the
+      // new conversation gets the warm-up a session start gives.
+      if (!sessionId) warmupUntil = (await $.clock.now()) + WARMUP_MS
+      await bindSession($)
+    }
     setActive($, activity('recalling'))
     let ran
     try {
@@ -1337,10 +1351,13 @@ export const register: Register = (on, options) => {
       // Bind the new conversation once its id is out, for up to ADOPT_MS.
       stopAdoptWatch()
       const until = (await $.clock.now()) + ADOPT_MS
+      adoptUntil = until
       adoptWatch = $.clock.every(POLL_MS, async () => {
         if (sessionId || (await $.clock.now()) > until) stopAdoptWatch()
         else await adoptSession($)
       })
+      // The row reads "connecting…" while the new conversation binds.
+      redraw($)
       void adoptSession($)
       return ran
     }

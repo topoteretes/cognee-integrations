@@ -353,6 +353,32 @@ test('a server that never answers stops spinning after the warm-up', async ($, o
   await ui.unmount()
 })
 
+test('after a /clear the row says connecting while the new conversation binds', async ($, on) => {
+  const state = { marker: '' }
+  const clock = wire(on, state, () => ({ ...SNAPSHOT, state: '' }))
+  state.marker = marker(clock.now(), { active: null, results: {} })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  // Long past the session's own warm-up: the row sits on the dim ○.
+  for (let s = 0; s < 125; s += 1) await clock.advance(1000)
+  let ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+  await ui.unmount()
+
+  // /clear: the engine still reports the ended id, so nothing is bound yet.
+  await $.session.end({ sessionId: SESSION, reason: 'clear' })
+  ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /connecting…/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeUndefined()
+  await ui.unmount()
+
+  // The adopt watch gives up: the row settles instead of spinning on.
+  for (let s = 0; s < 32; s += 1) await clock.advance(1000)
+  ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /connecting/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('a result older than five minutes leaves the row', async ($, on) => {
   const state = { marker: '' }
   const clock = wire(on, state)
