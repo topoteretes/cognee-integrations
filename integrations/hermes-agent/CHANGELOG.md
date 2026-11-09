@@ -55,6 +55,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   dataset (indistinguishable from a reset), which follows the configuration.
 
 ### Changed
+- **Hermes Desktop sets the credited dataset as code.** The drawn credit line shows
+  "based on dataset `live_context_support_agent`" with the name in inline code, so it stands
+  out from the sentence. Only a name that ends the line or leads to the next named dataset
+  is set; the terminal chats and messaging apps keep the line as the agent wrote it.
 - **The memory credit names the dataset an auto recall came from.** While recall is auto the
   credit said "based on Cognee memory", because the server picks the datasets. Each recalled
   memory now carries the dataset the server reports for it (`dataset_name` on the search

@@ -113,6 +113,41 @@ def test_desktop_gets_the_pixel_logo(cite_on):
     assert memory_credit.render_credit(PLAIN, "desktop") == RENDERED
 
 
+def test_desktop_sets_the_named_datasets_as_code(cite_on):
+    answer = (
+        "Maya wears EU 39.\n\n> Cognee: Maya's orders, based on dataset "
+        "live_context_support_agent and dataset agent_sessions."
+    )
+    line = memory_credit.render_credit(answer, "desktop").splitlines()[-1]
+    assert line.endswith(
+        " Maya's orders, based on dataset `live_context_support_agent`"
+        " and dataset `agent_sessions`."
+    )
+    assert memory_credit.has_credit(memory_credit.render_credit(answer, "desktop"))
+    assert memory_credit.strip_credit_lines(memory_credit.render_credit(answer, "desktop")) == (
+        "Maya wears EU 39."
+    )
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "based on Cognee memory.",
+        "based on dataset `x`.",
+        "a dataset is a set of documents, based on Cognee memory.",
+    ],
+)
+def test_only_a_named_dataset_is_set_as_code(sentence):
+    assert memory_credit.highlight_datasets(sentence) == sentence
+
+
+def test_three_datasets_are_each_set_as_code():
+    sentence = "based on dataset a, dataset b and dataset c."
+    assert memory_credit.highlight_datasets(sentence) == (
+        "based on dataset `a`, dataset `b` and dataset `c`."
+    )
+
+
 def test_the_pixel_logo_follows_the_grid():
     # One rule per vertical run of squares; a single-letter check keeps it readable.
     # E: a full left column, then squares in rows 0, 2 and 4 (raised 0.8, 0.4, 0).

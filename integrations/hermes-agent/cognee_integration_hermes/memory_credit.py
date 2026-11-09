@@ -257,9 +257,11 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
     if not credit_enabled() or not response_text:
         return None
     platform = (platform or "").strip().lower()
-    if platform in COLOR_PLATFORMS and _PLAIN_CREDIT_RE.search(response_text):
+    if platform in COLOR_PLATFORMS and _PLAIN_CREDIT_LINE_RE.search(response_text):
         drawn = WORDMARK[:-1] + LOGO_SPACE + "$"
-        return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{drawn} ", response_text)
+        return _PLAIN_CREDIT_LINE_RE.sub(
+            lambda m: f"{m.group(1)}{drawn} {highlight_datasets(m.group(2))}", response_text
+        )
     if platform not in BRAILLE_PLATFORMS:
         return None
     line_re = next(
@@ -278,6 +280,26 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
         lambda m: f"{m.group(1)}{LOGOTYPE[0]}  {m.group(2)}  \n{m.group(1)}{LOGOTYPE[1]}",
         response_text,
     )
+
+
+#: A dataset the credit names: "dataset <name>" where the name ends the line or is
+#: followed by the next one ("based on dataset a, dataset b and dataset c."), so
+#: "a dataset is a set of…" in the sentence is left alone. Trailing punctuation stays
+#: outside the code, and a name already in backticks is not wrapped again.
+_DATASET_NAME_RE = re.compile(
+    r"\bdataset (?!`)([^\s`]+?)"
+    r"(?=[.,;:!?)]*[ \t]*$|,?[ \t]+(?:and[ \t]+)?dataset[ \t])",
+    re.M,
+)
+
+
+def highlight_datasets(sentence: str) -> str:
+    """The credit's sentence with each dataset it names set as inline code.
+
+    Desktop renders markdown, so ``dataset `live_context_support_agent` `` stands out
+    from the sentence around it instead of reading as plain words.
+    """
+    return _DATASET_NAME_RE.sub(lambda m: f"dataset `{m.group(1)}`", sentence)
 
 
 def signs_with_logo(platform: str) -> bool:
