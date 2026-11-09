@@ -657,14 +657,34 @@ function redraw($: any): void {
   $.ui.invalidate('ui.render')
 }
 
+// Nothing confirmed yet about the connection while the session is still
+// coming up: the row shows the spinner and "connecting…" instead of a bare
+// dim ○, which reads as nothing happening. Bounded by the warm-up (and, before
+// the first snapshot, by the renderer still being tried), so a server that
+// never answers settles on the ○ instead of spinning for the session.
+function awaitingConnection(now: number): boolean {
+  if (active) return false
+  if (snapshot?.state === 'ok' || snapshot?.state === 'fail') return false
+  if (now < warmupUntil) return true
+  return snapshot === null && !!sessionId && rendererFailures < 3
+}
+
+function startSpin($: any): void {
+  if (spin) return
+  spin = $.clock.every(FRAME_MS, async () => {
+    frame = (frame + 1) % FRAMES.length
+    // The connection wait has no hook to end it: the frame stops itself.
+    if (!active && !awaitingConnection(await $.clock.now()) && spin) {
+      spin.cancel()
+      spin = null
+    }
+    $.ui.invalidate('ui.render')
+  })
+}
+
 function setActive($: any, next: Activity): void {
   active = next
-  if (!spin) {
-    spin = $.clock.every(FRAME_MS, () => {
-      frame = (frame + 1) % FRAMES.length
-      $.ui.invalidate('ui.render')
-    })
-  }
+  startSpin($)
   redraw($)
 }
 
@@ -1514,15 +1534,18 @@ export const register: Register = (on, options) => {
 
     // The health slot, as the text line draws it: the spinner while something
     // runs, a green ● once the server is confirmed up and authenticated, the
-    // red verdict with its button on a failure, and a dim ○ while nothing is
-    // known yet (warming up, no marker). One segment with the mark and the
+    // red verdict with its button on a failure, the spinner and "connecting…"
+    // while the session warms up with nothing confirmed, and a dim ○ once
+    // the warm-up is over and still nothing is known. One segment with the mark and the
     // wordmark after it: the official waveform as an inline SVG where the
     // surface draws one (the desktop; the terminal's table lists an Svg too,
     // but draws it as an empty box, so a terminal gets the wordmark alone),
     // then "cognee" bold in the brand lavender.
     const badge: RenderElement[] = []
     let badgeWidth = 2
-    if (active) {
+    const connecting = awaitingConnection(await $.clock.now())
+    if (connecting) startSpin($)
+    if (active || connecting) {
       badge.push(Text({ color: 'yellow', children: [`${FRAMES[frame % FRAMES.length] ?? '⠋'} `] }))
     } else if (snap?.state === 'ok') {
       badge.push(Text({ color: 'green', bold: true, children: ['● '] }))
@@ -1580,6 +1603,8 @@ export const register: Register = (on, options) => {
       result && result.age * 1000 < HIDE_AFTER_MS && !(result.phase === 'ready' && !result.ok && snap?.state === 'ok') ? result : null
     if (active) {
       segment(3 + active.text.length, 1, Text({ color: 'yellow', children: [` · ${active.text}`] }))
+    } else if (connecting) {
+      segment(3 + ACTIVE_LABELS.connecting.length, 1, Text({ color: 'yellow', children: [` · ${ACTIVE_LABELS.connecting}`] }))
     } else if (shownResult) {
       // At rest the result reads in the brand colour and bold.
       segment(

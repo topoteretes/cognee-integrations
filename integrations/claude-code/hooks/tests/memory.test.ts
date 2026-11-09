@@ -1237,8 +1237,9 @@ test('the row keeps checking after start until the connection marker lands', asy
   })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
+  // Not confirmed yet: the row says it is connecting rather than sitting blank.
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /connecting…/ })).toBeDefined()
   await ui.unmount()
 
   // Ten seconds on, the snapshot was retaken and the marker is there.
